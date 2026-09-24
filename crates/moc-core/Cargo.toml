@@ -1,0 +1,8 @@
+[package]
+name = "moc-core"
+version = "0.1.0"
+edition = "2024"
+authors = ["soeur@soeur.dev@gmail.com"]
+
+[dependencies]
+tokio.workspace = true
