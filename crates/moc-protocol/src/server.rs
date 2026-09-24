@@ -1,0 +1,608 @@
+//! 服务端：路由器、握手门禁、轮次注册表与生命周期。
+//!
+//! 路由用**显式 `match`**（不用宏、不做字符串反射）：方法表就是 crate 文档里那张表，
+//! 新增方法时读代码的人能一眼看全所有分支。
+//!
+//! 每个请求的处理顺序：
+//!
+//! 1. 并发门禁：[`ServerOptions::max_in_flight`] 个许可用尽 → `-32000`。
+//! 2. 握手门禁：除 `initialize` / `ping` 外的请求在握手完成前 → `-32002`；
+//!    重复 `initialize` → `-32600`；major 版本不一致 → `-32003`（附 `server_version`）。
+//! 3. params 反序列化失败 → `-32602`，**不调用 core**。
+//! 4. 分发：`ping` 与 `session/cancel` 由协议层自答；其余进 [`AgentService`]。
+//! 5. 结果序列化失败 → `-32603`。
+//!
+//! `session/prompt` 额外过轮次注册表：同一会话已有在飞轮次 → `-32011`，同样**不调用
+//! core**。该注册表同时是 `session/cancel` 的落点，也是协议层唯一持有的「会话相关」
+//! 状态——它只记「谁在飞」，不记任何会话内容。
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use serde_json::Value;
+use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
+use crate::connection::{
+    BoxFuture, Connection, ConnectionOptions, Inbound, now_ms, params_from_value, value_from,
+};
+use crate::error::{RpcError, RpcErrorCode};
+use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
+use crate::message::{Notification, Request};
+use crate::method::Method;
+use crate::methods::{
+    ClientInfo, ConfigGet, Initialize, Ping, PingResult, PromptParams, SessionCancel,
+    SessionCancelResult, SessionDelete, SessionList, SessionLoad, SessionNew, SessionPrompt,
+    SessionRename, SessionUnload, SessionUnlock,
+};
+use crate::service::{AgentService, RequestContext};
+use crate::transport::Transport;
+use crate::{PROTOCOL_VERSION, major_version};
+
+/// 服务端参数。
+#[derive(Debug, Clone, Copy)]
+pub struct ServerOptions {
+    /// 分帧方式；必须与前端一致（不参与握手）。
+    pub framing: Framing,
+    /// 单条报文体上限。
+    pub max_frame_bytes: usize,
+    /// 连接内并发请求上限；超出立刻回 `-32000`，不排队。
+    pub max_in_flight: usize,
+    /// 出站队列容量：更新通知的最大积压量，也是背压的起点。
+    pub outbound_capacity: usize,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            framing: Framing::ContentLength,
+            max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
+            max_in_flight: 64,
+            outbound_capacity: 256,
+        }
+    }
+}
+
+impl ServerOptions {
+    fn connection_options(self) -> ConnectionOptions {
+        ConnectionOptions {
+            framing: self.framing,
+            max_frame_bytes: self.max_frame_bytes,
+            outbound_capacity: self.outbound_capacity,
+        }
+    }
+}
+
+/// 服务端：一个 core 进程一个实例，一个实例服务一个前端。
+pub struct Server<S: AgentService> {
+    service: S,
+    options: ServerOptions,
+    shutdown: CancellationToken,
+    next_connection: AtomicU64,
+}
+
+impl<S: AgentService> Server<S> {
+    /// 用默认参数建立服务端；返回 `Arc` 便于跨任务共享。
+    pub fn new(service: S) -> Arc<Self> {
+        Self::with_options(service, ServerOptions::default())
+    }
+
+    /// 用指定参数建立服务端。
+    pub fn with_options(service: S, options: ServerOptions) -> Arc<Self> {
+        Arc::new(Self {
+            service,
+            options,
+            shutdown: CancellationToken::new(),
+            next_connection: AtomicU64::new(0),
+        })
+    }
+
+    /// 关闭服务端：取消全部连接的令牌，在飞轮次与请求随之结束。
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+    }
+
+    /// 服务端是否已关闭。
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown.is_cancelled()
+    }
+
+    /// 服务一条连接。
+    pub fn spawn<T: Transport>(self: &Arc<Self>, stream: T) -> ServerConnection {
+        self.launch(stream, self.shutdown.child_token())
+    }
+
+    /// 服务标准输入输出：前端以子进程方式拉起的接法。
+    pub fn spawn_stdio(self: &Arc<Self>) -> ServerConnection {
+        self.spawn(crate::transport::stdio())
+    }
+
+    /// 顺序 accept 一个 TCP 前端：断线后继续等下一位（本轮不支持多连接同时在线）。
+    ///
+    /// 传输层不做鉴权，`listener` 只应绑定回环地址。
+    pub fn spawn_tcp(self: &Arc<Self>, listener: TcpListener) -> ServerConnection {
+        let token = self.shutdown.child_token();
+        let server = Arc::clone(self);
+        let accept_token = token.clone();
+        let finished = CancellationToken::new();
+        let finished_signal = finished.clone();
+        tokio::spawn(async move {
+            loop {
+                let stream = tokio::select! {
+                    biased;
+                    () = accept_token.cancelled() => break,
+                    accepted = listener.accept() => match accepted {
+                        Ok((stream, peer)) => {
+                            tracing::info!(%peer, "接受前端连接");
+                            stream
+                        }
+                        Err(error) => {
+                            tracing::warn!("accept 失败：{error}");
+                            continue;
+                        }
+                    },
+                };
+                server.launch(stream, accept_token.child_token()).wait().await;
+            }
+            finished_signal.cancel();
+        });
+        ServerConnection { closed: token, finished }
+    }
+
+    /// 顺序 accept 一个 Unix socket 前端。
+    #[cfg(unix)]
+    pub fn spawn_unix(self: &Arc<Self>, listener: tokio::net::UnixListener) -> ServerConnection {
+        let token = self.shutdown.child_token();
+        let server = Arc::clone(self);
+        let accept_token = token.clone();
+        let finished = CancellationToken::new();
+        let finished_signal = finished.clone();
+        tokio::spawn(async move {
+            loop {
+                let stream = tokio::select! {
+                    biased;
+                    () = accept_token.cancelled() => break,
+                    accepted = listener.accept() => match accepted {
+                        Ok((stream, _)) => stream,
+                        Err(error) => {
+                            tracing::warn!("accept 失败：{error}");
+                            continue;
+                        }
+                    },
+                };
+                server.launch(stream, accept_token.child_token()).wait().await;
+            }
+            finished_signal.cancel();
+        });
+        ServerConnection { closed: token, finished }
+    }
+
+    /// 建立一条连接：拆读写半边、建连接对象、起主循环任务。
+    fn launch<T: Transport>(self: &Arc<Self>, stream: T, token: CancellationToken) -> ServerConnection {
+        let (reader, writer) = tokio::io::split(stream);
+        let id = self.next_connection.fetch_add(1, Ordering::Relaxed) + 1;
+        let (connection, outbound) = Connection::new(id, self.options.connection_options(), token.clone());
+        let dispatch = Arc::new(ServerDispatch::new(Arc::clone(self), Arc::clone(&connection)));
+        let finished = CancellationToken::new();
+        let finished_signal = finished.clone();
+        tokio::spawn(async move {
+            connection.run(reader, writer, outbound, dispatch).await;
+            finished_signal.cancel();
+        });
+        ServerConnection {
+            closed: token,
+            finished,
+        }
+    }
+}
+
+/// 一条服务端连接的句柄。
+///
+/// 完成信号用令牌而不是 `JoinHandle`：句柄需要能被多次 `wait`（accept 循环里
+/// 一个前端断线后等下一位），而 `JoinHandle` 只能被 await 一次。
+pub struct ServerConnection {
+    closed: CancellationToken,
+    finished: CancellationToken,
+}
+
+impl ServerConnection {
+    /// 关闭这条连接。
+    pub fn close(&self) {
+        self.closed.cancel();
+    }
+
+    /// 连接是否已关闭。
+    pub fn is_closed(&self) -> bool {
+        self.closed.is_cancelled()
+    }
+
+    /// 等待连接彻底收尾（读任务退出、在飞任务 abort、出站排空、写半边关闭）。
+    pub async fn wait(&self) {
+        self.finished.cancelled().await;
+    }
+}
+
+/// 连接内的服务端状态：握手、并发门禁、轮次注册表。
+struct ServerDispatch<S: AgentService> {
+    server: Arc<Server<S>>,
+    connection: Arc<Connection>,
+    handshake: Mutex<Handshake>,
+    in_flight: Arc<Semaphore>,
+    turns: Arc<Mutex<HashMap<String, CancellationToken>>>,
+}
+
+/// 握手状态机。
+///
+/// `InProgress` 挡的是并发重复 `initialize`（两个前端请求同时到达时只有一个能
+/// 真正握手）；版本不兼容或 core 拒绝时退回 `Fresh`，允许改正后重试。
+enum Handshake {
+    /// 尚未握手。
+    Fresh,
+    /// 正在处理 `initialize`。
+    InProgress,
+    /// 已握手，记录前端信息。
+    Ready(ClientInfo),
+}
+
+/// 轮次注册表的摘除守卫：任务正常结束、被取消、被 abort 都会摘除，绝不留脏记录。
+struct TurnGuard {
+    turns: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    session_id: String,
+}
+
+/// `session/prompt` 的轮次占位结果。
+enum TurnClaim {
+    /// 不是 prompt，或参数里读不出 `session_id`（后者交给任务报 `-32602`）。
+    NotPrompt,
+    /// 占位成功，附带 `session_id` 供守卫摘除。
+    Claimed(String),
+    /// 同一会话已有在飞轮次。
+    Busy,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.turns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.session_id);
+    }
+}
+
+impl<S: AgentService> ServerDispatch<S> {
+    fn new(server: Arc<Server<S>>, connection: Arc<Connection>) -> Self {
+        let in_flight = Arc::new(Semaphore::new(server.options.max_in_flight));
+        Self {
+            server,
+            connection,
+            handshake: Mutex::new(Handshake::Fresh),
+            in_flight,
+            turns: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn handshake(&self) -> std::sync::MutexGuard<'_, Handshake> {
+        self.handshake.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn turns(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
+        self.turns.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// 在读循环里为 `session/prompt` 占位轮次注册表。
+    ///
+    /// 只从 `params` 里读 `session_id` 一个字段，不解析整个 DTO——参数里可能带着
+    /// 数 MiB 的图片，读循环不该为它做一次完整反序列化。
+    fn claim_turn(&self, request: &Request, cancel: &CancellationToken) -> TurnClaim {
+        if request.method.as_ref() != <SessionPrompt as Method>::NAME {
+            return TurnClaim::NotPrompt;
+        }
+        let Some(session_id) = request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("session_id"))
+            .and_then(Value::as_str)
+        else {
+            return TurnClaim::NotPrompt;
+        };
+        let mut turns = self.turns();
+        if turns.contains_key(session_id) {
+            return TurnClaim::Busy;
+        }
+        turns.insert(session_id.to_owned(), cancel.clone());
+        TurnClaim::Claimed(session_id.to_owned())
+    }
+
+    /// 已完成握手时取出前端信息。
+    fn ready_client(&self) -> Option<ClientInfo> {
+        match &*self.handshake() {
+            Handshake::Ready(client) => Some(client.clone()),
+            _ => None,
+        }
+    }
+
+    /// 构造请求上下文。
+    fn context(&self, client: ClientInfo, cancel: CancellationToken) -> RequestContext {
+        RequestContext::new(
+            self.connection.id(),
+            client,
+            Arc::clone(self.connection.traffic()),
+            cancel,
+        )
+    }
+
+    /// 分发一个已获许可的请求。
+    async fn dispatch(
+        self: &Arc<Self>,
+        request: Request,
+        cancel: CancellationToken,
+        claim: TurnClaim,
+    ) {
+        let Request { id, method, params } = request;
+        let payload = match method.as_ref() {
+            <Initialize as Method>::NAME => self.initialize(params).await,
+            <Ping as Method>::NAME => value_from(PingResult {
+                server_time_ms: now_ms(),
+            }),
+            _ => match self.ready_client() {
+                Some(client) => self.route(client, method.as_ref(), params, cancel, claim).await,
+                None => Err(RpcError::of(RpcErrorCode::ServerNotInitialized)),
+            },
+        };
+        self.connection.respond(Some(id), payload).await;
+    }
+
+    /// 握手：版本协商 + 能力登记。
+    async fn initialize(self: &Arc<Self>, params: Option<Value>) -> Result<Value, RpcError> {
+        let params = params_from_value::<Initialize>(params)?;
+        {
+            let mut handshake = self.handshake();
+            match *handshake {
+                Handshake::Fresh => *handshake = Handshake::InProgress,
+                _ => {
+                    return Err(RpcError::new(
+                        RpcErrorCode::InvalidRequest.code(),
+                        "重复 initialize",
+                    ));
+                }
+            }
+        }
+        if !version_compatible(&params.protocol_version) {
+            *self.handshake() = Handshake::Fresh;
+            return Err(
+                RpcError::of(RpcErrorCode::UnsupportedProtocolVersion)
+                    .with_data(serde_json::json!({ "server_version": PROTOCOL_VERSION })),
+            );
+        }
+        let client = params.client.clone();
+        let cancel = self.connection.closed().child_token();
+        let outcome = self
+            .server
+            .service
+            .initialize(self.context(params.client.clone(), cancel), params)
+            .await;
+        match outcome {
+            Ok(result) => {
+                *self.handshake() = Handshake::Ready(client);
+                value_from(result)
+            }
+            Err(error) => {
+                *self.handshake() = Handshake::Fresh;
+                Err(error)
+            }
+        }
+    }
+
+    /// 已握手连接的方法分发。
+    async fn route(
+        self: &Arc<Self>,
+        client: ClientInfo,
+        method: &str,
+        params: Option<Value>,
+        cancel: CancellationToken,
+        claim: TurnClaim,
+    ) -> Result<Value, RpcError> {
+        match method {
+            <ConfigGet as Method>::NAME => {
+                let params = params_from_value::<ConfigGet>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .config_get(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionNew as Method>::NAME => {
+                let params = params_from_value::<SessionNew>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_new(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionList as Method>::NAME => {
+                let params = params_from_value::<SessionList>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_list(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionLoad as Method>::NAME => {
+                let params = params_from_value::<SessionLoad>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_load(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionUnload as Method>::NAME => {
+                let params = params_from_value::<SessionUnload>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_unload(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionRename as Method>::NAME => {
+                let params = params_from_value::<SessionRename>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_rename(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionDelete as Method>::NAME => {
+                let params = params_from_value::<SessionDelete>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_delete(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionUnlock as Method>::NAME => {
+                let params = params_from_value::<SessionUnlock>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_unlock(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionPrompt as Method>::NAME => {
+                // 占位已在读循环里完成（保证「先 prompt 后 cancel」的顺序），
+                // 这里只把守卫接过来：解析失败、core 报错、任务被 abort 都会释放占位
+                let turn = match claim {
+                    TurnClaim::Claimed(session_id) => Some(TurnGuard {
+                        turns: Arc::clone(&self.turns),
+                        session_id,
+                    }),
+                    _ => None,
+                };
+                let params = params_from_value::<SessionPrompt>(params)?;
+                self.prompt(client, params, cancel, turn).await
+            }
+            // 取消由协议层自答：trip 令牌即可，不经过 core，也不受出站队列拥塞影响
+            <SessionCancel as Method>::NAME => {
+                let params = params_from_value::<SessionCancel>(params)?;
+                value_from(self.cancel_turn(&params.session_id))
+            }
+            _ => Err(RpcError::of(RpcErrorCode::MethodNotFound)),
+        }
+    }
+
+    /// 跑一轮：进 core，结束后由守卫释放轮次占位。
+    async fn prompt(
+        self: &Arc<Self>,
+        client: ClientInfo,
+        params: PromptParams,
+        cancel: CancellationToken,
+        turn: Option<TurnGuard>,
+    ) -> Result<Value, RpcError> {
+        let result = self
+            .server
+            .service
+            .session_prompt(self.context(client, cancel), params)
+            .await;
+        drop(turn);
+        value_from(result?)
+    }
+
+    /// 取消该会话在飞的轮次；没有在飞轮次时是成功的空操作。
+    fn cancel_turn(&self, session_id: &str) -> SessionCancelResult {
+        match self.turns().get(session_id) {
+            Some(token) => {
+                token.cancel();
+                SessionCancelResult { cancelled: true }
+            }
+            None => SessionCancelResult { cancelled: false },
+        }
+    }
+}
+
+impl<S: AgentService> Inbound for ServerDispatch<S> {
+    fn on_request(self: Arc<Self>, request: Request, tasks: &mut JoinSet<()>) {
+        let Ok(permit) = Arc::clone(&self.in_flight).try_acquire_owned() else {
+            let connection = Arc::clone(&self.connection);
+            let id = Some(request.id);
+            tasks.spawn(async move {
+                connection
+                    .respond_error(id, RpcError::of(RpcErrorCode::ServerBusy))
+                    .await;
+            });
+            return;
+        };
+        // 每请求令牌与 prompt 的轮次占位都在读循环里完成：`session/cancel` 是同一
+        // 条连接上的后续报文，因此「先 prompt 后 cancel」的顺序是确定的，取消绝不会
+        // 因为任务调度顺序而落空。
+        let cancel = self.connection.closed().child_token();
+        match self.claim_turn(&request, &cancel) {
+            TurnClaim::Busy => {
+                let connection = Arc::clone(&self.connection);
+                let id = Some(request.id);
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    connection
+                        .respond_error(id, RpcError::of(RpcErrorCode::SessionBusy))
+                        .await;
+                });
+            }
+            claim => {
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    self.dispatch(request, cancel, claim).await;
+                });
+            }
+        }
+    }
+
+    fn on_notification(self: Arc<Self>, notification: Notification) -> BoxFuture<()> {
+        // 本轮没有「客户端→服务端」通知；通知永远不产生响应，因此只记日志
+        tracing::debug!(
+            connection = self.connection.id(),
+            method = %notification.method,
+            "忽略客户端发来的通知"
+        );
+        Box::pin(std::future::ready(()))
+    }
+}
+
+/// 版本是否兼容：比较第一个 `.` 之前的 major 段。
+fn version_compatible(client_version: &str) -> bool {
+    major_version(client_version) == major_version(PROTOCOL_VERSION)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_negotiation_compares_major_only() {
+        assert!(version_compatible("1.0"));
+        assert!(version_compatible("1.7"));
+        assert!(version_compatible("1"));
+        assert!(!version_compatible("2.0"));
+        assert!(!version_compatible("0.9"));
+        assert!(!version_compatible(""));
+        assert_eq!(major_version("1.2.3"), "1");
+        assert_eq!(major_version("1"), "1");
+    }
+
+    #[test]
+    fn options_defaults() {
+        let options = ServerOptions::default();
+        assert_eq!(options.framing, Framing::ContentLength);
+        assert_eq!(options.max_frame_bytes, DEFAULT_MAX_FRAME_BYTES);
+        assert_eq!(options.max_in_flight, 64);
+        assert_eq!(options.outbound_capacity, 256);
+        assert_eq!(PROTOCOL_VERSION, "1.0");
+    }
+}

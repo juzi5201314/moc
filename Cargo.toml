@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm"]
+members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-protocol"]
 default-members = ["crates/moc-cli"]
 
 [workspace.dependencies]
@@ -13,4 +13,5 @@ anyhow = { version = "1.0.104" }
 futures-core = { version = "0.3.34" }
 bytes = { version = "1.12.1" }
 tracing = { version = "0.1.44" }
+tokio-util = { version = "0.7.19" }
 wiremock = { version = "0.6.5" }
