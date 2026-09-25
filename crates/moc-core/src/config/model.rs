@@ -322,6 +322,14 @@ impl ResolvedProvider {
         if document.models.is_empty() {
             return Err(CoreError::Config(format!("providers.{id}.models 不能为空")));
         }
+        // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每个 step 都触发压缩。
+        for (model_id, model) in &document.models {
+            if model.context_window == 0 {
+                return Err(CoreError::Config(format!(
+                    "providers.{id}.models.{model_id}.context_window 必须大于 0"
+                )));
+            }
+        }
         let key = resolve_api_key(id, &document.api_key)?;
         let auth = match (api.protocol(), key) {
             (_, None) => Auth::None,

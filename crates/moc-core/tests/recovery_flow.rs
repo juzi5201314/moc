@@ -687,6 +687,59 @@ async fn unsupported_server_compaction_is_disabled_for_the_session() {
 }
 
 #[tokio::test]
+async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert!(
+                body.get("context_management").is_none(),
+                "auto=false 不得注入服务端压缩阈值"
+            );
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(responses_stream("自动已关闭"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "resp_c",
+                    "model": "gpt-test",
+                    "status": "completed",
+                    "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "checkpoint"}]}],
+                    "usage": {"input_tokens": 10, "output_tokens": 2},
+                }))
+            }
+        })
+        .mount(&upstream)
+        .await;
+    // threshold_tokens=1 使任何 auto=false 之前的配置都会在 step 0 触发自动压缩。
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_responses",
+        "[compaction]\nmethod_order=['soft']\nthreshold_tokens=1\nauto=false",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    let result = h.prompt(&id, "auto 关闭后不自动压缩").await;
+    assert_eq!(result.finish_reason, FinishReason::Stop);
+    assert!(
+        !h.updates
+            .lock()
+            .iter()
+            .any(|event| { matches!(event, SessionUpdate::ContextCompacted { .. }) })
+    );
+    let compacted = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(compacted.method, "soft");
+    h.close().await;
+}
+
+#[tokio::test]
 async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
     let upstream = MockServer::start().await;
     let count = Arc::new(AtomicUsize::new(0));

@@ -59,11 +59,12 @@ enabled = true
 enabled = true
 method_order = ["remote", "shake", "soft"]
 reserve_tokens = 0
-threshold_percent = -1
+threshold_percent = 85
 threshold_tokens = -1
 keep_recent_tokens = 20000
 protect_recent_tool_tokens = 20000
 mid_turn = true
+auto = true
 auto_continue = true
 
 [compaction.shake]

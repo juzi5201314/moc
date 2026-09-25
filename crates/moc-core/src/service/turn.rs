@@ -200,8 +200,9 @@ async fn run_turn_locked(
         let mut messages = model_messages(&snapshot, Some(system.clone()), Some(&model));
         messages.extend(reminder_messages.iter().cloned());
         if project_config.compaction.enabled
+            && project_config.compaction.auto
             && (step == 0 || project_config.compaction.mid_turn)
-            && compact::context_tokens(&snapshot, &messages)
+            && compact::context_tokens(&snapshot, &messages, &tools_available)
                 > compact::threshold(&project_config, model.context_window)
         {
             match compact::compact(
@@ -239,6 +240,7 @@ async fn run_turn_locked(
         let mut stream = loop {
             let mut llm_config = model.llm.clone();
             if project_config.compaction.enabled
+                && project_config.compaction.auto
                 && project_config.compaction.remote.enabled
                 && project_config.compaction.remote.server_side
                 && !snapshot.server_compaction_disabled

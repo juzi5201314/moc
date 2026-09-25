@@ -13,7 +13,7 @@ use toml::Value;
 use crate::CoreConfig;
 use crate::error::CoreError;
 use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
-use schema::ConfigDocument;
+use schema::{ConfigDocument, validate_compaction};
 
 pub use model::{ModelCapabilities, ThinkingLevel};
 pub use schema::{
@@ -141,6 +141,7 @@ impl ResolvedConfig {
             .map_err(|error| CoreError::Config(format!("配置字段无效: {error}")))?;
         let providers = resolve_catalog(&document.providers)?;
         validate_roles(&document.models.roles, &providers)?;
+        validate_compaction(&document.compaction)?;
         let session_dir = expand_config_path(&document.session.dir, &home)?;
         Ok(Self {
             home,

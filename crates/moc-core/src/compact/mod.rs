@@ -5,7 +5,7 @@ pub mod replay;
 pub mod shake;
 pub mod soft;
 
-use moc_llm::Message;
+use moc_llm::{Message, ToolDef};
 use moc_protocol::RequestContext;
 use moc_protocol::methods::{CompactResult, SessionUpdate};
 
@@ -46,13 +46,22 @@ pub fn messages_tokens(messages: &[Message]) -> u64 {
         .sum()
 }
 
-/// 有上游用量时以其为基准，仅估算响应之后追加的消息。
+/// 工具定义整体序列化后估算一次；工具 schema 随每次请求发送，必须计入基数。
+pub fn tools_tokens(tools: &[ToolDef]) -> u64 {
+    let Ok(text) = serde_json::to_string(tools) else {
+        return 0;
+    };
+    estimate_tokens(&text)
+}
+
+/// 有上游用量时以其为基准，仅估算响应之后追加的消息；无用量时全量估算并计入工具。
 pub(crate) fn context_tokens(
     state: &crate::session::state::SessionState,
     messages: &[Message],
+    tools: &[ToolDef],
 ) -> u64 {
     if state.usage.input_tokens == 0 || state.usage_at == 0 {
-        return messages_tokens(messages);
+        return messages_tokens(messages).saturating_add(tools_tokens(tools));
     }
     let added = state
         .transcript
@@ -67,6 +76,10 @@ pub(crate) fn context_tokens(
         .saturating_add(added)
 }
 
+/// 阈值三层优先级：绝对 token 数、窗口百分比、预留回退（`窗口 − max(16384, 15%)`）。
+///
+/// 只按 `context_window` 计算，绝不扣减 `max_output_tokens`：大输出上限的模型
+/// （如 500k 窗口 / 384k 输出）若按输出扣减会频繁提前压缩；真溢出由 Overflow 恢复兜底。
 pub fn threshold(config: &ResolvedConfig, context_window: u64) -> u64 {
     let compaction = &config.compaction;
     if compaction.threshold_tokens > 0 {
@@ -223,6 +236,11 @@ pub(crate) async fn record_compaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::entries::{Entry, EntryPayload};
+    use crate::session::state::SessionState;
+    use moc_protocol::methods::SessionMode;
+
+    const MODEL_BASE: &str = "[models.roles]\ndefault='p/m'\nsmol='p/m'\nslow='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
 
     #[test]
     fn token_estimator_and_threshold_follow_configured_precedence() {
@@ -236,13 +254,97 @@ mod tests {
         );
     }
 
-    fn test_config() -> ResolvedConfig {
+    #[test]
+    fn threshold_follows_tokens_percent_reserve_precedence() {
+        let tokens =
+            config_with("\n[compaction]\nthreshold_tokens = 50000\nthreshold_percent = 90\n");
+        assert_eq!(threshold(&tokens, 200_000), 50_000);
+        let percent = config_with("\n[compaction]\nthreshold_percent = 80\n");
+        assert_eq!(threshold(&percent, 200_000), 160_000);
+        let reserve =
+            config_with("\n[compaction]\nthreshold_percent = -1\nreserve_tokens = 4096\n");
+        assert_eq!(threshold(&reserve, 200_000), 195_904);
+    }
+
+    #[test]
+    fn threshold_ignores_max_output_tokens() {
+        // 500k 窗口 / 384k 最大输出：阈值仍为 85% 窗口，不因输出上限提前压缩。
+        let config = config_with("max_output_tokens = 393216\n");
+        assert_eq!(threshold(&config, 500_000), 425_000);
+    }
+
+    #[test]
+    fn config_rejects_malformed_thresholds() {
+        for suffix in [
+            "\n[compaction]\nthreshold_tokens = 0\n",
+            "\n[compaction]\nthreshold_tokens = -2\n",
+            "\n[compaction]\nthreshold_percent = 0\n",
+            "\n[compaction]\nthreshold_percent = 101\n",
+            "\n[compaction]\nthreshold_percent = -2\n",
+        ] {
+            assert!(
+                load_config(&format!("{MODEL_BASE}{suffix}")).is_err(),
+                "{suffix}"
+            );
+        }
+        let Err(error) = load_config(&format!("{MODEL_BASE}context_window = 0\n")) else {
+            panic!("context_window = 0 应被拒绝");
+        };
+        assert!(error.to_string().contains("context_window"), "{error}");
+    }
+
+    #[test]
+    fn context_tokens_counts_tools_only_without_usage() {
+        let tools = vec![ToolDef {
+            name: "demo".into(),
+            description: Some("工具描述".into()),
+            parameters: serde_json::json!({"type": "object"}),
+            strict: None,
+        }];
+        let messages = vec![Message::user_text("abcd")];
+        assert!(tools_tokens(&tools) > 0);
+        let state = SessionState::from_entries(vec![header_entry()]).unwrap();
+        assert_eq!(
+            context_tokens(&state, &messages, &tools),
+            messages_tokens(&messages) + tools_tokens(&tools)
+        );
+        // 有 usage 时上游基数已含工具 schema，只追加新消息，不再重复计入。
+        let header = header_entry();
+        let mut state =
+            SessionState::from_entries(vec![header.clone(), message_entry(&header)]).unwrap();
+        state.usage.input_tokens = 100;
+        state.usage_at = state.transcript.len();
+        assert_eq!(context_tokens(&state, &messages, &tools), 100);
+    }
+
+    fn header_entry() -> Entry {
+        Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp".into(),
+            "gpt-x".into(),
+            SessionMode::Normal,
+            None,
+            "t".into(),
+            1,
+        )
+    }
+
+    fn message_entry(header: &Entry) -> Entry {
+        Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("hi"),
+                tool: None,
+                finish_reason: None,
+            },
+            header.id().to_owned(),
+            2,
+        )
+    }
+
+    fn load_config(body: &str) -> Result<ResolvedConfig, crate::error::CoreError> {
         let directory = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(directory.path().join("home")).unwrap();
-        std::fs::write(
-            directory.path().join("home/config.toml"),
-            "[models.roles]\ndefault='p/m'\nsmol='p/m'\nslow='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n",
-        ).unwrap();
+        std::fs::write(directory.path().join("home/config.toml"), body).unwrap();
         ResolvedConfig::load(&crate::CoreConfig {
             home: directory.path().join("home"),
             cwd: directory.path().to_owned(),
@@ -250,6 +352,13 @@ mod tests {
             session_dir: None,
             client: moc_llm::Client::new(),
         })
-        .unwrap()
+    }
+
+    fn config_with(suffix: &str) -> ResolvedConfig {
+        load_config(&format!("{MODEL_BASE}{suffix}")).unwrap()
+    }
+
+    fn test_config() -> ResolvedConfig {
+        config_with("")
     }
 }

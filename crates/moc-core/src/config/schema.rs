@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::model::ModelCatalog;
+use crate::error::CoreError;
 
 #[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -222,14 +223,21 @@ pub enum CompactionMethod {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CompactionConfig {
+    /// 总开关；关闭后手动与自动压缩一并禁用。
     pub enabled: bool,
+    /// 压缩方法尝试顺序。
     pub method_order: Vec<CompactionMethod>,
+    /// 回退层预留 token 数；0 表示按窗口的 `max(16384, 15%)` 预留。
     pub reserve_tokens: u32,
+    /// 触发阈值，占上下文窗口的百分比；`-1` 表示未设置，落到回退层。
     pub threshold_percent: i32,
+    /// 触发阈值，绝对 token 数；`-1` 表示未设置，优先级高于 [`Self::threshold_percent`]。
     pub threshold_tokens: i64,
     pub keep_recent_tokens: u32,
     pub protect_recent_tool_tokens: u32,
     pub mid_turn: bool,
+    /// 阈值自动触发开关；关闭后仅剩手动压缩与 Overflow 恢复，不影响 [`Self::enabled`]。
+    pub auto: bool,
     pub auto_continue: bool,
     pub shake: ShakeConfig,
     pub remote: RemoteCompactionConfig,
@@ -245,16 +253,33 @@ impl Default for CompactionConfig {
                 CompactionMethod::Soft,
             ],
             reserve_tokens: 0,
-            threshold_percent: -1,
+            threshold_percent: 85,
             threshold_tokens: -1,
             keep_recent_tokens: 20_000,
             protect_recent_tool_tokens: 20_000,
             mid_turn: true,
+            auto: true,
             auto_continue: true,
             shake: ShakeConfig::default(),
             remote: RemoteCompactionConfig::default(),
         }
     }
+}
+
+/// 校验压缩阈值配置；`-1` 是「未设置」哨兵，其余取值必须落在有效区间，
+/// 避免畸形值（如 `0` 与未设置混淆、`percent > 100` 恒触发）静默改变触发行为。
+pub(super) fn validate_compaction(config: &CompactionConfig) -> Result<(), CoreError> {
+    if config.threshold_tokens == 0 || config.threshold_tokens < -1 {
+        return Err(CoreError::Config(
+            "compaction.threshold_tokens 必须是 -1 或正整数".into(),
+        ));
+    }
+    if config.threshold_percent != -1 && !(1..=100).contains(&config.threshold_percent) {
+        return Err(CoreError::Config(
+            "compaction.threshold_percent 必须是 -1 或 1..=100".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
