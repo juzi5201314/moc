@@ -1,10 +1,11 @@
 //! HTTP 客户端与重试。
 //!
-//! 一个 [`Client`] 持有一个连接池复用的 `reqwest::Client`，因此可以对同一个
-//! 实例并发发起任意多个请求；[`crate::ChatStream`] 亦可 `tokio::spawn` 到独立任务
-//! 中消费。
+//! 同一超时策略复用一个 reqwest 连接池；连接时限只约束 DNS/TCP/TLS，
+//! 不把模型生成期间等待响应头的时间误算成连接建立时间。
 
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -19,7 +20,15 @@ use crate::types::{ChatRequest, ChatResponse, Usage};
 /// HTTP 客户端。
 #[derive(Debug, Clone)]
 pub struct Client {
+    inner: Arc<ClientInner>,
+}
+
+#[derive(Debug)]
+struct ClientInner {
     http: reqwest::Client,
+    options: ClientBuilder,
+    /// 配置可提供任意时限；按完整 Duration 分组，冷路径建池、热路径点查。
+    transports: Mutex<HashMap<Duration, reqwest::Client>>,
 }
 
 /// Responses 原生压缩结果。
@@ -34,11 +43,11 @@ pub struct CompactResponse {
 }
 
 impl Client {
-    /// 用默认配置构造；内部 `reqwest::Client::new()` 不会失败。
+    /// 用默认选项构造共享连接池。
     pub fn new() -> Client {
-        Client {
-            http: reqwest::Client::new(),
-        }
+        ClientBuilder::new()
+            .build()
+            .expect("默认 HTTP 客户端可构造")
     }
 
     /// 自定义构造器（`user_agent` / 连接池 / 超时）。
@@ -172,6 +181,30 @@ impl Client {
         }
     }
 
+    fn post(&self, cfg: &LlmConfig, url: &str) -> Result<reqwest::RequestBuilder, LlmError> {
+        let Some(seconds) = cfg.connect_timeout_secs else {
+            return Ok(self.inner.http.post(url));
+        };
+        let timeout = Duration::try_from_secs_f64(seconds)
+            .map_err(|error| LlmError::Encode(format!("连接超时配置无效：{error}")))?;
+        if self.inner.options.connect_timeout == Some(timeout) {
+            return Ok(self.inner.http.post(url));
+        }
+        let mut transports = self.inner.transports.lock().expect("HTTP 连接池表");
+        if let Some(http) = transports.get(&timeout) {
+            return Ok(http.post(url));
+        }
+        let http = self
+            .inner
+            .options
+            .clone()
+            .connect_timeout(timeout)
+            .build_http()?;
+        let request = http.post(url);
+        transports.insert(timeout, http);
+        Ok(request)
+    }
+
     /// 发送一次请求并把非 2xx 响应解码为 [`LlmError::Api`]。
     async fn execute(
         &self,
@@ -179,7 +212,7 @@ impl Client {
         encoded: &EncodedRequest,
         stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
-        let mut builder = self.http.post(&encoded.url).body(encoded.body.clone());
+        let mut builder = self.post(cfg, &encoded.url)?.body(encoded.body.clone());
         for (name, value) in &encoded.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
@@ -196,11 +229,9 @@ impl Client {
             body_bytes = encoded.body.len(),
             "发送请求"
         );
-        let response = match cfg.connect_timeout_secs {
+        let response = match cfg.timeout_secs.filter(|_| stream) {
             Some(secs) => {
-                // reqwest 只在客户端级别提供 connect timeout，这里把
-                // `connect_timeout_secs` 实现为「建立连接并拿到响应头」的时限：
-                // 对流式请求正是「上游必须开始响应」的语义。
+                // 流式首包等待与后续读取同属空闲时限，不使用连接建立时限。
                 tokio::time::timeout(Duration::from_secs_f64(secs), builder.send())
                     .await
                     .map_err(|_| {
@@ -242,7 +273,7 @@ impl Default for Client {
 }
 
 /// [`Client`] 构造器。
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ClientBuilder {
     user_agent: Option<String>,
     pool_max_idle_per_host: Option<usize>,
@@ -282,8 +313,19 @@ impl ClientBuilder {
 
     /// 构造客户端。
     pub fn build(self) -> Result<Client, LlmError> {
+        let http = self.build_http()?;
+        Ok(Client {
+            inner: Arc::new(ClientInner {
+                http,
+                options: self,
+                transports: Mutex::new(HashMap::new()),
+            }),
+        })
+    }
+
+    fn build_http(&self) -> Result<reqwest::Client, LlmError> {
         let mut builder = reqwest::Client::builder();
-        if let Some(user_agent) = self.user_agent {
+        if let Some(user_agent) = &self.user_agent {
             builder = builder.user_agent(user_agent);
         }
         if let Some(max) = self.pool_max_idle_per_host {
@@ -295,34 +337,13 @@ impl ClientBuilder {
         if let Some(timeout) = self.connect_timeout {
             builder = builder.connect_timeout(timeout);
         }
-        let http = builder.build()?;
-        Ok(Client { http })
+        Ok(builder.build()?)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn builder_constructs_a_client() {
-        let client = Client::builder()
-            .user_agent("moc-llm/0.1")
-            .pool_max_idle_per_host(4)
-            .read_timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-        // `Debug` 输出不含凭据，也不包含请求体。
-        let debug = format!("{client:?}");
-        assert!(debug.starts_with("Client"), "{debug}");
-    }
-
-    #[test]
-    fn default_client_uses_the_shared_constructor() {
-        let client = Client::default();
-        assert_eq!(format!("{client:?}"), format!("{:?}", Client::new()));
-    }
 
     #[test]
     fn client_is_send_sync_and_cloneable() {

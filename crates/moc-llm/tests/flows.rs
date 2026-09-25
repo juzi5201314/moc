@@ -67,6 +67,115 @@ async fn last_body(server: &MockServer) -> Value {
 }
 
 #[tokio::test]
+async fn configured_transport_preserves_user_agent_when_reused_with_provider_timeout() {
+    let server = start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::header("user-agent", "moc-pool-contract"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"index":0,"message":{"role":"assistant","content":"传输选项保留"},"finish_reason":"stop"}]
+        })))
+        .expect(2)
+        .mount(&server).await;
+    let client = Client::builder()
+        .user_agent("moc-pool-contract")
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let mut cfg = config(Protocol::OpenAiChat, &server);
+    cfg.connect_timeout_secs = Some(20.0);
+    let request = ChatRequest {
+        messages: vec![Message::user_text("检查连接池")],
+        ..Default::default()
+    };
+    assert_eq!(
+        client
+            .complete(&cfg, &request)
+            .await
+            .unwrap()
+            .message
+            .text(),
+        "传输选项保留"
+    );
+    assert_eq!(
+        client
+            .clone()
+            .complete(&cfg, &request)
+            .await
+            .unwrap()
+            .message
+            .text(),
+        "传输选项保留"
+    );
+}
+
+#[tokio::test]
+async fn connected_nonstream_request_can_wait_beyond_connect_timeout() {
+    use std::time::Duration;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (entered, connected) = tokio::sync::oneshot::channel();
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut reader = BufReader::new(socket);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            assert!(reader.read_line(&mut line).await.unwrap() > 0);
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).await.unwrap();
+        entered.send(()).unwrap();
+        gate.await.unwrap();
+        let body = json!({"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"完整摘要"},"finish_reason":"stop"}]}).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = reader.get_mut().write_all(response.as_bytes()).await;
+    });
+    let response = tokio::spawn(async move {
+        Client::new()
+            .complete(
+                &LlmConfig {
+                    base_url: format!("http://{address}/v1"),
+                    model: "test-model".into(),
+                    connect_timeout_secs: Some(20.0),
+                    timeout_secs: Some(600.0),
+                    retry: RetryPolicy {
+                        max_attempts: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                &ChatRequest {
+                    messages: vec![Message::user_text("压缩历史")],
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    connected.await.unwrap();
+    // 已收到完整请求后才推进虚拟时钟；不依赖 TCP 调度或真实 sleep。
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    release.send(()).unwrap();
+    assert_eq!(response.await.unwrap().unwrap().message.text(), "完整摘要");
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn complete_chat_nonstream() {
     let server = start().await;
     mount_json(

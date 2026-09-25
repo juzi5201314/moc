@@ -293,11 +293,10 @@ pub struct LlmConfig {
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     /// 超时（秒）：非流式请求是整请求总时长，流式请求是两次字节到达之间的空闲上限。
     pub timeout_secs: Option<f64>,
-    /// 「建立连接并拿到响应头」的时限（秒）。
+    /// 连接建立（DNS/TCP/TLS）的时限，单位为秒；不包含等待模型响应头的时间。
     ///
-    /// reqwest 只在客户端级别提供 connect timeout，因此本 crate 把它实现为
-    /// 连接与响应头阶段的上限；要限制纯 TCP 连接阶段，用
-    /// [`crate::ClientBuilder::connect_timeout`]。
+    /// 同一时限共享连接池；未设置时沿用 [`crate::ClientBuilder::connect_timeout`]。
+    /// 非流式响应生成与流式首包等待受 `timeout_secs` 约束。
     pub connect_timeout_secs: Option<f64>,
     /// Responses 服务端压缩阈值；配置时请求体带 `context_management`。
     pub server_compaction_threshold: Option<u64>,

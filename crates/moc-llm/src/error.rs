@@ -34,7 +34,7 @@ pub enum LlmError {
     #[error("流式响应异常: {0}")]
     Stream(String),
     /// 重试次数耗尽。
-    #[error("重试 {attempts} 次后仍失败")]
+    #[error("重试 {attempts} 次后仍失败: {last}")]
     RetriesExhausted {
         /// 实际尝试次数（含首次）。
         attempts: u32,
@@ -498,7 +498,7 @@ mod tests {
             exhausted.api_error().map(|err| err.kind),
             Some(ApiErrorKind::ServerError)
         );
-        assert_eq!(exhausted.to_string(), "重试 3 次后仍失败");
+        assert!(exhausted.to_string().contains("unavailable"));
 
         let encode = LlmError::Encode("缺少 max_tokens".into());
         assert!(!encode.is_retryable());
