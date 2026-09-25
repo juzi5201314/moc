@@ -221,14 +221,20 @@ fn encode_assistant(
 ) -> Result<Value, LlmError> {
     let mut text = String::new();
     let mut reasoning = String::new();
+    let mut has_text = false;
+    let mut has_reasoning = false;
     let mut tool_calls = Vec::new();
     for part in &message.content {
         match part {
-            ContentPart::Text(chunk) => text.push_str(chunk),
+            ContentPart::Text(chunk) => {
+                has_text = true;
+                text.push_str(chunk);
+            }
             ContentPart::Reasoning(block) => {
                 if plan.keeps(block)
                     && let ReasoningBlock::Text { text: chunk, .. } = block
                 {
+                    has_reasoning = true;
                     reasoning.push_str(chunk);
                 }
             }
@@ -243,15 +249,21 @@ fn encode_assistant(
 
     let mut object = Map::new();
     object.insert("role".into(), Value::String("assistant".into()));
-    // 文本为空时线上取 null（含「只有工具调用」与「只有思维链」两种形态）。
+    // 显式空文本与缺失正文不同，兼容层可据此满足上游必填字段。
     object.insert(
         "content".into(),
-        finish_text_content(text, breakpoint)?.unwrap_or(Value::Null),
+        finish_text_content(text, breakpoint)?.unwrap_or_else(|| {
+            if has_text {
+                Value::String(String::new())
+            } else {
+                Value::Null
+            }
+        }),
     );
     if !tool_calls.is_empty() {
         object.insert("tool_calls".into(), Value::Array(tool_calls));
     }
-    if !reasoning.is_empty() {
+    if has_reasoning {
         object.insert(echo::reasoning_field(cfg).into(), Value::String(reasoning));
     }
     Ok(Value::Object(object))
@@ -762,6 +774,31 @@ mod tests {
                 "messages": [{"role": "user", "content": "hi"}],
             })
         );
+    }
+
+    #[test]
+    fn explicit_empty_assistant_blocks_preserve_required_wire_fields() {
+        let mut request = ChatRequest {
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentPart::Text(String::new()),
+                    ContentPart::Reasoning(ReasoningBlock::text("")),
+                ],
+            }],
+            options: RequestOptions {
+                echo_reasoning: crate::types::ReasoningEcho::Always,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &request, false);
+        assert_eq!(body["messages"][0]["content"], "");
+        assert_eq!(body["messages"][0]["reasoning_content"], "");
+        request.options.echo_reasoning = crate::types::ReasoningEcho::Never;
+        let stripped = encode_body(&config(), &request, false);
+        assert!(stripped["messages"][0].get("reasoning_content").is_none());
+        assert_eq!(stripped["messages"][0]["content"], "");
     }
 
     #[test]
