@@ -1,0 +1,101 @@
+# moc-core 默认配置。用户配置按表递归覆盖，数组与标量整体替换。
+
+[models.roles]
+default = "ds/deepseek-v4.1-flash:max"
+smol = "ds/deepseek-v4.1-flash:low"
+slow = "cpa-cx/gpt-6-luna:max"
+plan = "cpa-cx/ag/gpt-5.6-sol:xhigh"
+
+[providers]
+
+[tools]
+approval_mode = "yolo"
+
+[tools.approval]
+
+[tools.bash]
+default_timeout_secs = 120
+max_timeout_secs = 3600
+output_head_bytes = 20480
+output_tail_bytes = 20480
+auto_background_ms = 0
+deny_patterns = ["rm\\s+-rf\\s+/(\\s|$)", ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\};:", "mkfs\\.", "dd\\s+.*of=/dev/", "shutdown|reboot", ">\\s*/etc/passwd"]
+
+[tools.read]
+default_limit = 300
+max_bytes = 51200
+line_max_bytes = 204800
+max_file_bytes = 104857600
+
+[tools.edit]
+max_edits = 32
+noop_loop_threshold = 3
+
+[tools.write]
+hash_echo_min_hits = 2
+
+[tools.grep]
+max_files = 20
+max_matches_per_file = 20
+max_matches_total = 200
+line_max_chars = 512
+context_before = 1
+context_after = 3
+max_file_bytes = 4194304
+timeout_ms = 30000
+max_candidate_files = 20000
+
+[tools.find]
+limit = 200
+timeout_ms = 5000
+
+[tools.todo]
+enabled = true
+
+[tools.job]
+enabled = true
+
+[compaction]
+enabled = true
+method_order = ["remote", "shake", "soft"]
+reserve_tokens = 0
+threshold_percent = -1
+threshold_tokens = -1
+keep_recent_tokens = 20000
+protect_recent_tool_tokens = 20000
+mid_turn = true
+auto_continue = true
+
+[compaction.shake]
+soft_trim_chars = 4000
+head_chars = 1500
+tail_chars = 1500
+hard_clear_turns = 10
+keep_last_turns = 3
+supersede_reads = true
+
+[compaction.remote]
+enabled = true
+server_side = true
+retained_message_tokens = 64000
+
+[limits]
+max_steps_per_turn = 128
+max_length_continues = 2
+max_output_tokens = 32000
+
+[system_prompt]
+override = ""
+append = ""
+
+[context_files]
+enabled = true
+import_depth = 5
+
+[workspace]
+watch = true
+max_scan_entries = 100000
+
+[session]
+dir = "~/.moc/sessions"
+locking = true

@@ -1,0 +1,353 @@
+//! JSONL transcript entry schema 与协议投影。
+
+use moc_llm::{FinishReason, Message};
+use moc_protocol::methods::{
+    PlanStatus, SessionInfo, SessionLockInfo, SessionMode, TodoPhase, ToolExecution,
+    TranscriptEntry,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::ids;
+
+/// 一个会话 JSONL 文件的一行记录。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Entry {
+    /// 文件首行的稳定会话元信息。
+    Header {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        version: u32,
+        session_id: String,
+        cwd: String,
+        model: String,
+        mode: SessionMode,
+        parent_session_id: Option<String>,
+        title: String,
+        created_at_ms: u64,
+    },
+    /// 对话消息及可选工具/结束信息。
+    Message {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        message: Message,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<ToolExecution>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<FinishReason>,
+    },
+    /// 一次上下文压缩。
+    Compaction {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        method: String,
+        summary: String,
+        first_kept_id: Option<String>,
+        tokens_before: u64,
+        tokens_after: u64,
+        instructions: Option<String>,
+        native: Option<Box<serde_json::Value>>,
+    },
+    /// 工作模式变化。
+    ModeChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        mode: SessionMode,
+    },
+    /// 模型变化。
+    ModelChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        model: String,
+    },
+    /// 标题变化。
+    TitleChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        title: String,
+    },
+    /// Todo 清单快照。
+    Todos {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        phases: Vec<TodoPhase>,
+    },
+    /// 计划状态变化。
+    Plan {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        plan_id: String,
+        title: String,
+        path: String,
+        markdown: String,
+        status: PlanStatus,
+    },
+    /// `/clear` 后模型上下文重建边界。
+    ResetBoundary {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+    },
+}
+
+/// 非 header entry 的载荷；公共 ID 与 parent 链由 store 分配。
+#[derive(Debug, Clone, PartialEq)]
+pub enum EntryPayload {
+    Message {
+        message: Message,
+        tool: Option<ToolExecution>,
+        finish_reason: Option<FinishReason>,
+    },
+    Compaction {
+        method: String,
+        summary: String,
+        first_kept_id: Option<String>,
+        tokens_before: u64,
+        tokens_after: u64,
+        instructions: Option<String>,
+        native: Option<Box<serde_json::Value>>,
+    },
+    ModeChange {
+        mode: SessionMode,
+    },
+    ModelChange {
+        model: String,
+    },
+    TitleChange {
+        title: String,
+    },
+    Todos {
+        phases: Vec<TodoPhase>,
+    },
+    Plan {
+        plan_id: String,
+        title: String,
+        path: String,
+        markdown: String,
+        status: PlanStatus,
+    },
+    ResetBoundary,
+}
+
+impl Entry {
+    /// 创建 session JSONL 第一行。
+    #[allow(clippy::too_many_arguments)]
+    pub fn header(
+        session_id: String,
+        cwd: String,
+        model: String,
+        mode: SessionMode,
+        parent_session_id: Option<String>,
+        title: String,
+        created_at_ms: u64,
+    ) -> Self {
+        Self::Header {
+            id: ids::entry_id(),
+            parent_id: None,
+            at_ms: created_at_ms,
+            version: 1,
+            session_id,
+            cwd,
+            model,
+            mode,
+            parent_session_id,
+            title,
+            created_at_ms,
+        }
+    }
+
+    /// 从载荷构造并连接到上一条 entry。
+    pub fn from_payload(payload: EntryPayload, parent_id: String, at_ms: u64) -> Self {
+        let id = ids::entry_id();
+        let parent_id = Some(parent_id);
+        match payload {
+            EntryPayload::Message {
+                message,
+                tool,
+                finish_reason,
+            } => Self::Message {
+                id,
+                parent_id,
+                at_ms,
+                message,
+                tool,
+                finish_reason,
+            },
+            EntryPayload::Compaction {
+                method,
+                summary,
+                first_kept_id,
+                tokens_before,
+                tokens_after,
+                instructions,
+                native,
+            } => Self::Compaction {
+                id,
+                parent_id,
+                at_ms,
+                method,
+                summary,
+                first_kept_id,
+                tokens_before,
+                tokens_after,
+                instructions,
+                native,
+            },
+            EntryPayload::ModeChange { mode } => Self::ModeChange {
+                id,
+                parent_id,
+                at_ms,
+                mode,
+            },
+            EntryPayload::ModelChange { model } => Self::ModelChange {
+                id,
+                parent_id,
+                at_ms,
+                model,
+            },
+            EntryPayload::TitleChange { title } => Self::TitleChange {
+                id,
+                parent_id,
+                at_ms,
+                title,
+            },
+            EntryPayload::Todos { phases } => Self::Todos {
+                id,
+                parent_id,
+                at_ms,
+                phases,
+            },
+            EntryPayload::Plan {
+                plan_id,
+                title,
+                path,
+                markdown,
+                status,
+            } => Self::Plan {
+                id,
+                parent_id,
+                at_ms,
+                plan_id,
+                title,
+                path,
+                markdown,
+                status,
+            },
+            EntryPayload::ResetBoundary => Self::ResetBoundary {
+                id,
+                parent_id,
+                at_ms,
+            },
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Header { id, .. }
+            | Self::Message { id, .. }
+            | Self::Compaction { id, .. }
+            | Self::ModeChange { id, .. }
+            | Self::ModelChange { id, .. }
+            | Self::TitleChange { id, .. }
+            | Self::Todos { id, .. }
+            | Self::Plan { id, .. }
+            | Self::ResetBoundary { id, .. } => id,
+        }
+    }
+
+    pub fn parent_id(&self) -> Option<&str> {
+        match self {
+            Self::Header { parent_id, .. }
+            | Self::Message { parent_id, .. }
+            | Self::Compaction { parent_id, .. }
+            | Self::ModeChange { parent_id, .. }
+            | Self::ModelChange { parent_id, .. }
+            | Self::TitleChange { parent_id, .. }
+            | Self::Todos { parent_id, .. }
+            | Self::Plan { parent_id, .. }
+            | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
+        }
+    }
+
+    pub fn at_ms(&self) -> u64 {
+        match self {
+            Self::Header { at_ms, .. }
+            | Self::Message { at_ms, .. }
+            | Self::Compaction { at_ms, .. }
+            | Self::ModeChange { at_ms, .. }
+            | Self::ModelChange { at_ms, .. }
+            | Self::TitleChange { at_ms, .. }
+            | Self::Todos { at_ms, .. }
+            | Self::Plan { at_ms, .. }
+            | Self::ResetBoundary { at_ms, .. } => *at_ms,
+        }
+    }
+
+    pub fn header_fields(&self) -> Option<(&str, &str, &str, SessionMode, &str, u64, u64)> {
+        match self {
+            Self::Header {
+                session_id,
+                cwd,
+                model,
+                mode,
+                title,
+                created_at_ms,
+                at_ms,
+                ..
+            } => Some((session_id, cwd, model, *mode, title, *created_at_ms, *at_ms)),
+            _ => None,
+        }
+    }
+
+    pub fn transcript_entry(&self) -> Option<TranscriptEntry> {
+        match self {
+            Self::Message {
+                id,
+                at_ms,
+                message,
+                tool,
+                ..
+            } => Some(TranscriptEntry {
+                id: id.clone(),
+                at_ms: *at_ms,
+                message: message.clone(),
+                tool: tool.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn session_info(&self, lock: Option<SessionLockInfo>) -> Option<SessionInfo> {
+        let Self::Header {
+            session_id,
+            cwd,
+            model,
+            mode,
+            title,
+            created_at_ms,
+            at_ms,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some(SessionInfo {
+            id: session_id.clone(),
+            title: title.clone(),
+            model: model.clone(),
+            mode: *mode,
+            cwd: cwd.clone(),
+            created_at_ms: *created_at_ms,
+            updated_at_ms: *at_ms,
+            lock,
+        })
+    }
+}
