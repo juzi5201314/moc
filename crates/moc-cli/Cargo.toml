@@ -5,3 +5,19 @@ edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
 
 [dependencies]
+moc-core = { path = "../moc-core" }
+moc-protocol = { path = "../moc-protocol" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+libc.workspace = true
+
+[[bin]]
+name = "moc"
+path = "src/main.rs"
