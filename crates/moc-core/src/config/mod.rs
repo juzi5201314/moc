@@ -172,12 +172,12 @@ pub fn resolve_models(config: &CoreConfig) -> anyhow::Result<Vec<ResolvedModel>>
 fn expand_home_path(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if text == "~" {
-        return std::env::var_os("HOME")
+        return crate::paths::home_dir()
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("~"));
     }
-    if let Some(rest) = text.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
+    if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\"))
+        && let Some(home) = crate::paths::home_dir()
     {
         return PathBuf::from(home).join(rest);
     }
@@ -185,15 +185,21 @@ fn expand_home_path(path: &Path) -> PathBuf {
 }
 
 fn expand_config_path(value: &str, moc_home: &Path) -> Result<PathBuf, CoreError> {
-    if value == "~/.moc" {
+    if matches!(value, "~/.moc" | "~\\.moc") {
         return Ok(moc_home.to_owned());
     }
-    if let Some(rest) = value.strip_prefix("~/.moc/") {
+    if let Some(rest) = value
+        .strip_prefix("~/.moc/")
+        .or_else(|| value.strip_prefix("~\\.moc\\"))
+    {
         return Ok(moc_home.join(rest));
     }
-    if let Some(rest) = value.strip_prefix("~/") {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| CoreError::Config("无法展开配置路径：HOME 未设置".into()))?;
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        let home = crate::paths::home_dir()
+            .ok_or_else(|| CoreError::Config("无法展开配置路径：用户主目录未设置".into()))?;
         return Ok(PathBuf::from(home).join(rest));
     }
     let path = PathBuf::from(value);
@@ -314,11 +320,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("临时目录");
         let home = dir.path().join("home");
         fs::create_dir_all(&home).expect("创建 home");
-        let home_secret = std::env::var("HOME").expect("测试环境提供 HOME");
+        let (home_variable, home_secret) = std::env::var("HOME")
+            .map(|value| ("HOME", value))
+            .or_else(|_| std::env::var("USERPROFILE").map(|value| ("USERPROFILE", value)))
+            .expect("测试环境提供用户主目录变量");
+        let environment_secret = format!("env:{home_variable}");
         for (secret, expected) in [
             ("literal-token", "literal-token".to_owned()),
-            ("env:HOME", home_secret),
-            ("!printf command-token", "command-token".to_owned()),
+            (environment_secret.as_str(), home_secret),
+            ("!echo command-token", "command-token".to_owned()),
         ] {
             fs::write(home.join("config.toml"), provider_config(secret)).expect("写配置");
             let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))

@@ -8,7 +8,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::hashline::canon_hash;
 
-/// 文件身份与时间戳组成的快照纪元；任何字段变化都必须清除旧 served 集合。
+/// 文件元数据及原始内容组成的快照纪元；任一变化都会使 served 记录失效。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapshotId {
     pub device: u64,
@@ -18,20 +18,73 @@ pub struct SnapshotId {
     pub changed_secs: i64,
     pub changed_nanos: i64,
     pub size: u64,
+    pub content_hash: u128,
 }
 
 impl SnapshotId {
     pub fn from_metadata(metadata: &std::fs::Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            modified_secs: metadata.mtime(),
-            modified_nanos: metadata.mtime_nsec(),
-            changed_secs: metadata.ctime(),
-            changed_nanos: metadata.ctime_nsec(),
-            size: metadata.size(),
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            return Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                modified_secs: metadata.mtime(),
+                modified_nanos: metadata.mtime_nsec(),
+                changed_secs: metadata.ctime(),
+                changed_nanos: metadata.ctime_nsec(),
+                size: metadata.size(),
+                content_hash: 0,
+            };
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            // 卷序列号与文件索引标识文件；写入时间检测常规内容修改。
+            // 稳定版 MetadataExt 不提供 ChangeTime，创建时间补充文件代际信息。
+            let modified = metadata.last_write_time();
+            let created = metadata.creation_time();
+            return Self {
+                device: u64::from(metadata.volume_serial_number().unwrap_or_default()),
+                inode: metadata.file_index().unwrap_or(created),
+                modified_secs: i64::try_from(modified / 10_000_000).unwrap_or(i64::MAX),
+                modified_nanos: i64::try_from((modified % 10_000_000) * 100).unwrap_or(i64::MAX),
+                changed_secs: i64::try_from(created / 10_000_000).unwrap_or(i64::MAX),
+                changed_nanos: i64::try_from((created % 10_000_000) * 100).unwrap_or(i64::MAX),
+                size: metadata.file_size(),
+                content_hash: 0,
+            };
+        }
+        #[cfg(all(not(unix), not(windows)))]
+        {
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+            let (modified_secs, modified_nanos) = modified
+                .map(|duration| {
+                    (
+                        i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+                        i64::from(duration.subsec_nanos()),
+                    )
+                })
+                .unwrap_or((0, 0));
+            Self {
+                device: 0,
+                inode: 0,
+                modified_secs,
+                modified_nanos,
+                changed_secs: modified_secs,
+                changed_nanos: modified_nanos,
+                size: metadata.len(),
+                content_hash: 0,
+            }
+        }
+    }
+    pub(crate) fn from_metadata_and_bytes(metadata: &std::fs::Metadata, bytes: &[u8]) -> Self {
+        let mut snapshot = Self::from_metadata(metadata);
+        snapshot.content_hash = xxhash_rust::xxh3::xxh3_128(bytes);
+        snapshot
     }
 }
 
@@ -315,15 +368,29 @@ mod tests {
         let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
         let hashes = assign_hashes(&lines, &[]).expect("锚点分配");
         let canons = lines.iter().map(|line| canon_hash(line)).collect();
+        let epoch = SnapshotId::from_metadata_and_bytes(&metadata, &bytes);
         FileSnapshot {
             bytes,
             lines,
             hashes,
             canons,
-            epoch: SnapshotId::from_metadata(&metadata),
+            epoch,
             bom,
             line_ending,
         }
+    }
+
+    #[test]
+    fn content_hash_detects_same_metadata_and_size_changes() {
+        let temporary = tempfile::NamedTempFile::new().expect("临时文件");
+        fs::write(temporary.path(), b"before").expect("写测试文件");
+        let metadata = fs::metadata(temporary.path()).expect("元数据");
+        let before = SnapshotId::from_metadata_and_bytes(&metadata, b"before");
+        let after = SnapshotId::from_metadata_and_bytes(&metadata, b"change");
+
+        assert_eq!(before.size, after.size);
+        assert_ne!(before.content_hash, after.content_hash);
+        assert_ne!(before, after);
     }
 
     #[test]

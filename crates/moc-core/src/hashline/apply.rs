@@ -287,12 +287,27 @@ pub async fn undo(
     let Some(previous) = anchors.peek_undo(path) else {
         return Err(tool_error("E_NO_UNDO", "该文件没有可撤销的编辑"));
     };
-    let current = super::SnapshotId::from_metadata(&tokio::fs::metadata(path).await?);
-    if current != previous.expected {
-        return Err(tool_error(
+    let stale = || {
+        tool_error(
             "E_UNDO_STALE",
             "文件在编辑后被外部修改；撤销未执行，当前内容和撤销记录均保留",
-        ));
+        )
+    };
+    let before = tokio::fs::metadata(path).await?;
+    if before.len() > max_file_bytes {
+        return Err(stale());
+    }
+    let bytes = tokio::fs::read(path).await?;
+    if bytes.len() as u64 > max_file_bytes {
+        return Err(stale());
+    }
+    let after = tokio::fs::metadata(path).await?;
+    if super::SnapshotId::from_metadata(&before) != super::SnapshotId::from_metadata(&after) {
+        return Err(stale());
+    }
+    let current = super::SnapshotId::from_metadata_and_bytes(&after, &bytes);
+    if current != previous.expected {
+        return Err(stale());
     }
     let temporary = stage_file(path, &previous.bytes).await?;
     if let Err(error) = tokio::fs::rename(&temporary, path).await {

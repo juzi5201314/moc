@@ -13,6 +13,8 @@ use tokio::io::AsyncReadExt;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 
+mod group;
+pub(crate) use group::ProcessGroup;
 mod process;
 pub(crate) use process::{Process, ProcessExit};
 
@@ -163,43 +165,11 @@ async fn wait_foreground(
             Ok(None)
         }
         Selection::Cancelled => {
-            kill_process_group(process.pid)?;
+            process.group.kill()?;
             if let Err(error) = process.completion.await {
                 tracing::warn!(%error, "取消后回收命令失败");
             }
             Err(ToolError::new("E_CANCELLED", "命令已取消"))
-        }
-    }
-}
-
-pub(crate) fn kill_process_group(pid: Option<u32>) -> Result<(), ToolError> {
-    #[cfg(unix)]
-    if let Some(pid) = pid {
-        let pid = libc::pid_t::try_from(pid)
-            .map_err(|_| ToolError::new("E_BASH_KILL", "子进程 PID 超出系统范围"))?;
-        // SAFETY: 每条命令独占进程组；负 PID 只指向该命令及其子孙进程。
-        let result = unsafe { libc::kill(-pid, libc::SIGKILL) };
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(ToolError::new("E_BASH_KILL", error.to_string()));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// 每个子进程均独占进程组；future 被丢弃也不能留下子孙进程。
-pub(crate) struct ProcessGroup(Option<u32>);
-impl ProcessGroup {
-    pub(crate) fn new(pid: Option<u32>) -> Self {
-        Self(pid)
-    }
-}
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        if let Err(error) = kill_process_group(self.0.take()) {
-            tracing::warn!(%error, "回收进程组失败");
         }
     }
 }
@@ -357,6 +327,9 @@ mod tests {
     fn default_deny_patterns_are_valid_and_block_forkbombs() {
         let patterns = crate::config::BashConfig::default().deny_patterns;
         assert!(reject_denied(&patterns, ":(){ :|:& };:").is_err());
+        assert!(reject_denied(&patterns, "SHUTDOWN /S").is_err());
+        assert!(reject_denied(&patterns, "FORMAT C:").is_err());
+        assert!(reject_denied(&patterns, "Remove-Item C:\\data -Recurse").is_err());
         assert!(reject_denied(&patterns, "printf safe").is_ok());
     }
 

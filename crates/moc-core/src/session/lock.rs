@@ -185,7 +185,30 @@ fn pid_is_alive(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, SYNCHRONIZATION_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: 只请求等待权限，PID 来自锁文件并作为 Windows 进程标识传入。
+    let raw_process = unsafe { OpenProcess(SYNCHRONIZATION_SYNCHRONIZE, 0, pid) };
+    if raw_process.is_null() {
+        return std::io::Error::last_os_error().raw_os_error()
+            != Some(ERROR_INVALID_PARAMETER as i32);
+    }
+    // SAFETY: OpenProcess 返回的非空句柄由当前函数独占，交给 OwnedHandle 接管。
+    let process = unsafe { OwnedHandle::from_raw_handle(raw_process) };
+    // 只有进程句柄变为 signaled 才能确认退出；等待失败时保守地保持锁有效。
+    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) != 0 }
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn pid_is_alive(pid: u32) -> bool {
     pid == std::process::id()
 }

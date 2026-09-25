@@ -8,6 +8,7 @@ pub mod config;
 mod error;
 pub mod hashline;
 pub mod ids;
+mod paths;
 pub mod prompt;
 pub mod service;
 pub mod session;
@@ -38,9 +39,7 @@ impl Default for CoreConfig {
     fn default() -> Self {
         let home = std::env::var_os("MOC_HOME")
             .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|path| std::path::PathBuf::from(path).join(".moc"))
-            })
+            .or_else(|| crate::paths::home_dir().map(|path| path.join(".moc")))
             .unwrap_or_else(|| std::path::PathBuf::from(".moc"));
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         Self {

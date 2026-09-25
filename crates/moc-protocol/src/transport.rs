@@ -4,7 +4,7 @@
 //! |---|---|
 //! | [`stdio`] | 前端以子进程方式拉起 core（webui / desktop 的常规接法） |
 //! | [`duplex`] | TUI 内嵌 core：一对内存管道直连 [`crate::Server`] 与 [`crate::ClientBuilder`] |
-//! | [`listen_tcp`] / [`connect_tcp`] | 跨进程、跨容器；**只应绑定回环地址** |
+//! | [`listen_tcp`] / [`connect_tcp`] | 跨进程、跨容器；**只允许绑定回环地址** |
 //! | [`listen_unix`] / [`connect_unix`] | 同机跨进程（Unix 域套接字，带文件权限） |
 //!
 //! 传输层**不做鉴权**：拿到管道就等于拿到 core 的全部能力（含执行工具）。TCP 因此
@@ -47,9 +47,15 @@ pub async fn connect_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
     TcpStream::connect(addr).await
 }
 
-/// 监听 TCP。只应传入回环地址（见模块文档）。
+/// 监听 TCP。只接受回环地址，避免未鉴权的执行协议暴露到局域网。
 pub async fn listen_tcp(addr: SocketAddr) -> io::Result<TcpListener> {
-    TcpListener::bind(addr).await
+    if !addr.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TCP transport only accepts loopback addresses",
+        ));
+    }
+    tokio::net::TcpListener::bind(addr).await
 }
 
 /// 连接 Unix 域套接字。
@@ -64,4 +70,19 @@ pub async fn connect_unix(path: impl AsRef<Path>) -> io::Result<tokio::net::Unix
 #[cfg(unix)]
 pub async fn listen_unix(path: impl AsRef<Path>) -> io::Result<tokio::net::UnixListener> {
     tokio::net::UnixListener::bind(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn tcp_listener_rejects_non_loopback_addresses() {
+        let address = "0.0.0.0:0".parse().unwrap();
+        let result = listen_tcp(address).await;
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+    }
 }

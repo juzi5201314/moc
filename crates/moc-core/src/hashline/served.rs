@@ -75,7 +75,7 @@ pub fn read_snapshot(path: &Path, max_file_bytes: u64) -> Result<FileSnapshot, s
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return Err(std::io::Error::new(ErrorKind::InvalidData, "E_BINARY"));
     }
-    let identity = SnapshotId::from_metadata(&metadata);
+    let identity = SnapshotId::from_metadata_and_bytes(&metadata, &bytes);
     let bom = bytes.starts_with(&[0xef, 0xbb, 0xbf]);
     let content = if bom { &bytes[3..] } else { &bytes[..] };
     let line_ending = if content.windows(2).any(|window| window == b"\r\n") {

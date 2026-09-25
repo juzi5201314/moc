@@ -68,14 +68,30 @@ pub struct BackgroundJob {
 
 /// 当前机器本地时区时间，仅在日期变化时由 ReminderState 注入。
 pub fn local_time() -> String {
+    #[cfg(unix)]
     let output = Command::new("date")
         .args(["+%Y-%m-%d %H:%M（本地时区 %:z）"])
+        .output();
+    #[cfg(windows)]
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-Date -Format 'yyyy-MM-dd HH:mm zzz'",
+        ])
         .output();
     output
         .ok()
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .filter(|output| !output.is_empty())
+        .map(|output| {
+            #[cfg(windows)]
+            return format!("{output}（本地时区）");
+            #[cfg(not(windows))]
+            output
+        })
         .unwrap_or_else(|| "时间不可用".into())
 }
 

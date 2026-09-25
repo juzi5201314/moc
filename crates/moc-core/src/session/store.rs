@@ -390,16 +390,36 @@ async fn read_session_info(
 
 /// 把 cwd 编码成 omp 风格的可读目录名。
 pub fn encode_cwd(cwd: &Path) -> String {
-    let display = cwd.to_string_lossy();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+    if let Some(home) = crate::paths::home_dir()
         && let Ok(relative) = cwd.strip_prefix(home)
     {
-        return format!("-{}", relative.to_string_lossy().replace('/', "-"));
+        return format!("-{}", encode_path(relative));
     }
+    #[cfg(unix)]
     if let Ok(relative) = cwd.strip_prefix("/tmp") {
-        return format!("-tmp-{}", relative.to_string_lossy().replace('/', "-"));
+        return format!("-tmp-{}", encode_path(relative));
     }
-    format!("--{}--", display.replace('/', "-"))
+    format!("--{}--", encode_path(cwd))
+}
+
+#[cfg(windows)]
+fn encode_path(path: &Path) -> String {
+    let mut encoded = String::new();
+    for character in path.to_string_lossy().chars() {
+        match character {
+            '/' | '\\' => encoded.push('-'),
+            ':' => encoded.push_str("%3A"),
+            '%' => encoded.push_str("%25"),
+            '-' => encoded.push_str("%2D"),
+            character => encoded.push(character),
+        }
+    }
+    encoded
+}
+
+#[cfg(not(windows))]
+fn encode_path(path: &Path) -> String {
+    path.to_string_lossy().replace('/', "-")
 }
 
 fn timestamp_name(at_ms: u64) -> String {

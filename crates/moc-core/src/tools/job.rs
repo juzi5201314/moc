@@ -1,4 +1,4 @@
-//! 会话所有的后台进程、日志、等待与进程组取消。
+//! 会话所有的后台进程、日志、等待与进程树取消。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,7 @@ pub struct JobInfo {
     pub path: PathBuf,
     pub status: JobStatus,
     pid: Option<u32>,
+    group: Option<super::bash::ProcessGroup>,
 }
 
 #[derive(Default)]
@@ -62,7 +63,11 @@ impl JobManager {
                 "会话正在关闭，不能启动后台任务",
             ));
         }
-        let super::bash::Process { pid, completion } = process;
+        let super::bash::Process {
+            pid,
+            group,
+            completion,
+        } = process;
         self.jobs.lock().insert(
             id.clone(),
             JobInfo {
@@ -71,6 +76,7 @@ impl JobManager {
                 path: log_path.clone(),
                 status: JobStatus::Running,
                 pid,
+                group: Some(group),
             },
         );
         let manager = Arc::clone(self);
@@ -95,6 +101,7 @@ impl JobManager {
                 };
                 if let Some(job) = jobs.get_mut(&id) {
                     job.status = status;
+                    job.group.take();
                 }
                 status
             };
@@ -136,8 +143,13 @@ impl JobManager {
         for job in self.jobs.lock().values_mut() {
             if job.status == JobStatus::Running {
                 job.status = JobStatus::Killing;
-                if let Err(error) = super::bash::kill_process_group(job.pid) {
-                    tracing::warn!(job_id = %job.id, %error, "终止后台任务失败");
+                if let Err(error) = job
+                    .group
+                    .as_ref()
+                    .expect("运行中的后台任务必须持有进程组")
+                    .kill()
+                {
+                    tracing::warn!(job_id = %job.id, pid = ?job.pid, %error, "终止后台任务失败");
                 }
             }
         }
@@ -176,7 +188,10 @@ impl JobManager {
                 .get_mut(id)
                 .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("未知 job `{id}`")))?;
             if job.status == JobStatus::Running {
-                super::bash::kill_process_group(job.pid)?;
+                job.group
+                    .as_ref()
+                    .expect("运行中的后台任务必须持有进程组")
+                    .kill()?;
                 job.status = JobStatus::Killing;
             }
         }

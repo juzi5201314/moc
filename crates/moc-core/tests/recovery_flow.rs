@@ -858,6 +858,7 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     h.close().await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() {
     let upstream = MockServer::start().await;

@@ -165,6 +165,7 @@ async fn wait_file(path: &Path) {
     .expect("等待子进程明确写出启动标记");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn sigint_cancels_a_running_shell_and_repl_still_accepts_quit() {
     let upstream = MockServer::start().await;

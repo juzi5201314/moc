@@ -1,9 +1,10 @@
 //! 管道与 PTY 共用的完成句柄；后台化只转移所有权，不重置超时。
 
-use super::{BashArgs, ProcessGroup, ToolError, kill_process_group};
+use super::{BashArgs, ProcessGroup, ToolError};
 use futures_util::future::BoxFuture;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
 use std::{
+    ffi::OsString,
     io::{Read, Write},
     path::PathBuf,
     process::Stdio,
@@ -19,6 +20,7 @@ pub(crate) struct ProcessExit {
 
 pub(crate) struct Process {
     pub pid: Option<u32>,
+    pub group: ProcessGroup,
     pub completion: BoxFuture<'static, Result<ProcessExit, ToolError>>,
 }
 
@@ -43,11 +45,11 @@ impl Process {
         timeout: Option<Duration>,
         path: PathBuf,
     ) -> Result<Self, ToolError> {
-        let mut command =
-            Command::new(std::env::var_os("SHELL").unwrap_or_else(|| "/bin/bash".into()));
+        let mut command = Command::new(shell_program());
+        for argument in shell_arguments(&args.command) {
+            command.arg(argument);
+        }
         command
-            .arg("-lc")
-            .arg(format!("exec 2>&1\n{}", args.command))
             .current_dir(cwd)
             .envs(args.env.unwrap_or_default())
             .stdin(if args.stdin.is_some() {
@@ -57,13 +59,27 @@ impl Process {
             })
             .stdout(Stdio::piped())
             .kill_on_drop(true);
-        use std::os::unix::process::CommandExt;
-        command.as_std_mut().process_group(0);
+        #[cfg(windows)]
+        let group = ProcessGroup::for_suspended_spawn(&mut command)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.as_std_mut().process_group(0);
+        }
         let mut child = command
             .spawn()
             .map_err(|error| ToolError::new("E_BASH_SPAWN", error.to_string()))?;
         let pid = child.id();
-        let group = ProcessGroup::new(pid);
+        #[cfg(windows)]
+        {
+            let handle = child
+                .raw_handle()
+                .ok_or_else(|| ToolError::new("E_BASH_SPAWN", "无法取得 Windows 子进程句柄"))?;
+            group.assign_and_resume_suspended_process(handle)?;
+        }
+        #[cfg(unix)]
+        let group = ProcessGroup::new(pid)?;
+        let completion_group = group.clone();
         let deadline = timeout.map(|duration| tokio::time::Instant::now() + duration);
         let input = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout 已配置为管道");
@@ -90,11 +106,11 @@ impl Process {
                     if let Some(deadline) = deadline { tokio::time::sleep_until(deadline).await; }
                     else { std::future::pending::<()>().await; }
                 } => {
-                    kill_process_group(pid)?;
+                    completion_group.kill()?;
                     (child.wait().await, true)
                 }
             };
-            drop(group);
+            drop(completion_group);
             reader
                 .await
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
@@ -106,7 +122,11 @@ impl Process {
                 timed_out,
             })
         });
-        Ok(Self { pid, completion })
+        Ok(Self {
+            pid,
+            group,
+            completion,
+        })
     }
 
     async fn pty(
@@ -120,8 +140,8 @@ impl Process {
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker =
             tokio::task::spawn_blocking(move || run_pty(args, cwd, timeout, path, cancel, started));
-        let pid = match ready.await {
-            Ok(pid) => pid,
+        let (pid, group) = match ready.await {
+            Ok((pid, group)) => (pid, group),
             Err(_) => {
                 return match worker.await {
                     Ok(Err(error)) => Err(ToolError::new("E_PTY", error.to_string())),
@@ -130,15 +150,89 @@ impl Process {
                 };
             }
         };
+        let completion_group = group.clone();
         let completion = Box::pin(async move {
             let _cancel_on_drop = cancel_on_drop;
-            worker
+            let result = worker
                 .await
                 .map_err(|error| ToolError::new("E_PTY", error.to_string()))?
-                .map_err(|error| ToolError::new("E_PTY", error.to_string()))
+                .map_err(|error| ToolError::new("E_PTY", error.to_string()));
+            drop(completion_group);
+            result
         });
-        Ok(Self { pid, completion })
+        Ok(Self {
+            pid,
+            group,
+            completion,
+        })
     }
+}
+
+#[cfg(unix)]
+fn shell_program() -> OsString {
+    std::env::var_os("SHELL").unwrap_or_else(|| "/bin/bash".into())
+}
+
+#[cfg(windows)]
+fn shell_program() -> OsString {
+    std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())
+}
+
+#[cfg(unix)]
+fn shell_arguments(command: &str) -> Vec<String> {
+    vec!["-lc".into(), format!("exec 2>&1\n{command}")]
+}
+
+#[cfg(windows)]
+fn shell_arguments(command: &str) -> Vec<String> {
+    vec![
+        "/D".into(),
+        "/S".into(),
+        "/C".into(),
+        format!("chcp 65001>nul & ({command}) 2>&1"),
+    ]
+}
+
+#[cfg(windows)]
+// portable-pty 不支持暂停创建；先启动关闭 AutoRun 的空闲 cmd，再在入 Job 后发送命令。
+fn pty_shell_arguments(_command: &str) -> Vec<String> {
+    vec![
+        "/D".into(),
+        "/Q".into(),
+        "/K".into(),
+        "chcp 65001>nul & prompt $S".into(),
+    ]
+}
+
+#[cfg(unix)]
+fn pty_shell_arguments(command: &str) -> Vec<String> {
+    shell_arguments(command)
+}
+
+#[cfg(windows)]
+fn pty_input(command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> {
+    if command.contains('\0') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows shell 命令不能包含 NUL 字节",
+        ));
+    }
+    let command = if command.trim().is_empty() {
+        "rem"
+    } else {
+        command
+    };
+    let command = command
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r");
+    // exit 与用户命令同属一行，避免未读取的 stdin 被外层 cmd 当作命令。
+    Ok(format!("({command}) 2>&1 & exit\r{}", stdin.unwrap_or_default()).into_bytes())
+}
+
+#[cfg(unix)]
+fn pty_input(_command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> {
+    Ok(stdin.unwrap_or_default().into_bytes())
 }
 
 fn run_pty(
@@ -147,7 +241,7 @@ fn run_pty(
     timeout: Option<Duration>,
     path: PathBuf,
     cancel: CancellationToken,
-    started: tokio::sync::oneshot::Sender<Option<u32>>,
+    started: tokio::sync::oneshot::Sender<(Option<u32>, ProcessGroup)>,
 ) -> std::io::Result<ProcessExit> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -157,10 +251,10 @@ fn run_pty(
             pixel_height: 0,
         })
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut builder =
-        CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into()));
-    builder.arg("-lc");
-    builder.arg(format!("exec 2>&1\n{}", args.command));
+    let mut builder = CommandBuilder::new(shell_program());
+    for argument in pty_shell_arguments(&args.command) {
+        builder.arg(argument);
+    }
     builder.cwd(cwd);
     for (key, value) in args.env.unwrap_or_default() {
         builder.env(key, value);
@@ -177,18 +271,30 @@ fn run_pty(
         std::fs::create_dir_all(parent)?;
     }
     let mut log = std::fs::File::create(path)?;
+    #[cfg(windows)]
+    let group =
+        ProcessGroup::new_windows().map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut child = pair
         .slave
         .spawn_command(builder)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     let pid = child.process_id();
-    let group = ProcessGroup::new(pid);
+    #[cfg(windows)]
+    {
+        let Some(handle) = portable_pty::Child::as_raw_handle(&*child) else {
+            let _ = child.kill();
+            return Err(std::io::Error::other("无法取得 Windows PTY 子进程句柄"));
+        };
+        if let Err(error) = group.assign_running_process(handle) {
+            let _ = child.kill();
+            return Err(std::io::Error::other(error.to_string()));
+        }
+    }
+    #[cfg(unix)]
+    let group = ProcessGroup::new(pid).map_err(|error| std::io::Error::other(error.to_string()))?;
     drop(pair.slave);
-    let input = args.stdin.unwrap_or_default();
-    let writer_thread = std::thread::spawn(move || -> std::io::Result<()> {
-        writer.write_all(input.as_bytes())?;
-        writer.write_all(b"\x04\x04")
-    });
+    let input = pty_input(&args.command, args.stdin)?;
+    let writer_thread = std::thread::spawn(move || writer.write_all(&input));
     let reader_thread = std::thread::spawn(move || -> std::io::Result<()> {
         let mut buffer = [0u8; 16 * 1024];
         loop {
@@ -201,7 +307,7 @@ fn run_pty(
         log.sync_all()
     });
     let began = std::time::Instant::now();
-    let _ = started.send(pid);
+    let _ = started.send((pid, group.clone()));
     let mut timed_out = false;
     let waited = loop {
         match child.try_wait() {
@@ -211,7 +317,7 @@ fn run_pty(
         }
         timed_out = timeout.is_some_and(|limit| began.elapsed() >= limit);
         if timed_out || cancel.is_cancelled() {
-            kill_process_group(pid).map_err(std::io::Error::other)?;
+            group.kill().map_err(std::io::Error::other)?;
             break child.wait();
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -227,4 +333,26 @@ fn run_pty(
         code: Some(if status.success() { code } else { code.max(1) }),
         timed_out,
     })
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::{pty_input, pty_shell_arguments};
+
+    #[test]
+    fn pty_defers_the_user_command_until_the_shell_is_ready() {
+        assert_eq!(
+            pty_shell_arguments("echo ready"),
+            vec![
+                String::from("/D"),
+                String::from("/Q"),
+                String::from("/K"),
+                String::from("chcp 65001>nul & prompt $S"),
+            ],
+        );
+        assert_eq!(
+            String::from_utf8(pty_input("echo ready", Some("stdin-data".into())).unwrap()).unwrap(),
+            "(echo ready) 2>&1 & exit\rstdin-data",
+        );
+    }
 }

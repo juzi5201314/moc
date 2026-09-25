@@ -498,6 +498,23 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
     result
 }
 
+fn shell_command(command: &str) -> Command {
+    #[cfg(unix)]
+    {
+        let mut shell = Command::new(std::env::var_os("SHELL").unwrap_or_else(|| "sh".into()));
+        shell.args(["-lc", command]);
+        shell
+    }
+    #[cfg(windows)]
+    {
+        let mut shell =
+            Command::new(std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into()));
+        shell.args(["/D", "/S", "/C"]);
+        shell.arg(format!("chcp 65001>nul & ({command})"));
+        shell
+    }
+}
+
 fn resolve_api_key(provider: &str, spec: &str) -> Result<Option<String>, CoreError> {
     if spec.is_empty() {
         return Ok(None);
@@ -509,15 +526,11 @@ fn resolve_api_key(provider: &str, spec: &str) -> Result<Option<String>, CoreErr
             ))
         })?
     } else if let Some(command) = spec.strip_prefix('!') {
-        let output = Command::new("sh")
-            .arg("-lc")
-            .arg(command)
-            .output()
-            .map_err(|error| {
-                CoreError::Config(format!(
-                    "providers.{provider}.api_key 命令无法启动: {error}"
-                ))
-            })?;
+        let output = shell_command(command).output().map_err(|error| {
+            CoreError::Config(format!(
+                "providers.{provider}.api_key 命令无法启动: {error}"
+            ))
+        })?;
         if !output.status.success() {
             return Err(CoreError::Config(format!(
                 "providers.{provider}.api_key 命令以状态 {} 失败",

@@ -93,11 +93,12 @@ impl Default for BashConfig {
             output_tail_bytes: 20_480,
             auto_background_ms: 0,
             deny_patterns: vec![
-                r"rm\s+-rf\s+/(\s|$)".into(),
+                r"(?i)rm\s+-rf\s+/(\s|$)".into(),
                 r":\(\)\s*\{\s*:\|\s*:\s*&\s*\};:".into(),
-                r"mkfs\.".into(),
-                r"dd\s+.*of=/dev/".into(),
-                r"shutdown|reboot".into(),
+                r"(?i)mkfs\.".into(),
+                r"(?i)dd\s+.*of=/dev/".into(),
+                r"(?i)\b(shutdown|reboot|format|diskpart|del|erase|rd|rmdir|stop-computer|restart-computer)\b".into(),
+                r"(?i)\b(remove-item|clear-disk|initialize-disk|remove-partition)\b".into(),
                 r">\s*/etc/passwd".into(),
             ],
         }

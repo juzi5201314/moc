@@ -93,7 +93,10 @@ impl Tool for WriteTool {
                 ctx.anchors.push_undo(
                     path.clone(),
                     old,
-                    crate::hashline::SnapshotId::from_metadata(&metadata),
+                    crate::hashline::SnapshotId::from_metadata_and_bytes(
+                        &metadata,
+                        content.as_bytes(),
+                    ),
                 );
             }
             ctx.anchors.invalidate(&path);

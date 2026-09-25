@@ -159,10 +159,11 @@ fn parse_import_line(line: &str) -> Option<&str> {
 }
 
 fn resolve_import(source: &Path, import: &str) -> Option<PathBuf> {
-    if let Some(rest) = import.strip_prefix("~/") {
-        return std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(rest));
+    if let Some(rest) = import
+        .strip_prefix("~/")
+        .or_else(|| import.strip_prefix("~\\"))
+    {
+        return crate::paths::home_dir().map(|home| home.join(rest));
     }
     let path = Path::new(import);
     Some(if path.is_absolute() {

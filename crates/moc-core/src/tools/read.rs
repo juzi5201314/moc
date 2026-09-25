@@ -242,6 +242,7 @@ mod tests {
         assert!(output.contains("另有 2 项"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn directory_preview_has_two_levels_without_following_symlinks() {
         let dir = tempfile::tempdir().unwrap();

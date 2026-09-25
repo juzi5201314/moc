@@ -19,7 +19,15 @@ max_timeout_secs = 3600
 output_head_bytes = 20480
 output_tail_bytes = 20480
 auto_background_ms = 0
-deny_patterns = ["rm\\s+-rf\\s+/(\\s|$)", ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\};:", "mkfs\\.", "dd\\s+.*of=/dev/", "shutdown|reboot", ">\\s*/etc/passwd"]
+deny_patterns = [
+    "(?i)rm\\s+-rf\\s+/(\\s|$)",
+    ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\};:",
+    "(?i)mkfs\\.",
+    "(?i)dd\\s+.*of=/dev/",
+    "(?i)\\b(shutdown|reboot|format|diskpart|del|erase|rd|rmdir|stop-computer|restart-computer)\\b",
+    "(?i)\\b(remove-item|clear-disk|initialize-disk|remove-partition)\\b",
+    ">\\s*/etc/passwd",
+]
 
 [tools.read]
 default_limit = 300

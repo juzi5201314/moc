@@ -65,7 +65,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - ask/plan 不注册 edit/write，但 bash 不是操作系统沙箱。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - hashline 编辑只能引用 read 实际展示的完整行。未服务、漂移或过期范围拒绝执行，并附当前锚点；重启后必须重新建立许可。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。
-- 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。进程管理使用 Unix 进程组。
+- 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。
 - 压缩依次尝试 remote、shake、soft；原生载荷只用于兼容模型，换模型或载荷失效时恢复日志视图。`auto_continue=false` 会在轮次内压缩完成后停止继续请求模型。
 
@@ -77,4 +77,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-测试使用固定本地上游，真实执行协议连接、文件工具、子进程、PTY 和 CLI。真实供应商验收需要自行提供配置和凭据。实现与工程改进记录位于仓库 `target/log.md`。
+测试使用固定本地上游，真实执行协议连接、文件工具、子进程、PTY 和 CLI。真实供应商验收需要自行提供配置和凭据。
