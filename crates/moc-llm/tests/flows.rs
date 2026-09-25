@@ -311,6 +311,7 @@ async fn complete_anthropic_nonstream() {
     let response = Client::new().complete(&cfg, &req).await.unwrap();
 
     assert_eq!(response.finish_reason, FinishReason::ToolCalls);
+    assert_eq!(response.usage.input_tokens, 36);
     assert_eq!(response.usage.cached_input_tokens, Some(16));
     assert_eq!(response.usage.total_tokens, None);
     assert_eq!(

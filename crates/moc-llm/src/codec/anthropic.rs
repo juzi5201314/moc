@@ -604,18 +604,25 @@ fn map_stop_reason(reason: &str) -> FinishReason {
     }
 }
 
-/// usage 解码：Anthropic 的 `input_tokens` 不含缓存部分，`total_tokens` 无对应字段。
+/// usage 解码：Anthropic 的 `input_tokens` 不含缓存部分，折入缓存字段归一化为完整输入；
+/// `total_tokens` 无对应字段。
 fn decode_usage(usage: Option<&Value>) -> Usage {
     let Some(usage) = usage else {
         return Usage::default();
     };
     let number = |key: &str| usage.get(key).and_then(Value::as_u64);
+    let cache_read = number("cache_read_input_tokens");
+    let cache_creation = number("cache_creation_input_tokens");
+    let input = number("input_tokens")
+        .unwrap_or(0)
+        .saturating_add(cache_read.unwrap_or(0))
+        .saturating_add(cache_creation.unwrap_or(0));
     Usage {
-        input_tokens: number("input_tokens").unwrap_or(0),
+        input_tokens: input,
         output_tokens: number("output_tokens").unwrap_or(0),
         total_tokens: None,
-        cached_input_tokens: number("cache_read_input_tokens"),
-        cache_creation_input_tokens: number("cache_creation_input_tokens"),
+        cached_input_tokens: cache_read,
+        cache_creation_input_tokens: cache_creation,
         reasoning_tokens: usage
             .pointer("/output_tokens_details/thinking_tokens")
             .and_then(Value::as_u64),
@@ -1675,7 +1682,7 @@ mod tests {
         assert_eq!(
             response.usage,
             Usage {
-                input_tokens: 100,
+                input_tokens: 180,
                 output_tokens: 40,
                 total_tokens: None,
                 cached_input_tokens: Some(64),

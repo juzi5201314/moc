@@ -502,21 +502,20 @@ impl std::fmt::Display for FinishReason {
 
 /// token 用量。
 ///
-/// 各字段保持上游原始语义，**不做跨协议归一化**：
+/// `input_tokens` 已做跨协议归一化，恒为完整输入量（含缓存命中与缓存写入部分）；
+/// 其余字段保持上游原始语义：
 ///
 /// | 字段 | Chat 来源 | Anthropic 来源 | Responses 来源 |
 /// |---|---|---|---|
-/// | `input_tokens` | `prompt_tokens`（含缓存命中部分） | `input_tokens`（不含缓存部分） | `input_tokens`（含缓存命中部分） |
+/// | `input_tokens` | `prompt_tokens` | `input_tokens` + 缓存字段折入 | `input_tokens` |
 /// | `output_tokens` | `completion_tokens` | `output_tokens` | `output_tokens` |
 /// | `total_tokens` | `total_tokens` | 无对应字段 | `total_tokens` |
 /// | `cached_input_tokens` | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | `input_tokens_details.cached_tokens` |
 /// | `cache_creation_input_tokens` | 无 | `cache_creation_input_tokens` | 无 |
 /// | `reasoning_tokens` | `completion_tokens_details.reasoning_tokens` | `output_tokens_details.thinking_tokens` | `output_tokens_details.reasoning_tokens` |
-///
-/// Anthropic 下的完整输入量由调用方自行加 `cached_input_tokens + cache_creation_input_tokens`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Usage {
-    /// 输入 token 数。
+    /// 完整输入 token 数，含缓存命中与缓存写入部分。
     pub input_tokens: u64,
     /// 输出 token 数。
     pub output_tokens: u64,
