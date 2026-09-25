@@ -296,9 +296,12 @@ async fn mid_stream_error_is_not_retried() {
 #[tokio::test]
 async fn transport_error_is_classified_and_retryable() {
     // 1 端口必然无人监听：连接被拒绝是最典型的可重试传输错误。
+    // 主机名必须用 localhost 而不是 127.0.0.1：环境代理会吞掉对裸 IP 的连接
+    // 拒绝并回 502（no_proxy 的 `127.*` 通配语法 reqwest 不识别），而
+    // `localhost` 条目能被命中、直接旁路代理。
     let cfg = LlmConfig {
         protocol: Protocol::OpenAiChat,
-        base_url: "http://127.0.0.1:1/v1".into(),
+        base_url: "http://localhost:1/v1".into(),
         model: "test-model".into(),
         retry: fast_retry(1),
         ..Default::default()
