@@ -67,6 +67,7 @@ struct Accumulator {
     slots: HashMap<(BlockKind, usize), usize>,
     usage: Usage,
     finish_reason: Option<FinishReason>,
+    compaction: Option<Box<serde_json::Value>>,
 }
 
 impl Accumulator {
@@ -135,6 +136,11 @@ impl Accumulator {
                     _ => unreachable!("同一种类同一 index 的块结构固定"),
                 });
             }
+            StreamEvent::CompactionItem { item } => {
+                if self.compaction.is_none() {
+                    self.compaction = Some(item.clone());
+                }
+            }
             StreamEvent::Usage(usage) => self.usage.merge(*usage),
             StreamEvent::Done { finish_reason } => {
                 self.finish_reason = Some(finish_reason.clone());
@@ -191,6 +197,7 @@ impl Accumulator {
             },
             usage: self.usage,
             raw: None,
+            compaction: self.compaction.clone(),
         }
     }
 
@@ -633,6 +640,19 @@ mod tests {
             response.message.content,
             vec![ContentPart::Reasoning(ReasoningBlock::Item(Box::new(item)))]
         );
+    }
+
+    #[test]
+    fn preserves_compaction_stream_item() {
+        let item = serde_json::json!({ "type": "compaction", "id": "cmp_1" });
+        let accumulator = accumulate(
+            Protocol::OpenAiResponses,
+            &[StreamEvent::CompactionItem {
+                item: Box::new(item.clone()),
+            }],
+        );
+        let response = accumulator.fold(Protocol::OpenAiResponses, false);
+        assert_eq!(response.compaction.as_deref(), Some(&item));
     }
 
     #[test]

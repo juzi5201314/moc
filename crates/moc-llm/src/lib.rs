@@ -62,7 +62,7 @@ pub mod retry;
 pub mod stream;
 pub mod types;
 
-pub use client::{Client, ClientBuilder};
+pub use client::{Client, ClientBuilder, CompactResponse};
 pub use config::{
     AnthropicThinkingDialect, Auth, CacheConfig, CacheTtl, EndpointStyle, LlmConfig,
     MaxTokensField, Protocol, ResponseFormatDialect, ThinkingWire, ToolChoiceDialect, WireConfig,
@@ -75,3 +75,19 @@ pub use types::{
     Message, ReasoningBlock, ReasoningConfig, ReasoningEcho, ReasoningSummary, RequestOptions,
     ResponseFormat, Role, StreamEvent, ToolCall, ToolChoice, ToolDef, ToolResult, Usage,
 };
+
+/// 将完整对话历史编码为 Responses `input` item，供原生压缩请求复用。
+///
+/// 返回值不包含 [`ChatRequest::native_input`]；调用方需要保留并前置已有原生载荷。
+pub fn encode_responses_input_items(
+    cfg: &LlmConfig,
+    request: &ChatRequest,
+) -> Result<Vec<serde_json::Value>, LlmError> {
+    if cfg.protocol != Protocol::OpenAiResponses {
+        return Err(LlmError::Encode(
+            "Responses 输入编码仅支持 OpenAI Responses 协议".into(),
+        ));
+    }
+    codec::validate_tool_history(&request.messages)?;
+    codec::responses::encode_input_items(cfg, request)
+}

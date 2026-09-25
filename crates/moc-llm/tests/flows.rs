@@ -2,8 +2,9 @@
 //! capture_raw）。全部为固定输入 → 固定输出，不访问任何外部服务。
 
 use moc_llm::{
-    Auth, ChatRequest, Client, ContentPart, EndpointStyle, FinishReason, LlmConfig, Message,
-    Protocol, ReasoningBlock, RequestOptions, RetryPolicy, Role, StreamEvent, ToolCall, Usage,
+    Auth, ChatRequest, Client, ContentPart, EndpointStyle, FinishReason, LlmConfig, LlmError,
+    Message, Protocol, ReasoningBlock, RequestOptions, RetryPolicy, Role, StreamEvent, ToolCall,
+    Usage,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
@@ -344,8 +345,9 @@ async fn stream_responses() {
             "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
             "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"想一想\"}\n\n",
             "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"blob\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"想一想\"}]}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"compaction\",\"id\":\"cmp_1\",\"encrypted_content\":\"opaque\"}}\n\n",
             "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"好\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6}}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\"},{\"type\":\"compaction\",\"id\":\"cmp_1\",\"encrypted_content\":\"opaque\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6}}}\n\n",
         ],
     )
     .await;
@@ -373,6 +375,13 @@ async fn stream_responses() {
             .count(),
         1
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, StreamEvent::CompactionItem { .. }))
+            .count(),
+        1
+    );
 
     let response = stream.finish().await.unwrap();
     assert_eq!(response.finish_reason, FinishReason::Stop);
@@ -381,6 +390,10 @@ async fn stream_responses() {
         response.message.content[0],
         ContentPart::Reasoning(ReasoningBlock::Item(_))
     ));
+    assert_eq!(
+        response.compaction.as_deref(),
+        Some(&json!({ "type": "compaction", "id": "cmp_1", "encrypted_content": "opaque" }))
+    );
     assert_eq!(response.usage.total_tokens(), 6);
 }
 
@@ -613,4 +626,63 @@ async fn role_variants_round_trip_through_the_wire() {
         Role::Assistant.as_str(),
         messages[3]["role"].as_str().unwrap()
     );
+}
+
+#[tokio::test]
+async fn responses_compact_uses_endpoint_and_preserves_items() {
+    let server = start().await;
+    let output = vec![
+        json!({ "type": "compaction", "id": "cmp_1" }),
+        json!({ "type": "message" }),
+    ];
+    mount_json(
+        &server,
+        "/v1/responses/compact",
+        200,
+        json!({ "output": output, "usage": { "input_tokens": 40, "output_tokens": 2 } }),
+    )
+    .await;
+    let cfg = LlmConfig {
+        extra_body: serde_json::Map::from_iter([("metadata".into(), json!({ "source": "test" }))]),
+        ..config(Protocol::OpenAiResponses, &server)
+    };
+    let input = vec![json!({ "type": "message", "role": "user" })];
+
+    let response = Client::new().compact(&cfg, &input).await.expect("压缩成功");
+
+    assert_eq!(response.items, output);
+    assert_eq!(response.usage.input_tokens, 40);
+    assert_eq!(response.raw.as_deref().unwrap()["output"], json!(output));
+    let requests = requests(&server).await;
+    let sent: Value = serde_json::from_slice(&requests[0].body).expect("请求体是 JSON");
+    assert_eq!(sent["model"], "test-model");
+    assert_eq!(sent["input"], json!(input));
+    assert_eq!(sent["metadata"], json!({ "source": "test" }));
+}
+
+#[tokio::test]
+async fn responses_compact_requires_output_and_keeps_bounded_body() {
+    let server = start().await;
+    mount_json(
+        &server,
+        "/v1/responses/compact",
+        200,
+        json!({ "status": "completed" }),
+    )
+    .await;
+    let cfg = config(Protocol::OpenAiResponses, &server);
+    let error = Client::new()
+        .compact(&cfg, &[])
+        .await
+        .expect_err("缺少 output 不应被接受");
+    match error {
+        LlmError::Decode { message, body } => {
+            assert!(message.contains("output"));
+            assert!(
+                body.as_deref()
+                    .is_some_and(|body| body.contains("completed"))
+            );
+        }
+        other => panic!("期望 Decode，实际 {other:?}"),
+    }
 }

@@ -183,7 +183,7 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
 }
 
 /// 按字符边界截断，避免把多字节字符切成两半。
-fn truncated(text: &str, max_chars: usize) -> String {
+pub(crate) fn truncated(text: &str, max_chars: usize) -> String {
     match text.char_indices().nth(max_chars) {
         Some((cut, _)) => {
             let mut out = String::with_capacity(cut + 1);

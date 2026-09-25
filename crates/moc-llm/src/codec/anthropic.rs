@@ -587,6 +587,7 @@ pub(crate) fn decode_response(
             .map_or_default(map_stop_reason),
         usage: decode_usage(value.get("usage")),
         raw: None,
+        compaction: None,
     })
 }
 

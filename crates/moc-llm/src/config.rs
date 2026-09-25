@@ -299,6 +299,8 @@ pub struct LlmConfig {
     /// 连接与响应头阶段的上限；要限制纯 TCP 连接阶段，用
     /// [`crate::ClientBuilder::connect_timeout`]。
     pub connect_timeout_secs: Option<f64>,
+    /// Responses 服务端压缩阈值；配置时请求体带 `context_management`。
+    pub server_compaction_threshold: Option<u64>,
     /// 重试策略。
     pub retry: RetryPolicy,
 }
@@ -323,12 +325,48 @@ impl LlmConfig {
             ),
         }
     }
+
+    /// OpenAI Responses 原生压缩端点 URL。
+    pub fn compact_endpoint_url(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        match &self.endpoint {
+            EndpointStyle::Default => format!("{base}/responses/compact"),
+            EndpointStyle::Azure { api_version } => format!(
+                "{base}/openai/deployments/{}/responses/compact?api-version={api_version}",
+                self.model
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn compact_endpoint_urls_cover_default_and_azure() {
+        let default = LlmConfig {
+            protocol: Protocol::OpenAiResponses,
+            base_url: "https://api.openai.com/v1/".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            default.compact_endpoint_url(),
+            "https://api.openai.com/v1/responses/compact"
+        );
+        let azure = LlmConfig {
+            base_url: "https://contoso.openai.azure.com/".into(),
+            model: "gpt-deploy".into(),
+            endpoint: EndpointStyle::Azure {
+                api_version: "2025-04-01".into(),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            azure.compact_endpoint_url(),
+            "https://contoso.openai.azure.com/openai/deployments/gpt-deploy/responses/compact?api-version=2025-04-01"
+        );
+    }
 
     fn sample() -> LlmConfig {
         LlmConfig {
@@ -369,6 +407,7 @@ mod tests {
             extra_body: serde_json::Map::from_iter([("top_k".into(), json!(20))]),
             timeout_secs: Some(120.0),
             connect_timeout_secs: Some(5.0),
+            server_compaction_threshold: None,
             retry: RetryPolicy {
                 max_attempts: 5,
                 ..Default::default()

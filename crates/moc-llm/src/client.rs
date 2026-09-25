@@ -9,17 +9,28 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_core::Stream;
+use serde_json::Value;
 
 use crate::codec::{self, EncodedRequest};
-use crate::config::LlmConfig;
+use crate::config::{LlmConfig, Protocol};
 use crate::error::{ApiError, ApiErrorKind, LlmError};
 use crate::stream::ChatStream;
-use crate::types::{ChatRequest, ChatResponse};
-
+use crate::types::{ChatRequest, ChatResponse, Usage};
 /// HTTP 客户端。
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
+}
+
+/// Responses 原生压缩结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactResponse {
+    /// 服务端压缩后可继续回放的输入 item。
+    pub items: Vec<Value>,
+    /// 服务端报告的 token 用量。
+    pub usage: Usage,
+    /// 上游完整响应体。
+    pub raw: Option<Box<Value>>,
 }
 
 impl Client {
@@ -57,6 +68,53 @@ impl Client {
             "收到完整响应"
         );
         codec::decode_response(cfg, req, &body)
+    }
+
+    /// 调用 OpenAI Responses 原生压缩端点。
+    pub async fn compact(
+        &self,
+        cfg: &LlmConfig,
+        items: &[Value],
+    ) -> Result<CompactResponse, LlmError> {
+        if cfg.protocol != Protocol::OpenAiResponses {
+            return Err(LlmError::Encode(
+                "原生压缩端点仅支持 OpenAI Responses 协议".into(),
+            ));
+        }
+        let mut body = cfg.extra_body.clone();
+        body.insert("model".into(), Value::String(cfg.model.clone()));
+        body.insert("input".into(), Value::Array(items.to_vec()));
+        let body = serde_json::to_vec(&Value::Object(body))
+            .map_err(|error| LlmError::Encode(format!("Responses 压缩请求序列化失败: {error}")))?;
+        let request = ChatRequest::default();
+        let encoded = EncodedRequest {
+            url: cfg.compact_endpoint_url(),
+            headers: codec::common_headers(cfg, &request).into_vec(),
+            body,
+        };
+        let response = self
+            .with_retry(cfg, || self.execute(cfg, &encoded, false))
+            .await?;
+        let body = response.bytes().await?;
+        let value: Value = serde_json::from_slice(&body).map_err(|error| LlmError::Decode {
+            message: format!("Responses 压缩响应不是合法 JSON: {error}"),
+            body: Some(codec::truncated(&String::from_utf8_lossy(&body), 512).into_boxed_str()),
+        })?;
+        let output = value
+            .get("output")
+            .and_then(Value::as_array)
+            .ok_or_else(|| LlmError::Decode {
+                message: "Responses 压缩响应缺少 output 数组".into(),
+                body: Some(codec::truncated(&String::from_utf8_lossy(&body), 512).into_boxed_str()),
+            })?;
+        Ok(CompactResponse {
+            items: output.clone(),
+            usage: value
+                .get("usage")
+                .map(codec::openai::decode_usage)
+                .unwrap_or_default(),
+            raw: Some(Box::new(value)),
+        })
     }
 
     /// 流式请求。

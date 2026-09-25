@@ -34,10 +34,19 @@ pub(crate) fn encode(
 
     let mut body = cfg.extra_body.clone();
     body.insert("model".into(), Value::String(cfg.model.clone()));
-    body.insert(
-        "input".into(),
-        Value::Array(encode_input(cfg, plan, req, &breakpoints)?),
-    );
+    let mut input =
+        Vec::with_capacity(req.native_input.as_ref().map_or(0, Vec::len) + req.messages.len());
+    if let Some(native_input) = &req.native_input {
+        input.extend(native_input.iter().cloned());
+    }
+    input.extend(encode_input(cfg, plan, req, &breakpoints)?);
+    body.insert("input".into(), Value::Array(input));
+    if let Some(threshold) = cfg.server_compaction_threshold {
+        body.insert(
+            "context_management".into(),
+            json!([{ "type": "compaction", "compact_threshold": threshold }]),
+        );
+    }
     if !req.tools.is_empty() {
         body.insert(
             "tools".into(),
@@ -250,6 +259,16 @@ fn encode_input(
     Ok(items)
 }
 
+/// 编码请求消息到 Responses `input` item，不附加 `ChatRequest::native_input`。
+pub(crate) fn encode_input_items(
+    cfg: &LlmConfig,
+    req: &ChatRequest,
+) -> Result<Vec<Value>, LlmError> {
+    let plan = echo::plan(cfg, req);
+    let breakpoints = cache_breakpoints(req, req.messages.len())?;
+    encode_input(cfg, plan, req, &breakpoints)
+}
+
 /// 系统 / 开发者 / 用户消息：都是 `input` 里的 `message` item。
 fn encode_message_item(
     cfg: &LlmConfig,
@@ -454,6 +473,16 @@ pub(crate) fn decode_response(
     if value.get("status").and_then(Value::as_str) == Some("failed") {
         return Err(failed_error(value));
     }
+    let compaction = value
+        .get("output")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("compaction"))
+        })
+        .cloned()
+        .map(Box::new);
 
     let mut content = Vec::new();
     for item in value
@@ -514,6 +543,7 @@ pub(crate) fn decode_response(
         finish_reason: finish_reason(value),
         usage: value.get("usage").map_or_default(openai::decode_usage),
         raw: None,
+        compaction,
     })
 }
 
@@ -644,11 +674,15 @@ impl ResponsesStreamDecoder {
                 let Some(item) = value.get("item") else {
                     return;
                 };
-                if item.get("type").and_then(Value::as_str) == Some("reasoning") {
-                    out.push(Ok(StreamEvent::ReasoningItem {
+                match item.get("type").and_then(Value::as_str) {
+                    Some("reasoning") => out.push(Ok(StreamEvent::ReasoningItem {
                         index: index_of(value),
                         item: Box::new(item.clone()),
-                    }));
+                    })),
+                    Some("compaction") => out.push(Ok(StreamEvent::CompactionItem {
+                        item: Box::new(item.clone()),
+                    })),
+                    _ => {}
                 }
             }
             "response.completed" | "response.incomplete" => {
@@ -814,6 +848,15 @@ mod tests {
     }
 
     #[test]
+    fn public_input_encoder_returns_encoded_messages() {
+        let items = crate::encode_responses_input_items(&config(), &base_request())
+            .expect("Responses 历史可编码");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["role"], "user");
+        assert_eq!(items[0]["content"][0]["text"], "hi");
+    }
+
+    #[test]
     fn request_minimal_has_no_optional_fields() {
         let body = encode_body(&config(), &base_request(), false);
         // `include` 不是可选项：默认回传思维链时它保证加密 reasoning 可续跑。
@@ -828,6 +871,34 @@ mod tests {
                 }],
                 "include": ["reasoning.encrypted_content"],
             })
+        );
+    }
+
+    #[test]
+    fn native_input_precedes_encoded_messages_and_threshold_is_opt_in() {
+        let native = json!({ "type": "compaction", "id": "cmp_1" });
+        let req = ChatRequest {
+            native_input: Some(vec![native.clone()]),
+            ..base_request()
+        };
+        let body = encode_body(
+            &LlmConfig {
+                server_compaction_threshold: Some(128_000),
+                ..config()
+            },
+            &req,
+            false,
+        );
+        assert_eq!(body["input"][0], native);
+        assert_eq!(body["input"][1]["role"], "user");
+        assert_eq!(
+            body["context_management"],
+            json!([{ "type": "compaction", "compact_threshold": 128_000 }])
+        );
+        assert!(
+            encode_body(&config(), &base_request(), false)
+                .get("context_management")
+                .is_none()
         );
     }
 
@@ -1365,6 +1436,19 @@ mod tests {
     }
 
     #[test]
+    fn decode_response_exposes_compaction_item() {
+        let item = json!({ "type": "compaction", "id": "cmp_1", "encrypted_content": "opaque" });
+        let response = decode_response(
+            &config(),
+            &base_request(),
+            &json!({ "status": "completed", "output": [item.clone()] }),
+        )
+        .expect("响应可解码");
+        assert_eq!(response.compaction.as_deref(), Some(&item));
+        assert!(response.message.content.is_empty());
+    }
+
+    #[test]
     fn status_to_finish_reason() {
         let cases = [
             (
@@ -1430,6 +1514,7 @@ mod tests {
                 r#"{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"想一下"}"#,
                 r#"{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"full-blob","summary":[{"type":"summary_text","text":"想一下"}]}}"#,
                 r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1"}}"#,
+                r#"{"type":"response.output_item.done","output_index":3,"item":{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"}}"#,
                 r#"{"type":"response.output_text.delta","output_index":1,"delta":"答案"}"#,
                 r#"{"type":"response.output_text.done","output_index":1,"text":"答案"}"#,
                 r#"{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather"}}"#,
@@ -1459,6 +1544,11 @@ mod tests {
                         "encrypted_content": "full-blob",
                         "summary": [{"type": "summary_text", "text": "想一下"}],
                     })),
+                },
+                StreamEvent::CompactionItem {
+                    item: Box::new(
+                        json!({ "type": "compaction", "id": "cmp_1", "encrypted_content": "opaque" })
+                    ),
                 },
                 StreamEvent::TextDelta {
                     index: 1,

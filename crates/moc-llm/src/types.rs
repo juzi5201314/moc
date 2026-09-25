@@ -602,6 +602,9 @@ pub struct RequestOptions {
 pub struct ChatRequest {
     /// 对话历史，按时间顺序。
     pub messages: Vec<Message>,
+    /// Responses 服务端压缩返回的原生历史条目，编码时置于普通消息之前。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_input: Option<Vec<serde_json::Value>>,
     /// 可用工具；为空表示不启用工具调用。
     pub tools: Vec<ToolDef>,
     /// 工具选择策略。
@@ -644,6 +647,9 @@ pub struct ChatResponse {
     pub usage: Usage,
     /// 原始响应体，仅在 [`RequestOptions::capture_raw`] 为真时填充。
     pub raw: Option<Box<serde_json::Value>>,
+    /// Responses 协议返回的原生压缩条目。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<Box<serde_json::Value>>,
 }
 
 impl Default for FinishReason {
@@ -720,6 +726,11 @@ pub enum StreamEvent {
     },
     /// token 用量。
     Usage(Usage),
+    /// Responses 服务端压缩历史条目。
+    CompactionItem {
+        /// 压缩 item 原文。
+        item: Box<serde_json::Value>,
+    },
     /// 流结束。
     Done {
         /// 结束原因。

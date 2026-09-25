@@ -459,6 +459,7 @@ pub(crate) fn decode_response(
         finish_reason,
         usage: value.get("usage").map_or_default(openai::decode_usage),
         raw: None,
+        compaction: None,
     })
 }
 
@@ -791,6 +792,7 @@ mod tests {
                 Message::tool_result("call_1", "晴", false),
                 Message::user_text("谢谢"),
             ],
+            native_input: None,
             tools: vec![ToolDef {
                 name: "get_weather".into(),
                 description: Some("查天气".into()),
