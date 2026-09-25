@@ -116,6 +116,7 @@ pub(crate) async fn compact(
     if instructions.is_some() {
         return soft::compact(inner, ctx, &state, &config, instructions, tokens_before).await;
     }
+    let mut failures = Vec::with_capacity(config.compaction.method_order.len());
     for method in &config.compaction.method_order {
         let result = match method {
             CompactionMethod::Remote => {
@@ -149,11 +150,13 @@ pub(crate) async fn compact(
             Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => return Err(error),
             Err(error) => {
                 tracing::warn!(session_id, method = ?method, %error, "上下文压缩方法失败，尝试下一方法");
+                failures.push(format!("{method:?}: {error}"));
             }
         }
     }
     Err(CoreError::ContextOverflow(format!(
-        "所有上下文压缩方法均失败（{reason:?}）"
+        "所有上下文压缩方法均失败（{reason:?}）：{}",
+        failures.join("；")
     )))
 }
 

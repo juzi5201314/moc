@@ -14,6 +14,65 @@ use wiremock::{
 };
 
 #[tokio::test]
+async fn strict_chat_provider_omits_unsupported_prompt_cache_key() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body.get("prompt_cache_key").is_some() {
+                return ResponseTemplate::new(400).set_body_json(json!({
+                    "error": {"message": "未知请求字段：prompt_cache_key", "code": "UNKNOWN_FIELD"}
+                }));
+            }
+            ResponseTemplate::new(200).set_body_raw(text_stream("请求已接受"), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat",
+        "[compaction]\nenabled=false\n[providers.test.models.gpt-test.compat]\nsupports_prompt_cache_key=false").await;
+    let id = h.session(SessionMode::Normal).await;
+    assert_eq!(h.prompt(&id, "执行").await.message.text(), "请求已接受");
+    h.close().await;
+}
+
+#[tokio::test]
+async fn all_assistant_reasoning_constraint_repairs_text_only_history() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("已记录"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat",
+        "[compaction]\nenabled=false\n[providers.test.models.gpt-test.compat]\necho_reasoning='never'\nrequires_reasoning_content_for_all_assistant_turns=true").await;
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "第一轮").await;
+    h.prompt(&id, "继续").await;
+    let requests = upstream.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let assistant = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap();
+    assert_eq!(assistant["content"], "已记录");
+    assert_eq!(assistant["reasoning_content"], "");
+    assert!(
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "user")
+            .all(|message| message.get("reasoning_content").is_none())
+    );
+    h.close().await;
+}
+
+#[tokio::test]
 async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -917,5 +976,46 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
     assert!(loaded.session.lock.is_none());
     release.send(()).unwrap();
     upstream.await.unwrap();
+    h.close().await;
+}
+
+#[tokio::test]
+async fn failed_manual_compaction_preserves_upstream_error_and_history() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text_stream("已记录"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(503).set_body_json(json!({
+                    "error": {"message": "压缩模型拒绝输入", "code": "invalid_request"}
+                }))
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nmethod_order=['soft']",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "保留这个用户请求").await;
+    let before = h.load(&id).await;
+    let error = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("压缩模型拒绝输入"));
+    let after = h.load(&id).await;
+    assert_eq!(after.entries, before.entries);
+    assert!(after.session.lock.is_none());
     h.close().await;
 }

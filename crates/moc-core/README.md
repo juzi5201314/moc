@@ -31,6 +31,17 @@ approval_mode = "prompt"
 
 `api` 也支持 `openai_responses` 和 `anthropic_messages`；完整工具、上下文与模型兼容配置见 `src/config/defaults.toml`、`src/config/schema.rs` 和 `src/config/model.rs`。不要把供应商密钥提交到仓库。
 
+供应商兼容项放在 `[providers.<provider>.models.<model>.compat]`：
+
+- `supports_prompt_cache_key = false`：Chat/Responses 请求不发送缓存键及相关缓存选项，适用于拒绝扩展字段的上游；不关闭 Anthropic 的消息缓存断点。默认 `true`。
+- `requires_reasoning_content_for_all_assistant_turns = true`：回传所有 assistant 思维链，并为缺失的历史补显式空块；不只针对工具调用。默认 `false`。
+- `requires_reasoning_content_for_tool_calls` 与 `requires_assistant_content_for_tool_calls`：分别补齐工具调用历史中的推理字段和正文；显式空字符串不会被编码器转换成缺失字段。
+
+供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连；`timeout_secs` 限制非流式整请求以及流式首包等待和后续空闲时间。默认分别为 20 秒和 600 秒，长时间思考不应被建连超时中断。
+
+core 的供应商重试默认是最多 10 次尝试、初始退避 0.5 秒、最长退避 300 秒，并开启抖动。`retry` 表仅覆盖指定字段；连接池会保留客户端注入的选项并按建连超时复用。
+
+
 ```sh
 cargo run -p moc-cli -- --models
 cargo run -p moc-cli -- --cwd /path/to/workspace

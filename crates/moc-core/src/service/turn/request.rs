@@ -33,7 +33,9 @@ pub(super) fn build_request(
     native_input: Option<Vec<Value>>,
     session_id: &str,
 ) -> ChatRequest {
-    let echo_reasoning = if model.requires_reasoning_content_for_tool_calls {
+    let echo_reasoning = if model.requires_reasoning_content_for_tool_calls
+        || model.requires_reasoning_content_for_all_assistant_turns
+    {
         ReasoningEcho::Always
     } else {
         model.echo_reasoning
@@ -63,11 +65,13 @@ pub(super) fn build_request(
         parallel_tool_calls: Some(model.llm.wire.parallel_tool_calls),
         options: RequestOptions {
             echo_reasoning,
-            cache: Some(CacheConfig {
-                key: Some(session_id.to_owned()),
-                breakpoints,
-                ttl: None,
-            }),
+            cache: (model.supports_prompt_cache_key
+                || model.llm.protocol == moc_llm::Protocol::AnthropicMessages)
+                .then(|| CacheConfig {
+                    key: Some(session_id.to_owned()),
+                    breakpoints,
+                    ttl: None,
+                }),
             ..RequestOptions::default()
         },
     }

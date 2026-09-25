@@ -30,9 +30,7 @@ impl Tool for EditTool {
                     "path": {"type":"string"},
                     "edits": {
                         "type":"array", "minItems":1,
-                        "items":{"type":"array","minItems":3,"maxItems":3,"items":[
-                            {"type":"string"},{"type":"string"},{"type":"string"}
-                        ]}
+                        "items":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"}}
                     },
                     "move": {
                         "type":"object",

@@ -82,10 +82,12 @@ pub(crate) fn visible_history_start(state: &SessionState) -> usize {
 }
 
 fn repair_tool_history(mut message: Message, model: Option<&crate::ResolvedModel>) -> Message {
-    if message.role != Role::Assistant || message.tool_calls().next().is_none() {
+    if message.role != Role::Assistant {
         return message;
     }
-    if model.is_some_and(|model| model.requires_assistant_content_for_tool_calls)
+    let has_tool_calls = message.tool_calls().next().is_some();
+    if has_tool_calls
+        && model.is_some_and(|model| model.requires_assistant_content_for_tool_calls)
         && !message
             .content
             .iter()
@@ -95,11 +97,13 @@ fn repair_tool_history(mut message: Message, model: Option<&crate::ResolvedModel
             .content
             .insert(0, moc_llm::ContentPart::Text(String::new()));
     }
-    if model.is_some_and(|model| model.requires_reasoning_content_for_tool_calls)
-        && !message
-            .content
-            .iter()
-            .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
+    if model.is_some_and(|model| {
+        model.requires_reasoning_content_for_all_assistant_turns
+            || (has_tool_calls && model.requires_reasoning_content_for_tool_calls)
+    }) && !message
+        .content
+        .iter()
+        .any(|part| matches!(part, moc_llm::ContentPart::Reasoning(_)))
     {
         message.content.insert(
             0,

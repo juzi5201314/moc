@@ -78,23 +78,45 @@
 - `auto_continue=false` 在压缩维护完成后结束当前轮次，避免继续发起模型请求；工具调用配对不因停止维护而破坏。
 - 固定输入测试覆盖取消时的部分正文、工具顺序、溢出恢复、原生回放、只读违规、计划批准与 CLI SIGINT。
 
+## 私有供应商迁移与线上兼容
+
+- 按用户指示从 `~/.omp/agent/models.yml` 迁移 `cpa`、`91` 前缀的全部供应商：`91cc`、`91or`、`91vip`、`cpa`、`cpa-chat`、`cpa-grok`、`cpa-cx`，共 7 个供应商、31 个模型。`moc --models` 已完成无网络解析验证。
+- 配置写入 `~/.moc/config.toml`，目录权限 `0700`、文件权限 `0600`，密钥不进入仓库、日志或验收产物。保留端点、密钥、请求头、窗口、输出额度和兼容字段。
+- 所有验收角色 `default/smol/slow/plan` 都固定为 `cpa-chat/glm-5.3-flash:high`；线上请求仅使用 `glm-5.3-flash`，不以其他模型替代失败验收。
+- 思考区间默认取来源的下界；未声明档位的推理模型取 `auto`。来源未声明输出上限的 `step-5-preview` 沿用 core 的 32000 默认值。omp 专用开关与这些差异在私有配置注释中明确记录。
+- 实测首次请求被上游以 `UNKNOWN_FIELD` 拒绝，明确指出 `prompt_cache_key`。增加模型兼容开关 `supports_prompt_cache_key`，仅为该 GLM 配置关闭；保留其他模型默认行为及 Anthropic 消息缓存断点，不进行错误吞噬或自动换模型。
+- 关闭缓存扩展后，带工具的请求仍被上游 MaaS 组件拒绝。同一模型对照请求证实：edit 的旧式 tuple `items:[...]` 返回 400，等价的 `items:{type:string}` 返回 200。工具 schema 改为三个同类型字符串的定长数组，不改变编辑语义。
+- 迁移补齐 `requires_reasoning_content_for_all_assistant_turns`。实际请求体回归发现编码器原本丢弃显式空推理块；修正为区分缺失与显式空字符串，同时保留显式空 assistant 正文。`echo_reasoning=never` 仍剔除推理字段，供应商必填约束则优先。
+- `/compact` 实测发现非流式摘要被 20 秒的“连接加响应头”计时提前中止。将 `connect_timeout_secs` 改为 reqwest 的真实 DNS/TCP/TLS 连接时限，按时限复用连接池；生成及首包等待改由 `timeout_secs` 管理。门控 TCP 测试在连接后推进 30 秒虚拟时间，验证仍能收到完整摘要，不使用真实 sleep 或耗时阈值。
+- 压缩方法失败现在返回逐方法错误，重试耗尽同时保留最后一次上游原因；固定 503 回归验证 RPC 错误可定位且失败后历史与会话锁保持正确。
+- 核对并修正 core 的默认重试策略为计划约定的 10 次、0.5 秒起步、300 秒封顶；部分 TOML 重试表继承同一默认值，拼错字段仍报配置错误。LLM 独立客户端的默认策略不变。
+- 用真实请求头和连接池复用测试替换两个只比较 Debug 字符串的实现断言；这些旧断言此前均已通过，未删除任何失败的行为验收来规避问题。
+
 ## 验收与限制
 
-最终离线验收：全部通过。真实上游手动验收尚缺供应商配置与凭据，未计入通过项。
+离线与指定真实上游的端到端验收均已完成。在线仅使用 `cpa-chat/glm-5.3-flash`，包括摘要辅助角色；其他 30 个迁移模型仅验证配置解析，没有进行在线调用。
 
 | 检查 | 实际结果 |
 | --- | --- |
-| `cargo test --workspace` | 378 项测试通过，18 个 suite，0 失败 |
+| `cargo test --workspace` | 383 项测试通过，18 个 suite，0 失败；覆盖严格上游缓存字段、全 assistant 思维链、显式空块、连接期限、默认重试及失败诊断回归 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通过；项目没有 clippy 警告 |
 | `cargo fmt --all --check` | 通过 |
 | `cargo run -p moc-cli -- --help` | 实际二进制正常启动，列出全部约定参数 |
 | `crates/moc-cli/tests/cli_flow.rs` | 真实二进制执行文件闭环、会话恢复、计划批准和 SIGINT 后继续交互 |
 | `crates/moc-core/tests/recovery_flow.rs` | 包含压缩期间取消、关闭自动续行、后台 PTY 超时与回收、恢复不覆盖日志、长行与符号链接编辑 |
+| 真实 `--print` 文件工具闭环 | write → grep → read → edit → bash 完成；脚本实际输出 `hello moc` |
+| 真实计划流与只读模式 | `plan_d4f3eb4b` 提交并批准执行；argparse 默认值及 `--name Mia` 验收通过，ask 模式只作解释 |
+| 真实后台任务与 todo | todo 4/4 完成；`job_4` 输出 `background-ok`，退出码 0，JobFinished 与 job wait 均可见 |
+| 真实手动压缩 | `ContextCompacted(method=soft)`：6357 → 1624 token，摘要 3198 字符 |
+| 重启与压缩后恢复 | `--resume ses_1c58a854e468` 正确回忆计划、Mia 与后台输出；重新 read 获取锚点后 edit 注释，运行仍输出 `hello Mia` |
+| 最终二进制与会话列表 | `cargo build -p moc-cli` 通过；`moc --list --cwd /tmp/moc-live.FvvvBU` 列出已恢复会话及正确模型、模式和目录 |
 
-没有用修改输入 fixture、删掉失败断言或压制 lint 来绕过功能错误。验收过程修正了测试对合法请求中省略 `stream:false`、缓存断点使用内容块数组的错误假设，保持真实协议编码不变。
+在线产物：`/tmp/moc-live.FvvvBU/hello.py`；持久化会话为 `~/.moc/sessions/-tmp-moc-live.FvvvBU/2026-09-25T03-14-19-079Z_ses_1c58a854e468.jsonl`，最终核对 75 条记录，模型记录仅为 `cpa-chat/glm-5.3-flash:high`。计划与日志保留在该会话 sidecar 中，交互进程均以退出码 0 正常关闭。
+
+没有通过修改输入 fixture、删除失败的行为验收或压制 lint 来绕过功能错误。验收过程修正了测试对合法请求中省略 `stream:false`、缓存断点使用内容块数组的错误假设，保持真实协议编码不变。重试错误显示增加上游根因后，将过时的完整文案断言改为验证根因 `unavailable` 保留，分类与状态码断言继续生效。
 
 - 测试使用 wiremock 或本地 TCP 门控上游，不访问外部模型服务；文件操作、子进程、PTY、协议 duplex 和 CLI 二进制均为真实执行。
-- 本次已检查：`MOC_HOME` 未设置，`/home/soeur/.moc` 与工作区 `.moc` 均不存在。因此没有执行需要真实供应商配置与密钥的手动在线验收，也没有猜测用户的端点、模型或凭据。
+- 私有配置已按用户授权迁移并核对：7 个供应商的端点、密钥与请求头保持一致，四个模型角色指向唯一获准的 GLM；目录权限 0700、配置权限 0600。
 - `portable-pty` 的传递依赖 `nix 0.28.0` 有 Cargo future-incompatibility 提示；这与当前项目 clippy 警告不同，未以压制 lint 或改写依赖源码隐藏。
 - 会话列表为保证未加载会话的元数据正确，需要流式扫描控制记录；不缓存完整消息对象，但不是只读取首尾两行。
 - Git 快照仍使用 Git 输出，非 Git 扫描与结果容器受配置上限约束；没有将局部内存改进描述为全项目恒定内存。

@@ -67,6 +67,7 @@ pub(super) struct ProviderDocument {
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     pub timeout_secs: Option<f64>,
     pub connect_timeout_secs: Option<f64>,
+    #[serde(deserialize_with = "deserialize_provider_retry")]
     pub retry: RetryPolicy,
     pub endpoint: EndpointStyle,
     pub models: BTreeMap<String, ModelDocument>,
@@ -82,11 +83,36 @@ impl Default for ProviderDocument {
             extra_body: serde_json::Map::new(),
             timeout_secs: Some(600.0),
             connect_timeout_secs: Some(20.0),
-            retry: RetryPolicy::default(),
+            retry: provider_retry_defaults(),
             endpoint: EndpointStyle::default(),
             models: BTreeMap::new(),
         }
     }
+}
+
+fn provider_retry_defaults() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 10,
+        initial_backoff_secs: 0.5,
+        max_backoff_secs: 300.0,
+        jitter: true,
+    }
+}
+
+fn deserialize_provider_retry<'de, D>(deserializer: D) -> Result<RetryPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // 部分表覆写仍继承 core 默认，而不是 LLM 独立客户端的三次重试策略。
+    let mut defaults =
+        serde_json::to_value(provider_retry_defaults()).map_err(serde::de::Error::custom)?;
+    defaults
+        .as_object_mut()
+        .expect("RetryPolicy 是对象")
+        .extend(serde_json::Map::<String, serde_json::Value>::deserialize(
+            deserializer,
+        )?);
+    serde_json::from_value(defaults).map_err(serde::de::Error::custom)
 }
 
 #[derive(Clone, Deserialize)]
@@ -118,6 +144,7 @@ impl Default for ModelDocument {
 pub(super) struct ModelCompat {
     pub max_output_tokens_field: MaxTokensField,
     pub supports_stop: bool,
+    pub supports_prompt_cache_key: bool,
     pub reasoning_field: String,
     pub reasoning_field_aliases: Vec<String>,
     pub anthropic_thinking: AnthropicThinkingDialect,
@@ -128,6 +155,7 @@ pub(super) struct ModelCompat {
     pub response_format_dialect: ResponseFormatDialect,
     pub echo_reasoning: ReasoningEcho,
     pub requires_reasoning_content_for_tool_calls: bool,
+    pub requires_reasoning_content_for_all_assistant_turns: bool,
     pub requires_assistant_content_for_tool_calls: bool,
     pub thinking: ThinkingWire,
     pub extra_body: serde_json::Map<String, serde_json::Value>,
@@ -138,6 +166,7 @@ impl Default for ModelCompat {
         Self {
             max_output_tokens_field: MaxTokensField::default(),
             supports_stop: true,
+            supports_prompt_cache_key: true,
             reasoning_field: "reasoning_content".into(),
             reasoning_field_aliases: vec!["reasoning_content".into(), "reasoning".into()],
             anthropic_thinking: AnthropicThinkingDialect::default(),
@@ -148,6 +177,7 @@ impl Default for ModelCompat {
             response_format_dialect: ResponseFormatDialect::default(),
             echo_reasoning: ReasoningEcho::default(),
             requires_reasoning_content_for_tool_calls: false,
+            requires_reasoning_content_for_all_assistant_turns: false,
             requires_assistant_content_for_tool_calls: false,
             thinking: ThinkingWire::default(),
             extra_body: serde_json::Map::new(),
@@ -254,8 +284,12 @@ pub struct ResolvedModel {
     pub llm: LlmConfig,
     /// 默认思维链回传策略。
     pub echo_reasoning: ReasoningEcho,
+    /// Chat/Responses 上游是否接受 prompt_cache_key。
+    pub supports_prompt_cache_key: bool,
     /// 工具调用回传 reasoning_content 的上游约束。
     pub requires_reasoning_content_for_tool_calls: bool,
+    /// 所有 assistant 历史都必须携带 reasoning_content。
+    pub requires_reasoning_content_for_all_assistant_turns: bool,
     /// 工具调用回传 assistant content 的上游约束。
     pub requires_assistant_content_for_tool_calls: bool,
 }
@@ -363,9 +397,13 @@ impl ResolvedProvider {
             thinking_level: level,
             llm,
             echo_reasoning: model.compat.echo_reasoning,
+            supports_prompt_cache_key: model.compat.supports_prompt_cache_key,
             requires_reasoning_content_for_tool_calls: model
                 .compat
                 .requires_reasoning_content_for_tool_calls,
+            requires_reasoning_content_for_all_assistant_turns: model
+                .compat
+                .requires_reasoning_content_for_all_assistant_turns,
             requires_assistant_content_for_tool_calls: model
                 .compat
                 .requires_assistant_content_for_tool_calls,
@@ -521,6 +559,20 @@ pub(super) fn validate_roles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_retry_overrides_keep_core_defaults_and_reject_unknown_keys() {
+        for source in ["", "retry = { jitter = false }"] {
+            let provider: ProviderDocument = toml::from_str(source).unwrap();
+            assert_eq!(provider.retry.max_attempts, 10);
+            assert_eq!(provider.retry.initial_backoff_secs, 0.5);
+            assert_eq!(provider.retry.max_backoff_secs, 300.0);
+        }
+        let provider: ProviderDocument = toml::from_str("retry = { max_attempts = 2 }").unwrap();
+        assert!(provider.retry.delay(1, None).is_some());
+        assert!(provider.retry.delay(2, None).is_none());
+        assert!(toml::from_str::<ProviderDocument>("retry = { max_attempt = 2 }").is_err());
+    }
 
     #[test]
     fn selector_preserves_slashes_inside_model_ids_and_parses_level() {
