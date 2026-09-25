@@ -142,7 +142,8 @@ mod tests {
             })
         );
         let round_trip: PermissionRequestParams =
-            serde_json::from_value(serde_json::to_value(&params).expect("可序列化")).expect("可反序列化");
+            serde_json::from_value(serde_json::to_value(&params).expect("可序列化"))
+                .expect("可反序列化");
         assert_eq!(round_trip, params);
         assert_eq!(
             serde_json::to_value(PermissionResult {
@@ -151,6 +152,9 @@ mod tests {
             .expect("可序列化"),
             json!({ "option_id": "allow_once" })
         );
-        assert!(serde_json::from_value::<PermissionRequestParams>(json!({ "session_id": "s" })).is_err());
+        assert!(
+            serde_json::from_value::<PermissionRequestParams>(json!({ "session_id": "s" }))
+                .is_err()
+        );
     }
 }

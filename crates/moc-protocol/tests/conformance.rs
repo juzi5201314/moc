@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moc_protocol::frame::Framing;
-use moc_protocol::{Id, RpcErrorCode, RpcMessage, Response, ServerOptions, PROTOCOL_VERSION};
+use moc_protocol::{Id, PROTOCOL_VERSION, Response, RpcErrorCode, RpcMessage, ServerOptions};
 use serde_json::json;
 use support::{
     PromptMode, ScriptedService, handshake, initialize_params, notification, options_with_framing,
@@ -26,8 +26,12 @@ async fn echoes_id_and_jsonrpc_version() {
         ScriptedService::new(),
         options_with_framing(Framing::ContentLength),
     );
-    peer.send(&request(7, "initialize", initialize_params(PROTOCOL_VERSION)))
-        .await;
+    peer.send(&request(
+        7,
+        "initialize",
+        initialize_params(PROTOCOL_VERSION),
+    ))
+    .await;
     let raw = peer.recv_json().await;
     assert_eq!(raw["jsonrpc"], "2.0");
     assert_eq!(raw["id"], 7);
@@ -43,21 +47,24 @@ async fn echoes_id_and_jsonrpc_version() {
     let raw = peer.recv_json().await;
     assert_eq!(raw["jsonrpc"], "2.0");
     assert_eq!(raw["id"], "abc");
-    assert!(raw["result"]["server_time_ms"].as_u64().expect("毫秒时间戳") > 0);
+    assert!(
+        raw["result"]["server_time_ms"]
+            .as_u64()
+            .expect("毫秒时间戳")
+            > 0
+    );
 }
 
 #[tokio::test]
 async fn notification_is_never_answered() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     handshake(&mut peer).await;
 
     // 已注册方法名与未注册方法名的通知都不产生响应
     peer.send(&notification("ping", json!({}))).await;
     peer.send(&notification("no/such", json!({}))).await;
-    assert!(
-        peer.expect_silence(SILENCE).await,
-        "通知永远不产生响应字节"
-    );
+    assert!(peer.expect_silence(SILENCE).await, "通知永远不产生响应字节");
 
     // 连接仍然可用
     peer.send(&request(2, "ping", json!({}))).await;
@@ -66,7 +73,8 @@ async fn notification_is_never_answered() {
 
 #[tokio::test]
 async fn unknown_method_returns_method_not_found() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     handshake(&mut peer).await;
     // 方法表按方向隔离：服务端→客户端的方法在服务端侧就是未知方法
     for (id, method) in [
@@ -85,7 +93,8 @@ async fn unknown_method_returns_method_not_found() {
 
 #[tokio::test]
 async fn malformed_json_returns_parse_error_with_null_id() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     peer.send_payload(b"{oops").await;
     let raw = peer.recv_json().await;
     assert_eq!(raw["jsonrpc"], "2.0");
@@ -99,14 +108,21 @@ async fn malformed_json_returns_parse_error_with_null_id() {
 
 #[tokio::test]
 async fn invalid_envelope_returns_invalid_request() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     // 顺序与断言的 ID 回收策略一致：能读到合法 ID 就回显，读不到回 null
     let cases: [(&str, serde_json::Value); 7] = [
         (r#"{"jsonrpc":"1.0","id":1,"method":"ping"}"#, json!(1)),
         (r#"{"id":1,"method":"ping"}"#, json!(1)),
         (r#"{"jsonrpc":"2.0","id":1,"method":""}"#, json!(1)),
-        (r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":"x"}"#, json!(1)),
-        (r#"{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}"#, json!(1)),
+        (
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":"x"}"#,
+            json!(1),
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}"#,
+            json!(1),
+        ),
         (r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#, json!(null)),
         (r#"{"jsonrpc":"2.0","id":1}"#, json!(1)),
     ];
@@ -126,7 +142,8 @@ async fn invalid_envelope_returns_invalid_request() {
 
 #[tokio::test]
 async fn batch_array_is_rejected() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     peer.send_payload(br#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#)
         .await;
     let raw = peer.recv_json().await;
@@ -140,25 +157,35 @@ async fn batch_array_is_rejected() {
 
 #[tokio::test]
 async fn uninitialized_request_is_rejected_and_duplicate_initialize_fails() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     peer.send(&request(1, "session/list", json!({}))).await;
     assert_eq!(
         peer.recv_err(1).await,
         RpcErrorCode::ServerNotInitialized.code()
     );
 
-    peer.send(&request(2, "initialize", initialize_params(PROTOCOL_VERSION)))
-        .await;
+    peer.send(&request(
+        2,
+        "initialize",
+        initialize_params(PROTOCOL_VERSION),
+    ))
+    .await;
     peer.recv_ok(2).await;
 
-    peer.send(&request(3, "initialize", initialize_params(PROTOCOL_VERSION)))
-        .await;
+    peer.send(&request(
+        3,
+        "initialize",
+        initialize_params(PROTOCOL_VERSION),
+    ))
+    .await;
     assert_eq!(peer.recv_err(3).await, RpcErrorCode::InvalidRequest.code());
 }
 
 #[tokio::test]
 async fn protocol_version_mismatch_reports_server_version() {
-    let (_server, _connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, _connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     peer.send(&request(1, "initialize", initialize_params("2.0")))
         .await;
     let raw = peer.recv_json().await;
@@ -167,11 +194,15 @@ async fn protocol_version_mismatch_reports_server_version() {
         RpcErrorCode::UnsupportedProtocolVersion.code()
     );
     assert_eq!(raw["error"]["data"]["server_version"], PROTOCOL_VERSION);
-    assert_eq!(raw["error"]["data"]["server_version"], "1.0");
+    assert_eq!(raw["error"]["data"]["server_version"], "1.1");
 
     // 版本不兼容不占用握手状态：改正后仍能握手
-    peer.send(&request(2, "initialize", initialize_params(PROTOCOL_VERSION)))
-        .await;
+    peer.send(&request(
+        2,
+        "initialize",
+        initialize_params(PROTOCOL_VERSION),
+    ))
+    .await;
     peer.recv_ok(2).await;
 }
 
@@ -199,8 +230,12 @@ async fn invalid_params_returns_invalid_params() {
         service.calls()
     );
     // 被拒的请求不该占住会话轮次
-    peer.send(&request(4, "session/cancel", json!({ "session_id": "ses_1" })))
-        .await;
+    peer.send(&request(
+        4,
+        "session/cancel",
+        json!({ "session_id": "ses_1" }),
+    ))
+    .await;
     let raw = peer.recv_ok(4).await;
     assert_eq!(raw["cancelled"], false);
 }
@@ -333,7 +368,8 @@ async fn oversized_response_becomes_internal_error() {
 
 #[tokio::test]
 async fn fatal_frame_error_closes_connection() {
-    let (_server, connection, mut peer) = raw_pair(ScriptedService::new(), ServerOptions::default());
+    let (_server, connection, mut peer) =
+        raw_pair(ScriptedService::new(), ServerOptions::default());
     peer.send_bytes(b"Content-Length: abc\r\n\r\n").await;
     assert!(
         peer.expect_eof(Duration::from_secs(2)).await,

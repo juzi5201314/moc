@@ -16,18 +16,21 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use moc_protocol::methods::{
-    AgentInfo, AssistantDelta, ClientInfo, ConfigGetParams, ConfigGetResult, Empty, InputPart,
-    InitializeParams, InitializeResult, ModelInfo, PermissionRequestParams, PermissionResult,
-    PromptParams, ServerCapabilities, ServerInfo, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
-    SessionNewParams, SessionRenameParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, TurnResult, default_options,
+    AgentInfo, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
+    ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult, InputPart,
+    ModelInfo, PermissionRequestParams, PermissionResult, PromptParams, ServerCapabilities,
+    ServerInfo, SessionCompactParams, SessionDeleteParams, SessionInfo, SessionListParams,
+    SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo, SessionMode,
+    SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+    SessionRequestAsk, SessionSetModeParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, TurnResult,
+    default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
-    FrameDecoder, FrameEncoder, Framing, Id, Message, Notification, ProtocolError, ReasoningBlock,
-    Request, RequestContext, Response, Role, RpcError, RpcErrorCode, RpcMessage, Server,
-    ServerConnection, ServerOptions, ToolCall, ToolResult, Usage, transport, PROTOCOL_VERSION,
+    FrameDecoder, FrameEncoder, Framing, Id, Message, Notification, PROTOCOL_VERSION,
+    ProtocolError, ReasoningBlock, Request, RequestContext, Response, Role, RpcError, RpcErrorCode,
+    RpcMessage, Server, ServerConnection, ServerOptions, ToolCall, ToolResult, Usage, transport,
 };
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -50,6 +53,8 @@ pub enum PromptMode {
     UntilCancelled,
     /// 永远挂起：用于验证 future 被 abort 时是否留下了痕迹。
     Hang,
+    /// 发起一次 `session/request_ask` 以供反向请求集成测试。
+    Ask,
 }
 
 /// 一个会话的记录。
@@ -88,6 +93,8 @@ pub struct State {
     pub peak_prompts: usize,
     /// 授权询问结果：`Ok(option_id)` 或 `Err(错误码)`。
     pub asks: Vec<Result<String, i32>>,
+    /// 收到的用户提问答案。
+    pub ask_results: Vec<AskResult>,
     /// 上一个挂起轮次的 drop 标记。
     pub prompt_dropped: Option<Arc<AtomicBool>>,
     /// drop 时取消令牌是否已触发。
@@ -139,6 +146,7 @@ impl ScriptedService {
                         id: id.clone(),
                         title: format!("会话 {index}"),
                         model: "deepseek-flash".to_owned(),
+                        mode: SessionMode::Normal,
                         cwd: "/home/soeur/project/moc".to_owned(),
                         created_at_ms: 10,
                         updated_at_ms,
@@ -177,6 +185,7 @@ impl ScriptedService {
                     cwd: "/home/soeur/project/moc".to_owned(),
                     capabilities: ServerCapabilities {
                         permission_requests: true,
+                        ask_requests: true,
                         session_locking: true,
                     },
                     initialize: None,
@@ -184,6 +193,7 @@ impl ScriptedService {
                     running_prompts: 0,
                     peak_prompts: 0,
                     asks: Vec::new(),
+                    ask_results: Vec::new(),
                     prompt_dropped: None,
                     cancel_at_drop: None,
                     cancel_seen: 0,
@@ -197,7 +207,10 @@ impl ScriptedService {
 
     /// 读状态。
     pub fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.inner.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// 改状态。
@@ -246,7 +259,11 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
             id: format!("{session_id}_e{index}"),
             at_ms: 100 + index,
             message: Message {
-                role: if index % 2 == 0 { Role::User } else { Role::Assistant },
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
                 content: vec![ContentPart::Text(format!("第 {index} 条"))],
             },
             tool: (index == 4).then(|| ToolExecution {
@@ -542,6 +559,7 @@ impl AgentService for ScriptedService {
             created_at_ms: 1_000,
             updated_at_ms: 1_000,
             lock: None,
+            mode: params.mode,
         };
         state.sessions.insert(
             id,
@@ -575,7 +593,9 @@ impl AgentService for ScriptedService {
         params: SessionLoadParams,
     ) -> Result<SessionLoadResult, RpcError> {
         let mut state = self.state();
-        state.calls.push(format!("session_load({})", params.session_id));
+        state
+            .calls
+            .push(format!("session_load({})", params.session_id));
         let record = state
             .sessions
             .get(&params.session_id)
@@ -593,6 +613,8 @@ impl AgentService for ScriptedService {
             session: record.info.clone(),
             entries,
             truncated,
+            todos: Vec::new(),
+            plans: Vec::new(),
         })
     }
 
@@ -602,7 +624,9 @@ impl AgentService for ScriptedService {
         params: SessionUnloadParams,
     ) -> Result<Empty, RpcError> {
         let mut state = self.state();
-        state.calls.push(format!("session_unload({})", params.session_id));
+        state
+            .calls
+            .push(format!("session_unload({})", params.session_id));
         if !state.sessions.contains_key(&params.session_id) {
             return Err(RpcError::of(RpcErrorCode::SessionNotFound));
         }
@@ -699,6 +723,29 @@ impl AgentService for ScriptedService {
         Ok(Empty {})
     }
 
+    async fn session_set_mode(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionSetModeParams,
+    ) -> Result<SessionInfo, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
+    async fn session_plan_approve(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionPlanApproveParams,
+    ) -> Result<SessionPlanApproveResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
+    async fn session_compact(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionCompactParams,
+    ) -> Result<moc_protocol::methods::CompactResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
     async fn session_prompt(
         &self,
         ctx: RequestContext,
@@ -730,6 +777,31 @@ impl AgentService for ScriptedService {
             PromptMode::Gated(notify) => {
                 notify.notified().await;
                 self.run_full_turn(&ctx, session_id, &turn_id).await
+            }
+            PromptMode::Ask => {
+                let request = AskParams {
+                    session_id: session_id.to_owned(),
+                    turn_id: turn_id.clone(),
+                    request_id: "ask_1".to_owned(),
+                    questions: vec![AskQuestion {
+                        id: "choice".to_owned(),
+                        question: "选择语言".to_owned(),
+                        header: Some("语言".to_owned()),
+                        multi: false,
+                        recommended: Some(0),
+                        options: vec![AskOption {
+                            label: "Rust".to_owned(),
+                            description: Some("系统语言".to_owned()),
+                        }],
+                    }],
+                };
+                match ctx.requester().request::<SessionRequestAsk>(request).await {
+                    Ok(answer) => {
+                        self.with(|state| state.ask_results.push(answer));
+                        self.run_full_turn(&ctx, session_id, &turn_id).await
+                    }
+                    Err(_) => Err(RpcError::of(RpcErrorCode::InternalError)),
+                }
             }
             PromptMode::UntilCancelled => {
                 ctx.cancel().cancelled().await;
@@ -816,6 +888,13 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::TurnFinished { .. } => "turn_finished",
         SessionUpdate::TitleChanged { .. } => "title_changed",
         SessionUpdate::LockChanged { .. } => "lock_changed",
+        SessionUpdate::ModeChanged { .. } => "mode_changed",
+        SessionUpdate::TodoChanged { .. } => "todo_changed",
+        SessionUpdate::PlanSubmitted { .. } => "plan_submitted",
+        SessionUpdate::ContextCompacted { .. } => "context_compacted",
+        SessionUpdate::JobFinished { .. } => "job_finished",
+        SessionUpdate::WorkspaceChanged { .. } => "workspace_changed",
+        SessionUpdate::Error { .. } => "error",
     }
 }
 
@@ -833,9 +912,9 @@ pub fn update_handler(
 pub fn permission_handler(
     option_id: &'static str,
 ) -> impl Fn(PermissionRequestParams, ClientRequestContext) -> Ready<Result<PermissionResult, RpcError>>
-       + Send
-       + Sync
-       + 'static {
++ Send
++ Sync
++ 'static {
     move |_params, _ctx| {
         std::future::ready(Ok(PermissionResult {
             option_id: option_id.to_owned(),
@@ -983,7 +1062,8 @@ impl RawPeer {
     pub async fn send_payload(&mut self, payload: &[u8]) {
         let mut frame = Vec::new();
         assert!(
-            self.encoder.encode(payload, self.max_frame_bytes, &mut frame),
+            self.encoder
+                .encode(payload, self.max_frame_bytes, &mut frame),
             "测试载荷不超过上限"
         );
         self.send_bytes(&frame).await;
@@ -1023,7 +1103,10 @@ impl RawPeer {
     }
 
     /// 读到满足条件的报文；不满足的丢弃。
-    pub async fn recv_until<F: FnMut(&RpcMessage) -> bool>(&mut self, mut predicate: F) -> RpcMessage {
+    pub async fn recv_until<F: FnMut(&RpcMessage) -> bool>(
+        &mut self,
+        mut predicate: F,
+    ) -> RpcMessage {
         loop {
             let message = self.recv().await;
             if predicate(&message) {
@@ -1108,14 +1191,18 @@ pub fn initialize_result() -> Value {
     serde_json::json!({
         "protocol_version": PROTOCOL_VERSION,
         "server": { "name": "raw-core", "version": "9.9.9" },
-        "capabilities": { "permission_requests": true, "session_locking": true }
+        "capabilities": { "permission_requests": true, "session_locking": true, "ask_requests": false }
     })
 }
 
 /// 完成一次握手的便捷流程。
 pub async fn handshake(peer: &mut RawPeer) {
-    peer.send(&request(1, "initialize", initialize_params(PROTOCOL_VERSION)))
-        .await;
+    peer.send(&request(
+        1,
+        "initialize",
+        initialize_params(PROTOCOL_VERSION),
+    ))
+    .await;
     peer.recv_ok(1).await;
 }
 

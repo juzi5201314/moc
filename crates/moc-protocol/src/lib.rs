@@ -26,20 +26,18 @@
 //! | `initialize` | 前端→core | core | 未初始化（重复 → `-32600`） | `-32003` |
 //! | `ping` | 前端→core | 协议层自答 | — | — |
 //! | `config/get` | 前端→core | core | 已初始化 | `-32014` |
-//! | `session/new` | 前端→core | core | 已初始化 | `-32602` / `-32014` |
-//! | `session/list` | 前端→core | core | 已初始化 | — |
-//! | `session/load` | 前端→core | core | 已初始化 | `-32010` |
-//! | `session/unload` | 前端→core | core | 已初始化 | `-32010` |
-//! | `session/rename` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
-//! | `session/delete` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
-//! | `session/unlock` | 前端→core | core | 已初始化 | `-32010` |
+//! | `session/new` / `list` / `load` / `unload` | 前端→core | core | 已初始化 | `-32602` / `-32010` / `-32014` |
+//! | `session/rename` / `delete` / `unlock` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
+//! | `session/set_mode` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
+//! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
+//! | `session/compact` | 前端→core | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32015` / `-32011` |
 //! | `session/cancel` | 前端→core | 协议层自答 | 已初始化 | — |
-//! | `session/request_permission` | core→前端 | 前端 | 前端已注册处理器 | 前端自定义 |
+//! | `session/request_permission` / `session/request_ask` | core→前端 | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | `session/update` | core→前端 | 前端 | — | — |
 //!
-//! 方向是强约束：服务端收到 `session/update` / `session/request_permission`
-//! 一律按未知方法回 `-32601`。
+//! 方向是强约束：服务端收到 `session/update` / `session/request_permission` /
+//! `session/request_ask` 一律按未知方法回 `-32601`。
 //!
 //! # 线上形状
 //!
@@ -140,10 +138,11 @@
 //!
 //! ```no_run
 //! use moc_protocol::methods::{
-//!     ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult, PromptParams,
-//!     ServerCapabilities, ServerInfo, SessionDeleteParams, SessionInfo, SessionListParams,
-//!     SessionListResult, SessionLoadParams, SessionLoadResult, SessionNewParams, SessionRenameParams,
-//!     SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
+//!     CompactResult, ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult,
+//!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams, SessionDeleteParams,
+//!     SessionInfo, SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult,
+//!     SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+//!     SessionSetModeParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
@@ -169,7 +168,7 @@
 //!         Ok(InitializeResult {
 //!             protocol_version: PROTOCOL_VERSION.to_owned(),
 //!             server: ServerInfo { name: "moc-core".into(), version: "0.1.0".into() },
-//!             capabilities: ServerCapabilities { permission_requests: true, session_locking: true },
+//!             capabilities: ServerCapabilities { permission_requests: true, ask_requests: true, session_locking: true },
 //!         })
 //!     }
 //!
@@ -252,6 +251,15 @@
 //!     async fn session_unlock(&self, _ctx: RequestContext, _params: SessionUnlockParams) -> Result<Empty, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
+//!     async fn session_set_mode(&self, _ctx: RequestContext, _params: SessionSetModeParams) -> Result<SessionInfo, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_plan_approve(&self, _ctx: RequestContext, _params: SessionPlanApproveParams) -> Result<SessionPlanApproveResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_compact(&self, _ctx: RequestContext, _params: SessionCompactParams) -> Result<CompactResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
 //! }
 //! ```
 //!
@@ -311,7 +319,7 @@ pub use moc_llm::{
 ///
 /// `initialize` 只比较第一个 `.` 之前的 major 段，不一致回
 /// [`RpcErrorCode::UnsupportedProtocolVersion`] 并在 `data.server_version` 给出服务端版本。
-pub const PROTOCOL_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "1.1";
 
 /// 取版本号的 major 段（第一个 `.` 之前）；没有 `.` 时整串就是 major。
 pub(crate) fn major_version(version: &str) -> &str {

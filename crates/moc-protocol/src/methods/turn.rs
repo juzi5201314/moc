@@ -178,8 +178,9 @@ mod tests {
                 }
             })
         );
-        let round_trip: TurnResult = serde_json::from_value(serde_json::to_value(&result).expect("可序列化"))
-            .expect("可反序列化");
+        let round_trip: TurnResult =
+            serde_json::from_value(serde_json::to_value(&result).expect("可序列化"))
+                .expect("可反序列化");
         assert_eq!(round_trip, result);
     }
 }

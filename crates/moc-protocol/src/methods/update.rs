@@ -30,6 +30,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::session::{SessionLockInfo, ToolStatus};
+use super::{session::SessionMode, todo::TodoPhase};
 use crate::method::{Method, ServerNotification};
 use crate::{FinishReason, Message, ToolResult, Usage};
 
@@ -141,6 +142,49 @@ pub enum SessionUpdate {
         /// 新的锁投影；`None` 表示锁已释放。
         lock: Option<SessionLockInfo>,
     },
+    /// 会话工作模式变化。
+    ModeChanged { mode: SessionMode },
+    /// Todo 清单变化。
+    TodoChanged { phases: Vec<TodoPhase> },
+    /// 提交新计划。
+    PlanSubmitted {
+        plan_id: String,
+        title: String,
+        path: String,
+        markdown: String,
+    },
+    /// 上下文压缩完成。
+    ContextCompacted {
+        method: String,
+        tokens_before: u64,
+        tokens_after: u64,
+    },
+    /// 后台任务结束。
+    JobFinished {
+        job_id: String,
+        command: String,
+        exit_code: Option<i32>,
+        log_path: String,
+    },
+    /// 工作区发生变化。
+    WorkspaceChanged {
+        violation: bool,
+        changes: Vec<PathChange>,
+    },
+    /// 轮次内不可恢复错误。
+    Error {
+        turn_id: String,
+        message: String,
+        retryable: bool,
+    },
+}
+
+/// 工作区路径变化。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathChange {
+    pub path: String,
+    pub kind: String,
 }
 
 /// assistant 增量。
@@ -245,7 +289,12 @@ mod tests {
                 json!({ "type": "turn_started", "turn_id": "turn_1", "model": "deepseek-flash", "at_ms": 1_724_000_000_000u64 }),
             ),
             (
-                SessionUpdate::delta("turn_1", AssistantDelta::Reasoning { delta: "想".into() }),
+                SessionUpdate::delta(
+                    "turn_1",
+                    AssistantDelta::Reasoning {
+                        delta: "想".into()
+                    },
+                ),
                 json!({ "type": "assistant_delta", "turn_id": "turn_1", "delta": { "type": "reasoning", "delta": "想" } }),
             ),
             (
@@ -323,7 +372,9 @@ mod tests {
                 json!({ "type": "turn_finished", "turn_id": "turn_1", "message": { "role": "Assistant", "content": [{ "Text": "好的" }] }, "finish_reason": "Stop", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": null, "cached_input_tokens": null, "cache_creation_input_tokens": null, "reasoning_tokens": null } }),
             ),
             (
-                SessionUpdate::TitleChanged { title: "新标题".into() },
+                SessionUpdate::TitleChanged {
+                    title: "新标题".into(),
+                },
                 json!({ "type": "title_changed", "title": "新标题" }),
             ),
             (
@@ -351,9 +402,82 @@ mod tests {
     }
 
     #[test]
+    fn new_update_variants_round_trip_with_wire_shapes() {
+        let cases = [
+            (
+                SessionUpdate::ModeChanged {
+                    mode: SessionMode::Ask,
+                },
+                json!({ "type": "mode_changed", "mode": "ask" }),
+            ),
+            (
+                SessionUpdate::TodoChanged { phases: Vec::new() },
+                json!({ "type": "todo_changed", "phases": [] }),
+            ),
+            (
+                SessionUpdate::PlanSubmitted {
+                    plan_id: "plan_1".into(),
+                    title: "标题".into(),
+                    path: "/tmp/plan.md".into(),
+                    markdown: "# 计划".into(),
+                },
+                json!({ "type": "plan_submitted", "plan_id": "plan_1", "title": "标题", "path": "/tmp/plan.md", "markdown": "# 计划" }),
+            ),
+            (
+                SessionUpdate::ContextCompacted {
+                    method: "soft".into(),
+                    tokens_before: 10,
+                    tokens_after: 4,
+                },
+                json!({ "type": "context_compacted", "method": "soft", "tokens_before": 10, "tokens_after": 4 }),
+            ),
+            (
+                SessionUpdate::JobFinished {
+                    job_id: "job_1".into(),
+                    command: "cargo test".into(),
+                    exit_code: Some(0),
+                    log_path: "/tmp/job.log".into(),
+                },
+                json!({ "type": "job_finished", "job_id": "job_1", "command": "cargo test", "exit_code": 0, "log_path": "/tmp/job.log" }),
+            ),
+            (
+                SessionUpdate::WorkspaceChanged {
+                    violation: true,
+                    changes: vec![PathChange {
+                        path: "src/lib.rs".into(),
+                        kind: "modified".into(),
+                    }],
+                },
+                json!({ "type": "workspace_changed", "violation": true, "changes": [{ "path": "src/lib.rs", "kind": "modified" }] }),
+            ),
+            (
+                SessionUpdate::Error {
+                    turn_id: "turn_1".into(),
+                    message: "失败".into(),
+                    retryable: false,
+                },
+                json!({ "type": "error", "turn_id": "turn_1", "message": "失败", "retryable": false }),
+            ),
+        ];
+        for (update, expected) in cases {
+            let actual = serde_json::to_value(&update).expect("更新可序列化");
+            assert_eq!(actual, expected);
+            assert_eq!(
+                serde_json::from_value::<SessionUpdate>(actual).expect("更新可反序列化"),
+                update
+            );
+        }
+    }
+
+    #[test]
     fn unknown_type_is_rejected() {
         // 前端「忽略未知更新」的落地方式：解析失败即整条丢弃，不让连接受影响
-        assert!(serde_json::from_value::<SessionUpdate>(json!({ "type": "future_thing", "x": 1 })).is_err());
-        assert!(serde_json::from_value::<AssistantDelta>(json!({ "type": "future_delta" })).is_err());
+        assert!(
+            serde_json::from_value::<SessionUpdate>(json!({ "type": "future_thing", "x": 1 }))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<AssistantDelta>(json!({ "type": "future_delta" })).is_err()
+        );
     }
 }

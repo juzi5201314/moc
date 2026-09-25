@@ -7,31 +7,33 @@
 //! | [`initialize::Initialize`] | C→S | core | 未初始化 | `-32003` |
 //! | [`initialize::Ping`] | C→S | 协议层自答 | 无 | — |
 //! | [`config::ConfigGet`] | C→S | core | 已初始化 | `-32014` |
-//! | [`session::SessionNew`] | C→S | core | 已初始化 | `-32602` / `-32014` |
-//! | [`session::SessionList`] | C→S | core | 已初始化 | — |
-//! | [`session::SessionLoad`] | C→S | core | 已初始化 | `-32010` |
-//! | [`session::SessionUnload`] | C→S | core | 已初始化 | `-32010` |
-//! | [`session::SessionRename`] | C→S | core | 已初始化 | `-32010` / `-32015` |
-//! | [`session::SessionDelete`] | C→S | core | 已初始化 | `-32010` / `-32015` |
-//! | [`session::SessionUnlock`] | C→S | core | 已初始化 | `-32010` |
+//! | [`session::SessionNew`] / `SessionList` / `SessionLoad` / `SessionUnload` | C→S | core | 已初始化 | `-32010` / `-32014` |
+//! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
+//! | [`session::SessionSetMode`] | C→S | core | 已初始化 | `-32010` / `-32015` |
+//! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
+//! | [`session::SessionCompact`] | C→S | core | 会话无在飞轮次 | `-32010` / `-32011` / `-32014` |
 //! | [`turn::SessionPrompt`] | C→S | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32015` / `-32011` |
 //! | [`turn::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
-//! | [`permission::SessionRequestPermission`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
+//! | [`permission::SessionRequestPermission`] / [`ask::SessionRequestAsk`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
 //!
 //! 方向隔离是强制的：客户端向服务端发 `session/update` /
-//! `session/request_permission`，或服务端收到 `session/prompt` 之外的未知名字，
-//! 一律 [`crate::RpcErrorCode::MethodNotFound`]。
+//! `session/request_permission` / `session/request_ask`，或服务端收到 `session/prompt`
+//! 之外的未知名字，一律 [`crate::RpcErrorCode::MethodNotFound`]。
 
+pub mod ask;
 pub mod config;
 pub mod initialize;
 pub mod permission;
+pub mod plan;
 pub mod session;
+pub mod todo;
 pub mod turn;
 pub mod update;
 
 use serde::{Deserialize, Serialize};
 
+pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
 pub use config::{AgentInfo, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo};
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
@@ -41,18 +43,25 @@ pub use permission::{
     PermissionOption, PermissionOptionKind, PermissionRequestParams, PermissionResult,
     SessionRequestPermission, default_options,
 };
+pub use plan::{
+    PlanAction, PlanInfo, PlanStatus, SessionPlanApprove, SessionPlanApproveParams,
+    SessionPlanApproveResult,
+};
 pub use session::{
-    SessionDelete, SessionDeleteParams, SessionInfo, SessionList, SessionListParams,
-    SessionListResult, SessionLoad, SessionLoadParams, SessionLoadResult, SessionLockInfo,
-    SessionNew, SessionNewParams, SessionRename, SessionRenameParams, SessionUnload,
-    SessionUnloadParams, SessionUnlock, SessionUnlockParams, ToolExecution, ToolStatus,
-    TranscriptEntry,
+    CompactResult, SessionCompact, SessionCompactParams, SessionDelete, SessionDeleteParams,
+    SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
+    SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionRename,
+    SessionRenameParams, SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams,
+    SessionUnlock, SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
 };
+pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use turn::{
-    InputPart, PromptParams, SessionCancel, SessionCancelParams, SessionCancelResult, SessionPrompt,
-    TurnResult,
+    InputPart, PromptParams, SessionCancel, SessionCancelParams, SessionCancelResult,
+    SessionPrompt, TurnResult,
 };
-pub use update::{AssistantDelta, SessionUpdate, SessionUpdateMethod, SessionUpdateParams};
+pub use update::{
+    AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
+};
 
 /// 空结果：序列化为 `{}`。
 ///
@@ -84,11 +93,15 @@ mod tests {
             <SessionRename as Method>::NAME,
             <SessionDelete as Method>::NAME,
             <SessionUnlock as Method>::NAME,
+            <SessionSetMode as Method>::NAME,
+            <SessionPlanApprove as Method>::NAME,
+            <SessionCompact as Method>::NAME,
             <SessionPrompt as Method>::NAME,
             <SessionCancel as Method>::NAME,
         ];
         let server_methods = [
             <SessionRequestPermission as Method>::NAME,
+            <SessionRequestAsk as Method>::NAME,
             <SessionUpdateMethod as Method>::NAME,
         ];
         let expected: HashSet<&str> = [
@@ -102,6 +115,9 @@ mod tests {
             "session/rename",
             "session/delete",
             "session/unlock",
+            "session/set_mode",
+            "session/plan_approve",
+            "session/compact",
             "session/prompt",
             "session/cancel",
         ]
@@ -110,9 +126,13 @@ mod tests {
         assert_eq!(client_methods.into_iter().collect::<HashSet<_>>(), expected);
         assert_eq!(
             server_methods.into_iter().collect::<HashSet<_>>(),
-            ["session/request_permission", "session/update"]
-                .into_iter()
-                .collect::<HashSet<_>>()
+            [
+                "session/request_permission",
+                "session/request_ask",
+                "session/update",
+            ]
+            .into_iter()
+            .collect::<HashSet<_>>()
         );
     }
 
@@ -129,8 +149,12 @@ mod tests {
         assert_eq!(<SessionRename as Method>::NAME, "session/rename");
         assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
         assert_eq!(<SessionUnlock as Method>::NAME, "session/unlock");
+        assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
+        assert_eq!(<SessionPlanApprove as Method>::NAME, "session/plan_approve");
+        assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
         assert_eq!(<SessionPrompt as Method>::NAME, "session/prompt");
         assert_eq!(<SessionCancel as Method>::NAME, "session/cancel");
+        assert_eq!(<SessionRequestAsk as Method>::NAME, "session/request_ask");
         assert_eq!(
             <SessionRequestPermission as Method>::NAME,
             "session/request_permission"
@@ -147,6 +171,10 @@ mod tests {
         client::<Initialize>();
         client::<SessionPrompt>();
         server_request::<SessionRequestPermission>();
+        client::<SessionSetMode>();
+        client::<SessionPlanApprove>();
+        client::<SessionCompact>();
+        server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();
         assert_eq!(Empty {}, Empty::default());
     }

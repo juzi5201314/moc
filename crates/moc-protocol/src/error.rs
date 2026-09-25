@@ -376,22 +376,36 @@ mod tests {
             json!({ "code": -32003, "message": "协议主版本不兼容", "data": { "server_version": "1.0" } }),
         );
         // 未知字段与非法码类型必须被拒绝
-        assert!(serde_json::from_value::<RpcError>(json!({ "code": -1, "message": "x", "extra": 1 })).is_err());
-        assert!(serde_json::from_value::<RpcError>(json!({ "code": "x", "message": "x" })).is_err());
+        assert!(
+            serde_json::from_value::<RpcError>(json!({ "code": -1, "message": "x", "extra": 1 }))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<RpcError>(json!({ "code": "x", "message": "x" })).is_err()
+        );
         assert!(serde_json::from_value::<RpcError>(json!({ "code": -1 })).is_err());
     }
 
     #[test]
     fn from_code_uses_default_message_for_known_and_generic_for_unknown() {
-        assert_eq!(RpcError::from_code(-32015).message, "会话被其它进程锁定，只读");
+        assert_eq!(
+            RpcError::from_code(-32015).message,
+            "会话被其它进程锁定，只读"
+        );
         assert_eq!(RpcError::from_code(-33001).message, "未分类的协议错误");
     }
 
     #[test]
     fn io_kind_classification() {
-        assert_eq!(IoKind::classify(io::ErrorKind::UnexpectedEof), IoKind::Closed);
+        assert_eq!(
+            IoKind::classify(io::ErrorKind::UnexpectedEof),
+            IoKind::Closed
+        );
         assert_eq!(IoKind::classify(io::ErrorKind::BrokenPipe), IoKind::Broken);
-        assert_eq!(IoKind::classify(io::ErrorKind::PermissionDenied), IoKind::Other);
+        assert_eq!(
+            IoKind::classify(io::ErrorKind::PermissionDenied),
+            IoKind::Other
+        );
         let error: ProtocolError =
             io::Error::new(io::ErrorKind::ConnectionReset, "连接被重置").into();
         assert!(matches!(
@@ -407,7 +421,10 @@ mod tests {
     fn rpc_call_error_helpers() {
         assert!(RpcCallError::Cancelled.is_cancelled());
         assert!(RpcCallError::Closed.is_closed());
-        assert_eq!(RpcCallError::from(RpcError::of(RpcErrorCode::SessionNotFound)).code(), Some(-32010));
+        assert_eq!(
+            RpcCallError::from(RpcError::of(RpcErrorCode::SessionNotFound)).code(),
+            Some(-32010)
+        );
         assert_eq!(RpcCallError::Cancelled.code(), None);
     }
 }

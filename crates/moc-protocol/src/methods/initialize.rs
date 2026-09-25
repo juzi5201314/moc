@@ -39,6 +39,9 @@ pub struct ClientCapabilities {
     /// 能否处理 [`crate::methods::permission::PermissionRequestParams`]。
     #[serde(default)]
     pub permission_requests: bool,
+    /// 能否处理 [`crate::methods::ask::AskParams`] 反向请求。
+    #[serde(default)]
+    pub ask_requests: bool,
 }
 
 /// `initialize` 的结果。
@@ -77,6 +80,9 @@ pub struct ServerCapabilities {
     /// 是否实现跨进程会话锁语义。
     #[serde(default)]
     pub session_locking: bool,
+    /// 是否会向前端发起 [`crate::methods::ask::AskParams`]。
+    #[serde(default)]
+    pub ask_requests: bool,
 }
 
 /// `ping` 的结果。
@@ -133,6 +139,7 @@ mod tests {
             },
             capabilities: ClientCapabilities {
                 permission_requests: true,
+                ask_requests: true,
             },
         };
         assert_eq!(
@@ -140,7 +147,7 @@ mod tests {
             json!({
                 "protocol_version": "1.0",
                 "client": { "name": "moc-tui", "version": "0.1.0", "frontend": "tui" },
-                "capabilities": { "permission_requests": true }
+                "capabilities": { "permission_requests": true, "ask_requests": true }
             })
         );
         // capabilities 整体与字段都可省略
@@ -150,20 +157,24 @@ mod tests {
         }))
         .expect("可反序列化");
         assert!(!parsed.capabilities.permission_requests);
+        assert!(!parsed.capabilities.ask_requests);
         let parsed: InitializeParams = serde_json::from_value(json!({
             "protocol_version": "1.0",
             "client": { "name": "x", "version": "1", "frontend": "webui" },
             "capabilities": {}
         }))
         .expect("可反序列化");
+        assert!(!parsed.capabilities.ask_requests);
         assert!(!parsed.capabilities.permission_requests);
-        assert!(serde_json::from_value::<InitializeParams>(json!({
-            "protocol_version": "1.0",
-            "client": { "name": "x", "version": "1", "frontend": "webui" },
-            "capabilities": {},
-            "extra": 1
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<InitializeParams>(json!({
+                "protocol_version": "1.0",
+                "client": { "name": "x", "version": "1", "frontend": "webui" },
+                "capabilities": {},
+                "extra": 1
+            }))
+            .is_err()
+        );
 
         let result = InitializeResult {
             protocol_version: "1.0".into(),
@@ -174,6 +185,7 @@ mod tests {
             capabilities: ServerCapabilities {
                 permission_requests: true,
                 session_locking: true,
+                ask_requests: false,
             },
         };
         assert_eq!(
@@ -181,7 +193,7 @@ mod tests {
             json!({
                 "protocol_version": "1.0",
                 "server": { "name": "moc-core", "version": "0.1.0" },
-                "capabilities": { "permission_requests": true, "session_locking": true }
+                "capabilities": { "permission_requests": true, "session_locking": true, "ask_requests": false }
             })
         );
         // 老 core 不回 capabilities 时按「无能力」处理

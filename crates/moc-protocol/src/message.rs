@@ -448,8 +448,14 @@ mod tests {
     fn id_round_trips_and_rejects_floats() {
         assert_eq!(serde_json::to_value(Id::Number(7)).unwrap(), json!(7));
         assert_eq!(serde_json::to_value(Id::Number(-1)).unwrap(), json!(-1));
-        assert_eq!(serde_json::to_value(Id::String("a".into())).unwrap(), json!("a"));
-        assert_eq!(serde_json::from_value::<Id>(json!(12)).unwrap(), Id::Number(12));
+        assert_eq!(
+            serde_json::to_value(Id::String("a".into())).unwrap(),
+            json!("a")
+        );
+        assert_eq!(
+            serde_json::from_value::<Id>(json!(12)).unwrap(),
+            Id::Number(12)
+        );
         assert_eq!(
             serde_json::from_value::<Id>(json!("ses_1")).unwrap(),
             Id::String("ses_1".into())
@@ -465,7 +471,9 @@ mod tests {
         let request = RpcMessage::Request(Request::new(
             Id::Number(1),
             "session/prompt",
-            Some(json!({ "session_id": "ses_7f3a", "input": [{ "type": "text", "text": "看一下 README" }] })),
+            Some(
+                json!({ "session_id": "ses_7f3a", "input": [{ "type": "text", "text": "看一下 README" }] }),
+            ),
         ));
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
@@ -489,7 +497,10 @@ mod tests {
 
     #[test]
     fn response_wire_shapes() {
-        let ok = RpcMessage::Response(Response::result(Id::Number(1), json!({ "cancelled": true })));
+        let ok = RpcMessage::Response(Response::result(
+            Id::Number(1),
+            json!({ "cancelled": true }),
+        ));
         assert_eq!(
             serde_json::to_value(&ok).unwrap(),
             json!({ "jsonrpc": "2.0", "id": 1, "result": { "cancelled": true } })
@@ -502,7 +513,10 @@ mod tests {
             serde_json::to_value(&failed).unwrap(),
             json!({ "jsonrpc": "2.0", "id": "x", "error": { "code": -32601, "message": "未知方法" } })
         );
-        let null_id = RpcMessage::Response(Response::error(None, RpcError::of(RpcErrorCode::ParseError)));
+        let null_id = RpcMessage::Response(Response::error(
+            None,
+            RpcError::of(RpcErrorCode::ParseError),
+        ));
         assert_eq!(
             serde_json::to_value(&null_id).unwrap(),
             json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "报文不是合法 JSON" } })
@@ -576,7 +590,8 @@ mod tests {
             notification,
             RpcMessage::Notification(Notification::new("session/update", None))
         );
-        let response = parse(br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"x"}}"#).unwrap();
+        let response =
+            parse(br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"x"}}"#).unwrap();
         assert_eq!(
             response,
             RpcMessage::Response(Response::error(None, RpcError::new(-32700, "x")))

@@ -138,7 +138,9 @@ impl PendingMap {
         self.entries().clear();
     }
 
-    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<Id, oneshot::Sender<Result<Value, RpcError>>>> {
+    fn entries(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<Id, oneshot::Sender<Result<Value, RpcError>>>> {
         // 临界区只有 HashMap 操作，不可能在持锁期间 panic；中毒时直接取回内层数据
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -169,11 +171,22 @@ impl Traffic {
     /// 客户端发起的调用：正数 ID，等响应。
     ///
     /// 连接死亡时返回 [`RpcCallError::Closed`]（结果已不可达，重试由调用方决定）。
-    pub(crate) async fn call<M: ClientRequest>(&self, params: M::Params) -> Result<M::Result, RpcCallError> {
+    pub(crate) async fn call<M: ClientRequest>(
+        &self,
+        params: M::Params,
+    ) -> Result<M::Result, RpcCallError> {
         let params = serialize_params::<M>(params)?;
         let id = self.pending.next_call_id();
         let receiver = self.pending.register(id.clone());
-        if self.send(Outbound::Request(Request::new(id.clone(), M::NAME, Some(params)))).await.is_err() {
+        if self
+            .send(Outbound::Request(Request::new(
+                id.clone(),
+                M::NAME,
+                Some(params),
+            )))
+            .await
+            .is_err()
+        {
             self.pending.remove(&id);
             return Err(RpcCallError::Closed);
         }
@@ -207,7 +220,15 @@ impl Traffic {
         })?;
         let id = self.pending.next_reverse_id();
         let receiver = self.pending.register(id.clone());
-        if self.send(Outbound::Request(Request::new(id.clone(), M::NAME, Some(params)))).await.is_err() {
+        if self
+            .send(Outbound::Request(Request::new(
+                id.clone(),
+                M::NAME,
+                Some(params),
+            )))
+            .await
+            .is_err()
+        {
             self.pending.remove(&id);
             return Err(RpcCallError::Cancelled);
         }
@@ -228,7 +249,8 @@ impl Traffic {
 }
 
 /// 处理器返回的 future（类型擦除，便于按方法名存放）。
-pub(crate) type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
+pub(crate) type BoxFuture<T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'static>>;
 
 /// 对端消息的落地方式；实现必须保证「请求必有响应」。
 pub(crate) trait Inbound: Send + Sync + 'static {
@@ -294,7 +316,11 @@ impl Connection {
 
     /// 写出一个响应。
     pub(crate) async fn respond(&self, id: Option<Id>, payload: Result<Value, RpcError>) {
-        if let Err(error) = self.traffic.send(Outbound::Response(Response { id, payload })).await {
+        if let Err(error) = self
+            .traffic
+            .send(Outbound::Response(Response { id, payload }))
+            .await
+        {
             tracing::debug!(connection = self.id, "响应未写出：{error}");
         }
     }
@@ -330,7 +356,10 @@ impl Connection {
         loop {
             // 先把上一轮读到的完整报文全部发出去（此处的 await 都在 select 之外，
             // 因此可以自由持有 decoder 与 JoinSet）
-            if !self.dispatch_frames(&mut decoder, &dispatch, &mut tasks).await {
+            if !self
+                .dispatch_frames(&mut decoder, &dispatch, &mut tasks)
+                .await
+            {
                 break;
             }
             tokio::select! {
@@ -502,7 +531,10 @@ impl WriteBuffers {
         let body = &mut self.body;
         serde_json::to_writer(&mut *body, &message)
             .map_err(|error| EncodeFailure::Serialize(error.to_string()))?;
-        if self.encoder.encode(body, self.max_frame_bytes, &mut self.frame) {
+        if self
+            .encoder
+            .encode(body, self.max_frame_bytes, &mut self.frame)
+        {
             return Ok(());
         }
         Err(EncodeFailure::TooLarge {
@@ -521,7 +553,9 @@ impl WriteBuffers {
         self.frame.clear();
         let body = &mut self.body;
         serde_json::to_writer(&mut *body, &fallback).is_ok()
-            && self.encoder.encode(body, self.max_frame_bytes, &mut self.frame)
+            && self
+                .encoder
+                .encode(body, self.max_frame_bytes, &mut self.frame)
     }
 }
 
@@ -572,7 +606,9 @@ where
     match &degrade {
         Degrade::Response(_) => tracing::warn!("{detail}，响应已降级为 -32603"),
         Degrade::Notification(method) => tracing::warn!("通知 {method} 未写出（{detail}），已丢弃"),
-        Degrade::Request(id) => tracing::warn!("反向请求 {id} 未写出（{detail}），已让本地等待者失败"),
+        Degrade::Request(id) => {
+            tracing::warn!("反向请求 {id} 未写出（{detail}），已让本地等待者失败")
+        }
     }
     degrade.apply(writer, buffers, pending, detail).await
 }
@@ -709,7 +745,10 @@ mod tests {
         // 已投递的 ID 不能重复投递
         assert!(!pending.deliver(&id, Ok(Value::Null)));
         // 未登记的 ID 投递失败
-        assert!(!pending.fail(&Id::String("nope".into()), RpcError::of(RpcErrorCode::InternalError)));
+        assert!(!pending.fail(
+            &Id::String("nope".into()),
+            RpcError::of(RpcErrorCode::InternalError)
+        ));
     }
 
     #[test]
@@ -730,7 +769,8 @@ mod tests {
     fn missing_params_becomes_empty_object() {
         let params = params_from_value::<crate::methods::ConfigGet>(None).expect("空参数可解析");
         assert_eq!(params, crate::methods::ConfigGetParams {});
-        let error = params_from_value::<crate::methods::SessionDelete>(None).expect_err("缺少必要字段");
+        let error =
+            params_from_value::<crate::methods::SessionDelete>(None).expect_err("缺少必要字段");
         assert_eq!(error.code, RpcErrorCode::InvalidParams.code());
     }
 }

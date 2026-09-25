@@ -16,10 +16,10 @@
 //! core**。该注册表同时是 `session/cancel` 的落点，也是协议层唯一持有的「会话相关」
 //! 状态——它只记「谁在飞」，不记任何会话内容。
 
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -34,8 +34,8 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     ClientInfo, ConfigGet, Initialize, Ping, PingResult, PromptParams, SessionCancel,
-    SessionCancelResult, SessionDelete, SessionList, SessionLoad, SessionNew, SessionPrompt,
-    SessionRename, SessionUnload, SessionUnlock,
+    SessionCancelResult, SessionCompact, SessionDelete, SessionList, SessionLoad, SessionNew,
+    SessionPlanApprove, SessionPrompt, SessionRename, SessionSetMode, SessionUnload, SessionUnlock,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -144,11 +144,17 @@ impl<S: AgentService> Server<S> {
                         }
                     },
                 };
-                server.launch(stream, accept_token.child_token()).wait().await;
+                server
+                    .launch(stream, accept_token.child_token())
+                    .wait()
+                    .await;
             }
             finished_signal.cancel();
         });
-        ServerConnection { closed: token, finished }
+        ServerConnection {
+            closed: token,
+            finished,
+        }
     }
 
     /// 顺序 accept 一个 Unix socket 前端。
@@ -172,19 +178,33 @@ impl<S: AgentService> Server<S> {
                         }
                     },
                 };
-                server.launch(stream, accept_token.child_token()).wait().await;
+                server
+                    .launch(stream, accept_token.child_token())
+                    .wait()
+                    .await;
             }
             finished_signal.cancel();
         });
-        ServerConnection { closed: token, finished }
+        ServerConnection {
+            closed: token,
+            finished,
+        }
     }
 
     /// 建立一条连接：拆读写半边、建连接对象、起主循环任务。
-    fn launch<T: Transport>(self: &Arc<Self>, stream: T, token: CancellationToken) -> ServerConnection {
+    fn launch<T: Transport>(
+        self: &Arc<Self>,
+        stream: T,
+        token: CancellationToken,
+    ) -> ServerConnection {
         let (reader, writer) = tokio::io::split(stream);
         let id = self.next_connection.fetch_add(1, Ordering::Relaxed) + 1;
-        let (connection, outbound) = Connection::new(id, self.options.connection_options(), token.clone());
-        let dispatch = Arc::new(ServerDispatch::new(Arc::clone(self), Arc::clone(&connection)));
+        let (connection, outbound) =
+            Connection::new(id, self.options.connection_options(), token.clone());
+        let dispatch = Arc::new(ServerDispatch::new(
+            Arc::clone(self),
+            Arc::clone(&connection),
+        ));
         let finished = CancellationToken::new();
         let finished_signal = finished.clone();
         tokio::spawn(async move {
@@ -284,7 +304,9 @@ impl<S: AgentService> ServerDispatch<S> {
     }
 
     fn handshake(&self) -> std::sync::MutexGuard<'_, Handshake> {
-        self.handshake.lock().unwrap_or_else(PoisonError::into_inner)
+        self.handshake
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn turns(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
@@ -296,7 +318,10 @@ impl<S: AgentService> ServerDispatch<S> {
     /// 只从 `params` 里读 `session_id` 一个字段，不解析整个 DTO——参数里可能带着
     /// 数 MiB 的图片，读循环不该为它做一次完整反序列化。
     fn claim_turn(&self, request: &Request, cancel: &CancellationToken) -> TurnClaim {
-        if request.method.as_ref() != <SessionPrompt as Method>::NAME {
+        let method = request.method.as_ref();
+        let is_prompt = method == <SessionPrompt as Method>::NAME;
+        let is_compact = method == <SessionCompact as Method>::NAME;
+        if !is_prompt && !is_compact {
             return TurnClaim::NotPrompt;
         }
         let Some(session_id) = request
@@ -311,8 +336,12 @@ impl<S: AgentService> ServerDispatch<S> {
         if turns.contains_key(session_id) {
             return TurnClaim::Busy;
         }
-        turns.insert(session_id.to_owned(), cancel.clone());
-        TurnClaim::Claimed(session_id.to_owned())
+        if is_prompt {
+            turns.insert(session_id.to_owned(), cancel.clone());
+            TurnClaim::Claimed(session_id.to_owned())
+        } else {
+            TurnClaim::NotPrompt
+        }
     }
 
     /// 已完成握手时取出前端信息。
@@ -347,7 +376,10 @@ impl<S: AgentService> ServerDispatch<S> {
                 server_time_ms: now_ms(),
             }),
             _ => match self.ready_client() {
-                Some(client) => self.route(client, method.as_ref(), params, cancel, claim).await,
+                Some(client) => {
+                    self.route(client, method.as_ref(), params, cancel, claim)
+                        .await
+                }
                 None => Err(RpcError::of(RpcErrorCode::ServerNotInitialized)),
             },
         };
@@ -371,10 +403,8 @@ impl<S: AgentService> ServerDispatch<S> {
         }
         if !version_compatible(&params.protocol_version) {
             *self.handshake() = Handshake::Fresh;
-            return Err(
-                RpcError::of(RpcErrorCode::UnsupportedProtocolVersion)
-                    .with_data(serde_json::json!({ "server_version": PROTOCOL_VERSION })),
-            );
+            return Err(RpcError::of(RpcErrorCode::UnsupportedProtocolVersion)
+                .with_data(serde_json::json!({ "server_version": PROTOCOL_VERSION })));
         }
         let client = params.client.clone();
         let cancel = self.connection.closed().child_token();
@@ -474,6 +504,33 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_unlock(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionSetMode as Method>::NAME => {
+                let params = params_from_value::<SessionSetMode>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_set_mode(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionPlanApprove as Method>::NAME => {
+                let params = params_from_value::<SessionPlanApprove>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_plan_approve(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionCompact as Method>::NAME => {
+                let params = params_from_value::<SessionCompact>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_compact(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }
@@ -603,6 +660,6 @@ mod tests {
         assert_eq!(options.max_frame_bytes, DEFAULT_MAX_FRAME_BYTES);
         assert_eq!(options.max_in_flight, 64);
         assert_eq!(options.outbound_capacity, 256);
-        assert_eq!(PROTOCOL_VERSION, "1.0");
+        assert_eq!(PROTOCOL_VERSION, "1.1");
     }
 }

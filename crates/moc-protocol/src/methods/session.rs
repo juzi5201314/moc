@@ -1,18 +1,19 @@
-//! 会话生命周期方法：`session/new` / `list` / `load` / `unload` / `rename` / `delete` / `unlock`。
+//! 会话生命周期方法：`session/new` / `list` / `load` / `unload` / `rename` / `delete` / `unlock` / `set_mode` / `compact`。
 //!
-//! 会话状态、持久化与锁的实际持有全在 core；协议层只搬运 [[`SessionInfo::lock`]] 这类
+//! 会话状态、持久化与锁的实际持有全在 core；协议层只搬运 [`SessionInfo::lock`] 这类
 //! 投影。锁语义只有一条：**某进程正在该会话里跑一轮 agent 工作时上锁；其它 core
 //! 可读不可写**。
 //!
 //! | 操作 | 被他人持锁时 |
 //! |---|---|
 //! | `session/list`、`session/load`、`config/get` | 始终允许 |
-//! | `session/prompt`、`session/rename`、`session/delete` | [`crate::RpcErrorCode::SessionLocked`] |
+//! | `session/prompt`、`session/rename`、`session/delete`、`session/set_mode` | [`crate::RpcErrorCode::SessionLocked`] |
 //! | `session/unlock{force:true}` | 无条件清除锁记录（强夺） |
 //!
 //! `force=false` 的 `session/unlock` 只释放**本进程**持有的锁；对他人持有的锁，
 //! core 返回 [`crate::RpcErrorCode::SessionLocked`]，`force=true` 则无条件清除。
 
+use super::{plan::PlanInfo, todo::TodoPhase};
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -45,6 +46,24 @@ pub struct SessionDelete;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUnlock;
 
+/// 会话工作模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    #[default]
+    Normal,
+    Ask,
+    Plan,
+}
+
+/// `session/set_mode`：切换会话工作模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSetMode;
+
+/// `session/compact`：手动压缩会话上下文。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionCompact;
+
 /// `session/new` 的参数。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +77,9 @@ pub struct SessionNewParams {
     /// 标题；`None` 由 core 生成（如取首条用户输入）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 新会话初始模式。
+    #[serde(default)]
+    pub mode: SessionMode,
 }
 
 /// 一条会话的元信息。
@@ -70,6 +92,9 @@ pub struct SessionInfo {
     pub title: String,
     /// 当前模型 ID。
     pub model: String,
+    /// 当前工作模式。
+    #[serde(default)]
+    pub mode: SessionMode,
     /// 工作目录。
     pub cwd: String,
     /// 创建时间的 UNIX 毫秒时间戳。
@@ -134,6 +159,12 @@ pub struct SessionLoadResult {
     pub entries: Vec<TranscriptEntry>,
     /// 是否因 `max_entries` 截断。
     pub truncated: bool,
+    /// 当前 todo 阶段；空值兼容旧 core。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<TodoPhase>,
+    /// 当前会话计划；空值兼容旧 core。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<PlanInfo>,
 }
 
 /// 一条 transcript 条目。
@@ -214,6 +245,33 @@ pub struct SessionUnlockParams {
     pub force: bool,
 }
 
+/// `session/set_mode` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetModeParams {
+    pub session_id: String,
+    pub mode: SessionMode,
+}
+
+/// `session/compact` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCompactParams {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// 一次上下文压缩的结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactResult {
+    pub method: String,
+    pub tokens_before: u64,
+    pub tokens_after: u64,
+    pub summary_chars: u32,
+}
+
 impl Method for SessionNew {
     const NAME: &'static str = "session/new";
     type Params = SessionNewParams;
@@ -270,6 +328,22 @@ impl Method for SessionUnlock {
 
 impl ClientRequest for SessionUnlock {}
 
+impl Method for SessionSetMode {
+    const NAME: &'static str = "session/set_mode";
+    type Params = SessionSetModeParams;
+    type Result = SessionInfo;
+}
+
+impl ClientRequest for SessionSetMode {}
+
+impl Method for SessionCompact {
+    const NAME: &'static str = "session/compact";
+    type Params = SessionCompactParams;
+    type Result = CompactResult;
+}
+
+impl ClientRequest for SessionCompact {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,18 +357,23 @@ mod tests {
         assert_eq!(<SessionRename as Method>::NAME, "session/rename");
         assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
         assert_eq!(<SessionUnlock as Method>::NAME, "session/unlock");
+        assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
+        assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
     }
 
     #[test]
     fn session_new_accepts_partial_params() {
-        let parsed: SessionNewParams = serde_json::from_value(serde_json::json!({})).expect("可反序列化");
+        let parsed: SessionNewParams =
+            serde_json::from_value(serde_json::json!({})).expect("可反序列化");
         assert_eq!(parsed, SessionNewParams::default());
         let parsed: SessionNewParams =
             serde_json::from_value(serde_json::json!({ "cwd": "/tmp/ws" })).expect("可反序列化");
         assert_eq!(parsed.cwd.as_deref(), Some("/tmp/ws"));
         assert!(parsed.model.is_none());
         // 未知字段必须暴露
-        assert!(serde_json::from_value::<SessionNewParams>(serde_json::json!({ "cwdly": 1 })).is_err());
+        assert!(
+            serde_json::from_value::<SessionNewParams>(serde_json::json!({ "cwdly": 1 })).is_err()
+        );
         // 空结果序列化为 {}
         assert_eq!(
             serde_json::to_value(crate::methods::Empty {}).expect("可序列化"),
@@ -337,13 +416,14 @@ mod tests {
             model: "m".into(),
             cwd: "/tmp".into(),
             created_at_ms: 1,
+            mode: SessionMode::Plan,
             updated_at_ms: 2,
             lock: None,
         };
         assert_eq!(
             serde_json::to_value(&info).expect("可序列化"),
             serde_json::json!({
-                "id": "ses_1", "title": "t", "model": "m", "cwd": "/tmp",
+                "id": "ses_1", "title": "t", "model": "m", "mode": "plan", "cwd": "/tmp",
                 "created_at_ms": 1, "updated_at_ms": 2
             })
         );

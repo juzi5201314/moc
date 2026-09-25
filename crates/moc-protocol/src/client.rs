@@ -114,7 +114,11 @@ impl ClientBuilder {
                 value_from(result)
             })
         });
-        if self.request_handlers.insert(<M as Method>::NAME, erased).is_some() {
+        if self
+            .request_handlers
+            .insert(<M as Method>::NAME, erased)
+            .is_some()
+        {
             self.duplicates.push(<M as Method>::NAME);
         }
         self
@@ -142,7 +146,11 @@ impl ClientBuilder {
                 handler(params, ctx).await;
             })
         });
-        if self.notification_handlers.insert(<M as Method>::NAME, erased).is_some() {
+        if self
+            .notification_handlers
+            .insert(<M as Method>::NAME, erased)
+            .is_some()
+        {
             self.duplicates.push(<M as Method>::NAME);
         }
         self
@@ -242,7 +250,10 @@ impl ClientHandle {
     ///
     /// 多个任务可以并发调用（TUI 的「跑轮次」与「取消」就是两条并发调用）；
     /// 连接死亡时在飞调用统一收到 [`RpcCallError::Closed`]。
-    pub async fn call<M: ClientRequest>(&self, params: M::Params) -> Result<M::Result, RpcCallError> {
+    pub async fn call<M: ClientRequest>(
+        &self,
+        params: M::Params,
+    ) -> Result<M::Result, RpcCallError> {
         self.inner.traffic.call::<M>(params).await
     }
 
@@ -294,7 +305,8 @@ impl Inbound for ClientDispatch {
             let traffic = Arc::clone(&self.traffic);
             let id = request.id;
             tasks.spawn(async move {
-                let response = Response::error(Some(id), RpcError::of(RpcErrorCode::MethodNotFound));
+                let response =
+                    Response::error(Some(id), RpcError::of(RpcErrorCode::MethodNotFound));
                 let _ = traffic.send(Outbound::Response(response)).await;
             });
             return;

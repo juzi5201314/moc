@@ -167,10 +167,7 @@ fn large_message_round_trip_both_framings() {
         for part in frame.chunks(chunk.max(1)) {
             decoder.push(part);
         }
-        let decoded = decoder
-            .next_frame()
-            .expect("分帧合法")
-            .expect("完整帧");
+        let decoded = decoder.next_frame().expect("分帧合法").expect("完整帧");
         assert_eq!(decoded.len(), payload.len(), "分帧 {framing:?} 长度不符");
         assert!(decoded == payload.as_slice(), "分帧 {framing:?} 内容不符");
         assert_eq!(decoder.next_frame().expect("分帧合法"), None);

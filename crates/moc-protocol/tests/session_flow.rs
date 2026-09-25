@@ -7,14 +7,16 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use moc_protocol::methods::{
-    AssistantDelta, ClientCapabilities, ConfigGet, ConfigGetParams, ServerCapabilities,
-    SessionCancel, SessionCancelParams, SessionDelete, SessionDeleteParams, SessionList,
-    SessionListParams, SessionLoad, SessionLoadParams, SessionPrompt, SessionRename,
-    SessionRenameParams, SessionRequestPermission, SessionUnload, SessionUnloadParams,
-    SessionUnlock, SessionUnlockParams, SessionUpdate, SessionUpdateMethod, ToolStatus,
+    AskAnswer, AskResult, AssistantDelta, ClientCapabilities, ConfigGet, ConfigGetParams,
+    PlanAction, ServerCapabilities, SessionCancel, SessionCancelParams, SessionCompact,
+    SessionCompactParams, SessionDelete, SessionDeleteParams, SessionList, SessionListParams,
+    SessionLoad, SessionLoadParams, SessionMode, SessionPlanApprove, SessionPlanApproveParams,
+    SessionPrompt, SessionRename, SessionRenameParams, SessionRequestAsk, SessionRequestPermission,
+    SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams, SessionUnlock,
+    SessionUnlockParams, SessionUpdate, SessionUpdateMethod, ToolStatus,
 };
 use moc_protocol::{
-    ClientBuilder, FinishReason, ProtocolError, RpcCallError, RpcErrorCode, PROTOCOL_VERSION,
+    ClientBuilder, FinishReason, PROTOCOL_VERSION, ProtocolError, RpcCallError, RpcErrorCode,
 };
 use support::{
     PromptMode, ScriptedService, UpdateLog, client_info, local_client, permission_handler,
@@ -27,6 +29,7 @@ fn builder(log: UpdateLog, option_id: &'static str) -> ClientBuilder {
     ClientBuilder::new(client_info())
         .capabilities(ClientCapabilities {
             permission_requests: true,
+            ask_requests: true,
         })
         .on_notification::<SessionUpdateMethod, _, _>(update_handler(log))
         .on_request::<SessionRequestPermission, _, _>(permission_handler(option_id))
@@ -45,6 +48,7 @@ async fn handshake_and_config() {
         ServerCapabilities {
             permission_requests: true,
             session_locking: true,
+            ask_requests: true,
         }
     );
     assert!(
@@ -78,6 +82,79 @@ async fn handshake_and_config() {
         .collect();
     assert_eq!(ids, ["ses_1", "ses_2", "ses_3"], "按 updated_at_ms 降序");
     assert!(list.sessions.iter().all(|session| session.lock.is_none()));
+}
+
+#[tokio::test]
+async fn new_session_methods_are_dispatched_to_core() {
+    let service = ScriptedService::new();
+    let (_server, _connection, handle, _) =
+        local_client(service, builder(UpdateLog::default(), "allow_once")).await;
+
+    let error = handle
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: "ses_1".to_owned(),
+            mode: SessionMode::Ask,
+        })
+        .await
+        .expect_err("脚本 core 不实现模式切换");
+    assert_eq!(error.code(), Some(RpcErrorCode::NotSupported.code()));
+
+    let error = handle
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: "ses_1".to_owned(),
+            plan_id: "plan_12345678".to_owned(),
+            action: PlanAction::Execute,
+        })
+        .await
+        .expect_err("脚本 core 不实现计划批准");
+    assert_eq!(error.code(), Some(RpcErrorCode::NotSupported.code()));
+
+    let error = handle
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: "ses_1".to_owned(),
+            instructions: None,
+        })
+        .await
+        .expect_err("脚本 core 不实现压缩");
+    assert_eq!(error.code(), Some(RpcErrorCode::NotSupported.code()));
+}
+
+#[tokio::test]
+async fn request_ask_round_trips_through_frontend_handler() {
+    let service = ScriptedService::new();
+    service.prompt_mode(PromptMode::Ask);
+    let observed = Arc::new(std::sync::Mutex::new(None));
+    let observed_by_handler = Arc::clone(&observed);
+    let frontend = builder(UpdateLog::default(), "allow_once")
+        .on_request::<SessionRequestAsk, _, _>(move |params, _ctx| {
+            let observed = Arc::clone(&observed_by_handler);
+            async move {
+                *observed.lock().expect("ask 请求锁可用") = Some(params);
+                Ok(AskResult {
+                    answers: vec![AskAnswer {
+                        id: "choice".to_owned(),
+                        selected: vec!["Rust".to_owned()],
+                        custom: None,
+                    }],
+                })
+            }
+        });
+    let (_server, _connection, handle, _) = local_client(service.clone(), frontend).await;
+
+    handle
+        .call::<SessionPrompt>(prompt_params("ses_1", "选择实现语言"))
+        .await
+        .expect("提问往返及轮次成功");
+
+    let request = observed
+        .lock()
+        .expect("ask 请求锁可用")
+        .clone()
+        .expect("前端收到 ask 请求");
+    assert_eq!(request.session_id, "ses_1");
+    assert_eq!(request.turn_id, "turn_1");
+    assert_eq!(request.questions[0].id, "choice");
+    assert_eq!(service.state().ask_results[0].answers[0].selected, ["Rust"]);
 }
 
 #[tokio::test]
@@ -237,6 +314,14 @@ async fn same_session_second_prompt_is_busy_and_other_sessions_run_concurrently(
         .await
         .expect_err("同一会话应当忙碌");
     assert_eq!(busy.code(), Some(RpcErrorCode::SessionBusy.code()));
+    let compact_busy = handle
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: "ses_1".to_owned(),
+            instructions: None,
+        })
+        .await
+        .expect_err("活动轮次期间拒绝压缩");
+    assert_eq!(compact_busy.code(), Some(RpcErrorCode::SessionBusy.code()));
 
     // 另一个会话并发跑
     let second_handle = handle.clone();
@@ -411,7 +496,8 @@ async fn session_lock_blocks_writes_but_allows_reads() {
     let service = ScriptedService::new();
     service.lock_session("ses_1", 4242, "web-tui");
     let log = UpdateLog::default();
-    let (_server, _connection, handle, _) = local_client(service.clone(), builder(log.clone(), "allow_once")).await;
+    let (_server, _connection, handle, _) =
+        local_client(service.clone(), builder(log.clone(), "allow_once")).await;
 
     // 写操作全部被拒
     for error in [
@@ -491,7 +577,8 @@ async fn session_lock_blocks_writes_but_allows_reads() {
 async fn rename_emits_title_changed_and_returns_session_info() {
     let service = ScriptedService::new();
     let log = UpdateLog::default();
-    let (_server, _connection, handle, _) = local_client(service.clone(), builder(log.clone(), "allow_once")).await;
+    let (_server, _connection, handle, _) =
+        local_client(service.clone(), builder(log.clone(), "allow_once")).await;
 
     let info = handle
         .call::<SessionRename>(SessionRenameParams {
@@ -503,7 +590,11 @@ async fn rename_emits_title_changed_and_returns_session_info() {
     assert_eq!(info.id, "ses_2");
     assert_eq!(info.title, "重构协议层");
     assert_eq!(info.updated_at_ms, 500);
-    assert!(service.calls().contains(&"session_rename(ses_2)".to_owned()));
+    assert!(
+        service
+            .calls()
+            .contains(&"session_rename(ses_2)".to_owned())
+    );
 
     match log.find("title_changed") {
         Some(SessionUpdate::TitleChanged { title }) => assert_eq!(title, "重构协议层"),
@@ -575,7 +666,11 @@ async fn unload_invokes_service_and_session_stays_listed() {
         .await
         .expect("卸载成功");
     assert_eq!(empty, moc_protocol::methods::Empty {});
-    assert!(service.calls().contains(&"session_unload(ses_3)".to_owned()));
+    assert!(
+        service
+            .calls()
+            .contains(&"session_unload(ses_3)".to_owned())
+    );
 
     let list = handle
         .call::<SessionList>(SessionListParams {})

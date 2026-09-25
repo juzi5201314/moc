@@ -28,11 +28,12 @@ use crate::error::{ProtocolError, RpcCallError, RpcError};
 use crate::message::Notification;
 use crate::method::Method;
 use crate::methods::{
-    ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult,
-    PermissionRequestParams, PermissionResult, PromptParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionRenameParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
-    SessionUpdateParams, TurnResult,
+    CompactResult, ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult,
+    PermissionRequestParams, PermissionResult, PromptParams, SessionCompactParams,
+    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
+    SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
+    SessionRenameParams, SessionSetModeParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdateMethod, SessionUpdateParams, TurnResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -40,7 +41,7 @@ use crate::methods::{
 /// 用 Rust 2024 的 RPITIT（返回位置 impl Trait）而不是 `async-trait`：两者都要
 /// `+ Send` 约束，但 RPITIT 不引入动态派发、不要求额外的 crate 依赖。
 pub trait AgentService: Send + Sync + 'static {
-    /// 握手：协商版本并登记前端能力。返回的 `protocol_version` 应当回 `"1.0"`。
+    /// 握手：协商版本并登记前端能力。返回的 `protocol_version` 应当回当前版本。
     fn initialize(
         &self,
         ctx: RequestContext,
@@ -102,6 +103,27 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionUnlockParams,
     ) -> impl Future<Output = Result<Empty, RpcError>> + Send;
+
+    /// 切换会话模式；被他人持锁时回 `SessionLocked`。
+    fn session_set_mode(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetModeParams,
+    ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
+
+    /// 批准或拒绝已提交计划。
+    fn session_plan_approve(
+        &self,
+        ctx: RequestContext,
+        params: SessionPlanApproveParams,
+    ) -> impl Future<Output = Result<SessionPlanApproveResult, RpcError>> + Send;
+
+    /// 手动压缩会话上下文。
+    fn session_compact(
+        &self,
+        ctx: RequestContext,
+        params: SessionCompactParams,
+    ) -> impl Future<Output = Result<CompactResult, RpcError>> + Send;
 
     /// 跑一轮 agent 工作：挂到本轮结束才返回，过程增量走 `session/update` 通知。
     ///
@@ -209,7 +231,8 @@ impl UpdateSink {
             session_id: session_id.into(),
             update,
         };
-        let value = serde_json::to_value(params).map_err(|error| ProtocolError::Encode(error.to_string()))?;
+        let value = serde_json::to_value(params)
+            .map_err(|error| ProtocolError::Encode(error.to_string()))?;
         self.traffic
             .send(Outbound::Notification(Notification::new(
                 <SessionUpdateMethod as Method>::NAME,
@@ -235,6 +258,8 @@ impl Requester {
         &self,
         params: M::Params,
     ) -> Result<M::Result, RpcCallError> {
-        self.traffic.reverse_request::<M>(params, &self.cancel).await
+        self.traffic
+            .reverse_request::<M>(params, &self.cancel)
+            .await
     }
 }
