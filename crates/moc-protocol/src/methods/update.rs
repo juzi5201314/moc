@@ -345,6 +345,7 @@ mod tests {
                         tool_call_id: "call_9".into(),
                         content: "用户拒绝".into(),
                         is_error: true,
+                        images: Vec::new(),
                     },
                     duration_ms: None,
                     diff: None,
@@ -360,6 +361,7 @@ mod tests {
                         tool_call_id: "call_9".into(),
                         content: "已编辑".into(),
                         is_error: false,
+                        images: Vec::new(),
                     },
                     duration_ms: Some(12),
                     diff: Some(ToolDiff {

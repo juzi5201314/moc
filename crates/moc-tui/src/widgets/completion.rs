@@ -9,13 +9,34 @@ pub struct SlashCommand {
 
 /// 内置斜杠命令表。
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
-    SlashCommand { name: "/help", description: "快捷键与命令帮助" },
-    SlashCommand { name: "/new", description: "新建会话" },
-    SlashCommand { name: "/model", description: "切换模型" },
-    SlashCommand { name: "/resume", description: "恢复历史会话" },
-    SlashCommand { name: "/mode", description: "切换 Normal / Ask / Plan" },
-    SlashCommand { name: "/compact", description: "手动压缩上下文" },
-    SlashCommand { name: "/quit", description: "退出 moc" },
+    SlashCommand {
+        name: "/help",
+        description: "快捷键与命令帮助",
+    },
+    SlashCommand {
+        name: "/new",
+        description: "新建会话",
+    },
+    SlashCommand {
+        name: "/model",
+        description: "切换模型",
+    },
+    SlashCommand {
+        name: "/resume",
+        description: "恢复历史会话",
+    },
+    SlashCommand {
+        name: "/mode",
+        description: "切换 Normal / Ask / Plan",
+    },
+    SlashCommand {
+        name: "/compact",
+        description: "手动压缩上下文",
+    },
+    SlashCommand {
+        name: "/quit",
+        description: "退出 moc",
+    },
 ];
 
 /// 补全菜单状态：`None` = 未打开。
@@ -41,7 +62,10 @@ impl CompletionState {
         if candidates.is_empty() {
             return None;
         }
-        Some(Self { candidates, selected: 0 })
+        Some(Self {
+            candidates,
+            selected: 0,
+        })
     }
 
     pub fn select_next(&mut self) {

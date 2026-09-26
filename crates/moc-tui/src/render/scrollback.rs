@@ -53,7 +53,11 @@ impl ScrollbackView {
         }
         for (index, entry) in app.blocks.iter().enumerate() {
             let key = (entry.generation, entry.folded, app.view_gen);
-            if self.cache.get(index).is_some_and(|cached| cached.key == key) {
+            if self
+                .cache
+                .get(index)
+                .is_some_and(|cached| cached.key == key)
+            {
                 continue;
             }
             let lines = render_entry(entry, app, width);
@@ -69,7 +73,14 @@ impl ScrollbackView {
     }
 
     /// 从第 `skip_rows` 行开始把内容画进视口，并登记命中表与行文本。
-    pub fn paint(&self, buffer: &mut Buffer, area: Rect, skip_rows: usize, hits: &mut Vec<(usize, u16, u16)>, lines: &mut Vec<(u16, String)>) {
+    pub fn paint(
+        &self,
+        buffer: &mut Buffer,
+        area: Rect,
+        skip_rows: usize,
+        hits: &mut Vec<(usize, u16, u16)>,
+        lines: &mut Vec<(u16, String)>,
+    ) {
         let mut offset = skip_rows;
         let mut y = area.y;
         let bottom = area.y.saturating_add(area.height);
@@ -115,7 +126,9 @@ fn render_entry(entry: &Entry, app: &App, width: u16) -> Vec<Line<'static>> {
                     lines.push(Line::from(vec![
                         Span::styled(
                             "❯ ".to_owned(),
-                            Style::new().fg(theme.accent_user).add_modifier(Modifier::BOLD),
+                            Style::new()
+                                .fg(theme.accent_user)
+                                .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(row, Style::new().fg(theme.accent_user)),
                     ]));
@@ -140,7 +153,11 @@ fn render_entry(entry: &Entry, app: &App, width: u16) -> Vec<Line<'static>> {
                     format!(
                         "◆ Thinking（{} 字符，{}）",
                         text.chars().count(),
-                        if entry.folded { "点击/ctrl+t 展开" } else { "ctrl+t 展开" }
+                        if entry.folded {
+                            "点击/ctrl+t 展开"
+                        } else {
+                            "ctrl+t 展开"
+                        }
                     ),
                     Style::new().fg(theme.accent_thinking),
                 ))];
@@ -178,7 +195,11 @@ fn render_entry(entry: &Entry, app: &App, width: u16) -> Vec<Line<'static>> {
         Block::Tool(tool) => render_tool(tool, app, width, entry.folded),
         Block::Todo { phases } => render_todo(phases, app, width),
         Block::Note { text, error } => {
-            let color = if *error { theme.accent_error } else { theme.gray_bright };
+            let color = if *error {
+                theme.accent_error
+            } else {
+                theme.gray_bright
+            };
             vec![
                 Line::from(Span::styled(
                     wrap_text(text, width)
@@ -208,20 +229,12 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
     };
     let summary = tool_summary(tool, &args);
     lines.push(Line::from(vec![
-        Span::styled(
-            format!("{bullet} "),
-            Style::new().fg(bullet_color),
-        ),
+        Span::styled(format!("{bullet} "), Style::new().fg(bullet_color)),
         Span::styled(
             tool.name.clone(),
-            Style::new()
-                .fg(bullet_color)
-                .add_modifier(Modifier::BOLD),
+            Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" {summary}"),
-            Style::new().fg(theme.text_secondary),
-        ),
+        Span::styled(format!(" {summary}"), Style::new().fg(theme.text_secondary)),
     ]));
 
     if app.tools_collapsed || folded {
@@ -229,9 +242,9 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
     }
 
     let inner_width = width.saturating_sub(4);
-    let is_error = tool.status.is_some_and(|status| {
-        status != moc_protocol::methods::ToolStatus::Completed
-    });
+    let is_error = tool
+        .status
+        .is_some_and(|status| status != moc_protocol::methods::ToolStatus::Completed);
 
     if let Some(diff) = &tool.diff {
         // edit / write：diff 全文渲染
@@ -241,8 +254,14 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
                 .map(|line| indent_line(line)),
         );
     } else if tool.name == "bash" {
-        let command = args.get("command").and_then(Value::as_str).unwrap_or_default();
-        for (index, row) in wrap_text(command, inner_width.saturating_sub(2)).into_iter().enumerate() {
+        let command = args
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        for (index, row) in wrap_text(command, inner_width.saturating_sub(2))
+            .into_iter()
+            .enumerate()
+        {
             lines.push(Line::from(Span::styled(
                 format!("{}{}", if index == 0 { "  $ " } else { "    " }, row),
                 Style::new().fg(theme.command),
@@ -253,14 +272,21 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
             lines.extend(rows.into_iter().map(|text| {
                 Line::from(Span::styled(
                     format!("  {text}"),
-                    Style::new().fg(if is_error { theme.diff_delete_fg } else { theme.text_secondary }),
+                    Style::new().fg(if is_error {
+                        theme.diff_delete_fg
+                    } else {
+                        theme.text_secondary
+                    }),
                 ))
             }));
         }
     } else if tool.name == "read" || tool.name == "find" {
         lines.extend(file_list_rows(&args, inner_width, theme));
     } else if tool.name == "grep" {
-        let pattern = args.get("pattern").and_then(Value::as_str).unwrap_or_default();
+        let pattern = args
+            .get("pattern")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         lines.push(Line::from(Span::styled(
             format!("  ⌕ {pattern}"),
             Style::new().fg(theme.path),
@@ -329,7 +355,13 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
         "find" => args
             .get("glob")
             .and_then(Value::as_array)
-            .map(|globs| globs.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
+            .map(|globs| {
+                globs
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default(),
         "todo" => "更新任务清单".to_owned(),
         "ask" => args
@@ -416,13 +448,19 @@ fn indent_line(line: Line<'static>) -> Line<'static> {
 }
 
 /// Todo 树（omp 风格）：阶段行带完成进度，条目按状态给符号与颜色。
-fn render_todo(phases: &[moc_protocol::methods::TodoPhase], app: &App, width: usize) -> Vec<Line<'static>> {
+fn render_todo(
+    phases: &[moc_protocol::methods::TodoPhase],
+    app: &App,
+    width: usize,
+) -> Vec<Line<'static>> {
     use moc_protocol::methods::TodoStatus;
 
     let theme = app.theme;
     let mut lines = vec![Line::from(Span::styled(
         "◆ TODO".to_owned(),
-        Style::new().fg(theme.accent_user).add_modifier(Modifier::BOLD),
+        Style::new()
+            .fg(theme.accent_user)
+            .add_modifier(Modifier::BOLD),
     ))];
     let phase_count = phases.len();
     for (phase_index, phase) in phases.iter().enumerate() {
@@ -436,10 +474,7 @@ fn render_todo(phases: &[moc_protocol::methods::TodoPhase], app: &App, width: us
         let total = phase.items.len();
         lines.push(Line::from(vec![
             Span::styled(branch.to_owned(), Style::new().fg(theme.border)),
-            Span::styled(
-                phase.phase.clone(),
-                Style::new().fg(theme.text_secondary),
-            ),
+            Span::styled(phase.phase.clone(), Style::new().fg(theme.text_secondary)),
             Span::styled(
                 format!(" · {done}/{total}"),
                 Style::new().fg(if done == total && total > 0 {

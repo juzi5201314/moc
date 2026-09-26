@@ -114,8 +114,8 @@ pub async fn connect_embedded(
     );
 
     let ask_events = events.clone();
-    let builder = builder.on_request::<SessionRequestAsk, _, _>(
-        move |params, ctx: ClientRequestContext| {
+    let builder =
+        builder.on_request::<SessionRequestAsk, _, _>(move |params, ctx: ClientRequestContext| {
             let events = ask_events.clone();
             let cancel = ctx.cancel;
             async move {
@@ -131,8 +131,7 @@ pub async fn connect_embedded(
                 }
                 select_reply(reply_rx, cancel).await
             }
-        },
-    );
+        });
 
     let (client, handshake) = builder
         .connect(frontend_side)

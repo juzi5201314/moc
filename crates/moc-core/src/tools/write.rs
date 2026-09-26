@@ -110,6 +110,7 @@ impl Tool for WriteTool {
                     content.len()
                 ),
                 is_error: false,
+                images: Vec::new(),
                 summary: None,
                 control: super::ToolControl::Continue,
                 status: None,

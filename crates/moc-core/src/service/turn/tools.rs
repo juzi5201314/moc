@@ -56,7 +56,7 @@ pub(super) async fn execute_tool_batch(
             results[index] = Some((Err(error), 0));
             continue;
         };
-        let approval = config.tools.approval.get(&call.name).copied();
+        let approval = config.tool_approval.lookup(&call.name);
         let asks_permission = approval == Some(ToolApproval::Prompt)
             || (approval.is_none()
                 && config.tools.approval_mode == ApprovalMode::Prompt
@@ -174,6 +174,7 @@ pub(super) async fn execute_tool_batch(
             tool_call_id: call.id.clone(),
             content: outcome.content.clone(),
             is_error: outcome.is_error,
+            images: outcome.images.clone(),
         };
         inner
             .sessions
@@ -244,11 +245,12 @@ async fn execute_tool(
             format!("未注册工具 `{name}`"),
         ));
     };
-    if !crate::service::mode::allowed_tools(mode).contains(&name) {
+    if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
         return Ok(ToolOutcome::failure("E_MODE", "当前模式不允许调用该工具"));
     }
     if (name == "todo" && !config.tools.todo.enabled)
         || (name == "job" && !config.tools.job.enabled)
+        || (name == "skill" && !config.skills.enabled)
         || (name == "ask" && !inner.client_supports_ask(request.connection_id()))
     {
         return Ok(ToolOutcome::failure("E_TOOL_DISABLED", "该工具未启用"));
@@ -270,6 +272,7 @@ async fn execute_tool(
             return Ok(ToolOutcome {
                 content: "[E_PERMISSION_DENIED] 用户拒绝执行该工具".into(),
                 is_error: true,
+                images: Vec::new(),
                 summary: None,
                 control: ToolControl::Continue,
                 status: Some(ToolStatus::Denied),
@@ -321,7 +324,7 @@ async fn authorize(
     let session_id = ctx.session_id.as_str();
     let turn_id = ctx.turn_id.as_str();
     let tool_name = tool.name();
-    let policy = config.tools.approval.get(tool_name).copied();
+    let policy = config.tool_approval.lookup(tool_name);
     if policy == Some(ToolApproval::Deny) {
         return Ok(Authorization::Denied);
     }

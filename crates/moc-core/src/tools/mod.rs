@@ -6,6 +6,7 @@ pub mod edit;
 pub mod find;
 pub mod grep;
 pub mod job;
+pub mod mcp;
 pub mod plan;
 pub mod read;
 pub mod todo;
@@ -47,6 +48,8 @@ pub enum ToolControl {
 pub struct ToolOutcome {
     pub content: String,
     pub is_error: bool,
+    /// 结果携带的图片；仅 MCP 桥接工具会填充。
+    pub images: Vec<moc_llm::ImageSource>,
     pub summary: Option<String>,
     pub control: ToolControl,
     pub status: Option<moc_protocol::methods::ToolStatus>,
@@ -60,6 +63,7 @@ impl ToolOutcome {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
             summary: None,
             control: ToolControl::Continue,
             status: None,
@@ -71,6 +75,7 @@ impl ToolOutcome {
         Self {
             content: format!("[{code}] {}", message.as_ref()),
             is_error: true,
+            images: Vec::new(),
             summary: None,
             control: ToolControl::Continue,
             status: None,
@@ -82,6 +87,7 @@ impl ToolOutcome {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
             summary: None,
             control: ToolControl::EndTurn,
             status: None,
@@ -117,6 +123,7 @@ impl ToolError {
         ToolOutcome {
             content: self.to_string(),
             is_error: true,
+            images: Vec::new(),
             summary: None,
             control: ToolControl::Continue,
             status: (self.code == "E_CANCELLED").then_some(moc_protocol::ToolStatus::Cancelled),
@@ -139,12 +146,21 @@ pub struct ToolCtx {
     pub sessions: Arc<SessionTable>,
     pub cancel: CancellationToken,
     pub jobs: Arc<job::JobManager>,
+    /// 该项目的 MCP 管理器（空配置时为空管理器）。
+    pub mcp: Arc<moc_mcp::McpManager>,
+    /// 该项目的 skill 索引。
+    pub skills: Arc<crate::skills::SkillIndex>,
+    /// 本会话已加载的 skill 名。
+    pub loaded_skills: Arc<parking_lot::RwLock<crate::skills::LoadedSkills>>,
 }
 
 /// 工具实例由注册表持有；实现将同步 schema 与异步执行分开。
+///
+/// `name` / `description` 返回动态 `&str`：MCP 桥接工具的标识来自运行期
+/// 协商结果，不能是 `'static`；内置工具返回字面量即可自动兼容。
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
     fn tier(&self) -> Tier;
     fn parallel_safe(&self) -> bool;
     fn def(&self) -> ToolDef;
@@ -157,13 +173,15 @@ pub trait Tool: Send + Sync {
 
 #[derive(Default)]
 pub struct ToolRegistry {
-    tools: Vec<Arc<dyn Tool>>,
+    builtins: Vec<Arc<dyn Tool>>,
+    /// 动态工具（MCP 桥接）；每轮请求前由 core 按最新快照整体替换。
+    dynamic: parking_lot::RwLock<Vec<Arc<dyn Tool>>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: vec![
+            builtins: vec![
                 Arc::new(read::ReadTool),
                 Arc::new(grep::GrepTool),
                 Arc::new(find::FindTool),
@@ -174,21 +192,39 @@ impl ToolRegistry {
                 Arc::new(write::WriteTool),
                 Arc::new(ask::AskTool),
                 Arc::new(plan::SubmitPlanTool),
+                Arc::new(crate::skills::tool::SkillTool),
             ],
+            dynamic: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.iter().find(|tool| tool.name() == name).cloned()
+        self.builtins
+            .iter()
+            .find(|tool| tool.name() == name)
+            .cloned()
+            .or_else(|| {
+                self.dynamic
+                    .read()
+                    .iter()
+                    .find(|tool| tool.name() == name)
+                    .cloned()
+            })
+    }
+
+    /// 替换动态工具集；传入前须按名字排序以保证请求内顺序稳定。
+    pub fn set_dynamic(&self, tools: Vec<Arc<dyn Tool>>) {
+        *self.dynamic.write() = tools;
     }
 
     pub fn definitions(
         &self,
         mode: SessionMode,
         ask_supported: bool,
-        config: &crate::config::ToolsConfig,
+        config: &ResolvedConfig,
     ) -> Vec<ToolDef> {
-        self.tools
+        let mut definitions: Vec<ToolDef> = self
+            .builtins
             .iter()
             .filter(|tool| {
                 let name = tool.name();
@@ -196,26 +232,51 @@ impl ToolRegistry {
                     SessionMode::Normal => name != "submit_plan",
                     SessionMode::Ask => matches!(
                         name,
-                        "read" | "grep" | "find" | "bash" | "todo" | "job" | "ask"
+                        "read" | "grep" | "find" | "bash" | "todo" | "job" | "ask" | "skill"
                     ),
                     SessionMode::Plan => matches!(
                         name,
-                        "read" | "grep" | "find" | "bash" | "todo" | "job" | "ask" | "submit_plan"
+                        "read"
+                            | "grep"
+                            | "find"
+                            | "bash"
+                            | "todo"
+                            | "job"
+                            | "ask"
+                            | "skill"
+                            | "submit_plan"
                     ),
                 }) && (name != "ask" || ask_supported)
-                    && (name != "todo" || config.todo.enabled)
-                    && (name != "job" || config.job.enabled)
+                    && (name != "todo" || config.tools.todo.enabled)
+                    && (name != "job" || config.tools.job.enabled)
+                    && (name != "skill" || config.skills.enabled)
             })
             .map(|tool| {
                 let mut definition = tool.def();
                 definition.description = Some(tool.description().to_owned());
                 definition
             })
-            .collect()
+            .collect();
+        // 动态（MCP）工具：Normal 全量放行；Ask/Plan 只保留只读工具。
+        let dynamic = self.dynamic.read();
+        definitions.extend(
+            dynamic
+                .iter()
+                .filter(|tool| match mode {
+                    SessionMode::Normal => true,
+                    SessionMode::Ask | SessionMode::Plan => tool.tier() == Tier::Read,
+                })
+                .map(|tool| {
+                    let mut definition = tool.def();
+                    definition.description = Some(tool.description().to_owned());
+                    definition
+                }),
+        );
+        definitions
     }
 
     pub fn all(&self) -> &[Arc<dyn Tool>] {
-        &self.tools
+        &self.builtins
     }
 }
 
@@ -254,7 +315,7 @@ fn ceil_char_boundary(text: &str, mut position: usize) -> usize {
     position
 }
 
-fn schema(properties: Value, required: &[&str]) -> Value {
+pub(crate) fn schema(properties: Value, required: &[&str]) -> Value {
     serde_json::json!({
         "type": "object",
         "properties": properties,
@@ -284,6 +345,103 @@ pub fn resolve_tool_path(cwd: &std::path::Path, value: &str) -> Result<PathBuf, 
         .file_name()
         .ok_or_else(|| ToolError::new("E_ACCESS", "无效文件名"))?;
     Ok(parent.join(filename))
+}
+
+#[cfg(test)]
+mod dynamic_registry_tests {
+    use super::*;
+    use moc_protocol::methods::SessionMode;
+    use std::sync::Arc;
+
+    struct FakeTool {
+        name: String,
+        read_only: bool,
+    }
+
+    impl Tool for FakeTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn description(&self) -> &str {
+            "动态工具"
+        }
+        fn tier(&self) -> Tier {
+            if self.read_only {
+                Tier::Read
+            } else {
+                Tier::Exec
+            }
+        }
+        fn parallel_safe(&self) -> bool {
+            self.read_only
+        }
+        fn def(&self) -> ToolDef {
+            ToolDef::new(self.name.clone(), serde_json::json!({"type": "object"}))
+        }
+        fn run<'a>(
+            &'a self,
+            _ctx: &'a ToolCtx,
+            _args: Value,
+        ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
+            unreachable!("registry 测试不执行动态工具")
+        }
+    }
+
+    fn config() -> crate::config::ResolvedConfig {
+        // 仅供 definitions() 计数测试使用的最小配置。
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let raw = "[models.roles]\ndefault='p/model'\nsmol='p/model'\nslow='p/model'\nplan='p/model'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n";
+        std::fs::write(home.path().join("config.toml"), raw).unwrap();
+        let core = crate::CoreConfig {
+            home: home.path().to_owned(),
+            cwd: cwd.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: None,
+            client: moc_llm::Client::new(),
+        };
+        crate::ResolvedConfig::load(&core)
+            .unwrap()
+            .for_project(cwd.path())
+            .unwrap()
+    }
+
+    #[test]
+    fn dynamic_tools_are_resolvable_and_mode_filtered() {
+        let registry = ToolRegistry::new();
+        registry.set_dynamic(vec![
+            Arc::new(FakeTool {
+                name: "mcp__github__edit_file".into(),
+                read_only: false,
+            }),
+            Arc::new(FakeTool {
+                name: "mcp__github__list_issues".into(),
+                read_only: true,
+            }),
+        ]);
+
+        assert!(registry.get("mcp__github__list_issues").is_some());
+        assert!(registry.get("mcp__github__edit_file").is_some());
+        assert!(registry.get("read").is_some());
+
+        let normal = registry.definitions(SessionMode::Normal, true, &config());
+        assert_eq!(normal.len(), 12, "10 内置（无 submit_plan）+ 2 动态");
+
+        let ask = registry.definitions(SessionMode::Ask, true, &config());
+        assert_eq!(ask.len(), 9, "Ask 模式只放行只读动态工具");
+        assert!(ask.iter().any(|d| d.name == "mcp__github__list_issues"));
+        assert!(!ask.iter().any(|d| d.name == "mcp__github__edit_file"));
+
+        // 内置工具不受动态替换影响。
+        registry.set_dynamic(Vec::new());
+        assert!(registry.get("mcp__github__list_issues").is_none());
+        assert_eq!(
+            registry
+                .definitions(SessionMode::Normal, true, &config())
+                .len(),
+            10
+        );
+    }
 }
 
 #[cfg(test)]

@@ -14,11 +14,7 @@ use crate::modal::Modal;
 use crate::widgets::completion::CompletionState;
 
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
-pub fn draw_completion_menu(
-    frame: &mut Frame,
-    completion: &CompletionState,
-    prompt_area: Rect,
-) {
+pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, prompt_area: Rect) {
     let rows = completion.candidates.len() as u16;
     let width = 72.min(prompt_area.width);
     let height = (rows + 2).min(prompt_area.y);
@@ -46,7 +42,10 @@ pub fn draw_completion_menu(
                 Style::new().fg(theme.text_secondary).bg(theme.bg_visual),
             )
         } else {
-            (Style::new().fg(theme.text_primary), Style::new().fg(theme.gray))
+            (
+                Style::new().fg(theme.text_primary),
+                Style::new().fg(theme.gray),
+            )
         };
         lines.push(Line::from(vec![
             Span::styled(prefix.to_string(), desc_style),
@@ -55,7 +54,7 @@ pub fn draw_completion_menu(
         ]));
     }
     lines.push(Line::from(Span::styled(
-        "tab/enter 确认 · esc 关闭".to_owned(),
+        "↑/↓ 选择 · Tab/Enter 确认 · Esc 关闭".to_owned(),
         Style::new().fg(theme.gray_dim),
     )));
     frame.render_widget(
@@ -108,7 +107,9 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
 /// 模态内容行（按类型分派）。
 fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
     match modal {
-        Modal::Permission { params, selected, .. } => {
+        Modal::Permission {
+            params, selected, ..
+        } => {
             let theme = app.theme;
             let mut lines = Vec::new();
             if let Some(body) = &params.body {
@@ -136,7 +137,9 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
                 };
                 let hint = match option.kind {
                     moc_protocol::methods::PermissionOptionKind::AllowOnce
-                    | moc_protocol::methods::PermissionOptionKind::AllowAlways => theme.accent_success,
+                    | moc_protocol::methods::PermissionOptionKind::AllowAlways => {
+                        theme.accent_success
+                    }
                     _ => theme.accent_error,
                 };
                 lines.push(Line::from(Span::styled(
@@ -169,7 +172,11 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
             lines.push(Line::from(String::new()));
             for (index, option) in current.options.iter().enumerate() {
                 let chosen = selected[*question].contains(&option.label);
-                let marker = if index == highlight[*question] { "❯" } else { " " };
+                let marker = if index == highlight[*question] {
+                    "❯"
+                } else {
+                    " "
+                };
                 let check = if chosen { "☑" } else { "☐" };
                 let style = if index == highlight[*question] {
                     Style::new()
@@ -212,7 +219,11 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
             )));
             lines
         }
-        Modal::Model { models, current, selected } => {
+        Modal::Model {
+            models,
+            current,
+            selected,
+        } => {
             let theme = app.theme;
             let mut lines = vec![Line::from(Span::styled(
                 format!("当前：{current}"),
@@ -233,12 +244,12 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
                     detail.push_str(&format!(" · {} tokens", format_number(window)));
                 }
                 if let Some(pricing) = &model.pricing {
-                    detail.push_str(&format!(" · ${:.2}/${:.2} 每百万", pricing.input, pricing.output));
+                    detail.push_str(&format!(
+                        " · ${:.2}/${:.2} 每百万",
+                        pricing.input, pricing.output
+                    ));
                 }
-                lines.push(Line::from(Span::styled(
-                    format!("{marker}{detail}"),
-                    style,
-                )));
+                lines.push(Line::from(Span::styled(format!("{marker}{detail}"), style)));
             }
             lines
         }
@@ -268,7 +279,9 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
             }
             lines
         }
-        Modal::Plan { markdown, selected, .. } => {
+        Modal::Plan {
+            markdown, selected, ..
+        } => {
             let theme = app.theme;
             let mut lines = crate::render::markdown::render_markdown(markdown, 100, theme);
             lines.push(Line::from(String::new()));
@@ -307,20 +320,17 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
                 ("ctrl+v", "粘贴剪贴板图片"),
                 ("ctrl+m", "切换模型"),
                 ("ctrl+r", "恢复历史会话"),
-                ("shift+tab", "切换滚动区 / 输入框焦点"),
+                ("tab", "补全菜单确认；否则切换输入焦点"),
+                ("shift+tab", "输入框切换模式；滚动区时聚焦输入框"),
                 ("alt+enter", "输入框内换行"),
-                ("↑ / ↓", "历史消息 / 多行移动"),
-                ("shift+tab(空闲)", "循环 Normal / Ask / Plan 模式"),
+                ("↑ / ↓", "补全候选 / 输入历史 / 多行移动"),
                 ("ctrl+c", "运行中取消轮次；空闲退出"),
                 ("/commands", "help new model resume mode compact quit"),
             ]
             .iter()
             .map(|(key, description)| {
                 Line::from(vec![
-                    Span::styled(
-                        format!("  {key:<14}"),
-                        Style::new().fg(theme.accent_user),
-                    ),
+                    Span::styled(format!("  {key:<14}"), Style::new().fg(theme.accent_user)),
                     Span::styled(
                         (*description).to_owned(),
                         Style::new().fg(theme.text_secondary),

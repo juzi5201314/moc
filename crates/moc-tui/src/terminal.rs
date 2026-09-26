@@ -4,12 +4,14 @@
 //! 同一份恢复序列；顺序与启用相反，保证终端状态无残留。
 
 use anyhow::Context;
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen,disable_raw_mode, enable_raw_mode,
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
-use ratatui::backend::CrosstermBackend;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 /// 已进入交互模式的终端句柄；drop 时自动恢复。
 pub struct TerminalGuard {

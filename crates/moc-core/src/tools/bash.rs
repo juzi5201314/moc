@@ -127,6 +127,7 @@ impl Tool for BashTool {
                     (timeout > 0).then_some(Duration::from_secs(timeout)),
                 ),
                 is_error: result.timed_out || result.code != Some(0),
+                images: Vec::new(),
                 summary: None,
                 control: super::ToolControl::Continue,
                 status: None,

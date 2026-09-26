@@ -183,7 +183,9 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
         SessionMode::Normal => &[
             "read", "grep", "find", "todo", "job", "bash", "edit", "write", "ask",
         ],
-        SessionMode::Ask => &["read", "grep", "find", "todo", "job", "bash", "ask"],
+        SessionMode::Ask => &[
+            "read", "grep", "find", "todo", "job", "bash", "ask", "skill",
+        ],
         SessionMode::Plan => &[
             "read",
             "grep",
@@ -192,7 +194,25 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "job",
             "bash",
             "ask",
+            "skill",
             "submit_plan",
         ],
+    }
+}
+
+/// 是否允许在当前模式调用该工具。
+///
+/// 内置工具沿用名字白名单；动态（MCP）工具按风险类别判定：
+/// Normal 全量放行，Ask/Plan 只放行 `Tier::Read` 的只读工具。
+pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> bool {
+    if allowed_tools(mode).contains(&name) {
+        return true;
+    }
+    if !name.starts_with("mcp__") {
+        return false;
+    }
+    match mode {
+        SessionMode::Normal => true,
+        SessionMode::Ask | SessionMode::Plan => tier == crate::tools::Tier::Read,
     }
 }

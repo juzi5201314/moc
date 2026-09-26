@@ -33,6 +33,8 @@ pub(crate) struct SessionRuntime {
     pub workspace: Mutex<Option<WorkspaceSnapshot>>,
     pub reminders: tokio::sync::Mutex<crate::prompt::reminder::ReminderState>,
     pub permissions: RwLock<HashMap<String, bool>>,
+    /// 本会话已加载的 skill 名；`skill` 工具据此去重。
+    pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
 }
 
 impl SessionRuntime {
@@ -43,6 +45,7 @@ impl SessionRuntime {
             workspace: Mutex::new(None),
             reminders: tokio::sync::Mutex::new(crate::prompt::reminder::ReminderState::default()),
             permissions: RwLock::new(HashMap::new()),
+            loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
     }
 }
@@ -56,6 +59,10 @@ pub(crate) struct CoreInner {
     pub capabilities: RwLock<HashMap<u64, ClientCapabilities>>,
     pub runtimes: Mutex<HashMap<String, Arc<SessionRuntime>>>,
     pub project_configs: RwLock<HashMap<PathBuf, Arc<ResolvedConfig>>>,
+    /// 每个 cwd（项目）一个 MCP 管理器，与 project_configs 同键。
+    pub mcp_managers: Mutex<HashMap<PathBuf, Arc<moc_mcp::McpManager>>>,
+    /// 每个 cwd 一份 skill 索引；会话内不变以稳定 system prompt。
+    pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
     pub turns: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
@@ -89,6 +96,52 @@ impl CoreInner {
             .get(&connection_id)
             .is_some_and(|caps| caps.ask_requests)
     }
+
+    /// 取得（或惰性创建）该项目的 MCP 管理器；创建即开始连接，不阻塞调用方。
+    pub(crate) async fn project_mcp(
+        &self,
+        cwd: &Path,
+    ) -> Result<Arc<moc_mcp::McpManager>, CoreError> {
+        let config = self.project_config(cwd)?;
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        if let Some(manager) = self.mcp_managers.lock().await.get(&key).cloned() {
+            return Ok(manager);
+        }
+        let servers = match config.mcp_servers() {
+            Ok(servers) => servers,
+            Err(error) => {
+                tracing::error!(%error, "MCP 配置解析失败，跳过全部 server");
+                Vec::new()
+            }
+        };
+        let manager = moc_mcp::McpManager::new(servers, self.shutdown.child_token());
+        manager.start().await;
+        self.mcp_managers
+            .lock()
+            .await
+            .insert(key, Arc::clone(&manager));
+        Ok(manager)
+    }
+
+    /// 取得（或惰性扫描）该项目的 skill 索引。
+    pub(crate) fn project_skills(
+        &self,
+        cwd: &Path,
+    ) -> Result<Arc<crate::skills::SkillIndex>, CoreError> {
+        let config = self.project_config(cwd)?;
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        if let Some(index) = self.skill_indexes.read().get(&key).cloned() {
+            return Ok(index);
+        }
+        let index = Arc::new(crate::skills::discovery::discover_index(
+            cwd,
+            &config.home,
+            crate::paths::home_dir().as_deref(),
+            &config.skills,
+        ));
+        self.skill_indexes.write().insert(key, Arc::clone(&index));
+        Ok(index)
+    }
 }
 
 /// 通过协议 [`AgentService`] 暴露的完整代理运行时。
@@ -119,6 +172,8 @@ impl Core {
                 capabilities: RwLock::new(HashMap::new()),
                 runtimes: Mutex::new(HashMap::new()),
                 project_configs: RwLock::new(HashMap::new()),
+                mcp_managers: Mutex::new(HashMap::new()),
+                skill_indexes: RwLock::new(HashMap::new()),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
                 turns: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
@@ -126,7 +181,7 @@ impl Core {
         }))
     }
 
-    /// 等待轮次取消收尾，终止后台进程组并释放临时状态。
+    /// 等待轮次取消收尾，终止后台进程组与 MCP 连接并释放临时状态。
     pub async fn shutdown(&self) {
         self.inner.shutdown.cancel();
         let mut turns = std::mem::take(&mut *self.inner.turns.lock().await);
@@ -134,6 +189,17 @@ impl Core {
             if let Err(error) = result {
                 tracing::error!(%error, "轮次收尾任务失败");
             }
+        }
+        let managers: Vec<_> = self
+            .inner
+            .mcp_managers
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        for manager in managers {
+            manager.shutdown().await;
         }
         let runtimes: Vec<_> = self.inner.runtimes.lock().await.values().cloned().collect();
         for runtime in runtimes {

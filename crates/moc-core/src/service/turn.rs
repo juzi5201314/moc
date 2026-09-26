@@ -98,6 +98,8 @@ async fn run_turn_locked(
     if user_message.content.is_empty() {
         return Err(RpcError::of(RpcErrorCode::InvalidParams));
     }
+    let user_message =
+        apply_skill_invocation(inner, user_message, &state_snapshot.session.cwd).await?;
     inner
         .sessions
         .append_message(&params.session_id, user_message.clone(), None, None)
@@ -162,16 +164,47 @@ async fn run_turn_locked(
         .map_err(protocol_to_rpc)?;
 
     let cancel = ctx.cancel();
+    // MCP 工具在每轮开始时快照一次并整体替换进注册表；list_changed 等变更
+    // 在下一轮生效，保证请求内工具定义顺序与内容稳定。
+    let mcp = inner
+        .project_mcp(std::path::Path::new(&state_snapshot.session.cwd))
+        .await
+        .map_err(to_rpc)?;
+    mcp.start().await;
+    for notice in mcp.drain_notices().await {
+        record
+            .state
+            .lock()
+            .await
+            .notices
+            .push(format!("MCP `{}`：{}", notice.server, notice.message));
+    }
+    let mcp_snapshot = mcp.snapshot().await;
+    inner.tools.set_dynamic(
+        mcp_snapshot
+            .tools
+            .iter()
+            .map(|info| {
+                Arc::new(crate::tools::mcp::McpTool::new(
+                    Arc::clone(&mcp),
+                    info.clone(),
+                )) as Arc<dyn crate::tools::Tool>
+            })
+            .collect(),
+    );
+    let skills = inner
+        .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
+        .map_err(to_rpc)?;
     let tools_available = inner.tools.definitions(
         mode,
         inner.client_supports_ask(ctx.connection_id()),
-        &project_config.tools,
+        &project_config,
     );
     let mut last_message = Message::default();
     let mut final_reason = FinishReason::Stop;
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
-    let system = system_message(&project_config, &model, mode, &cwd);
+    let system = system_message(&project_config, &model, mode, &cwd, &skills);
 
     'steps: for step in 0..project_config.limits.max_steps_per_turn {
         if cancel.is_cancelled() {
@@ -456,6 +489,9 @@ async fn run_turn_locked(
             cancel: cancel.clone(),
             jobs: Arc::clone(&runtime.jobs),
             sessions: Arc::clone(&inner.sessions),
+            mcp: Arc::clone(&mcp),
+            skills: Arc::clone(&skills),
+            loaded_skills: Arc::clone(&runtime.loaded_skills),
         };
         let control_end =
             execute_tool_batch(inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
@@ -527,4 +563,39 @@ async fn emit_fatal(
         )
         .await
         .map_err(protocol_to_rpc)
+}
+
+/// 解析用户输入中的 `/skill:<name> 参数` 显式调用。
+///
+/// 正文以 user 消息注入（用户指令优先级高于工具结果），`disable-model-invocation`
+/// 的 skill 仅此路径可用；输入不以 `/skill:` 开头时原样返回。
+async fn apply_skill_invocation(
+    inner: &CoreInner,
+    message: Message,
+    cwd: &str,
+) -> Result<Message, RpcError> {
+    let text = message.text();
+    let Some(rest) = text.strip_prefix("/skill:") else {
+        return Ok(message);
+    };
+    let (name, arguments) = match rest.split_once([' ', '\n']) {
+        Some((name, arguments)) => (name, arguments.trim()),
+        None => (rest.trim_end(), ""),
+    };
+    if name.is_empty() {
+        return Ok(message);
+    }
+    let skills = inner
+        .project_skills(std::path::Path::new(cwd))
+        .map_err(to_rpc)?;
+    let mut loaded = std::collections::HashSet::new();
+    let content = crate::skills::tool::render_for_invocation(&skills, name, &mut loaded)
+        .map_err(crate::service::invalid_params)?;
+    let mut injected = format!(
+        "<system-reminder>以下内容由用户通过 /skill:{name} 显式调用注入，请立即遵循其内容。</system-reminder>\n{content}"
+    );
+    if !arguments.is_empty() {
+        injected.push_str(&format!("\n\n用户附带的指令：{arguments}"));
+    }
+    Ok(Message::user_text(injected))
 }

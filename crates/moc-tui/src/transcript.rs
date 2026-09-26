@@ -4,8 +4,8 @@
 //! 为 key,块内容每次变化 `gen` 自增,流式增量只让**活动的那一块**缓存失效。
 //! 协议的 `SessionUpdate` 在 `crate::event` 里被折叠成这些块。
 
-use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
 use moc_protocol::ToolResult;
+use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
 
 /// 转写条目：块 + 内容版本（渲染缓存 key 的一部分）。
 #[derive(Debug, Clone)]

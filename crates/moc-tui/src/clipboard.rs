@@ -22,22 +22,25 @@ pub async fn read_clipboard_image() -> Option<ClipboardImage> {
         return try_read("wl-paste", &["-t", "image/jpeg"]).await;
     }
     if std::env::var_os("DISPLAY").is_some() && which("xclip") {
-        if let Some(image) =
-            try_read("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"]).await
+        if let Some(image) = try_read(
+            "xclip",
+            &["-selection", "clipboard", "-t", "image/png", "-o"],
+        )
+        .await
         {
             return Some(image);
         }
-        return try_read("xclip", &["-selection", "clipboard", "-t", "image/jpeg", "-o"]).await;
+        return try_read(
+            "xclip",
+            &["-selection", "clipboard", "-t", "image/jpeg", "-o"],
+        )
+        .await;
     }
     None
 }
 
 async fn try_read(program: &str, args: &[&str]) -> Option<ClipboardImage> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .await
-        .ok()?;
+    let output = Command::new(program).args(args).output().await.ok()?;
     if !output.status.success() || output.stdout.is_empty() {
         return None;
     }

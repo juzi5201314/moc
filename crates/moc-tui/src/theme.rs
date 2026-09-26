@@ -191,13 +191,7 @@ fn nearest_indexed(rgb: Rgb) -> u8 {
             ((c - 35) / 40).min(5)
         }
     };
-    let cube_value = |level: i32| -> i32 {
-        if level == 0 {
-            0
-        } else {
-            55 + level * 40
-        }
-    };
+    let cube_value = |level: i32| -> i32 { if level == 0 { 0 } else { 55 + level * 40 } };
     let (lr, lg, lb) = (cube_level(r), cube_level(g), cube_level(b));
     let (qr, qg, qb) = (cube_value(lr), cube_value(lg), cube_value(lb));
     let cube_distance = {

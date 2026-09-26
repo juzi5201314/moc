@@ -12,6 +12,7 @@ mod paths;
 pub mod prompt;
 pub mod service;
 pub mod session;
+pub mod skills;
 pub mod tools;
 pub mod workspace;
 pub use service::Core;

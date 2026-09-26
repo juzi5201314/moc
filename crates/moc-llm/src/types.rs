@@ -117,12 +117,23 @@ impl Message {
         content: impl Into<String>,
         is_error: bool,
     ) -> Self {
+        Self::tool_result_with_images(tool_call_id, content, is_error, Vec::new())
+    }
+
+    /// 带图片的工具结果消息；图片随结果一起呈现给模型。
+    pub fn tool_result_with_images(
+        tool_call_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+        images: Vec<ImageSource>,
+    ) -> Self {
         Self {
             role: Role::Tool,
             content: vec![ContentPart::ToolResult(ToolResult {
                 tool_call_id: tool_call_id.into(),
                 content: content.into(),
                 is_error,
+                images,
             })],
         }
     }
@@ -254,6 +265,11 @@ pub struct ToolResult {
     pub content: String,
     /// 是否为失败结果（Anthropic 有对应字段，其余协议由 core 拼进文本）。
     pub is_error: bool,
+    /// 结果携带的图片。Anthropic 原生随 tool_result 传递；Chat / Responses 的
+    /// tool 角色只收文本，编码器会把图片转成紧随其后的 user 消息。
+    /// 仅允许 [`ImageSource::Base64`]：URL 来源对 tool 结果无意义。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSource>,
 }
 
 /// 思维链块。
@@ -768,10 +784,40 @@ mod tests {
                 tool_call_id: "call_1".into(),
                 content: "42".into(),
                 is_error: true,
+                images: Vec::new(),
             })]
         );
         assert_eq!(tool.tool_results().count(), 1);
         assert_eq!(tool.tool_calls().count(), 0);
+    }
+
+    #[test]
+    fn tool_result_images_round_trip_and_default_when_absent() {
+        use serde_json::json;
+        let message = Message::tool_result_with_images(
+            "call_1",
+            "截图如下",
+            false,
+            vec![ImageSource::Base64 {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
+        );
+        let encoded = serde_json::to_string(&message).unwrap();
+        let decoded: Message = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, message);
+
+        // 旧会话记录没有 images 字段：反序列化为空而不是报错。
+        let legacy = json!({
+            "role": "Tool",
+            "content": [{"ToolResult": {
+                "tool_call_id": "call_1",
+                "content": "旧结果",
+                "is_error": false,
+            }}]
+        });
+        let decoded: Message = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.tool_results().next().unwrap().images, Vec::new());
     }
 
     #[test]

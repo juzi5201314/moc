@@ -23,9 +23,8 @@ use moc_protocol::methods::{
     SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo, SessionMode,
     SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
     SessionRequestAsk, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
-    SessionUnlockParams,
-    SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, TurnResult,
-    default_options,
+    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
+    TranscriptEntry, TurnResult, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -422,6 +421,7 @@ impl ScriptedService {
                             "未获授权".to_owned()
                         },
                         is_error: !allowed,
+                        images: Vec::new(),
                     },
                     duration_ms: Some(12),
                     diff: None,

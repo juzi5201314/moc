@@ -20,6 +20,7 @@ pub fn system_message(
     model: &ResolvedModel,
     mode: SessionMode,
     cwd: &Path,
+    skills: &crate::skills::SkillIndex,
 ) -> Message {
     let mut sections = Vec::new();
     let intro = if config.system_prompt.override_text.trim().is_empty() {
@@ -52,6 +53,10 @@ pub fn system_message(
         }
         rules.push_str("\n</repo-rules>");
         sections.push(rules);
+    }
+    // skill 目录属于稳定前缀（会话内索引不变），保持 prompt cache 命中。
+    if let Some(catalog) = crate::skills::catalog::render(skills, &config.skills) {
+        sections.push(catalog);
     }
     sections.push(format!(
         "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
@@ -111,8 +116,9 @@ mod tests {
         fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").unwrap();
         let config = resolved(&cwd, &home);
         let model = config.resolve_role("default").unwrap();
-        let normal = system_message(&config, &model, SessionMode::Normal, &cwd);
-        let ask = system_message(&config, &model, SessionMode::Ask, &cwd);
+        let skills = crate::skills::SkillIndex::empty();
+        let normal = system_message(&config, &model, SessionMode::Normal, &cwd, &skills);
+        let ask = system_message(&config, &model, SessionMode::Ask, &cwd, &skills);
         let normal = match &normal.content[0] {
             moc_llm::ContentPart::Text(text) => text,
             _ => panic!("系统提示为文本"),
@@ -133,5 +139,29 @@ mod tests {
     fn volatile_reminder_is_a_user_message() {
         let message = reminder_message("<system-reminder>job 完成</system-reminder>".into());
         assert_eq!(message.role, Role::User);
+    }
+
+    #[test]
+    fn skill_catalog_is_included_when_present() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(cwd.join(".agents/skills/demo")).unwrap();
+        fs::write(
+            cwd.join(".agents/skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: 演示 skill\n---\n正文",
+        )
+        .unwrap();
+        let config = resolved(&cwd, &home);
+        let model = config.resolve_role("default").unwrap();
+        let skills =
+            crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
+        let message = system_message(&config, &model, SessionMode::Normal, &cwd, &skills);
+        let text = match &message.content[0] {
+            moc_llm::ContentPart::Text(text) => text,
+            _ => panic!("系统提示为文本"),
+        };
+        assert!(text.contains("<skills>"));
+        assert!(text.contains("- demo: 演示 skill"));
     }
 }

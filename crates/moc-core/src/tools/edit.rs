@@ -4,16 +4,13 @@ use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolControl, resolve_tool_path, schema};
+use super::{Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, resolve_tool_path, schema};
 use crate::hashline::apply::{EditError, EditRequest, apply_edit, preview_edit};
 use moc_protocol::ToolDiff;
 
 /// 授权预览：按工具参数计算 edit 将产生的 diff，不落盘、不更新锚点状态。
 /// 参数不合法或范围未服务时返回 `None`，真实错误由执行阶段给出。
-pub(crate) fn preview_edit_diff(
-    ctx: &ToolCtx,
-    arguments: &serde_json::Value,
-) -> Option<ToolDiff> {
+pub(crate) fn preview_edit_diff(ctx: &ToolCtx, arguments: &serde_json::Value) -> Option<ToolDiff> {
     let mut request: EditRequest = serde_json::from_value(arguments.clone()).ok()?;
     let source_path = resolve_tool_path(&ctx.cwd, &request.path).ok()?;
     request.path = source_path.to_string_lossy().into_owned();
@@ -24,7 +21,9 @@ pub(crate) fn preview_edit_diff(
         .transpose()
         .ok()?;
     let source_served = ctx.anchors.served(&source_path).unwrap_or_default();
-    let target_served = target_path.as_ref().and_then(|path| ctx.anchors.served(path));
+    let target_served = target_path
+        .as_ref()
+        .and_then(|path| ctx.anchors.served(path));
     preview_edit(
         &ctx.cwd,
         &request,
@@ -122,6 +121,7 @@ impl Tool for EditTool {
                     Ok(ToolOutcome {
                         content: output.content,
                         is_error: false,
+                        images: Vec::new(),
                         summary: None,
                         control: ToolControl::Continue,
                         status: None,
@@ -143,6 +143,7 @@ impl Tool for EditTool {
                     Ok(ToolOutcome {
                         content,
                         is_error: true,
+                        images: Vec::new(),
                         summary: None,
                         control: ToolControl::Continue,
                         status: None,

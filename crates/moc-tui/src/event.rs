@@ -20,7 +20,7 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::Modal;
 use crate::protocol::{AppEvent, EmbeddedConnection, connect_embedded};
@@ -58,9 +58,10 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     bootstrap(&connection.client, &mut app, &opts).await;
 
     // `moc "提示词"`：会话就绪后立即发送首轮
-    if let (Some(session), Some(text)) =
-        (app.session.as_ref().map(|s| s.id.clone()), opts.initial_prompt.clone())
-        && !text.trim().is_empty()
+    if let (Some(session), Some(text)) = (
+        app.session.as_ref().map(|s| s.id.clone()),
+        opts.initial_prompt.clone(),
+    ) && !text.trim().is_empty()
     {
         app.push_user(text.clone());
         send_turn(&connection.client, session, vec![InputPart::Text { text }]);
@@ -299,6 +300,14 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
         MouseEventKind::ScrollUp => scroll(app, -3),
         MouseEventKind::ScrollDown => scroll(app, 3),
         MouseEventKind::Down(MouseButton::Left) => {
+            let area = app.prompt_area;
+            if position.0 >= area.x
+                && position.0 < area.x.saturating_add(area.width)
+                && position.1 >= area.y
+                && position.1 < area.y.saturating_add(area.height)
+            {
+                app.focus = Focus::Prompt;
+            }
             app.pending_click = Some(position);
         }
         MouseEventKind::Drag(MouseButton::Left) => {
@@ -333,7 +342,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
 
 fn scroll(app: &mut App, delta: i32) {
     if delta < 0 {
-        app.scroll_offset = app.scroll_offset.saturating_sub(delta.unsigned_abs() as usize);
+        app.scroll_offset = app
+            .scroll_offset
+            .saturating_sub(delta.unsigned_abs() as usize);
     } else {
         app.scroll_offset = app.scroll_offset.saturating_add(delta as usize);
     }
@@ -349,6 +360,9 @@ fn handle_key(
     // 打开的模态吃掉全部键盘事件
     if app.modal.is_some() {
         handle_modal_key(app, connection, modifiers, code);
+        return;
+    }
+    if handle_completion_key(app, modifiers, code) {
         return;
     }
     match (code, modifiers) {
@@ -448,18 +462,47 @@ fn handle_key(
     }
 }
 
+fn handle_completion_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> bool {
+    if app.focus != Focus::Prompt || app.completion.is_none() {
+        return false;
+    }
+    match (code, modifiers) {
+        (KeyCode::Tab, KeyModifiers::SHIFT) => false,
+        (KeyCode::Tab, KeyModifiers::NONE) => accept_completion(app),
+        (KeyCode::Up, _) => {
+            if let Some(completion) = app.completion.as_mut() {
+                completion.select_previous();
+            }
+            true
+        }
+        (KeyCode::Down, _) => {
+            if let Some(completion) = app.completion.as_mut() {
+                completion.select_next();
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn accept_completion(app: &mut App) -> bool {
+    let Some(completion) = app.completion.take() else {
+        return false;
+    };
+    let chosen = completion.chosen();
+    app.prompt.clear();
+    app.prompt.insert_str_raw(chosen);
+    app.prompt.insert_char(' ');
+    true
+}
+
 fn sync_completion(app: &mut App) {
     app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
 }
 
 /// 提交输入：补全确认 > 斜杠命令 > 普通发送。
 fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
-    if let Some(completion) = app.completion.take() {
-        // 确认补全：整行替换为命令 + 空格
-        let chosen = completion.chosen();
-        app.prompt.clear();
-        app.prompt.insert_str_raw(chosen);
-        app.prompt.insert_char(' ');
+    if accept_completion(app) {
         return;
     }
     let first_line = app.prompt_text().lines().next().unwrap_or_default();
@@ -653,88 +696,78 @@ fn handle_modal_key(
             }
         }
         Modal::Model {
-            models,
-            selected,
-            ..
-        } => {
-            match (code, modifiers) {
-                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                    *selected = selected.saturating_sub(1);
-                }
-                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    *selected = (*selected + 1).min(models.len().saturating_sub(1));
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if let Some(model) = models.get(*selected)
-                        && let Some(session_id) = session_id
-                    {
-                        let client = connection.client.clone();
-                        let events = events.clone();
-                        let selector = model.id.clone();
-                        tokio::spawn(async move {
-                            match client
-                                .call::<SessionSetModel>(SessionSetModelParams {
-                                    session_id,
-                                    selector,
-                                })
-                                .await
-                            {
-                                Ok(_) => {
-                                    let _ = events.send(AppEvent::ModelSwitched);
-                                }
-                                Err(error) => tracing::warn!(%error, "切换模型失败"),
-                            }
-                        });
-                    }
-                    close = true;
-                }
-                (KeyCode::Esc, _) => close = true,
-                _ => {}
+            models, selected, ..
+        } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                *selected = selected.saturating_sub(1);
             }
-        }
-        Modal::Sessions { sessions, selected } => {
-            match (code, modifiers) {
-                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                    *selected = selected.saturating_sub(1);
-                }
-                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    *selected = (*selected + 1).min(sessions.len().saturating_sub(1));
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if let Some(session) = sessions.get(*selected) {
-                        let client = connection.client.clone();
-                        let session_id = session.id.clone();
-                        let events = events.clone();
-                        tokio::spawn(async move {
-                            match client
-                                .call::<SessionLoad>(SessionLoadParams {
-                                    session_id,
-                                    max_entries: None,
-                                })
-                                .await
-                            {
-                                Ok(loaded) => {
-                                    let _ = events.send(AppEvent::Loaded(
-                                        loaded.session,
-                                        crate::transcript_restore::blocks_from_entries(
-                                            &loaded.entries,
-                                        ),
-                                    ));
-                                }
-                                Err(error) => tracing::warn!(%error, "加载会话失败"),
-                            }
-                        });
-                    }
-                    close = true;
-                }
-                (KeyCode::Esc, _) => close = true,
-                _ => {}
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                *selected = (*selected + 1).min(models.len().saturating_sub(1));
             }
-        }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                if let Some(model) = models.get(*selected)
+                    && let Some(session_id) = session_id
+                {
+                    let client = connection.client.clone();
+                    let events = events.clone();
+                    let selector = model.id.clone();
+                    tokio::spawn(async move {
+                        match client
+                            .call::<SessionSetModel>(SessionSetModelParams {
+                                session_id,
+                                selector,
+                            })
+                            .await
+                        {
+                            Ok(_) => {
+                                let _ = events.send(AppEvent::ModelSwitched);
+                            }
+                            Err(error) => tracing::warn!(%error, "切换模型失败"),
+                        }
+                    });
+                }
+                close = true;
+            }
+            (KeyCode::Esc, _) => close = true,
+            _ => {}
+        },
+        Modal::Sessions { sessions, selected } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                *selected = selected.saturating_sub(1);
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                *selected = (*selected + 1).min(sessions.len().saturating_sub(1));
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                if let Some(session) = sessions.get(*selected) {
+                    let client = connection.client.clone();
+                    let session_id = session.id.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        match client
+                            .call::<SessionLoad>(SessionLoadParams {
+                                session_id,
+                                max_entries: None,
+                            })
+                            .await
+                        {
+                            Ok(loaded) => {
+                                let _ = events.send(AppEvent::Loaded(
+                                    loaded.session,
+                                    crate::transcript_restore::blocks_from_entries(&loaded.entries),
+                                ));
+                            }
+                            Err(error) => tracing::warn!(%error, "加载会话失败"),
+                        }
+                    });
+                }
+                close = true;
+            }
+            (KeyCode::Esc, _) => close = true,
+            _ => {}
+        },
         Modal::Plan {
-            plan_id,
-            selected,
-            ..
+            plan_id, selected, ..
         } => {
             match (code, modifiers) {
                 (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => *selected = 0,
@@ -804,18 +837,22 @@ fn advance_ask(
     selected: &[Vec<String>],
     custom: &str,
     reply: &mut Option<
-        tokio::sync::oneshot::Sender<Result<moc_protocol::methods::AskResult, moc_protocol::RpcError>>,
+        tokio::sync::oneshot::Sender<
+            Result<moc_protocol::methods::AskResult, moc_protocol::RpcError>,
+        >,
     >,
 ) -> bool {
     let answers = params
         .questions
         .iter()
         .enumerate()
-        .map(|(index, current_question)| moc_protocol::methods::AskAnswer {
-            id: current_question.id.clone(),
-            selected: selected.get(index).cloned().unwrap_or_default(),
-            custom: (!custom.is_empty() && index == *question).then(|| custom.to_owned()),
-        })
+        .map(
+            |(index, current_question)| moc_protocol::methods::AskAnswer {
+                id: current_question.id.clone(),
+                selected: selected.get(index).cloned().unwrap_or_default(),
+                custom: (!custom.is_empty() && index == *question).then(|| custom.to_owned()),
+            },
+        )
         .collect();
     if *question + 1 >= params.questions.len() {
         if let Some(reply) = reply.take() {
@@ -837,8 +874,9 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 if !delta.is_empty()
                     && !app.has_streaming(|block| matches!(block, Block::Assistant { .. }))
                 {
-                    app.blocks
-                        .push(Entry::new(Block::Assistant { text: String::new() }));
+                    app.blocks.push(Entry::new(Block::Assistant {
+                        text: String::new(),
+                    }));
                 }
                 app.append_streaming(
                     |block| match block {
@@ -852,8 +890,9 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 if !delta.is_empty()
                     && !app.has_streaming(|block| matches!(block, Block::Thinking { .. }))
                 {
-                    app.blocks
-                        .push(Entry::new(Block::Thinking { text: String::new() }));
+                    app.blocks.push(Entry::new(Block::Thinking {
+                        text: String::new(),
+                    }));
                 }
                 app.append_streaming(
                     |block| match block {
@@ -863,9 +902,14 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                     &delta,
                 );
             }
-            moc_protocol::methods::AssistantDelta::ToolCallStarted { tool_call_id: _, name: _ } => {
-            }
-            moc_protocol::methods::AssistantDelta::ToolCallArgs { tool_call_id, delta } => {
+            moc_protocol::methods::AssistantDelta::ToolCallStarted {
+                tool_call_id: _,
+                name: _,
+            } => {}
+            moc_protocol::methods::AssistantDelta::ToolCallArgs {
+                tool_call_id,
+                delta,
+            } => {
                 if let Some(entry) = app.tool_entry_mut(&tool_call_id) {
                     entry.push_args(&delta);
                 } else {
@@ -875,9 +919,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             moc_protocol::methods::AssistantDelta::Usage { usage } => app.apply_usage(usage),
         },
         SessionUpdate::ToolStarted {
-            tool_call_id,
-            name,
-            ..
+            tool_call_id, name, ..
         } => app.start_tool_block(tool_call_id, name),
         SessionUpdate::ToolFinished {
             tool_call_id,
@@ -938,9 +980,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             );
         }
         SessionUpdate::JobFinished {
-            command,
-            exit_code,
-            ..
+            command, exit_code, ..
         } => {
             app.push_note(
                 format!("后台任务结束：{command}（exit {exit_code:?}）"),
@@ -957,9 +997,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::PermissionResolved { .. } => {}
         SessionUpdate::LockChanged { .. } => {}
         SessionUpdate::Error {
-            message,
-            retryable,
-            ..
+            message, retryable, ..
         } => {
             app.push_note(format!("错误：{message}（可重试：{retryable}）"), true);
         }
@@ -975,7 +1013,10 @@ fn send_turn(client: &ClientHandle, session_id: String, parts: Vec<InputPart>) {
             session_id,
             input: parts,
         };
-        match client.call::<moc_protocol::methods::SessionPrompt>(params).await {
+        match client
+            .call::<moc_protocol::methods::SessionPrompt>(params)
+            .await
+        {
             Ok(result) => tracing::info!(finish = ?result.finish_reason, "轮次完成"),
             Err(error) => tracing::warn!(%error, "轮次请求失败"),
         }
@@ -1098,7 +1139,11 @@ fn copy_selection(app: &mut App) {
         return;
     };
     let (start_row, end_row) = if sy <= ey { (sy, ey) } else { (ey, sy) };
-    let (start_col, end_col) = if sy == ey && sx > ex { (ex, sx) } else { (sx, ex) };
+    let (start_col, end_col) = if sy == ey && sx > ex {
+        (ex, sx)
+    } else {
+        (sx, ex)
+    };
     let mut text = String::new();
     for &(row, ref line_text) in &app.paint_lines {
         if row < start_row || row > end_row {
@@ -1131,4 +1176,91 @@ fn copy_selection(app: &mut App) {
     let _ = events;
     app.selection = None;
     app.set_notice("已复制选中内容");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn app() -> App {
+        let (events, _receiver) = unbounded_channel::<AppEvent>();
+        App::new(Theme::global(), events)
+    }
+
+    fn app_with_completion() -> App {
+        let mut app = app();
+        app.prompt.insert_str_raw("/m");
+        app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
+        app
+    }
+
+    #[test]
+    fn tab_accepts_the_selected_command_instead_of_changing_focus() {
+        let mut app = app_with_completion();
+
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Tab
+        ));
+
+        assert_eq!(app.prompt.text, "/model ");
+        assert!(app.completion.is_none());
+        assert_eq!(app.focus, Focus::Prompt);
+    }
+
+    #[test]
+    fn completion_arrows_select_the_command_tab_accepts() {
+        let mut app = app_with_completion();
+
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Down
+        ));
+        assert_eq!(
+            app.completion
+                .as_ref()
+                .map(|completion| completion.chosen()),
+            Some("/mode")
+        );
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Tab
+        ));
+
+        assert_eq!(app.prompt.text, "/mode ");
+    }
+
+    #[test]
+    fn clicking_the_prompt_restores_focus_only_inside_its_area() {
+        let mut app = app();
+        app.prompt_area = ratatui::layout::Rect::new(4, 10, 40, 3);
+        app.focus = Focus::Scrollback;
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: 11,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.focus, Focus::Scrollback);
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 4,
+                row: 11,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+        assert_eq!(app.focus, Focus::Prompt);
+    }
 }

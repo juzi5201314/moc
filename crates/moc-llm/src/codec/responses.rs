@@ -253,7 +253,8 @@ fn encode_input(
             Role::Assistant => {
                 encode_assistant_items(plan, message, breakpoint, &mut items)?;
             }
-            Role::Tool => items.push(encode_tool_result(message, breakpoint)?),
+            // tool 结果携带的图片无法进入 function_call_output，编码为紧随的 user 消息。
+            Role::Tool => items.extend(encode_tool_result(cfg, message, breakpoint)?),
         }
     }
     Ok(items)
@@ -417,7 +418,11 @@ fn flush_text(pending: &mut String, block_index: &mut Option<usize>, items: &mut
     }
 }
 
-fn encode_tool_result(message: &Message, breakpoint: bool) -> Result<Value, LlmError> {
+fn encode_tool_result(
+    cfg: &LlmConfig,
+    message: &Message,
+    breakpoint: bool,
+) -> Result<Vec<Value>, LlmError> {
     let Some(result) = message.tool_results().next() else {
         return Err(LlmError::Encode("tool 消息缺少 ToolResult 内容块".into()));
     };
@@ -426,11 +431,29 @@ fn encode_tool_result(message: &Message, breakpoint: bool) -> Result<Value, LlmE
             "Responses 的缓存断点只能落在文本内容块上".into(),
         ));
     }
-    Ok(json!({
+    let mut items = vec![json!({
         "type": "function_call_output",
         "call_id": result.tool_call_id,
         "output": result.content,
-    }))
+    })];
+    if result.images.is_empty() {
+        return Ok(items);
+    }
+    // 图片旁路：function_call_output 只收文本，以独立 user message item 补发。
+    let mut blocks = Vec::with_capacity(result.images.len() + 1);
+    blocks.push(json!({
+        "type": "input_text",
+        "text": format!("[工具 {} 返回的图片]", result.tool_call_id),
+    }));
+    for source in &result.images {
+        blocks.push(encode_image(cfg, source, None)?);
+    }
+    items.push(json!({
+        "type": "message",
+        "role": "user",
+        "content": blocks,
+    }));
+    Ok(items)
 }
 
 /// 给最后一个文本内容块打上显式缓存断点。
@@ -965,6 +988,44 @@ mod tests {
                 {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "这就去查"}]},
                 {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"北京\"}"},
                 {"type": "function_call_output", "call_id": "call_1", "output": "晴"},
+            ])
+        );
+    }
+
+    #[test]
+    fn tool_result_images_are_bypassed_as_user_message() {
+        let req = ChatRequest {
+            messages: vec![
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::ToolCall(ToolCall::new(
+                        "call_1",
+                        "screenshot",
+                        "{}",
+                    ))],
+                },
+                Message::tool_result_with_images(
+                    "call_1",
+                    "截图如下",
+                    false,
+                    vec![ImageSource::Base64 {
+                        media_type: "image/png".into(),
+                        data: "AAAA".into(),
+                    }],
+                ),
+            ],
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["input"],
+            json!([
+                {"type": "function_call", "call_id": "call_1", "name": "screenshot", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "截图如下"},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "[工具 call_1 返回的图片]"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ]},
             ])
         );
     }

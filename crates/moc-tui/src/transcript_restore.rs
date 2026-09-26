@@ -3,8 +3,8 @@
 //! transcript 里 assistant 消息携带 ToolCall、后随的 Tool 消息携带
 //! ToolResult；恢复时按 tool_call_id 把结果回填到调用块上。
 
-use moc_protocol::{ContentPart, Role};
 use moc_protocol::methods::{ToolExecution, ToolStatus, TranscriptEntry};
+use moc_protocol::{ContentPart, Role};
 
 use crate::transcript::{Block, Entry, ToolCallBlock};
 
@@ -12,13 +12,10 @@ use crate::transcript::{Block, Entry, ToolCallBlock};
 pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
     let mut blocks: Vec<Entry> = Vec::new();
     // tool_call_id → 已创建工具块的下标（结果回填用）
-    let mut call_index: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut call_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for record in entries {
-        let TranscriptEntry {
-            message, tool, ..
-        } = record;
+        let TranscriptEntry { message, tool, .. } = record;
         match message.role {
             Role::User => {
                 let text = collect_text(&message.content);
@@ -151,6 +148,7 @@ mod tests {
                         tool_call_id: "call_1".into(),
                         content: "a.rs".into(),
                         is_error: false,
+                        images: Vec::new(),
                     })],
                 },
                 Some(ToolExecution {

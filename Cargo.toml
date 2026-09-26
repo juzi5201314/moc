@@ -1,12 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-protocol", "crates/moc-tui"]
+members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-protocol", "crates/moc-tui"]
 default-members = ["crates/moc-cli", "crates/moc-tui"]
 
 [workspace.dependencies]
 tokio = { version = "1.53.1", features = ["full"] }
 serde = { version = "1.0", features = ["serde_derive"] }
 serde_json = { version = "1.0" }
+serde_yaml = "0.9"
 reqwest = { version = "0.13.5", features = ["stream"] }
 thiserror = { version = "2.0.21" }
 anyhow = { version = "1.0.104" }
@@ -19,6 +20,7 @@ wiremock = { version = "0.6.5" }
 toml = "1"
 ignore = "0.4"
 globset = "0.4"
+http = "1"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"

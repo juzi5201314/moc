@@ -60,12 +60,12 @@ impl Modal {
     pub fn title(&self) -> String {
         match self {
             Modal::Permission { params, .. } => params.title.clone(),
-            Modal::Ask { params, question, .. } => {
-                params.questions.get(*question).map_or_else(
-                    || "提问".into(),
-                    |question| question.question.clone(),
-                )
-            }
+            Modal::Ask {
+                params, question, ..
+            } => params
+                .questions
+                .get(*question)
+                .map_or_else(|| "提问".into(), |question| question.question.clone()),
             Modal::Model { .. } => "选择模型".into(),
             Modal::Sessions { .. } => "恢复会话".into(),
             Modal::Plan { title, .. } => format!("计划审批：{title}"),
@@ -77,7 +77,9 @@ impl Modal {
     pub fn option_count(&self) -> usize {
         match self {
             Modal::Permission { params, .. } => params.options.len(),
-            Modal::Ask { params, question, .. } => params
+            Modal::Ask {
+                params, question, ..
+            } => params
                 .questions
                 .get(*question)
                 .map(|question| question.options.len() + 1) // + 自定义输入行

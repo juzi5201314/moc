@@ -240,9 +240,24 @@ mod tests {
                     old_start: 1,
                     new_start: 1,
                     lines: vec![
-                        DiffLine { kind: DiffLineKind::Equal, old_no: Some(1), new_no: Some(1), text: "fn main() {".into() },
-                        DiffLine { kind: DiffLineKind::Delete, old_no: Some(2), new_no: None, text: "    println!(\"a\");".into() },
-                        DiffLine { kind: DiffLineKind::Insert, old_no: None, new_no: Some(2), text: "    println!(\"b\");".into() },
+                        DiffLine {
+                            kind: DiffLineKind::Equal,
+                            old_no: Some(1),
+                            new_no: Some(1),
+                            text: "fn main() {".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Delete,
+                            old_no: Some(2),
+                            new_no: None,
+                            text: "    println!(\"a\");".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Insert,
+                            old_no: None,
+                            new_no: Some(2),
+                            text: "    println!(\"b\");".into(),
+                        },
                     ],
                 }],
             }],
@@ -301,7 +316,11 @@ mod tests {
         let new = lines("a\nb\nc\nd");
         let diff = build_tool_diff("/tmp/a.txt", &old, &new);
         let hunk = &diff.files[0].hunks[0];
-        assert!(hunk.lines.iter().all(|line| line.kind != DiffLineKind::Delete));
+        assert!(
+            hunk.lines
+                .iter()
+                .all(|line| line.kind != DiffLineKind::Delete)
+        );
         assert_eq!(hunk.lines[2].text, "c");
         assert_eq!(hunk.lines[2].new_no, Some(3));
     }
@@ -315,8 +334,12 @@ mod tests {
 
     #[test]
     fn rewrite_is_truncated_to_cap() {
-        let old: Vec<String> = (0..DIFF_MAX_LINES + 5).map(|i| format!("old {i}")).collect();
-        let new: Vec<String> = (0..DIFF_MAX_LINES + 5).map(|i| format!("new {i}")).collect();
+        let old: Vec<String> = (0..DIFF_MAX_LINES + 5)
+            .map(|i| format!("old {i}"))
+            .collect();
+        let new: Vec<String> = (0..DIFF_MAX_LINES + 5)
+            .map(|i| format!("new {i}"))
+            .collect();
         let old_refs: Vec<&str> = old.iter().map(String::as_str).collect();
         let new_refs: Vec<&str> = new.iter().map(String::as_str).collect();
         let diff = build_tool_diff("/tmp/big.txt", &old_refs, &new_refs);

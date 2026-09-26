@@ -28,11 +28,13 @@ pub(crate) async fn compact(
         return Err(CoreError::Tool("Responses 原生压缩不适用于当前模型".into()));
     }
     let mut full_messages = Vec::with_capacity(messages.len() + 1);
+    let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
     full_messages.push(crate::prompt::system_message(
         config,
         model,
         state.mode,
         std::path::Path::new(&state.session.cwd),
+        &skills,
     ));
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {
@@ -40,7 +42,7 @@ pub(crate) async fn compact(
         tools: inner.tools.definitions(
             state.mode,
             inner.client_supports_ask(ctx.connection_id()),
-            &config.tools,
+            config,
         ),
         native_input: None,
         ..ChatRequest::default()

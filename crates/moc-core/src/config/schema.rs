@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
 use super::model::ModelCatalog;
@@ -20,6 +21,34 @@ pub(super) struct ConfigDocument {
     pub workspace: WorkspaceConfig,
     pub session: SessionDocument,
     pub tui: TuiConfig,
+    pub mcp: moc_mcp::McpDocument,
+    pub skills: SkillsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkillsConfig {
+    pub enabled: bool,
+    /// 额外扫描目录；支持 `~` 展开。
+    pub dirs: Vec<String>,
+    /// 按名称禁用的 skill。
+    pub disable: Vec<String>,
+    /// `<skills>` 目录总预算（字节）；超预算条目降级为短语，名字永远可见。
+    pub catalog_char_budget: usize,
+    /// 单条 description 的截断长度（字符）。
+    pub description_max_chars: usize,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dirs: Vec::new(),
+            disable: Vec::new(),
+            catalog_char_budget: 24_576,
+            description_max_chars: 1024,
+        }
+    }
 }
 
 /// TUI 前端设置。
@@ -51,6 +80,65 @@ pub enum ToolApproval {
     Allow,
     Deny,
     Prompt,
+}
+
+/// `[tools.approval]` 的预编译匹配器。
+///
+/// 精确键 O(log n) 命中；含通配符的键在配置加载期编译为 [`GlobSet`]，
+/// 运行期按「模式更长 = 更具体」排序取首个命中。`mcp__github__*` 这类
+/// 前缀规则由此生效，MCP 工具无需逐个登记。
+#[derive(Debug, Clone, Default)]
+pub struct ApprovalMatcher {
+    exact: BTreeMap<String, ToolApproval>,
+    /// (模式长度, 匹配器, 策略)，按模式长度降序。
+    globs: Vec<(usize, GlobSet, ToolApproval)>,
+}
+
+impl ApprovalMatcher {
+    pub fn build(approval: &BTreeMap<String, ToolApproval>) -> Self {
+        let mut exact = BTreeMap::new();
+        let mut globs = Vec::new();
+        for (key, policy) in approval {
+            let is_pattern =
+                key.contains('*') || key.contains('?') || key.contains('[') || key.contains('{');
+            if !is_pattern {
+                exact.insert(key.clone(), *policy);
+                continue;
+            }
+            match GlobBuilder::new(key).literal_separator(false).build() {
+                Ok(glob) => {
+                    let mut builder = GlobSetBuilder::new();
+                    builder.add(glob);
+                    match builder.build() {
+                        Ok(set) => globs.push((key.len(), set, *policy)),
+                        Err(error) => {
+                            tracing::warn!("审批规则 `{key}` 编译失败，已忽略：{error}")
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("审批规则 `{key}` 不是合法 glob，已忽略：{error}")
+                }
+            }
+        }
+        globs.sort_by_key(|(pattern_len, _, _)| std::cmp::Reverse(*pattern_len));
+        Self { exact, globs }
+    }
+
+    /// 解析工具名对应的策略：精确优先，glob 按具体度取首个命中。
+    pub fn lookup(&self, name: &str) -> Option<ToolApproval> {
+        if let Some(policy) = self.exact.get(name) {
+            return Some(*policy);
+        }
+        self.globs
+            .iter()
+            .find(|(_, set, _)| set.is_match(name))
+            .map(|(_, _, policy)| *policy)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.exact.is_empty() && self.globs.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

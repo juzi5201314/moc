@@ -31,13 +31,18 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     let theme = app.theme;
     let area = frame.area();
     let rows = area.height;
-    let status_rows = if rows > SHORT_TERMINAL_ROWS { STATUS_ROWS } else { 0 };
+    let status_rows = if rows > SHORT_TERMINAL_ROWS {
+        STATUS_ROWS
+    } else {
+        0
+    };
     let [scroll_area, prompt_area, status_area] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(PROMPT_ROWS.min(rows)),
         Constraint::Length(status_rows),
     ])
     .areas(area);
+    app.prompt_area = prompt_area;
 
     // 整帧铺底色（备用屏模式下终端自身背景与主题保持一致）
     frame
@@ -122,17 +127,21 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     let mut runs: Vec<(char, ratatui::style::Color, u16)> =
         Vec::with_capacity(text.chars().count() + 1);
     runs.push(('◆', theme.accent_success, 1));
-    runs.extend(
-        text.chars()
-            .map(|ch| (ch, theme.text_primary, ch.width().unwrap_or(1).max(1) as u16)),
-    );
+    runs.extend(text.chars().map(|ch| {
+        (
+            ch,
+            theme.text_primary,
+            ch.width().unwrap_or(1).max(1) as u16,
+        )
+    }));
     let mut col = area.x;
     for (ch, fg, width) in runs {
         if col >= end {
             break;
         }
         if let Some(cell) = buffer.cell_mut((col, row)) {
-            cell.set_char(ch).set_style(Style::new().fg(fg).bg(theme.bg_panel));
+            cell.set_char(ch)
+                .set_style(Style::new().fg(fg).bg(theme.bg_panel));
         }
         // 宽字符右侧补空格铺底，避免残留
         for offset in 1..width {
@@ -147,7 +156,8 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     }
     while col < end {
         if let Some(cell) = buffer.cell_mut((col, row)) {
-            cell.set_char(' ').set_style(Style::new().bg(theme.bg_panel));
+            cell.set_char(' ')
+                .set_style(Style::new().bg(theme.bg_panel));
         }
         col += 1;
     }
@@ -161,8 +171,8 @@ fn draw_scrollbar(frame: &mut Frame, app: &App, area: Rect, max_offset: usize) {
     let theme = app.theme;
     let track = area.height;
     let total = (max_offset as u32) + area.height as u32;
-    let thumb_height = ((area.height as u32 * area.height as u32) / total.max(1))
-        .clamp(1, track as u32) as u16;
+    let thumb_height =
+        ((area.height as u32 * area.height as u32) / total.max(1)).clamp(1, track as u32) as u16;
     let position_ratio = app.scroll_offset as f64 / max_offset as f64;
     let thumb_top = ((track - thumb_height) as f64 * position_ratio).round() as u16;
     let x = area.x + area.width - 1;
@@ -226,7 +236,9 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
                         Style::new().fg(theme.text_primary),
                     ));
                 }
-                let end = rest[index..].find(']').map_or(rest.len(), |end| index + end + 1);
+                let end = rest[index..]
+                    .find(']')
+                    .map_or(rest.len(), |end| index + end + 1);
                 spans.push(Span::styled(
                     rest[index..end].to_owned(),
                     Style::new().fg(theme.accent_warning),
@@ -346,7 +358,12 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
         };
         push(
             &mut spans,
-            format!("『{}{}』{}", "━".repeat(filled), "─".repeat(slots - filled), format_context_percent(percent)),
+            format!(
+                "『{}{}』{}",
+                "━".repeat(filled),
+                "─".repeat(slots - filled),
+                format_context_percent(percent)
+            ),
             bar_color,
         );
     }
@@ -357,7 +374,11 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
         push(&mut spans, format!("⎇ {branch}"), theme.accent_success);
     }
     if let Some((done, total)) = data.todo {
-        push(&mut spans, format!("☑ {done}/{total}"), theme.accent_success);
+        push(
+            &mut spans,
+            format!("☑ {done}/{total}"),
+            theme.accent_success,
+        );
     }
     // 右侧统计段
     let right = format!(
@@ -375,10 +396,7 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
         .unwrap_or_default();
     let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
     let remaining = width.saturating_sub(used + right.len() + right_cost.len() + 4);
-    spans.push(Span::styled(
-        " ".repeat(2.min(remaining / 2)),
-        Style::new(),
-    ));
+    spans.push(Span::styled(" ".repeat(2.min(remaining / 2)), Style::new()));
     spans.push(Span::styled(right, Style::new().fg(theme.gray)));
     spans.push(Span::styled(
         right_cost,
@@ -426,7 +444,9 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
                     .unwrap_or_else(|| "⏱ -".into()),
                 theme.gray,
             )),
-            "cost" => data.cost.map(|cost| (format!("${cost:.2}"), theme.accent_warning)),
+            "cost" => data
+                .cost
+                .map(|cost| (format!("${cost:.2}"), theme.accent_warning)),
             other => {
                 // 未知占位符按原文保留
                 plain.push_str(&format!("{{{other}}}"));

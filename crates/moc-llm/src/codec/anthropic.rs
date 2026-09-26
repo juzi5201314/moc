@@ -345,33 +345,54 @@ fn encode_user_blocks(cfg: &LlmConfig, message: &Message) -> Result<Vec<Value>, 
         match part {
             ContentPart::Text(text) => blocks.push(json!({"type": "text", "text": text})),
             ContentPart::Image { source, .. } => {
-                let source = match source {
-                    ImageSource::Base64 { media_type, data } => json!({
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": data,
-                    }),
-                    ImageSource::Url(url) => {
-                        if !cfg.wire.image_url {
-                            return Err(LlmError::Encode(
-                                "该线格式不支持图片 URL 来源，请改传 base64".into(),
-                            ));
-                        }
-                        json!({"type": "url", "url": url})
-                    }
-                };
-                blocks.push(json!({"type": "image", "source": source}));
+                blocks.push(json!({"type": "image", "source": encode_image_source(cfg, source)?}));
             }
-            ContentPart::ToolResult(result) => blocks.push(json!({
-                "type": "tool_result",
-                "tool_use_id": result.tool_call_id,
-                "content": result.content,
-                "is_error": result.is_error,
-            })),
+            ContentPart::ToolResult(result) => {
+                // 无图时保持字符串 content（旧线格式兼容）；带图时 content 升级为
+                // 内容块数组：文本块 + 图片块，与 Anthropic 的 tool_result 结构一致。
+                let content = if result.images.is_empty() {
+                    Value::String(result.content.clone())
+                } else {
+                    let mut parts = Vec::with_capacity(result.images.len() + 1);
+                    if !result.content.is_empty() {
+                        parts.push(json!({"type": "text", "text": result.content}));
+                    }
+                    for source in &result.images {
+                        parts.push(
+                            json!({"type": "image", "source": encode_image_source(cfg, source)?}),
+                        );
+                    }
+                    Value::Array(parts)
+                };
+                blocks.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": result.tool_call_id,
+                    "content": content,
+                    "is_error": result.is_error,
+                }));
+            }
             other => return Err(unsupported_part(message.role, other)),
         }
     }
     Ok(blocks)
+}
+
+fn encode_image_source(cfg: &LlmConfig, source: &ImageSource) -> Result<Value, LlmError> {
+    match source {
+        ImageSource::Base64 { media_type, data } => Ok(json!({
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        })),
+        ImageSource::Url(url) => {
+            if !cfg.wire.image_url {
+                return Err(LlmError::Encode(
+                    "该线格式不支持图片 URL 来源，请改传 base64".into(),
+                ));
+            }
+            Ok(json!({"type": "url", "url": url}))
+        }
+    }
 }
 
 fn encode_tool_def(def: &ToolDef) -> Value {
@@ -1962,6 +1983,7 @@ mod tests {
                         tool_call_id: "call_1".into(),
                         content: "工具炸了".into(),
                         is_error: true,
+                        images: Vec::new(),
                     })],
                 },
             ],
@@ -1977,6 +1999,54 @@ mod tests {
                 "content": "工具炸了",
                 "is_error": true,
             })
+        );
+    }
+
+    #[test]
+    fn tool_result_images_upgrade_content_to_blocks() {
+        let req = ChatRequest {
+            messages: vec![
+                assistant_with_tools(&[("call_1", "screenshot")]),
+                Message::tool_result_with_images(
+                    "call_1",
+                    "截图如下",
+                    false,
+                    vec![ImageSource::Base64 {
+                        media_type: "image/png".into(),
+                        data: "AAAA".into(),
+                    }],
+                ),
+            ],
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["messages"][1]["content"][0],
+            json!({
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": [
+                    {"type": "text", "text": "截图如下"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                ],
+                "is_error": false,
+            })
+        );
+
+        // 无图结果保持字符串形态，不引入结构变化。
+        let plain = ChatRequest {
+            messages: vec![
+                assistant_with_tools(&[("call_1", "screenshot")]),
+                Message::tool_result("call_1", "纯文本", false),
+            ],
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &plain, false);
+        assert_eq!(
+            body["messages"][1]["content"][0]["content"],
+            json!("纯文本")
         );
     }
 }

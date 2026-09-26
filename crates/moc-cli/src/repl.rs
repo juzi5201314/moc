@@ -69,7 +69,11 @@ fn use_tui(args: &CliArgs) -> bool {
 /// 把 CLI 参数翻译成 TUI 启动选项。
 fn tui_options(args: &CliArgs) -> moc_tui::TuiOptions {
     let resume = if let Some(id) = &args.resume {
-        Some(if id.is_empty() { None } else { Some(id.clone()) })
+        Some(if id.is_empty() {
+            None
+        } else {
+            Some(id.clone())
+        })
     } else if args.continue_session {
         Some(None)
     } else {

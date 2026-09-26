@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
 use moc_protocol::{ModelInfo, SessionInfo, ToolResult, Usage};
+use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// tok/s 滑动窗口长度。
@@ -64,6 +65,8 @@ pub struct App {
     pub pending_plan: Option<(String, String, String)>,
     /// 当前焦点。
     pub focus: Focus,
+    /// 最近一次绘制的输入框区域，用于鼠标点击恢复焦点。
+    pub prompt_area: Rect,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
     pub scroll_offset: usize,
     /// 是否有在飞轮次。
@@ -118,6 +121,7 @@ impl App {
             modal: None,
             pending_plan: None,
             focus: Focus::Prompt,
+            prompt_area: Rect::default(),
             scroll_offset: 0,
             turn_running: false,
             turn_started_at: None,
@@ -163,10 +167,13 @@ impl App {
 
     /// 找到指定调用 ID 的工具条目。
     pub fn tool_entry_mut(&mut self, tool_call_id: &str) -> Option<&mut Entry> {
-        self.blocks.iter_mut().rev().find_map(|entry| match &entry.block {
-            Block::Tool(tool) if tool.id == tool_call_id => Some(entry),
-            _ => None,
-        })
+        self.blocks
+            .iter_mut()
+            .rev()
+            .find_map(|entry| match &entry.block {
+                Block::Tool(tool) if tool.id == tool_call_id => Some(entry),
+                _ => None,
+            })
     }
 
     /// 工具执行开始：把增量阶段累积的信息落地成转写块。
@@ -212,13 +219,14 @@ impl App {
 
     /// 流式尾部是否已有该类块。
     pub fn has_streaming(&self, matches: impl Fn(&Block) -> bool) -> bool {
-        self.blocks.last().is_some_and(|entry| matches(&entry.block))
+        self.blocks
+            .last()
+            .is_some_and(|entry| matches(&entry.block))
     }
 
     /// 追加一条系统提示。
     pub fn push_note(&mut self, text: String, error: bool) {
-        self.blocks
-            .push(Entry::new(Block::Note { text, error }));
+        self.blocks.push(Entry::new(Block::Note { text, error }));
     }
 
     /// 追加一条用户消息。
@@ -267,7 +275,11 @@ impl App {
             self.set_notice("模型目录为空");
             return;
         }
-        let current = self.session.as_ref().map(|s| s.model.clone()).unwrap_or_default();
+        let current = self
+            .session
+            .as_ref()
+            .map(|s| s.model.clone())
+            .unwrap_or_default();
         let selected = self
             .models
             .iter()
@@ -297,7 +309,11 @@ impl App {
     }
 
     /// 在增量流末尾追加文本：已存在同类流式块则续写，否则由调用方先新建。
-    pub fn append_streaming(&mut self, pick: impl Fn(&mut Block) -> Option<&mut String>, delta: &str) {
+    pub fn append_streaming(
+        &mut self,
+        pick: impl Fn(&mut Block) -> Option<&mut String>,
+        delta: &str,
+    ) {
         // `pick` 借用 blocks：先定位（借用结束），再取目标下标续写
         let target_index = self
             .blocks

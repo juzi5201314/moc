@@ -1,0 +1,27 @@
+[package]
+name = "moc-mcp"
+version = "0.1.0"
+edition = "2024"
+authors = ["soeur@soeur.dev@gmail.com"]
+
+[dependencies]
+rmcp = { version = "3.4.1", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+futures-util.workspace = true
+globset.workspace = true
+http.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rmcp = { version = "3.4.1", features = ["server"] }

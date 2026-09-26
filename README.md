@@ -37,10 +37,10 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 | 按键 | 作用 |
 | --- | --- |
-| `Enter` / `Alt+Enter` | 发送 / 输入框内换行 |
-| `↑` / `↓` | 输入历史；多行时逐行移动光标 |
-| `Shift+Tab` | 输入框聚焦时循环 Normal → Ask → Plan 模式 |
-| `Tab` | 滚动区 / 输入框切换焦点 |
+| `Enter` / `Alt+Enter` | 补全菜单确认 / 发送；Alt+Enter 在输入框换行 |
+| `↑` / `↓` | 补全菜单中选择命令；否则浏览输入历史 / 多行移动光标 |
+| `Tab` | 补全菜单确认；否则切换滚动区 / 输入框焦点 |
+| `Shift+Tab` | 输入框聚焦时循环 Normal → Ask → Plan；滚动区聚焦时切回输入框 |
 | `Ctrl+T` | 全局展开 / 收起思考内容 |
 | `Ctrl+O` | 全局展开 / 收起工具调用 |
 | `Ctrl+V` | 粘贴剪贴板图片（wl-paste / xclip） |

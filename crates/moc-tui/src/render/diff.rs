@@ -129,11 +129,14 @@ fn render_file(
             let content_width_used: usize = highlighted
                 .lines
                 .first()
-                .map(|spans| spans.iter().map(|span| super::wrap::str_width(&span.text)).sum())
+                .map(|spans| {
+                    spans
+                        .iter()
+                        .map(|span| super::wrap::str_width(&span.text))
+                        .sum()
+                })
                 .unwrap_or(0);
-            if content_width_used < content_width
-                && line.kind != DiffLineKind::Equal
-            {
+            if content_width_used < content_width && line.kind != DiffLineKind::Equal {
                 spans.push(Span::styled(
                     " ".repeat(content_width - content_width_used),
                     Style::new().bg(bg),

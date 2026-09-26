@@ -143,12 +143,15 @@ fn encode_messages(
     let mut out = Vec::with_capacity(req.messages.len());
     for (index, message) in req.messages.iter().enumerate() {
         let breakpoint = breakpoints.contains(&index);
-        out.push(match message.role {
-            Role::System | Role::Developer => encode_instruction(cfg, message, breakpoint)?,
-            Role::User => encode_user(cfg, message, breakpoint)?,
-            Role::Assistant => encode_assistant(cfg, plan, message, breakpoint)?,
-            Role::Tool => encode_tool_result(message, breakpoint)?,
-        });
+        match message.role {
+            Role::System | Role::Developer => {
+                out.push(encode_instruction(cfg, message, breakpoint)?);
+            }
+            Role::User => out.push(encode_user(cfg, message, breakpoint)?),
+            Role::Assistant => out.push(encode_assistant(cfg, plan, message, breakpoint)?),
+            // tool 消息携带的图片无法进入 tool 角色，编码为紧随其后的 user 消息。
+            Role::Tool => out.extend(encode_tool_result(cfg, message, breakpoint)?),
+        }
     }
     Ok(out)
 }
@@ -269,7 +272,11 @@ fn encode_assistant(
     Ok(Value::Object(object))
 }
 
-fn encode_tool_result(message: &Message, breakpoint: bool) -> Result<Value, LlmError> {
+fn encode_tool_result(
+    cfg: &LlmConfig,
+    message: &Message,
+    breakpoint: bool,
+) -> Result<Vec<Value>, LlmError> {
     let Some(result) = message.tool_results().next() else {
         return Err(LlmError::Encode("tool 消息缺少 ToolResult 内容块".into()));
     };
@@ -279,11 +286,25 @@ fn encode_tool_result(message: &Message, breakpoint: bool) -> Result<Value, LlmE
     } else {
         Value::String(result.content.clone())
     };
-    Ok(json!({
+    let mut out = vec![json!({
         "role": "tool",
         "tool_call_id": result.tool_call_id,
         "content": content,
-    }))
+    })];
+    if result.images.is_empty() {
+        return Ok(out);
+    }
+    // 图片旁路：tool 角色只收字符串，以独立 user 消息补发。
+    let mut blocks = Vec::with_capacity(result.images.len() + 1);
+    blocks.push(json!({
+        "type": "text",
+        "text": format!("[工具 {} 返回的图片]", result.tool_call_id),
+    }));
+    for source in &result.images {
+        blocks.push(encode_image(cfg, source, None)?);
+    }
+    out.push(json!({"role": "user", "content": Value::Array(blocks)}));
+    Ok(out)
 }
 
 fn encode_tool_def(def: &ToolDef) -> Value {
@@ -1695,6 +1716,46 @@ mod tests {
         };
         let body = encode_body(&config(), &req, false);
         assert_eq!(body["messages"][1]["content"], json!(""));
+    }
+
+    #[test]
+    fn tool_result_images_are_bypassed_as_user_message() {
+        let req = ChatRequest {
+            messages: vec![
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::ToolCall(ToolCall::new(
+                        "call_1",
+                        "screenshot",
+                        "{}",
+                    ))],
+                },
+                Message::tool_result_with_images(
+                    "call_1",
+                    "截图如下",
+                    false,
+                    vec![ImageSource::Base64 {
+                        media_type: "image/png".into(),
+                        data: "AAAA".into(),
+                    }],
+                ),
+            ],
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}},
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "截图如下"},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "[工具 call_1 返回的图片]"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ]},
+            ])
+        );
     }
 
     #[test]

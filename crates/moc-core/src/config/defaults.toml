@@ -108,3 +108,18 @@ max_scan_entries = 100000
 [session]
 dir = "~/.moc/sessions"
 locking = true
+
+[mcp]
+enabled = true
+connect_timeout_secs = 15
+call_timeout_secs = 120
+max_output_chars = 40960
+
+[mcp.servers]
+
+[skills]
+enabled = true
+dirs = []
+disable = []
+catalog_char_budget = 24576
+description_max_chars = 1024

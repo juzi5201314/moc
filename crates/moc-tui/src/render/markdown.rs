@@ -4,9 +4,7 @@
 //! 标题结束时统一按显示宽度换行产出（续行悬挂缩进）；代码块整块交给
 //! syntect 高亮；表格按内容宽度画全边框盒。样式全部来自主题槽位。
 
-use pulldown_cmark::{
-    CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -35,7 +33,8 @@ pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'s
         table_cell: Vec::new(),
         in_table_head: false,
     };
-    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     for event in Parser::new_ext(source, options) {
         renderer.handle(event);
     }
@@ -92,7 +91,10 @@ impl<'a> MdRenderer<'a> {
             Event::Text(text) => self.text(&text),
             Event::Code(code) => {
                 let style = Style::new().fg(self.theme.path).bg(self.theme.code_bg);
-                self.push_run(Run { style, text: code.to_string() });
+                self.push_run(Run {
+                    style,
+                    text: code.to_string(),
+                });
             }
             Event::SoftBreak => self.push_char(' '),
             Event::HardBreak => self.flush_inline(),
@@ -175,9 +177,15 @@ impl<'a> MdRenderer<'a> {
             Tag::Strong => self.bold += 1,
             Tag::Strikethrough => self.strike += 1,
             Tag::Link { .. } => self.link_depth += 1,
-            Tag::Image { .. } | Tag::MetadataBlock(_) | Tag::FootnoteDefinition(_)
-            | Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition
-            | Tag::HtmlBlock | Tag::Superscript | Tag::Subscript => {}
+            Tag::Image { .. }
+            | Tag::MetadataBlock(_)
+            | Tag::FootnoteDefinition(_)
+            | Tag::DefinitionList
+            | Tag::DefinitionListTitle
+            | Tag::DefinitionListDefinition
+            | Tag::HtmlBlock
+            | Tag::Superscript
+            | Tag::Subscript => {}
         }
     }
 
@@ -194,10 +202,8 @@ impl<'a> MdRenderer<'a> {
                 }
                 self.heading = None;
                 self.flush_inline();
-                self.out.push(Line::from(Span::styled(
-                    String::new(),
-                    Style::new(),
-                )));
+                self.out
+                    .push(Line::from(Span::styled(String::new(), Style::new())));
             }
             TagEnd::BlockQuote(_) => self.quote_depth = self.quote_depth.saturating_sub(1),
             TagEnd::CodeBlock => self.flush_code(),
@@ -229,11 +235,15 @@ impl<'a> MdRenderer<'a> {
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => self.link_depth = self.link_depth.saturating_sub(1),
-            TagEnd::Image | TagEnd::MetadataBlock(_)
+            TagEnd::Image
+            | TagEnd::MetadataBlock(_)
             | TagEnd::FootnoteDefinition
-            | TagEnd::DefinitionList | TagEnd::DefinitionListTitle
-            | TagEnd::DefinitionListDefinition | TagEnd::HtmlBlock
-            | TagEnd::Superscript | TagEnd::Subscript => {}
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::HtmlBlock
+            | TagEnd::Superscript
+            | TagEnd::Subscript => {}
         }
     }
 
@@ -243,7 +253,13 @@ impl<'a> MdRenderer<'a> {
         if bold {
             style = style.add_modifier(Modifier::BOLD);
         }
-        self.inline.insert(0, Run { style, text: prefix.to_owned() });
+        self.inline.insert(
+            0,
+            Run {
+                style,
+                text: prefix.to_owned(),
+            },
+        );
     }
 
     fn text(&mut self, text: &str) {
@@ -390,7 +406,10 @@ impl<'a> MdRenderer<'a> {
                     .fg
                     .map(highlight::rgb_to_color)
                     .unwrap_or(self.theme.text_primary);
-                Span::styled(span.text.clone(), Style::new().fg(fg).bg(self.theme.code_bg))
+                Span::styled(
+                    span.text.clone(),
+                    Style::new().fg(fg).bg(self.theme.code_bg),
+                )
             }));
             self.out.push(Line::from(line));
         }
@@ -462,10 +481,7 @@ impl<'a> MdRenderer<'a> {
             if bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            vec![
-                Span::styled(shown, style),
-                Span::styled(pad, Style::new()),
-            ]
+            vec![Span::styled(shown, style), Span::styled(pad, Style::new())]
         };
         let render_row = |cells: &Vec<Vec<Run>>, bold: bool| -> Line<'static> {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -476,7 +492,10 @@ impl<'a> MdRenderer<'a> {
                 ));
                 spans.extend(render_cell(&cell_text(cells, index), *width, bold));
             }
-            spans.push(Span::styled("│".to_owned(), Style::new().fg(self.theme.border)));
+            spans.push(Span::styled(
+                "│".to_owned(),
+                Style::new().fg(self.theme.border),
+            ));
             Line::from(spans)
         };
         let border_line = |position: &str| -> Line<'static> {
@@ -488,7 +507,11 @@ impl<'a> MdRenderer<'a> {
                     _ => ("└", "┴"),
                 };
                 spans.push(Span::styled(
-                    format!("{}{}", if index == 0 { head } else { cross }, "─".repeat(width + 2)),
+                    format!(
+                        "{}{}",
+                        if index == 0 { head } else { cross },
+                        "─".repeat(width + 2)
+                    ),
                     Style::new().fg(self.theme.border),
                 ));
             }
@@ -497,7 +520,10 @@ impl<'a> MdRenderer<'a> {
                 "mid" => "┤",
                 _ => "┘",
             };
-            spans.push(Span::styled(tail.to_owned(), Style::new().fg(self.theme.border)));
+            spans.push(Span::styled(
+                tail.to_owned(),
+                Style::new().fg(self.theme.border),
+            ));
             Line::from(spans)
         };
         self.out.push(border_line("top"));
@@ -548,7 +574,8 @@ mod tests {
         assert!(out.iter().any(|line| line.contains("• 甲")), "{out:?}");
         assert!(out.iter().any(|line| line.contains("• 乙")), "{out:?}");
         assert!(
-            out.iter().any(|line| line.starts_with("  ") && line.contains("• 丙")),
+            out.iter()
+                .any(|line| line.starts_with("  ") && line.contains("• 丙")),
             "{out:?}"
         );
     }
@@ -575,6 +602,9 @@ mod tests {
     fn inline_code_and_bold_styles_merge_runs() {
         let out = lines("普通 **加粗** `code`", 60);
         let joined = out.join("");
-        assert!(joined.contains("普通") && joined.contains("加粗") && joined.contains("code"), "{out:?}");
+        assert!(
+            joined.contains("普通") && joined.contains("加粗") && joined.contains("code"),
+            "{out:?}"
+        );
     }
 }

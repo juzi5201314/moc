@@ -160,11 +160,7 @@ pub fn plan_edit(
         let mut target_snapshot =
             read_snapshot(&target_path, max_file_bytes).map_err(tool_error_from_io)?;
         anchors.reuse_hashes(&target_path, &mut target_snapshot);
-        ensure_snapshot_current(
-            target_served_for_check,
-            &target_snapshot,
-            &target_path,
-        )?;
+        ensure_snapshot_current(target_served_for_check, &target_snapshot, &target_path)?;
         let target_position = if let Some(anchor) = &movement.target_anchor {
             let (position, _, warning) =
                 verify_range(target_served_for_check, &target_snapshot, anchor, anchor)
@@ -304,9 +300,7 @@ pub async fn apply_edit(
     let source_bytes = encode_file(&source_snapshot, &source_lines);
     let target_change = match target {
         Some(target) => {
-            let target_served = target_served
-                .as_deref()
-                .expect("目标已在 plan 阶段验证");
+            let target_served = target_served.as_deref().expect("目标已在 plan 阶段验证");
             let hashes = stable_hashes(&target.snapshot, &target.lines, target_served, &[])?;
             let bytes = encode_file(&target.snapshot, &target.lines);
             Some((target.path, target.snapshot, target.lines, hashes, bytes))
@@ -393,9 +387,7 @@ pub async fn apply_edit(
             &before,
             after,
             hashes,
-            target_served
-                .as_deref_mut()
-                .expect("目标已验证"),
+            target_served.as_deref_mut().expect("目标已验证"),
             anchors,
         ));
     }
@@ -826,23 +818,23 @@ mod tests {
         let kinds: Vec<_> = diff.files[0]
             .hunks
             .iter()
-            .flat_map(|hunk| hunk.lines.iter().map(|line| (line.kind, line.text.as_str())))
+            .flat_map(|hunk| {
+                hunk.lines
+                    .iter()
+                    .map(|line| (line.kind, line.text.as_str()))
+            })
             .collect();
         assert!(kinds.contains(&(moc_protocol::DiffLineKind::Insert, "delta")));
         assert!(kinds.contains(&(moc_protocol::DiffLineKind::Insert, "beta")));
-        assert!(!kinds.iter().any(|(kind, _)| *kind == moc_protocol::DiffLineKind::Delete));
+        assert!(
+            !kinds
+                .iter()
+                .any(|(kind, _)| *kind == moc_protocol::DiffLineKind::Delete)
+        );
         // 执行：最终内容与预览一致
-        let output = apply_edit(
-            dir.path(),
-            &request,
-            &mut served,
-            None,
-            &anchors,
-            32,
-            4096,
-        )
-        .await
-        .expect("编辑成功");
+        let output = apply_edit(dir.path(), &request, &mut served, None, &anchors, 32, 4096)
+            .await
+            .expect("编辑成功");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "alpha\nbeta\ndelta\nbeta\ngamma\n"

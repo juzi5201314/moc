@@ -47,7 +47,7 @@ pub fn load_context_files(
     deduplicate_and_bound(files)
 }
 
-fn git_root(cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn git_root(cwd: &Path) -> Option<PathBuf> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)

@@ -17,10 +17,10 @@ use schema::{ConfigDocument, validate_compaction};
 
 pub use model::{ModelCapabilities, ThinkingLevel};
 pub use schema::{
-    ApprovalMode, BashConfig, CompactionConfig, CompactionMethod, ContextFilesConfig, EditConfig,
-    FeatureConfig, FindConfig, GrepConfig, LimitsConfig, ReadConfig, RemoteCompactionConfig,
-    ShakeConfig, SystemPromptConfig, TuiConfig, ToolApproval, ToolsConfig, WorkspaceConfig,
-    WriteConfig,
+    ApprovalMatcher, ApprovalMode, BashConfig, CompactionConfig, CompactionMethod,
+    ContextFilesConfig, EditConfig, FeatureConfig, FindConfig, GrepConfig, LimitsConfig,
+    ReadConfig, RemoteCompactionConfig, ShakeConfig, SkillsConfig, SystemPromptConfig,
+    ToolApproval, ToolsConfig, TuiConfig, WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与跨进程锁设置。
@@ -41,6 +41,8 @@ pub struct ResolvedConfig {
     pub roles: ModelRoles,
     /// 工具策略与限制。
     pub tools: ToolsConfig,
+    /// `[tools.approval]` 的预编译匹配器（精确 + glob）。
+    pub tool_approval: ApprovalMatcher,
     /// 上下文压缩设置。
     pub compaction: CompactionConfig,
     /// 轮次资源上限。
@@ -55,6 +57,10 @@ pub struct ResolvedConfig {
     pub session: SessionSettings,
     /// TUI 前端设置。
     pub tui: TuiConfig,
+    /// MCP 客户端设置（含全部 server 定义）。
+    pub mcp: moc_mcp::McpDocument,
+    /// Agent Skills 设置。
+    pub skills: SkillsConfig,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
     overlays: Vec<PathBuf>,
@@ -150,6 +156,7 @@ impl ResolvedConfig {
             home,
             cwd,
             roles: document.models.roles,
+            tool_approval: ApprovalMatcher::build(&document.tools.approval),
             tools: document.tools,
             compaction: document.compaction,
             limits: document.limits,
@@ -161,16 +168,76 @@ impl ResolvedConfig {
                 locking: document.session.locking,
             },
             tui: document.tui,
+            mcp: document.mcp,
+            skills: document.skills,
             providers,
             base_raw,
             overlays,
         })
+    }
+
+    /// 汇总该项目的全部 MCP server 配置：TOML `[mcp.servers]` 与社区
+    /// `.mcp.json`（cwd 向上到 git root）、`~/.moc/mcp.json` 合并。
+    pub fn mcp_servers(&self) -> Result<Vec<moc_mcp::ServerConfig>, CoreError> {
+        if !self.mcp.enabled {
+            return Ok(Vec::new());
+        }
+        let project_files = moc_mcp::discover_project_json(
+            &self.cwd,
+            crate::prompt::context_files::git_root(&self.cwd).as_deref(),
+        )
+        .into_iter()
+        .map(|path| {
+            let text = fs::read_to_string(&path).unwrap_or_default();
+            let servers = moc_mcp::parse_mcp_json(&text)
+                .map_err(|error| CoreError::Config(format!("解析 {}: {error}", path.display())));
+            servers.map(|servers| (path, servers))
+        })
+        .collect::<Result<Vec<_>, CoreError>>()?;
+        let user_file = {
+            let path = moc_mcp::user_json_path(&self.home);
+            if path.is_file() {
+                let text = fs::read_to_string(&path).map_err(|error| {
+                    CoreError::Config(format!("读取 {}: {error}", path.display()))
+                })?;
+                let servers = moc_mcp::parse_mcp_json(&text).map_err(|error| {
+                    CoreError::Config(format!("解析 {}: {error}", path.display()))
+                })?;
+                Some((path, servers))
+            } else {
+                None
+            }
+        };
+        let source = moc_mcp::JsonSource {
+            project_files,
+            user_file,
+        };
+        moc_mcp::resolve_all(&self.mcp, &source)
+            .map_err(|error| CoreError::Config(error.to_string()))
     }
 }
 
 /// 解析配置中的所有 provider/model，供 CLI 列表与配置检查使用。
 pub fn resolve_models(config: &CoreConfig) -> anyhow::Result<Vec<ResolvedModel>> {
     Ok(ResolvedConfig::load(config)?.available_models())
+}
+
+/// 展开 `~` 前缀的用户路径（`[skills] dirs` 等扩展配置使用）。
+pub fn expand_user_path(value: &str) -> PathBuf {
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        if let Some(home) = crate::paths::home_dir() {
+            return home.join(rest);
+        }
+    }
+    if value == "~"
+        && let Some(home) = crate::paths::home_dir()
+    {
+        return home;
+    }
+    PathBuf::from(value)
 }
 
 fn expand_home_path(path: &Path) -> PathBuf {
@@ -266,6 +333,34 @@ mod tests {
         format!(
             "[models.roles]\ndefault='p/model:high'\nsmol='p/model:low'\nslow='p/model:max'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\napi_key='{api_key}'\n[providers.p.models.model]\nreasoning=true\ninput=['text','image']\n"
         )
+    }
+
+    #[test]
+    fn approval_matcher_prefers_exact_then_most_specific_glob() {
+        use super::schema::ApprovalMatcher;
+        use std::collections::BTreeMap;
+
+        let rules: BTreeMap<String, ToolApproval> = [
+            ("mcp__github__*".to_owned(), ToolApproval::Prompt),
+            ("mcp__github__list_*".to_owned(), ToolApproval::Allow),
+            ("bash".to_owned(), ToolApproval::Deny),
+        ]
+        .into_iter()
+        .collect();
+        let matcher = ApprovalMatcher::build(&rules);
+        assert_eq!(matcher.lookup("bash"), Some(ToolApproval::Deny));
+        // 更长的模式更具体，覆盖短前缀。
+        assert_eq!(
+            matcher.lookup("mcp__github__list_issues"),
+            Some(ToolApproval::Allow)
+        );
+        assert_eq!(
+            matcher.lookup("mcp__github__create_issue"),
+            Some(ToolApproval::Prompt)
+        );
+        assert_eq!(matcher.lookup("unrelated"), None);
+        assert!(!matcher.is_empty());
+        assert!(ApprovalMatcher::build(&BTreeMap::new()).is_empty());
     }
 
     #[test]

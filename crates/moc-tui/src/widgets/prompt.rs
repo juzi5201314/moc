@@ -69,9 +69,7 @@ impl PromptState {
     pub fn insert_text(&mut self, content: &str) {
         let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
         // 与最近一次粘贴相同：展开最近的 paste chip（repaste-to-expand）
-        if self.last_paste.as_deref() == Some(normalized.as_str())
-            && self.expand_latest_paste()
-        {
+        if self.last_paste.as_deref() == Some(normalized.as_str()) && self.expand_latest_paste() {
             self.last_paste = None;
             return;
         }
@@ -85,10 +83,7 @@ impl PromptState {
             });
             let placeholder = format!("[paste#{id}]");
             self.insert_str_raw(&placeholder);
-            self.last_paste = self
-                .pastes
-                .last()
-                .map(|chip| chip.content.clone());
+            self.last_paste = self.pastes.last().map(|chip| chip.content.clone());
         } else {
             self.insert_str_raw(&normalized);
         }
@@ -114,7 +109,9 @@ impl PromptState {
 
     /// 光标移到当前逻辑行行首。
     pub fn move_line_start(&mut self) {
-        let line_start = self.text[..self.cursor].rfind('\n').map_or(0, |index| index + 1);
+        let line_start = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
         self.cursor = line_start;
     }
 
@@ -165,8 +162,7 @@ impl PromptState {
     /// 删除光标处字符。
     pub fn delete(&mut self) {
         if self.cursor < self.text.len() {
-            let end = self
-                .text[self.cursor..]
+            let end = self.text[self.cursor..]
                 .char_indices()
                 .nth(1)
                 .map(|(index, _)| self.cursor + index)
@@ -195,8 +191,7 @@ impl PromptState {
     }
 
     pub fn left(&mut self) {
-        if let Some(previous) = self
-            .text[..self.cursor]
+        if let Some(previous) = self.text[..self.cursor]
             .char_indices()
             .next_back()
             .map(|(index, _)| index)
@@ -207,8 +202,7 @@ impl PromptState {
 
     pub fn right(&mut self) {
         if self.cursor < self.text.len() {
-            self.cursor = self
-                .text[self.cursor..]
+            self.cursor = self.text[self.cursor..]
                 .char_indices()
                 .nth(1)
                 .map(|(index, _)| self.cursor + index)
@@ -258,15 +252,8 @@ impl PromptState {
             .count();
         let lines: Vec<&str> = self.text.split('\n').collect();
         let target_line = lines[target as usize];
-        let offset_in_line: usize = target_line
-            .chars()
-            .take(column)
-            .map(char::len_utf8)
-            .sum();
-        let line_start: usize = lines[..target as usize]
-            .iter()
-            .map(|l| l.len() + 1)
-            .sum();
+        let offset_in_line: usize = target_line.chars().take(column).map(char::len_utf8).sum();
+        let line_start: usize = lines[..target as usize].iter().map(|l| l.len() + 1).sum();
         self.cursor = line_start + offset_in_line.min(target_line.len());
     }
 
@@ -317,7 +304,9 @@ impl PromptState {
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.break_history_browse();
-        if !text.trim().is_empty() && self.histories.first().map(|h| h.as_str()) != Some(text.as_str()) {
+        if !text.trim().is_empty()
+            && self.histories.first().map(|h| h.as_str()) != Some(text.as_str())
+        {
             self.histories.insert(0, text.clone());
             self.histories.truncate(HISTORY_MAX);
         }
@@ -354,7 +343,9 @@ impl PromptState {
             {
                 plain.push_str(rest[..index].trim());
                 if !plain.is_empty() {
-                    parts.push(InputPart::Text { text: std::mem::take(&mut plain) });
+                    parts.push(InputPart::Text {
+                        text: std::mem::take(&mut plain),
+                    });
                 }
                 parts.push(InputPart::Image {
                     source: ImageSource::Base64 {
@@ -387,8 +378,7 @@ impl PromptState {
     }
 
     pub fn clear_line_to_end(&mut self) {
-        let end = self
-            .text[self.cursor..]
+        let end = self.text[self.cursor..]
             .find('\n')
             .map(|index| self.cursor + index)
             .unwrap_or(self.text.len());

@@ -24,17 +24,19 @@ impl InputThread {
         let (sender, receiver): (UnboundedSender<InputEvent>, _) = unbounded_channel();
         let handle = std::thread::Builder::new()
             .name("moc-tui-input".into())
-            .spawn(move || loop {
-                match event::read() {
-                    // `read()` 阻塞等待事件；没有 poll 轮询的忙等
-                    Ok(terminal) => {
-                        if sender.send(InputEvent::Terminal(terminal)).is_err() {
-                            return; // 主循环已退出
+            .spawn(move || {
+                loop {
+                    match event::read() {
+                        // `read()` 阻塞等待事件；没有 poll 轮询的忙等
+                        Ok(terminal) => {
+                            if sender.send(InputEvent::Terminal(terminal)).is_err() {
+                                return; // 主循环已退出
+                            }
                         }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "crossterm 事件读取失败");
-                        return;
+                        Err(error) => {
+                            tracing::warn!(%error, "crossterm 事件读取失败");
+                            return;
+                        }
                     }
                 }
             })
