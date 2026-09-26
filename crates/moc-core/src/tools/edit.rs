@@ -4,8 +4,38 @@ use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, resolve_tool_path, schema};
-use crate::hashline::apply::{EditError, EditRequest, apply_edit};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolControl, resolve_tool_path, schema};
+use crate::hashline::apply::{EditError, EditRequest, apply_edit, preview_edit};
+use moc_protocol::ToolDiff;
+
+/// 授权预览：按工具参数计算 edit 将产生的 diff，不落盘、不更新锚点状态。
+/// 参数不合法或范围未服务时返回 `None`，真实错误由执行阶段给出。
+pub(crate) fn preview_edit_diff(
+    ctx: &ToolCtx,
+    arguments: &serde_json::Value,
+) -> Option<ToolDiff> {
+    let mut request: EditRequest = serde_json::from_value(arguments.clone()).ok()?;
+    let source_path = resolve_tool_path(&ctx.cwd, &request.path).ok()?;
+    request.path = source_path.to_string_lossy().into_owned();
+    let target_path = request
+        .move_lines
+        .as_ref()
+        .map(|movement| resolve_tool_path(&ctx.cwd, &movement.target_path))
+        .transpose()
+        .ok()?;
+    let source_served = ctx.anchors.served(&source_path).unwrap_or_default();
+    let target_served = target_path.as_ref().and_then(|path| ctx.anchors.served(path));
+    preview_edit(
+        &ctx.cwd,
+        &request,
+        &source_served,
+        target_served.as_ref(),
+        &ctx.anchors,
+        ctx.config.tools.edit.max_edits,
+        ctx.config.tools.read.max_file_bytes.min(4 * 1024 * 1024),
+    )
+    .ok()
+}
 
 pub struct EditTool;
 
@@ -79,17 +109,24 @@ impl Tool for EditTool {
             )
             .await;
             match result {
-                Ok(content) => {
+                Ok(output) => {
                     let count = ctx
                         .anchors
-                        .observe_edit(payload, content != "No changes made.");
+                        .observe_edit(payload, output.content != "No changes made.");
                     if count >= ctx.config.tools.edit.noop_loop_threshold {
                         return Err(ToolError::new(
                             "E_NOOP_LOOP",
                             "同一编辑连续未产生变化，请重新检查目标内容",
                         ));
                     }
-                    Ok(ToolOutcome::success(content))
+                    Ok(ToolOutcome {
+                        content: output.content,
+                        is_error: false,
+                        summary: None,
+                        control: ToolControl::Continue,
+                        status: None,
+                        diff: output.diff,
+                    })
                 }
                 Err(EditError::Tool(mut content)) => {
                     if ["E_UNSERVED_RANGE", "E_STALE_RANGE", "E_STALE_ANCHOR"]
@@ -107,8 +144,9 @@ impl Tool for EditTool {
                         content,
                         is_error: true,
                         summary: None,
-                        control: super::ToolControl::Continue,
+                        control: ToolControl::Continue,
                         status: None,
+                        diff: None,
                     })
                 }
                 Err(error) => Err(ToolError::new("E_ACCESS", error.to_string())),

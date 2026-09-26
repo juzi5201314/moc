@@ -50,6 +50,9 @@ pub struct ToolOutcome {
     pub summary: Option<String>,
     pub control: ToolControl,
     pub status: Option<moc_protocol::methods::ToolStatus>,
+    /// 文件变更的结构化 diff；仅 `edit` / `write` 成功时给出，随
+    /// `SessionUpdate::ToolFinished` 透传给前端渲染。
+    pub diff: Option<moc_protocol::methods::ToolDiff>,
 }
 
 impl ToolOutcome {
@@ -60,6 +63,7 @@ impl ToolOutcome {
             summary: None,
             control: ToolControl::Continue,
             status: None,
+            diff: None,
         }
     }
 
@@ -70,6 +74,7 @@ impl ToolOutcome {
             summary: None,
             control: ToolControl::Continue,
             status: None,
+            diff: None,
         }
     }
 
@@ -80,6 +85,7 @@ impl ToolOutcome {
             summary: None,
             control: ToolControl::EndTurn,
             status: None,
+            diff: None,
         }
     }
 }
@@ -114,6 +120,7 @@ impl ToolError {
             summary: None,
             control: ToolControl::Continue,
             status: (self.code == "E_CANCELLED").then_some(moc_protocol::ToolStatus::Cancelled),
+            diff: None,
         }
     }
 }

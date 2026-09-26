@@ -19,7 +19,8 @@ pub use model::{ModelCapabilities, ThinkingLevel};
 pub use schema::{
     ApprovalMode, BashConfig, CompactionConfig, CompactionMethod, ContextFilesConfig, EditConfig,
     FeatureConfig, FindConfig, GrepConfig, LimitsConfig, ReadConfig, RemoteCompactionConfig,
-    ShakeConfig, SystemPromptConfig, ToolApproval, ToolsConfig, WorkspaceConfig, WriteConfig,
+    ShakeConfig, SystemPromptConfig, TuiConfig, ToolApproval, ToolsConfig, WorkspaceConfig,
+    WriteConfig,
 };
 
 /// 会话文件与跨进程锁设置。
@@ -52,6 +53,8 @@ pub struct ResolvedConfig {
     pub workspace: WorkspaceConfig,
     /// 会话数据设置。
     pub session: SessionSettings,
+    /// TUI 前端设置。
+    pub tui: TuiConfig,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
     overlays: Vec<PathBuf>,
@@ -157,6 +160,7 @@ impl ResolvedConfig {
                 dir: session_dir,
                 locking: document.session.locking,
             },
+            tui: document.tui,
             providers,
             base_raw,
             overlays,

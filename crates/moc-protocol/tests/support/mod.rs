@@ -22,7 +22,8 @@ use moc_protocol::methods::{
     ServerInfo, SessionCompactParams, SessionDeleteParams, SessionInfo, SessionListParams,
     SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo, SessionMode,
     SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-    SessionRequestAsk, SessionSetModeParams, SessionUnloadParams, SessionUnlockParams,
+    SessionRequestAsk, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
+    SessionUnlockParams,
     SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, TurnResult,
     default_options,
 };
@@ -167,12 +168,14 @@ impl ScriptedService {
                             display_name: "DeepSeek Flash".to_owned(),
                             context_window: Some(128_000),
                             max_output_tokens: Some(8_192),
+                            pricing: None,
                         },
                         ModelInfo {
                             id: "claude-sonnet".to_owned(),
                             display_name: "Claude Sonnet".to_owned(),
                             context_window: Some(200_000),
                             max_output_tokens: None,
+                            pricing: None,
                         },
                     ],
                     default_model: Some("deepseek-flash".to_owned()),
@@ -370,6 +373,7 @@ impl ScriptedService {
                 tool_name: "bash".to_owned(),
                 title: "执行命令：cargo test".to_owned(),
                 body: None,
+                diff: None,
                 options: default_options(),
             })
             .await;
@@ -420,6 +424,7 @@ impl ScriptedService {
                         is_error: !allowed,
                     },
                     duration_ms: Some(12),
+                    diff: None,
                 },
             )
             .await
@@ -527,6 +532,7 @@ impl AgentService for ScriptedService {
                 display_name: "x".repeat(state.config_padding),
                 context_window: None,
                 max_output_tokens: None,
+                pricing: None,
             });
         }
         Ok(ConfigGetResult {
@@ -535,6 +541,7 @@ impl AgentService for ScriptedService {
             agents: state.agents.clone(),
             default_agent: state.default_agent.clone(),
             cwd: state.cwd.clone(),
+            statusline_template: None,
         })
     }
 
@@ -731,6 +738,14 @@ impl AgentService for ScriptedService {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
 
+    async fn session_set_model(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionSetModelParams,
+    ) -> Result<SessionInfo, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
     async fn session_plan_approve(
         &self,
         _ctx: RequestContext,
@@ -889,6 +904,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::TitleChanged { .. } => "title_changed",
         SessionUpdate::LockChanged { .. } => "lock_changed",
         SessionUpdate::ModeChanged { .. } => "mode_changed",
+        SessionUpdate::ModelChanged { .. } => "model_changed",
         SessionUpdate::TodoChanged { .. } => "todo_changed",
         SessionUpdate::PlanSubmitted { .. } => "plan_submitted",
         SessionUpdate::ContextCompacted { .. } => "context_compacted",

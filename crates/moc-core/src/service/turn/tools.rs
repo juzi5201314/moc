@@ -201,6 +201,7 @@ pub(super) async fn execute_tool_batch(
                     status,
                     result: tool_result,
                     duration_ms: Some(duration_ms),
+                    diff: outcome.diff,
                 },
             )
             .await
@@ -272,6 +273,7 @@ async fn execute_tool(
                 summary: None,
                 control: ToolControl::Continue,
                 status: Some(ToolStatus::Denied),
+                diff: None,
             });
         }
         Authorization::Allowed => {}
@@ -365,6 +367,26 @@ async fn authorize(
         .get("command")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let diff = match tool_name {
+        "edit" => crate::tools::edit::preview_edit_diff(ctx, arguments),
+        "write" => {
+            let path = arguments.get("path").and_then(Value::as_str);
+            let content = arguments.get("content").and_then(Value::as_str);
+            match (path, content) {
+                (Some(path), Some(content)) => {
+                    crate::tools::write::preview_write_diff(
+                        &ctx.cwd,
+                        path,
+                        content,
+                        ctx.config.tools.read.max_file_bytes,
+                    )
+                    .await
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
     let answer = request
         .ask_permission(moc_protocol::methods::PermissionRequestParams {
             session_id: session_id.to_owned(),
@@ -381,6 +403,7 @@ async fn authorize(
                 )
             },
             body: (!command.is_empty()).then(|| command.to_owned()),
+            diff,
             options: [
                 (
                     "allow_once",

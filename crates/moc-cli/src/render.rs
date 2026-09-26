@@ -178,6 +178,9 @@ impl Renderer {
             SessionUpdate::ModeChanged { mode } => {
                 let _ = writeln!(out, "\n[模式：{mode:?}]");
             }
+            SessionUpdate::ModelChanged { model } => {
+                let _ = writeln!(out, "\n[模型：{model}]");
+            }
             SessionUpdate::TitleChanged { title } => {
                 let _ = writeln!(out, "\n[会话标题：{title}]");
             }

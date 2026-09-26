@@ -19,6 +19,18 @@ pub(super) struct ConfigDocument {
     pub context_files: ContextFilesConfig,
     pub workspace: WorkspaceConfig,
     pub session: SessionDocument,
+    pub tui: TuiConfig,
+}
+
+/// TUI 前端设置。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TuiConfig {
+    /// statusline 自定义模板；`None` 用内置渲染。
+    ///
+    /// 占位符：`{model} {mode} {context} {context_percent} {workdir} {branch}
+    /// {todo} {tokens_in} {tokens_out} {tok_s} {turn_elapsed} {cost}`。
+    pub statusline: Option<String>,
 }
 
 /// 工具授权策略。

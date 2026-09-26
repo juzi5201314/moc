@@ -29,6 +29,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::diff::ToolDiff;
 use super::session::{SessionLockInfo, ToolStatus};
 use super::{session::SessionMode, todo::TodoPhase};
 use crate::method::{Method, ServerNotification};
@@ -99,6 +100,10 @@ pub enum SessionUpdate {
         /// 执行耗时毫秒；`None` 表示不计时。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        /// 文件变更的结构化 diff；仅 `edit` / `write` 成功时由 core 给出，
+        /// 授权弹窗与 transcript 的 diff 渲染都以此为准。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diff: Option<ToolDiff>,
     },
     /// core 正在等前端授权（与 [`SessionUpdate::PermissionResolved`] 成对）。
     ///
@@ -144,6 +149,8 @@ pub enum SessionUpdate {
     },
     /// 会话工作模式变化。
     ModeChanged { mode: SessionMode },
+    /// 会话模型变化（`session/set_model` 之后由 core 推送）。
+    ModelChanged { model: String },
     /// Todo 清单变化。
     TodoChanged { phases: Vec<TodoPhase> },
     /// 提交新计划。
@@ -340,8 +347,39 @@ mod tests {
                         is_error: true,
                     },
                     duration_ms: None,
+                    diff: None,
                 },
                 json!({ "type": "tool_finished", "turn_id": "turn_1", "tool_call_id": "call_9", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
+            ),
+            (
+                SessionUpdate::ToolFinished {
+                    turn_id: "turn_1".into(),
+                    tool_call_id: "call_9".into(),
+                    status: ToolStatus::Completed,
+                    result: ToolResult {
+                        tool_call_id: "call_9".into(),
+                        content: "已编辑".into(),
+                        is_error: false,
+                    },
+                    duration_ms: Some(12),
+                    diff: Some(ToolDiff {
+                        files: vec![super::super::diff::ToolFileDiff {
+                            path: "/tmp/a.rs".into(),
+                            hunks: vec![super::super::diff::DiffHunk {
+                                old_start: 1,
+                                new_start: 1,
+                                lines: vec![super::super::diff::DiffLine {
+                                    kind: super::super::diff::DiffLineKind::Delete,
+                                    old_no: Some(1),
+                                    new_no: None,
+                                    text: "旧行".into(),
+                                }],
+                            }],
+                        }],
+                        truncated: false,
+                    }),
+                },
+                json!({ "type": "tool_finished", "turn_id": "turn_1", "tool_call_id": "call_9", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
             ),
             (
                 SessionUpdate::PermissionRequested {
@@ -409,6 +447,12 @@ mod tests {
                     mode: SessionMode::Ask,
                 },
                 json!({ "type": "mode_changed", "mode": "ask" }),
+            ),
+            (
+                SessionUpdate::ModelChanged {
+                    model: "deepseek-v4".into(),
+                },
+                json!({ "type": "model_changed", "model": "deepseek-v4" }),
             ),
             (
                 SessionUpdate::TodoChanged { phases: Vec::new() },

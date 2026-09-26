@@ -10,8 +10,8 @@ use moc_protocol::methods::{
     InitializeParams, InitializeResult, ModelInfo, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult,
     SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionSetModeParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, TurnResult,
+    SessionPlanApproveResult, SessionRenameParams, SessionSetModeParams, SessionSetModelParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -229,6 +229,7 @@ impl AgentService for Core {
                 display_name: model.display_name,
                 context_window: Some(model.context_window),
                 max_output_tokens: Some(model.max_output_tokens),
+                pricing: model.pricing,
             })
             .collect();
         Ok(ConfigGetResult {
@@ -247,6 +248,7 @@ impl AgentService for Core {
             }],
             default_agent: Some("moc".into()),
             cwd: self.inner.config.cwd.to_string_lossy().into_owned(),
+            statusline_template: self.inner.config.tui.statusline.clone(),
         })
     }
 
@@ -460,6 +462,55 @@ impl AgentService for Core {
             .emit(
                 params.session_id,
                 SessionUpdate::ModeChanged { mode: info.mode },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+        Ok(info)
+    }
+
+    async fn session_set_model(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetModelParams,
+    ) -> Result<SessionInfo, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let cwd = record.state.lock().await.session.cwd.clone();
+        let config = self
+            .inner
+            .project_config(std::path::Path::new(&cwd))
+            .map_err(to_rpc)?;
+        let model = config.resolve_model(&params.selector).map_err(to_rpc)?;
+        let file_lock = self
+            .inner
+            .sessions
+            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .await
+            .map_err(to_rpc)?;
+        let mut info = if record.state.lock().await.model != model.selector {
+            self.inner
+                .sessions
+                .set_model(&params.session_id, model.selector.clone())
+                .await
+                .map_err(to_rpc)?
+        } else {
+            let mut session = record.state.lock().await.session_info();
+            session.lock = None;
+            session
+        };
+        drop(file_lock);
+        info.lock = None;
+        ctx.updates()
+            .emit(
+                params.session_id,
+                SessionUpdate::ModelChanged {
+                    model: info.model.clone(),
+                },
             )
             .await
             .map_err(protocol_to_rpc)?;

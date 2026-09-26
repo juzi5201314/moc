@@ -9,6 +9,7 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, resolve_tool_path, schema};
+use moc_protocol::{ToolDiff, ToolFileDiff};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,6 +82,7 @@ impl Tool for WriteTool {
             };
             let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
             let content = normalize_line_endings(&args.content, ending);
+            let diff = build_write_diff(&path, old.as_deref(), &content);
             let temporary = stage(&path, content.as_bytes()).await?;
             if let Err(error) = tokio::fs::rename(&temporary, &path).await {
                 let _ = tokio::fs::remove_file(&temporary).await;
@@ -101,11 +103,18 @@ impl Tool for WriteTool {
             }
             ctx.anchors.invalidate(&path);
             let lines = content.lines().count();
-            Ok(ToolOutcome::success(format!(
-                "已写入 {}（{lines} 行，{} 字节）",
-                path.display(),
-                content.len()
-            )))
+            Ok(ToolOutcome {
+                content: format!(
+                    "已写入 {}（{lines} 行，{} 字节）",
+                    path.display(),
+                    content.len()
+                ),
+                is_error: false,
+                summary: None,
+                control: super::ToolControl::Continue,
+                status: None,
+                diff,
+            })
         })
     }
 }
@@ -153,6 +162,56 @@ fn line_ending(bytes: &[u8]) -> &'static [u8] {
     } else {
         b"\n"
     }
+}
+
+/// 计算整体写入的 diff：旧文件（可能不存在）对比归一化后的新内容。
+///
+/// 旧文件不是合法 UTF-8 或新旧内容完全一致时返回 `None`——前者无法按行
+/// 渲染，后者没有可展示的变更。
+fn build_write_diff(path: &Path, old: Option<&[u8]>, content: &str) -> Option<ToolDiff> {
+    let old_lines: Vec<String> = match old {
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => text.lines().map(str::to_owned).collect(),
+            Err(_) => return None,
+        },
+        None => Vec::new(),
+    };
+    let new_lines: Vec<String> = content.lines().map(str::to_owned).collect();
+    let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
+    let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
+    let (hunks, truncated) = moc_protocol::build_hunks(&old_refs, &new_refs);
+    if hunks.is_empty() {
+        return None;
+    }
+    Some(ToolDiff {
+        files: vec![ToolFileDiff {
+            path: path.display().to_string(),
+            hunks,
+        }],
+        truncated,
+    })
+}
+
+/// 授权预览：按工具参数计算 write 将产生的 diff，不落盘。
+/// 参数缺失、路径无效或内容超限时返回 `None`，真实错误由执行阶段给出。
+pub(crate) async fn preview_write_diff(
+    cwd: &Path,
+    path_value: &str,
+    content: &str,
+    max_file_bytes: u64,
+) -> Option<ToolDiff> {
+    let absolute = resolve_tool_path(cwd, path_value).ok()?;
+    if content.len() as u64 > max_file_bytes {
+        return None;
+    }
+    let old = match tokio::fs::read(&absolute).await {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return None,
+    };
+    let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
+    let normalized = normalize_line_endings(content, ending);
+    build_write_diff(&absolute, old.as_deref(), &normalized)
 }
 
 fn normalize_line_endings(content: &str, ending: &[u8]) -> String {

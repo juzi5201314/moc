@@ -9,6 +9,7 @@ use tokio::io::AsyncWriteExt;
 use super::served::{RangeError, read_snapshot, verify_range};
 use crate::error::CoreError;
 use crate::hashline::{ANCHOR_SPACE, AnchorStore, FileSnapshot, ServedFile};
+use moc_protocol::{ToolDiff, ToolFileDiff};
 
 #[derive(Debug, Error)]
 pub enum EditError {
@@ -46,16 +47,46 @@ struct VerifiedEdit {
     replacement: Vec<String>,
 }
 
-/// 先验证全部范围并构造文件内容，再原子提交；失败不产生 undo 记录。
-pub async fn apply_edit(
+/// 一个待提交文件的内容计划：原始快照 + 计算后的最终行。
+#[derive(Debug, Clone)]
+pub struct EditPlan {
+    /// 源文件绝对路径。
+    pub path: PathBuf,
+    /// 编辑前的文件快照（含 bytes / 行尾 / BOM，提交阶段需要）。
+    pub snapshot: FileSnapshot,
+    /// 编辑后的最终行序列。
+    pub lines: Vec<String>,
+    /// 被删除的原始行号（0-based，`stable_hashes` 需要）。
+    pub removed: Vec<usize>,
+    /// verify_range 产生的警告（过期锚点已按当前位置处理等）。
+    pub warnings: Vec<String>,
+    /// 编辑前后内容完全一致（`apply_edit` 直接早退，`preview_edit` 返回空 diff）。
+    pub no_changes: bool,
+    /// `move` 的目标文件计划。
+    pub target: Option<EditPlanTarget>,
+}
+
+/// `move` 目标文件的内容计划。
+#[derive(Debug, Clone)]
+pub struct EditPlanTarget {
+    pub path: PathBuf,
+    pub snapshot: FileSnapshot,
+    pub lines: Vec<String>,
+}
+
+/// 验证全部范围并计算文件最终内容；不触碰磁盘、不更新锚点状态。
+///
+/// [`apply_edit`]（提交）与 [`preview_edit`]（授权 diff 预览）共用同一份计划，
+/// 保证「弹窗里预览的」与「实际落盘的」完全一致。
+pub fn plan_edit(
     cwd: &Path,
     request: &EditRequest,
-    served: &mut ServedFile,
-    target_served: Option<&mut ServedFile>,
+    served: &ServedFile,
+    target_served: Option<&ServedFile>,
     anchors: &AnchorStore,
     max_edits: usize,
     max_file_bytes: u64,
-) -> Result<String, EditError> {
+) -> Result<EditPlan, EditError> {
     if request.edits.is_empty() || request.edits.len() > max_edits {
         return Err(tool_error(
             "E_BAD_PAYLOAD",
@@ -105,8 +136,7 @@ pub async fn apply_edit(
         source_lines.splice(edit.start..edit.end, edit.replacement.clone());
     }
 
-    let mut target_change = None;
-    let mut target_served = target_served;
+    let mut target = None;
     if let Some(movement) = &request.move_lines {
         let (start, end, warning) =
             verify_range(served, &source_snapshot, &movement.from, &movement.to)
@@ -121,7 +151,7 @@ pub async fn apply_edit(
                 "move 的 target_path 必須不同於 source path",
             ));
         }
-        let target_served_for_check = target_served.as_deref_mut().ok_or_else(|| {
+        let target_served_for_check = target_served.ok_or_else(|| {
             tool_error(
                 "E_UNSERVED_RANGE",
                 "目标文件尚未 read；先 read 目标文件再搬运",
@@ -130,7 +160,11 @@ pub async fn apply_edit(
         let mut target_snapshot =
             read_snapshot(&target_path, max_file_bytes).map_err(tool_error_from_io)?;
         anchors.reuse_hashes(&target_path, &mut target_snapshot);
-        ensure_snapshot_current(target_served_for_check, &target_snapshot, &target_path)?;
+        ensure_snapshot_current(
+            target_served_for_check,
+            &target_snapshot,
+            &target_path,
+        )?;
         let target_position = if let Some(anchor) = &movement.target_anchor {
             let (position, _, warning) =
                 verify_range(target_served_for_check, &target_snapshot, anchor, anchor)
@@ -162,7 +196,11 @@ pub async fn apply_edit(
         source_lines = final_source;
         let mut target_lines = target_snapshot.lines.clone();
         target_lines.splice(target_position..target_position, moved_lines.clone());
-        target_change = Some((target_path, target_snapshot, target_lines));
+        target = Some(EditPlanTarget {
+            path: target_path,
+            snapshot: target_snapshot,
+            lines: target_lines,
+        });
     }
 
     if source_lines.is_empty() && !source_snapshot.lines.is_empty() {
@@ -171,24 +209,110 @@ pub async fn apply_edit(
             "编辑结果会清空文件；使用 write 或显式重写完整文件",
         ));
     }
-    if source_lines == source_snapshot.lines && target_change.is_none() {
-        return Ok("No changes made.".into());
+    let no_changes = source_lines == source_snapshot.lines && target.is_none();
+    Ok(EditPlan {
+        path: source_path,
+        snapshot: source_snapshot,
+        lines: source_lines,
+        removed,
+        warnings,
+        no_changes,
+        target,
+    })
+}
+
+impl EditPlan {
+    /// 把计划转为结构化 [`ToolDiff`]（协议 DTO）。
+    fn to_tool_diff(&self) -> ToolDiff {
+        let mut files = Vec::with_capacity(1 + usize::from(self.target.is_some()));
+        let mut truncated =
+            push_file_diff(&self.path, &self.snapshot.lines, &self.lines, &mut files);
+        if let Some(target) = &self.target {
+            truncated |= push_file_diff(
+                &target.path,
+                &target.snapshot.lines,
+                &target.lines,
+                &mut files,
+            );
+        }
+        ToolDiff { files, truncated }
     }
+}
+
+/// 单文件 diff 计算并压入 `files`；返回该文件是否被截断。
+fn push_file_diff(
+    path: &Path,
+    old_lines: &[String],
+    new_lines: &[String],
+    files: &mut Vec<ToolFileDiff>,
+) -> bool {
+    let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
+    let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
+    let (hunks, truncated) = moc_protocol::build_hunks(&old_refs, &new_refs);
+    files.push(ToolFileDiff {
+        path: path.display().to_string(),
+        hunks,
+    });
+    truncated
+}
+
+/// `apply_edit` 的成功输出：给模型看的内容 + 给前端看的结构化 diff。
+#[derive(Debug, Clone)]
+pub struct EditOutput {
+    pub content: String,
+    pub diff: Option<ToolDiff>,
+}
+
+/// 先验证全部范围并构造文件内容，再原子提交；失败不产生 undo 记录。
+pub async fn apply_edit(
+    cwd: &Path,
+    request: &EditRequest,
+    served: &mut ServedFile,
+    mut target_served: Option<&mut ServedFile>,
+    anchors: &AnchorStore,
+    max_edits: usize,
+    max_file_bytes: u64,
+) -> Result<EditOutput, EditError> {
+    let plan = plan_edit(
+        cwd,
+        request,
+        served,
+        target_served.as_deref(),
+        anchors,
+        max_edits,
+        max_file_bytes,
+    )?;
+    if plan.no_changes {
+        return Ok(EditOutput {
+            content: "No changes made.".into(),
+            diff: None,
+        });
+    }
+    let diff = plan.to_tool_diff();
+
+    let EditPlan {
+        path: source_path,
+        snapshot: source_snapshot,
+        lines: source_lines,
+        removed,
+        warnings,
+        target,
+        ..
+    } = plan;
 
     let source_hashes = stable_hashes(&source_snapshot, &source_lines, served, &removed)?;
     let source_bytes = encode_file(&source_snapshot, &source_lines);
-    let target_change = target_change
-        .map(|(path, snapshot, lines)| {
-            let hashes = stable_hashes(
-                &snapshot,
-                &lines,
-                target_served.as_deref().expect("目标已验证"),
-                &[],
-            )?;
-            let bytes = encode_file(&snapshot, &lines);
-            Ok::<_, EditError>((path, snapshot, lines, hashes, bytes))
-        })
-        .transpose()?;
+    let target_change = match target {
+        Some(target) => {
+            let target_served = target_served
+                .as_deref()
+                .expect("目标已在 plan 阶段验证");
+            let hashes = stable_hashes(&target.snapshot, &target.lines, target_served, &[])?;
+            let bytes = encode_file(&target.snapshot, &target.lines);
+            Some((target.path, target.snapshot, target.lines, hashes, bytes))
+        }
+        None => None,
+    };
 
     let source_temp = stage_file(&source_path, &source_bytes).await?;
     let target_temp = if let Some((path, _, _, _, bytes)) = &target_change {
@@ -269,14 +393,51 @@ pub async fn apply_edit(
             &before,
             after,
             hashes,
-            target_served.expect("目标已验证"),
+            target_served
+                .as_deref_mut()
+                .expect("目标已验证"),
             anchors,
         ));
     }
     if !warnings.is_empty() {
         output.push_str(&format!("\n警告：{}", warnings.join("；")));
     }
-    Ok(output)
+    Ok(EditOutput {
+        content: output,
+        diff: Some(diff),
+    })
+}
+
+/// 授权预览：计算 edit 将产生的结构化 diff，不落盘、不更新锚点。
+///
+/// 与 [`apply_edit`] 共用 [`plan_edit`]，预览通过即代表实际执行可用；
+/// 返回 [`EditError`]（如 E_UNSERVED_RANGE）时调用方应直接放弃预览，
+/// 真实错误由执行阶段给出。
+pub fn preview_edit(
+    cwd: &Path,
+    request: &EditRequest,
+    served: &ServedFile,
+    target_served: Option<&ServedFile>,
+    anchors: &AnchorStore,
+    max_edits: usize,
+    max_file_bytes: u64,
+) -> Result<ToolDiff, EditError> {
+    let plan = plan_edit(
+        cwd,
+        request,
+        served,
+        target_served,
+        anchors,
+        max_edits,
+        max_file_bytes,
+    )?;
+    if plan.no_changes {
+        return Ok(ToolDiff {
+            files: Vec::new(),
+            truncated: false,
+        });
+    }
+    Ok(plan.to_tool_diff())
 }
 
 pub async fn undo(
@@ -644,6 +805,61 @@ mod tests {
         );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
+
+    #[tokio::test]
+    async fn preview_matches_applied_content_and_reports_insert_delete_lines() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("file.txt");
+        let (snapshot, mut served) = served_snapshot(&path, "alpha\nbeta\ngamma\n");
+        let anchors = AnchorStore::new();
+        let anchor = encode_anchor(snapshot.hashes[1]).unwrap();
+        let request = EditRequest {
+            path: "file.txt".into(),
+            edits: vec![[anchor.clone(), anchor, "delta\nbeta".into()]],
+            move_lines: None,
+        };
+        // 预览：在 beta 行后插入 delta、beta 两行（同锚点 + 非空 = 后插入）
+        let diff = preview_edit(dir.path(), &request, &served, None, &anchors, 32, 4096)
+            .expect("预览成功");
+        assert!(!diff.truncated);
+        assert_eq!(diff.files.len(), 1);
+        let kinds: Vec<_> = diff.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter().map(|line| (line.kind, line.text.as_str())))
+            .collect();
+        assert!(kinds.contains(&(moc_protocol::DiffLineKind::Insert, "delta")));
+        assert!(kinds.contains(&(moc_protocol::DiffLineKind::Insert, "beta")));
+        assert!(!kinds.iter().any(|(kind, _)| *kind == moc_protocol::DiffLineKind::Delete));
+        // 执行：最终内容与预览一致
+        let output = apply_edit(
+            dir.path(),
+            &request,
+            &mut served,
+            None,
+            &anchors,
+            32,
+            4096,
+        )
+        .await
+        .expect("编辑成功");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "alpha\nbeta\ndelta\nbeta\ngamma\n"
+        );
+        let applied = output.diff.expect("成功编辑携带 diff");
+        let applied_inserts: Vec<&str> = applied.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .filter(|line| line.kind == moc_protocol::DiffLineKind::Insert)
+            .map(|line| line.text.as_str())
+            .collect();
+        // 重复行场景下 LCS 对齐存在等价解，这里只断言插入集合与最终内容一致
+        assert_eq!(applied_inserts.len(), 2);
+        assert!(applied_inserts.contains(&"delta"));
+        assert!(applied_inserts.contains(&"beta"));
+    }
 }
 
 #[cfg(test)]
@@ -740,7 +956,7 @@ mod transaction_tests {
             "keep\nend\nafter\n"
         );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "target\nmove\n");
-        assert!(output.contains(&format!("[{}]", target.display())));
+        assert!(output.content.contains(&format!("[{}]", target.display())));
         undo(&source, &store, 4096).await.unwrap();
         undo(&target, &store, 4096).await.unwrap();
         assert_eq!(std::fs::read(&source).unwrap(), a.bytes);

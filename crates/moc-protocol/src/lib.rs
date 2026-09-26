@@ -28,7 +28,7 @@
 //! | `config/get` | 前端→core | core | 已初始化 | `-32014` |
 //! | `session/new` / `list` / `load` / `unload` | 前端→core | core | 已初始化 | `-32602` / `-32010` / `-32014` |
 //! | `session/rename` / `delete` / `unlock` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
-//! | `session/set_mode` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
+//! | `session/set_mode` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32015` / `-32011` |
@@ -142,7 +142,8 @@
 //!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams, SessionDeleteParams,
 //!     SessionInfo, SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult,
 //!     SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-//!     SessionSetModeParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
+//!     SessionSetModeParams, SessionSetModelParams, SessionUnloadParams, SessionUnlockParams,
+//!     SessionUpdate, TurnResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
@@ -197,6 +198,7 @@
 //!             tool_name: "bash".to_owned(),
 //!             title: "执行命令：cargo test".to_owned(),
 //!             body: None,
+//!             diff: None,
 //!             options: moc_protocol::methods::default_options(),
 //!         };
 //!         let allowed = ctx.ask_permission(permission).await.is_ok();
@@ -252,6 +254,9 @@
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_set_mode(&self, _ctx: RequestContext, _params: SessionSetModeParams) -> Result<SessionInfo, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_set_model(&self, _ctx: RequestContext, _params: SessionSetModelParams) -> Result<SessionInfo, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_plan_approve(&self, _ctx: RequestContext, _params: SessionPlanApproveParams) -> Result<SessionPlanApproveResult, RpcError> {

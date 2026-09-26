@@ -60,6 +60,10 @@ pub enum SessionMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionSetMode;
 
+/// `session/set_model`：按选择器切换会话模型。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSetModel;
+
 /// `session/compact`：手动压缩会话上下文。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionCompact;
@@ -253,6 +257,16 @@ pub struct SessionSetModeParams {
     pub mode: SessionMode,
 }
 
+/// `session/set_model` 的参数：按选择器切换会话模型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetModelParams {
+    /// 目标会话。
+    pub session_id: String,
+    /// 模型选择器（`config/get` 返回的 `ModelInfo::id`，或 core 接受的别名）。
+    pub selector: String,
+}
+
 /// `session/compact` 的参数。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -336,6 +350,14 @@ impl Method for SessionSetMode {
 
 impl ClientRequest for SessionSetMode {}
 
+impl Method for SessionSetModel {
+    const NAME: &'static str = "session/set_model";
+    type Params = SessionSetModelParams;
+    type Result = SessionInfo;
+}
+
+impl ClientRequest for SessionSetModel {}
+
 impl Method for SessionCompact {
     const NAME: &'static str = "session/compact";
     type Params = SessionCompactParams;
@@ -358,6 +380,7 @@ mod tests {
         assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
         assert_eq!(<SessionUnlock as Method>::NAME, "session/unlock");
         assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
+        assert_eq!(<SessionSetModel as Method>::NAME, "session/set_model");
         assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
     }
 

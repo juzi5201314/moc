@@ -35,7 +35,8 @@ use crate::method::Method;
 use crate::methods::{
     ClientInfo, ConfigGet, Initialize, Ping, PingResult, PromptParams, SessionCancel,
     SessionCancelResult, SessionCompact, SessionDelete, SessionList, SessionLoad, SessionNew,
-    SessionPlanApprove, SessionPrompt, SessionRename, SessionSetMode, SessionUnload, SessionUnlock,
+    SessionPlanApprove, SessionPrompt, SessionRename, SessionSetMode, SessionSetModel,
+    SessionUnload, SessionUnlock,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -513,6 +514,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_set_mode(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionSetModel as Method>::NAME => {
+                let params = params_from_value::<SessionSetModel>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_set_model(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

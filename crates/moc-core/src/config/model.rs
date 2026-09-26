@@ -124,6 +124,8 @@ pub(super) struct ModelDocument {
     pub thinking_level: ThinkingLevel,
     pub input: Vec<ModelInput>,
     pub compat: ModelCompat,
+    /// 每百万 token 定价（美元）；未配置时前端隐藏费用段。
+    pub pricing: Option<moc_protocol::ModelPricing>,
 }
 
 impl Default for ModelDocument {
@@ -135,6 +137,7 @@ impl Default for ModelDocument {
             thinking_level: ThinkingLevel::Off,
             input: vec![ModelInput::Text],
             compat: ModelCompat::default(),
+            pricing: None,
         }
     }
 }
@@ -280,6 +283,8 @@ pub struct ResolvedModel {
     pub max_output_tokens: u32,
     /// 解析后的模型 thinking level。
     pub thinking_level: ThinkingLevel,
+    /// 每百万 token 定价（美元）；`None` 表示未配置。
+    pub pricing: Option<moc_protocol::ModelPricing>,
     /// 供应商协议配置。
     pub llm: LlmConfig,
     /// 默认思维链回传策略。
@@ -403,6 +408,7 @@ impl ResolvedProvider {
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             thinking_level: level,
+            pricing: model.pricing,
             llm,
             echo_reasoning: model.compat.echo_reasoning,
             supports_prompt_cache_key: model.compat.supports_prompt_cache_key,

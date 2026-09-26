@@ -9,7 +9,7 @@
 //! | [`config::ConfigGet`] | C→S | core | 已初始化 | `-32014` |
 //! | [`session::SessionNew`] / `SessionList` / `SessionLoad` / `SessionUnload` | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
-//! | [`session::SessionSetMode`] | C→S | core | 已初始化 | `-32010` / `-32015` |
+//! | [`session::SessionSetMode`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
 //! | [`session::SessionCompact`] | C→S | core | 会话无在飞轮次 | `-32010` / `-32011` / `-32014` |
 //! | [`turn::SessionPrompt`] | C→S | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32015` / `-32011` |
@@ -23,6 +23,7 @@
 
 pub mod ask;
 pub mod config;
+pub mod diff;
 pub mod initialize;
 pub mod permission;
 pub mod plan;
@@ -34,7 +35,8 @@ pub mod update;
 use serde::{Deserialize, Serialize};
 
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
-pub use config::{AgentInfo, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo};
+pub use config::{AgentInfo, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelPricing};
+pub use diff::{build_hunks, DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff};
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
@@ -51,8 +53,9 @@ pub use session::{
     CompactResult, SessionCompact, SessionCompactParams, SessionDelete, SessionDeleteParams,
     SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
     SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionRename,
-    SessionRenameParams, SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams,
-    SessionUnlock, SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
+    SessionRenameParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams,
+    ToolExecution, ToolStatus, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use turn::{
@@ -94,6 +97,7 @@ mod tests {
             <SessionDelete as Method>::NAME,
             <SessionUnlock as Method>::NAME,
             <SessionSetMode as Method>::NAME,
+            <SessionSetModel as Method>::NAME,
             <SessionPlanApprove as Method>::NAME,
             <SessionCompact as Method>::NAME,
             <SessionPrompt as Method>::NAME,
@@ -116,6 +120,7 @@ mod tests {
             "session/delete",
             "session/unlock",
             "session/set_mode",
+            "session/set_model",
             "session/plan_approve",
             "session/compact",
             "session/prompt",
@@ -150,6 +155,7 @@ mod tests {
         assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
         assert_eq!(<SessionUnlock as Method>::NAME, "session/unlock");
         assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
+        assert_eq!(<SessionSetModel as Method>::NAME, "session/set_model");
         assert_eq!(<SessionPlanApprove as Method>::NAME, "session/plan_approve");
         assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
         assert_eq!(<SessionPrompt as Method>::NAME, "session/prompt");
@@ -172,6 +178,7 @@ mod tests {
         client::<SessionPrompt>();
         server_request::<SessionRequestPermission>();
         client::<SessionSetMode>();
+        client::<SessionSetModel>();
         client::<SessionPlanApprove>();
         client::<SessionCompact>();
         server_request::<SessionRequestAsk>();

@@ -130,6 +130,7 @@ impl Tool for BashTool {
                 summary: None,
                 control: super::ToolControl::Continue,
                 status: None,
+                diff: None,
             })
         })
     }

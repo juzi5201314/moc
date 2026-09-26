@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::diff::ToolDiff;
 use crate::method::{Method, ServerRequest};
 
 /// `session/request_permission` 的方法标记。
@@ -44,9 +45,16 @@ pub struct PermissionRequestParams {
     pub tool_name: String,
     /// 一行标题，如「执行命令：cargo test」。
     pub title: String,
-    /// 详细内容（命令全文、diff 等）；`None` 表示无可展示的细节。
+    /// 详细内容（命令全文等）；`None` 表示无可展示的细节。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// `edit` / `write` 的结构化 diff 预览（工具尚未执行，展示的是拟议变更）；
+    /// `None` 表示无 diff 可展示。
+    ///
+    /// 该字段在 v1.1 加入。字段在旧前端的 `deny_unknown_fields` 下无法解析，
+    /// 反向请求会失败并被 core 按拒绝处理——core 与前端同仓库同步升级。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<ToolDiff>,
     /// 可选答案；前端必须回其中一个 `id`。
     pub options: Vec<PermissionOption>,
 }
@@ -124,6 +132,7 @@ mod tests {
             tool_name: "bash".into(),
             title: "执行命令：cargo test".into(),
             body: None,
+            diff: None,
             options: default_options(),
         };
         assert_eq!(
