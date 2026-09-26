@@ -1,0 +1,25 @@
+[package]
+name = "moc-tui"
+version = "0.1.0"
+edition = "2024"
+authors = ["soeur@soeur.dev@gmail.com"]
+
+[dependencies]
+moc-core = { path = "../moc-core" }
+moc-protocol = { path = "../moc-protocol" }
+ratatui = "0.30.2"
+crossterm = "0.29"
+pulldown-cmark = { version = "0.13", features = ["simd"] }
+syntect = { version = "5.3", default-features = false, features = [
+    "default-fancy",
+] }
+two-face = "0.5"
+unicode-width = "0.2"
+anyhow.workspace = true
+base64 = "0.22"
+tokio.workspace = true
+tokio-util.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }

@@ -7,6 +7,7 @@ authors = ["soeur@soeur.dev@gmail.com"]
 [dependencies]
 moc-core = { path = "../moc-core" }
 moc-protocol = { path = "../moc-protocol" }
+moc-tui = { path = "../moc-tui" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true

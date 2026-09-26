@@ -48,9 +48,43 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
         return Ok(());
     }
     let core = Core::new(config).context("初始化 MOC core 失败")?;
-    let result = run_embedded(core.clone(), args).await;
+    let result = if use_tui(&args) {
+        moc_tui::run(core.clone(), tui_options(&args)).await
+    } else {
+        run_embedded(core.clone(), args).await
+    };
     core.shutdown().await;
     result
+}
+
+/// 交互模式默认进 TUI；`--repl` 强制行式，非 TTY（管道 / CI）自动降级。
+fn use_tui(args: &CliArgs) -> bool {
+    if args.print || args.list || args.repl {
+        return false;
+    }
+    use std::io::IsTerminal as _;
+    std::io::stdout().is_terminal() && std::io::stdin().is_terminal()
+}
+
+/// 把 CLI 参数翻译成 TUI 启动选项。
+fn tui_options(args: &CliArgs) -> moc_tui::TuiOptions {
+    let resume = if let Some(id) = &args.resume {
+        Some(if id.is_empty() { None } else { Some(id.clone()) })
+    } else if args.continue_session {
+        Some(None)
+    } else {
+        None
+    };
+    moc_tui::TuiOptions {
+        cwd: args
+            .cwd
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        model: args.model.clone(),
+        mode: args.mode.into(),
+        resume,
+        initial_prompt: args.prompt.clone(),
+    }
 }
 
 fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {

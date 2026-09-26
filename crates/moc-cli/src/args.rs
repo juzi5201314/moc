@@ -35,6 +35,9 @@ pub struct CliArgs {
     /// 单轮模式：可从 stdin 读取提示词，只打印最终答案。
     #[arg(long = "print")]
     pub print: bool,
+    /// 强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。
+    #[arg(long = "repl")]
+    pub repl: bool,
     /// 不显示思维链增量。
     #[arg(long)]
     pub hide_thinking: bool,
