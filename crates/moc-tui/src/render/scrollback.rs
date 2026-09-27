@@ -29,7 +29,9 @@ pub struct ScrollbackView {
 
 struct CachedEntry {
     key: (u64, bool, u64),
+    height: usize,
     lines: Vec<Line<'static>>,
+    rendered: bool,
 }
 
 impl Default for ScrollbackView {
@@ -46,7 +48,7 @@ impl ScrollbackView {
         Self::default()
     }
 
-    /// 同步缓存（按需重渲染失效的块），返回总行数。
+    /// 同步失效块；非视口块的文本行会在绘制后释放，只保留高度索引。
     pub fn sync(&mut self, app: &App, width: u16) -> usize {
         if self.width != width {
             self.width = width;
@@ -62,7 +64,13 @@ impl ScrollbackView {
                 continue;
             }
             let lines = render_entry(entry, app, width, index == 0);
-            let cached = CachedEntry { key, lines };
+            let height = lines.len();
+            let cached = CachedEntry {
+                key,
+                height,
+                lines,
+                rendered: true,
+            };
             if index < self.cache.len() {
                 self.cache[index] = cached;
             } else {
@@ -70,7 +78,37 @@ impl ScrollbackView {
             }
         }
         self.cache.truncate(app.blocks.len());
-        self.cache.iter().map(|cached| cached.lines.len()).sum()
+        self.cache.iter().map(|cached| cached.height).sum()
+    }
+
+    /// 在绘制后释放完全离开视口的行，只保留高度与缓存键。
+    pub fn trim_outside(&mut self, skip_rows: usize, viewport: usize) {
+        let end = skip_rows.saturating_add(viewport);
+        let mut offset = 0usize;
+        for cached in &mut self.cache {
+            let next = offset.saturating_add(cached.height);
+            if next <= skip_rows || offset >= end {
+                cached.lines.clear();
+                cached.rendered = false;
+            }
+            offset = next;
+        }
+    }
+
+    /// 为当前视口懒加载被回收的块。
+    pub fn ensure_visible(&mut self, app: &App, skip_rows: usize, viewport: usize) {
+        let end = skip_rows.saturating_add(viewport);
+        let mut offset = 0usize;
+        for (index, cached) in self.cache.iter_mut().enumerate() {
+            let next = offset.saturating_add(cached.height);
+            if !cached.rendered && offset < end && next > skip_rows {
+                let lines = render_entry(&app.blocks[index], app, self.width, index == 0);
+                cached.height = lines.len();
+                cached.lines = lines;
+                cached.rendered = true;
+            }
+            offset = next;
+        }
     }
 
     /// 从第 `skip_rows` 行开始把内容画进视口，并登记命中表与行文本。
@@ -79,6 +117,7 @@ impl ScrollbackView {
         buffer: &mut Buffer,
         area: Rect,
         skip_rows: usize,
+        collect_lines: bool,
         hits: &mut Vec<(usize, u16, u16)>,
         lines: &mut Vec<(u16, String)>,
     ) {
@@ -86,26 +125,29 @@ impl ScrollbackView {
         let mut y = area.y;
         let bottom = area.y.saturating_add(area.height);
         for (index, cached) in self.cache.iter().enumerate() {
-            if offset >= cached.lines.len() {
-                offset -= cached.lines.len();
+            if offset >= cached.height {
+                offset -= cached.height;
                 continue;
             }
+            let has_title = offset == 0;
             let row_start = y;
             for line in &cached.lines[offset..] {
                 if y >= bottom {
                     break;
                 }
                 buffer.set_line(area.x, y, line, area.width);
-                lines.push((
-                    y,
-                    line.spans
-                        .iter()
-                        .map(|span| span.content.to_string())
-                        .collect(),
-                ));
+                if collect_lines {
+                    let text = line.spans.iter().fold(String::new(), |mut text, span| {
+                        text.push_str(span.content.as_ref());
+                        text
+                    });
+                    lines.push((y, text));
+                }
                 y += 1;
             }
-            hits.push((index, row_start, y));
+            if has_title {
+                hits.push((index, row_start, y));
+            }
             offset = 0;
             if y >= bottom {
                 return;
@@ -210,14 +252,11 @@ fn user_message(
 
 /// 助手回复：正文按 [`PROSE_INDENT`] 悬挂缩进，尾注行给耗时与本地时间。
 fn assistant_message(text: &str, entry: &Entry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = render_markdown(
-        text,
-        width.saturating_sub(PROSE_INDENT).max(8),
-        theme,
-    )
-    .into_iter()
-    .map(indent_prose)
-    .collect();
+    let mut lines: Vec<Line<'static>> =
+        render_markdown(text, width.saturating_sub(PROSE_INDENT).max(8), theme)
+            .into_iter()
+            .map(indent_prose)
+            .collect();
     if let Some(footer) = turn_footer(entry, width, theme) {
         lines.push(footer);
     }
@@ -565,7 +604,7 @@ fn clamp_rows(result: &str, width: usize) -> Vec<String> {
 }
 
 /// 截断到显示宽度上限，末尾补省略号。
-pub(super) fn truncate_to_width(text: String, max: usize) -> String {
+pub(crate) fn truncate_to_width(text: String, max: usize) -> String {
     if str_width(&text) <= max {
         return text;
     }
@@ -645,9 +684,7 @@ fn render_todo(
                 style = style.add_modifier(Modifier::CROSSED_OUT);
             }
             let indent = format!("{item_branch}  ");
-            let budget = width
-                .saturating_sub(TITLE_INDENT + indent.len() + 4)
-                .max(8);
+            let budget = width.saturating_sub(TITLE_INDENT + indent.len() + 4).max(8);
             for (index, row) in wrap_text(&item.task, budget).into_iter().enumerate() {
                 if index == 0 {
                     lines.push(Line::from(vec![

@@ -16,6 +16,7 @@ use ratatui::backend::CrosstermBackend;
 /// 已进入交互模式的终端句柄；drop 时自动恢复。
 pub struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
+    restored: bool,
 }
 
 impl TerminalGuard {
@@ -23,16 +24,33 @@ impl TerminalGuard {
     pub fn enter() -> anyhow::Result<Self> {
         enable_raw_mode().context("启用 raw mode 失败")?;
         let mut stdout = std::io::stdout();
-        crossterm::execute!(
+        if let Err(error) = crossterm::execute!(
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
             EnableBracketedPaste
-        )
-        .context("切换备用屏/鼠标捕获失败")?;
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend).context("初始化终端缓冲失败")?;
-        Ok(Self { terminal })
+        ) {
+            let _ = disable_raw_mode();
+            return Err(error).context("切换备用屏/鼠标捕获失败");
+        }
+        let terminal = match Terminal::new(CrosstermBackend::new(stdout)) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                let mut stdout = std::io::stdout();
+                let _ = crossterm::execute!(
+                    stdout,
+                    DisableBracketedPaste,
+                    DisableMouseCapture,
+                    LeaveAlternateScreen
+                );
+                let _ = disable_raw_mode();
+                return Err(error).context("初始化终端缓冲失败");
+            }
+        };
+        Ok(Self {
+            terminal,
+            restored: false,
+        })
     }
 
     pub fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<std::io::Stdout>> {
@@ -41,6 +59,10 @@ impl TerminalGuard {
 
     /// 恢复终端状态；幂等，供 Drop 与显式退出共用。
     pub fn restore(&mut self) {
+        if self.restored {
+            return;
+        }
+        self.restored = true;
         let _ = crossterm::execute!(
             self.terminal.backend_mut(),
             DisableBracketedPaste,

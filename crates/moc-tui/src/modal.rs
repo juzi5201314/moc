@@ -7,10 +7,61 @@ use moc_protocol::methods::{
     AskParams, AskResult, ModelInfo, PermissionRequestParams, PermissionResult, SessionInfo,
 };
 
+/// 可搜索列表模态的状态。
+#[derive(Debug, Clone, Default)]
+pub struct PickerState {
+    /// 当前过滤字符串。
+    pub query: String,
+    /// 过滤结果中的选中项下标。
+    pub selected: usize,
+    /// 列表 viewport 的首项下标。
+    pub offset: usize,
+    /// 是否正在请求后端数据。
+    pub loading: bool,
+    /// 最近一次请求错误。
+    pub error: Option<String>,
+}
+
+impl PickerState {
+    pub fn reset(&mut self) {
+        self.query.clear();
+        self.selected = 0;
+        self.offset = 0;
+        self.error = None;
+    }
+
+    pub fn move_selection(&mut self, delta: i32, count: usize, page: usize) {
+        if count == 0 {
+            self.selected = 0;
+            self.offset = 0;
+            return;
+        }
+        let max = count - 1;
+        self.selected = if delta < 0 {
+            self.selected.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            self.selected.saturating_add(delta as usize).min(max)
+        };
+        self.keep_visible(page.max(1), count);
+    }
+
+    pub fn keep_visible(&mut self, page: usize, count: usize) {
+        if count == 0 {
+            self.offset = 0;
+            self.selected = 0;
+            return;
+        }
+        self.selected = self.selected.min(count - 1);
+        if self.selected < self.offset {
+            self.offset = self.selected;
+        } else if self.selected >= self.offset + page {
+            self.offset = self.selected + 1 - page;
+        }
+        self.offset = self.offset.min(count.saturating_sub(page));
+    }
+}
+
 /// 打开的模态。
-///
-/// `reply` 用 `Option` 包裹：答复时从 `&mut` 里 `take()` 出来消费掉
-/// （oneshot 的 `send` 按值取接收端）。
 pub enum Modal {
     /// 工具授权：展示 diff 预览（若有）与选项列表。
     Permission {
@@ -34,12 +85,12 @@ pub enum Modal {
     Model {
         models: Vec<ModelInfo>,
         current: String,
-        selected: usize,
+        picker: PickerState,
     },
     /// 会话恢复（`session/list` + `session/load`）。
     Sessions {
         sessions: Vec<SessionInfo>,
-        selected: usize,
+        picker: PickerState,
     },
     /// 计划审批（`session/plan_approve`）。
     Plan {
@@ -82,10 +133,12 @@ impl Modal {
             } => params
                 .questions
                 .get(*question)
-                .map(|question| question.options.len() + 1) // + 自定义输入行
+                .map(|question| question.options.len() + 1)
                 .unwrap_or(0),
-            Modal::Model { models, .. } => models.len(),
-            Modal::Sessions { sessions, .. } => sessions.len(),
+            Modal::Model { picker, models, .. } => filtered_models(models, &picker.query).len(),
+            Modal::Sessions { picker, sessions } => {
+                filtered_sessions(sessions, &picker.query).len()
+            }
             Modal::Plan { .. } => 2,
             Modal::Help => 0,
         }
@@ -98,13 +151,86 @@ impl Modal {
             return;
         }
         let selected = match self {
-            Modal::Permission { selected, .. }
-            | Modal::Model { selected, .. }
-            | Modal::Sessions { selected, .. }
-            | Modal::Plan { selected, .. } => selected,
+            Modal::Permission { selected, .. } | Modal::Plan { selected, .. } => selected,
             Modal::Ask { .. } | Modal::Help => return,
+            Modal::Model { picker, .. } | Modal::Sessions { picker, .. } => {
+                picker.selected = if delta < 0 {
+                    picker
+                        .selected
+                        .saturating_sub(delta.unsigned_abs() as usize)
+                } else {
+                    picker
+                        .selected
+                        .saturating_add(delta as usize)
+                        .min(count - 1)
+                };
+                return;
+            }
         };
-        let next = (*selected as i32 + delta).rem_euclid(count as i32) as usize;
+        let next = (*selected as i32 + delta).clamp(0, count as i32 - 1) as usize;
         *selected = next;
+    }
+
+    pub fn picker_mut(&mut self) -> Option<&mut PickerState> {
+        match self {
+            Modal::Model { picker, .. } | Modal::Sessions { picker, .. } => Some(picker),
+            _ => None,
+        }
+    }
+
+    pub fn set_error(&mut self, message: String) {
+        if let Some(picker) = self.picker_mut() {
+            picker.loading = false;
+            picker.error = Some(message);
+        }
+    }
+}
+
+pub fn filtered_models<'a>(models: &'a [ModelInfo], query: &str) -> Vec<(usize, &'a ModelInfo)> {
+    let query = query.to_lowercase();
+    models
+        .iter()
+        .enumerate()
+        .filter(|(_, model)| {
+            query.is_empty()
+                || model.id.to_lowercase().contains(&query)
+                || model.display_name.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
+pub fn filtered_sessions<'a>(
+    sessions: &'a [SessionInfo],
+    query: &str,
+) -> Vec<(usize, &'a SessionInfo)> {
+    let query = query.to_lowercase();
+    sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, session)| {
+            query.is_empty()
+                || session.title.to_lowercase().contains(&query)
+                || session.cwd.to_lowercase().contains(&query)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PickerState;
+
+    #[test]
+    fn picker_keeps_selected_item_inside_viewport() {
+        let mut picker = PickerState {
+            selected: 0,
+            offset: 0,
+            ..Default::default()
+        };
+        picker.move_selection(9, 20, 8);
+        assert_eq!(picker.selected, 9);
+        assert_eq!(picker.offset, 2);
+        picker.move_selection(-9, 20, 8);
+        assert_eq!(picker.selected, 0);
+        assert_eq!(picker.offset, 0);
     }
 }

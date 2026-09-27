@@ -16,8 +16,8 @@ use crate::widgets::completion::CompletionState;
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
 pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, prompt_area: Rect) {
     let rows = completion.candidates.len() as u16;
-    let width = 72.min(prompt_area.width);
-    let height = (rows + 2).min(prompt_area.y);
+    let width = prompt_area.width.min(72).max(20);
+    let height = (rows + 3).min(prompt_area.y);
     if height == 0 {
         return;
     }
@@ -29,32 +29,29 @@ pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, pro
     };
     let theme = crate::theme::Theme::global();
     frame.render_widget(Clear, area);
-    let mut lines = Vec::new();
+    let content_width = usize::from(width.saturating_sub(4));
+    let mut lines = Vec::with_capacity(completion.candidates.len() + 1);
     for (index, candidate) in completion.candidates.iter().enumerate() {
         let selected = index == completion.selected;
         let prefix = if selected { "❯ " } else { "  " };
-        let (name_style, desc_style) = if selected {
-            (
-                Style::new()
-                    .fg(theme.text_primary)
-                    .bg(theme.bg_visual)
-                    .add_modifier(Modifier::BOLD),
-                Style::new().fg(theme.text_secondary).bg(theme.bg_visual),
-            )
+        let style = if selected {
+            Style::new()
+                .fg(theme.text_primary)
+                .bg(theme.bg_visual)
+                .add_modifier(Modifier::BOLD)
         } else {
-            (
-                Style::new().fg(theme.text_primary),
-                Style::new().fg(theme.gray),
-            )
+            Style::new().fg(theme.text_primary)
         };
-        lines.push(Line::from(vec![
-            Span::styled(prefix.to_string(), desc_style),
-            Span::styled(format!("{:<14}", candidate.name), name_style),
-            Span::styled(candidate.description.to_owned(), desc_style),
-        ]));
+        lines.push(Line::from(Span::styled(
+            ellipsize(
+                &format!("{prefix}{:<14}{}", candidate.name, candidate.description),
+                content_width,
+            ),
+            style,
+        )));
     }
     lines.push(Line::from(Span::styled(
-        "↑/↓ 选择 · Tab/Enter 确认 · Esc 关闭".to_owned(),
+        "↑↓ 选择 · Tab/Enter 确认 · Esc 关闭",
         Style::new().fg(theme.gray_dim),
     )));
     frame.render_widget(
@@ -73,12 +70,26 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
         return;
     };
     let area = frame.area();
-    let max_width = area.width * 3 / 4;
+    if area.width < 20 || area.height < 6 {
+        return;
+    }
     let theme = app.theme;
-    let lines = modal_lines(app, modal);
-    let content_height = lines.len() as u16;
-    let height = (content_height + 2).min(area.height.saturating_sub(2));
-    let width = max_width;
+    // 保留正文轮廓但降低对比度，浮层成为唯一的视觉焦点。
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
+    let width = if area.width < 70 {
+        area.width.saturating_sub(4).max(16)
+    } else {
+        area.width.min(96)
+    };
+    let max_content = usize::from(area.height.saturating_sub(6)).max(1);
+    let content_width = usize::from(width.saturating_sub(4)).max(8);
+    let lines = modal_lines(app, modal, content_width, max_content);
+    let content_height = lines.len().max(1) as u16;
+    let height = content_height
+        .saturating_add(4)
+        .min(area.height.saturating_sub(2));
     let modal_area = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -105,24 +116,27 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
 }
 
 /// 模态内容行（按类型分派）。
-fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
-    match modal {
+fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let theme = app.theme;
+    let mut lines = match modal {
         Modal::Permission {
             params, selected, ..
         } => {
-            let theme = app.theme;
             let mut lines = Vec::new();
             if let Some(body) = &params.body {
-                for row in body.lines().take(4) {
-                    lines.push(Line::from(Span::styled(
+                lines.extend(body.lines().take(4).map(|row| {
+                    Line::from(Span::styled(
                         format!("  {row}"),
                         Style::new().fg(theme.text_secondary),
-                    )));
-                }
+                    ))
+                }));
             }
             if let Some(diff) = &params.diff {
-                let diff_lines = crate::render::diff::render_diff(diff, 90, theme);
-                lines.extend(diff_lines.into_iter().take(24));
+                lines.extend(
+                    crate::render::diff::render_diff(diff, width, theme)
+                        .into_iter()
+                        .take(max_lines.saturating_sub(lines.len() + 3)),
+                );
             }
             lines.push(Line::from(String::new()));
             for (index, option) in params.options.iter().enumerate() {
@@ -135,16 +149,9 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
                 } else {
                     Style::new().fg(theme.text_secondary)
                 };
-                let hint = match option.kind {
-                    moc_protocol::methods::PermissionOptionKind::AllowOnce
-                    | moc_protocol::methods::PermissionOptionKind::AllowAlways => {
-                        theme.accent_success
-                    }
-                    _ => theme.accent_error,
-                };
                 lines.push(Line::from(Span::styled(
                     format!("{marker}{} {}", index + 1, option.label),
-                    style.fg(style.fg.unwrap_or(hint)),
+                    style,
                 )));
             }
             lines
@@ -158,7 +165,6 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
             editing_custom,
             ..
         } => {
-            let theme = app.theme;
             let mut lines = Vec::new();
             if params.questions.len() > 1 {
                 lines.push(Line::from(Span::styled(
@@ -205,9 +211,11 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
             } else {
                 Style::new().fg(theme.gray)
             };
-            let marker = if editing_here { "❯" } else { " " };
             lines.push(Line::from(Span::styled(
-                format!(" {marker} ✎ 自定义：{custom}"),
+                format!(
+                    " {} ✎ 自定义：{custom}",
+                    if editing_here { "❯" } else { " " }
+                ),
                 custom_style,
             )));
             lines.push(Line::from(Span::styled(
@@ -222,68 +230,151 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
         Modal::Model {
             models,
             current,
-            selected,
+            picker,
         } => {
-            let theme = app.theme;
-            let mut lines = vec![Line::from(Span::styled(
-                format!("当前：{current}"),
-                Style::new().fg(theme.gray),
-            ))];
-            for (index, model) in models.iter().enumerate() {
-                let marker = if index == *selected { "❯ " } else { "  " };
-                let style = if index == *selected {
-                    Style::new()
-                        .fg(theme.accent_user)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
-                let mut detail = model.id.clone();
-                if let Some(window) = model.context_window {
-                    detail.push_str(&format!(" · {} tokens", format_number(window)));
-                }
-                if let Some(pricing) = &model.pricing {
-                    detail.push_str(&format!(
-                        " · ${:.2}/${:.2} 每百万",
-                        pricing.input, pricing.output
-                    ));
-                }
-                lines.push(Line::from(Span::styled(format!("{marker}{detail}"), style)));
-            }
-            lines
-        }
-        Modal::Sessions { sessions, selected } => {
-            let theme = app.theme;
-            if sessions.is_empty() {
-                return vec![Line::from(Span::styled(
-                    "加载中…".to_owned(),
+            let filtered = crate::modal::filtered_models(models, &picker.query);
+            let visible = max_lines.saturating_sub(5).max(1);
+            let offset = picker.offset.min(filtered.len().saturating_sub(visible));
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    format!("当前：{}", ellipsize(current, width)),
                     Style::new().fg(theme.gray),
-                ))];
-            }
-            let mut lines = Vec::new();
-            for (index, session) in sessions.iter().enumerate() {
-                let marker = if index == *selected { "❯ " } else { "  " };
-                let style = if index == *selected {
-                    Style::new()
-                        .fg(theme.accent_user)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "搜索：{}",
+                        if picker.query.is_empty() {
+                            "_"
+                        } else {
+                            &picker.query
+                        }
+                    ),
+                    Style::new().fg(theme.accent_model),
+                )),
+                Line::from(String::new()),
+            ];
+            if picker.loading {
                 lines.push(Line::from(Span::styled(
-                    format!("{marker}{:<40} {}", session.title, session.cwd),
-                    style,
+                    "正在切换模型…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            } else if let Some(error) = &picker.error {
+                lines.push(Line::from(Span::styled(
+                    format!("错误：{error}"),
+                    Style::new().fg(theme.accent_error),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "Enter 重试 · Esc 关闭",
+                    Style::new().fg(theme.gray_dim),
                 )));
             }
+            if filtered.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "没有匹配的模型",
+                    Style::new().fg(theme.gray),
+                )));
+            } else {
+                for (index, (_, model)) in filtered.iter().skip(offset).take(visible).enumerate() {
+                    let actual = offset + index;
+                    let marker = if actual == picker.selected {
+                        "❯ "
+                    } else {
+                        "  "
+                    };
+                    let mut detail = model.id.clone();
+                    if let Some(window) = model.context_window {
+                        detail.push_str(&format!(" · {} tokens", format_number(window)));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        ellipsize(&format!("{marker}{detail}"), width),
+                        if actual == picker.selected {
+                            Style::new()
+                                .fg(theme.accent_user)
+                                .bg(theme.bg_visual)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::new().fg(theme.text_secondary)
+                        },
+                    )));
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                "↑↓ 移动 · PgUp/PgDn 翻页 · 输入搜索 · Enter 确认 · Esc 关闭",
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines
+        }
+        Modal::Sessions { sessions, picker } => {
+            let filtered = crate::modal::filtered_sessions(sessions, &picker.query);
+            let visible = max_lines.saturating_sub(4).max(1);
+            let offset = picker.offset.min(filtered.len().saturating_sub(visible));
+            let mut lines = vec![Line::from(Span::styled(
+                format!(
+                    "搜索：{}",
+                    if picker.query.is_empty() {
+                        "_"
+                    } else {
+                        &picker.query
+                    }
+                ),
+                Style::new().fg(theme.accent_model),
+            ))];
+            if picker.loading && sessions.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "正在加载会话…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            } else if let Some(error) = &picker.error {
+                lines.push(Line::from(Span::styled(
+                    format!("错误：{error}"),
+                    Style::new().fg(theme.accent_error),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "Enter 重试 · Esc 关闭",
+                    Style::new().fg(theme.gray_dim),
+                )));
+            } else if filtered.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "没有匹配的会话",
+                    Style::new().fg(theme.gray),
+                )));
+            } else {
+                for (index, (_, session)) in filtered.iter().skip(offset).take(visible).enumerate()
+                {
+                    let actual = offset + index;
+                    let marker = if actual == picker.selected {
+                        "❯ "
+                    } else {
+                        "  "
+                    };
+                    let text = format!(
+                        "{marker}{}  {}",
+                        session.title,
+                        ellipsize(&session.cwd, width / 2),
+                    );
+                    lines.push(Line::from(Span::styled(
+                        ellipsize(&text, width),
+                        if actual == picker.selected {
+                            Style::new()
+                                .fg(theme.accent_user)
+                                .bg(theme.bg_visual)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::new().fg(theme.text_secondary)
+                        },
+                    )));
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                "↑↓ 移动 · PgUp/PgDn 翻页 · 输入搜索 · Enter 恢复 · Esc 关闭",
+                Style::new().fg(theme.gray_dim),
+            )));
             lines
         }
         Modal::Plan {
             markdown, selected, ..
         } => {
-            let theme = app.theme;
-            let mut lines = crate::render::markdown::render_markdown(markdown, 100, theme);
+            let mut lines = crate::render::markdown::render_markdown(markdown, width, theme);
             lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![
                 Span::styled(
@@ -312,34 +403,38 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
             ]));
             lines
         }
-        Modal::Help => {
-            let theme = app.theme;
-            [
-                ("ctrl+t", "展开 / 收起思考内容"),
-                ("ctrl+o", "展开 / 收起工具调用"),
-                ("ctrl+v", "粘贴剪贴板图片"),
-                ("ctrl+p", "切换模型"),
-                ("ctrl+r", "恢复历史会话"),
-                ("tab", "补全菜单确认；否则切换输入焦点"),
-                ("shift+tab", "输入框切换模式；滚动区时聚焦输入框"),
-                ("alt+enter", "输入框内换行"),
-                ("↑ / ↓", "补全候选 / 输入历史 / 多行移动"),
-                ("ctrl+c", "运行中取消轮次；空闲退出"),
-                ("/commands", "help new model resume mode compact quit"),
-            ]
-            .iter()
-            .map(|(key, description)| {
-                Line::from(vec![
-                    Span::styled(format!("  {key:<14}"), Style::new().fg(theme.accent_user)),
-                    Span::styled(
-                        (*description).to_owned(),
-                        Style::new().fg(theme.text_secondary),
-                    ),
-                ])
-            })
-            .collect()
-        }
+        Modal::Help => [
+            ("Ctrl+T", "展开 / 收起思考内容"),
+            ("Ctrl+O", "展开 / 收起工具调用"),
+            ("Ctrl+V", "粘贴剪贴板图片"),
+            ("Ctrl+P", "切换模型"),
+            ("Ctrl+R", "恢复历史会话"),
+            ("Tab", "补全菜单确认；否则切换输入焦点"),
+            ("Shift+Tab", "输入框切换模式"),
+            ("Alt+Enter", "输入框内换行"),
+            ("↑ / ↓", "补全候选 / 输入历史 / 多行移动"),
+            ("PageUp/Down", "滚动转写区或列表"),
+            ("Ctrl+C", "运行中取消；空闲时再次按下退出"),
+            ("/commands", "help new model resume mode compact quit"),
+        ]
+        .into_iter()
+        .map(|(key, description)| {
+            Line::from(vec![
+                Span::styled(format!("  {key:<14}"), Style::new().fg(theme.accent_user)),
+                Span::styled(description, Style::new().fg(theme.text_secondary)),
+            ])
+        })
+        .collect(),
+    };
+    lines.truncate(max_lines.max(1));
+    lines
+}
+
+fn ellipsize(text: &str, width: usize) -> String {
+    if crate::render::wrap::str_width(text) <= width {
+        return text.to_owned();
     }
+    crate::render::scrollback::truncate_to_width(text.to_owned(), width.max(1))
 }
 
 /// token 数缩写（120000 → 120K）。

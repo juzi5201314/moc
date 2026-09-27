@@ -94,19 +94,26 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     let content_rows = u16::try_from(content_rows)
         .unwrap_or(PROMPT_BORDER_ROWS)
         .min(prompt_cap);
-    let [header_area, _gap_top, scroll_area, _gap_bottom, prompt_area, status_area] =
-        Layout::vertical([
-            Constraint::Length(header_rows),
-            // 信息条与转写区之间留白；没有信息条时转写区自己顶格
-            Constraint::Length(u16::from(header_rows > 0)),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(PROMPT_BORDER_ROWS + content_rows),
-            Constraint::Length(status_rows),
-        ])
-        .areas(frame_area);
+    let [
+        header_area,
+        _gap_top,
+        scroll_area,
+        _gap_bottom,
+        prompt_area,
+        status_area,
+    ] = Layout::vertical([
+        Constraint::Length(header_rows),
+        // 信息条与转写区之间留白；没有信息条时转写区自己顶格
+        Constraint::Length(u16::from(header_rows > 0)),
+        Constraint::Min(3),
+        Constraint::Length(1),
+        Constraint::Length(PROMPT_BORDER_ROWS + content_rows),
+        Constraint::Length(status_rows),
+    ])
+    .areas(frame_area);
     let scroll_area = inset(scroll_area, MARGIN_X);
     let prompt_area = inset(prompt_area, MARGIN_X);
+    app.scrollback_area = scroll_area;
     app.prompt_area = prompt_area;
 
     // 整帧铺底色（备用屏模式下终端自身背景与主题保持一致）
@@ -122,15 +129,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         app.scroll_offset = max_offset;
     }
     let skip_rows = max_offset - app.scroll_offset;
+    view.ensure_visible(app, skip_rows, viewport);
     app.mouse_hits.clear();
     app.paint_lines.clear();
+    let collect_lines = app.selection.is_some() || app.pending_click.is_some();
     view.paint(
         frame.buffer_mut(),
         scroll_area,
         skip_rows,
+        collect_lines,
         &mut app.mouse_hits,
         &mut app.paint_lines,
     );
+    view.trim_outside(skip_rows, viewport);
     highlight_selection(frame, app, scroll_area);
     draw_notice(frame, app, scroll_area);
     // 滚动条贴终端右缘：与内容边距无关，避免压住正文
@@ -194,7 +205,9 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     let max_text = usize::from(area.width).saturating_sub(PREFIX + 2);
     let text = scrollback::truncate_to_width(text.to_owned(), max_text);
     let chip_width = str_width(&text) + PREFIX + 2;
-    let chip_width = u16::try_from(chip_width).unwrap_or(area.width).min(area.width);
+    let chip_width = u16::try_from(chip_width)
+        .unwrap_or(area.width)
+        .min(area.width);
     let row = area.y + area.height - 1;
     let x = area.x + area.width - chip_width;
     let fill = Style::new().bg(theme.bg_highlight);
@@ -208,7 +221,12 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
         },
         fill,
     );
-    buffer.set_string(x, row, " ▌ ", Style::new().fg(theme.accent_success).bg(theme.bg_highlight));
+    buffer.set_string(
+        x,
+        row,
+        " ▌ ",
+        Style::new().fg(theme.accent_success).bg(theme.bg_highlight),
+    );
     buffer.set_string(
         x + 3,
         row,
@@ -253,7 +271,7 @@ fn draw_scrollbar(frame: &mut Frame, app: &App, area: Rect, max_offset: usize) {
     }
 }
 
-fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.is_empty() {
         return;
     }
@@ -271,6 +289,51 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         area,
     );
     draw_prompt_legends(frame, app, area);
+    if app.focus == Focus::Prompt {
+        let (x, y) = prompt_cursor_position(app, area);
+        frame.set_cursor_position((x, y));
+    }
+}
+
+fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
+    let text_width = usize::from(area.width)
+        .saturating_sub(2 + PROMPT_PAD + PROMPT_MARKER)
+        .max(4);
+    let before = &app.prompt.text[..app.prompt.cursor];
+    let mut visual_row = 0usize;
+    let mut current = "";
+    for line in before.split('\n') {
+        current = line;
+        visual_row += wrap::wrap_text(line, text_width).len();
+    }
+    visual_row = visual_row.saturating_sub(1);
+    let current_rows = wrap::wrap_text(current, text_width);
+    let column = current_rows
+        .last()
+        .map(|row| str_width(row))
+        .unwrap_or(0)
+        .min(text_width);
+    let total_rows = app
+        .prompt
+        .text
+        .split('\n')
+        .map(|line| wrap::wrap_text(line, text_width).len())
+        .sum::<usize>()
+        .max(1);
+    let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
+    let start = total_rows.saturating_sub(visible_rows);
+    let row = visual_row.saturating_sub(start).min(visible_rows - 1);
+    let x = area
+        .x
+        .saturating_add(1)
+        .saturating_add(PROMPT_PAD as u16)
+        .saturating_add(PROMPT_MARKER as u16)
+        .saturating_add(column as u16);
+    let y = area.y.saturating_add(1).saturating_add(row as u16);
+    (
+        x.min(area.x.saturating_add(area.width.saturating_sub(2))),
+        y,
+    )
 }
 
 /// 输入框下边框上的图例：左＝切换类快捷键小提示，右＝模型 · 模式。
@@ -372,11 +435,11 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             ),
         ])];
     }
-    text.split('\n')
+    let lines: Vec<Line<'static>> = text
+        .split('\n')
         .flat_map(|line| wrap::wrap_text(line, text_width))
         .enumerate()
         .map(|(index, row)| {
-            // chip 占位（[paste#N] / [image#N]）着色提示
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(4);
             spans.push(Span::styled(
                 " ".to_owned(),
@@ -412,7 +475,10 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
             }
             Line::from(spans)
         })
-        .collect()
+        .collect();
+    let visible = usize::from(area.height.saturating_sub(2)).max(1);
+    let start = lines.len().saturating_sub(visible);
+    lines.into_iter().skip(start).collect()
 }
 
 /// 顶部信息条：左＝品牌 · git 分支 · 工作目录，右＝上下文进度 · 累计费用。
@@ -432,16 +498,24 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ];
     if let Some(branch) = &data.branch {
-        spans.push(Span::styled("  ⎇ ".to_owned(), Style::new().fg(theme.border)));
         spans.push(Span::styled(
-            branch.clone(),
+            "  ⎇ ".to_owned(),
+            Style::new().fg(theme.border),
+        ));
+        spans.push(Span::styled(
+            scrollback::truncate_to_width(branch.clone(), 24),
             Style::new().fg(theme.accent_success),
         ));
     }
     if !data.workdir.is_empty() {
         spans.push(Span::styled("  ".to_owned(), Style::new()));
+        let used = spans
+            .iter()
+            .map(|span| str_width(&span.content))
+            .sum::<usize>();
+        let max_workdir = usize::from(area.width).saturating_sub(used + 18).max(8);
         spans.push(Span::styled(
-            data.workdir.clone(),
+            scrollback::truncate_to_width(data.workdir.clone(), max_workdir),
             Style::new().fg(theme.gray),
         ));
     }
@@ -523,8 +597,8 @@ fn statusline_data(app: &App) -> StatuslineData {
         .map(|session| format!("{:?}", session.mode).to_lowercase())
         .unwrap_or_else(|| "idle".into());
     let context_window = app.context_window().filter(|window| *window > 0);
-    let context_percent = context_window
-        .map(|window| app.usage.input_tokens as f64 * 100.0 / window as f64);
+    let context_percent =
+        context_window.map(|window| app.usage.input_tokens as f64 * 100.0 / window as f64);
     let workdir = app
         .session
         .as_ref()
@@ -619,13 +693,19 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
             .map(|elapsed| format!(" › ⏱ {}s", elapsed.as_secs()))
             .unwrap_or_default(),
     );
-    let right_cost = data
+    let mut right_cost = data
         .cost
         .map(|cost| format!(" › ${cost:.2}"))
         .unwrap_or_default();
     let used: usize = spans.iter().map(|span| str_width(&span.content)).sum();
+    let available = width.saturating_sub(used + 2);
+    if str_width(&right) + str_width(&right_cost) > available {
+        right_cost.clear();
+    }
+    let right =
+        scrollback::truncate_to_width(right, available.saturating_sub(str_width(&right_cost)));
     let right_width = str_width(&right) + str_width(&right_cost);
-    let gap = width.saturating_sub(used + right_width).max(2);
+    let gap = width.saturating_sub(used + right_width).max(1);
     spans.push(Span::styled(" ".repeat(gap), Style::new()));
     spans.push(Span::styled(right, Style::new().fg(theme.gray)));
     spans.push(Span::styled(

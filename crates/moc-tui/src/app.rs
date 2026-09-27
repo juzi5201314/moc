@@ -83,7 +83,9 @@ pub struct App {
     pub git_branch: Option<String>,
     /// statusline 自定义模板（core 配置 `[tui] statusline`）。
     pub statusline_template: Option<String>,
-    /// 视口命中表（点击折叠用）：`(块下标, 视口起始行, 视口结束行)`。
+    /// 最近一次绘制的转写区，用于鼠标选区的绝对坐标换算。
+    pub scrollback_area: Rect,
+    /// 视口命中表（点击折叠用）：`(块下标, 标题行, 标题后行)`。
     pub mouse_hits: Vec<(usize, u16, u16)>,
     /// 视口行文本（`(行, 文本)`，选择复制用）。
     pub paint_lines: Vec<(u16, String)>,
@@ -91,8 +93,9 @@ pub struct App {
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
     pub pending_click: Option<(u16, u16)>,
-    /// ctrl+c 第一次按下（等待二次确认退出）。
+    /// ctrl+c / Esc 的二次确认状态。
     pub cancel_pending: bool,
+    pub clear_pending: bool,
     /// 一次性提示（操作反馈、启动警告）；带 TTL 自动消失。
     pub notice: Option<String>,
     /// 当前 notice 的设置时刻（toast 超时判定）。
@@ -100,6 +103,8 @@ pub struct App {
     /// 退出标志。
     pub should_quit: bool,
 
+    /// 工具调用 ID 到转写块下标的索引，工具参数增量走热路径。
+    tool_indices: HashMap<String, usize>,
     /// 增量阶段累积的参数：`tool_call_id → JSON 片段拼接`（在工具块创建前到达）。
     pending_args: HashMap<String, String>,
 }
@@ -130,14 +135,17 @@ impl App {
             cost_usd: 0.0,
             git_branch: None,
             statusline_template: None,
+            scrollback_area: Rect::default(),
             mouse_hits: Vec::new(),
             paint_lines: Vec::new(),
             selection: None,
             pending_click: None,
             cancel_pending: false,
+            clear_pending: false,
             notice: None,
             notice_at: None,
             should_quit: false,
+            tool_indices: HashMap::new(),
             pending_args: HashMap::new(),
         }
     }
@@ -167,20 +175,19 @@ impl App {
 
     /// 找到指定调用 ID 的工具条目。
     pub fn tool_entry_mut(&mut self, tool_call_id: &str) -> Option<&mut Entry> {
-        self.blocks
-            .iter_mut()
-            .rev()
-            .find_map(|entry| match &entry.block {
-                Block::Tool(tool) if tool.id == tool_call_id => Some(entry),
-                _ => None,
-            })
+        let index = *self.tool_indices.get(tool_call_id)?;
+        match self.blocks.get(index).map(|entry| &entry.block) {
+            Some(Block::Tool(tool)) if tool.id == tool_call_id => self.blocks.get_mut(index),
+            _ => None,
+        }
     }
 
     /// 工具执行开始：把增量阶段累积的信息落地成转写块。
     pub fn start_tool_block(&mut self, tool_call_id: String, name: String) {
         let arguments = self.pending_args.remove(&tool_call_id).unwrap_or_default();
+        let index = self.blocks.len();
         self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-            id: tool_call_id,
+            id: tool_call_id.clone(),
             name,
             arguments,
             status: None,
@@ -189,6 +196,7 @@ impl App {
             duration_ms: None,
             running: true,
         })));
+        self.tool_indices.insert(tool_call_id, index);
     }
 
     /// 工具执行结束：回填终态。
@@ -203,9 +211,9 @@ impl App {
         if let Some(entry) = self.tool_entry_mut(&tool_call_id) {
             entry.finish_tool(status, result, duration_ms, diff);
         } else {
-            // 没见过 started / args 增量（如恢复会话）：直接落一个完成块
+            let index = self.blocks.len();
             self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-                id: tool_call_id,
+                id: tool_call_id.clone(),
                 name: result.tool_call_id.clone(),
                 arguments: String::new(),
                 status: Some(status),
@@ -214,6 +222,7 @@ impl App {
                 duration_ms,
                 running: false,
             })));
+            self.tool_indices.insert(tool_call_id, index);
         }
     }
 
@@ -310,10 +319,13 @@ impl App {
             .iter()
             .position(|model| model.id == current || current.starts_with(&model.id))
             .unwrap_or(0);
+        let mut picker = crate::modal::PickerState::default();
+        picker.selected = selected;
+        picker.offset = selected.saturating_sub(7);
         self.modal = Some(Modal::Model {
             models: self.models.clone(),
             current,
-            selected,
+            picker,
         });
     }
 
@@ -321,7 +333,10 @@ impl App {
     pub fn open_session_picker(&mut self) {
         self.modal = Some(Modal::Sessions {
             sessions: Vec::new(),
-            selected: 0,
+            picker: crate::modal::PickerState {
+                loading: true,
+                ..Default::default()
+            },
         });
     }
 
@@ -329,6 +344,12 @@ impl App {
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
         self.session = Some(info);
         self.blocks = blocks;
+        self.tool_indices.clear();
+        for (index, entry) in self.blocks.iter().enumerate() {
+            if let Block::Tool(tool) = &entry.block {
+                self.tool_indices.insert(tool.id.clone(), index);
+            }
+        }
         self.scroll_offset = 0;
         self.view_gen += 1;
     }

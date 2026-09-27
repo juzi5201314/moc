@@ -167,7 +167,7 @@ async fn event_loop(
     let mut view = render::ScrollbackView::new();
     let mut next_frame = tokio::time::Instant::now();
     let mut dirty = true;
-
+    let mut deferred_event: Option<AppEvent> = None;
     loop {
         if app.should_quit {
             return Ok(());
@@ -207,10 +207,27 @@ async fn event_loop(
                     None => return Ok(()),
                 }
             }
-            app_event = event_rx.recv() => {
+            app_event = async {
+                if let Some(event) = deferred_event.take() {
+                    Some(event)
+                } else {
+                    event_rx.recv().await
+                }
+            } => {
                 dirty = true;
                 match app_event {
-                    Some(AppEvent::Update(params)) => apply_update(app, params.update),
+                    Some(AppEvent::Update(params)) => {
+                        apply_update(app, params.update);
+                        while let Ok(next) = event_rx.try_recv() {
+                            match next {
+                                AppEvent::Update(params) => apply_update(app, params.update),
+                                other => {
+                                    deferred_event = Some(other);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Some(AppEvent::ClipboardImage(image)) => match image {
                         Some((media_type, bytes)) => {
                             let encoded = crate::clipboard::base64_encode(&bytes);
@@ -258,12 +275,22 @@ async fn event_loop(
                     Some(AppEvent::Sessions(sessions)) => {
                         app.modal = Some(Modal::Sessions {
                             sessions,
-                            selected: 0,
+                            picker: crate::modal::PickerState::default(),
                         });
                     }
+                    Some(AppEvent::PickerError(error)) => {
+                        if let Some(modal) = app.modal.as_mut() {
+                            modal.set_error(error);
+                        } else {
+                            app.set_notice(error);
+                        }
+                    }
+                    Some(AppEvent::Notice(message)) => app.set_notice(message),
                     Some(AppEvent::Loaded(info, blocks)) => {
                         app.modal = None;
+                        let cwd = info.cwd.clone();
                         app.switch_session(info, blocks);
+                        refresh_git_branch(app, &cwd);
                     }
                     Some(AppEvent::ModelSwitched) => {
                         app.modal = None;
@@ -326,7 +353,7 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 if let Some(&(index, ..)) = app
                     .mouse_hits
                     .iter()
-                    .find(|&&(_, start, end)| position.1 >= start && position.1 < end)
+                    .find(|&&(_, start, _)| position.1 == start)
                     && let Some(entry) = app.blocks.get_mut(index)
                     && entry.block.foldable()
                 {
@@ -357,27 +384,70 @@ fn handle_key(
     modifiers: KeyModifiers,
     code: KeyCode,
 ) {
-    // 打开的模态吃掉全部键盘事件
+    if !matches!(
+        (code, modifiers),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL)
+    ) {
+        app.cancel_pending = false;
+    }
+    if !matches!(code, KeyCode::Esc) {
+        app.clear_pending = false;
+    }
     if app.modal.is_some() {
         handle_modal_key(app, connection, modifiers, code);
+        return;
+    }
+    if matches!(code, KeyCode::Esc) && app.completion.is_some() {
+        app.completion = None;
         return;
     }
     if handle_completion_key(app, modifiers, code) {
         return;
     }
+    if app.focus == Focus::Scrollback {
+        match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                scroll(app, -3);
+                return;
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                scroll(app, 3);
+                return;
+            }
+            (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                scroll(app, -10);
+                return;
+            }
+            (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                scroll(app, 10);
+                return;
+            }
+            (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => {
+                app.scroll_offset = usize::MAX;
+                return;
+            }
+            (KeyCode::End, _) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => {
+                app.scroll_offset = 0;
+                return;
+            }
+            _ => {}
+        }
+    }
     match (code, modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
             if app.turn_running {
-                // 第一次中断：取消轮次；再按一次退出
                 if app.cancel_pending {
                     app.should_quit = true;
                 } else {
                     app.cancel_pending = true;
-                    app.set_notice("轮次取消中；再按一次 ctrl+c 退出");
+                    app.set_notice("轮次取消中；再按一次 Ctrl+C 退出");
                     cancel_turn(&connection.client, app);
                 }
-            } else {
+            } else if app.cancel_pending {
                 app.should_quit = true;
+            } else {
+                app.cancel_pending = true;
+                app.set_notice("再次按 Ctrl+C 退出");
             }
         }
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
@@ -396,12 +466,7 @@ fn handle_key(
                 "工具调用：展开"
             });
         }
-        (KeyCode::Char('v'), KeyModifiers::CONTROL) => {
-            // 图片粘贴：读系统剪贴板（异步），文本粘贴走 bracketed paste
-            spawn_clipboard_image(app.events.clone());
-        }
-        // ctrl+p：模型选择。不用 ctrl+m——终端里 ctrl+m 与 Enter 同为 CR（0x0d），
-        // 没有 kitty 键盘协议时前端根本收不到这个组合。
+        (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_image(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
         (KeyCode::Char('y'), KeyModifiers::NONE) => copy_selection(app),
@@ -409,26 +474,28 @@ fn handle_key(
             if app.selection.is_some() {
                 app.selection = None;
             } else if !app.prompt_text().is_empty() {
-                app.prompt.clear();
+                if app.clear_pending {
+                    app.prompt.clear();
+                    app.clear_pending = false;
+                } else {
+                    app.clear_pending = true;
+                    app.set_notice("再次按 Esc 清空输入");
+                }
             }
         }
-        // 终端把 shift+tab 报为 BackTab（ESC[Z）；kitty 协议关闭时 modifiers 为空
         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _)
             if app.focus == crate::app::Focus::Prompt =>
         {
-            // 输入框聚焦时 shift+tab 循环模式（codex/grok 语义）
-            cycle_mode(app, connection);
+            cycle_mode(app, connection)
         }
-        (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
-            app.focus = app.focus.toggle();
-        }
+        (KeyCode::Tab, _) | (KeyCode::BackTab, _) => app.focus = app.focus.toggle(),
         (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT)
             if app.focus == crate::app::Focus::Prompt =>
         {
-            app.prompt.insert_char('\n');
+            app.prompt.insert_char('\n')
         }
         (KeyCode::Enter, KeyModifiers::NONE) if app.focus == crate::app::Focus::Prompt => {
-            commit_prompt(app, connection);
+            commit_prompt(app, connection)
         }
         (KeyCode::Up, _) if app.focus == crate::app::Focus::Prompt => {
             app.prompt.up();
@@ -443,11 +510,15 @@ fn handle_key(
         (KeyCode::Delete, _) if app.focus == crate::app::Focus::Prompt => app.prompt.delete(),
         (KeyCode::Left, _) if app.focus == crate::app::Focus::Prompt => app.prompt.left(),
         (KeyCode::Right, _) if app.focus == crate::app::Focus::Prompt => app.prompt.right(),
-        (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL) => {
-            app.prompt.move_line_start();
+        (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL)
+            if app.focus == crate::app::Focus::Prompt =>
+        {
+            app.prompt.move_line_start()
         }
-        (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-            app.prompt.move_line_end();
+        (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL)
+            if app.focus == crate::app::Focus::Prompt =>
+        {
+            app.prompt.move_line_end()
         }
         (KeyCode::Char('k'), KeyModifiers::CONTROL) => app.prompt.clear_line_to_end(),
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => app.prompt.clear(),
@@ -492,9 +563,7 @@ fn accept_completion(app: &mut App) -> bool {
         return false;
     };
     let chosen = completion.chosen();
-    app.prompt.clear();
-    app.prompt.insert_str_raw(chosen);
-    app.prompt.insert_char(' ');
+    app.prompt.replace_current_token(chosen);
     true
 }
 
@@ -517,6 +586,7 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
         return;
     }
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.set_notice("会话仍在连接，请稍候");
         return;
     };
     let parts = app.prompt.build_input_parts();
@@ -528,16 +598,15 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
 fn open_session_picker(app: &mut App, connection: &EmbeddedConnection) {
     let client = connection.client.clone();
     let events = app.events.clone();
-    app.modal = Some(Modal::Sessions {
-        sessions: Vec::new(),
-        selected: 0,
-    });
+    app.open_session_picker();
     tokio::spawn(async move {
         match client.call::<SessionList>(SessionListParams {}).await {
             Ok(list) => {
                 let _ = events.send(AppEvent::Sessions(list.sessions));
             }
-            Err(error) => tracing::warn!(%error, "会话列表拉取失败"),
+            Err(error) => {
+                let _ = events.send(AppEvent::PickerError(format!("加载会话列表失败：{error}")));
+            }
         }
     });
 }
@@ -697,19 +766,46 @@ fn handle_modal_key(
                 _ => {}
             }
         }
-        Modal::Model {
-            models, selected, ..
-        } => match (code, modifiers) {
-            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                *selected = selected.saturating_sub(1);
-            }
-            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                *selected = (*selected + 1).min(models.len().saturating_sub(1));
-            }
-            (KeyCode::Enter, KeyModifiers::NONE) => {
-                if let Some(model) = models.get(*selected)
-                    && let Some(session_id) = session_id
+        Modal::Model { models, picker, .. } => {
+            let filtered = crate::modal::filtered_models(models, &picker.query);
+            match (code, modifiers) {
+                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
+                (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                (KeyCode::Home, _) => {
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::End, _) => {
+                    picker.selected = filtered.len().saturating_sub(1);
+                    picker.keep_visible(8, filtered.len());
+                }
+                (KeyCode::Backspace, _) => {
+                    picker.query.pop();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    if !ch.is_control() =>
                 {
+                    picker.query.push(ch);
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if picker.loading {
+                        return;
+                    }
+                    let Some((_, model)) = filtered.get(picker.selected) else {
+                        return;
+                    };
+                    let Some(session_id) = session_id.clone() else {
+                        picker.error = Some("当前没有活动会话".into());
+                        return;
+                    };
+                    picker.loading = true;
+                    picker.error = None;
                     let client = connection.client.clone();
                     let events = events.clone();
                     let selector = model.id.clone();
@@ -724,24 +820,53 @@ fn handle_modal_key(
                             Ok(_) => {
                                 let _ = events.send(AppEvent::ModelSwitched);
                             }
-                            Err(error) => tracing::warn!(%error, "切换模型失败"),
+                            Err(error) => {
+                                let _ = events
+                                    .send(AppEvent::PickerError(format!("切换模型失败：{error}")));
+                            }
                         }
                     });
                 }
-                close = true;
+                (KeyCode::Esc, _) => close = true,
+                _ => {}
             }
-            (KeyCode::Esc, _) => close = true,
-            _ => {}
-        },
-        Modal::Sessions { sessions, selected } => match (code, modifiers) {
-            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                *selected = selected.saturating_sub(1);
-            }
-            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                *selected = (*selected + 1).min(sessions.len().saturating_sub(1));
-            }
-            (KeyCode::Enter, KeyModifiers::NONE) => {
-                if let Some(session) = sessions.get(*selected) {
+        }
+        Modal::Sessions { sessions, picker } => {
+            let filtered = crate::modal::filtered_sessions(sessions, &picker.query);
+            match (code, modifiers) {
+                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
+                (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                (KeyCode::Home, _) => {
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::End, _) => {
+                    picker.selected = filtered.len().saturating_sub(1);
+                    picker.keep_visible(8, filtered.len());
+                }
+                (KeyCode::Backspace, _) => {
+                    picker.query.pop();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    if !ch.is_control() =>
+                {
+                    picker.query.push(ch);
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if picker.loading {
+                        return;
+                    }
+                    let Some((_, session)) = filtered.get(picker.selected) else {
+                        return;
+                    };
+                    picker.loading = true;
+                    picker.error = None;
                     let client = connection.client.clone();
                     let session_id = session.id.clone();
                     let events = events.clone();
@@ -759,15 +884,17 @@ fn handle_modal_key(
                                     crate::transcript_restore::blocks_from_entries(&loaded.entries),
                                 ));
                             }
-                            Err(error) => tracing::warn!(%error, "加载会话失败"),
+                            Err(error) => {
+                                let _ = events
+                                    .send(AppEvent::PickerError(format!("加载会话失败：{error}")));
+                            }
                         }
                     });
                 }
-                close = true;
+                (KeyCode::Esc, _) => close = true,
+                _ => {}
             }
-            (KeyCode::Esc, _) => close = true,
-            _ => {}
-        },
+        }
         Modal::Plan {
             plan_id, selected, ..
         } => {
@@ -1064,21 +1191,64 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     match name {
-        "/quit" | "/q" => app.should_quit = true,
+        "/new" => {
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            let (cwd, model, mode) = app
+                .session
+                .as_ref()
+                .map(|session| {
+                    (
+                        Some(session.cwd.clone()),
+                        Some(session.model.clone()),
+                        session.mode,
+                    )
+                })
+                .unwrap_or((None, None, SessionMode::Normal));
+            tokio::spawn(async move {
+                match client
+                    .call::<SessionNew>(SessionNewParams {
+                        cwd,
+                        model,
+                        title: None,
+                        mode,
+                    })
+                    .await
+                {
+                    Ok(info) => {
+                        let _ = events.send(AppEvent::Loaded(info, Vec::new()));
+                    }
+                    Err(error) => {
+                        let _ = events.send(AppEvent::Notice(format!("新建会话失败：{error}")));
+                    }
+                }
+            });
+        }
         "/help" => app.modal = Some(Modal::Help),
         "/compact" => {
             if let Some(session_id) = session_id {
                 let client = connection.client.clone();
+                let events = app.events.clone();
                 let instructions = (!rest.trim().is_empty()).then(|| rest.trim().to_owned());
                 tokio::spawn(async move {
-                    let result = client
+                    match client
                         .call::<SessionCompact>(SessionCompactParams {
                             session_id,
                             instructions,
                         })
-                        .await;
-                    tracing::info!(?result, "手动压缩完成");
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = events.send(AppEvent::Notice("上下文压缩已完成".into()));
+                        }
+                        Err(error) => {
+                            let _ =
+                                events.send(AppEvent::Notice(format!("上下文压缩失败：{error}")));
+                        }
+                    }
                 });
+            } else {
+                app.set_notice("当前没有活动会话");
             }
         }
         "/mode" => cycle_mode(app, connection),
@@ -1091,6 +1261,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
 /// 循环切换 Normal → Ask → Plan。
 fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
         return;
     };
     let next = match session.mode {
@@ -1100,13 +1271,20 @@ fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     };
     let client = connection.client.clone();
     let session_id = session.id.clone();
+    let events = app.events.clone();
     tokio::spawn(async move {
-        let _ = client
+        match client
             .call::<SessionSetMode>(SessionSetModeParams {
                 session_id,
                 mode: next,
             })
-            .await;
+            .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("切换模式失败：{error}")));
+            }
+        }
     });
 }
 
@@ -1137,23 +1315,29 @@ fn copy_selection(app: &mut App) {
     let Some(((sx, sy), (ex, ey))) = app.selection else {
         return;
     };
-    let (start_row, end_row) = if sy <= ey { (sy, ey) } else { (ey, sy) };
-    let (start_col, end_col) = if sy == ey && sx > ex {
-        (ex, sx)
+    let (start_row, end_row, start_col, end_col) = if sy < ey {
+        (sy, ey, sx, ex)
+    } else if sy > ey {
+        (ey, sy, ex, sx)
+    } else if sx <= ex {
+        (sy, ey, sx, ex)
     } else {
-        (sx, ex)
+        (sy, ey, ex, sx)
     };
+    let area_x = app.scrollback_area.x;
+    let start_col = usize::from(start_col.saturating_sub(area_x));
+    let end_col = usize::from(end_col.saturating_sub(area_x));
     let mut text = String::new();
     for &(row, ref line_text) in &app.paint_lines {
         if row < start_row || row > end_row {
             continue;
         }
-        // 单行选择按列裁剪；跨行选择取整行
         if start_row == end_row {
-            let chars: Vec<char> = line_text.chars().collect();
-            let from = (start_col as usize).min(chars.len());
-            let to = (end_col as usize).min(chars.len());
-            text.push_str(&chars[from..to].iter().collect::<String>());
+            text.push_str(&slice_display_columns(line_text, start_col, end_col));
+        } else if row == start_row {
+            text.push_str(&slice_display_columns(line_text, start_col, usize::MAX));
+        } else if row == end_row {
+            text.push_str(&slice_display_columns(line_text, 0, end_col));
         } else {
             text.push_str(line_text);
         }
@@ -1162,19 +1346,32 @@ fn copy_selection(app: &mut App) {
     if text.is_empty() {
         return;
     }
-    let events = app.events.clone();
-    let text_for_log = text.clone();
+    let text_for_clipboard = text.clone();
     tokio::spawn(async move {
-        match crate::clipboard::copy_text_to_clipboard(text_for_log.trim_end()).await {
-            Ok(()) => {
-                tracing::debug!("选区已复制");
-            }
+        match crate::clipboard::copy_text_to_clipboard(text_for_clipboard.trim_end()).await {
+            Ok(()) => tracing::debug!("选区已复制"),
             Err(error) => tracing::debug!(%error, "复制选区失败"),
         }
     });
-    let _ = events;
     app.selection = None;
     app.set_notice("已复制选中内容");
+}
+
+fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
+    let mut output = String::new();
+    let mut column = 0usize;
+    for ch in text.chars() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        let next = column.saturating_add(width);
+        if next > from && column < to {
+            output.push(ch);
+        }
+        column = next;
+        if column >= to {
+            break;
+        }
+    }
+    output
 }
 
 #[cfg(test)]

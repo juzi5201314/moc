@@ -39,8 +39,12 @@ pub enum AppEvent {
     Sessions(Vec<moc_protocol::SessionInfo>),
     /// 会话加载完成（选择器选中后切换转写）。
     Loaded(moc_protocol::SessionInfo, Vec<crate::transcript::Entry>),
+    /// 选择器异步请求失败，保留浮层展示错误与重试提示。
+    PickerError(String),
     /// 模型切换完成（关闭选择器）。
     ModelSwitched,
+    /// 非模态异步操作的用户可见提示。
+    Notice(String),
     /// git 分支就绪（statusline 异步刷新）。
     GitBranch(String),
 }

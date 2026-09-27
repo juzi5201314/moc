@@ -106,6 +106,25 @@ impl PromptState {
         self.cursor += content.len();
         self.break_history_browse();
     }
+    /// 用补全命令替换当前 token，不破坏多行草稿的其余内容。
+    pub fn replace_current_token(&mut self, replacement: &str) {
+        let line_start = self.text[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let token_start = self.text[line_start..self.cursor]
+            .rfind(char::is_whitespace)
+            .map_or(line_start, |index| line_start + index + 1);
+        let token_end = self.text[self.cursor..]
+            .find(char::is_whitespace)
+            .map_or(self.text.len(), |index| self.cursor + index);
+        self.text.replace_range(token_start..token_end, replacement);
+        self.cursor = token_start + replacement.len();
+        if self.cursor == self.text.len() || self.text.as_bytes().get(self.cursor) != Some(&b' ') {
+            self.text.insert(self.cursor, ' ');
+            self.cursor += 1;
+        }
+        self.break_history_browse();
+    }
 
     /// 光标移到当前逻辑行行首。
     pub fn move_line_start(&mut self) {
@@ -175,15 +194,16 @@ impl PromptState {
     /// 光标前是否恰好结束一个 chip 占位；返回 (start, end)。
     fn chip_ending_at(&self, cursor: usize) -> Option<(usize, usize)> {
         let prefix = &self.text[..cursor];
-        let marker_start = prefix.rfind("[paste#").map(|index| (index, "[paste#]"));
-        let image_start = prefix.rfind("[image#").map(|index| (index, "[image#]"));
-        for (index, _) in marker_start.into_iter().chain(image_start) {
+        for marker in ["[paste#", "[image#"] {
+            let Some(index) = prefix.rfind(marker) else {
+                continue;
+            };
             let rest = &prefix[index..];
-            if rest.ends_with(']')
-                && rest[1..]
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '#')
-            {
+            let valid = rest
+                .strip_prefix(marker)
+                .and_then(|value| value.strip_suffix(']'))
+                .is_some_and(|id| !id.is_empty() && id.chars().all(|ch| ch.is_ascii_digit()));
+            if valid && rest.ends_with(']') {
                 return Some((index, cursor));
             }
         }
@@ -341,8 +361,8 @@ impl PromptState {
             if let Some(id) = id
                 && let Some(chip) = self.images.iter().find(|chip| chip.id == id)
             {
-                plain.push_str(rest[..index].trim());
-                if !plain.is_empty() {
+                plain.push_str(&rest[..index]);
+                if !plain.trim().is_empty() {
                     parts.push(InputPart::Text {
                         text: std::mem::take(&mut plain),
                     });
@@ -360,6 +380,7 @@ impl PromptState {
             plain.push_str(&rest[..index + end + 1]);
             rest = &rest[index + end + 1..];
         }
+
         plain.push_str(rest);
         if !plain.trim().is_empty() || parts.is_empty() {
             parts.push(InputPart::Text { text: plain });
@@ -399,5 +420,30 @@ impl PromptState {
         self.text.replace_range(position..self.cursor, "");
         self.cursor = position;
         self.break_history_browse();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PromptState;
+
+    #[test]
+    fn completion_replaces_token_without_destroying_multiline_draft() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("/mo\n保留内容");
+        prompt.cursor = 3;
+        prompt.replace_current_token("/model");
+        assert_eq!(prompt.text, "/model \n保留内容");
+        assert_eq!(prompt.cursor, 7);
+    }
+
+    #[test]
+    fn wide_character_cursor_moves_on_utf8_boundaries() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("中文a");
+        prompt.left();
+        assert_eq!(&prompt.text[..prompt.cursor], "中文");
+        prompt.right();
+        assert_eq!(&prompt.text[..prompt.cursor], "中文a");
     }
 }
