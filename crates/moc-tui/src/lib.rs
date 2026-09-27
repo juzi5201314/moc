@@ -1,9 +1,10 @@
 //! moc-tui：moc 的终端交互前端。
 //!
 //! 基于 ratatui + crossterm（与 grok-build 同款技术栈），内嵌 core 走与
-//! 其他前端完全相同的 JSON-RPC 协议（见 [`protocol`]）。布局信息密度参照
-//! omp：紧凑的转写区、工具调用盒、todo 树与底部 statusline；交互质感参照
-//! grok-build：鼠标操控、折叠开关、圆角输入框。
+//! 其他前端完全相同的 JSON-RPC 协议（见 [`protocol`]）。版面参照 grok-build：
+//! 内容左右留边距，顶部信息条与输入框下边框图例（左＝快捷键小提示、右＝模型 ·
+//! 模式）夹住转写区；用户消息是带底色的圆角面板，助手回复带「耗时 + 时间」尾注，
+//! 思维链展开成引文带。交互质感同样对齐：鼠标操控、折叠开关、圆角输入框。
 
 pub mod app;
 pub mod clipboard;

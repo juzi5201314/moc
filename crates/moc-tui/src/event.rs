@@ -400,7 +400,9 @@ fn handle_key(
             // 图片粘贴：读系统剪贴板（异步），文本粘贴走 bracketed paste
             spawn_clipboard_image(app.events.clone());
         }
-        (KeyCode::Char('m'), KeyModifiers::CONTROL) => app.open_model_picker(),
+        // ctrl+p：模型选择。不用 ctrl+m——终端里 ctrl+m 与 Enter 同为 CR（0x0d），
+        // 没有 kitty 键盘协议时前端根本收不到这个组合。
+        (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
         (KeyCode::Char('y'), KeyModifiers::NONE) => copy_selection(app),
         (KeyCode::Esc, _) => {
@@ -867,16 +869,16 @@ fn advance_ask(
 
 /// 把协议更新折叠进块序列：流式增量续写活动块，工具调用按 ID 归组。
 fn apply_update(app: &mut App, update: SessionUpdate) {
-    use crate::transcript::{Block, Entry};
+    use crate::transcript::Block;
     match update {
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
             moc_protocol::methods::AssistantDelta::Text { delta } => {
                 if !delta.is_empty()
                     && !app.has_streaming(|block| matches!(block, Block::Assistant { .. }))
                 {
-                    app.blocks.push(Entry::new(Block::Assistant {
+                    app.push_block(Block::Assistant {
                         text: String::new(),
-                    }));
+                    });
                 }
                 app.append_streaming(
                     |block| match block {
@@ -890,9 +892,9 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 if !delta.is_empty()
                     && !app.has_streaming(|block| matches!(block, Block::Thinking { .. }))
                 {
-                    app.blocks.push(Entry::new(Block::Thinking {
+                    app.push_block(Block::Thinking {
                         text: String::new(),
-                    }));
+                    });
                 }
                 app.append_streaming(
                     |block| match block {
@@ -935,10 +937,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             app.turn_started_at = Some(std::time::Instant::now());
             app.notice = None;
         }
-        SessionUpdate::TurnFinished { .. } => {
-            app.turn_running = false;
-            app.cancel_pending = false;
-        }
+        SessionUpdate::TurnFinished { .. } => app.finish_turn(),
         SessionUpdate::TitleChanged { title } => {
             if let Some(session) = app.session.as_mut() {
                 session.title = title;

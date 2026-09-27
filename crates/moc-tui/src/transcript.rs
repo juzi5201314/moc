@@ -7,6 +7,15 @@
 use moc_protocol::ToolResult;
 use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
 
+/// 当前时刻的 UNIX 毫秒时间戳。
+pub fn now_ms() -> u64 {
+    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return 0;
+    };
+    // u128 毫秒 → u64：毫秒计数到 u64 溢出是 5.8 亿年后的事
+    u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// 转写条目：块 + 内容版本（渲染缓存 key 的一部分）。
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -14,6 +23,12 @@ pub struct Entry {
     pub block: Block,
     /// 单块折叠覆盖（与全局开关叠加：任一为真即折叠）。
     pub folded: bool,
+    /// 块落地时刻（UNIX 毫秒）：用户消息与助手回复据此显示时间戳。
+    /// `None` 表示无从得知（如从历史恢复的会话）。
+    pub at_ms: Option<u64>,
+    /// 该块所在轮次的耗时（毫秒）：轮次结束时回填到助手块，
+    /// 渲染为 `Worked for` 尾注。
+    pub elapsed_ms: Option<u64>,
 }
 
 impl Entry {
@@ -22,12 +37,32 @@ impl Entry {
             generation: 0,
             block,
             folded: false,
+            at_ms: None,
+            elapsed_ms: None,
+        }
+    }
+
+    /// 实时创建的块：带上落地时刻（历史恢复的块走 [`Entry::new`]，时间未知）。
+    pub fn timed(block: Block) -> Self {
+        Self {
+            at_ms: Some(now_ms()),
+            ..Self::new(block)
         }
     }
 
     /// 内容变化时统一走这里，保证缓存失效。
     pub(crate) fn touch(&mut self) {
         self.generation += 1;
+    }
+
+    /// 轮次收尾：把结束时刻与耗时回填到助手块（`Worked for` 尾注 + 回复时间）。
+    pub fn stamp_turn(&mut self, at_ms: u64, elapsed_ms: u64) {
+        if !matches!(self.block, Block::Assistant { .. }) {
+            return;
+        }
+        self.at_ms = Some(at_ms);
+        self.elapsed_ms = Some(elapsed_ms);
+        self.touch();
     }
 
     /// 切换单块折叠。

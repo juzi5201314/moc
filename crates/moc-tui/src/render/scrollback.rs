@@ -13,6 +13,7 @@ use serde_json::Value;
 use super::diff;
 use super::markdown::render_markdown;
 use super::wrap::{str_width, wrap_text};
+use super::{PROSE_INDENT, TITLE_INDENT};
 use crate::app::App;
 use crate::theme::Theme;
 use crate::transcript::{Block, Entry, ToolCallBlock};
@@ -60,7 +61,7 @@ impl ScrollbackView {
             {
                 continue;
             }
-            let lines = render_entry(entry, app, width);
+            let lines = render_entry(entry, app, width, index == 0);
             let cached = CachedEntry { key, lines };
             if index < self.cache.len() {
                 self.cache[index] = cached;
@@ -113,104 +114,244 @@ impl ScrollbackView {
     }
 }
 
-/// 单块渲染。折叠状态由全局开关与块类型共同决定。
-fn render_entry(entry: &Entry, app: &App, width: u16) -> Vec<Line<'static>> {
-    let width = width as usize;
+/// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
+/// 折叠状态由全局开关与块类型共同决定。
+fn render_entry(entry: &Entry, app: &App, width: u16, first: bool) -> Vec<Line<'static>> {
+    let width = usize::from(width);
     let theme = app.theme;
     match &entry.block {
-        Block::User { text } => {
-            let mut lines = Vec::new();
-            let rows = wrap_text(text, width.saturating_sub(2));
-            for (index, row) in rows.into_iter().enumerate() {
-                if index == 0 {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "❯ ".to_owned(),
-                            Style::new()
-                                .fg(theme.accent_user)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(row, Style::new().fg(theme.accent_user)),
-                    ]));
-                } else {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {row}"),
-                        Style::new().fg(theme.accent_user),
-                    )));
-                }
-            }
-            lines.push(Line::from(String::new()));
-            lines
-        }
-        Block::Assistant { text } => {
-            let mut lines = render_markdown(text, width.saturating_sub(2), theme);
-            lines.push(Line::from(String::new()));
-            lines
-        }
-        Block::Thinking { text } => {
-            if !app.show_thinking || entry.folded {
-                return vec![Line::from(Span::styled(
-                    format!(
-                        "◆ Thinking（{} 字符，{}）",
-                        text.chars().count(),
-                        if entry.folded {
-                            "点击/ctrl+t 展开"
-                        } else {
-                            "ctrl+t 展开"
-                        }
-                    ),
-                    Style::new().fg(theme.accent_thinking),
-                ))];
-            }
-            let mut lines = render_markdown(text, width.saturating_sub(6), theme)
-                .into_iter()
-                .map(|line| {
-                    let mut spans = vec![Span::styled(
-                        "    ".to_owned(),
-                        Style::new().fg(theme.accent_thinking),
-                    )];
-                    spans.extend(line.spans.into_iter().map(|span| {
-                        Span::styled(
-                            span.content.into_owned(),
-                            span.style
-                                .fg(theme.accent_thinking)
-                                .add_modifier(Modifier::ITALIC),
-                        )
-                    }));
-                    Line::from(spans)
-                })
-                .collect::<Vec<_>>();
-            lines.insert(
-                0,
-                Line::from(Span::styled(
-                    "◆ Thinking".to_owned(),
-                    Style::new()
-                        .fg(theme.accent_thinking)
-                        .add_modifier(Modifier::BOLD),
-                )),
-            );
-            lines.push(Line::from(String::new()));
-            lines
-        }
+        Block::User { text } => user_message(text, entry.at_ms, first, width, theme),
+        Block::Assistant { text } => assistant_message(text, entry, width, theme),
+        Block::Thinking { text } => thinking_block(text, entry, app, width),
         Block::Tool(tool) => render_tool(tool, app, width, entry.folded),
         Block::Todo { phases } => render_todo(phases, app, width),
-        Block::Note { text, error } => {
-            let color = if *error {
-                theme.accent_error
-            } else {
-                theme.gray_bright
-            };
-            vec![
-                Line::from(Span::styled(
-                    wrap_text(text, width)
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default(),
-                    Style::new().fg(color),
-                )),
-                Line::from(String::new()),
-            ]
+        Block::Note { text, error } => note_block(text, *error, width, theme),
+    }
+}
+
+/// 用户消息：整幅圆角面板（抬升底色），末行右侧给本地时间。
+///
+/// 面板左右各留 1 格内边距、上下一行边框，长文本吃满面板宽度换行；
+/// 末行放不下时间戳时单独追加一行，绝不与正文重叠。
+fn user_message(
+    text: &str,
+    at_ms: Option<u64>,
+    first: bool,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut pending_clock = at_ms.and_then(format_clock);
+    let inner = width.saturating_sub(2);
+    let text_width = inner.saturating_sub(2).max(8);
+    let border_style = Style::new().fg(theme.border).bg(theme.bg_highlight);
+    let fill = Style::new().bg(theme.bg_highlight);
+    let text_style = Style::new()
+        .fg(theme.accent_user)
+        .bg(theme.bg_highlight)
+        .add_modifier(Modifier::BOLD);
+
+    let rows = wrap_text(text, text_width);
+    let last_row = rows.len().saturating_sub(1);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 3);
+    if !first {
+        lines.push(Line::from(String::new()));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("╭{}╮", "─".repeat(inner)),
+        border_style,
+    )));
+    for (index, row) in rows.into_iter().enumerate() {
+        let free = inner.saturating_sub(2 + str_width(&row));
+        let mut spans = vec![
+            Span::styled("│".to_owned(), border_style),
+            Span::styled(" ".to_owned(), fill),
+            Span::styled(row, text_style),
+        ];
+        if index == last_row
+            && let Some(clock) = &pending_clock
+        {
+            let clock_width = str_width(clock);
+            if free >= clock_width + 2 {
+                spans.push(Span::styled(" ".repeat(free - clock_width), fill));
+                spans.push(Span::styled(
+                    clock.clone(),
+                    Style::new().fg(theme.gray).bg(theme.bg_highlight),
+                ));
+                pending_clock = None;
+            }
         }
+        spans.push(Span::styled(" ".to_owned(), fill));
+        spans.push(Span::styled("│".to_owned(), border_style));
+        lines.push(pad_line(spans, fill, width));
+    }
+    if let Some(clock) = pending_clock {
+        let clock_width = str_width(&clock);
+        let free = inner.saturating_sub(2);
+        lines.push(pad_line(
+            vec![
+                Span::styled("│".to_owned(), border_style),
+                Span::styled(" ".to_owned(), fill),
+                Span::styled(" ".repeat(free.saturating_sub(clock_width)), fill),
+                Span::styled(clock, Style::new().fg(theme.gray).bg(theme.bg_highlight)),
+                Span::styled(" ".to_owned(), fill),
+                Span::styled("│".to_owned(), border_style),
+            ],
+            fill,
+            width,
+        ));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("╰{}╯", "─".repeat(inner)),
+        border_style,
+    )));
+    lines.push(Line::from(String::new()));
+    lines
+}
+
+/// 助手回复：正文按 [`PROSE_INDENT`] 悬挂缩进，尾注行给耗时与本地时间。
+fn assistant_message(text: &str, entry: &Entry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = render_markdown(
+        text,
+        width.saturating_sub(PROSE_INDENT).max(8),
+        theme,
+    )
+    .into_iter()
+    .map(indent_prose)
+    .collect();
+    if let Some(footer) = turn_footer(entry, width, theme) {
+        lines.push(footer);
+    }
+    lines.push(Line::from(String::new()));
+    lines
+}
+
+/// 助手回复尾注：左侧 `耗时`、右侧本地时间；轮次未结束（或耗时未知）时不占行。
+fn turn_footer(entry: &Entry, width: usize, theme: &Theme) -> Option<Line<'static>> {
+    let elapsed = format_duration(entry.elapsed_ms?);
+    let clock = entry.at_ms.and_then(format_clock);
+    let text = format!("耗时 {elapsed}");
+    let used = PROSE_INDENT + str_width(&text);
+    let mut spans = vec![
+        Span::styled(" ".repeat(PROSE_INDENT), Style::new()),
+        Span::styled(text, Style::new().fg(theme.gray_dim)),
+    ];
+    if let Some(clock) = clock {
+        let gap = width.saturating_sub(used + str_width(&clock)).max(2);
+        spans.push(Span::styled(" ".repeat(gap), Style::new()));
+        spans.push(Span::styled(clock, Style::new().fg(theme.gray_dim)));
+    }
+    Some(Line::from(spans))
+}
+
+/// 思维链：折叠时单行标题；展开时引文带（左竖线 + 抬升底色 + 斜体）。
+fn thinking_block(text: &str, entry: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
+    let theme = app.theme;
+    let expanded = app.show_thinking && !entry.folded;
+    let mut spans = vec![
+        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+        Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_thinking)),
+        Span::styled(
+            "Thinking".to_owned(),
+            Style::new()
+                .fg(theme.gray_bright)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" · {} 字符", text.chars().count()),
+            Style::new().fg(theme.gray_dim),
+        ),
+    ];
+    if !expanded {
+        spans.push(Span::styled(
+            "  ctrl+t 展开".to_owned(),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
+    let mut lines = vec![Line::from(spans)];
+    if expanded {
+        let band = Style::new().bg(theme.bg_hover);
+        for line in render_markdown(text, width.saturating_sub(PROSE_INDENT + 1).max(8), theme) {
+            let mut spans = vec![Span::styled(
+                "▏ ".to_owned(),
+                Style::new().fg(theme.accent_thinking).bg(theme.bg_hover),
+            )];
+            spans.extend(line.spans.into_iter().map(|span| {
+                Span::styled(
+                    span.content.into_owned(),
+                    span.style
+                        .fg(theme.accent_thinking)
+                        .bg(theme.bg_hover)
+                        .add_modifier(Modifier::ITALIC),
+                )
+            }));
+            lines.push(pad_line(spans, band, width));
+        }
+    }
+    lines.push(Line::from(String::new()));
+    lines
+}
+
+/// 系统提示：错误 `✘`、普通 `»`，缩进与块标题一致。
+fn note_block(text: &str, error: bool, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let (marker, color) = if error {
+        ("✘ ", theme.accent_error)
+    } else {
+        ("» ", theme.gray_bright)
+    };
+    let mut lines: Vec<Line<'static>> = wrap_text(text, width.saturating_sub(TITLE_INDENT + 2))
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Line::from(vec![
+                Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+                if index == 0 {
+                    Span::styled(marker.to_owned(), Style::new().fg(color))
+                } else {
+                    Span::styled("  ".to_owned(), Style::new())
+                },
+                Span::styled(row, Style::new().fg(color)),
+            ])
+        })
+        .collect();
+    lines.push(Line::from(String::new()));
+    lines
+}
+
+/// 用 `fill` 补满到 `width`：所有行都自带底色，面板/引文带才成形。
+fn pad_line(spans: Vec<Span<'static>>, fill: Style, width: usize) -> Line<'static> {
+    let used: usize = spans.iter().map(|span| str_width(&span.content)).sum();
+    let mut spans = spans;
+    if used < width {
+        spans.push(Span::styled(" ".repeat(width - used), fill));
+    }
+    Line::from(spans)
+}
+
+/// 正文统一左缩进（助手回复、工具内容共用同一列）。
+fn indent_prose(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::styled(" ".repeat(PROSE_INDENT), Style::new())];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
+/// UNIX 毫秒 → 本地 `HH:MM`；超出可表示范围时返回 `None`。
+fn format_clock(at_ms: u64) -> Option<String> {
+    use chrono::TimeZone;
+    let millis = i64::try_from(at_ms).ok()?;
+    chrono::Local
+        .timestamp_millis_opt(millis)
+        .single()
+        .map(|at| at.format("%H:%M").to_string())
+}
+
+/// 耗时展示：毫秒级给 `ms`，不足一分钟给一位小数，再长给 `Xm Ys`。
+fn format_duration(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms} ms")
+    } else if ms < 60_000 {
+        format!("{}.{}s", ms / 1000, (ms % 1000) / 100)
+    } else {
+        format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
     }
 }
 
@@ -229,6 +370,7 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
     };
     let summary = tool_summary(tool, &args);
     lines.push(Line::from(vec![
+        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled(format!("{bullet} "), Style::new().fg(bullet_color)),
         Span::styled(
             tool.name.clone(),
@@ -313,7 +455,7 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
     // 尾注：耗时 / 失败原因
     if let Some(duration) = tool.duration_ms {
         lines.push(Line::from(Span::styled(
-            format!("  ⏱ {duration} ms"),
+            format!("  ⏱ {}", format_duration(duration)),
             Style::new().fg(theme.gray_dim),
         )));
     }
@@ -422,7 +564,8 @@ fn clamp_rows(result: &str, width: usize) -> Vec<String> {
     rows
 }
 
-fn truncate_to_width(text: String, max: usize) -> String {
+/// 截断到显示宽度上限，末尾补省略号。
+pub(super) fn truncate_to_width(text: String, max: usize) -> String {
     if str_width(&text) <= max {
         return text;
     }
@@ -456,12 +599,15 @@ fn render_todo(
     use moc_protocol::methods::TodoStatus;
 
     let theme = app.theme;
-    let mut lines = vec![Line::from(Span::styled(
-        "◆ TODO".to_owned(),
-        Style::new()
-            .fg(theme.accent_user)
-            .add_modifier(Modifier::BOLD),
-    ))];
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+        Span::styled(
+            "◆ TODO".to_owned(),
+            Style::new()
+                .fg(theme.accent_user)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
     let phase_count = phases.len();
     for (phase_index, phase) in phases.iter().enumerate() {
         let is_last_phase = phase_index + 1 == phase_count;
@@ -473,6 +619,7 @@ fn render_todo(
             .count();
         let total = phase.items.len();
         lines.push(Line::from(vec![
+            Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
             Span::styled(branch.to_owned(), Style::new().fg(theme.border)),
             Span::styled(phase.phase.clone(), Style::new().fg(theme.text_secondary)),
             Span::styled(
@@ -498,16 +645,20 @@ fn render_todo(
                 style = style.add_modifier(Modifier::CROSSED_OUT);
             }
             let indent = format!("{item_branch}  ");
-            let budget = width.saturating_sub(indent.len() + 4).max(8);
+            let budget = width
+                .saturating_sub(TITLE_INDENT + indent.len() + 4)
+                .max(8);
             for (index, row) in wrap_text(&item.task, budget).into_iter().enumerate() {
                 if index == 0 {
                     lines.push(Line::from(vec![
+                        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
                         Span::styled(item_branch.to_owned(), Style::new().fg(theme.border)),
                         Span::styled(marker.to_owned(), Style::new().fg(color)),
                         Span::styled(row, style),
                     ]));
                 } else {
                     lines.push(Line::from(vec![
+                        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
                         Span::styled(item_branch.to_owned(), Style::new().fg(theme.border)),
                         Span::styled("    ".to_owned(), Style::new()),
                         Span::styled(row, style),
@@ -518,4 +669,36 @@ fn render_todo(
     }
     lines.push(Line::from(String::new()));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ColorLevel;
+
+    /// 用户面板：时间戳优先与末行同行，放不下时另起一行，且所有行都不超出面板宽度。
+    #[test]
+    fn user_panel_keeps_clock_inside_panel_width() {
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        // 固定 UNIX 毫秒 ⇒ 固定的本地 `HH:MM`
+        let at_ms = 1_700_000_000_000;
+        let clock = format_clock(at_ms).expect("演示时间戳应可格式化");
+
+        // 短消息：时间戳与正文同行
+        let short = user_message("hi", Some(at_ms), true, 40, &theme);
+        assert_eq!(short.len(), 4, "面板应为 上边框/正文/下边框 + 尾随留白");
+        assert!(short[1].spans.iter().any(|span| span.content == clock));
+
+        // 正文吃满整行：时间戳另起一行，任何行都不超宽
+        let narrow = user_message("一二三四五六七八九十", Some(at_ms), true, 24, &theme);
+        assert_eq!(narrow.len(), 5, "时间戳应独占一行");
+        for line in &narrow {
+            assert!(line.width() <= 24, "行宽 {} 超出面板", line.width());
+        }
+        let clock_rows = narrow
+            .iter()
+            .filter(|line| line.spans.iter().any(|span| span.content == clock))
+            .count();
+        assert_eq!(clock_rows, 1, "时间戳应恰好出现一次");
+    }
 }

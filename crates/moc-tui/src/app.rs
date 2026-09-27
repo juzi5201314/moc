@@ -231,7 +231,32 @@ impl App {
 
     /// 追加一条用户消息。
     pub fn push_user(&mut self, text: String) {
-        self.blocks.push(Entry::new(Block::User { text }));
+        self.blocks.push(Entry::timed(Block::User { text }));
+    }
+
+    /// 追加一条实时块（助手正文 / 思维链 / 工具调用）：带落地时刻。
+    pub fn push_block(&mut self, block: Block) {
+        self.blocks.push(Entry::timed(block));
+    }
+
+    /// 轮次收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
+    pub fn finish_turn(&mut self) {
+        let elapsed = self.turn_started_at.map(|at| at.elapsed());
+        self.turn_running = false;
+        self.cancel_pending = false;
+        self.turn_started_at = None;
+        let Some(elapsed) = elapsed else {
+            return;
+        };
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        if let Some(entry) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|entry| matches!(entry.block, Block::Assistant { .. }))
+        {
+            entry.stamp_turn(crate::transcript::now_ms(), elapsed_ms);
+        }
     }
 
     /// 切换思考可见性并使视图缓存失效。

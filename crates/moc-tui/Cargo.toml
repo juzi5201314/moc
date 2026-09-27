@@ -17,6 +17,8 @@ two-face = "0.5"
 unicode-width = "0.2"
 anyhow.workspace = true
 base64 = "0.22"
+# 消息时间戳按本地时区格式化（`clock` 特性走 iana-time-zone）。
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true

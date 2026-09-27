@@ -318,7 +318,7 @@ fn modal_lines(app: &App, modal: &Modal) -> Vec<Line<'static>> {
                 ("ctrl+t", "展开 / 收起思考内容"),
                 ("ctrl+o", "展开 / 收起工具调用"),
                 ("ctrl+v", "粘贴剪贴板图片"),
-                ("ctrl+m", "切换模型"),
+                ("ctrl+p", "切换模型"),
                 ("ctrl+r", "恢复历史会话"),
                 ("tab", "补全菜单确认；否则切换输入焦点"),
                 ("shift+tab", "输入框切换模式；滚动区时聚焦输入框"),
