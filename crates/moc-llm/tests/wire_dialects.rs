@@ -334,13 +334,10 @@ async fn claude_adaptive_thinking_with_cache_control() {
 }
 
 #[tokio::test]
-async fn claude_manual_thinking_budget() {
+async fn claude_adaptive_thinking_uses_effort_level() {
     let server = start().await;
     let cfg = LlmConfig {
-        wire: WireConfig {
-            anthropic_thinking: AnthropicThinkingDialect::ManualBudget,
-            ..Default::default()
-        },
+        wire: WireConfig::default(),
         ..config(Protocol::AnthropicMessages, &server)
     };
     let req = ChatRequest {
@@ -348,17 +345,15 @@ async fn claude_manual_thinking_budget() {
         max_output_tokens: Some(8192),
         reasoning: Some(ReasoningConfig {
             enabled: true,
-            budget_tokens: Some(4096),
+            effort: Some(Effort::Max),
             ..Default::default()
         }),
         ..Default::default()
     };
     let body = sent_body(&server, &cfg, &req).await;
 
-    assert_eq!(
-        body["thinking"],
-        json!({"type": "enabled", "budget_tokens": 4096})
-    );
+    assert_eq!(body["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(body["output_config"], json!({"effort": "max"}));
     assert_eq!(body["max_tokens"], json!(8192));
 }
 

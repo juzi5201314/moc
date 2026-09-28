@@ -1665,6 +1665,7 @@ name = "moc-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "futures-core",
  "futures-util",
@@ -1677,6 +1678,7 @@ dependencies = [
  "memchr",
  "moc-llm",
  "moc-mcp",
+ "moc-openviking",
  "moc-protocol",
  "parking_lot",
  "portable-pty",
@@ -1729,6 +1731,20 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "moc-openviking"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

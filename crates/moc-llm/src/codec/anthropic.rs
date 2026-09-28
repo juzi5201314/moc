@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use super::echo::{self, ReasoningEchoPlan};
 use super::sse::SseEvent;
 use super::{EncodedRequest, ErrorFields, StreamDecoder, common_headers};
-use crate::config::{AnthropicThinkingDialect, CacheTtl, LlmConfig, ToolChoiceDialect};
+use crate::config::{CacheTtl, LlmConfig, ToolChoiceDialect};
 use crate::error::{ApiError, ApiErrorKind, LlmError};
 use crate::types::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, ImageSource, Message, ReasoningBlock,
@@ -26,9 +26,6 @@ use crate::types::{
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// 1 小时缓存 TTL 所需的 beta 头。
 const EXTENDED_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
-/// manual 思考预算的下限。
-const MIN_THINKING_BUDGET: u32 = 1024;
-
 /// 编码请求。
 pub(crate) fn encode(
     cfg: &LlmConfig,
@@ -38,8 +35,6 @@ pub(crate) fn encode(
     let max_tokens = req
         .max_output_tokens
         .ok_or_else(|| LlmError::Encode("Anthropic 协议的 max_output_tokens 是必填项".into()))?;
-    validate_thinking(cfg, req, max_tokens)?;
-
     let plan = echo::plan(cfg, req);
     let mut normalized = normalize(cfg, req, plan)?;
     let cache = apply_cache(req, &mut normalized)?;
@@ -130,30 +125,6 @@ fn encode_output_config(cfg: &LlmConfig, req: &ChatRequest) -> Map<String, Value
         output_config.insert("format".into(), value);
     }
     output_config
-}
-
-/// 参数校验：把上游 400 提前变成明确的本地错误。
-fn validate_thinking(cfg: &LlmConfig, req: &ChatRequest, max_tokens: u32) -> Result<(), LlmError> {
-    let Some(reasoning) = &req.reasoning else {
-        return Ok(());
-    };
-    if cfg.wire.anthropic_thinking != AnthropicThinkingDialect::ManualBudget || !reasoning.enabled {
-        return Ok(());
-    }
-    let budget = reasoning.budget_tokens.ok_or_else(|| {
-        LlmError::Encode("Anthropic manual 思考模式需要 reasoning.budget_tokens".into())
-    })?;
-    if budget < MIN_THINKING_BUDGET {
-        return Err(LlmError::Encode(format!(
-            "Anthropic 思考预算不得小于 {MIN_THINKING_BUDGET}，收到 {budget}"
-        )));
-    }
-    if budget >= max_tokens {
-        return Err(LlmError::Encode(format!(
-            "Anthropic 思考预算 {budget} 必须小于 max_output_tokens {max_tokens}"
-        )));
-    }
-    Ok(())
 }
 
 /// 线上消息与断点落位。
@@ -339,13 +310,13 @@ fn encode_tool_call(call: &ToolCall) -> Result<Value, LlmError> {
     }))
 }
 
-fn encode_user_blocks(cfg: &LlmConfig, message: &Message) -> Result<Vec<Value>, LlmError> {
+fn encode_user_blocks(_cfg: &LlmConfig, message: &Message) -> Result<Vec<Value>, LlmError> {
     let mut blocks = Vec::with_capacity(message.content.len());
     for part in &message.content {
         match part {
             ContentPart::Text(text) => blocks.push(json!({"type": "text", "text": text})),
             ContentPart::Image { source, .. } => {
-                blocks.push(json!({"type": "image", "source": encode_image_source(cfg, source)?}));
+                blocks.push(json!({"type": "image", "source": encode_image_source(source)?}));
             }
             ContentPart::ToolResult(result) => {
                 // 无图时保持字符串 content（旧线格式兼容）；带图时 content 升级为
@@ -358,9 +329,8 @@ fn encode_user_blocks(cfg: &LlmConfig, message: &Message) -> Result<Vec<Value>, 
                         parts.push(json!({"type": "text", "text": result.content}));
                     }
                     for source in &result.images {
-                        parts.push(
-                            json!({"type": "image", "source": encode_image_source(cfg, source)?}),
-                        );
+                        parts
+                            .push(json!({"type": "image", "source": encode_image_source(source)?}));
                     }
                     Value::Array(parts)
                 };
@@ -377,21 +347,14 @@ fn encode_user_blocks(cfg: &LlmConfig, message: &Message) -> Result<Vec<Value>, 
     Ok(blocks)
 }
 
-fn encode_image_source(cfg: &LlmConfig, source: &ImageSource) -> Result<Value, LlmError> {
+fn encode_image_source(source: &ImageSource) -> Result<Value, LlmError> {
     match source {
         ImageSource::Base64 { media_type, data } => Ok(json!({
             "type": "base64",
             "media_type": media_type,
             "data": data,
         })),
-        ImageSource::Url(url) => {
-            if !cfg.wire.image_url {
-                return Err(LlmError::Encode(
-                    "该线格式不支持图片 URL 来源，请改传 base64".into(),
-                ));
-            }
-            Ok(json!({"type": "url", "url": url}))
-        }
+        ImageSource::Url(url) => Ok(json!({"type": "url", "url": url})),
     }
 }
 
@@ -436,24 +399,15 @@ fn encode_tool_choice(
     Some(object)
 }
 
-/// 写入 `thinking` 对象；`display` 只有 `summarized` 与 `omitted` 两个取值。
-fn encode_thinking(cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<String, Value>) {
+/// 写入 `thinking` 对象；思考等级通过 `output_config.effort` 发送。
+fn encode_thinking(_cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<String, Value>) {
     let mut thinking = Map::new();
     let kind = if reasoning.enabled {
-        match cfg.wire.anthropic_thinking {
-            AnthropicThinkingDialect::Adaptive => "adaptive",
-            AnthropicThinkingDialect::ManualBudget => "enabled",
-        }
+        "adaptive"
     } else {
         "disabled"
     };
     thinking.insert("type".into(), Value::String(kind.into()));
-    if reasoning.enabled
-        && cfg.wire.anthropic_thinking == AnthropicThinkingDialect::ManualBudget
-        && let Some(budget) = reasoning.budget_tokens
-    {
-        thinking.insert("budget_tokens".into(), Value::from(budget));
-    }
     if reasoning.enabled
         && let Some(display) = reasoning.summary.and_then(display_value)
     {
@@ -880,7 +834,7 @@ fn optional_string_at(value: &Value, pointer: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::config::{CacheConfig, Protocol, ResponseFormatDialect, WireConfig};
-    use crate::types::{RequestOptions, ToolResult};
+    use crate::types::{Effort, RequestOptions, ToolResult};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -1004,7 +958,6 @@ mod tests {
                 enabled: true,
                 effort: Some(crate::types::Effort::High),
                 summary: Some(ReasoningSummary::Detailed),
-                ..Default::default()
             }),
             response_format: Some(ResponseFormat::JsonSchema {
                 name: "weather".into(),
@@ -1277,25 +1230,15 @@ mod tests {
                 {"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}},
             ])
         );
-
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                image_url: false,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let err = encode(&cfg, &req, false).unwrap_err();
-        assert!(err.to_string().contains("图片 URL"), "{err}");
     }
 
     #[test]
-    fn thinking_adaptive_and_manual() {
+    fn thinking_levels_use_adaptive_and_output_config_effort() {
         let adaptive = ChatRequest {
             reasoning: Some(ReasoningConfig {
                 enabled: true,
+                effort: Some(Effort::High),
                 summary: Some(ReasoningSummary::Omitted),
-                ..Default::default()
             }),
             ..base_request()
         };
@@ -1304,28 +1247,7 @@ mod tests {
             body["thinking"],
             json!({"type": "adaptive", "display": "omitted"})
         );
-
-        let manual_cfg = LlmConfig {
-            wire: WireConfig {
-                anthropic_thinking: AnthropicThinkingDialect::ManualBudget,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let manual = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: true,
-                budget_tokens: Some(2048),
-                ..Default::default()
-            }),
-            max_output_tokens: Some(4096),
-            ..Default::default()
-        };
-        let body = encode_body(&manual_cfg, &manual, false);
-        assert_eq!(
-            body["thinking"],
-            json!({"type": "enabled", "budget_tokens": 2048})
-        );
+        assert_eq!(body["output_config"]["effort"], "high");
 
         let disabled = ChatRequest {
             reasoning: Some(ReasoningConfig {
@@ -1337,55 +1259,8 @@ mod tests {
         let body = encode_body(&config(), &disabled, false);
         assert_eq!(body["thinking"], json!({"type": "disabled"}));
 
-        // 未配置 reasoning 时不发送 thinking。
         let body = encode_body(&config(), &base_request(), false);
         assert!(body.get("thinking").is_none());
-    }
-
-    #[test]
-    fn manual_budget_is_validated() {
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                anthropic_thinking: AnthropicThinkingDialect::ManualBudget,
-                ..Default::default()
-            },
-            ..config()
-        };
-
-        let missing = ChatRequest {
-            reasoning: Some(ReasoningConfig::enabled()),
-            max_output_tokens: Some(4096),
-            ..Default::default()
-        };
-        let err = encode(&cfg, &missing, false).unwrap_err();
-        assert!(err.to_string().contains("budget_tokens"), "{err}");
-
-        let too_small = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: true,
-                budget_tokens: Some(512),
-                ..Default::default()
-            }),
-            max_output_tokens: Some(4096),
-            ..Default::default()
-        };
-        let err = encode(&cfg, &too_small, false).unwrap_err();
-        assert!(err.to_string().contains("不得小于 1024"), "{err}");
-
-        let too_large = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: true,
-                budget_tokens: Some(4096),
-                ..Default::default()
-            }),
-            max_output_tokens: Some(4096),
-            ..Default::default()
-        };
-        let err = encode(&cfg, &too_large, false).unwrap_err();
-        assert!(
-            err.to_string().contains("必须小于 max_output_tokens"),
-            "{err}"
-        );
     }
 
     #[test]

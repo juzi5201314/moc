@@ -12,8 +12,9 @@ use moc_protocol::{
     ClientBuilder, ClientHandle, ClientInfo, ClientRequestContext, RpcError, RpcErrorCode, Server,
     ServerConnection, ServerOptions,
     methods::{
-        AskParams, AskResult, ClientCapabilities, PermissionRequestParams, PermissionResult,
-        SessionRequestAsk, SessionRequestPermission, SessionUpdateMethod, SessionUpdateParams,
+        AskParams, AskResult, ClientCapabilities, ContextUsageResult, PermissionRequestParams,
+        PermissionResult, SessionRequestAsk, SessionRequestPermission, SessionUpdateMethod,
+        SessionUpdateParams,
     },
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -35,11 +36,19 @@ pub enum AppEvent {
     },
     /// 剪贴板图片读取结果（ctrl+v；`None` = 无图片或读取失败）。
     ClipboardImage(Option<(String, Vec<u8>)>),
-    /// 会话列表就绪（ctrl+r / `/resume` 的选择器数据）。
+    /// OpenViking 记忆目录列表。
+    Memories(Vec<moc_protocol::methods::OpenVikingEntry>),
+    /// OpenViking 正文读取完成。
+    MemoryRead(moc_protocol::methods::OpenVikingReadResult),
+    /// OpenViking 正文保存完成。
+    MemorySaved(String),
+    /// 上下文估算完成。
+    ContextUsage(ContextUsageResult),
+    /// 会话列表就绪。
     Sessions(Vec<moc_protocol::SessionInfo>),
-    /// 会话加载完成（选择器选中后切换转写）。
+    /// 会话加载完成。
     Loaded(moc_protocol::SessionInfo, Vec<crate::transcript::Entry>),
-    /// 选择器异步请求失败，保留浮层展示错误与重试提示。
+    /// 选择器请求失败，保留浮层展示错误与重试提示。
     PickerError(String),
     /// 模型切换完成（关闭选择器）。
     ModelSwitched,

@@ -32,6 +32,7 @@ pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'s
         table: None,
         table_cell: Vec::new(),
         in_table_head: false,
+        in_table_cell: false,
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -81,6 +82,7 @@ struct MdRenderer<'a> {
     table: Option<TableAcc>,
     table_cell: Vec<Run>,
     in_table_head: bool,
+    in_table_cell: bool,
 }
 
 impl<'a> MdRenderer<'a> {
@@ -93,17 +95,37 @@ impl<'a> MdRenderer<'a> {
                 let style = Style::new().fg(self.theme.path).bg(self.theme.code_bg);
                 self.push_run(Run {
                     style,
-                    text: code.to_string(),
+                    text: format!(" {code} "),
                 });
             }
-            Event::SoftBreak => self.push_char(' '),
-            Event::HardBreak => self.flush_inline(),
+            Event::SoftBreak => {
+                if self.in_table_cell {
+                    self.push_run(Run {
+                        style: self.current_style(),
+                        text: " ".to_owned(),
+                    });
+                } else {
+                    self.flush_inline();
+                }
+            }
+            Event::HardBreak => {
+                if self.in_table_cell {
+                    self.push_run(Run {
+                        style: self.current_style(),
+                        text: " ".to_owned(),
+                    });
+                } else {
+                    self.flush_inline();
+                }
+            }
             Event::Rule => {
                 self.flush_inline();
+                self.ensure_block_gap();
                 self.out.push(Line::from(Span::styled(
                     "─".repeat(self.width.saturating_sub(2).min(self.width)),
                     Style::new().fg(self.theme.border),
                 )));
+                self.out.push(Line::from(String::new()));
             }
             Event::TaskListMarker(checked) => {
                 let (marker, color) = if checked {
@@ -128,17 +150,27 @@ impl<'a> MdRenderer<'a> {
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
-            Tag::Paragraph => self.flush_inline(),
+            Tag::Paragraph => {
+                self.flush_inline();
+                if self.list_stack.is_empty() && self.quote_depth == 0 {
+                    self.ensure_block_gap();
+                }
+            }
             Tag::Heading { level, .. } => {
                 self.flush_inline();
+                self.ensure_block_gap();
                 self.heading = Some(level);
             }
             Tag::BlockQuote(_) => {
                 self.flush_inline();
+                if self.quote_depth == 0 {
+                    self.ensure_block_gap();
+                }
                 self.quote_depth += 1;
             }
             Tag::CodeBlock(kind) => {
                 self.flush_inline();
+                self.ensure_block_gap();
                 self.code_info = match kind {
                     CodeBlockKind::Fenced(info) => Some(info.to_string()),
                     CodeBlockKind::Indented => None,
@@ -147,6 +179,9 @@ impl<'a> MdRenderer<'a> {
             }
             Tag::List(start) => {
                 self.flush_inline();
+                if self.list_stack.is_empty() {
+                    self.ensure_block_gap();
+                }
                 self.list_stack.push(ListFrame {
                     ordered: start.is_some(),
                     next_index: start.unwrap_or(1),
@@ -168,11 +203,21 @@ impl<'a> MdRenderer<'a> {
             }
             Tag::Table(_) => {
                 self.flush_inline();
+                self.ensure_block_gap();
                 self.table = Some(TableAcc::default());
             }
             Tag::TableHead => self.in_table_head = true,
-            Tag::TableRow => {}
-            Tag::TableCell => self.table_cell.clear(),
+            Tag::TableRow => {
+                if !self.in_table_head
+                    && let Some(table) = self.table.as_mut()
+                {
+                    table.rows.push(Vec::new());
+                }
+            }
+            Tag::TableCell => {
+                self.table_cell.clear();
+                self.in_table_cell = true;
+            }
             Tag::Emphasis => self.italic += 1,
             Tag::Strong => self.bold += 1,
             Tag::Strikethrough => self.strike += 1,
@@ -220,14 +265,13 @@ impl<'a> MdRenderer<'a> {
             TagEnd::TableHead => self.in_table_head = false,
             TagEnd::TableRow => {}
             TagEnd::TableCell => {
+                self.in_table_cell = false;
                 let cell = std::mem::take(&mut self.table_cell);
                 if let Some(table) = self.table.as_mut() {
                     if self.in_table_head {
                         table.header.push(cell);
                     } else if let Some(row) = table.rows.last_mut() {
                         row.push(cell);
-                    } else {
-                        table.rows.push(vec![cell]);
                     }
                 }
             }
@@ -308,20 +352,25 @@ impl<'a> MdRenderer<'a> {
         if run.text.is_empty() {
             return;
         }
-        if let Some(last) = self.inline.last_mut()
+        let runs = if self.in_table_cell {
+            &mut self.table_cell
+        } else {
+            &mut self.inline
+        };
+        if let Some(last) = runs.last_mut()
             && last.style == run.style
         {
             last.text.push_str(&run.text);
             return;
         }
-        self.inline.push(run);
+        runs.push(run);
     }
 
-    fn push_char(&mut self, ch: char) {
-        self.push_run(Run {
-            style: self.current_style(),
-            text: ch.to_string(),
-        });
+    /// 块级内容之间保留一行视觉间距，避免标题和段落连成一块。
+    fn ensure_block_gap(&mut self) {
+        if self.out.last().is_some_and(|line| line.width() > 0) {
+            self.out.push(Line::from(String::new()));
+        }
     }
 
     /// 段落 / 标题 / 列表项结束：inline 缓冲按宽度换行后产出。
@@ -431,7 +480,7 @@ impl<'a> MdRenderer<'a> {
             return;
         }
         let mut widths = vec![0usize; column_count];
-        let measure = |cells: &Vec<Vec<Run>>, widths: &mut [usize]| {
+        let measure = |cells: &[Vec<Run>], widths: &mut [usize]| {
             for (index, cell) in cells.iter().enumerate() {
                 let text: String = cell.iter().map(|run| run.text.as_str()).collect();
                 widths[index] = widths[index].max(str_width(&text));
@@ -441,49 +490,63 @@ impl<'a> MdRenderer<'a> {
         for row in &table.rows {
             measure(row, &mut widths);
         }
-        // 整体超宽时按比例收缩（保底 3 列宽）
-        let available = self.width.saturating_sub(column_count + 3);
+        // 整体超宽时按比例收缩；边框占用的列数必须从总宽度中完整扣除。
+        let border_width = column_count.saturating_mul(3).saturating_add(1);
+        let available = self.width.saturating_sub(border_width);
         let total: usize = widths.iter().sum();
         if total > available {
-            let scaled: Vec<usize> = widths
-                .iter()
-                .map(|&width| width.min(available * width / total.max(1)).max(3))
-                .collect();
-            widths.copy_from_slice(&scaled);
+            let original = widths.clone();
+            let minimum = usize::from(available >= column_count);
+            let remaining = available.saturating_sub(minimum * column_count);
+            for (index, width) in original.iter().enumerate() {
+                widths[index] = minimum + remaining.saturating_mul(*width) / total.max(1);
+            }
+            let assigned: usize = widths.iter().sum();
+            for index in 0..available.saturating_sub(assigned) {
+                widths[index % column_count] += 1;
+            }
         }
         let truncate = |text: &str, max: usize| -> String {
+            let full_width = str_width(text);
+            if full_width <= max {
+                return text.to_owned();
+            }
+            if max == 0 {
+                return String::new();
+            }
             let mut out = String::new();
             let mut used = 0usize;
             for ch in text.chars() {
                 let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if used + ch_width > max {
+                if used + ch_width + 1 > max {
                     break;
                 }
                 out.push(ch);
                 used += ch_width;
             }
-            if used < str_width(text) {
-                out.push('…');
-            }
+            out.push('…');
             out
         };
-        let cell_text = |cells: &Vec<Vec<Run>>, index: usize| -> String {
+        let cell_text = |cells: &[Vec<Run>], index: usize| -> String {
             cells
                 .get(index)
                 .map(|cell| cell.iter().map(|run| run.text.as_str()).collect())
                 .unwrap_or_default()
         };
         let render_cell = |text: &str, width: usize, bold: bool| -> Vec<Span<'static>> {
-            let padded = format!(" {text}");
-            let shown = truncate(&padded, width + 1);
-            let pad = " ".repeat((width + 1).saturating_sub(str_width(&shown)));
+            let shown = truncate(text, width);
+            let shown_width = str_width(&shown);
             let mut style = Style::new().fg(self.theme.text_primary);
             if bold {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            vec![Span::styled(shown, style), Span::styled(pad, Style::new())]
+            vec![
+                Span::styled(" ".to_owned(), style),
+                Span::styled(shown, style),
+                Span::styled(" ".repeat(width.saturating_sub(shown_width) + 1), style),
+            ]
         };
-        let render_row = |cells: &Vec<Vec<Run>>, bold: bool| -> Line<'static> {
+        let render_row = |cells: &[Vec<Run>], bold: bool| -> Line<'static> {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (index, width) in widths.iter().enumerate() {
                 spans.push(Span::styled(
@@ -569,6 +632,16 @@ mod tests {
     }
 
     #[test]
+    fn headings_and_paragraphs_keep_visual_separation() {
+        let out = lines("# 标题\n\n第一段\n\n第二段", 40);
+        let heading = out.iter().position(|line| line.contains("标题")).unwrap();
+        let first = out.iter().position(|line| line == "第一段").unwrap();
+        let second = out.iter().position(|line| line == "第二段").unwrap();
+        assert_eq!(first, heading + 2, "标题与正文之间应留出一行：{out:?}");
+        assert_eq!(second, first + 2, "相邻段落应留出一行：{out:?}");
+    }
+
+    #[test]
     fn lists_are_indented_and_bulleted() {
         let out = lines("- 甲\n- 乙\n  - 丙", 40);
         assert!(out.iter().any(|line| line.contains("• 甲")), "{out:?}");
@@ -606,5 +679,31 @@ mod tests {
             joined.contains("普通") && joined.contains("加粗") && joined.contains("code"),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn tables_keep_cell_content_and_row_boundaries() {
+        let out = lines(
+            "| 工具 | 用途 |\n|---|---|\n| `read` | 读取文件 |\n| `bash` | 执行命令 |",
+            40,
+        );
+        let read_row = out.iter().position(|line| line.contains("read"));
+        let bash_row = out.iter().position(|line| line.contains("bash"));
+        assert!(read_row.is_some() && bash_row.is_some(), "{out:?}");
+        assert!(read_row < bash_row, "表格行顺序错误：{out:?}");
+        assert!(out.iter().any(|line| line.contains("读取文件")), "{out:?}");
+        assert!(out.iter().any(|line| line.contains("执行命令")), "{out:?}");
+    }
+
+    #[test]
+    fn soft_breaks_remain_visible_line_breaks() {
+        let out = lines("工具用途\n`bash`执行 shell 命令", 40);
+        assert_eq!(out, vec!["工具用途", " bash 执行 shell 命令"]);
+    }
+
+    #[test]
+    fn inline_code_has_readable_padding() {
+        let out = lines("前缀`bash`后缀", 40);
+        assert_eq!(out, vec!["前缀 bash 后缀"]);
     }
 }

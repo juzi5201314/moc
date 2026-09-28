@@ -28,12 +28,15 @@ use crate::error::{ProtocolError, RpcCallError, RpcError};
 use crate::message::Notification;
 use crate::method::Method;
 use crate::methods::{
-    CompactResult, ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult,
-    PermissionRequestParams, PermissionResult, PromptParams, SessionCompactParams,
-    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
-    SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
-    SessionRenameParams, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, TurnResult,
+    CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty, InitializeParams,
+    InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
+    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
+    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams,
+    SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionSetModeParams,
+    SessionSetModelParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
+    SessionUpdateParams, TurnResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -54,6 +57,30 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: ConfigGetParams,
     ) -> impl Future<Output = Result<ConfigGetResult, RpcError>> + Send;
+
+    fn openviking_list(
+        &self,
+        ctx: RequestContext,
+        params: OpenVikingListParams,
+    ) -> impl Future<Output = Result<OpenVikingListResult, RpcError>> + Send;
+
+    fn openviking_read(
+        &self,
+        ctx: RequestContext,
+        params: OpenVikingReadParams,
+    ) -> impl Future<Output = Result<OpenVikingReadResult, RpcError>> + Send;
+
+    fn openviking_write(
+        &self,
+        ctx: RequestContext,
+        params: OpenVikingWriteParams,
+    ) -> impl Future<Output = Result<OpenVikingWriteResult, RpcError>> + Send;
+
+    fn openviking_delete(
+        &self,
+        ctx: RequestContext,
+        params: OpenVikingDeleteParams,
+    ) -> impl Future<Output = Result<OpenVikingDeleteResult, RpcError>> + Send;
 
     /// 新建会话。
     fn session_new(
@@ -131,6 +158,13 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionCompactParams,
     ) -> impl Future<Output = Result<CompactResult, RpcError>> + Send;
+
+    /// 估算当前会话上下文，并返回系统提示词、工具提示词与历史明细。
+    fn session_context(
+        &self,
+        ctx: RequestContext,
+        params: SessionContextParams,
+    ) -> impl Future<Output = Result<ContextUsageResult, RpcError>> + Send;
 
     /// 跑一轮 agent 工作：挂到本轮结束才返回，过程增量走 `session/update` 通知。
     ///

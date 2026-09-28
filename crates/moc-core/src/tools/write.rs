@@ -53,6 +53,25 @@ impl Tool for WriteTool {
         Box::pin(async move {
             let args: WriteArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
+                let Some(client) = &ctx.openviking else {
+                    return Err(ToolError::new(
+                        "E_OPENVIKING_DISABLED",
+                        "未配置 OpenViking URL",
+                    ));
+                };
+                let peer = ctx.openviking_peer.as_deref();
+                let uri = moc_openviking::OpenVikingUri::parse(&args.path)
+                    .map_err(|error| ToolError::new("E_OPENVIKING_URI", error.to_string()))?;
+                client
+                    .write(uri.as_str(), &args.content, peer)
+                    .await
+                    .map_err(|error| ToolError::new("E_OPENVIKING_WRITE", error.to_string()))?;
+                return Ok(ToolOutcome::success(format!(
+                    "已提交 OpenViking 写入 {}",
+                    uri.as_str()
+                )));
+            }
             let supplied = Path::new(&args.path);
             let absolute = if supplied.is_absolute() {
                 supplied.to_owned()

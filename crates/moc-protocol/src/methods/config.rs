@@ -54,6 +54,9 @@ pub struct ModelInfo {
     pub id: String,
     /// 展示名。
     pub display_name: String,
+    /// 模型允许选择的思考等级；`None` 表示前端使用默认集合。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_levels: Option<Vec<String>>,
     /// 上下文窗口 token 数；`None` 表示未配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
@@ -110,6 +113,7 @@ mod tests {
             models: vec![ModelInfo {
                 id: "deepseek-flash".into(),
                 display_name: "DeepSeek Flash".into(),
+                thinking_levels: None,
                 context_window: Some(128_000),
                 max_output_tokens: None,
                 pricing: Some(ModelPricing {

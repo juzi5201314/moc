@@ -1,10 +1,8 @@
 //! 帧绘制：布局切分 + 各区域渲染。
 //!
-//! 布局自上而下：顶部信息条 → 留白 → 滚动区（转写，唯一 `Min` 约束）→
 //! 留白 → 输入框 → statusline。所有内容左右各留 [`MARGIN_X`] 格边距，行与行
-//! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝切换类快捷键
-//! 小提示，右＝模型 · 模式）。整帧先铺主题底色，滚动区由 [`ScrollbackView`]
-//! 按行缓存直写 buffer。
+//! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝快捷键提示，右＝模型 · 模式）。
+//! 整帧先铺主题底色，滚动区由 [`ScrollbackView`] 按行缓存直写 buffer。
 
 pub mod diff;
 pub mod highlight;
@@ -87,7 +85,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         0
     };
     let content_area = inset(frame_area, MARGIN_X);
-    // 输入框随多行输入长高，但不能挤掉转写区（至少留 3 行）
+    // 输入框随多行输入长高，但不能挤掉转写区（至少留 3 行）。
     let chrome = header_rows + status_rows + PROMPT_BORDER_ROWS + 2;
     let prompt_cap = rows.saturating_sub(chrome + 3).max(1);
     let content_rows = prompt_content_rows(app, content_area.width);
@@ -103,7 +101,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         status_area,
     ] = Layout::vertical([
         Constraint::Length(header_rows),
-        // 信息条与转写区之间留白；没有信息条时转写区自己顶格
+        // 信息条与转写区之间留白；没有信息条时转写区自己顶格。
         Constraint::Length(u16::from(header_rows > 0)),
         Constraint::Min(3),
         Constraint::Length(1),
@@ -162,7 +160,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     }
 }
 
-/// 拖选高亮：选中行铺 `bg_visual`（在内容绘制之后覆盖前景/背景对调）。
+/// 拖选高亮：选中行统一使用高对比度前景和 `bg_visual`，避免继承内容底色后变暗。
 fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
     let Some(((_, sy), (_, ey))) = app.selection else {
         return;
@@ -178,12 +176,7 @@ fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
             let Some(cell) = buffer.cell_mut((col, row)) else {
                 continue;
             };
-            let style = cell.style();
-            cell.set_style(
-                Style::new()
-                    .fg(style.bg.unwrap_or(theme.text_primary))
-                    .bg(theme.bg_visual),
-            );
+            cell.set_style(Style::new().fg(theme.text_primary).bg(theme.bg_visual));
         }
     }
 }
@@ -336,10 +329,10 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     )
 }
 
-/// 输入框下边框上的图例：左＝切换类快捷键小提示，右＝模型 · 模式。
+/// 输入框下边框上的图例：左＝快捷键提示，右＝模型 · 思考预算 · 模式。
 ///
-/// 图例直接写在边框行上（覆盖边框线），因此不占正文行、也不和输入文字抢位置；
-/// 空间不够时先让掉左侧提示，再让掉右侧。
+/// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
+/// 右侧的当前模型与模式仍然保留。
 fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
     if area.height < 3 || area.width < 24 {
         return;
@@ -364,7 +357,13 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let tips: [(&str, &str); 3] = [("ctrl+t", "思考"), ("ctrl+o", "工具"), ("ctrl+p", "模型")];
+    let tips: [(&str, &str); 5] = [
+        ("ctrl+h", "快捷键"),
+        ("ctrl+t", "思考"),
+        ("ctrl+o", "工具"),
+        ("ctrl+m", "模式"),
+        ("shift+tab", "预算"),
+    ];
     let tips_width: usize = tips
         .iter()
         .map(|(key, label)| str_width(key) + 1 + str_width(label))
@@ -373,7 +372,6 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
-    // 左图例：先抹掉边框线留一格间隙，再逐段上色
     if show_tips {
         let mut x = area.x + 3;
         buffer.set_string(area.x + 2, y, " ", Style::new());
@@ -391,7 +389,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         }
         buffer.set_string(x, y, " ", Style::new());
     }
-    // 右图例：与边框线留一格间隙，贴右边框内侧收尾
+
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let mut x = area.x + area.width - 2 - right_cells;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
@@ -482,7 +480,8 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
 }
 
 /// 顶部信息条：左＝品牌 · git 分支 · 工作目录，右＝上下文进度 · 累计费用。
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.context_area = Rect::default();
     if area.is_empty() {
         return;
     }
@@ -547,8 +546,22 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         let used: usize = spans.iter().map(|span| str_width(&span.content)).sum();
         let right_width: usize = right.iter().map(|span| str_width(&span.content)).sum();
         let width = usize::from(area.width);
-        // 挤不下就整段让位：宁可不显示，也不截半截进度条
+        // 挤不下就整段让位：宁可不显示，也不截半截进度条。
         if used + right_width + 2 <= width {
+            let right_x = area.x + u16::try_from(width - right_width).unwrap_or(u16::MAX);
+            if data.context_percent.is_some() {
+                let context_width = right
+                    .iter()
+                    .take(2)
+                    .map(|span| str_width(&span.content))
+                    .sum::<usize>();
+                app.context_area = Rect {
+                    x: right_x,
+                    y: area.y,
+                    width: u16::try_from(context_width).unwrap_or(u16::MAX),
+                    height: area.height,
+                };
+            }
             spans.push(Span::styled(
                 " ".repeat(width - used - right_width),
                 Style::new(),
@@ -597,8 +610,8 @@ fn statusline_data(app: &App) -> StatuslineData {
         .map(|session| format!("{:?}", session.mode).to_lowercase())
         .unwrap_or_else(|| "idle".into());
     let context_window = app.context_window().filter(|window| *window > 0);
-    let context_percent =
-        context_window.map(|window| app.usage.input_tokens as f64 * 100.0 / window as f64);
+    let context_used = app.context_used();
+    let context_percent = context_window.map(|window| context_used as f64 * 100.0 / window as f64);
     let workdir = app
         .session
         .as_ref()
@@ -614,7 +627,7 @@ fn statusline_data(app: &App) -> StatuslineData {
         model: app.model_display().to_owned(),
         mode,
         context_percent,
-        context_used: app.usage.input_tokens,
+        context_used,
         context_window,
         workdir,
         branch: app.git_branch.clone(),
@@ -733,7 +746,7 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "mode" => Some((data.mode.clone(), theme.accent_tool)),
             "context" => data
                 .context_percent
-                .map(|_| (format_number(app.usage.input_tokens), theme.text_secondary)),
+                .map(|_| (format_number(data.context_used), theme.text_secondary)),
             "context_percent" => data
                 .context_percent
                 .map(|percent| (format_context_percent(percent), theme.text_secondary)),

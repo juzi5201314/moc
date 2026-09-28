@@ -33,11 +33,13 @@ use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
 use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
-    ClientInfo, ConfigGet, Initialize, Ping, PingResult, PromptParams, SessionCancel,
-    SessionCancelResult, SessionCompact, SessionDelete, SessionList, SessionLoad, SessionNew,
+    ClientInfo, ConfigGet, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead,
+    OpenVikingWrite, Ping, PingResult, PromptParams, SessionCancel, SessionCancelResult,
+    SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad, SessionNew,
     SessionPlanApprove, SessionPrompt, SessionRename, SessionSetMode, SessionSetModel,
     SessionUnload, SessionUnlock,
 };
+
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
 use crate::{PROTOCOL_VERSION, major_version};
@@ -445,6 +447,42 @@ impl<S: AgentService> ServerDispatch<S> {
                     .await?;
                 value_from(result)
             }
+            <OpenVikingList as Method>::NAME => {
+                let params = params_from_value::<OpenVikingList>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .openviking_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <OpenVikingRead as Method>::NAME => {
+                let params = params_from_value::<OpenVikingRead>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .openviking_read(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <OpenVikingWrite as Method>::NAME => {
+                let params = params_from_value::<OpenVikingWrite>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .openviking_write(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <OpenVikingDelete as Method>::NAME => {
+                let params = params_from_value::<OpenVikingDelete>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .openviking_delete(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <SessionNew as Method>::NAME => {
                 let params = params_from_value::<SessionNew>(params)?;
                 let result = self
@@ -541,6 +579,16 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_compact(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+
+            <SessionContext as Method>::NAME => {
+                let params = params_from_value::<SessionContext>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_context(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

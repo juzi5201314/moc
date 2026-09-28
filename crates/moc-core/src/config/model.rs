@@ -121,9 +121,12 @@ pub(super) struct ModelDocument {
     pub context_window: u64,
     pub max_output_tokens: u32,
     pub reasoning: bool,
-    pub thinking_level: ThinkingLevel,
+    /// `None` 表示使用统一的默认推理等级集合。
+    pub thinking_levels: Option<Vec<ThinkingLevel>>,
     pub input: Vec<ModelInput>,
     pub compat: ModelCompat,
+    /// Responses 原生远程压缩；未配置时按协议与模型名自动判断。
+    pub remote_compaction: Option<bool>,
     /// 每百万 token 定价（美元）；未配置时前端隐藏费用段。
     pub pricing: Option<moc_protocol::ModelPricing>,
 }
@@ -134,9 +137,10 @@ impl Default for ModelDocument {
             context_window: 200_000,
             max_output_tokens: 32_000,
             reasoning: false,
-            thinking_level: ThinkingLevel::Off,
+            thinking_levels: None,
             input: vec![ModelInput::Text],
             compat: ModelCompat::default(),
+            remote_compaction: None,
             pricing: None,
         }
     }
@@ -154,7 +158,6 @@ pub(super) struct ModelCompat {
     pub tool_choice_dialect: ToolChoiceDialect,
     pub parallel_tool_calls: bool,
     pub developer_role: bool,
-    pub image_url: bool,
     pub response_format_dialect: ResponseFormatDialect,
     pub echo_reasoning: ReasoningEcho,
     pub requires_reasoning_content_for_tool_calls: bool,
@@ -176,7 +179,6 @@ impl Default for ModelCompat {
             tool_choice_dialect: ToolChoiceDialect::default(),
             parallel_tool_calls: true,
             developer_role: false,
-            image_url: true,
             response_format_dialect: ResponseFormatDialect::default(),
             echo_reasoning: ReasoningEcho::default(),
             requires_reasoning_content_for_tool_calls: false,
@@ -192,39 +194,33 @@ impl Default for ModelCompat {
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
     Off,
-    Minimal,
     Low,
     Medium,
     High,
     Xhigh,
     Max,
-    Auto,
 }
 
 impl ThinkingLevel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
-            Self::Auto => "auto",
         }
     }
 
     pub fn effort(self) -> Option<Effort> {
         match self {
             Self::Off => Some(Effort::None),
-            Self::Minimal => Some(Effort::Minimal),
             Self::Low => Some(Effort::Low),
             Self::Medium => Some(Effort::Medium),
             Self::High => Some(Effort::High),
             Self::Xhigh => Some(Effort::XHigh),
             Self::Max => Some(Effort::Max),
-            Self::Auto => None,
         }
     }
 }
@@ -235,13 +231,11 @@ impl std::str::FromStr for ThinkingLevel {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "off" => Ok(Self::Off),
-            "minimal" => Ok(Self::Minimal),
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
-            "auto" => Ok(Self::Auto),
             _ => Err(CoreError::Config(format!("未知 thinking level `{value}`"))),
         }
     }
@@ -283,6 +277,10 @@ pub struct ResolvedModel {
     pub max_output_tokens: u32,
     /// 解析后的模型 thinking level。
     pub thinking_level: ThinkingLevel,
+    /// 模型允许选择的 thinking level；`off` 始终可用于显式关闭推理。
+    pub thinking_levels: Vec<ThinkingLevel>,
+    /// 是否启用 Responses 原生远程压缩。
+    pub remote_compaction: bool,
     /// 每百万 token 定价（美元）；`None` 表示未配置。
     pub pricing: Option<moc_protocol::ModelPricing>,
     /// 供应商协议配置。
@@ -334,7 +332,21 @@ impl ResolvedProvider {
                     "providers.{id}.models.{model_id}.context_window 必须大于 0"
                 )));
             }
+            if let Some(levels) = &model.thinking_levels
+                && (levels.is_empty() || levels.contains(&ThinkingLevel::Off))
+            {
+                return Err(CoreError::Config(format!(
+                    "providers.{id}.models.{model_id}.thinking_levels 必须包含至少一个非 off 等级"
+                )));
+            }
+            if model.remote_compaction == Some(true) && api.protocol() != Protocol::OpenAiResponses
+            {
+                return Err(CoreError::Config(format!(
+                    "providers.{id}.models.{model_id}.remote_compaction 仅支持 openai_responses"
+                )));
+            }
         }
+
         let key = resolve_api_key(id, &document.api_key)?;
         let auth = match (api.protocol(), key) {
             (_, None) => Auth::None,
@@ -367,6 +379,14 @@ impl ResolvedProvider {
     ) -> ResolvedModel {
         let mut extra_body = self.extra_body.clone();
         extra_body.extend(model.compat.extra_body.clone());
+        let thinking_levels = effective_thinking_levels(model);
+        let remote_compaction = model.remote_compaction.unwrap_or(
+            self.api.protocol() == Protocol::OpenAiResponses
+                && model_id
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|id| id.starts_with("gpt-")),
+        );
         let llm = LlmConfig {
             protocol: self.api.protocol(),
             base_url: self.base_url.clone(),
@@ -383,7 +403,6 @@ impl ResolvedProvider {
                 tool_choice_dialect: model.compat.tool_choice_dialect,
                 parallel_tool_calls: model.compat.parallel_tool_calls,
                 developer_role: model.compat.developer_role,
-                image_url: model.compat.image_url,
                 response_format_dialect: model.compat.response_format_dialect,
             },
             headers: self.headers.clone(),
@@ -408,6 +427,8 @@ impl ResolvedProvider {
             context_window: model.context_window,
             max_output_tokens: model.max_output_tokens,
             thinking_level: level,
+            thinking_levels,
+            remote_compaction,
             pricing: model.pricing,
             llm,
             echo_reasoning: model.compat.echo_reasoning,
@@ -423,6 +444,25 @@ impl ResolvedProvider {
                 .requires_assistant_content_for_tool_calls,
         }
     }
+}
+fn default_thinking_levels() -> Vec<ThinkingLevel> {
+    vec![
+        ThinkingLevel::Low,
+        ThinkingLevel::Medium,
+        ThinkingLevel::High,
+        ThinkingLevel::Xhigh,
+        ThinkingLevel::Max,
+    ]
+}
+
+fn effective_thinking_levels(model: &ModelDocument) -> Vec<ThinkingLevel> {
+    if !model.reasoning {
+        return Vec::new();
+    }
+    model
+        .thinking_levels
+        .clone()
+        .unwrap_or_else(default_thinking_levels)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -487,10 +527,18 @@ pub(super) fn resolve_one(
             parsed.model_id
         ))
     })?;
-    let level = parsed
-        .level
-        .or(fallback_level)
-        .unwrap_or(model.thinking_level);
+    let thinking_levels = effective_thinking_levels(model);
+    let default_level = thinking_levels
+        .first()
+        .copied()
+        .unwrap_or(ThinkingLevel::Off);
+    let level = parsed.level.or(fallback_level).unwrap_or(default_level);
+    if model.reasoning && level != ThinkingLevel::Off && !thinking_levels.contains(&level) {
+        return Err(CoreError::Config(format!(
+            "模型 selector `{selector}` 的 thinking level `{}` 不在模型 thinking_levels 中",
+            level.as_str()
+        )));
+    }
     Ok(provider.resolve_model(parsed.provider_id, parsed.model_id, model, level))
 }
 
@@ -498,7 +546,11 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
     let mut result = Vec::new();
     for (provider_id, provider) in providers {
         for (model_id, model) in &provider.models {
-            result.push(provider.resolve_model(provider_id, model_id, model, model.thinking_level));
+            let level = effective_thinking_levels(model)
+                .first()
+                .copied()
+                .unwrap_or(ThinkingLevel::Off);
+            result.push(provider.resolve_model(provider_id, model_id, model, level));
         }
     }
     result

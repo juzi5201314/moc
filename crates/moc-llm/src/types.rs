@@ -450,8 +450,6 @@ pub struct ReasoningConfig {
     pub enabled: bool,
     /// 推理强度。
     pub effort: Option<Effort>,
-    /// Anthropic manual 模式下的思考预算，必须小于 `max_output_tokens`。
-    pub budget_tokens: Option<u32>,
     /// 摘要粒度（Anthropic 的 `display` / Responses 的 `reasoning.summary`）。
     pub summary: Option<ReasoningSummary>,
 }

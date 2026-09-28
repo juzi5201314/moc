@@ -4,7 +4,8 @@
 //! 事件优先路由给打开的模态（见 `crate::event`），渲染浮层在 `crate::render`。
 
 use moc_protocol::methods::{
-    AskParams, AskResult, ModelInfo, PermissionRequestParams, PermissionResult, SessionInfo,
+    AskParams, AskResult, ContextUsageResult, ModelInfo, PermissionRequestParams, PermissionResult,
+    SessionInfo,
 };
 
 /// 可搜索列表模态的状态。
@@ -87,6 +88,21 @@ pub enum Modal {
         current: String,
         picker: PickerState,
     },
+    /// OpenViking 工作区记忆目录。
+    Memories {
+        root_uri: String,
+        entries: Vec<moc_protocol::methods::OpenVikingEntry>,
+        picker: PickerState,
+    },
+    /// OpenViking 正文编辑器。
+    MemoryEditor {
+        uri: String,
+        editor: crate::widgets::prompt::PromptState,
+        dirty: bool,
+        root_uri: String,
+        entries: Vec<moc_protocol::methods::OpenVikingEntry>,
+        picker: PickerState,
+    },
     /// 会话恢复（`session/list` + `session/load`）。
     Sessions {
         sessions: Vec<SessionInfo>,
@@ -101,6 +117,8 @@ pub enum Modal {
     },
     /// 快捷键帮助。
     Help,
+    /// 上下文组成估算详情。
+    Context { usage: Option<ContextUsageResult> },
 }
 
 /// 回复通道的错误类型别名（协议层 RpcError 的重导出位置）。
@@ -118,9 +136,14 @@ impl Modal {
                 .get(*question)
                 .map_or_else(|| "提问".into(), |question| question.question.clone()),
             Modal::Model { .. } => "选择模型".into(),
+            Modal::Memories { .. } => "OpenViking 记忆".into(),
+            Modal::MemoryEditor { uri, dirty, .. } => {
+                format!("{}{}", if *dirty { "* " } else { "" }, uri)
+            }
             Modal::Sessions { .. } => "恢复会话".into(),
             Modal::Plan { title, .. } => format!("计划审批：{title}"),
             Modal::Help => "快捷键帮助".into(),
+            Modal::Context { .. } => "上下文占用".into(),
         }
     }
 
@@ -136,44 +159,52 @@ impl Modal {
                 .map(|question| question.options.len() + 1)
                 .unwrap_or(0),
             Modal::Model { picker, models, .. } => filtered_models(models, &picker.query).len(),
+            Modal::Memories {
+                entries, picker, ..
+            } => entries
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .name
+                        .to_lowercase()
+                        .contains(&picker.query.to_lowercase())
+                })
+                .count(),
+            Modal::MemoryEditor { .. } => 0,
             Modal::Sessions { picker, sessions } => {
                 filtered_sessions(sessions, &picker.query).len()
             }
             Modal::Plan { .. } => 2,
-            Modal::Help => 0,
+            Modal::Help | Modal::Context { .. } => 0,
         }
     }
-
     /// 移动选中项（循环）。
     pub fn move_selection(&mut self, delta: i32) {
         let count = self.option_count();
         if count == 0 {
             return;
         }
-        let selected = match self {
-            Modal::Permission { selected, .. } | Modal::Plan { selected, .. } => selected,
-            Modal::Ask { .. } | Modal::Help => return,
-            Modal::Model { picker, .. } | Modal::Sessions { picker, .. } => {
-                picker.selected = if delta < 0 {
-                    picker
-                        .selected
-                        .saturating_sub(delta.unsigned_abs() as usize)
-                } else {
-                    picker
-                        .selected
-                        .saturating_add(delta as usize)
-                        .min(count - 1)
-                };
-                return;
+        match self {
+            Modal::Permission { selected, .. } | Modal::Plan { selected, .. } => {
+                *selected = (*selected as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
-        };
-        let next = (*selected as i32 + delta).clamp(0, count as i32 - 1) as usize;
-        *selected = next;
+            Modal::Ask { .. }
+            | Modal::MemoryEditor { .. }
+            | Modal::Help
+            | Modal::Context { .. } => {}
+            Modal::Model { picker, .. }
+            | Modal::Memories { picker, .. }
+            | Modal::Sessions { picker, .. } => {
+                picker.move_selection(delta, count, 8);
+            }
+        }
     }
 
     pub fn picker_mut(&mut self) -> Option<&mut PickerState> {
         match self {
-            Modal::Model { picker, .. } | Modal::Sessions { picker, .. } => Some(picker),
+            Modal::Model { picker, .. }
+            | Modal::Memories { picker, .. }
+            | Modal::Sessions { picker, .. } => Some(picker),
             _ => None,
         }
     }

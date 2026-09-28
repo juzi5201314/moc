@@ -25,6 +25,7 @@ pub mod ask;
 pub mod config;
 pub mod diff;
 pub mod initialize;
+pub mod openviking;
 pub mod permission;
 pub mod plan;
 pub mod session;
@@ -41,6 +42,12 @@ pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
 };
+pub use openviking::{
+    OpenVikingDelete, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingEntry,
+    OpenVikingList, OpenVikingListParams, OpenVikingListResult, OpenVikingRead,
+    OpenVikingReadParams, OpenVikingReadResult, OpenVikingWrite, OpenVikingWriteParams,
+    OpenVikingWriteResult,
+};
 pub use permission::{
     PermissionOption, PermissionOptionKind, PermissionRequestParams, PermissionResult,
     SessionRequestPermission, default_options,
@@ -50,8 +57,9 @@ pub use plan::{
     SessionPlanApproveResult,
 };
 pub use session::{
-    CompactResult, SessionCompact, SessionCompactParams, SessionDelete, SessionDeleteParams,
-    SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
+    CompactResult, ContextUsageResult, ContextUsageSection, SessionCompact, SessionCompactParams,
+    SessionContext, SessionContextParams, SessionDelete, SessionDeleteParams, SessionInfo,
+    SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
     SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionRename,
     SessionRenameParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
     SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams,
@@ -100,8 +108,13 @@ mod tests {
             <SessionSetModel as Method>::NAME,
             <SessionPlanApprove as Method>::NAME,
             <SessionCompact as Method>::NAME,
+            <SessionContext as Method>::NAME,
             <SessionPrompt as Method>::NAME,
             <SessionCancel as Method>::NAME,
+            <OpenVikingList as Method>::NAME,
+            <OpenVikingRead as Method>::NAME,
+            <OpenVikingWrite as Method>::NAME,
+            <OpenVikingDelete as Method>::NAME,
         ];
         let server_methods = [
             <SessionRequestPermission as Method>::NAME,
@@ -121,10 +134,15 @@ mod tests {
             "session/unlock",
             "session/set_mode",
             "session/set_model",
-            "session/plan_approve",
-            "session/compact",
             "session/prompt",
             "session/cancel",
+            "openviking/list",
+            "openviking/read",
+            "openviking/write",
+            "openviking/delete",
+            "session/context",
+            "session/plan_approve",
+            "session/compact",
         ]
         .into_iter()
         .collect();
@@ -160,6 +178,10 @@ mod tests {
         assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
         assert_eq!(<SessionPrompt as Method>::NAME, "session/prompt");
         assert_eq!(<SessionCancel as Method>::NAME, "session/cancel");
+        assert_eq!(<OpenVikingList as Method>::NAME, "openviking/list");
+        assert_eq!(<OpenVikingRead as Method>::NAME, "openviking/read");
+        assert_eq!(<OpenVikingWrite as Method>::NAME, "openviking/write");
+        assert_eq!(<OpenVikingDelete as Method>::NAME, "openviking/delete");
         assert_eq!(<SessionRequestAsk as Method>::NAME, "session/request_ask");
         assert_eq!(
             <SessionRequestPermission as Method>::NAME,

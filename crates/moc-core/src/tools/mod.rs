@@ -146,6 +146,9 @@ pub struct ToolCtx {
     pub sessions: Arc<SessionTable>,
     pub cancel: CancellationToken,
     pub jobs: Arc<job::JobManager>,
+    /// 当前 workspace 的惰性 OpenViking client；未配置时为 None。
+    pub openviking: Option<Arc<moc_openviking::OpenVikingClient>>,
+    pub openviking_peer: Option<String>,
     /// 该项目的 MCP 管理器（空配置时为空管理器）。
     pub mcp: Arc<moc_mcp::McpManager>,
     /// 该项目的 skill 索引。

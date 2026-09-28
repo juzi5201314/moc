@@ -193,6 +193,22 @@ pub(super) async fn execute_tool_batch(
             )
             .await
             .map_err(to_rpc)?;
+        if config.openviking.capture
+            && let Some(client) = tool_ctx.openviking.as_ref()
+            && let Some(peer) = tool_ctx.openviking_peer.as_deref()
+        {
+            let session = format!(
+                "moc-{}",
+                session_id.replace(
+                    |character: char| !character.is_ascii_alphanumeric()
+                        && character != '-'
+                        && character != '_',
+                    "-"
+                )
+            );
+            let message = serde_json::json!({"role":"tool","tool_call_id":call.id,"tool_name":call.name,"parts":[{"type":"text","text":outcome.content.chars().take(4096).collect::<String>()}]});
+            let _ = client.append_messages(&session, &[message], peer).await;
+        }
         if let Err(error) = update
             .emit(
                 session_id.to_owned(),

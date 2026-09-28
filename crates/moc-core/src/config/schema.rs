@@ -19,6 +19,7 @@ pub(super) struct ConfigDocument {
     pub system_prompt: SystemPromptConfig,
     pub context_files: ContextFilesConfig,
     pub workspace: WorkspaceConfig,
+    pub openviking: moc_openviking::OpenVikingConfig,
     pub session: SessionDocument,
     pub tui: TuiConfig,
     pub mcp: moc_mcp::McpDocument,
@@ -430,7 +431,6 @@ impl Default for RemoteCompactionConfig {
 pub struct LimitsConfig {
     pub max_steps_per_turn: usize,
     pub max_length_continues: usize,
-    pub max_output_tokens: u32,
 }
 
 impl Default for LimitsConfig {
@@ -438,7 +438,6 @@ impl Default for LimitsConfig {
         Self {
             max_steps_per_turn: 128,
             max_length_continues: 2,
-            max_output_tokens: 32_000,
         }
     }
 }

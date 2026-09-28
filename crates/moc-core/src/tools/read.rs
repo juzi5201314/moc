@@ -55,6 +55,27 @@ impl Tool for ReadTool {
         Box::pin(async move {
             let args: ReadArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
+                let Some(client) = &ctx.openviking else {
+                    return Err(ToolError::new(
+                        "E_OPENVIKING_DISABLED",
+                        "未配置 OpenViking URL",
+                    ));
+                };
+                let peer = ctx.openviking_peer.as_deref();
+                let offset = args.offset.unwrap_or(1).max(1).saturating_sub(1);
+                let limit = args.limit.unwrap_or(ctx.config.tools.read.default_limit) as i64;
+                if let Ok(document) = client.read(&args.path, peer, offset, limit).await {
+                    return Ok(ToolOutcome::success(format!(
+                        "[{}]\n{}",
+                        document.uri, document.content
+                    )));
+                }
+                return Err(ToolError::new(
+                    "E_OPENVIKING_READ",
+                    "读取 OpenViking 内容失败",
+                ));
+            }
             let path = resolve_path(&ctx.cwd, &args.path)?;
             if path.is_dir() {
                 return Ok(ToolOutcome::success(list_directory(&path, &ctx.cwd)?));

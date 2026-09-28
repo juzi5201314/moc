@@ -30,8 +30,16 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "切换 Normal / Ask / Plan",
     },
     SlashCommand {
+        name: "/memories",
+        description: "浏览 OpenViking 工作区记忆",
+    },
+    SlashCommand {
         name: "/compact",
         description: "手动压缩上下文",
+    },
+    SlashCommand {
+        name: "/context",
+        description: "查看上下文组成与占用比例",
     },
     SlashCommand {
         name: "/quit",

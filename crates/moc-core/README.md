@@ -17,8 +17,17 @@ plan = "provider/model"
 
 [providers.provider]
 api = "openai_chat"
-base_url = "https://your-provider.example/v1"
+base_url = "https://your-provider.example"
 api_key = "env:MOC_API_KEY"
+
+[defaults.models."*gpt-5.6-sol"]
+context_window = 500000
+max_output_tokens = 128000
+input = ["text", "image"]
+
+[providers.provider.models."gpt-5.6-sol"]
+reasoning = true
+thinking_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [providers.provider.models.model]
 context_window = 200000
@@ -27,9 +36,15 @@ input = ["text"]
 
 [tools]
 approval_mode = "prompt"
+
 ```
 
-`api` 也支持 `openai_responses` 和 `anthropic_messages`；完整工具、上下文与模型兼容配置见 `src/config/defaults.toml`、`src/config/schema.rs` 和 `src/config/model.rs`。不要把供应商密钥提交到仓库。
+`base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
+
+`[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*gpt-5.6-sol"` 会匹配 `ag/gpt-5.6-sol`。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
+支持 `input = ["image"]` 的模型会接收所有图片输入形式。输入文本中的独立 `@path/to/image.png`、`@~/image.png` 标记会由 core 读取本地文件并转成 Base64；不再需要配置 `compat.image_url`。Responses 协议中，模型 ID 末段以 `gpt-` 开头时默认启用远程压缩，可用模型字段 `remote_compaction = false` 关闭。
+
+完整工具、上下文与模型兼容配置见 `src/config/defaults.toml`、`src/config/schema.rs` 和 `src/config/model.rs`。不要把供应商密钥提交到仓库。
 
 供应商兼容项放在 `[providers.<provider>.models.<model>.compat]`：
 

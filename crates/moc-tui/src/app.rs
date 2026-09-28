@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 
 use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
-use moc_protocol::{ModelInfo, SessionInfo, ToolResult, Usage};
+use moc_protocol::{ContextUsageResult, ModelInfo, SessionInfo, ToolResult, Usage};
+
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -67,6 +68,10 @@ pub struct App {
     pub focus: Focus,
     /// 最近一次绘制的输入框区域，用于鼠标点击恢复焦点。
     pub prompt_area: Rect,
+    /// 顶部上下文占用区域，用于鼠标点击打开详情。
+    pub context_area: Rect,
+    /// Core 估算的上下文组成与总量。
+    pub context_usage: Option<ContextUsageResult>,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
     pub scroll_offset: usize,
     /// 是否有在飞轮次。
@@ -127,6 +132,8 @@ impl App {
             pending_plan: None,
             focus: Focus::Prompt,
             prompt_area: Rect::default(),
+            context_area: Rect::default(),
+            context_usage: None,
             scroll_offset: 0,
             turn_running: false,
             turn_started_at: None,
@@ -344,6 +351,7 @@ impl App {
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
         self.session = Some(info);
         self.blocks = blocks;
+        self.context_usage = None;
         self.tool_indices.clear();
         for (index, entry) in self.blocks.iter().enumerate() {
             if let Block::Tool(tool) = &entry.block {
@@ -419,6 +427,17 @@ impl App {
             .iter()
             .find(|candidate| candidate.id == base)
             .and_then(|info| info.context_window)
+    }
+
+    /// 当前上下文占用：请求实测值优先，未请求时使用 core 估算值。
+    pub fn context_used(&self) -> u64 {
+        if self.usage.input_tokens > 0 {
+            self.usage.input_tokens
+        } else {
+            self.context_usage
+                .as_ref()
+                .map_or(0, |usage| usage.total_tokens)
+        }
     }
 
     /// 应用一次 usage 刷新：费用累计 + tok/s 窗口采样。

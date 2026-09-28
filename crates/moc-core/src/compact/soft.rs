@@ -61,11 +61,7 @@ pub(crate) async fn compact(
             Message::system(SUMMARY_SYSTEM),
             Message::user_text(transcript),
         ],
-        max_output_tokens: Some(
-            role_model
-                .max_output_tokens
-                .min(config.limits.max_output_tokens),
-        ),
+        max_output_tokens: Some(role_model.max_output_tokens),
         ..ChatRequest::default()
     };
     let cancel = ctx.cancel();

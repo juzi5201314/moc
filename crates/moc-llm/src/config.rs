@@ -110,15 +110,12 @@ pub enum MaxTokensField {
     MaxCompletionTokens,
 }
 
-/// Anthropic 思考模式方言。
+/// Anthropic 自适应思考模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnthropicThinkingDialect {
-    /// 自适应思考：`{"type":"adaptive"}`。
     #[default]
     Adaptive,
-    /// 手动预算：`{"type":"enabled","budget_tokens":N}`。
-    ManualBudget,
 }
 
 /// 工具选择方言。
@@ -212,8 +209,6 @@ pub struct WireConfig {
     pub parallel_tool_calls: bool,
     /// 是否支持 `developer` 角色；`false` 时降级为 `system`。
     pub developer_role: bool,
-    /// 是否支持图片 URL 来源；`false` 时 URL 图片报错。
-    pub image_url: bool,
     /// 响应格式方言。
     pub response_format_dialect: ResponseFormatDialect,
 }
@@ -230,7 +225,6 @@ impl Default for WireConfig {
             tool_choice_dialect: ToolChoiceDialect::Standard,
             parallel_tool_calls: true,
             developer_role: false,
-            image_url: true,
             response_format_dialect: ResponseFormatDialect::Standard,
         }
     }
@@ -314,7 +308,10 @@ impl LlmConfig {
 
     /// 本次请求的完整 URL（不含查询串之外的内容）。
     pub(crate) fn endpoint_url(&self) -> String {
-        let base = self.base_url.trim_end_matches('/');
+        let base = match &self.endpoint {
+            EndpointStyle::Default => normalize_base_url(&self.base_url),
+            EndpointStyle::Azure { .. } => self.base_url.trim_end_matches('/').to_owned(),
+        };
         match &self.endpoint {
             EndpointStyle::Default => format!("{base}/{}", self.protocol.path()),
             EndpointStyle::Azure { api_version } => format!(
@@ -324,10 +321,25 @@ impl LlmConfig {
             ),
         }
     }
+}
 
+fn normalize_base_url(raw: &str) -> String {
+    let skip_version = raw.ends_with('#');
+    let base = raw.trim_end_matches('#').trim_end_matches('/');
+    if skip_version || base.ends_with("/v1") {
+        base.to_owned()
+    } else {
+        format!("{base}/v1")
+    }
+}
+
+impl LlmConfig {
     /// OpenAI Responses 原生压缩端点 URL。
     pub fn compact_endpoint_url(&self) -> String {
-        let base = self.base_url.trim_end_matches('/');
+        let base = match &self.endpoint {
+            EndpointStyle::Default => normalize_base_url(&self.base_url),
+            EndpointStyle::Azure { .. } => self.base_url.trim_end_matches('/').to_owned(),
+        };
         match &self.endpoint {
             EndpointStyle::Default => format!("{base}/responses/compact"),
             EndpointStyle::Azure { api_version } => format!(
@@ -366,6 +378,28 @@ mod tests {
             "https://contoso.openai.azure.com/openai/deployments/gpt-deploy/responses/compact?api-version=2025-04-01"
         );
     }
+    #[test]
+    fn endpoint_urls_normalize_v1_and_honor_escape_marker() {
+        for (base_url, expected) in [
+            ("https://example.com/", "https://example.com/v1/responses"),
+            ("https://example.com/v1", "https://example.com/v1/responses"),
+            (
+                "https://example.com/v1/",
+                "https://example.com/v1/responses",
+            ),
+            (
+                "https://example.com/v1/v1#",
+                "https://example.com/v1/v1/responses",
+            ),
+        ] {
+            let config = LlmConfig {
+                protocol: Protocol::OpenAiResponses,
+                base_url: base_url.into(),
+                ..Default::default()
+            };
+            assert_eq!(config.endpoint_url(), expected);
+        }
+    }
 
     fn sample() -> LlmConfig {
         LlmConfig {
@@ -392,11 +426,10 @@ mod tests {
                     effort_map: BTreeMap::from([(Effort::XHigh, "x-high".into())]),
                     toggle_extra: serde_json::Map::from_iter([("keep".into(), json!("all"))]),
                 },
-                anthropic_thinking: AnthropicThinkingDialect::ManualBudget,
+                anthropic_thinking: AnthropicThinkingDialect::Adaptive,
                 tool_choice_dialect: ToolChoiceDialect::AnyForRequired,
                 parallel_tool_calls: false,
                 developer_role: true,
-                image_url: false,
                 response_format_dialect: ResponseFormatDialect::Unsupported,
             },
             headers: BTreeMap::from([(
@@ -474,7 +507,6 @@ mod tests {
         assert_eq!(config.wire.tool_choice_dialect, ToolChoiceDialect::Standard);
         assert!(config.wire.parallel_tool_calls);
         assert!(!config.wire.developer_role);
-        assert!(config.wire.image_url);
         assert_eq!(
             config.wire.response_format_dialect,
             ResponseFormatDialect::Standard

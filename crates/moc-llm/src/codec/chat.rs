@@ -176,13 +176,13 @@ fn encode_instruction(
     Ok(json!({"role": role, "content": finish_text_content(text, breakpoint)?}))
 }
 
-fn encode_user(cfg: &LlmConfig, message: &Message, breakpoint: bool) -> Result<Value, LlmError> {
+fn encode_user(_cfg: &LlmConfig, message: &Message, breakpoint: bool) -> Result<Value, LlmError> {
     let mut blocks = Vec::with_capacity(message.content.len());
     for part in &message.content {
         match part {
             ContentPart::Text(chunk) => blocks.push(json!({"type": "text", "text": chunk})),
             ContentPart::Image { source, detail } => {
-                blocks.push(encode_image(cfg, source, *detail)?);
+                blocks.push(encode_image(source, *detail)?);
             }
             other => return Err(unsupported_part(message.role, other)),
         }
@@ -190,20 +190,9 @@ fn encode_user(cfg: &LlmConfig, message: &Message, breakpoint: bool) -> Result<V
     Ok(json!({"role": "user", "content": finish_content(blocks, breakpoint)?}))
 }
 
-fn encode_image(
-    cfg: &LlmConfig,
-    source: &ImageSource,
-    detail: Option<ImageDetail>,
-) -> Result<Value, LlmError> {
+fn encode_image(source: &ImageSource, detail: Option<ImageDetail>) -> Result<Value, LlmError> {
     let url = match source {
-        ImageSource::Url(url) => {
-            if !cfg.wire.image_url {
-                return Err(LlmError::Encode(
-                    "该线格式不支持图片 URL 来源，请改传 base64".into(),
-                ));
-            }
-            url.clone()
-        }
+        ImageSource::Url(url) => url.clone(),
         ImageSource::Base64 { media_type, data } => {
             format!("data:{media_type};base64,{data}")
         }
@@ -273,7 +262,7 @@ fn encode_assistant(
 }
 
 fn encode_tool_result(
-    cfg: &LlmConfig,
+    _cfg: &LlmConfig,
     message: &Message,
     breakpoint: bool,
 ) -> Result<Vec<Value>, LlmError> {
@@ -301,7 +290,7 @@ fn encode_tool_result(
         "text": format!("[工具 {} 返回的图片]", result.tool_call_id),
     }));
     for source in &result.images {
-        blocks.push(encode_image(cfg, source, None)?);
+        blocks.push(encode_image(source, None)?);
     }
     out.push(json!({"role": "user", "content": Value::Array(blocks)}));
     Ok(out)
@@ -1178,16 +1167,6 @@ mod tests {
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
             ])
         );
-
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                image_url: false,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let err = encode(&cfg, &req, false).unwrap_err();
-        assert!(err.to_string().contains("图片 URL"), "{err}");
     }
 
     #[test]

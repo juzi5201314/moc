@@ -18,13 +18,15 @@ use std::time::Duration;
 use moc_protocol::methods::{
     AgentInfo, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
     ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult, InputPart,
-    ModelInfo, PermissionRequestParams, PermissionResult, PromptParams, ServerCapabilities,
-    ServerInfo, SessionCompactParams, SessionDeleteParams, SessionInfo, SessionListParams,
-    SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo, SessionMode,
-    SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-    SessionRequestAsk, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
-    TranscriptEntry, TurnResult, default_options,
+    ModelInfo, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
+    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
+    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams,
+    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
+    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
+    SessionLoadResult, SessionLockInfo, SessionMode, SessionNewParams, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
+    SessionSetModelParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, TurnResult, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -165,6 +167,7 @@ impl ScriptedService {
                         ModelInfo {
                             id: "deepseek-flash".to_owned(),
                             display_name: "DeepSeek Flash".to_owned(),
+                            thinking_levels: None,
                             context_window: Some(128_000),
                             max_output_tokens: Some(8_192),
                             pricing: None,
@@ -172,6 +175,7 @@ impl ScriptedService {
                         ModelInfo {
                             id: "claude-sonnet".to_owned(),
                             display_name: "Claude Sonnet".to_owned(),
+                            thinking_levels: None,
                             context_window: Some(200_000),
                             max_output_tokens: None,
                             pricing: None,
@@ -530,6 +534,7 @@ impl AgentService for ScriptedService {
             models.push(ModelInfo {
                 id: "padded".to_owned(),
                 display_name: "x".repeat(state.config_padding),
+                thinking_levels: None,
                 context_window: None,
                 max_output_tokens: None,
                 pricing: None,
@@ -542,6 +547,49 @@ impl AgentService for ScriptedService {
             default_agent: state.default_agent.clone(),
             cwd: state.cwd.clone(),
             statusline_template: None,
+        })
+    }
+    async fn openviking_list(
+        &self,
+        _ctx: RequestContext,
+        params: OpenVikingListParams,
+    ) -> Result<OpenVikingListResult, RpcError> {
+        Ok(OpenVikingListResult {
+            uri: params.uri,
+            entries: Vec::new(),
+        })
+    }
+
+    async fn openviking_read(
+        &self,
+        _ctx: RequestContext,
+        params: OpenVikingReadParams,
+    ) -> Result<OpenVikingReadResult, RpcError> {
+        Ok(OpenVikingReadResult {
+            uri: params.uri,
+            content: String::new(),
+        })
+    }
+
+    async fn openviking_write(
+        &self,
+        _ctx: RequestContext,
+        params: OpenVikingWriteParams,
+    ) -> Result<OpenVikingWriteResult, RpcError> {
+        Ok(OpenVikingWriteResult {
+            uri: params.uri,
+            result: Value::Null,
+        })
+    }
+
+    async fn openviking_delete(
+        &self,
+        _ctx: RequestContext,
+        params: OpenVikingDeleteParams,
+    ) -> Result<OpenVikingDeleteResult, RpcError> {
+        Ok(OpenVikingDeleteResult {
+            uri: params.uri,
+            result: Value::Null,
         })
     }
 
@@ -759,6 +807,13 @@ impl AgentService for ScriptedService {
         _ctx: RequestContext,
         _params: SessionCompactParams,
     ) -> Result<moc_protocol::methods::CompactResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+    async fn session_context(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionContextParams,
+    ) -> Result<moc_protocol::methods::ContextUsageResult, RpcError> {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
     async fn session_prompt(

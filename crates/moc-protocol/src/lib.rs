@@ -138,12 +138,15 @@
 //!
 //! ```no_run
 //! use moc_protocol::methods::{
-//!     CompactResult, ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult,
-//!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams, SessionDeleteParams,
-//!     SessionInfo, SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult,
-//!     SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-//!     SessionSetModeParams, SessionSetModelParams, SessionUnloadParams, SessionUnlockParams,
-//!     SessionUpdate, TurnResult,
+//!     CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult,
+//!     Empty, InitializeParams, InitializeResult,
+//!     OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
+//!     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
+//!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
+//!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
+//!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
+//!     SessionRenameParams, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
+//!     SessionUnlockParams, SessionUpdate, TurnResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
@@ -264,6 +267,21 @@
 //!     }
 //!     async fn session_compact(&self, _ctx: RequestContext, _params: SessionCompactParams) -> Result<CompactResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_context(&self, _ctx: RequestContext, _params: SessionContextParams) -> Result<ContextUsageResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn openviking_list(&self, _ctx: RequestContext, params: OpenVikingListParams) -> Result<OpenVikingListResult, RpcError> {
+//!         Ok(OpenVikingListResult { uri: params.uri, entries: Vec::new() })
+//!     }
+//!     async fn openviking_read(&self, _ctx: RequestContext, params: OpenVikingReadParams) -> Result<OpenVikingReadResult, RpcError> {
+//!         Ok(OpenVikingReadResult { uri: params.uri, content: String::new() })
+//!     }
+//!     async fn openviking_write(&self, _ctx: RequestContext, params: OpenVikingWriteParams) -> Result<OpenVikingWriteResult, RpcError> {
+//!         Ok(OpenVikingWriteResult { uri: params.uri, result: serde_json::Value::Null })
+//!     }
+//!     async fn openviking_delete(&self, _ctx: RequestContext, params: OpenVikingDeleteParams) -> Result<OpenVikingDeleteResult, RpcError> {
+//!         Ok(OpenVikingDeleteResult { uri: params.uri, result: serde_json::Value::Null })
 //!     }
 //! }
 //! ```

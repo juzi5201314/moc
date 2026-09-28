@@ -1,12 +1,10 @@
-//! 三层 TOML 配置合并与解析后的运行时设置。
-
-pub mod model;
-mod schema;
+//! 运行时配置加载、合并与解析。
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use globset::GlobBuilder;
 use moc_llm::LlmConfig;
 use toml::Value;
 
@@ -14,6 +12,9 @@ use crate::CoreConfig;
 use crate::error::CoreError;
 use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
 use schema::{ConfigDocument, validate_compaction};
+
+pub mod model;
+mod schema;
 
 pub use model::{ModelCapabilities, ThinkingLevel};
 pub use schema::{
@@ -33,33 +34,20 @@ pub struct SessionSettings {
 /// 一次完成路径合并、密钥解析与 provider/model 校验的运行时配置。
 #[derive(Clone)]
 pub struct ResolvedConfig {
-    /// core 配置与数据根目录。
     pub home: PathBuf,
-    /// 当前配置所对应的工作目录。
     pub cwd: PathBuf,
-    /// 模型角色 selector。
     pub roles: ModelRoles,
-    /// 工具策略与限制。
     pub tools: ToolsConfig,
-    /// `[tools.approval]` 的预编译匹配器（精确 + glob）。
     pub tool_approval: ApprovalMatcher,
-    /// 上下文压缩设置。
     pub compaction: CompactionConfig,
-    /// 轮次资源上限。
     pub limits: LimitsConfig,
-    /// 系统提示词覆盖。
     pub system_prompt: SystemPromptConfig,
-    /// 上下文文件发现设置。
     pub context_files: ContextFilesConfig,
-    /// 工作区监视设置。
     pub workspace: WorkspaceConfig,
-    /// 会话数据设置。
+    pub openviking: moc_openviking::OpenVikingConfig,
     pub session: SessionSettings,
-    /// TUI 前端设置。
     pub tui: TuiConfig,
-    /// MCP 客户端设置（含全部 server 定义）。
     pub mcp: moc_mcp::McpDocument,
-    /// Agent Skills 设置。
     pub skills: SkillsConfig,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
@@ -132,20 +120,20 @@ impl ResolvedConfig {
         all_models(&self.providers)
     }
 
-    /// 将模型最大输出限制到 core 全局上限。
+    /// 返回指定模型的协议配置；输出上限由模型自身配置决定。
     pub fn llm_config(&self, model: &ResolvedModel) -> LlmConfig {
         model.llm.clone()
     }
 
     fn from_merged(
-        raw: Value,
+        mut raw: Value,
         base_raw: Value,
         home: PathBuf,
         cwd: PathBuf,
         overlays: Vec<PathBuf>,
     ) -> Result<Self, CoreError> {
+        apply_model_defaults(&mut raw)?;
         let document: ConfigDocument = raw
-            .clone()
             .try_into()
             .map_err(|error| CoreError::Config(format!("配置字段无效: {error}")))?;
         let providers = resolve_catalog(&document.providers)?;
@@ -163,6 +151,8 @@ impl ResolvedConfig {
             system_prompt: document.system_prompt,
             context_files: document.context_files,
             workspace: document.workspace,
+            openviking: document.openviking,
+
             session: SessionSettings {
                 dir: session_dir,
                 locking: document.session.locking,
@@ -313,6 +303,70 @@ fn merge_value(target: &mut Value, overlay: Value) {
     }
 }
 
+fn apply_model_defaults(raw: &mut Value) -> Result<(), CoreError> {
+    let Some(defaults) = raw.get("defaults") else {
+        return Ok(());
+    };
+    let defaults_models = defaults
+        .get("models")
+        .and_then(Value::as_table)
+        .cloned()
+        .ok_or_else(|| CoreError::Config("defaults.models 必须是表".into()))?;
+    for pattern in defaults_models.keys() {
+        GlobBuilder::new(pattern)
+            .literal_separator(false)
+            .build()
+            .map_err(|error| {
+                CoreError::Config(format!(
+                    "defaults.models.{pattern} 不是合法模型匹配模式：{error}"
+                ))
+            })?;
+    }
+
+    let providers = raw
+        .get_mut("providers")
+        .and_then(Value::as_table_mut)
+        .ok_or_else(|| CoreError::Config("providers 必须是表".into()))?;
+    for (_, provider) in providers.iter_mut() {
+        let Some(models) = provider.get_mut("models").and_then(Value::as_table_mut) else {
+            continue;
+        };
+        for (model_id, explicit) in models.iter_mut() {
+            let mut matching = defaults_models
+                .iter()
+                .filter_map(|(pattern, value)| {
+                    let glob = GlobBuilder::new(pattern)
+                        .literal_separator(false)
+                        .build()
+                        .expect("defaults.models 匹配模式已在上方校验");
+                    glob.compile_matcher().is_match(model_id).then_some((
+                        !pattern.contains(['*', '?', '[', '{']),
+                        pattern.len(),
+                        pattern.as_str(),
+                        value,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            matching.sort_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then(left.1.cmp(&right.1))
+                    .then(left.2.cmp(right.2))
+            });
+            let mut merged = Value::Table(Default::default());
+            for (_, _, _, value) in matching {
+                merge_value(&mut merged, value.clone());
+            }
+            merge_value(&mut merged, explicit.clone());
+            *explicit = merged;
+        }
+    }
+    raw.as_table_mut()
+        .expect("配置根节点必须是表")
+        .remove("defaults");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -452,5 +506,81 @@ mod tests {
         assert!(ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err());
         fs::write(home.join("config.toml"), "[providers.p\ninvalid").expect("写非法 TOML");
         assert!(ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err());
+    }
+
+    #[test]
+    fn wildcard_model_defaults_merge_before_provider_overrides() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(
+            home.join("config.toml"),
+            r#"
+[models.roles]
+default = "p/ag/gpt-5.6-sol:high"
+smol = "p/ag/gpt-5.6-sol:high"
+slow = "p/ag/gpt-5.6-sol:max"
+plan = "p/ag/gpt-5.6-sol:max"
+
+[defaults.models."*gpt-5.6-sol"]
+context_window = 500000
+max_output_tokens = 384000
+reasoning = true
+thinking_levels = ["high", "max"]
+input = ["text", "image"]
+
+[defaults.models."*gpt-5.6-sol".compat]
+developer_role = true
+
+[providers.p]
+api = "openai_responses"
+base_url = "https://example.invalid"
+
+[providers.p.models."ag/gpt-5.6-sol"]
+max_output_tokens = 128000
+"#,
+        )
+        .expect("写配置");
+
+        let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
+            .expect("通配模型默认值可解析");
+        let model = config.resolve_role("default").expect("解析模型");
+        assert_eq!(model.context_window, 500_000);
+        assert_eq!(model.max_output_tokens, 128_000);
+        assert!(model.capabilities.reasoning);
+        assert!(model.capabilities.image);
+        assert_eq!(
+            model.thinking_levels,
+            vec![ThinkingLevel::High, ThinkingLevel::Max]
+        );
+        assert!(model.llm.wire.developer_role);
+        assert!(model.remote_compaction);
+    }
+
+    #[test]
+    fn reasoning_defaults_to_standard_effort_levels() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(
+            home.join("config.toml"),
+            "[models.roles]\ndefault='p/m:max'\nsmol='p/m:low'\nslow='p/m:high'\nplan='p/m:max'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\nreasoning=true\n",
+        )
+        .expect("写配置");
+        let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
+            .expect("默认思考等级可解析");
+        assert_eq!(
+            config
+                .resolve_role("default")
+                .expect("解析模型")
+                .thinking_levels,
+            vec![
+                ThinkingLevel::Low,
+                ThinkingLevel::Medium,
+                ThinkingLevel::High,
+                ThinkingLevel::Xhigh,
+                ThinkingLevel::Max,
+            ]
+        );
     }
 }

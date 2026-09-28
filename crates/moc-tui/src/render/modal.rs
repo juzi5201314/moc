@@ -304,6 +304,97 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             )));
             lines
         }
+        Modal::Memories {
+            root_uri,
+            entries,
+            picker,
+        } => {
+            let query = picker.query.to_lowercase();
+            let filtered: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.name.to_lowercase().contains(&query))
+                .collect();
+            let visible = max_lines.saturating_sub(5).max(1);
+            let offset = picker.offset.min(filtered.len().saturating_sub(visible));
+            let mut lines = vec![Line::from(Span::styled(
+                ellipsize(root_uri, width),
+                Style::new().fg(theme.accent_model),
+            ))];
+            if picker.loading {
+                lines.push(Line::from(Span::styled(
+                    "正在加载 OpenViking 记忆…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            } else if let Some(error) = &picker.error {
+                lines.push(Line::from(Span::styled(
+                    format!("错误：{error}"),
+                    Style::new().fg(theme.accent_error),
+                )));
+            } else if filtered.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "没有记忆条目",
+                    Style::new().fg(theme.gray),
+                )));
+            } else {
+                for (index, entry) in filtered.iter().skip(offset).take(visible).enumerate() {
+                    let actual = offset + index;
+                    let marker = if actual == picker.selected {
+                        "❯ "
+                    } else {
+                        "  "
+                    };
+                    let kind = if entry.is_dir { "▸" } else { "·" };
+                    lines.push(Line::from(Span::styled(
+                        ellipsize(
+                            &format!("{marker}{kind} {}  {}", entry.name, entry.abstract_text),
+                            width,
+                        ),
+                        if actual == picker.selected {
+                            Style::new()
+                                .fg(theme.accent_user)
+                                .bg(theme.bg_visual)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::new().fg(theme.text_secondary)
+                        },
+                    )));
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                "↑↓ 移动 · Enter 进入目录 · Esc 返回",
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines
+        }
+        Modal::MemoryEditor {
+            uri, editor, dirty, ..
+        } => {
+            let mut lines = vec![Line::from(Span::styled(
+                ellipsize(uri, width),
+                Style::new().fg(theme.accent_model),
+            ))];
+            lines.push(Line::from(Span::styled(
+                if *dirty {
+                    "已修改 · Ctrl+S 保存"
+                } else {
+                    "Ctrl+S 保存 · Esc 返回"
+                },
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines.extend(
+                editor
+                    .text
+                    .lines()
+                    .take(max_lines.saturating_sub(3))
+                    .map(|line| {
+                        Line::from(Span::styled(
+                            line.to_owned(),
+                            Style::new().fg(theme.text_secondary),
+                        ))
+                    }),
+            );
+            lines
+        }
         Modal::Sessions { sessions, picker } => {
             let filtered = crate::modal::filtered_sessions(sessions, &picker.query);
             let visible = max_lines.saturating_sub(4).max(1);
@@ -403,24 +494,83 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             ]));
             lines
         }
+        Modal::Context { usage } => {
+            let mut lines = Vec::new();
+            match usage {
+                Some(usage) => {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "估算占用：{} / {} ({:.1}%)",
+                            format_number(usage.total_tokens),
+                            format_number(usage.context_window),
+                            usage.total_tokens as f64 * 100.0 / usage.context_window.max(1) as f64,
+                        ),
+                        Style::new()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "各项按当前模型请求格式估算，实际用量以响应为准。",
+                        Style::new()
+                            .fg(theme.gray_dim)
+                            .add_modifier(Modifier::ITALIC),
+                    )));
+                    lines.push(Line::from(String::new()));
+                    let total = usage.total_tokens.max(1) as f64;
+                    for section in &usage.sections {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("  {:<10}", section.name),
+                                Style::new().fg(theme.text_secondary),
+                            ),
+                            Span::styled(
+                                format!(
+                                    "{} ({:.1}%)",
+                                    format_number(section.tokens),
+                                    section.tokens as f64 * 100.0 / total,
+                                ),
+                                Style::new().fg(theme.accent_model),
+                            ),
+                        ]));
+                    }
+                }
+                None => lines.push(Line::from(Span::styled(
+                    "正在计算上下文…",
+                    Style::new().fg(theme.accent_running),
+                ))),
+            }
+            lines.push(Line::from(Span::styled(
+                "Esc 关闭",
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines
+        }
         Modal::Help => [
-            ("Ctrl+T", "展开 / 收起思考内容"),
-            ("Ctrl+O", "展开 / 收起工具调用"),
-            ("Ctrl+V", "粘贴剪贴板图片"),
-            ("Ctrl+P", "切换模型"),
-            ("Ctrl+R", "恢复历史会话"),
-            ("Tab", "补全菜单确认；否则切换输入焦点"),
-            ("Shift+Tab", "输入框切换模式"),
+            ("Ctrl+H", "打开快捷键帮助"),
+            ("Ctrl+T", "展开 / 折叠思考"),
+            ("Ctrl+O", "展开 / 折叠工具调用"),
+            ("Ctrl+M", "切换 Normal / Ask / Plan 模式"),
+            ("Shift+Tab", "切换思考预算"),
+            ("Ctrl+V / P / R", "粘贴图片 / 切换模型 / 恢复会话"),
+            ("Ctrl+C / Y", "取消或退出 / 复制选区"),
+            ("Ctrl+A / E", "输入行首 / 行尾"),
+            ("Ctrl+K / U / W", "删除至行尾 / 清空 / 删除前词"),
+            ("Tab", "切换焦点；补全菜单确认候选"),
             ("Alt+Enter", "输入框内换行"),
             ("↑ / ↓", "补全候选 / 输入历史 / 多行移动"),
             ("PageUp/Down", "滚动转写区或列表"),
-            ("Ctrl+C", "运行中取消；空闲时再次按下退出"),
-            ("/commands", "help new model resume mode compact quit"),
+            ("Home / End", "转写区跳到最新 / 最旧内容"),
+            ("Esc", "取消选择；再次清空输入"),
+            ("/context", "查看上下文组成与占用比例"),
+            (
+                "/commands",
+                "help new model resume mode compact context quit",
+            ),
         ]
         .into_iter()
         .map(|(key, description)| {
             Line::from(vec![
-                Span::styled(format!("  {key:<14}"), Style::new().fg(theme.accent_user)),
+                Span::styled(format!("  {key:<18}"), Style::new().fg(theme.accent_user)),
                 Span::styled(description, Style::new().fg(theme.text_secondary)),
             ])
         })

@@ -88,10 +88,6 @@ enabled = true
 server_side = true
 retained_message_tokens = 64000
 
-[limits]
-max_steps_per_turn = 128
-max_length_continues = 2
-max_output_tokens = 32000
 
 [system_prompt]
 override = ""
@@ -104,6 +100,16 @@ import_depth = 5
 [workspace]
 watch = true
 max_scan_entries = 100000
+
+[openviking]
+url = ""
+api_key = ""
+timeout_secs = 15
+recall = true
+capture = true
+skills = true
+peer_scope = "actor"
+max_context_tokens = 1600
 
 [session]
 dir = "~/.moc/sessions"

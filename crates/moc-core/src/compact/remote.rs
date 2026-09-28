@@ -21,8 +21,8 @@ pub(crate) async fn compact(
     tokens_before: u64,
 ) -> Result<moc_protocol::methods::CompactResult, CoreError> {
     if !config.compaction.remote.enabled
+        || !model.remote_compaction
         || model.llm.protocol != Protocol::OpenAiResponses
-        || !model.model_id.starts_with("gpt-")
         || inner.remote_unavailable.read().contains(&model.selector)
     {
         return Err(CoreError::Tool("Responses 原生压缩不适用于当前模型".into()));

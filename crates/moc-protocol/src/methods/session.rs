@@ -68,6 +68,40 @@ pub struct SessionSetModel;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionCompact;
 
+/// `session/context`：估算当前会话上下文，并按组成部分返回 token 明细。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionContext;
+
+/// `session/context` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionContextParams {
+    /// 目标会话。
+    pub session_id: String,
+}
+
+/// 一项上下文组成部分。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextUsageSection {
+    /// 展示名称。
+    pub name: String,
+    /// 估算 token 数。
+    pub tokens: u64,
+}
+
+/// 当前会话上下文估算结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextUsageResult {
+    /// 模型上下文窗口上限。
+    pub context_window: u64,
+    /// 所有组成部分合计。
+    pub total_tokens: u64,
+    /// 系统提示词、工具提示词、会话历史等明细。
+    pub sections: Vec<ContextUsageSection>,
+}
+
 /// `session/new` 的参数。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -366,6 +400,14 @@ impl Method for SessionCompact {
 
 impl ClientRequest for SessionCompact {}
 
+impl Method for SessionContext {
+    const NAME: &'static str = "session/context";
+    type Params = SessionContextParams;
+    type Result = ContextUsageResult;
+}
+
+impl ClientRequest for SessionContext {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +424,7 @@ mod tests {
         assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
         assert_eq!(<SessionSetModel as Method>::NAME, "session/set_model");
         assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
+        assert_eq!(<SessionContext as Method>::NAME, "session/context");
     }
 
     #[test]

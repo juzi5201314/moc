@@ -10,13 +10,12 @@ use anyhow::Context as _;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use moc_core::Core;
 use moc_protocol::{
-    ClientHandle, SessionInfo,
-    methods::{
-        ConfigGet, ConfigGetParams, InputPart, PromptParams, SessionCompact, SessionCompactParams,
-        SessionList, SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew,
-        SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionSetMode,
-        SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUpdate,
-    },
+    ClientHandle, ConfigGet, ConfigGetParams, InputPart, OpenVikingList, OpenVikingListParams,
+    OpenVikingRead, OpenVikingReadParams, OpenVikingWrite, OpenVikingWriteParams, PromptParams,
+    SessionCompact, SessionCompactParams, SessionContext, SessionInfo, SessionList,
+    SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams,
+    SessionPlanApprove, SessionPlanApproveParams, SessionSetMode, SessionSetModeParams,
+    SessionSetModel, SessionSetModelParams, SessionUpdate,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -147,9 +146,55 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
         Ok(info) => {
             refresh_git_branch(app, &info.cwd);
             app.session = Some(info);
+            load_context(client, app).await;
         }
         Err(error) => app.set_notice(format!("会话启动失败：{error}")),
     }
+}
+
+async fn load_context(client: &ClientHandle, app: &mut App) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    if let Ok(usage) = client
+        .call::<SessionContext>(moc_protocol::SessionContextParams { session_id })
+        .await
+    {
+        app.context_usage = Some(usage);
+    }
+}
+
+fn refresh_context(app: &App, connection: &EmbeddedConnection, notify_failure: bool) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<SessionContext>(moc_protocol::SessionContextParams { session_id })
+            .await
+        {
+            Ok(usage) => {
+                let _ = events.send(AppEvent::ContextUsage(usage));
+            }
+            Err(error) if notify_failure => {
+                let _ = events.send(AppEvent::Notice(format!("读取上下文占用失败：{error}")));
+            }
+            Err(_) => {}
+        }
+    });
+}
+
+fn open_context(app: &mut App, connection: &EmbeddedConnection) {
+    if app.session.is_none() {
+        app.set_notice("当前没有活动会话");
+        return;
+    }
+    app.modal = Some(Modal::Context {
+        usage: app.context_usage.clone(),
+    });
+    refresh_context(app, connection, true);
 }
 
 /// 主循环。
@@ -217,10 +262,12 @@ async fn event_loop(
                 dirty = true;
                 match app_event {
                     Some(AppEvent::Update(params)) => {
-                        apply_update(app, params.update);
+                        apply_update_and_refresh(app, connection, params.update);
                         while let Ok(next) = event_rx.try_recv() {
                             match next {
-                                AppEvent::Update(params) => apply_update(app, params.update),
+                                AppEvent::Update(params) => {
+                                    apply_update_and_refresh(app, connection, params.update)
+                                }
                                 other => {
                                     deferred_event = Some(other);
                                     break;
@@ -272,6 +319,47 @@ async fn event_loop(
                         });
                         app.focus = crate::app::Focus::Prompt;
                     }
+                    Some(AppEvent::Memories(entries)) => {
+                        if let Some(Modal::Memories { entries: current, picker, .. }) = app.modal.as_mut() {
+                            *current = entries;
+                            picker.loading = false;
+                            picker.error = None;
+                            picker.selected = 0;
+                            picker.offset = 0;
+                        }
+                    }
+                    Some(AppEvent::MemoryRead(document)) => {
+                        if let Some(Modal::Memories { root_uri, entries, picker }) = app.modal.take() {
+                            let mut editor = crate::widgets::prompt::PromptState::default();
+                            editor.text = document.content;
+                            editor.cursor = editor.text.len();
+                            app.modal = Some(Modal::MemoryEditor { uri: document.uri, editor, dirty: false, root_uri, entries, picker });
+                        }
+                    }
+                    Some(AppEvent::MemorySaved(uri)) => {
+                        let root = match app.modal.take() {
+                            Some(Modal::MemoryEditor { root_uri, .. }) => root_uri,
+                            other => { app.modal = other; String::new() }
+                        };
+                        if root.is_empty() { app.set_notice(format!("已保存 OpenViking 记忆：{uri}")); }
+                        else {
+                            app.modal = Some(Modal::Memories { root_uri: root.clone(), entries: Vec::new(), picker: crate::modal::PickerState { loading: true, ..Default::default() } });
+                            let client = connection.client.clone();
+                            let events = app.events.clone();
+                            tokio::spawn(async move {
+                                match client.call::<OpenVikingList>(OpenVikingListParams { uri: root, recursive: false, limit: 128 }).await {
+                                    Ok(result) => { let _ = events.send(AppEvent::Memories(result.entries)); }
+                                    Err(error) => { let _ = events.send(AppEvent::PickerError(format!("刷新 OpenViking 记忆失败：{error}"))); }
+                                }
+                            });
+                        }
+                    }
+                    Some(AppEvent::ContextUsage(usage)) => {
+                        app.context_usage = Some(usage.clone());
+                        if let Some(Modal::Context { usage: current }) = app.modal.as_mut() {
+                            *current = Some(usage);
+                        }
+                    }
                     Some(AppEvent::Sessions(sessions)) => {
                         app.modal = Some(Modal::Sessions {
                             sessions,
@@ -291,6 +379,7 @@ async fn event_loop(
                         let cwd = info.cwd.clone();
                         app.switch_session(info, blocks);
                         refresh_git_branch(app, &cwd);
+                        refresh_context(app, connection, false);
                     }
                     Some(AppEvent::ModelSwitched) => {
                         app.modal = None;
@@ -312,11 +401,33 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             handle_key(app, connection, key.modifiers, key.code);
         }
-        Event::Mouse(mouse) => handle_mouse(app, mouse),
+        Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
         Event::Paste(text) => app.prompt.insert_text(&text),
         Event::Resize(_, _) => {} // 下一次 draw 自动按新尺寸重算
         _ => {}
     }
+}
+
+/// 鼠标事件：上下文点击需要连接，其余交互保持无连接处理。
+fn handle_mouse_with_connection(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mouse: crossterm::event::MouseEvent,
+) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        let position = (mouse.column, mouse.row);
+        let context = app.context_area;
+        if position.0 >= context.x
+            && position.0 < context.x.saturating_add(context.width)
+            && position.1 >= context.y
+            && position.1 < context.y.saturating_add(context.height)
+        {
+            open_context(app, connection);
+            return;
+        }
+    }
+    handle_mouse(app, mouse);
 }
 
 /// 鼠标：滚轮滚动、点击折叠、拖选复制。
@@ -450,18 +561,19 @@ fn handle_key(
                 app.set_notice("再次按 Ctrl+C 退出");
             }
         }
+        (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help),
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
             app.toggle_thinking();
             app.set_notice(if app.show_thinking {
                 "思考内容：展开"
             } else {
-                "思考内容：收起"
+                "思考内容：折叠"
             });
         }
         (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
             app.toggle_tools();
             app.set_notice(if app.tools_collapsed {
-                "工具调用：收起"
+                "工具调用：折叠"
             } else {
                 "工具调用：展开"
             });
@@ -469,6 +581,7 @@ fn handle_key(
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_image(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
+        (KeyCode::Char('m'), KeyModifiers::CONTROL) => cycle_mode(app, connection),
         (KeyCode::Char('y'), KeyModifiers::NONE) => copy_selection(app),
         (KeyCode::Esc, _) => {
             if app.selection.is_some() {
@@ -483,12 +596,10 @@ fn handle_key(
                 }
             }
         }
-        (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _)
-            if app.focus == crate::app::Focus::Prompt =>
-        {
-            cycle_mode(app, connection)
+        (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
+            cycle_thinking_level(app, connection)
         }
-        (KeyCode::Tab, _) | (KeyCode::BackTab, _) => app.focus = app.focus.toggle(),
+        (KeyCode::Tab, _) => app.focus = app.focus.toggle(),
         (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT)
             if app.focus == crate::app::Focus::Prompt =>
         {
@@ -624,6 +735,7 @@ fn handle_modal_key(
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     let events = app.events.clone();
     let mut close = false;
+    let mut return_memory_list = false;
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
@@ -831,6 +943,143 @@ fn handle_modal_key(
                 _ => {}
             }
         }
+        Modal::Memories {
+            root_uri,
+            entries,
+            picker,
+        } => {
+            let query = picker.query.to_lowercase();
+            let filtered: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.name.to_lowercase().contains(&query))
+                .collect();
+            match (code, modifiers) {
+                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
+                (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                (KeyCode::Backspace, _) => {
+                    picker.query.pop();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    if !ch.is_control() =>
+                {
+                    picker.query.push(ch);
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    let Some(entry) = filtered.get(picker.selected) else {
+                        return;
+                    };
+                    let uri = entry.uri.clone();
+                    let client = connection.client.clone();
+                    let events = events.clone();
+                    if entry.is_dir {
+                        *root_uri = uri.clone();
+                        picker.loading = true;
+                        picker.error = None;
+                        tokio::spawn(async move {
+                            match client
+                                .call::<OpenVikingList>(OpenVikingListParams {
+                                    uri,
+                                    recursive: false,
+                                    limit: 128,
+                                })
+                                .await
+                            {
+                                Ok(result) => {
+                                    let _ = events.send(AppEvent::Memories(result.entries));
+                                }
+                                Err(error) => {
+                                    let _ = events.send(AppEvent::PickerError(format!(
+                                        "读取 OpenViking 目录失败：{error}"
+                                    )));
+                                }
+                            }
+                        });
+                    } else {
+                        picker.loading = true;
+                        picker.error = None;
+                        tokio::spawn(async move {
+                            match client
+                                .call::<OpenVikingRead>(OpenVikingReadParams {
+                                    uri,
+                                    offset: 0,
+                                    limit: 32_000,
+                                })
+                                .await
+                            {
+                                Ok(result) => {
+                                    let _ = events.send(AppEvent::MemoryRead(result));
+                                }
+                                Err(error) => {
+                                    let _ = events.send(AppEvent::PickerError(format!(
+                                        "读取 OpenViking 正文失败：{error}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                }
+                (KeyCode::Esc, _) => close = true,
+                _ => {}
+            }
+        }
+        Modal::MemoryEditor {
+            uri, editor, dirty, ..
+        } => match (code, modifiers) {
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                let uri = uri.clone();
+                let content = editor.text.clone();
+                let client = connection.client.clone();
+                let events = events.clone();
+                *dirty = false;
+                tokio::spawn(async move {
+                    match client
+                        .call::<OpenVikingWrite>(OpenVikingWriteParams {
+                            uri: uri.clone(),
+                            content,
+                            mode: "replace".into(),
+                        })
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = events.send(AppEvent::MemorySaved(uri));
+                        }
+                        Err(error) => {
+                            let _ = events.send(AppEvent::PickerError(format!(
+                                "保存 OpenViking 记忆失败：{error}"
+                            )));
+                        }
+                    }
+                });
+            }
+            (KeyCode::Esc, _) => return_memory_list = true,
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) if !ch.is_control() => {
+                editor.insert_char(ch);
+                *dirty = true;
+            }
+            (KeyCode::Backspace, _) => {
+                editor.backspace();
+                *dirty = true;
+            }
+            (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT) => {
+                editor.insert_char('\n');
+                *dirty = true;
+            }
+            (KeyCode::Left, _) => editor.left(),
+            (KeyCode::Right, _) => editor.right(),
+            (KeyCode::Up, _) => {
+                editor.up();
+            }
+            (KeyCode::Down, _) => {
+                editor.down();
+            }
+            _ => {}
+        },
         Modal::Sessions { sessions, picker } => {
             let filtered = crate::modal::filtered_sessions(sessions, &picker.query);
             match (code, modifiers) {
@@ -944,7 +1193,7 @@ fn handle_modal_key(
                 _ => {}
             }
         }
-        Modal::Help => {
+        Modal::Help | Modal::Context { .. } => {
             if matches!(
                 (code, modifiers),
                 (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE)
@@ -953,7 +1202,21 @@ fn handle_modal_key(
             }
         }
     }
-    if close {
+    if return_memory_list {
+        if let Some(Modal::MemoryEditor {
+            root_uri,
+            entries,
+            picker,
+            ..
+        }) = app.modal.take()
+        {
+            app.modal = Some(Modal::Memories {
+                root_uri,
+                entries,
+                picker,
+            });
+        }
+    } else if close {
         app.modal = None;
     }
 }
@@ -991,6 +1254,20 @@ fn advance_ask(
     } else {
         *question += 1;
         false
+    }
+}
+
+fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, update: SessionUpdate) {
+    let refresh = matches!(
+        &update,
+        SessionUpdate::TurnFinished { .. }
+            | SessionUpdate::ModeChanged { .. }
+            | SessionUpdate::ModelChanged { .. }
+            | SessionUpdate::ContextCompacted { .. }
+    );
+    apply_update(app, update);
+    if refresh {
+        refresh_context(app, connection, false);
     }
 }
 
@@ -1224,7 +1501,44 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 }
             });
         }
+        "/memories" => {
+            let root_uri = if rest.trim().is_empty() {
+                "viking://~/memories/".to_owned()
+            } else {
+                rest.trim().replace("ov://", "viking://")
+            };
+            app.modal = Some(Modal::Memories {
+                root_uri: root_uri.clone(),
+                entries: Vec::new(),
+                picker: crate::modal::PickerState {
+                    loading: true,
+                    ..Default::default()
+                },
+            });
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                match client
+                    .call::<OpenVikingList>(OpenVikingListParams {
+                        uri: root_uri,
+                        recursive: false,
+                        limit: 128,
+                    })
+                    .await
+                {
+                    Ok(result) => {
+                        let _ = events.send(AppEvent::Memories(result.entries));
+                    }
+                    Err(error) => {
+                        let _ = events.send(AppEvent::PickerError(format!(
+                            "读取 OpenViking 记忆失败：{error}"
+                        )));
+                    }
+                }
+            });
+        }
         "/help" => app.modal = Some(Modal::Help),
+        "/context" => open_context(app, connection),
         "/compact" => {
             if let Some(session_id) = session_id {
                 let client = connection.client.clone();
@@ -1283,6 +1597,54 @@ fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
             Ok(_) => {}
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换模式失败：{error}")));
+            }
+        }
+    });
+}
+
+/// 按当前模型声明的思考等级循环切换。
+fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let (base, current) = session
+        .model
+        .rsplit_once(':')
+        .unwrap_or((session.model.as_str(), "off"));
+    let levels = app
+        .models
+        .iter()
+        .find(|model| model.id == base)
+        .and_then(|model| model.thinking_levels.clone())
+        .unwrap_or_else(|| {
+            ["off", "low", "medium", "high", "xhigh", "max"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        });
+    let index = levels
+        .iter()
+        .position(|level| level == current)
+        .unwrap_or(0);
+    let next = levels[(index + 1) % levels.len()].clone();
+    let selector = format!("{base}:{next}");
+    let client = connection.client.clone();
+    let session_id = session.id.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<SessionSetModel>(SessionSetModelParams {
+                session_id,
+                selector,
+            })
+            .await
+        {
+            Ok(_) => {
+                let _ = events.send(AppEvent::Notice(format!("思考等级：{next}")));
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("切换思考等级失败：{error}")));
             }
         }
     });

@@ -171,9 +171,9 @@ fn render_entry(entry: &Entry, app: &App, width: u16, first: bool) -> Vec<Line<'
     }
 }
 
-/// 用户消息：整幅圆角面板（抬升底色），末行右侧给本地时间。
+/// 用户消息：整幅圆角边框面板，末行右侧给本地时间。
 ///
-/// 面板左右各留 1 格内边距、上下一行边框，长文本吃满面板宽度换行；
+/// 面板左右各留 1 格内边距、上下一行边框，背景与转写区一致；长文本吃满面板宽度换行；
 /// 末行放不下时间戳时单独追加一行，绝不与正文重叠。
 fn user_message(
     text: &str,
@@ -185,12 +185,9 @@ fn user_message(
     let mut pending_clock = at_ms.and_then(format_clock);
     let inner = width.saturating_sub(2);
     let text_width = inner.saturating_sub(2).max(8);
-    let border_style = Style::new().fg(theme.border).bg(theme.bg_highlight);
-    let fill = Style::new().bg(theme.bg_highlight);
-    let text_style = Style::new()
-        .fg(theme.accent_user)
-        .bg(theme.bg_highlight)
-        .add_modifier(Modifier::BOLD);
+    let border_style = Style::new().fg(theme.border).bg(theme.bg_base);
+    let fill = Style::new().bg(theme.bg_base);
+    let text_style = Style::new().fg(theme.accent_user).bg(theme.bg_base);
 
     let rows = wrap_text(text, text_width);
     let last_row = rows.len().saturating_sub(1);
@@ -290,7 +287,7 @@ fn thinking_block(text: &str, entry: &Entry, app: &App, width: usize) -> Vec<Lin
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_thinking)),
         Span::styled(
-            "Thinking".to_owned(),
+            "思考内容".to_owned(),
             Style::new()
                 .fg(theme.gray_bright)
                 .add_modifier(Modifier::BOLD),
@@ -302,7 +299,7 @@ fn thinking_block(text: &str, entry: &Entry, app: &App, width: usize) -> Vec<Lin
     ];
     if !expanded {
         spans.push(Span::styled(
-            "  ctrl+t 展开".to_owned(),
+            "  Ctrl+T 展开".to_owned(),
             Style::new().fg(theme.gray_dim),
         ));
     }

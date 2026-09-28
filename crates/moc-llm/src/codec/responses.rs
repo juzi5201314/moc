@@ -272,7 +272,7 @@ pub(crate) fn encode_input_items(
 
 /// 系统 / 开发者 / 用户消息：都是 `input` 里的 `message` item。
 fn encode_message_item(
-    cfg: &LlmConfig,
+    _cfg: &LlmConfig,
     message: &Message,
     breakpoint: bool,
 ) -> Result<Value, LlmError> {
@@ -291,7 +291,7 @@ fn encode_message_item(
         match part {
             ContentPart::Text(text) => blocks.push(json!({"type": text_type, "text": text})),
             ContentPart::Image { source, detail } => {
-                blocks.push(encode_image(cfg, source, *detail)?);
+                blocks.push(encode_image(source, *detail)?);
             }
             other => return Err(unsupported_part(message.role, other)),
         }
@@ -302,20 +302,9 @@ fn encode_message_item(
     Ok(json!({"type": "message", "role": role, "content": blocks}))
 }
 
-fn encode_image(
-    cfg: &LlmConfig,
-    source: &ImageSource,
-    detail: Option<ImageDetail>,
-) -> Result<Value, LlmError> {
+fn encode_image(source: &ImageSource, detail: Option<ImageDetail>) -> Result<Value, LlmError> {
     let url = match source {
-        ImageSource::Url(url) => {
-            if !cfg.wire.image_url {
-                return Err(LlmError::Encode(
-                    "该线格式不支持图片 URL 来源，请改传 base64".into(),
-                ));
-            }
-            url.clone()
-        }
+        ImageSource::Url(url) => url.clone(),
         ImageSource::Base64 { media_type, data } => format!("data:{media_type};base64,{data}"),
     };
     let mut block = Map::new();
@@ -419,7 +408,7 @@ fn flush_text(pending: &mut String, block_index: &mut Option<usize>, items: &mut
 }
 
 fn encode_tool_result(
-    cfg: &LlmConfig,
+    _cfg: &LlmConfig,
     message: &Message,
     breakpoint: bool,
 ) -> Result<Vec<Value>, LlmError> {
@@ -446,7 +435,7 @@ fn encode_tool_result(
         "text": format!("[工具 {} 返回的图片]", result.tool_call_id),
     }));
     for source in &result.images {
-        blocks.push(encode_image(cfg, source, None)?);
+        blocks.push(encode_image(source, None)?);
     }
     items.push(json!({
         "type": "message",
@@ -1235,7 +1224,6 @@ mod tests {
                 enabled: true,
                 effort: Some(crate::types::Effort::Medium),
                 summary: Some(ReasoningSummary::Detailed),
-                ..Default::default()
             }),
             ..base_request()
         };
