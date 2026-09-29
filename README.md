@@ -49,13 +49,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 “界面”页可配置快捷键、思考与工具输出的默认展开状态、完成／需要你回答时的通知。通知只在终端失焦时发送，通过 OSC 9 交给终端呈现；操作系统通知支持取决于终端。鼠标交互自动启用，没有捕获开关。
 
-`Ctrl+Enter`、`Shift+Enter`、`Ctrl+M` 这类与旧式控制码撞车的组合键需要终端支持渐进键盘协议（kitty keyboard protocol）。moc 启动时查询终端能力，只申请「消歧义」一位（`CSI > 1 u`），既能让 `Ctrl+M` 不再退化成 `Enter`，又不会被 ConPTY／WSL 这类中间层丢掉；协商结果写在 `Ctrl+H` 帮助页脚注，终端不支持时会退化成普通 `Enter`。Windows Terminal 在 1.25 之前没有实现该协议，可在 `settings.json` 用 `sendInput` 直接注入 `CSI u` 序列补上，例如：
-
-```json
-{ "keys": "ctrl+m", "command": { "action": "sendInput", "input": "\u001b[109;5u" } }
-```
-
-也可以直接把快捷键改绑到终端本来就能区分的组合键。
+切换会话模式默认绑定 `Alt+M`，任何终端都能用。`Ctrl+M`、`Ctrl+Enter`、`Shift+Enter` 这类与旧式控制码撞车的组合键需要终端支持渐进键盘协议（kitty keyboard protocol）：moc 启动时查询终端能力，只申请「消歧义」一位（`CSI > 1 u`），协商结果写在 `Ctrl+H` 帮助页脚注。终端不支持该协议时 `Ctrl+M` 会被终端当成 `Enter`（Windows Terminal 1.25 起才支持），此时用 `Alt+M`，键位本身也可以在设置页重绑。
 
 ### 快捷键
 
@@ -65,7 +59,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Shift+Enter` / `Alt+Enter` | 输入框换行 |
 | `↑` / `↓` | 补全菜单中选择命令；否则浏览输入历史 / 多行移动光标 |
 | `Tab` | 补全菜单确认；否则切换滚动区 / 输入框焦点 |
-| `Shift+Tab` / `Ctrl+M` | 切换思考等级 / 切换会话模式 |
+| `Shift+Tab` / `Alt+M` | 切换思考等级 / 切换会话模式 |
 | `Ctrl+T` | 全局展开 / 收起思考内容 |
 | `Ctrl+H` | 快捷键帮助（键位可配置，重绑后表内同步） |
 | `Ctrl+O` | 全局展开 / 收起工具调用 |
