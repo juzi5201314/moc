@@ -80,7 +80,7 @@ impl Tool for ReadTool {
             if path.is_dir() {
                 return Ok(ToolOutcome::success(list_directory(&path, &ctx.cwd)?));
             }
-            let max_bytes = ctx.config.tools.read.max_file_bytes;
+            let max_bytes = ctx.config.tools.output.max_file_bytes;
             let mut snapshot = read_snapshot(&path, max_bytes)
                 .map_err(|error| map_read_error(path.to_string_lossy().as_ref(), error))?;
             ctx.anchors.reuse_hashes(&path, &mut snapshot);

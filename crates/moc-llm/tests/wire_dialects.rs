@@ -4,10 +4,10 @@
 //! 请求」断言线上形态，证明同一套机制能表达真实厂商组合。
 
 use moc_llm::{
-    AnthropicThinkingDialect, Auth, CacheConfig, CacheTtl, ChatRequest, Client, ContentPart,
-    Effort, EndpointStyle, FinishReason, LlmConfig, MaxTokensField, Message, Protocol,
-    ReasoningBlock, ReasoningConfig, ReasoningEcho, RequestOptions, RetryPolicy, StreamEvent,
-    ThinkingWire, ToolCall, ToolDef, WireConfig,
+    Auth, CacheConfig, CacheTtl, ChatRequest, Client, ContentPart, Effort, EndpointStyle,
+    FinishReason, LlmConfig, MaxTokensField, Message, Protocol, ReasoningBlock, ReasoningConfig,
+    ReasoningEcho, RequestOptions, RetryPolicy, StreamEvent, ThinkingWire, ToolCall, ToolDef,
+    WireConfig,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path, query_param};
@@ -290,10 +290,6 @@ async fn claude_adaptive_thinking_with_cache_control() {
         auth: Auth::Header {
             name: "x-api-key".into(),
             value: "sk-ant".into(),
-        },
-        wire: WireConfig {
-            anthropic_thinking: AnthropicThinkingDialect::Adaptive,
-            ..Default::default()
         },
         ..config(Protocol::AnthropicMessages, &server)
     };

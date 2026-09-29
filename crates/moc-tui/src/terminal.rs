@@ -5,7 +5,9 @@
 
 use anyhow::Context;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -28,7 +30,12 @@ impl TerminalGuard {
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
-            EnableBracketedPaste
+            EnableBracketedPaste,
+            EnableFocusChange,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+            )
         ) {
             let _ = disable_raw_mode();
             return Err(error).context("切换备用屏/鼠标捕获失败");
@@ -39,6 +46,8 @@ impl TerminalGuard {
                 let mut stdout = std::io::stdout();
                 let _ = crossterm::execute!(
                     stdout,
+                    PopKeyboardEnhancementFlags,
+                    DisableFocusChange,
                     DisableBracketedPaste,
                     DisableMouseCapture,
                     LeaveAlternateScreen
@@ -65,6 +74,8 @@ impl TerminalGuard {
         self.restored = true;
         let _ = crossterm::execute!(
             self.terminal.backend_mut(),
+            PopKeyboardEnhancementFlags,
+            DisableFocusChange,
             DisableBracketedPaste,
             DisableMouseCapture,
             LeaveAlternateScreen

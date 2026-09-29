@@ -13,6 +13,7 @@ use crate::error::CoreError;
 pub(super) struct ConfigDocument {
     pub models: ModelCatalog,
     pub providers: BTreeMap<String, super::model::ProviderDocument>,
+    pub sources: SourcesConfig,
     pub tools: ToolsConfig,
     pub compaction: CompactionConfig,
     pub limits: LimitsConfig,
@@ -21,7 +22,6 @@ pub(super) struct ConfigDocument {
     pub workspace: WorkspaceConfig,
     pub openviking: moc_openviking::OpenVikingConfig,
     pub session: SessionDocument,
-    pub tui: TuiConfig,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
 }
@@ -30,6 +30,10 @@ pub(super) struct ConfigDocument {
 #[serde(default, deny_unknown_fields)]
 pub struct SkillsConfig {
     pub enabled: bool,
+    pub moc_user: bool,
+    pub moc_project: bool,
+    pub agents_user: bool,
+    pub agents_project: bool,
     /// 额外扫描目录；支持 `~` 展开。
     pub dirs: Vec<String>,
     /// 按名称禁用的 skill。
@@ -44,23 +48,16 @@ impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            moc_user: true,
+            moc_project: true,
+            agents_user: true,
+            agents_project: true,
             dirs: Vec::new(),
             disable: Vec::new(),
             catalog_char_budget: 24_576,
             description_max_chars: 1024,
         }
     }
-}
-
-/// TUI 前端设置。
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TuiConfig {
-    /// statusline 自定义模板；`None` 用内置渲染。
-    ///
-    /// 占位符：`{model} {mode} {context} {context_percent} {workdir} {branch}
-    /// {todo} {tokens_in} {tokens_out} {tok_s} {turn_elapsed} {cost}`。
-    pub statusline: Option<String>,
 }
 
 /// 工具授权策略。
@@ -147,6 +144,7 @@ impl ApprovalMatcher {
 pub struct ToolsConfig {
     pub approval_mode: ApprovalMode,
     pub approval: BTreeMap<String, ToolApproval>,
+    pub output: OutputConfig,
     pub bash: BashConfig,
     pub read: ReadConfig,
     pub edit: EditConfig,
@@ -154,7 +152,7 @@ pub struct ToolsConfig {
     pub grep: GrepConfig,
     pub find: FindConfig,
     pub todo: FeatureConfig,
-    pub job: FeatureConfig,
+    pub job: JobConfig,
 }
 
 impl Default for ToolsConfig {
@@ -162,6 +160,7 @@ impl Default for ToolsConfig {
         Self {
             approval_mode: ApprovalMode::Yolo,
             approval: BTreeMap::new(),
+            output: OutputConfig::default(),
             bash: BashConfig::default(),
             read: ReadConfig::default(),
             edit: EditConfig::default(),
@@ -169,7 +168,7 @@ impl Default for ToolsConfig {
             grep: GrepConfig::default(),
             find: FindConfig::default(),
             todo: FeatureConfig::default(),
-            job: FeatureConfig::default(),
+            job: JobConfig::default(),
         }
     }
 }
@@ -179,8 +178,6 @@ impl Default for ToolsConfig {
 pub struct BashConfig {
     pub default_timeout_secs: u64,
     pub max_timeout_secs: u64,
-    pub output_head_bytes: usize,
-    pub output_tail_bytes: usize,
     pub auto_background_ms: u64,
     pub deny_patterns: Vec<String>,
 }
@@ -190,8 +187,6 @@ impl Default for BashConfig {
         Self {
             default_timeout_secs: 120,
             max_timeout_secs: 3600,
-            output_head_bytes: 20_480,
-            output_tail_bytes: 20_480,
             auto_background_ms: 0,
             deny_patterns: vec![
                 r"(?i)rm\s+-rf\s+/(\s|$)".into(),
@@ -212,7 +207,6 @@ pub struct ReadConfig {
     pub default_limit: usize,
     pub max_bytes: usize,
     pub line_max_bytes: usize,
-    pub max_file_bytes: u64,
 }
 
 impl Default for ReadConfig {
@@ -221,7 +215,6 @@ impl Default for ReadConfig {
             default_limit: 300,
             max_bytes: 51_200,
             line_max_bytes: 204_800,
-            max_file_bytes: 104_857_600,
         }
     }
 }
@@ -329,12 +322,7 @@ pub struct CompactionConfig {
     pub enabled: bool,
     /// 压缩方法尝试顺序。
     pub method_order: Vec<CompactionMethod>,
-    /// 回退层预留 token 数；0 表示按窗口的 `max(16384, 15%)` 预留。
-    pub reserve_tokens: u32,
-    /// 触发阈值，占上下文窗口的百分比；`-1` 表示未设置，落到回退层。
-    pub threshold_percent: i32,
-    /// 触发阈值，绝对 token 数；`-1` 表示未设置，优先级高于 [`Self::threshold_percent`]。
-    pub threshold_tokens: i64,
+    pub threshold: CompactionThreshold,
     pub keep_recent_tokens: u32,
     pub protect_recent_tool_tokens: u32,
     pub mid_turn: bool,
@@ -354,9 +342,7 @@ impl Default for CompactionConfig {
                 CompactionMethod::Shake,
                 CompactionMethod::Soft,
             ],
-            reserve_tokens: 0,
-            threshold_percent: 85,
-            threshold_tokens: -1,
+            threshold: CompactionThreshold::default(),
             keep_recent_tokens: 20_000,
             protect_recent_tool_tokens: 20_000,
             mid_turn: true,
@@ -368,20 +354,32 @@ impl Default for CompactionConfig {
     }
 }
 
-/// 校验压缩阈值配置；`-1` 是「未设置」哨兵，其余取值必须落在有效区间，
-/// 避免畸形值（如 `0` 与未设置混淆、`percent > 100` 恒触发）静默改变触发行为。
+/// 百分比与固定 token 二选一，不使用哨兵值或输出上限推导阈值。
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(
+    tag = "mode",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum CompactionThreshold {
+    Percent(u64),
+    Tokens(u64),
+}
+
+impl Default for CompactionThreshold {
+    fn default() -> Self {
+        Self::Percent(85)
+    }
+}
+
 pub(super) fn validate_compaction(config: &CompactionConfig) -> Result<(), CoreError> {
-    if config.threshold_tokens == 0 || config.threshold_tokens < -1 {
-        return Err(CoreError::Config(
-            "compaction.threshold_tokens 必须是 -1 或正整数".into(),
-        ));
+    match config.threshold {
+        CompactionThreshold::Percent(1..=100) | CompactionThreshold::Tokens(1..) => Ok(()),
+        _ => Err(CoreError::Config(
+            "压缩阈值：百分比须为 1–100，token 数须大于 0".into(),
+        )),
     }
-    if config.threshold_percent != -1 && !(1..=100).contains(&config.threshold_percent) {
-        return Err(CoreError::Config(
-            "compaction.threshold_percent 必须是 -1 或 1..=100".into(),
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -454,6 +452,9 @@ pub struct SystemPromptConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ContextFilesConfig {
     pub enabled: bool,
+    pub user: bool,
+    pub project: bool,
+    pub max_tokens: u64,
     pub import_depth: usize,
 }
 
@@ -461,6 +462,9 @@ impl Default for ContextFilesConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            user: true,
+            project: true,
+            max_tokens: 16_000,
             import_depth: 5,
         }
     }
@@ -486,14 +490,97 @@ impl Default for WorkspaceConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SessionDocument {
     pub dir: String,
-    pub locking: bool,
+    pub retention: RetentionConfig,
 }
 
 impl Default for SessionDocument {
     fn default() -> Self {
         Self {
             dir: "~/.moc/sessions".into(),
-            locking: true,
+            retention: RetentionConfig::default(),
+        }
+    }
+}
+
+/// 配置文件来源；显式 CLI 覆盖层始终加载。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SourcesConfig {
+    pub project_config: bool,
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        Self {
+            project_config: true,
+        }
+    }
+}
+
+/// 文件容量与工具输出预算属于公共工具策略，不归某个具体工具所有。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OutputConfig {
+    pub head_bytes: usize,
+    pub tail_bytes: usize,
+    pub max_file_bytes: u64,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            head_bytes: 20_480,
+            tail_bytes: 20_480,
+            max_file_bytes: 104_857_600,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobOverflow {
+    Error,
+    Wait,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct JobConfig {
+    pub enabled: bool,
+    pub max_running: usize,
+    pub overflow: JobOverflow,
+}
+
+impl Default for JobConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_running: 4,
+            overflow: JobOverflow::Error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RetentionConfig {
+    pub enabled: bool,
+    pub archive_after_days: u64,
+    pub retain_newest_global: usize,
+    pub retain_newest_per_workspace: usize,
+    pub artifacts_days: u64,
+    pub logs_days: u64,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            archive_after_days: 30,
+            retain_newest_global: 20,
+            retain_newest_per_workspace: 10,
+            artifacts_days: 30,
+            logs_days: 14,
         }
     }
 }

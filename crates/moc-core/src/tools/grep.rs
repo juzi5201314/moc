@@ -81,12 +81,8 @@ impl Tool for GrepTool {
                 .paths
                 .artifacts()
                 .join(format!("{}-grep.txt", crate::ids::entry_id()));
-            let config = &ctx.config.tools.bash;
-            if result.len()
-                > config
-                    .output_head_bytes
-                    .saturating_add(config.output_tail_bytes)
-            {
+            let config = &ctx.config.tools.output;
+            if result.len() > config.head_bytes.saturating_add(config.tail_bytes) {
                 tokio::fs::create_dir_all(ctx.paths.artifacts())
                     .await
                     .map_err(|error| ToolError::new("E_ARTIFACT", error.to_string()))?;
@@ -96,8 +92,8 @@ impl Tool for GrepTool {
             }
             Ok(ToolOutcome::success(truncate_output_with_artifact(
                 &result,
-                config.output_head_bytes,
-                config.output_tail_bytes,
+                config.head_bytes,
+                config.tail_bytes,
                 &output_path,
             )))
         })

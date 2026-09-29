@@ -38,24 +38,31 @@ pub(crate) struct SessionRuntime {
     pub permissions: RwLock<HashMap<String, bool>>,
     /// 本会话已加载的 skill 名；`skill` 工具据此去重。
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
+    pub steering: Mutex<management::Steering>,
 }
 
 impl SessionRuntime {
-    fn new() -> Self {
+    fn new(slots: Arc<crate::concurrency::Gate>) -> Self {
         Self {
             anchors: Arc::new(crate::hashline::AnchorStore::new()),
-            jobs: Arc::new(JobManager::new()),
+            jobs: Arc::new(JobManager::with_slots(slots)),
             workspace: Mutex::new(None),
             reminders: tokio::sync::Mutex::new(crate::prompt::reminder::ReminderState::default()),
             permissions: RwLock::new(HashMap::new()),
             loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            steering: Mutex::new(management::Steering::default()),
         }
     }
 }
 
 /// core 进程内共享状态。
 pub(crate) struct CoreInner {
-    pub config: Arc<ResolvedConfig>,
+    pub config: RwLock<Arc<ResolvedConfig>>,
+    pub boot: CoreConfig,
+    pub config_write: Mutex<()>,
+    pub config_epoch: tokio::sync::RwLock<()>,
+    pub provider_gates: RwLock<HashMap<String, Arc<crate::concurrency::Gate>>>,
+    pub job_slots: Arc<crate::concurrency::Gate>,
     pub client: Client,
     pub sessions: Arc<SessionTable>,
     pub tools: ToolRegistry,
@@ -73,6 +80,30 @@ pub(crate) struct CoreInner {
 }
 
 impl CoreInner {
+    pub(crate) fn config(&self) -> Arc<ResolvedConfig> {
+        Arc::clone(&self.config.read())
+    }
+
+    pub(crate) fn workspace_identity(
+        &self,
+        cwd: &Path,
+    ) -> Result<moc_openviking::WorkspaceIdentity, CoreError> {
+        crate::workspace::registry::resolve(self.project_config(cwd)?.as_ref(), cwd)
+    }
+
+    pub(crate) async fn provider_permit(
+        &self,
+        model: &crate::ResolvedModel,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<crate::concurrency::Permit, CoreError> {
+        let gate = {
+            let mut gates = self.provider_gates.write();
+            Arc::clone(gates.entry(model.provider_id.clone()).or_default())
+        };
+        gate.acquire(model.max_concurrency, cancel)
+            .await
+            .ok_or(CoreError::Cancelled)
+    }
     pub(crate) async fn project_openviking(
         &self,
         cwd: &Path,
@@ -108,7 +139,7 @@ impl CoreInner {
         if let Some(config) = self.project_configs.read().get(&cwd).cloned() {
             return Ok(config);
         }
-        let config = Arc::new(self.config.for_project(&cwd)?);
+        let config = Arc::new(self.config().for_project(&cwd)?);
         self.project_configs
             .write()
             .insert(cwd, Arc::clone(&config));
@@ -119,7 +150,7 @@ impl CoreInner {
         Arc::clone(
             runtimes
                 .entry(session_id.to_owned())
-                .or_insert_with(|| Arc::new(SessionRuntime::new())),
+                .or_insert_with(|| Arc::new(SessionRuntime::new(Arc::clone(&self.job_slots)))),
         )
     }
 
@@ -184,6 +215,9 @@ pub struct Core {
 }
 
 impl Core {
+    pub fn config_home(&self) -> PathBuf {
+        self.inner.config().home.clone()
+    }
     /// 加载配置、验证供应商并建立会话存储目录。
     pub fn new(config: CoreConfig) -> anyhow::Result<Arc<Self>> {
         let mut resolved = ResolvedConfig::load(&config)?;
@@ -192,13 +226,15 @@ impl Core {
         }
         let resolved = Arc::new(resolved);
         std::fs::create_dir_all(&resolved.session.dir)?;
-        let sessions = Arc::new(SessionTable::new(
-            resolved.session.dir.clone(),
-            resolved.session.locking,
-        ));
+        let sessions = Arc::new(SessionTable::new(resolved.session.dir.clone(), true));
         Ok(Arc::new(Self {
             inner: Arc::new(CoreInner {
-                config: resolved,
+                config: RwLock::new(resolved),
+                boot: config.clone(),
+                config_write: Mutex::new(()),
+                config_epoch: tokio::sync::RwLock::new(()),
+                provider_gates: RwLock::new(HashMap::new()),
+                job_slots: Arc::new(crate::concurrency::Gate::default()),
                 client: config.client,
                 sessions,
                 tools: ToolRegistry::new(),
@@ -294,10 +330,12 @@ impl Core {
             .anchors
             .latest_undo_path()
             .ok_or_else(|| anyhow::anyhow!("[E_NO_UNDO] 当前会话没有可撤销的编辑"))?;
-        Ok(
-            crate::hashline::apply::undo(&path, &runtime.anchors, config.tools.read.max_file_bytes)
-                .await?,
+        Ok(crate::hashline::apply::undo(
+            &path,
+            &runtime.anchors,
+            config.tools.output.max_file_bytes,
         )
+        .await?)
     }
     async fn openviking_client_for(
         &self,
@@ -310,7 +348,7 @@ impl Core {
         let Ok(Some(client)) = self.openviking_client_for(cwd).await else {
             return;
         };
-        let Ok(identity) = moc_openviking::resolve_peer_id(cwd) else {
+        let Ok(identity) = self.inner.workspace_identity(cwd) else {
             return;
         };
         let _ = client
@@ -319,7 +357,7 @@ impl Core {
     }
 
     async fn openviking_client(&self) -> Result<Arc<moc_openviking::OpenVikingClient>, RpcError> {
-        self.openviking_client_for(&self.inner.config.cwd)
+        self.openviking_client_for(&self.inner.config().cwd)
             .await?
             .ok_or_else(|| {
                 RpcError::new(RpcErrorCode::NotSupported.code(), "未配置 OpenViking URL")
@@ -327,8 +365,9 @@ impl Core {
     }
 
     fn openviking_identity(&self) -> Result<moc_openviking::WorkspaceIdentity, RpcError> {
-        moc_openviking::resolve_peer_id(&self.inner.config.cwd)
-            .map_err(|error| RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string()))
+        self.inner
+            .workspace_identity(&self.inner.config().cwd)
+            .map_err(to_rpc)
     }
 }
 
@@ -356,14 +395,31 @@ impl AgentService for Core {
         })
     }
 
+    async fn config_manage(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::ConfigAction,
+    ) -> Result<moc_protocol::ConfigReply, RpcError> {
+        management::manage(&self.inner, ctx, params)
+            .await
+            .map_err(to_rpc)
+    }
+
+    async fn session_steer(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SteerParams,
+    ) -> Result<moc_protocol::SteerResult, RpcError> {
+        management::steer(&self.inner, params).await.map_err(to_rpc)
+    }
+
     async fn config_get(
         &self,
         _ctx: RequestContext,
         _params: ConfigGetParams,
     ) -> Result<ConfigGetResult, RpcError> {
-        let models = self
-            .inner
-            .config
+        let config = self.inner.config();
+        let models = config
             .available_models()
             .into_iter()
             .map(|model| ModelInfo {
@@ -386,21 +442,18 @@ impl AgentService for Core {
             .collect::<Vec<_>>();
         Ok(ConfigGetResult {
             models,
-            default_model: Some(
-                self.inner
-                    .config
-                    .resolve_role("default")
-                    .map_err(to_rpc)?
-                    .selector,
-            ),
+            default_model: if config.roles.default.is_empty() {
+                None
+            } else {
+                Some(config.resolve_role("default").map_err(to_rpc)?.selector)
+            },
             agents: vec![AgentInfo {
                 id: "moc".into(),
                 display_name: "moc".into(),
                 description: Some("通用编码代理".into()),
             }],
             default_agent: Some("moc".into()),
-            cwd: self.inner.config.cwd.to_string_lossy().into_owned(),
-            statusline_template: self.inner.config.tui.statusline.clone(),
+            cwd: config.cwd.to_string_lossy().into_owned(),
         })
     }
     async fn openviking_list(
@@ -505,7 +558,7 @@ impl AgentService for Core {
             .cwd
             .as_deref()
             .map(PathBuf::from)
-            .unwrap_or_else(|| self.inner.config.cwd.clone());
+            .unwrap_or_else(|| self.inner.config().cwd.clone());
         let cwd = std::fs::canonicalize(&cwd)
             .map_err(|error| invalid_params(format!("cwd 无效：{error}")))?;
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
@@ -817,7 +870,8 @@ impl AgentService for Core {
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let model = config.resolve_model(&state.model).map_err(to_rpc)?;
         let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
-        let system = crate::prompt::system_message(&config, &model, state.mode, &cwd, &skills);
+        let pieces = crate::prompt::system_pieces(&config, &model, state.mode, &cwd, &skills);
+        let system = crate::prompt::compose_system(&pieces);
         let messages =
             crate::compact::replay::model_messages(&state, Some(system.clone()), Some(&model));
         let tools = self.inner.tools.definitions(
@@ -831,22 +885,36 @@ impl AgentService for Core {
         let total_tokens = system_tokens
             .saturating_add(tool_tokens)
             .saturating_add(history_tokens);
+        let mut sections: Vec<_> = pieces
+            .into_iter()
+            .map(|piece| ContextUsageSection {
+                name: piece.title.into(),
+                tokens: crate::compact::estimate_tokens(&piece.text),
+            })
+            .collect();
+        let piece_tokens: u64 = sections.iter().map(|section| section.tokens).sum();
+        sections.push(ContextUsageSection {
+            name: "系统消息结构".into(),
+            tokens: system_tokens.saturating_sub(piece_tokens),
+        });
+        sections.push(ContextUsageSection {
+            name: "工具定义".into(),
+            tokens: tool_tokens,
+        });
+        sections.push(ContextUsageSection {
+            name: "会话历史".into(),
+            tokens: history_tokens,
+        });
         Ok(ContextUsageResult {
             context_window: model.context_window,
             total_tokens,
-            sections: vec![
-                ContextUsageSection {
-                    name: "系统提示词".into(),
-                    tokens: system_tokens,
-                },
-                ContextUsageSection {
-                    name: "工具提示词".into(),
-                    tokens: tool_tokens,
-                },
-                ContextUsageSection {
-                    name: "会话历史".into(),
-                    tokens: history_tokens,
-                },
+            sections,
+            compaction_threshold:compact::threshold(&config,model.context_window),
+            notes:vec![
+                format!("自动压缩阈值 {} token，仅按上下文窗口计算，不扣除 max_output_tokens。",compact::threshold(&config,model.context_window)),
+                format!("指令文件共享 {} token 预算，超限会在注入内容标注截断；Skills 目录预算 {} bytes。",config.context_files.max_tokens,config.skills.catalog_char_budget),
+                format!("OpenViking 每轮召回预算 {} token；工具输出预算为开头 {} + 结尾 {} bytes。",config.openviking.max_context_tokens,config.tools.output.head_bytes,config.tools.output.tail_bytes),
+                "此处为当前基础请求估算；按问题召回的临时记忆和运行时提醒在发起请求时计入压缩判断，实际 token 以服务端用量为准。".into(),
             ],
         })
     }
@@ -948,5 +1016,6 @@ pub(crate) async fn snapshot_workspace(
         .map_err(|error| CoreError::Session(error.to_string()))
 }
 
+mod management;
 mod mode;
 mod turn;

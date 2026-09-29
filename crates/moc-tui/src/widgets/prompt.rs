@@ -49,6 +49,45 @@ pub struct PromptState {
 }
 
 impl PromptState {
+    pub fn from_text(text: String) -> Self {
+        let cursor = text.len();
+        Self {
+            text,
+            cursor,
+            ..Default::default()
+        }
+    }
+    /// 移出当前草稿而不复制图片，也不带走输入历史。
+    pub fn take_draft(&mut self) -> Self {
+        self.break_history_browse();
+        Self {
+            text: std::mem::take(&mut self.text),
+            cursor: std::mem::take(&mut self.cursor),
+            pastes: std::mem::take(&mut self.pastes),
+            images: std::mem::take(&mut self.images),
+            next_chip_id: self.next_chip_id,
+            last_paste: self.last_paste.take(),
+            ..Default::default()
+        }
+    }
+
+    pub fn restore_draft(&mut self, mut draft: Self) {
+        std::mem::swap(&mut self.histories, &mut draft.histories);
+        *self = draft;
+    }
+
+    /// Steering 回执到达之前保留原草稿，失败或轮次已结束时仍可编辑、排队。
+    pub fn preview_parts(&self) -> Vec<InputPart> {
+        Self {
+            text: self.text.clone(),
+            cursor: self.cursor,
+            pastes: self.pastes.clone(),
+            images: self.images.clone(),
+            next_chip_id: self.next_chip_id,
+            ..Default::default()
+        }
+        .build_input_parts()
+    }
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty() && self.images.is_empty()
     }

@@ -64,8 +64,8 @@ pub mod types;
 
 pub use client::{Client, ClientBuilder, CompactResponse};
 pub use config::{
-    AnthropicThinkingDialect, Auth, CacheConfig, CacheTtl, EndpointStyle, LlmConfig,
-    MaxTokensField, Protocol, ResponseFormatDialect, ThinkingWire, ToolChoiceDialect, WireConfig,
+    Auth, CacheConfig, CacheTtl, EndpointStyle, LlmConfig, MaxTokensField, Protocol,
+    ResponseFormatDialect, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
 pub use error::{ApiError, ApiErrorKind, LlmError, TransportError, TransportKind};
 pub use retry::RetryPolicy;

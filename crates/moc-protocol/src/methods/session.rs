@@ -100,6 +100,9 @@ pub struct ContextUsageResult {
     pub total_tokens: u64,
     /// 系统提示词、工具提示词、会话历史等明细。
     pub sections: Vec<ContextUsageSection>,
+    /// 可执行阈值与来源预算说明；估算不扣除模型输出上限。
+    pub compaction_threshold: u64,
+    pub notes: Vec<String>,
 }
 
 /// `session/new` 的参数。

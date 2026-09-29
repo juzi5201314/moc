@@ -23,5 +23,11 @@ tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

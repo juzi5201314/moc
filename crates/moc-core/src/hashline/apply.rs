@@ -264,7 +264,7 @@ pub async fn apply_edit(
     cwd: &Path,
     request: &EditRequest,
     served: &mut ServedFile,
-    mut target_served: Option<&mut ServedFile>,
+    target_served: Option<&mut ServedFile>,
     anchors: &AnchorStore,
     max_edits: usize,
     max_file_bytes: u64,
@@ -387,7 +387,7 @@ pub async fn apply_edit(
             &before,
             after,
             hashes,
-            target_served.as_deref_mut().expect("目标已验证"),
+            target_served.expect("目标已验证"),
             anchors,
         ));
     }

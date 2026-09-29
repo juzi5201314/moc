@@ -160,6 +160,10 @@ pub struct ServerConfig {
 pub struct McpDocument {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub user_config: bool,
+    #[serde(default = "default_true")]
+    pub project_config: bool,
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_secs: u64,
     #[serde(default = "default_call_timeout")]
@@ -174,6 +178,8 @@ impl Default for McpDocument {
     fn default() -> Self {
         Self {
             enabled: true,
+            user_config: true,
+            project_config: true,
             connect_timeout_secs: default_connect_timeout(),
             call_timeout_secs: default_call_timeout(),
             max_output_chars: default_max_output_chars(),

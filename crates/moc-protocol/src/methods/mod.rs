@@ -25,6 +25,7 @@ pub mod ask;
 pub mod config;
 pub mod diff;
 pub mod initialize;
+pub mod management;
 pub mod openviking;
 pub mod permission;
 pub mod plan;
@@ -41,6 +42,10 @@ pub use diff::{DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff, build_h
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
+};
+pub use management::{
+    CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
+    MaintenanceReport, SessionSteer, SettingsDocument, SteerParams, SteerResult, WorkspaceBinding,
 };
 pub use openviking::{
     OpenVikingDelete, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingEntry,

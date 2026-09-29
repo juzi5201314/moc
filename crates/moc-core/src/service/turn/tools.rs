@@ -397,7 +397,7 @@ async fn authorize(
                         &ctx.cwd,
                         path,
                         content,
-                        ctx.config.tools.read.max_file_bytes,
+                        ctx.config.tools.output.max_file_bytes,
                     )
                     .await
                 }

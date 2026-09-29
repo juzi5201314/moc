@@ -110,14 +110,6 @@ pub enum MaxTokensField {
     MaxCompletionTokens,
 }
 
-/// Anthropic 自适应思考模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnthropicThinkingDialect {
-    #[default]
-    Adaptive,
-}
-
 /// 工具选择方言。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -201,8 +193,6 @@ pub struct WireConfig {
     pub reasoning_field_aliases: Vec<String>,
     /// Chat 协议下思考字段的线形状。
     pub thinking: ThinkingWire,
-    /// Anthropic 的思考模式方言。
-    pub anthropic_thinking: AnthropicThinkingDialect,
     /// 工具选择方言。
     pub tool_choice_dialect: ToolChoiceDialect,
     /// 是否支持 `parallel_tool_calls`。
@@ -221,7 +211,6 @@ impl Default for WireConfig {
             reasoning_field: "reasoning_content".into(),
             reasoning_field_aliases: vec!["reasoning_content".into(), "reasoning".into()],
             thinking: ThinkingWire::default(),
-            anthropic_thinking: AnthropicThinkingDialect::Adaptive,
             tool_choice_dialect: ToolChoiceDialect::Standard,
             parallel_tool_calls: true,
             developer_role: false,
@@ -304,6 +293,17 @@ impl LlmConfig {
         let mut next = self.clone();
         next.model = model.into();
         next
+    }
+
+    /// 模型目录沿用推理端点的版本路径规则，不包含会话模型或 deployment。
+    pub fn models_endpoint_url(&self) -> String {
+        match &self.endpoint {
+            EndpointStyle::Default => format!("{}/models", normalize_base_url(&self.base_url)),
+            EndpointStyle::Azure { api_version } => format!(
+                "{}/openai/models?api-version={api_version}",
+                self.base_url.trim_end_matches('/')
+            ),
+        }
     }
 
     /// 本次请求的完整 URL（不含查询串之外的内容）。
@@ -426,7 +426,6 @@ mod tests {
                     effort_map: BTreeMap::from([(Effort::XHigh, "x-high".into())]),
                     toggle_extra: serde_json::Map::from_iter([("keep".into(), json!("all"))]),
                 },
-                anthropic_thinking: AnthropicThinkingDialect::Adaptive,
                 tool_choice_dialect: ToolChoiceDialect::AnyForRequired,
                 parallel_tool_calls: false,
                 developer_role: true,
@@ -500,10 +499,6 @@ mod tests {
         );
         assert!(config.wire.thinking.effort_map.is_empty());
         assert!(config.wire.thinking.toggle_extra.is_empty());
-        assert_eq!(
-            config.wire.anthropic_thinking,
-            AnthropicThinkingDialect::Adaptive
-        );
         assert_eq!(config.wire.tool_choice_dialect, ToolChoiceDialect::Standard);
         assert!(config.wire.parallel_tool_calls);
         assert!(!config.wire.developer_role);

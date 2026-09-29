@@ -1,3 +1,5 @@
+pub mod content;
+
 use moc_core::{Core, CoreConfig};
 use moc_protocol::{ClientBuilder, ClientHandle, Server, ServerConnection, methods::*, transport};
 use parking_lot::Mutex;

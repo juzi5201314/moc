@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
-use moc_protocol::{ContextUsageResult, ModelInfo, SessionInfo, ToolResult, Usage};
+use moc_protocol::{ContextUsageResult, ModelInfo, SessionInfo, SessionMode, ToolResult, Usage};
 
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
@@ -86,7 +86,7 @@ pub struct App {
     pub cost_usd: f64,
     /// git 分支（异步刷新）。
     pub git_branch: Option<String>,
-    /// statusline 自定义模板（core 配置 `[tui] statusline`）。
+    /// 独立 tui.toml 的 statusline 模板。
     pub statusline_template: Option<String>,
     /// 最近一次绘制的转写区，用于鼠标选区的绝对坐标换算。
     pub scrollback_area: Rect,
@@ -107,6 +107,23 @@ pub struct App {
     pub notice_at: Option<std::time::Instant>,
     /// 退出标志。
     pub should_quit: bool,
+    pub preferences: crate::config::TuiConfig,
+    pub keymap: crate::config::KeyMap,
+    pub tui_store: Option<crate::config::TuiStore>,
+    pub settings: Option<crate::settings::SettingsPanel>,
+    pub next_config_id: u64,
+    pub startup_cwd: String,
+    pub startup_mode: SessionMode,
+    pub startup_pending: Option<String>,
+    pub terminal_focused: bool,
+    pub queues: HashMap<String, std::collections::VecDeque<crate::queue::QueuedPrompt>>,
+    pub inflight_turns: std::collections::HashSet<String>,
+    pub next_queue_id: u64,
+    pub queue_hits: Vec<(u64, Rect, Rect)>,
+    pub queue_area: Rect,
+    pub queue_offset: usize,
+    pub interrupt_pending: std::collections::HashSet<String>,
+    pub prompt_stash: Option<PromptState>,
 
     /// 工具调用 ID 到转写块下标的索引，工具参数增量走热路径。
     tool_indices: HashMap<String, usize>,
@@ -152,6 +169,24 @@ impl App {
             notice: None,
             notice_at: None,
             should_quit: false,
+            preferences: crate::config::TuiConfig::default(),
+            keymap: crate::config::KeyMap::compile(&crate::config::TuiConfig::default())
+                .expect("内置键位合法"),
+            tui_store: None,
+            settings: None,
+            next_config_id: 0,
+            startup_cwd: String::new(),
+            startup_mode: SessionMode::Normal,
+            startup_pending: None,
+            terminal_focused: true,
+            queues: HashMap::new(),
+            inflight_turns: std::collections::HashSet::new(),
+            next_queue_id: 0,
+            queue_hits: Vec::new(),
+            queue_area: Rect::default(),
+            queue_offset: 0,
+            interrupt_pending: std::collections::HashSet::new(),
+            prompt_stash: None,
             tool_indices: HashMap::new(),
             pending_args: HashMap::new(),
         }
@@ -326,9 +361,11 @@ impl App {
             .iter()
             .position(|model| model.id == current || current.starts_with(&model.id))
             .unwrap_or(0);
-        let mut picker = crate::modal::PickerState::default();
-        picker.selected = selected;
-        picker.offset = selected.saturating_sub(7);
+        let picker = crate::modal::PickerState {
+            selected,
+            offset: selected.saturating_sub(7),
+            ..Default::default()
+        };
         self.modal = Some(Modal::Model {
             models: self.models.clone(),
             current,

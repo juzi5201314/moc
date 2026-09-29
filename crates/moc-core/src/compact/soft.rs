@@ -55,7 +55,11 @@ pub(crate) async fn compact(
     }
     let retained = messages_tokens(&history[start..]);
     let transcript = summary_transcript(state, &history, start, instructions);
-    let role_model = config.resolve_role("smol")?;
+    let role_model = if config.roles.smol == "inherit" {
+        config.resolve_model(&state.model)?
+    } else {
+        config.resolve_role("smol")?
+    };
     let request = ChatRequest {
         messages: vec![
             Message::system(SUMMARY_SYSTEM),
@@ -65,6 +69,7 @@ pub(crate) async fn compact(
         ..ChatRequest::default()
     };
     let cancel = ctx.cancel();
+    let _permit = inner.provider_permit(&role_model, &cancel).await?;
     let response = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),

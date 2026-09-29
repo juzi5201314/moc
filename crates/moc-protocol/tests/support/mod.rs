@@ -546,7 +546,6 @@ impl AgentService for ScriptedService {
             agents: state.agents.clone(),
             default_agent: state.default_agent.clone(),
             cwd: state.cwd.clone(),
-            statusline_template: None,
         })
     }
     async fn openviking_list(

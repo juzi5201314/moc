@@ -2,7 +2,7 @@
 
 use super::{BashArgs, ProcessGroup, ToolError};
 use futures_util::future::BoxFuture;
-use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::{
     ffi::OsString,
     io::{Read, Write},

@@ -438,6 +438,24 @@ impl<S: AgentService> ServerDispatch<S> {
         claim: TurnClaim,
     ) -> Result<Value, RpcError> {
         match method {
+            "config/manage" => {
+                let params = params_from_value::<crate::ConfigManage>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .config_manage(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            "session/steer" => {
+                let params = params_from_value::<crate::SessionSteer>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_steer(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <ConfigGet as Method>::NAME => {
                 let params = params_from_value::<ConfigGet>(params)?;
                 let result = self

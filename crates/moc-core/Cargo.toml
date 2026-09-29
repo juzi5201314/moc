@@ -33,6 +33,9 @@ toml.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 rayon.workspace = true
+reqwest.workspace = true
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+aho-corasick = "1"
 xxhash-rust.workspace = true
 
 [target.'cfg(windows)'.dependencies]

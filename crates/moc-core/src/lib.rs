@@ -4,6 +4,7 @@
 //! 本 crate 负责会话状态、工具与上下文生命周期。
 
 pub mod compact;
+mod concurrency;
 pub mod config;
 mod error;
 pub mod hashline;

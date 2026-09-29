@@ -22,6 +22,7 @@ use crate::transcript::{Block, Entry, ToolCallBlock};
 const TOOL_RESULT_TAIL_ROWS: usize = 14;
 
 /// 滚动区渲染状态（与 `App::blocks` 长度保持同步）。
+#[derive(Default)]
 pub struct ScrollbackView {
     width: u16,
     cache: Vec<CachedEntry>,
@@ -32,15 +33,6 @@ struct CachedEntry {
     height: usize,
     lines: Vec<Line<'static>>,
     rendered: bool,
-}
-
-impl Default for ScrollbackView {
-    fn default() -> Self {
-        Self {
-            width: 0,
-            cache: Vec::new(),
-        }
-    }
 }
 
 impl ScrollbackView {

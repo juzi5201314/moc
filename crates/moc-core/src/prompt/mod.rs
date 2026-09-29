@@ -14,7 +14,11 @@ use crate::config::model::ResolvedModel;
 const DEFAULT_INTRO: &str = "You are a helpful software engineer assistant.";
 const TOOL_POLICY: &str = "工具：bash/read/edit/write/todo/grep/find 可用；搜索代码用 grep，找文件用 find，不要用 bash 跑 grep/find；改文件前先 read（edit 需要 read 给出的行锚点）；只有需要整文件重写或新建文件时才用 write。\n改文件用 edit 的锚点：read 的输出形如 `HZ3│内容`，把锚点填进 edits 的 from/to；不确定当前内容就重新 read，不要凭记忆构造锚点。";
 
-/// 组装稳定模型前缀；时间、job 与工作区通知不得传入此函数。
+pub struct PromptPiece {
+    pub title: &'static str,
+    pub text: String,
+}
+
 pub fn system_message(
     config: &ResolvedConfig,
     model: &ResolvedModel,
@@ -22,20 +26,53 @@ pub fn system_message(
     cwd: &Path,
     skills: &crate::skills::SkillIndex,
 ) -> Message {
+    compose_system(&system_pieces(config, model, mode, cwd, skills))
+}
+
+pub fn compose_system(pieces: &[PromptPiece]) -> Message {
+    let capacity = pieces.iter().map(|piece| piece.text.len()).sum::<usize>()
+        + pieces.len().saturating_sub(1) * 2;
+    let mut text = String::with_capacity(capacity);
+    for (index, piece) in pieces.iter().enumerate() {
+        if index > 0 {
+            text.push_str("\n\n");
+        }
+        text.push_str(&piece.text);
+    }
+    Message::system(text)
+}
+
+/// 组装稳定模型前缀；时间、job 与工作区通知不得传入此函数。
+pub fn system_pieces(
+    config: &ResolvedConfig,
+    model: &ResolvedModel,
+    mode: SessionMode,
+    cwd: &Path,
+    skills: &crate::skills::SkillIndex,
+) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     let intro = if config.system_prompt.override_text.trim().is_empty() {
         DEFAULT_INTRO
     } else {
         config.system_prompt.override_text.trim()
     };
-    sections.push(intro.to_owned());
-    sections.push(tool_policy(mode));
+    sections.push(PromptPiece {
+        title: "身份说明",
+        text: intro.to_owned(),
+    });
+    sections.push(PromptPiece {
+        title: "工具使用规则",
+        text: tool_policy(mode),
+    });
     if !config.system_prompt.append.trim().is_empty() {
-        sections.push(config.system_prompt.append.trim().to_owned());
+        sections.push(PromptPiece {
+            title: "附加系统指令",
+            text: config.system_prompt.append.trim().to_owned(),
+        });
     }
 
     let context_files = if config.context_files.enabled {
-        context_files::load_context_files(cwd, &config.home, config.context_files.import_depth)
+        context_files::load_context_files(cwd, &config.home, &config.context_files)
     } else {
         Vec::new()
     };
@@ -52,20 +89,29 @@ pub fn system_message(
             rules.push_str("</file>");
         }
         rules.push_str("\n</repo-rules>");
-        sections.push(rules);
+        sections.push(PromptPiece {
+            title: "项目与用户指令",
+            text: rules,
+        });
     }
     // skill 目录属于稳定前缀（会话内索引不变），保持 prompt cache 命中。
     if let Some(catalog) = crate::skills::catalog::render(skills, &config.skills) {
-        sections.push(catalog);
+        sections.push(PromptPiece {
+            title: "Skills 目录",
+            text: catalog,
+        });
     }
-    sections.push(format!(
-        "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
-        cwd.display(),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        model.id,
-    ));
-    Message::system(sections.join("\n\n"))
+    sections.push(PromptPiece {
+        title: "运行环境",
+        text: format!(
+            "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
+            cwd.display(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            model.id,
+        ),
+    });
+    sections
 }
 
 fn tool_policy(mode: SessionMode) -> String {

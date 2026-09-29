@@ -31,7 +31,7 @@ pub(crate) fn preview_edit_diff(ctx: &ToolCtx, arguments: &serde_json::Value) ->
         target_served.as_ref(),
         &ctx.anchors,
         ctx.config.tools.edit.max_edits,
-        ctx.config.tools.read.max_file_bytes.min(4 * 1024 * 1024),
+        ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
     )
     .ok()
 }
@@ -104,7 +104,7 @@ impl Tool for EditTool {
                 target_served.as_mut(),
                 &ctx.anchors,
                 ctx.config.tools.edit.max_edits,
-                ctx.config.tools.read.max_file_bytes.min(4 * 1024 * 1024),
+                ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
             )
             .await;
             match result {

@@ -13,22 +13,26 @@ use crate::error::CoreError;
 use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
 use schema::{ConfigDocument, validate_compaction};
 
+pub mod catalog;
+pub mod discovery;
+pub mod editor;
 pub mod model;
 mod schema;
 
 pub use model::{ModelCapabilities, ThinkingLevel};
 pub use schema::{
     ApprovalMatcher, ApprovalMode, BashConfig, CompactionConfig, CompactionMethod,
-    ContextFilesConfig, EditConfig, FeatureConfig, FindConfig, GrepConfig, LimitsConfig,
-    ReadConfig, RemoteCompactionConfig, ShakeConfig, SkillsConfig, SystemPromptConfig,
-    ToolApproval, ToolsConfig, TuiConfig, WorkspaceConfig, WriteConfig,
+    CompactionThreshold, ContextFilesConfig, EditConfig, FeatureConfig, FindConfig, GrepConfig,
+    JobConfig, JobOverflow, LimitsConfig, OutputConfig, ReadConfig, RemoteCompactionConfig,
+    RetentionConfig, ShakeConfig, SkillsConfig, SourcesConfig, SystemPromptConfig, ToolApproval,
+    ToolsConfig, WorkspaceConfig, WriteConfig,
 };
 
-/// 会话文件与跨进程锁设置。
+/// 会话文件与保留策略；跨进程锁始终启用。
 #[derive(Debug, Clone)]
 pub struct SessionSettings {
     pub dir: PathBuf,
-    pub locking: bool,
+    pub retention: RetentionConfig,
 }
 
 /// 一次完成路径合并、密钥解析与 provider/model 校验的运行时配置。
@@ -37,6 +41,7 @@ pub struct ResolvedConfig {
     pub home: PathBuf,
     pub cwd: PathBuf,
     pub roles: ModelRoles,
+    pub sources: SourcesConfig,
     pub tools: ToolsConfig,
     pub tool_approval: ApprovalMatcher,
     pub compaction: CompactionConfig,
@@ -46,7 +51,6 @@ pub struct ResolvedConfig {
     pub workspace: WorkspaceConfig,
     pub openviking: moc_openviking::OpenVikingConfig,
     pub session: SessionSettings,
-    pub tui: TuiConfig,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
     providers: BTreeMap<String, model::ResolvedProvider>,
@@ -78,7 +82,9 @@ impl ResolvedConfig {
     pub fn for_project(&self, cwd: impl AsRef<Path>) -> Result<Self, CoreError> {
         let cwd = expand_home_path(cwd.as_ref());
         let mut raw = self.base_raw.clone();
-        merge_optional_file(&mut raw, &cwd.join(".moc").join("config.toml"))?;
+        if self.sources.project_config {
+            merge_optional_file(&mut raw, &cwd.join(".moc").join("config.toml"))?;
+        }
         for overlay in &self.overlays {
             merge_required_file(&mut raw, overlay)?;
         }
@@ -93,20 +99,23 @@ impl ResolvedConfig {
 
     /// 按 provider/model[:level] 或模型角色解析可调用模型。
     pub fn resolve_model(&self, selector: &str) -> Result<ResolvedModel, CoreError> {
-        let role_selector = match selector {
-            "default" => Some(self.roles.default.as_str()),
-            "smol" => Some(self.roles.smol.as_str()),
-            "slow" => Some(self.roles.slow.as_str()),
-            "plan" => Some(
-                self.roles
-                    .plan
-                    .as_deref()
-                    .filter(|selector| !selector.is_empty())
-                    .unwrap_or(&self.roles.slow),
-            ),
-            _ => None,
+        let selector = match selector {
+            "default" => self.roles.default.as_str(),
+            "smol" => self.roles.smol.as_str(),
+            "slow" => self.roles.slow.as_str(),
+            "plan" => self.roles.plan.as_str(),
+            other => other,
         };
-        let selector = role_selector.unwrap_or(selector);
+        let selector = if selector == "inherit" {
+            self.roles.default.as_str()
+        } else {
+            selector
+        };
+        if selector.is_empty() {
+            return Err(CoreError::Config(
+                "尚未配置主模型，请打开 /config 添加供应商并选择至少一个模型".into(),
+            ));
+        }
         resolve_one(&self.providers, selector, None)
     }
 
@@ -139,11 +148,15 @@ impl ResolvedConfig {
         let providers = resolve_catalog(&document.providers)?;
         validate_roles(&document.models.roles, &providers)?;
         validate_compaction(&document.compaction)?;
+        if document.tools.job.max_running == 0 {
+            return Err(CoreError::Config("后台进程上限必须大于 0".into()));
+        }
         let session_dir = expand_config_path(&document.session.dir, &home)?;
         Ok(Self {
             home,
             cwd,
             roles: document.models.roles,
+            sources: document.sources,
             tool_approval: ApprovalMatcher::build(&document.tools.approval),
             tools: document.tools,
             compaction: document.compaction,
@@ -155,9 +168,8 @@ impl ResolvedConfig {
 
             session: SessionSettings {
                 dir: session_dir,
-                locking: document.session.locking,
+                retention: document.session.retention,
             },
-            tui: document.tui,
             mcp: document.mcp,
             skills: document.skills,
             providers,
@@ -172,10 +184,14 @@ impl ResolvedConfig {
         if !self.mcp.enabled {
             return Ok(Vec::new());
         }
-        let project_files = moc_mcp::discover_project_json(
-            &self.cwd,
-            crate::prompt::context_files::git_root(&self.cwd).as_deref(),
-        )
+        let project_files = if self.mcp.project_config {
+            moc_mcp::discover_project_json(
+                &self.cwd,
+                crate::prompt::context_files::git_root(&self.cwd).as_deref(),
+            )
+        } else {
+            Vec::new()
+        }
         .into_iter()
         .map(|path| {
             let text = fs::read_to_string(&path).unwrap_or_default();
@@ -186,7 +202,7 @@ impl ResolvedConfig {
         .collect::<Result<Vec<_>, CoreError>>()?;
         let user_file = {
             let path = moc_mcp::user_json_path(&self.home);
-            if path.is_file() {
+            if self.mcp.user_config && path.is_file() {
                 let text = fs::read_to_string(&path).map_err(|error| {
                     CoreError::Config(format!("读取 {}: {error}", path.display()))
                 })?;
@@ -217,10 +233,9 @@ pub fn expand_user_path(value: &str) -> PathBuf {
     if let Some(rest) = value
         .strip_prefix("~/")
         .or_else(|| value.strip_prefix("~\\"))
+        && let Some(home) = crate::paths::home_dir()
     {
-        if let Some(home) = crate::paths::home_dir() {
-            return home.join(rest);
-        }
+        return home.join(rest);
     }
     if value == "~"
         && let Some(home) = crate::paths::home_dir()
@@ -233,14 +248,12 @@ pub fn expand_user_path(value: &str) -> PathBuf {
 fn expand_home_path(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if text == "~" {
-        return crate::paths::home_dir()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("~"));
+        return crate::paths::home_dir().unwrap_or_else(|| PathBuf::from("~"));
     }
     if let Some(rest) = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\"))
         && let Some(home) = crate::paths::home_dir()
     {
-        return PathBuf::from(home).join(rest);
+        return home.join(rest);
     }
     path.to_owned()
 }
@@ -261,7 +274,7 @@ fn expand_config_path(value: &str, moc_home: &Path) -> Result<PathBuf, CoreError
     {
         let home = crate::paths::home_dir()
             .ok_or_else(|| CoreError::Config("无法展开配置路径：用户主目录未设置".into()))?;
-        return Ok(PathBuf::from(home).join(rest));
+        return Ok(home.join(rest));
     }
     let path = PathBuf::from(value);
     Ok(if path.is_absolute() {

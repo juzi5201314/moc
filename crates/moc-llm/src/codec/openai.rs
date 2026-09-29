@@ -48,7 +48,11 @@ pub(crate) fn map_finish_reason(reason: &str) -> FinishReason {
 /// 都解析不出消息时返回 `None`，由调用方按状态码降级。
 pub(crate) fn parse_error_body(body: &[u8]) -> Option<ErrorFields> {
     let value: Value = serde_json::from_slice(body).ok()?;
-    let error = value.get("error").unwrap_or(&value);
+    parse_error_value(&value)
+}
+
+pub(crate) fn parse_error_value(value: &Value) -> Option<ErrorFields> {
+    let error = value.get("error").unwrap_or(value);
     let message = error
         .get("message")
         .and_then(Value::as_str)

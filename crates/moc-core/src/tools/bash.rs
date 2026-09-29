@@ -90,6 +90,12 @@ impl Tool for BashTool {
             let command = args.command.clone();
             let job_id = next_job_id(ctx).await?;
             let output_path = ctx.paths.jobs().join(format!("{job_id}.log"));
+            // 显式后台任务在启动子进程之前预留名额，超限不会先执行命令。
+            let permit = if asynchronous {
+                Some(ctx.jobs.reserve(&ctx.config.tools.job, &ctx.cancel).await?)
+            } else {
+                None
+            };
             let process = Process::spawn(args, cwd, timeout, output_path.clone()).await?;
             if asynchronous {
                 ctx.jobs.start(
@@ -98,6 +104,7 @@ impl Tool for BashTool {
                     command,
                     output_path.clone(),
                     process,
+                    permit.expect("后台任务已预留名额"),
                 )?;
                 return Ok(ToolOutcome::success(format!(
                     "后台任务已启动：{job_id}，日志：{}",
@@ -114,8 +121,8 @@ impl Tool for BashTool {
             };
             let output = read_bounded_file(
                 &output_path,
-                ctx.config.tools.bash.output_head_bytes,
-                ctx.config.tools.bash.output_tail_bytes,
+                ctx.config.tools.output.head_bytes,
+                ctx.config.tools.output.tail_bytes,
             )
             .await
             .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
@@ -162,9 +169,21 @@ async fn wait_foreground(
     match selection {
         Selection::Finished(result) => result.map(Some),
         Selection::Background => {
-            ctx.jobs
-                .start(ctx.clone(), job_id, command, output_path, process)?;
-            Ok(None)
+            if let Some(permit) = ctx.jobs.slots.try_acquire(ctx.config.tools.job.max_running) {
+                ctx.jobs
+                    .start(ctx.clone(), job_id, command, output_path, process, permit)?;
+                Ok(None)
+            } else {
+                // 自动后台化已开始执行；名额用尽时继续前台等待，不额外创建后台任务。
+                tokio::select! {
+                    result = &mut process.completion => result.map(Some),
+                    _ = ctx.cancel.cancelled() => {
+                        process.group.kill()?;
+                        let _ = process.completion.await;
+                        Err(ToolError::new("E_CANCELLED", "命令已取消"))
+                    }
+                }
+            }
         }
         Selection::Cancelled => {
             process.group.kill()?;

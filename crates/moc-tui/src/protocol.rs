@@ -22,6 +22,21 @@ use tokio_util::sync::CancellationToken;
 
 /// UI 事件队列承载的消息。
 pub enum AppEvent {
+    SettingsResponse {
+        panel: u64,
+        result: anyhow::Result<moc_protocol::ConfigReply>,
+        saved: bool,
+    },
+    ConfigurationLoaded(moc_protocol::ConfigGetResult),
+    TurnReturned {
+        session: String,
+        result: anyhow::Result<()>,
+    },
+    SteerReturned {
+        session: String,
+        prompt: crate::queue::QueuedPrompt,
+        result: anyhow::Result<bool>,
+    },
     /// `session/update` 通知。
     Update(SessionUpdateParams),
     /// 授权请求；主循环收到后弹出模态，回选经 `reply` 送回协议层。

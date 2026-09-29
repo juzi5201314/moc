@@ -36,6 +36,23 @@ pub fn estimate_tokens(text: &str) -> u64 {
     ascii / 4 + non_ascii
 }
 
+/// 用同一个 token 估算器确定 UTF-8 前缀，避免中文按字节裁剪时超预算。
+pub fn prefix_within_tokens(text: &str, budget: u64) -> &str {
+    let mut ascii = 0u64;
+    let mut non_ascii = 0u64;
+    for (index, character) in text.char_indices() {
+        if character.is_ascii() {
+            ascii += 1;
+        } else {
+            non_ascii += 1;
+        }
+        if ascii / 4 + non_ascii > budget {
+            return &text[..index];
+        }
+    }
+    text
+}
+
 pub fn messages_tokens(messages: &[Message]) -> u64 {
     messages
         .iter()
@@ -76,26 +93,14 @@ pub(crate) fn context_tokens(
         .saturating_add(added)
 }
 
-/// 阈值三层优先级：绝对 token 数、窗口百分比、预留回退（`窗口 − max(16384, 15%)`）。
-///
-/// 只按 `context_window` 计算，绝不扣减 `max_output_tokens`：大输出上限的模型
-/// （如 500k 窗口 / 384k 输出）若按输出扣减会频繁提前压缩；真溢出由 Overflow 恢复兜底。
+/// 只使用模型上下文窗口，绝不扣除模型输出上限；上游溢出仍走自动压缩恢复。
 pub fn threshold(config: &ResolvedConfig, context_window: u64) -> u64 {
-    let compaction = &config.compaction;
-    if compaction.threshold_tokens > 0 {
-        return compaction.threshold_tokens as u64;
+    match config.compaction.threshold {
+        crate::config::CompactionThreshold::Percent(percent) => {
+            context_window.saturating_mul(percent) / 100
+        }
+        crate::config::CompactionThreshold::Tokens(tokens) => tokens,
     }
-    if compaction.threshold_percent > 0 {
-        return context_window
-            .saturating_mul(compaction.threshold_percent as u64)
-            .saturating_div(100);
-    }
-    let reserve = if compaction.reserve_tokens > 0 {
-        compaction.reserve_tokens as u64
-    } else {
-        16_384u64.max(context_window.saturating_mul(15) / 100)
-    };
-    context_window.saturating_sub(reserve)
 }
 
 /// 按配置执行压缩链；显式指令只交给摘要模型。
@@ -255,15 +260,12 @@ mod tests {
     }
 
     #[test]
-    fn threshold_follows_tokens_percent_reserve_precedence() {
+    fn threshold_selects_exactly_one_strategy() {
         let tokens =
-            config_with("\n[compaction]\nthreshold_tokens = 50000\nthreshold_percent = 90\n");
+            config_with("\n[compaction]\nthreshold = { mode = 'tokens', value = 50000 }\n");
         assert_eq!(threshold(&tokens, 200_000), 50_000);
-        let percent = config_with("\n[compaction]\nthreshold_percent = 80\n");
+        let percent = config_with("\n[compaction]\nthreshold = { mode = 'percent', value = 80 }\n");
         assert_eq!(threshold(&percent, 200_000), 160_000);
-        let reserve =
-            config_with("\n[compaction]\nthreshold_percent = -1\nreserve_tokens = 4096\n");
-        assert_eq!(threshold(&reserve, 200_000), 195_904);
     }
 
     #[test]
@@ -276,11 +278,11 @@ mod tests {
     #[test]
     fn config_rejects_malformed_thresholds() {
         for suffix in [
-            "\n[compaction]\nthreshold_tokens = 0\n",
-            "\n[compaction]\nthreshold_tokens = -2\n",
-            "\n[compaction]\nthreshold_percent = 0\n",
-            "\n[compaction]\nthreshold_percent = 101\n",
-            "\n[compaction]\nthreshold_percent = -2\n",
+            "\n[compaction]\nthreshold = { mode = 'tokens', value = 0 }\n",
+            "\n[compaction]\nthreshold = { mode = 'tokens', value = -2 }\n",
+            "\n[compaction]\nthreshold = { mode = 'percent', value = 0 }\n",
+            "\n[compaction]\nthreshold = { mode = 'percent', value = 101 }\n",
+            "\n[compaction]\nthreshold_tokens = 100\n",
         ] {
             assert!(
                 load_config(&format!("{MODEL_BASE}{suffix}")).is_err(),

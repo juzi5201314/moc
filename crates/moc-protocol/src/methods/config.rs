@@ -41,9 +41,6 @@ pub struct ConfigGetResult {
     pub default_agent: Option<String>,
     /// core 的当前工作目录（`session/new` 不带 `cwd` 时用它）。
     pub cwd: String,
-    /// TUI statusline 自定义模板；`None` 表示未配置（前端用内置渲染）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub statusline_template: Option<String>,
 }
 
 /// 一个可用模型。
@@ -131,7 +128,6 @@ mod tests {
             }],
             default_agent: Some("build".into()),
             cwd: "/home/soeur/project/moc".into(),
-            statusline_template: None,
         };
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),

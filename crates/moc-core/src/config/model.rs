@@ -4,20 +4,29 @@ use std::collections::BTreeMap;
 use std::process::Command;
 
 use moc_llm::{
-    AnthropicThinkingDialect, Auth, Effort, EndpointStyle, LlmConfig, MaxTokensField, Protocol,
-    ReasoningEcho, ResponseFormatDialect, RetryPolicy, ThinkingWire, ToolChoiceDialect, WireConfig,
+    Auth, Effort, EndpointStyle, LlmConfig, MaxTokensField, Protocol, ReasoningEcho,
+    ResponseFormatDialect, RetryPolicy, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
 use serde::Deserialize;
 
 use crate::error::CoreError;
 
+/// 缓存保留策略；自动沿用协议默认，不进行额外预热请求。
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CachePolicy {
+    #[default]
+    Auto,
+    Short,
+    Long,
+    Off,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum ProviderApi {
-    #[serde(alias = "openai-completions")]
     OpenaiChat,
     OpenaiResponses,
-    #[serde(alias = "anthropic-messages")]
     AnthropicMessages,
 }
 
@@ -43,16 +52,16 @@ pub struct ModelRoles {
     pub default: String,
     pub smol: String,
     pub slow: String,
-    pub plan: Option<String>,
+    pub plan: String,
 }
 
 impl Default for ModelRoles {
     fn default() -> Self {
         Self {
-            default: "ds/deepseek-v4.1-flash:max".into(),
-            smol: "ds/deepseek-v4.1-flash:low".into(),
-            slow: "cpa-cx/gpt-6-luna:max".into(),
-            plan: Some("cpa-cx/ag/gpt-5.6-sol:xhigh".into()),
+            default: String::new(),
+            smol: "inherit".into(),
+            slow: "inherit".into(),
+            plan: "inherit".into(),
         }
     }
 }
@@ -67,6 +76,8 @@ pub(super) struct ProviderDocument {
     pub extra_body: serde_json::Map<String, serde_json::Value>,
     pub timeout_secs: Option<f64>,
     pub connect_timeout_secs: Option<f64>,
+    pub max_concurrency: usize,
+    pub cache: CachePolicy,
     #[serde(deserialize_with = "deserialize_provider_retry")]
     pub retry: RetryPolicy,
     pub endpoint: EndpointStyle,
@@ -81,8 +92,10 @@ impl Default for ProviderDocument {
             api_key: String::new(),
             headers: BTreeMap::new(),
             extra_body: serde_json::Map::new(),
-            timeout_secs: Some(600.0),
+            timeout_secs: None,
             connect_timeout_secs: Some(20.0),
+            max_concurrency: 0,
+            cache: CachePolicy::Auto,
             retry: provider_retry_defaults(),
             endpoint: EndpointStyle::default(),
             models: BTreeMap::new(),
@@ -154,7 +167,6 @@ pub(super) struct ModelCompat {
     pub supports_prompt_cache_key: bool,
     pub reasoning_field: String,
     pub reasoning_field_aliases: Vec<String>,
-    pub anthropic_thinking: AnthropicThinkingDialect,
     pub tool_choice_dialect: ToolChoiceDialect,
     pub parallel_tool_calls: bool,
     pub developer_role: bool,
@@ -175,7 +187,6 @@ impl Default for ModelCompat {
             supports_prompt_cache_key: true,
             reasoning_field: "reasoning_content".into(),
             reasoning_field_aliases: vec!["reasoning_content".into(), "reasoning".into()],
-            anthropic_thinking: AnthropicThinkingDialect::default(),
             tool_choice_dialect: ToolChoiceDialect::default(),
             parallel_tool_calls: true,
             developer_role: false,
@@ -285,6 +296,8 @@ pub struct ResolvedModel {
     pub pricing: Option<moc_protocol::ModelPricing>,
     /// 供应商协议配置。
     pub llm: LlmConfig,
+    pub max_concurrency: usize,
+    pub cache: CachePolicy,
     /// 默认思维链回传策略。
     pub echo_reasoning: ReasoningEcho,
     /// Chat/Responses 上游是否接受 prompt_cache_key。
@@ -306,12 +319,25 @@ pub(super) struct ResolvedProvider {
     extra_body: serde_json::Map<String, serde_json::Value>,
     timeout_secs: Option<f64>,
     connect_timeout_secs: Option<f64>,
+    max_concurrency: usize,
+    cache: CachePolicy,
     retry: RetryPolicy,
     endpoint: EndpointStyle,
     models: BTreeMap<String, ModelDocument>,
 }
 
 impl ResolvedProvider {
+    pub(super) fn catalog_config(&self) -> LlmConfig {
+        LlmConfig {
+            protocol: self.api.protocol(),
+            base_url: self.base_url.clone(),
+            auth: self.auth.clone(),
+            headers: self.headers.clone(),
+            endpoint: self.endpoint.clone(),
+            connect_timeout_secs: self.connect_timeout_secs,
+            ..Default::default()
+        }
+    }
     pub(super) fn from_document(id: &str, document: ProviderDocument) -> Result<Self, CoreError> {
         let api = document
             .api
@@ -321,9 +347,6 @@ impl ResolvedProvider {
             return Err(CoreError::Config(format!(
                 "providers.{id}.base_url 必须是 http(s) URL"
             )));
-        }
-        if document.models.is_empty() {
-            return Err(CoreError::Config(format!("providers.{id}.models 不能为空")));
         }
         // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每个 step 都触发压缩。
         for (model_id, model) in &document.models {
@@ -364,6 +387,8 @@ impl ResolvedProvider {
             extra_body: document.extra_body,
             timeout_secs: document.timeout_secs,
             connect_timeout_secs: document.connect_timeout_secs,
+            max_concurrency: document.max_concurrency,
+            cache: document.cache,
             retry: document.retry,
             endpoint: document.endpoint,
             models: document.models,
@@ -379,6 +404,15 @@ impl ResolvedProvider {
     ) -> ResolvedModel {
         let mut extra_body = self.extra_body.clone();
         extra_body.extend(model.compat.extra_body.clone());
+        if self.cache == CachePolicy::Long
+            && self.api.protocol() != Protocol::AnthropicMessages
+            && model.compat.supports_prompt_cache_key
+        {
+            // 24h 是 OpenAI 自动缓存协议的长保留值；只在用户明确选择长缓存时发送。
+            extra_body
+                .entry("prompt_cache_retention".to_owned())
+                .or_insert_with(|| serde_json::json!("24h"));
+        }
         let thinking_levels = effective_thinking_levels(model);
         let remote_compaction = model.remote_compaction.unwrap_or(
             self.api.protocol() == Protocol::OpenAiResponses
@@ -399,7 +433,6 @@ impl ResolvedProvider {
                 reasoning_field: model.compat.reasoning_field.clone(),
                 reasoning_field_aliases: model.compat.reasoning_field_aliases.clone(),
                 thinking: model.compat.thinking.clone(),
-                anthropic_thinking: model.compat.anthropic_thinking,
                 tool_choice_dialect: model.compat.tool_choice_dialect,
                 parallel_tool_calls: model.compat.parallel_tool_calls,
                 developer_role: model.compat.developer_role,
@@ -431,6 +464,8 @@ impl ResolvedProvider {
             remote_compaction,
             pricing: model.pricing,
             llm,
+            max_concurrency: self.max_concurrency,
+            cache: self.cache,
             echo_reasoning: model.compat.echo_reasoning,
             supports_prompt_cache_key: model.compat.supports_prompt_cache_key,
             requires_reasoning_content_for_tool_calls: model
@@ -616,21 +651,27 @@ pub(super) fn validate_roles(
     roles: &ModelRoles,
     providers: &BTreeMap<String, ResolvedProvider>,
 ) -> Result<(), CoreError> {
+    // 首次启动允许空目录进入设置页；真正创建会话时必须解析出主模型。
+    if roles.default.is_empty()
+        && providers
+            .values()
+            .all(|provider| provider.models.is_empty())
+    {
+        return Ok(());
+    }
     for (role, selector) in [
         ("default", roles.default.as_str()),
         ("smol", roles.smol.as_str()),
         ("slow", roles.slow.as_str()),
+        ("plan", roles.plan.as_str()),
     ] {
+        let selector = if selector == "inherit" && role != "default" {
+            &roles.default
+        } else {
+            selector
+        };
         resolve_one(providers, selector, None)
             .map_err(|error| CoreError::Config(format!("models.roles.{role} 无法解析：{error}")))?;
-    }
-    if let Some(selector) = roles
-        .plan
-        .as_deref()
-        .filter(|selector| !selector.is_empty())
-    {
-        resolve_one(providers, selector, None)
-            .map_err(|error| CoreError::Config(format!("models.roles.plan 无法解析：{error}")))?;
     }
     Ok(())
 }

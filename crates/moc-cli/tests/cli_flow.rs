@@ -66,6 +66,19 @@ fn call(id: &str, name: &str, args: Value) -> String {
     )
 }
 
+fn content_text(value: &Value) -> std::borrow::Cow<'_, str> {
+    match value {
+        Value::String(text) => std::borrow::Cow::Borrowed(text),
+        Value::Array(parts) => std::borrow::Cow::Owned(
+            parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect(),
+        ),
+        _ => panic!("工具正文不是标准 Chat 文本：{value}"),
+    }
+}
+
 #[tokio::test]
 async fn print_runs_write_grep_read_edit_and_resume_without_notification_noise() {
     let upstream = MockServer::start().await;
@@ -80,7 +93,7 @@ async fn print_runs_write_grep_read_edit_and_resume_without_notification_noise()
             2 => call("read", "read", json!({"path":"hello.py"})),
             3 => {
                 let result = body["messages"].as_array().unwrap().iter().find(|message| message["tool_call_id"] == "read").unwrap();
-                let output = result["content"][0]["text"].as_str().unwrap();
+                let output = content_text(&result["content"]);
                 let anchors: Vec<_> = output.lines().filter_map(|line| line.split_once('│').map(|(anchor, _)| anchor)).collect();
                 call("edit", "edit", json!({"path":"hello.py","edits":[[anchors[0],anchors[1],"print('hello moc')"]]}))
             }

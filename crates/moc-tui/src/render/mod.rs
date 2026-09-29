@@ -71,6 +71,13 @@ fn prompt_content_rows(app: &App, width: u16) -> usize {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
+    if let Some(panel) = &mut app.settings {
+        crate::settings::draw(frame, panel, app.theme);
+        if app.modal.is_some() {
+            modal::draw_modal(frame, app);
+        }
+        return;
+    }
     let theme = app.theme;
     let frame_area = frame.area();
     let rows = frame_area.height;
@@ -151,6 +158,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         draw_statusline(frame, app, inset(status_area, MARGIN_X));
     }
 
+    crate::queue::draw(frame, app);
     // 浮层最后画：补全菜单贴输入框上沿，模态居中（覆盖正文与信息条）
     if let Some(completion) = &app.completion {
         modal::draw_completion_menu(frame, completion, prompt_area);
@@ -357,12 +365,20 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let binding = |action: &str| {
+        app.preferences
+            .keybindings
+            .get(action)
+            .and_then(|keys| keys.first())
+            .map(String::as_str)
+            .unwrap_or("—")
+    };
     let tips: [(&str, &str); 5] = [
-        ("ctrl+h", "快捷键"),
-        ("ctrl+t", "思考"),
-        ("ctrl+o", "工具"),
-        ("ctrl+m", "模式"),
-        ("shift+tab", "预算"),
+        (binding("help"), "快捷键"),
+        (binding("thinking"), "思考"),
+        (binding("tools"), "工具"),
+        (binding("mode"), "模式"),
+        (binding("thinking_level"), "预算"),
     ];
     let tips_width: usize = tips
         .iter()

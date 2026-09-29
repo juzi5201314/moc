@@ -50,6 +50,7 @@ pub(crate) async fn compact(
     let mut items = state.native_input.clone().unwrap_or_default();
     items.extend(moc_llm::encode_responses_input_items(&model.llm, &request)?);
     let cancel = ctx.cancel();
+    let _permit = inner.provider_permit(model, &cancel).await?;
     let compacted = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),

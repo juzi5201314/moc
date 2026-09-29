@@ -2,6 +2,7 @@
 
 pub mod entries;
 pub mod lock;
+pub mod maintenance;
 pub mod state;
 pub mod store;
 
@@ -119,6 +120,8 @@ impl SessionTable {
             .find(session_id)
             .await?
             .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {session_id}")))?;
+        // 归档恢复同样是写操作；与其他进程的归档/追加共享会话锁。
+        let _disk = lock::SessionLockGuard::acquire(paths.lock_file(session_id), "load")?;
         let entries = self.store.read_entries(&paths).await?;
         let state = SessionState::from_entries(entries)?;
         if state.session.id != session_id {

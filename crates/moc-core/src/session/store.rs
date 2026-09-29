@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::error::CoreError;
 
@@ -211,13 +211,12 @@ impl SessionStore {
             }
             let mut files = fs::read_dir(directory.path()).await?;
             while let Some(file) = files.next_entry().await? {
-                let path = file.path();
+                let Some(path) = super::maintenance::journal_path(&file.path()) else {
+                    continue;
+                };
                 if path
-                    .extension()
-                    .is_some_and(|extension| extension == "jsonl")
-                    && path.file_stem().is_some_and(|stem| {
-                        stem.to_string_lossy().ends_with(&format!("_{session_id}"))
-                    })
+                    .file_stem()
+                    .is_some_and(|stem| stem.to_string_lossy().ends_with(&format!("_{session_id}")))
                 {
                     let paths = SessionPaths {
                         transcript: path,
@@ -235,6 +234,7 @@ impl SessionStore {
 
     /// 打开 transcript 用于追加。
     pub async fn open(&self, paths: &SessionPaths) -> Result<SessionFile, CoreError> {
+        super::maintenance::restore(&paths.transcript).await?;
         let file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -252,8 +252,7 @@ impl SessionStore {
 
     /// 读取并反序列化完整 JSONL 历史。
     pub async fn read_entries(&self, paths: &SessionPaths) -> Result<Vec<Entry>, CoreError> {
-        let file = File::open(&paths.transcript).await?;
-        let mut lines = BufReader::new(file).lines();
+        let mut lines = super::maintenance::reader(&paths.transcript).await?.lines();
         let mut entries = Vec::new();
         let mut line_number = 0usize;
         while let Some(line) = lines.next_line().await? {
@@ -272,6 +271,7 @@ impl SessionStore {
     /// 流式投影元信息，跳过消息载荷分配，并按更新时间降序列会话。
     pub async fn list(&self) -> Result<Vec<moc_protocol::methods::SessionInfo>, CoreError> {
         let mut result = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let mut directories = match fs::read_dir(&self.root).await {
             Ok(directories) => directories,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
@@ -283,11 +283,10 @@ impl SessionStore {
             }
             let mut files = fs::read_dir(directory.path()).await?;
             while let Some(file) = files.next_entry().await? {
-                let path = file.path();
-                if path
-                    .extension()
-                    .is_none_or(|extension| extension != "jsonl")
-                {
+                let Some(path) = super::maintenance::journal_path(&file.path()) else {
+                    continue;
+                };
+                if !seen.insert(path.clone()) {
                     continue;
                 }
                 let Some(mut info) = read_session_info(&path).await? else {
@@ -337,8 +336,7 @@ impl SessionStore {
 async fn read_session_info(
     path: &Path,
 ) -> Result<Option<moc_protocol::methods::SessionInfo>, CoreError> {
-    let file = File::open(path).await?;
-    let mut reader = BufReader::new(file);
+    let mut reader = super::maintenance::reader(path).await?;
     let mut line = String::new();
     if reader.read_line(&mut line).await? == 0 {
         return Ok(None);

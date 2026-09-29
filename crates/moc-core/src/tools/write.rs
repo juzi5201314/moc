@@ -85,7 +85,7 @@ impl Tool for WriteTool {
                 .await
                 .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
-            if args.content.len() as u64 > ctx.config.tools.read.max_file_bytes {
+            if args.content.len() as u64 > ctx.config.tools.output.max_file_bytes {
                 return Err(ToolError::new("E_TOO_LARGE", "写入内容超过单文件字节上限"));
             }
             reject_served_hash_echo(

@@ -1,5 +1,7 @@
 //! 固定上游响应下验证 core 的 JSON-RPC 轮次闭环。
 
+#[path = "support/content.rs"]
+mod content;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -42,7 +44,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
-             [session]\ndir={:?}\nlocking=false\n\
+             [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
@@ -214,7 +216,7 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
             "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
-             [session]\ndir={:?}\nlocking=false\n\
+             [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
@@ -449,7 +451,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
-             [session]\ndir={:?}\nlocking=false\n\
+             [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
@@ -618,7 +620,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
             "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
-             [session]\ndir={:?}\nlocking=false\n\
+             [session]\ndir={:?}\n\
              [workspace]\nwatch=true\nmax_scan_entries=1000\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
@@ -720,9 +722,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
         serde_json::from_slice(&requests[1].body).expect("next request JSON");
     let reminder = next_request["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(reminder["role"], "user");
-    let text = reminder["content"][0]["text"]
-        .as_str()
-        .expect("cached reminder text block");
+    let text = content::content_text(&reminder["content"]);
     assert!(text.contains("只读模式下修改了工作区"), "{text}");
     assert!(text.contains("violation.txt"), "{text}");
 

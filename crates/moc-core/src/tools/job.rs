@@ -42,11 +42,44 @@ pub struct JobManager {
     changed: Notify,
     workers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     shutting_down: AtomicBool,
+    pub(crate) slots: Arc<crate::concurrency::Gate>,
 }
 
 impl JobManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_slots(slots: Arc<crate::concurrency::Gate>) -> Self {
+        Self {
+            slots,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) async fn reserve(
+        &self,
+        config: &crate::config::JobConfig,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<crate::concurrency::Permit, ToolError> {
+        match config.overflow {
+            crate::config::JobOverflow::Error => {
+                self.slots.try_acquire(config.max_running).ok_or_else(|| {
+                    ToolError::new(
+                        "E_JOB_LIMIT",
+                        format!(
+                            "后台进程已达 {} 个；请等待或结束已有 job 后再试",
+                            config.max_running
+                        ),
+                    )
+                })
+            }
+            crate::config::JobOverflow::Wait => self
+                .slots
+                .acquire(config.max_running, cancel)
+                .await
+                .ok_or_else(|| ToolError::new("E_CANCELLED", "等待后台进程空位已取消")),
+        }
     }
 
     pub(crate) fn start(
@@ -56,8 +89,10 @@ impl JobManager {
         command: String,
         log_path: PathBuf,
         process: super::bash::Process,
+        permit: crate::concurrency::Permit,
     ) -> Result<(), ToolError> {
         if self.shutting_down.load(Ordering::Acquire) {
+            process.group.kill()?;
             return Err(ToolError::new(
                 "E_CANCELLED",
                 "会话正在关闭，不能启动后台任务",
@@ -81,7 +116,9 @@ impl JobManager {
         );
         let manager = Arc::clone(self);
         let worker = tokio::spawn(async move {
+            let permit = permit;
             let waited = completion.await;
+            drop(permit);
             let status = {
                 let mut jobs = manager.jobs.lock();
                 let status = if jobs

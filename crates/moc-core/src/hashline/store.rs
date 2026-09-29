@@ -26,7 +26,7 @@ impl SnapshotId {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            return Self {
+            Self {
                 device: metadata.dev(),
                 inode: metadata.ino(),
                 modified_secs: metadata.mtime(),
@@ -35,7 +35,7 @@ impl SnapshotId {
                 changed_nanos: metadata.ctime_nsec(),
                 size: metadata.size(),
                 content_hash: 0,
-            };
+            }
         }
         #[cfg(windows)]
         {
@@ -44,7 +44,7 @@ impl SnapshotId {
             // 稳定版 MetadataExt 不提供 ChangeTime，创建时间补充文件代际信息。
             let modified = metadata.last_write_time();
             let created = metadata.creation_time();
-            return Self {
+            Self {
                 device: u64::from(metadata.volume_serial_number().unwrap_or_default()),
                 inode: metadata.file_index().unwrap_or(created),
                 modified_secs: i64::try_from(modified / 10_000_000).unwrap_or(i64::MAX),
@@ -53,7 +53,7 @@ impl SnapshotId {
                 changed_nanos: i64::try_from((created % 10_000_000) * 100).unwrap_or(i64::MAX),
                 size: metadata.file_size(),
                 content_hash: 0,
-            };
+            }
         }
         #[cfg(all(not(unix), not(windows)))]
         {

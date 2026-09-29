@@ -108,6 +108,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compression"
+version = "0.4.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb61aea1a7def73ee7c350a184f0e70b32c182344e2e75bf70c9b621b83417fd"
+dependencies = [
+ "compression-codecs",
+ "compression-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "atomic"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -398,6 +410,23 @@ dependencies = [
  "ryu",
  "static_assertions",
 ]
+
+[[package]]
+name = "compression-codecs"
+version = "0.4.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef16c47ba2797aa6a909cc37d39911f3a6743811fe7408ac0b0cc0276b656e9"
+dependencies = [
+ "compression-core",
+ "flate2",
+ "memchr",
+]
+
+[[package]]
+name = "compression-core"
+version = "0.4.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e8ccc4ea9f6acc32d102c0f6d471d11d913ad15f20c04de743374861fa1d414"
 
 [[package]]
 name = "convert_case"
@@ -1664,7 +1693,9 @@ dependencies = [
 name = "moc-core"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
+ "async-compression",
  "base64 0.22.1",
  "bytes",
  "futures-core",
@@ -1683,6 +1714,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "rayon",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1773,14 +1805,18 @@ dependencies = [
  "moc-protocol",
  "pulldown-cmark",
  "ratatui",
+ "serde",
  "serde_json",
  "syntect",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "two-face",
  "unicode-width",
+ "wiremock",
 ]
 
 [[package]]

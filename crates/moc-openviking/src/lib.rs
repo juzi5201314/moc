@@ -362,7 +362,7 @@ impl OpenVikingClient {
         session_id: Option<&str>,
         peer: Option<&str>,
     ) -> Result<serde_json::Value, OpenVikingError> {
-        self.send_json(self.http.post(self.endpoint("/api/v1/search/search")).json(&serde_json::json!({"query": query, "mode":"context", "purpose":"coding", "peer_scope":"actor", "max_tokens": self.config.max_context_tokens, "session_id":session_id})), peer).await
+        self.send_json(self.http.post(self.endpoint("/api/v1/search/search")).json(&serde_json::json!({"query": query, "mode":"context", "purpose":"coding", "peer_scope":self.config.peer_scope, "max_tokens": self.config.max_context_tokens, "session_id":session_id})), peer).await
     }
     pub async fn append_messages(
         &self,
@@ -483,6 +483,7 @@ pub enum PeerSource {
     GitRemote,
     GitRoot,
     Workspace,
+    Registered,
 }
 #[derive(Debug, Clone)]
 pub struct WorkspaceIdentity {

@@ -1,4 +1,6 @@
 //! 真实协议连接与固定本地上游下的中断、压缩和计划状态转移。
+#[path = "support/steering.rs"]
+mod steering;
 mod support;
 
 use moc_protocol::{FinishReason, Role, methods::*};
@@ -176,7 +178,7 @@ async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
     let h = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=100\nthreshold_tokens=900000",
+        "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}",
     )
     .await;
     let id = h.session(SessionMode::Normal).await;
@@ -452,7 +454,7 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
                         .iter()
                         .find(|message| message["tool_call_id"] == "background")
                         .unwrap();
-                    let content = result["content"][0]["text"].as_str().unwrap();
+                    let content = support::content::content_text(&result["content"]);
                     let id = content
                         .split("后台任务已启动：")
                         .nth(1)
@@ -615,7 +617,7 @@ async fn remote_compaction_replays_native_items_and_retained_messages_once() {
     let h = Harness::new(
         &upstream.uri(),
         "openai_responses",
-        "[compaction]\nmethod_order=['remote']\nthreshold_tokens=900000",
+        "[compaction]\nmethod_order=['remote']\nthreshold={mode='tokens',value=900000}",
     )
     .await;
     let id = h.session(SessionMode::Normal).await;
@@ -663,7 +665,7 @@ async fn unsupported_server_compaction_is_disabled_for_the_session() {
     let h = Harness::new(
         &upstream.uri(),
         "openai_responses",
-        "[compaction]\nthreshold_tokens=900000",
+        "[compaction]\nthreshold={mode='tokens',value=900000}",
     )
     .await;
     let id = h.session(SessionMode::Normal).await;
@@ -711,11 +713,11 @@ async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
         })
         .mount(&upstream)
         .await;
-    // threshold_tokens=1 使任何 auto=false 之前的配置都会在 step 0 触发自动压缩。
+    // 一 token 阈值确保 auto=false 确实阻止按阈值压缩。
     let h = Harness::new(
         &upstream.uri(),
         "openai_responses",
-        "[compaction]\nmethod_order=['soft']\nthreshold_tokens=1\nauto=false",
+        "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}\nauto=false",
     )
     .await;
     let id = h.session(SessionMode::Normal).await;
@@ -760,7 +762,7 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['shake']\nprotect_recent_tool_tokens=0\nthreshold_tokens=900000\n[compaction.shake]\nkeep_last_turns=0\nsoft_trim_chars=64").await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['shake']\nprotect_recent_tool_tokens=0\nthreshold={mode='tokens',value=900000}\n[compaction.shake]\nkeep_last_turns=0\nsoft_trim_chars=64").await;
     std::fs::write(h.root.path().join("work/large.txt"), "内容".repeat(2500)).unwrap();
     let id = h.session(SessionMode::Normal).await;
     h.prompt(&id, "第一次读取").await;
@@ -869,14 +871,13 @@ async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() 
                 0 => tool_stream(vec![("read_link", "read", json!({"path":"alias.txt"}))]),
                 1 => {
                     let body: Value = serde_json::from_slice(&request.body).unwrap();
-                    let output = body["messages"]
+                    let result = body["messages"]
                         .as_array()
                         .unwrap()
                         .iter()
                         .find(|message| message["tool_call_id"] == "read_link")
-                        .unwrap()["content"][0]["text"]
-                        .as_str()
                         .unwrap();
+                    let output = support::content::content_text(&result["content"]);
                     assert!(output.contains("内容未展示"));
                     let anchor = output
                         .lines()
@@ -938,7 +939,7 @@ async fn disabled_auto_continue_finishes_after_compaction_without_a_stream_reque
     let h = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nthreshold_tokens=1\nauto_continue=false",
+        "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}\nauto_continue=false",
     )
     .await;
     let id = h.session(SessionMode::Normal).await;
@@ -990,7 +991,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
     let h = Harness::new(
         &url,
         "openai_chat",
-        "[compaction]\nmethod_order=['soft']\nthreshold_tokens=1",
+        "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}",
     )
     .await;
     let id = h.session(SessionMode::Normal).await;

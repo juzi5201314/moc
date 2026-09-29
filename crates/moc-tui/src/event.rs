@@ -40,12 +40,14 @@ pub struct TuiOptions {
     pub resume: Option<Option<String>>,
     /// 启动即发送的提示词（`moc "提示词"`）。
     pub initial_prompt: Option<String>,
+    pub hide_thinking: bool,
 }
 
 /// 运行 TUI 直到退出。
 pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     init_logging();
     let theme = Theme::global();
+    let (tui_store, preferences) = crate::config::TuiStore::load(&core.config_home())?;
     let mut guard = TerminalGuard::enter()?;
 
     let (events, mut event_rx) = unbounded_channel::<AppEvent>();
@@ -54,16 +56,24 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         .context("连接内嵌 core 失败")?;
 
     let mut app = App::new(theme, events.clone());
+    app.show_thinking = preferences.show_thinking && !opts.hide_thinking;
+    app.tools_collapsed = !preferences.expand_tools;
+    app.statusline_template = preferences.statusline.clone();
+    app.keymap = crate::config::KeyMap::compile(&preferences)?;
+    app.preferences = preferences;
+    app.tui_store = Some(tui_store);
+    app.startup_mode = opts.mode;
+    app.startup_pending = opts.initial_prompt.clone();
     bootstrap(&connection.client, &mut app, &opts).await;
+    if app.session.is_none() && app.models.is_empty() {
+        crate::settings::open(&mut app, &connection);
+    }
 
-    // `moc "提示词"`：会话就绪后立即发送首轮
-    if let (Some(session), Some(text)) = (
-        app.session.as_ref().map(|s| s.id.clone()),
-        opts.initial_prompt.clone(),
-    ) && !text.trim().is_empty()
+    if app.session.is_some()
+        && let Some(text) = app.startup_pending.take()
     {
-        app.push_user(text.clone());
-        send_turn(&connection.client, session, vec![InputPart::Text { text }]);
+        app.prompt.insert_str_raw(&text);
+        crate::queue::submit(&mut app, &connection, false);
     }
 
     let mut input = InputThread::spawn();
@@ -102,10 +112,14 @@ fn init_logging() {
 
 /// 拉取模型目录并建立/恢复初始会话；失败给出可见错误但继续运行（用户可退出）。
 async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
-    let outcome: anyhow::Result<SessionInfo> = async {
+    let outcome: anyhow::Result<Option<SessionInfo>> = async {
         let config = client.call::<ConfigGet>(ConfigGetParams {}).await?;
         app.models = config.models;
-        app.statusline_template = config.statusline_template;
+        app.startup_cwd = opts.cwd.clone().unwrap_or(config.cwd);
+        if config.default_model.is_none() && opts.model.is_none() {
+            app.set_notice("首次启动：请添加供应商并选择至少一个模型");
+            return Ok(None);
+        }
         let info = match &opts.resume {
             None => {
                 client
@@ -139,15 +153,16 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                     .session
             }
         };
-        Ok(info)
+        Ok(Some(info))
     }
     .await;
     match outcome {
-        Ok(info) => {
+        Ok(Some(info)) => {
             refresh_git_branch(app, &info.cwd);
             app.session = Some(info);
             load_context(client, app).await;
         }
+        Ok(None) => {}
         Err(error) => app.set_notice(format!("会话启动失败：{error}")),
     }
 }
@@ -261,11 +276,17 @@ async fn event_loop(
             } => {
                 dirty = true;
                 match app_event {
+                    Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
+                        | AppEvent::TurnReturned {..} | AppEvent::SteerReturned {..})) => {
+                        crate::interaction::handle_event(app, connection, event);
+                    }
                     Some(AppEvent::Update(params)) => {
+                        if !app.session.as_ref().is_some_and(|session| session.id == params.session_id) { continue; }
                         apply_update_and_refresh(app, connection, params.update);
                         while let Ok(next) = event_rx.try_recv() {
                             match next {
                                 AppEvent::Update(params) => {
+                                    if !app.session.as_ref().is_some_and(|session| session.id == params.session_id) { continue; }
                                     apply_update_and_refresh(app, connection, params.update)
                                 }
                                 other => {
@@ -286,6 +307,7 @@ async fn event_loop(
                         }
                     },
                     Some(AppEvent::Permission { params, reply }) => {
+                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify("有操作等待你的确认"); }
                         app.modal = Some(Modal::Permission {
                             params,
                             selected: 0,
@@ -294,6 +316,7 @@ async fn event_loop(
                         app.focus = crate::app::Focus::Prompt;
                     }
                     Some(AppEvent::Ask { params, reply }) => {
+                        if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify("有问题等待你的回答"); }
                         let per_question = params.questions.len();
                         // 先算推荐选择（借用 params），再整体 move 进模态
                         let highlight = vec![0; per_question];
@@ -380,9 +403,12 @@ async fn event_loop(
                         app.switch_session(info, blocks);
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
+                        if let Some(text)=app.startup_pending.take() { app.prompt.insert_str_raw(&text); crate::queue::submit(app,connection,false); }
+                        crate::queue::dispatch(app,connection);
                     }
                     Some(AppEvent::ModelSwitched) => {
                         app.modal = None;
+                        crate::queue::dispatch(app,connection);
                     }
                     Some(AppEvent::GitBranch(branch)) => {
                         app.git_branch = Some(branch);
@@ -397,6 +423,19 @@ async fn event_loop(
 
 /// 终端事件分派（键盘 / 鼠标 / 粘贴 / resize）。
 fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
+    if app.settings.is_some() && app.modal.is_none() {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                crate::settings::handle_key(app, connection, key.modifiers, key.code)
+            }
+            Event::Mouse(mouse) => crate::settings::mouse(app, connection, mouse),
+            Event::Paste(text) => crate::settings::paste(app, &text),
+            Event::FocusGained => app.terminal_focused = true,
+            Event::FocusLost => app.terminal_focused = false,
+            _ => {}
+        }
+        return;
+    }
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             handle_key(app, connection, key.modifiers, key.code);
@@ -404,6 +443,8 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
         Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
         Event::Paste(text) => app.prompt.insert_text(&text),
         Event::Resize(_, _) => {} // 下一次 draw 自动按新尺寸重算
+        Event::FocusGained => app.terminal_focused = true,
+        Event::FocusLost => app.terminal_focused = false,
         _ => {}
     }
 }
@@ -415,8 +456,36 @@ fn handle_mouse_with_connection(
     mouse: crossterm::event::MouseEvent,
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    if app.queue_area.contains((mouse.column, mouse.row).into()) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                app.queue_offset = app.queue_offset.saturating_sub(1);
+                return;
+            }
+            MouseEventKind::ScrollDown => {
+                app.queue_offset = app.queue_offset.saturating_add(1);
+                return;
+            }
+            _ => {}
+        }
+    }
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         let position = (mouse.column, mouse.row);
+        if let Some((id, _, cancel)) = app
+            .queue_hits
+            .iter()
+            .find(|(_, row, cancel)| {
+                row.contains(position.into()) || cancel.contains(position.into())
+            })
+            .cloned()
+        {
+            if cancel.contains(position.into()) {
+                crate::queue::remove(app, id);
+            } else {
+                crate::queue::edit(app, id);
+            }
+            return;
+        }
         let context = app.context_area;
         if position.0 >= context.x
             && position.0 < context.x.saturating_add(context.width)
@@ -515,6 +584,37 @@ fn handle_key(
     if handle_completion_key(app, modifiers, code) {
         return;
     }
+    let translated = app.keymap.action(modifiers, code);
+    match translated {
+        Some("config") => {
+            crate::settings::open(app, connection);
+            return;
+        }
+        Some("queue") => {
+            crate::queue::submit(app, connection, true);
+            return;
+        }
+        Some("queue_edit") => {
+            if let Some(id) = app
+                .session
+                .as_ref()
+                .and_then(|session| app.queues.get(&session.id))
+                .and_then(|queue| queue.front())
+                .map(|entry| entry.id)
+            {
+                crate::queue::edit(app, id);
+            }
+            return;
+        }
+        _ => {}
+    }
+    let (modifiers, code) = if let Some(key) = app.keymap.translated(modifiers, code) {
+        key
+    } else if app.keymap.reserved(modifiers, code) {
+        return;
+    } else {
+        (modifiers, code)
+    };
     if app.focus == Focus::Scrollback {
         match (code, modifiers) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
@@ -696,13 +796,7 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     if app.prompt.is_empty() {
         return;
     }
-    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("会话仍在连接，请稍候");
-        return;
-    };
-    let parts = app.prompt.build_input_parts();
-    app.push_user(display_text_of(&parts));
-    send_turn(&connection.client, session_id, parts);
+    crate::queue::submit(app, connection, false);
 }
 
 /// ctrl+r / `/resume`：拉取会话列表后打开选择器。
@@ -1160,32 +1254,38 @@ fn handle_modal_key(
                         };
                         let client = connection.client.clone();
                         let plan_id = plan_id.clone();
+                        let events = app.events.clone();
+                        app.inflight_turns.insert(session_id.clone());
                         tokio::spawn(async move {
-                            match client
-                                .call::<SessionPlanApprove>(SessionPlanApproveParams {
-                                    session_id,
-                                    plan_id,
-                                    action,
-                                })
-                                .await
-                            {
-                                Ok(result) => {
-                                    // 批准后 core 可能给自动跟进提示词，直接作为新一轮发送
-                                    if let (Some(session_id), Some(prompt)) =
-                                        (Some(result.session_id), result.auto_prompt)
-                                        && !prompt.trim().is_empty()
-                                    {
-                                        let params = PromptParams {
-                                            session_id,
-                                            input: vec![InputPart::Text { text: prompt }],
-                                        };
-                                        let _ = client
-                                            .call::<moc_protocol::methods::SessionPrompt>(params)
-                                            .await;
-                                    }
+                            let original_session = session_id.clone();
+                            let result: anyhow::Result<()> = async {
+                                let result = client
+                                    .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                                        session_id,
+                                        plan_id,
+                                        action,
+                                    })
+                                    .await?;
+                                // 计划自动跟进与普通发送共享 RPC 收尾事件。
+                                if let (Some(session_id), Some(prompt)) =
+                                    (Some(result.session_id), result.auto_prompt)
+                                    && !prompt.trim().is_empty()
+                                {
+                                    let params = PromptParams {
+                                        session_id,
+                                        input: vec![InputPart::Text { text: prompt }],
+                                    };
+                                    client
+                                        .call::<moc_protocol::methods::SessionPrompt>(params)
+                                        .await?;
                                 }
-                                Err(error) => tracing::warn!(%error, "计划审批失败"),
+                                Ok(())
                             }
+                            .await;
+                            let _ = events.send(AppEvent::TurnReturned {
+                                session: original_session,
+                                result,
+                            });
                         });
                     }
                     close = true;
@@ -1218,6 +1318,7 @@ fn handle_modal_key(
         }
     } else if close {
         app.modal = None;
+        crate::queue::dispatch(app, connection);
     }
 }
 
@@ -1258,6 +1359,12 @@ fn advance_ask(
 }
 
 fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, update: SessionUpdate) {
+    if matches!(&update, SessionUpdate::TurnFinished { .. })
+        && !app.terminal_focused
+        && app.preferences.notify_complete
+    {
+        crate::config::notify("当前轮次已完成");
+    }
     let refresh = matches!(
         &update,
         SessionUpdate::TurnFinished { .. }
@@ -1407,27 +1514,8 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
     }
 }
 
-/// 发送轮次；`session/prompt` 是长请求，完成/失败只影响运行状态标记。
-fn send_turn(client: &ClientHandle, session_id: String, parts: Vec<InputPart>) {
-    let client = client.clone();
-    tokio::spawn(async move {
-        tracing::info!(%session_id, "发送轮次请求");
-        let params = PromptParams {
-            session_id,
-            input: parts,
-        };
-        match client
-            .call::<moc_protocol::methods::SessionPrompt>(params)
-            .await
-        {
-            Ok(result) => tracing::info!(finish = ?result.finish_reason, "轮次完成"),
-            Err(error) => tracing::warn!(%error, "轮次请求失败"),
-        }
-    });
-}
-
 /// 发出取消；core 会终止本轮并给未执行的工具调用补 Cancelled 结果。
-fn cancel_turn(client: &ClientHandle, app: &App) {
+pub(crate) fn cancel_turn(client: &ClientHandle, app: &App) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
@@ -1452,7 +1540,7 @@ fn spawn_clipboard_image(events: UnboundedSender<AppEvent>) {
 }
 
 /// 用户展示文本：图片 chip 显示为占位说明。
-fn display_text_of(parts: &[InputPart]) -> String {
+pub(crate) fn display_text_of(parts: &[InputPart]) -> String {
     parts
         .iter()
         .map(|part| match part {
@@ -1468,6 +1556,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     match name {
+        "/config" => crate::settings::open(app, connection),
         "/new" => {
             let client = connection.client.clone();
             let events = app.events.clone();
@@ -1745,6 +1834,93 @@ mod tests {
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
         App::new(Theme::global(), events)
+    }
+
+    #[tokio::test]
+    async fn closing_modal_resumes_queue_after_turn_finishes() {
+        use moc_core::{Core, CoreConfig};
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "data: {\"id\":\"reply\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"队列已恢复\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            ))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("config.toml"), format!(
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='{}'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+            upstream.uri(),
+        )).unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, mut receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        let id = session.id.clone();
+        app.session = Some(session);
+        app.turn_running = true;
+        app.inflight_turns.insert(id.clone());
+        app.modal = Some(Modal::Help);
+        app.prompt.insert_str_raw("弹窗关闭后继续执行");
+        crate::queue::submit(&mut app, &connection, true);
+        crate::interaction::handle_event(
+            &mut app,
+            &connection,
+            AppEvent::TurnReturned {
+                session: id.clone(),
+                result: Ok(()),
+            },
+        );
+        assert_eq!(app.queues[&id].len(), 1, "弹窗打开期间应保留队列");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let AppEvent::TurnReturned { result, .. } = receiver.recv().await.unwrap() {
+                    result.unwrap();
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("关闭弹窗应派发队列，而不是等待下一次用户输入");
+        let loaded = connection
+            .client
+            .call::<SessionLoad>(SessionLoadParams {
+                session_id: id,
+                max_entries: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(loaded.entries[0].message.text(), "弹窗关闭后继续执行");
+        assert_eq!(loaded.entries[1].message.text(), "队列已恢复");
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     fn app_with_completion() -> App {

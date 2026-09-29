@@ -4,28 +4,28 @@
 
 ## 配置与启动
 
-全局配置为 `$MOC_HOME/config.toml`，默认 `~/.moc/config.toml`。会话还会合并其工作目录中的 `.moc/config.toml`，最后应用按顺序传入的 `--config` 覆盖层。表递归合并，标量与数组整体替换。
+全局配置为 `$MOC_HOME/config.toml`，默认 `~/.moc/config.toml`。启用 `sources.project_config` 时，会话还会合并其工作目录中的 `.moc/config.toml`，最后应用按顺序传入的 `--config` 覆盖层。表递归合并，标量与数组整体替换。供应商和主模型没有产品预设；TUI 首次启动自动引导配置。
 
 下面是配置结构示例，端点、模型和密钥环境变量必须替换为实际供应商设置：
 
 ```toml
 [models.roles]
 default = "provider/model"
-smol = "provider/model"
-slow = "provider/model"
-plan = "provider/model"
+smol = "inherit"
+slow = "inherit"
+plan = "inherit"
 
 [providers.provider]
 api = "openai_chat"
 base_url = "https://your-provider.example"
 api_key = "env:MOC_API_KEY"
 
-[defaults.models."*gpt-5.6-sol"]
+[defaults.models."*-reasoner"]
 context_window = 500000
 max_output_tokens = 128000
 input = ["text", "image"]
 
-[providers.provider.models."gpt-5.6-sol"]
+[providers.provider.models."example-reasoner"]
 reasoning = true
 thinking_levels = ["low", "medium", "high", "xhigh", "max"]
 
@@ -41,7 +41,7 @@ approval_mode = "prompt"
 
 `base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
 
-`[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*gpt-5.6-sol"` 会匹配 `ag/gpt-5.6-sol`。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
+`[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*-reasoner"` 会匹配 `provider/example-reasoner`；以上名称仅演示配置结构，不代表内置模型。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
 支持 `input = ["image"]` 的模型会接收所有图片输入形式。输入文本中的独立 `@path/to/image.png`、`@~/image.png` 标记会由 core 读取本地文件并转成 Base64；不再需要配置 `compat.image_url`。Responses 协议中，模型 ID 末段以 `gpt-` 开头时默认启用远程压缩，可用模型字段 `remote_compaction = false` 关闭。
 
 完整工具、上下文与模型兼容配置见 `src/config/defaults.toml`、`src/config/schema.rs` 和 `src/config/model.rs`。不要把供应商密钥提交到仓库。
@@ -52,9 +52,35 @@ approval_mode = "prompt"
 - `requires_reasoning_content_for_all_assistant_turns = true`：回传所有 assistant 思维链，并为缺失的历史补显式空块；不只针对工具调用。默认 `false`。
 - `requires_reasoning_content_for_tool_calls` 与 `requires_assistant_content_for_tool_calls`：分别补齐工具调用历史中的推理字段和正文；显式空字符串不会被编码器转换成缺失字段。
 
-供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连；`timeout_secs` 限制非流式整请求以及流式首包等待和后续空闲时间。默认分别为 20 秒和 600 秒，长时间思考不应被建连超时中断。
+供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连，默认 20 秒。`timeout_secs` 默认不设置，不限制首包等待或流式空闲；仅用户显式设置时才限制非流式整请求以及流式首包等待和后续空闲。
 
 core 的供应商重试默认是最多 10 次尝试、初始退避 0.5 秒、最长退避 300 秒，并开启抖动。`retry` 表仅覆盖指定字段；连接池会保留客户端注入的选项并按建连超时复用。
+
+### 配置界面与来源
+
+TUI `/config` 支持全局／项目覆盖、搜索、字段说明、重置继承和高级设置。修改使用草稿，保存时做完整 schema 校验、外部变更检测及原子写入。TUI 偏好单独保存到 `tui.toml`，不属于内核配置。模型发现调用所选协议的 `/models` 端点，处理分页并去重；结果默认不勾选，只导入用户选择的模型。发现接口通常不包含完整上下文窗口、输入能力与定价，添加后需核对这些字段。
+
+来源页分别控制项目配置、用户／项目指令文件、MOC／`.agents` Skills 和用户／项目 MCP 配置。Skills 默认启用所有发现项，同名按来源优先级遮蔽，不重复加载，也没有允许名单。已有的 `skills.disable` 用于显式禁用。
+
+### 请求、进程与输出预算
+
+- `providers.<id>.max_concurrency`：同一供应商跨会话共享并发限额，`0` 表示不限；取消等待不会占用名额。模型生成和压缩请求使用同一限额。
+- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 缓存系统前缀及近期历史，OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。
+- `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
+- `tools.output` 统一工具输出的首尾预算（各 20 KiB）和读写文件容量上限（100 MiB），不再借用 Bash 私有字段；工具本身的专项限制仍在各自分组。
+
+### 上下文压缩与解释
+
+`compaction.threshold` 一次只选择一种策略，默认 `{ mode = "percent", value = 85 }`；固定 token 可写为 `{ mode = "tokens", value = 120000 }`。百分比只乘上下文窗口，不扣除模型 `max_output_tokens`。收到请求阶段或流内的上下文溢出错误时，会尝试压缩并继续当前任务；不可恢复错误仍明确返回。
+
+顶部上下文详情展示系统提示、指令文件、Skills、工具定义及历史的预算分解与压缩阈值。指令文件共享 `context_files.max_tokens`，Skills 目录、OpenViking 召回及工具结果分别受各自预算控制；界面是估算，实际 token 以供应商用量为准。内部 shake 算法和模型兼容项归入高级设置，`compat.anthropic_thinking` 已删除。
+
+### 会话保留与工作区记忆
+
+`session.retention` 默认启用：30 天后归档会话，保护全局最新 20 个、每个工作区最新 10 个以及已加载／锁定会话；未引用产物保留 30 天，后台日志保留 14 天。在 `/config` 的会话页按 `G` 预览，再明确确认执行。会话归档为 gzip，仍能列出和恢复；历史、压缩归档及恢复备份引用的产物不会被删除。保留策略与上下文压缩互不替代。
+
+OpenViking 页集中管理服务配置和工作区绑定。按 `W` 查看知识域，`Enter` 将旧路径迁移到新目录并保持同一身份；目录不存在只标记，不自动清理。`Delete` 需要明确确认：共享知识域只解除当前路径绑定，最后一个绑定才删除远程记忆。非 Git 工作区同样支持持久身份，目录改名后应使用迁移操作而不是创建新知识域。
+
 
 
 ```sh
@@ -68,7 +94,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 
 ## 嵌入接口
 
-- `Core::new(CoreConfig)` 加载配置、验证供应商并建立会话目录，返回 `Arc<Core>`。
+- `Core::new(CoreConfig)` 加载配置并建立会话目录，返回 `Arc<Core>`；允许尚未配置模型，以便前端完成首次引导，创建会话时再要求可用主模型。
 - `CoreConfig` 包含 `home`、`cwd`、`overlays`、`session_dir` 与可注入的 `moc_llm::Client`。
 - 将 `Core` 交给 `moc_protocol::Server`，通过协议客户端调用会话和轮次方法。
 - 前端退出时调用 `Core::shutdown().await`，等待取消收尾并回收后台进程。

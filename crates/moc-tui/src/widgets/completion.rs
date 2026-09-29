@@ -10,6 +10,10 @@ pub struct SlashCommand {
 /// 内置斜杠命令表。
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "/config",
+        description: "配置模型、供应商、来源、TUI 与知识域",
+    },
+    SlashCommand {
         name: "/help",
         description: "快捷键与命令帮助",
     },

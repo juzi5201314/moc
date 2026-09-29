@@ -58,6 +58,23 @@ pub trait AgentService: Send + Sync + 'static {
         params: ConfigGetParams,
     ) -> impl Future<Output = Result<ConfigGetResult, RpcError>> + Send;
 
+    /// 可选管理能力；不支持本地配置的嵌入式服务须明确拒绝，而非忽略写入。
+    fn config_manage(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::ConfigAction,
+    ) -> impl Future<Output = Result<crate::ConfigReply, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_steer(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SteerParams,
+    ) -> impl Future<Output = Result<crate::SteerResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     fn openviking_list(
         &self,
         ctx: RequestContext,

@@ -4,8 +4,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MAX_CONTEXT_BYTES: usize = 200 * 1024;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextFile {
     pub path: PathBuf,
@@ -16,7 +14,7 @@ pub struct ContextFile {
 pub fn load_context_files(
     cwd: &Path,
     moc_home: &Path,
-    max_import_depth: usize,
+    config: &crate::config::ContextFilesConfig,
 ) -> Vec<ContextFile> {
     let root = git_root(cwd).unwrap_or_else(|| cwd.to_owned());
     let mut directories = Vec::new();
@@ -30,21 +28,25 @@ pub fn load_context_files(
     directories.reverse();
     let mut files = Vec::new();
     let mut visited = HashSet::new();
-    for directory in directories {
+    if config.project {
+        for directory in directories {
+            push_file(
+                directory.join("AGENTS.md"),
+                config.import_depth,
+                &mut visited,
+                &mut files,
+            );
+        }
+    }
+    if config.user {
         push_file(
-            directory.join("AGENTS.md"),
-            max_import_depth,
+            moc_home.join("AGENTS.md"),
+            config.import_depth,
             &mut visited,
             &mut files,
         );
     }
-    push_file(
-        moc_home.join("AGENTS.md"),
-        max_import_depth,
-        &mut visited,
-        &mut files,
-    );
-    deduplicate_and_bound(files)
+    deduplicate_and_bound(files, config.max_tokens)
 }
 
 pub(crate) fn git_root(cwd: &Path) -> Option<PathBuf> {
@@ -173,34 +175,35 @@ fn resolve_import(source: &Path, import: &str) -> Option<PathBuf> {
     })
 }
 
-fn deduplicate_and_bound(files: Vec<ContextFile>) -> Vec<ContextFile> {
+fn deduplicate_and_bound(files: Vec<ContextFile>, budget: u64) -> Vec<ContextFile> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    let mut bytes = 0usize;
+    let mut remaining = budget;
     let mut omitted = 0usize;
     for mut file in files {
-        if !seen.insert(file.content.as_bytes().to_vec()) {
+        if !seen.insert(file.content.clone()) {
             continue;
         }
-        if bytes + file.content.len() > MAX_CONTEXT_BYTES {
-            let available = MAX_CONTEXT_BYTES.saturating_sub(bytes);
-            if available > 0 {
-                file.content =
-                    String::from_utf8_lossy(&file.content.as_bytes()[..available]).into_owned();
-                bytes += file.content.len();
+        let tokens = crate::compact::estimate_tokens(&file.content);
+        if tokens > remaining {
+            let included =
+                crate::compact::prefix_within_tokens(&file.content, remaining.saturating_sub(24));
+            if !included.is_empty() {
+                file.content = format!("{included}\n[本文件因指令预算截断，请按需读取原文件]");
                 result.push(file);
             }
+            remaining = 0;
             omitted += 1;
-            continue;
+        } else {
+            remaining -= tokens;
+            result.push(file);
         }
-        bytes += file.content.len();
-        result.push(file);
     }
     if omitted > 0
         && let Some(last) = result.last_mut()
     {
         last.content.push_str(&format!(
-            "\n[已省略 {omitted} 个上下文文件，共超过 {MAX_CONTEXT_BYTES} 字节]"
+            "\n[指令预算 {budget} token；{omitted} 个文件未完整注入]"
         ));
     }
     result
@@ -231,7 +234,11 @@ mod tests {
         .expect("本地规则");
         fs::write(root.path().join("ignored.md"), "not imported\n").expect("示例文件");
         fs::write(home.path().join("AGENTS.md"), "global rules\n").expect("全局规则");
-        let files = load_context_files(&root.path().join("sub"), home.path(), 5);
+        let files = load_context_files(
+            &root.path().join("sub"),
+            home.path(),
+            &crate::config::ContextFilesConfig::default(),
+        );
         let prompt = files
             .iter()
             .map(|file| file.content.as_str())
@@ -254,7 +261,11 @@ mod tests {
             "`@missing.md`\n```\n@missing.md\n```\n@absent.md\n",
         )
         .expect("写规则");
-        let files = load_context_files(root.path(), root.path().join("none").as_path(), 5);
+        let files = load_context_files(
+            root.path(),
+            root.path().join("none").as_path(),
+            &crate::config::ContextFilesConfig::default(),
+        );
         assert!(files[0].content.contains("@missing.md"));
         assert!(files[0].content.contains("@absent.md"));
     }

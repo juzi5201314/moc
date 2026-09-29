@@ -16,7 +16,7 @@ use crate::widgets::completion::CompletionState;
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
 pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, prompt_area: Rect) {
     let rows = completion.candidates.len() as u16;
-    let width = prompt_area.width.min(72).max(20);
+    let width = prompt_area.width.clamp(20, 72);
     let height = (rows + 3).min(prompt_area.y);
     if height == 0 {
         return;
@@ -533,6 +533,10 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                             ),
                         ]));
                     }
+                    lines.push(Line::from(""));
+                    lines.extend(usage.notes.iter().map(|note| {
+                        Line::from(Span::styled(note.clone(), Style::new().fg(theme.gray)))
+                    }));
                 }
                 None => lines.push(Line::from(Span::styled(
                     "正在计算上下文…",
@@ -545,36 +549,25 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             )));
             lines
         }
-        Modal::Help => [
-            ("Ctrl+H", "打开快捷键帮助"),
-            ("Ctrl+T", "展开 / 折叠思考"),
-            ("Ctrl+O", "展开 / 折叠工具调用"),
-            ("Ctrl+M", "切换 Normal / Ask / Plan 模式"),
-            ("Shift+Tab", "切换思考预算"),
-            ("Ctrl+V / P / R", "粘贴图片 / 切换模型 / 恢复会话"),
-            ("Ctrl+C / Y", "取消或退出 / 复制选区"),
-            ("Ctrl+A / E", "输入行首 / 行尾"),
-            ("Ctrl+K / U / W", "删除至行尾 / 清空 / 删除前词"),
-            ("Tab", "切换焦点；补全菜单确认候选"),
-            ("Alt+Enter", "输入框内换行"),
-            ("↑ / ↓", "补全候选 / 输入历史 / 多行移动"),
-            ("PageUp/Down", "滚动转写区或列表"),
-            ("Home / End", "转写区跳到最新 / 最旧内容"),
-            ("Esc", "取消选择；再次清空输入"),
-            ("/context", "查看上下文组成与占用比例"),
-            (
-                "/commands",
-                "help new model resume mode compact context quit",
-            ),
-        ]
-        .into_iter()
-        .map(|(key, description)| {
-            Line::from(vec![
-                Span::styled(format!("  {key:<18}"), Style::new().fg(theme.accent_user)),
-                Span::styled(description, Style::new().fg(theme.text_secondary)),
-            ])
-        })
-        .collect(),
+        Modal::Help => crate::config::actions()
+            .iter()
+            .map(|(action, description, _)| {
+                let key = app
+                    .preferences
+                    .keybindings
+                    .get(*action)
+                    .map(|keys| keys.join(" / "))
+                    .unwrap_or_default();
+                Line::from(vec![
+                    Span::styled(format!("  {key:<20}"), Style::new().fg(theme.accent_user)),
+                    Span::styled(
+                        (*description).to_owned(),
+                        Style::new().fg(theme.text_secondary),
+                    ),
+                ])
+            })
+            .chain([Line::from("/config 编辑配置和键位；Esc 关闭帮助")])
+            .collect(),
     };
     lines.truncate(max_lines.max(1));
     lines

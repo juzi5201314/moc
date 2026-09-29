@@ -63,23 +63,31 @@ pub fn discover_index(
         .enumerate()
     {
         let depth = depth as u32;
-        roots.push((
-            100 + depth,
-            dir.join(".moc").join("skills"),
-            format!("项目 .moc/skills（{}）", dir.display()),
-        ));
-        roots.push((
-            200 + depth,
-            dir.join(".agents").join("skills"),
-            format!("项目 .agents/skills（{}）", dir.display()),
-        ));
+        if config.moc_project {
+            roots.push((
+                100 + depth,
+                dir.join(".moc").join("skills"),
+                format!("项目 .moc/skills（{}）", dir.display()),
+            ));
+        }
+        if config.agents_project {
+            roots.push((
+                200 + depth,
+                dir.join(".agents").join("skills"),
+                format!("项目 .agents/skills（{}）", dir.display()),
+            ));
+        }
     }
     for dir in &config.dirs {
         let expanded = crate::config::expand_user_path(dir);
         roots.push((300, expanded, format!("配置 dirs（{dir}）")));
     }
-    roots.push((400, home.join("skills"), "用户 .moc/skills".into()));
-    if let Some(user_home) = user_home {
+    if config.moc_user {
+        roots.push((400, home.join("skills"), "用户 .moc/skills".into()));
+    }
+    if config.agents_user
+        && let Some(user_home) = user_home
+    {
         roots.push((
             500,
             user_home.join(".agents").join("skills"),
@@ -284,6 +292,34 @@ mod tests {
         assert_eq!(index.get("shared").unwrap().description, "moc 版");
         assert_eq!(index.get("user-only").unwrap().description, "用户独有");
         assert_eq!(index.list().count(), 2);
+    }
+
+    #[test]
+    fn disabling_a_source_reveals_the_shadowed_skill_once() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        write_skill(
+            &project.join(".moc/skills"),
+            "shared",
+            "name: shared\ndescription: 项目版",
+            "项目正文",
+        );
+        write_skill(
+            &home.join("skills"),
+            "shared",
+            "name: shared\ndescription: 用户版",
+            "用户正文",
+        );
+        let mut settings = SkillsConfig::default();
+        let project_index = discover_index(&project, &home, None, &settings);
+        assert_eq!(project_index.get("shared").unwrap().description, "项目版");
+        settings.moc_project = false;
+        let user_index = discover_index(&project, &home, None, &settings);
+        assert_eq!(user_index.list().count(), 1);
+        assert_eq!(user_index.get("shared").unwrap().description, "用户版");
     }
 
     #[test]

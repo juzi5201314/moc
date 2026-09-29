@@ -16,7 +16,7 @@ use moc_protocol::{
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
-mod request;
+pub(super) mod request;
 mod stream;
 mod tools;
 mod workspace;
@@ -38,6 +38,7 @@ pub async fn run_turn(
         .await
         .map_err(to_rpc)?;
     let _turn = record.try_turn_lock().map_err(to_rpc)?;
+    let _epoch = inner.config_epoch.read().await;
     let mut file_lock = inner
         .sessions
         .acquire_lock(&params.session_id, &ctx.client().frontend)
@@ -59,8 +60,25 @@ pub async fn run_turn(
     repair_pending_calls(inner, &session_id, &record)
         .await
         .map_err(to_rpc)?;
+    inner
+        .runtime(&session_id)
+        .await
+        .steering
+        .lock()
+        .await
+        .accepting = true;
     let result = run_turn_locked(inner, &ctx, params, Arc::clone(&record)).await;
+    inner
+        .runtime(&session_id)
+        .await
+        .steering
+        .lock()
+        .await
+        .accepting = false;
     repair_pending_calls(inner, &session_id, &record)
+        .await
+        .map_err(to_rpc)?;
+    super::management::drain_steering(inner, &session_id, true)
         .await
         .map_err(to_rpc)?;
     file_lock.take();
@@ -117,7 +135,7 @@ async fn run_turn_locked(
             .await
             .map_err(to_rpc)?
         && let Ok(identity) =
-            moc_openviking::resolve_peer_id(std::path::Path::new(&state_snapshot.session.cwd))
+            inner.workspace_identity(std::path::Path::new(&state_snapshot.session.cwd))
     {
         let ov_session = openviking_session_id(&params.session_id);
         let _ = client.create_session(&ov_session, &identity.peer_id).await;
@@ -225,6 +243,7 @@ async fn run_turn_locked(
     let mut final_reason = FinishReason::Stop;
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
+    let mut stream_overflows = 0usize;
     let system = system_message(&project_config, &model, mode, &cwd, &skills);
 
     'steps: for step in 0..project_config.limits.max_steps_per_turn {
@@ -232,6 +251,9 @@ async fn run_turn_locked(
             final_reason = FinishReason::Cancelled;
             break;
         }
+        super::management::drain_steering(inner, &params.session_id, false)
+            .await
+            .map_err(to_rpc)?;
         let mut snapshot = record.state.lock().await.clone();
         let mut reminder_messages = Vec::new();
         if step == 0 {
@@ -241,9 +263,8 @@ async fn run_turn_locked(
                     .project_openviking(std::path::Path::new(&state_snapshot.session.cwd))
                     .await
                     .map_err(to_rpc)?
-                && let Ok(identity) = moc_openviking::resolve_peer_id(std::path::Path::new(
-                    &state_snapshot.session.cwd,
-                ))
+                && let Ok(identity) =
+                    inner.workspace_identity(std::path::Path::new(&state_snapshot.session.cwd))
             {
                 let key = CoreInner::openviking_failure_key(
                     &project_config.openviking.url,
@@ -284,15 +305,30 @@ async fn run_turn_locked(
                     .project_openviking(std::path::Path::new(&state_snapshot.session.cwd))
                     .await
                     .map_err(to_rpc)?
-                && let Ok(identity) = moc_openviking::resolve_peer_id(std::path::Path::new(
-                    &state_snapshot.session.cwd,
-                ))
-                && let Ok(catalog) = client.list_skills(Some(&identity.peer_id)).await
+                && let Ok(identity) =
+                    inner.workspace_identity(std::path::Path::new(&state_snapshot.session.cwd))
+                && let Ok(mut catalog) = client.list_skills(Some(&identity.peer_id)).await
             {
                 inner.openviking_mark_success(&CoreInner::openviking_failure_key(
                     &project_config.openviking.url,
                     &identity.peer_id,
                 ));
+                let entries = if catalog.get("skills").is_some() {
+                    catalog.get_mut("skills")
+                } else {
+                    Some(&mut catalog)
+                };
+                if let Some(entries) = entries.and_then(Value::as_array_mut) {
+                    let mut seen = std::collections::HashSet::new();
+                    entries.retain(|entry| {
+                        entry
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| {
+                                skills.get(name).is_none() && seen.insert(name.to_owned())
+                            })
+                    });
+                }
                 let rendered = format!(
                     "<openviking-skills>{}</openviking-skills>",
                     catalog.get("skills").cloned().unwrap_or(catalog)
@@ -355,7 +391,7 @@ async fn run_turn_locked(
             &params.session_id,
         );
         let mut overflow_attempts = 0;
-        let mut stream = loop {
+        let (mut stream, request_permit) = loop {
             let mut llm_config = model.llm.clone();
             if project_config.compaction.enabled
                 && project_config.compaction.auto
@@ -368,12 +404,24 @@ async fn run_turn_locked(
                 llm_config.server_compaction_threshold =
                     Some(compact::threshold(&project_config, model.context_window));
             }
+            let mut permit = match inner.provider_permit(&model, &cancel).await {
+                Ok(permit) => Some(permit),
+                Err(crate::CoreError::Cancelled) => {
+                    final_reason = FinishReason::Cancelled;
+                    break 'steps;
+                }
+                Err(error) => return Err(to_rpc(error)),
+            };
             let streamed = tokio::select! {
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'steps; }
                 result = inner.client.stream(&llm_config, &request) => result,
             };
+            // 错误恢复可能再次请求同一 Provider，必须先归还失败请求的许可。
+            if streamed.is_err() {
+                permit.take();
+            }
             match streamed {
-                Ok(stream) => break stream,
+                Ok(stream) => break (stream, permit),
                 Err(error)
                     if llm_config.server_compaction_threshold.is_some()
                         && error.api_error().is_some_and(|api| api.status == Some(400))
@@ -440,7 +488,7 @@ async fn run_turn_locked(
             tokio::select! {
                 _ = cancel.cancelled() => {
                     interrupted = true;
-                    break stream.interrupt();
+                    break Some(stream.interrupt());
                 }
                 event = stream.next_event() => {
                     match event {
@@ -448,15 +496,21 @@ async fn run_turn_locked(
                             if let Err(error) = forward_event(&update, &params.session_id, &turn_id, event, &mut call_ids).await {
                                 interrupted = true;
                                 connection_error = Some(protocol_to_rpc(error));
-                                break stream.interrupt();
+                                break Some(stream.interrupt());
                             }
+                        }
+                        Some(Err(error)) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength)
+                            && project_config.compaction.enabled && stream_overflows < 2 => {
+                            let _ = stream.interrupt();
+                            break None;
                         }
                         Some(Err(error)) => {
                             emit_fatal(&update, &params.session_id, &turn_id, &error.to_string()).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
                         }
                         None => match stream.finish().await {
-                            Ok(response) => break response,
+                            Ok(response) => break Some(response),
+                            Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break None,
                             Err(error) => {
                                 emit_fatal(&update, &params.session_id, &turn_id, &error.to_string()).await?;
                                 return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
@@ -465,6 +519,24 @@ async fn run_turn_locked(
                 }
                 }
             }
+        };
+        drop(request_permit);
+        let Some(response) = response else {
+            stream_overflows += 1;
+            compact::compact(
+                inner,
+                ctx,
+                &params.session_id,
+                compact::CompactReason::Overflow,
+                None,
+            )
+            .await
+            .map_err(to_rpc)?;
+            if !project_config.compaction.auto_continue {
+                final_reason = FinishReason::Length;
+                break 'steps;
+            }
+            continue 'steps;
         };
         usage.input_tokens = usage
             .input_tokens
@@ -523,7 +595,7 @@ async fn run_turn_locked(
         let calls: Vec<_> = response.message.tool_calls().cloned().collect();
         if project_config.openviking.capture
             && let Some(client) = inner.project_openviking(&cwd).await.map_err(to_rpc)?
-            && let Ok(identity) = moc_openviking::resolve_peer_id(&cwd)
+            && let Ok(identity) = inner.workspace_identity(&cwd)
         {
             let ov_session = openviking_session_id(&params.session_id);
             let tool_calls: Vec<_> = calls.iter().map(|call| serde_json::json!({"id": call.id, "name": call.name, "arguments": truncate_memory(&call.arguments)})).collect();
@@ -571,10 +643,18 @@ async fn run_turn_locked(
             } else if final_reason == FinishReason::Length {
                 tracing::warn!(session_id = %params.session_id, "模型连续输出达到长度上限");
             }
+            if !interrupted {
+                let mut steering = runtime.steering.lock().await;
+                if !steering.messages.is_empty() {
+                    continue;
+                }
+                steering.accepting = false;
+            }
             break;
         }
         let openviking = inner.project_openviking(&cwd).await.map_err(to_rpc)?;
-        let openviking_peer = moc_openviking::resolve_peer_id(&cwd)
+        let openviking_peer = inner
+            .workspace_identity(&cwd)
             .ok()
             .map(|identity| identity.peer_id);
         let tool_ctx = ToolCtx {
@@ -619,7 +699,7 @@ async fn run_turn_locked(
 
     if project_config.openviking.capture
         && let Some(client) = inner.project_openviking(&cwd).await.map_err(to_rpc)?
-        && let Ok(identity) = moc_openviking::resolve_peer_id(&cwd)
+        && let Ok(identity) = inner.workspace_identity(&cwd)
     {
         let ov_session = openviking_session_id(&params.session_id);
         let _ = client.commit_session(&ov_session, &identity.peer_id).await;
@@ -694,9 +774,8 @@ fn render_openviking_context(value: &Value, max_tokens: u32) -> Option<String> {
     });
     let mut seen = std::collections::HashSet::new();
     let mut rendered = String::from("<openviking-context>");
-    let budget = usize::try_from(max_tokens)
-        .unwrap_or(usize::MAX)
-        .saturating_mul(4);
+    let budget = u64::from(max_tokens);
+    let mut used = compact::estimate_tokens(&rendered) + 8;
     for (_, entry) in ordered {
         let Some(uri) = entry.get("uri").and_then(Value::as_str) else {
             continue;
@@ -715,14 +794,11 @@ fn render_openviking_context(value: &Value, max_tokens: u32) -> Option<String> {
             escape_xml(uri),
             escape_xml(content)
         );
-        if rendered
-            .len()
-            .saturating_add(memory.len())
-            .saturating_add(19)
-            > budget
-        {
-            break;
+        let tokens = compact::estimate_tokens(&memory);
+        if used.saturating_add(tokens) > budget {
+            continue;
         }
+        used += tokens;
         rendered.push_str(&memory);
     }
     (rendered.len() > "<openviking-context>".len()).then(|| {

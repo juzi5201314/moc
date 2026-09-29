@@ -14,7 +14,7 @@ use super::{EncodedRequest, StreamDecoder, common_headers};
 use crate::config::{
     CacheTtl, LlmConfig, MaxTokensField, ResponseFormatDialect, ToolChoiceDialect,
 };
-use crate::error::LlmError;
+use crate::error::{ApiError, ApiErrorKind, LlmError};
 use crate::types::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, ImageDetail, ImageSource, Message,
     ReasoningBlock, ReasoningConfig, ResponseFormat, Role, StreamEvent, ToolCall, ToolChoice,
@@ -673,6 +673,24 @@ impl StreamDecoder for ChatStreamDecoder {
                 return;
             }
         };
+        if value.get("error").is_some_and(|error| !error.is_null())
+            || value.get("type").and_then(Value::as_str) == Some("error")
+        {
+            self.terminated = true;
+            let (message, code) = openai::parse_error_value(&value).map_or_else(
+                || ("Chat 流返回了错误，但没有提供消息".to_owned(), None),
+                |fields| (fields.message, fields.code),
+            );
+            let mut error = ApiError::new(
+                None,
+                ApiErrorKind::Unknown.refine(code.as_deref(), &message),
+                message,
+                event.data,
+            );
+            error.code = code;
+            out.push(Err(LlmError::Api(error)));
+            return;
+        }
 
         if !self.started {
             self.started = true;

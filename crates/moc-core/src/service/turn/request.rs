@@ -11,7 +11,7 @@ use moc_llm::{
 use moc_protocol::methods::InputPart;
 use serde_json::Value;
 
-pub(super) async fn project_input(
+pub(in crate::service) async fn project_input(
     input: Vec<InputPart>,
     accepts_image: bool,
     cwd: &Path,
@@ -164,10 +164,21 @@ pub(super) fn build_request(
     } else {
         model.echo_reasoning
     };
-    let mut breakpoints = vec![0];
-    if messages.len() > 1 {
-        breakpoints.push(messages.len() - 1);
-    }
+    use crate::config::model::CachePolicy;
+    let anthropic = model.llm.protocol == moc_llm::Protocol::AnthropicMessages;
+    // Anthropic 缓存稳定系统前缀及最后两条历史；OpenAI 默认只发送路由键，
+    // 不把所有兼容端点误判为支持显式断点和 30m 协议。
+    let breakpoints = if anthropic {
+        let mut points = vec![0];
+        for index in messages.len().saturating_sub(2)..messages.len() {
+            if index != 0 {
+                points.push(index);
+            }
+        }
+        points
+    } else {
+        Vec::new()
+    };
     ChatRequest {
         messages,
         native_input,
@@ -188,12 +199,16 @@ pub(super) fn build_request(
         parallel_tool_calls: Some(model.llm.wire.parallel_tool_calls),
         options: RequestOptions {
             echo_reasoning,
-            cache: (model.supports_prompt_cache_key
-                || model.llm.protocol == moc_llm::Protocol::AnthropicMessages)
+            cache: (model.cache != CachePolicy::Off
+                && (model.supports_prompt_cache_key || anthropic))
                 .then(|| CacheConfig {
-                    key: Some(session_id.to_owned()),
+                    key: (!anthropic).then(|| session_id.to_owned()),
                     breakpoints,
-                    ttl: None,
+                    ttl: match (anthropic, model.cache) {
+                        (true, CachePolicy::Long) => Some(moc_llm::CacheTtl::OneHour),
+                        (true, CachePolicy::Short) => Some(moc_llm::CacheTtl::FiveMinutes),
+                        _ => None,
+                    },
                 }),
             ..RequestOptions::default()
         },

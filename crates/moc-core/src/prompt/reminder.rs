@@ -78,7 +78,7 @@ pub fn local_time() -> String {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-Date -Format 'yyyy-MM-dd HH:mm zzz'",
+            "Get-Date -Format 'yyyy-MM-dd HH:mm（本地时区 zzz）'",
         ])
         .output();
     output
@@ -86,12 +86,6 @@ pub fn local_time() -> String {
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .filter(|output| !output.is_empty())
-        .map(|output| {
-            #[cfg(windows)]
-            return format!("{output}（本地时区）");
-            #[cfg(not(windows))]
-            output
-        })
         .unwrap_or_else(|| "时间不可用".into())
 }
 

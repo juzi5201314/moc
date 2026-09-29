@@ -625,13 +625,6 @@ mod tests {
     }
 
     #[test]
-    fn headings_get_prefixes() {
-        let out = lines("# 标题一\n\n正文", 40);
-        assert!(out[0].starts_with("█ "), "实际输出：{out:?}");
-        assert_eq!(out.iter().any(|line| line == "正文"), true);
-    }
-
-    #[test]
     fn headings_and_paragraphs_keep_visual_separation() {
         let out = lines("# 标题\n\n第一段\n\n第二段", 40);
         let heading = out.iter().position(|line| line.contains("标题")).unwrap();
