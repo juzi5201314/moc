@@ -37,7 +37,7 @@ impl KeyboardProtocol {
     pub fn description(self) -> &'static str {
         match self {
             Self::Enhanced => "键盘协议：已启用，Ctrl+M／Ctrl+Enter 等组合键可区分",
-            Self::Legacy => "键盘协议：不可用，Ctrl+M／Ctrl+Enter 会退化成 Enter",
+            Self::Legacy => "键盘协议：不可用，Ctrl+M 等同 Enter，切换模式请按 Alt+M",
         }
     }
 }

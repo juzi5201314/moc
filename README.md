@@ -49,7 +49,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 “界面”页可配置快捷键、思考与工具输出的默认展开状态、完成／需要你回答时的通知。通知只在终端失焦时发送，通过 OSC 9 交给终端呈现；操作系统通知支持取决于终端。鼠标交互自动启用，没有捕获开关。
 
-切换会话模式默认绑定 `Alt+M`，任何终端都能用。`Ctrl+M`、`Ctrl+Enter`、`Shift+Enter` 这类与旧式控制码撞车的组合键需要终端支持渐进键盘协议（kitty keyboard protocol）：moc 启动时查询终端能力，只申请「消歧义」一位（`CSI > 1 u`），协商结果写在 `Ctrl+H` 帮助页脚注。终端不支持该协议时 `Ctrl+M` 会被终端当成 `Enter`（Windows Terminal 1.25 起才支持），此时用 `Alt+M`，键位本身也可以在设置页重绑。
+`Ctrl+Enter`、`Ctrl+M` 这类组合键需要终端支持区分；不支持时 `Ctrl+M` 等同于 `Enter`，切换会话模式请用 `Alt+M`（键位可在设置页重绑）。
 
 ### 快捷键
 
@@ -76,12 +76,9 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 ### 剪贴板
 
-`Ctrl+V` 先取剪贴板里的图片（WSL 走 `powershell.exe` 读 Windows 剪贴板；Wayland 用
-`wl-paste`，X11 用 `xclip`），没有图片时按纯文本粘贴；`y` 复制选区会同时发 OSC52
-并写系统剪贴板。Windows Terminal 默认把 `Ctrl+V` 留给终端自身的粘贴，应用收不到这个
-按键：此时 moc 用终端送来的空括号粘贴（终端发现剪贴板里没有文本可粘）触发同一条读取
-路径，所以不需要改终端配置；若希望纯文本剪贴板也由 moc 处理，可把 `ctrl+v` 改绑到
-`sendInput` 转发 `\u0016`。
+`Ctrl+V` 粘贴剪贴板里的图片，没有图片时粘贴文本；Linux 下图片需要 `wl-paste`
+（Wayland）或 `xclip`（X11），WSL 直接读 Windows 剪贴板，Windows Terminal 里按
+`Ctrl+V` 即可，无需额外配置。`y` 复制拖选内容到终端与系统剪贴板（OSC52）。
 
 ### statusline
 
