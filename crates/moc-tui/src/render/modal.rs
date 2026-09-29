@@ -97,8 +97,9 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
     };
     let lines = modal_lines(app, modal, content_width, max_content);
     let content_height = lines.len().max(1) as u16;
+    // 2 行给上下边框，1 行留作底部内边距：内容顶格，下沿不贴边框也不空一大片。
     let height = content_height
-        .saturating_add(4)
+        .saturating_add(3)
         .min(area.height.saturating_sub(2));
     let modal_area = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -131,8 +132,8 @@ const HELP_KEY_GAP: usize = 2;
 const HELP_COLUMN_GAP: usize = 4;
 /// 快捷键帮助：快捷键行左缩进（格）。
 const HELP_INDENT: usize = 2;
-/// 快捷键帮助：页脚（留白 + 三行说明）占用的行数。
-const HELP_FOOTER_ROWS: usize = 4;
+/// 快捷键帮助：页脚（留白 + Esc 说明）占用的行数。
+const HELP_FOOTER_ROWS: usize = 2;
 
 /// 一列快捷键的（键位列宽，整列宽）。
 type HelpColumn = (usize, usize);
@@ -156,7 +157,7 @@ fn measure_column(rows: &[(String, &'static str)]) -> HelpColumn {
 ///
 /// 键位列按该列最长绑定取齐——键位可配置，固定宽度会让 `shift/alt + enter` 这类
 /// 长组合挤出描述列；返回内容的自然宽度，模态据此收窄到刚好容纳。
-/// 页脚（`/config` 提示与 Esc 说明）左缩进为 0，与快捷键行的 [`HELP_INDENT`] 区分。
+/// 页脚只剩一行 Esc 说明，缩进与快捷键行一致，不再贴住卡片边框。
 fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'static>>, usize) {
     let theme = app.theme;
     let mut rows: Vec<(String, &'static str)> = crate::config::actions()
@@ -208,16 +209,10 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
         })
         .collect();
     lines.push(Line::from(String::new()));
-    for footer in [
-        "/config 编辑配置和键位",
-        "Esc 关闭帮助",
-        app.keyboard_protocol.description(),
-    ] {
-        lines.push(Line::from(Span::styled(
-            footer,
-            Style::new().fg(theme.gray_dim),
-        )));
-    }
+    lines.push(Line::from(vec![
+        Span::styled(" ".repeat(HELP_INDENT), Style::new()),
+        Span::styled("Esc 关闭帮助", Style::new().fg(theme.gray_dim)),
+    ]));
     (lines, width)
 }
 
@@ -371,7 +366,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 Line::from(Span::styled(
                     format!(
                         "当前：{}",
-                        ellipsize(&crate::app::model_selector_label(current), width)
+                        ellipsize(crate::app::model_selector_label(current), width)
                     ),
                     Style::new().fg(theme.gray),
                 )),

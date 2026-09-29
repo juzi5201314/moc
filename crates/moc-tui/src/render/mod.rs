@@ -354,12 +354,10 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
     let mode = app
         .session
         .as_ref()
-        .map(|session| crate::app::mode_label(session.mode))
-        .unwrap_or("未连接")
-        .to_owned();
+        .map_or("idle", |session| crate::app::mode_label(session.mode));
     let right = [
         (model, theme.gray),
-        (" · ".to_owned(), theme.border),
+        (" · ", theme.border),
         (mode, theme.accent_model),
     ];
     let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
@@ -373,7 +371,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         .get("help")
         .and_then(|keys| keys.first())
         .map_or("—", String::as_str);
-    const HELP_TIP: &str = "快捷键帮助";
+    const HELP_TIP: &str = "Help";
     let tips_width = str_width(help_key) + 1 + str_width(HELP_TIP);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
@@ -394,8 +392,8 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
     let mut x = area.x + area.width - 2 - right_cells;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
     for (text, color) in right {
-        buffer.set_string(x, y, &text, Style::new().fg(color));
-        x += cell_width(&text);
+        buffer.set_string(x, y, text, Style::new().fg(color));
+        x += cell_width(text);
     }
     buffer.set_string(x, y, " ", Style::new());
 }
@@ -601,7 +599,7 @@ fn statusline_data(app: &App) -> StatuslineData {
         .session
         .as_ref()
         .map(|session| crate::app::mode_label(session.mode).to_owned())
-        .unwrap_or_else(|| "未连接".into());
+        .unwrap_or_else(|| "idle".into());
     let context_window = app.context_window().filter(|window| *window > 0);
     let context_used = app.context_used();
     let context_percent = context_window.map(|window| context_used as f64 * 100.0 / window as f64);
@@ -617,7 +615,7 @@ fn statusline_data(app: &App) -> StatuslineData {
     };
     let cost = (app.cost_usd > 0.0).then_some(app.cost_usd);
     StatuslineData {
-        model: app.model_display(),
+        model: app.model_display().to_owned(),
         mode,
         context_percent,
         context_used,
@@ -816,11 +814,7 @@ mod tests {
     #[test]
     fn prompt_rows_follow_input_wrapping() {
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            Theme::global(),
-            events,
-            crate::terminal::KeyboardProtocol::Enhanced,
-        );
+        let mut app = App::new(Theme::global(), events);
         assert_eq!(prompt_content_rows(&app, 60), 1, "空输入占一行");
 
         app.prompt.text = "第一行\n第二行\n第三行".into();

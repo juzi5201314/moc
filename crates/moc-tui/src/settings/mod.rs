@@ -919,8 +919,7 @@ impl SettingsPanel {
                 if let Some(models) = value.get("models").and_then(Value::as_object) {
                     for model in models.keys() {
                         let value = format!("{provider}/{model}");
-                        let label = crate::app::model_selector_label(&value);
-                        choices.push(moc_protocol::ChoiceOption::new(&value, &label));
+                        choices.push(moc_protocol::ChoiceOption::new(&value, &value));
                     }
                 }
             }
@@ -928,8 +927,7 @@ impl SettingsPanel {
         if let Some(current) = value.as_str().filter(|current| !current.is_empty())
             && !choices.iter().any(|choice| choice.value == current)
         {
-            let label = crate::app::model_selector_label(current);
-            choices.push(moc_protocol::ChoiceOption::new(current, &label));
+            choices.push(moc_protocol::ChoiceOption::new(current, current));
         }
         FieldKind::Choice(choices)
     }

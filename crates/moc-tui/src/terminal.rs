@@ -23,29 +23,9 @@ use ratatui::backend::CrosstermBackend;
 const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
 
-/// 键盘协议协商结果：决定帮助页的提示，也决定退出时还原什么。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyboardProtocol {
-    /// 终端接受了渐进键盘增强，组合键可区分。
-    Enhanced,
-    /// 终端不支持：Ctrl+M、Ctrl+Enter 等会退化成 Enter。
-    Legacy,
-}
-
-impl KeyboardProtocol {
-    /// 帮助页脚注：让用户知道组合键在当前终端是否真的可用。
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Enhanced => "键盘协议：已启用，Ctrl+M／Ctrl+Enter 等组合键可区分",
-            Self::Legacy => "键盘协议：不可用，Ctrl+M 等同 Enter，切换模式请按 Alt+M",
-        }
-    }
-}
-
 /// 已进入交互模式的终端句柄；drop 时自动恢复。
 pub struct TerminalGuard {
     terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
-    keyboard_protocol: KeyboardProtocol,
     restored: bool,
 }
 
@@ -56,14 +36,8 @@ impl TerminalGuard {
         // 协商必须在输入线程启动前完成：crossterm 写 `CSI ? u` + `CSI c`
         // 并读取应答（终端不回话时最多等 2 秒），期间键入的按键仍留在
         // 事件队列里，不会被吞掉。
-        let keyboard_protocol = match supports_keyboard_enhancement() {
-            Ok(true) => KeyboardProtocol::Enhanced,
-            Ok(false) | Err(_) => KeyboardProtocol::Legacy,
-        };
-        tracing::info!(
-            protocol = ?keyboard_protocol,
-            "键盘协议协商完成"
-        );
+        let enhanced = matches!(supports_keyboard_enhancement(), Ok(true));
+        tracing::info!(enhanced, "键盘协议协商完成");
         let mut stdout = std::io::stdout();
         if let Err(error) = crossterm::execute!(
             stdout,
@@ -94,18 +68,12 @@ impl TerminalGuard {
         };
         Ok(Self {
             terminal,
-            keyboard_protocol,
             restored: false,
         })
     }
 
     pub fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<std::io::Stdout>> {
         &mut self.terminal
-    }
-
-    /// 本次会话的键盘协议协商结果。
-    pub fn keyboard_protocol(&self) -> KeyboardProtocol {
-        self.keyboard_protocol
     }
 
     /// 恢复终端状态；幂等，供 Drop 与显式退出共用。

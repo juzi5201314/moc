@@ -15,7 +15,6 @@ pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10)
 
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
-use crate::terminal::KeyboardProtocol;
 use crate::theme::Theme;
 use crate::transcript::{Block, Entry, ToolCallBlock};
 use crate::widgets::completion::CompletionState;
@@ -41,8 +40,6 @@ impl Focus {
 /// 应用状态。
 pub struct App {
     pub theme: &'static Theme,
-    /// 终端键盘协议协商结果（帮助页提示组合键是否真的可区分）。
-    pub keyboard_protocol: KeyboardProtocol,
     /// UI 事件队列的发送端（供异步任务投递结果，如剪贴板图片）。
     pub events: UnboundedSender<AppEvent>,
     /// 当前会话信息（模型、模式、cwd 都从这里读）。
@@ -148,15 +145,10 @@ pub struct ConfigWrite {
 }
 
 impl App {
-    pub fn new(
-        theme: &'static Theme,
-        events: UnboundedSender<AppEvent>,
-        keyboard_protocol: KeyboardProtocol,
-    ) -> Self {
+    pub fn new(theme: &'static Theme, events: UnboundedSender<AppEvent>) -> Self {
         Self {
             theme,
             events,
-            keyboard_protocol,
             session: None,
             models: Vec::new(),
             blocks: Vec::new(),
@@ -268,12 +260,11 @@ impl App {
         }
     }
 
-    /// 当前模型展示名（含思考等级的友好写法）。
-    pub fn model_display(&self) -> String {
+    /// 当前模型展示名；未连接时显示 `idle`。
+    pub fn model_display(&self) -> &str {
         self.session
             .as_ref()
-            .map(|session| model_selector_label(&session.model))
-            .unwrap_or_else(|| "未连接".into())
+            .map_or("idle", |session| model_selector_label(&session.model))
     }
     /// 找到指定调用 ID 的工具条目。
     pub fn tool_entry_mut(&mut self, tool_call_id: &str) -> Option<&mut Entry> {
@@ -591,34 +582,33 @@ impl App {
     }
 }
 
-/// 会话模式的展示名。
+/// 会话模式的展示名：与模型同处图例，沿用界面原有的英文标识。
 pub fn mode_label(mode: SessionMode) -> &'static str {
     match mode {
-        SessionMode::Normal => "标准",
-        SessionMode::Ask => "问答",
-        SessionMode::Plan => "计划",
+        SessionMode::Normal => "normal",
+        SessionMode::Ask => "ask",
+        SessionMode::Plan => "plan",
     }
 }
 
-/// 思考等级的展示名；未知等级原样显示。
-pub fn thinking_label(level: &str) -> &str {
-    match level {
-        "off" => "关闭",
-        "low" => "低",
-        "medium" => "中",
-        "high" => "高",
-        "xhigh" => "极高",
-        "max" => "最高",
-        other => other,
-    }
+/// 模型展示名：选择串即 `供应商/模型:等级`，思考关闭时省掉 `:off` 后缀。
+pub fn model_selector_label(selector: &str) -> &str {
+    selector.strip_suffix(":off").unwrap_or(selector)
 }
 
-/// 模型选择串的展示：`供应商/模型:等级` → `供应商/模型（思考：低）`。
-pub fn model_selector_label(selector: &str) -> String {
-    match selector.rsplit_once(':') {
-        Some((base, level)) if !base.is_empty() && !level.is_empty() => {
-            format!("{base}（思考：{}）", thinking_label(level))
-        }
-        _ => selector.to_owned(),
+#[cfg(test)]
+mod tests {
+    use super::{mode_label, model_selector_label};
+    use moc_protocol::SessionMode;
+
+    /// 模型与模式在界面上一律用英文标识，且思考关闭时不出现在模型名里。
+    #[test]
+    fn labels_stay_english() {
+        assert_eq!(model_selector_label("test/model:off"), "test/model");
+        assert_eq!(model_selector_label("test/model:high"), "test/model:high");
+        assert_eq!(model_selector_label("test/model"), "test/model");
+        assert_eq!(mode_label(SessionMode::Normal), "normal");
+        assert_eq!(mode_label(SessionMode::Ask), "ask");
+        assert_eq!(mode_label(SessionMode::Plan), "plan");
     }
 }

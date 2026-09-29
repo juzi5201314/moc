@@ -55,7 +55,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         .await
         .context("连接后台服务失败")?;
 
-    let mut app = App::new(theme, events.clone(), guard.keyboard_protocol());
+    let mut app = App::new(theme, events.clone());
     app.show_thinking = preferences.show_thinking && !opts.hide_thinking;
     app.tools_collapsed = !preferences.expand_tools;
     app.statusline_template = preferences.statusline.clone();
@@ -1748,10 +1748,7 @@ fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnection) {
             .await
         {
             Ok(_) => {
-                let _ = events.send(AppEvent::Notice(format!(
-                    "思考等级：{}",
-                    crate::app::thinking_label(&next)
-                )));
+                let _ = events.send(AppEvent::Notice(format!("思考等级：{next}")));
             }
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换思考等级失败：{error}")));
@@ -1861,13 +1858,12 @@ fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::KeyboardProtocol;
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use tokio::sync::mpsc::unbounded_channel;
 
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
-        App::new(Theme::global(), events, KeyboardProtocol::Enhanced)
+        App::new(Theme::global(), events)
     }
 
     #[tokio::test]
@@ -1905,7 +1901,7 @@ mod tests {
         let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
             .await
             .unwrap();
-        let mut app = App::new(Theme::global(), events, KeyboardProtocol::Enhanced);
+        let mut app = App::new(Theme::global(), events);
         let session = connection
             .client
             .call::<SessionNew>(SessionNewParams {
