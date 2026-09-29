@@ -816,7 +816,11 @@ mod tests {
     #[test]
     fn prompt_rows_follow_input_wrapping() {
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(Theme::global(), events);
+        let mut app = App::new(
+            Theme::global(),
+            events,
+            crate::terminal::KeyboardProtocol::Enhanced,
+        );
         assert_eq!(prompt_content_rows(&app, 60), 1, "空输入占一行");
 
         app.prompt.text = "第一行\n第二行\n第三行".into();

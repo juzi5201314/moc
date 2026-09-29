@@ -55,7 +55,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         .await
         .context("连接后台服务失败")?;
 
-    let mut app = App::new(theme, events.clone());
+    let mut app = App::new(theme, events.clone(), guard.keyboard_protocol());
     app.show_thinking = preferences.show_thinking && !opts.hide_thinking;
     app.tools_collapsed = !preferences.expand_tools;
     app.statusline_template = preferences.statusline.clone();
@@ -1837,12 +1837,13 @@ fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::KeyboardProtocol;
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     use tokio::sync::mpsc::unbounded_channel;
 
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
-        App::new(Theme::global(), events)
+        App::new(Theme::global(), events, KeyboardProtocol::Enhanced)
     }
 
     #[tokio::test]
@@ -1880,7 +1881,7 @@ mod tests {
         let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
             .await
             .unwrap();
-        let mut app = App::new(Theme::global(), events);
+        let mut app = App::new(Theme::global(), events, KeyboardProtocol::Enhanced);
         let session = connection
             .client
             .call::<SessionNew>(SessionNewParams {

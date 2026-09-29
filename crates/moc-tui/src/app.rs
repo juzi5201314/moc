@@ -15,6 +15,7 @@ pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10)
 
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
+use crate::terminal::KeyboardProtocol;
 use crate::theme::Theme;
 use crate::transcript::{Block, Entry, ToolCallBlock};
 use crate::widgets::completion::CompletionState;
@@ -40,6 +41,8 @@ impl Focus {
 /// 应用状态。
 pub struct App {
     pub theme: &'static Theme,
+    /// 终端键盘协议协商结果（帮助页提示组合键是否真的可区分）。
+    pub keyboard_protocol: KeyboardProtocol,
     /// UI 事件队列的发送端（供异步任务投递结果，如剪贴板图片）。
     pub events: UnboundedSender<AppEvent>,
     /// 当前会话信息（模型、模式、cwd 都从这里读）。
@@ -145,10 +148,15 @@ pub struct ConfigWrite {
 }
 
 impl App {
-    pub fn new(theme: &'static Theme, events: UnboundedSender<AppEvent>) -> Self {
+    pub fn new(
+        theme: &'static Theme,
+        events: UnboundedSender<AppEvent>,
+        keyboard_protocol: KeyboardProtocol,
+    ) -> Self {
         Self {
             theme,
             events,
+            keyboard_protocol,
             session: None,
             models: Vec::new(),
             blocks: Vec::new(),

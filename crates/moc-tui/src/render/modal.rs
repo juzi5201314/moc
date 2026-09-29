@@ -131,8 +131,8 @@ const HELP_KEY_GAP: usize = 2;
 const HELP_COLUMN_GAP: usize = 4;
 /// 快捷键帮助：快捷键行左缩进（格）。
 const HELP_INDENT: usize = 2;
-/// 快捷键帮助：页脚（留白 + 两行说明）占用的行数。
-const HELP_FOOTER_ROWS: usize = 3;
+/// 快捷键帮助：页脚（留白 + 三行说明）占用的行数。
+const HELP_FOOTER_ROWS: usize = 4;
 
 /// 一列快捷键的（键位列宽，整列宽）。
 type HelpColumn = (usize, usize);
@@ -208,7 +208,11 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
         })
         .collect();
     lines.push(Line::from(String::new()));
-    for footer in ["/config 编辑配置和键位", "Esc 关闭帮助"] {
+    for footer in [
+        "/config 编辑配置和键位",
+        "Esc 关闭帮助",
+        app.keyboard_protocol.description(),
+    ] {
         lines.push(Line::from(Span::styled(
             footer,
             Style::new().fg(theme.gray_dim),
