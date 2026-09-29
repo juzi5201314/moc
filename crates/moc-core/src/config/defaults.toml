@@ -1,23 +1,29 @@
 # moc-core 默认配置。用户配置按表递归覆盖，数组与标量整体替换。
 
 [models.roles]
-default = "ds/deepseek-v4.1-flash:max"
-smol = "ds/deepseek-v4.1-flash:low"
-slow = "cpa-cx/gpt-6-luna:max"
-plan = "cpa-cx/ag/gpt-5.6-sol:xhigh"
+default = ""
+smol = "inherit"
+slow = "inherit"
+plan = "inherit"
 
 [providers]
+
+[sources]
+project_config = true
 
 [tools]
 approval_mode = "yolo"
 
 [tools.approval]
 
+[tools.output]
+head_bytes = 20480
+tail_bytes = 20480
+max_file_bytes = 104857600
+
 [tools.bash]
 default_timeout_secs = 120
 max_timeout_secs = 3600
-output_head_bytes = 20480
-output_tail_bytes = 20480
 auto_background_ms = 0
 deny_patterns = [
     "(?i)rm\\s+-rf\\s+/(\\s|$)",
@@ -33,7 +39,6 @@ deny_patterns = [
 default_limit = 300
 max_bytes = 51200
 line_max_bytes = 204800
-max_file_bytes = 104857600
 
 [tools.edit]
 max_edits = 32
@@ -62,13 +67,13 @@ enabled = true
 
 [tools.job]
 enabled = true
+max_running = 4
+overflow = "error"
 
 [compaction]
 enabled = true
 method_order = ["remote", "shake", "soft"]
-reserve_tokens = 0
-threshold_percent = 85
-threshold_tokens = -1
+threshold = { mode = "percent", value = 85 }
 keep_recent_tokens = 20000
 protect_recent_tool_tokens = 20000
 mid_turn = true
@@ -95,6 +100,9 @@ append = ""
 
 [context_files]
 enabled = true
+user = true
+project = true
+max_tokens = 16000
 import_depth = 5
 
 [workspace]
@@ -113,10 +121,23 @@ max_context_tokens = 1600
 
 [session]
 dir = "~/.moc/sessions"
-locking = true
+
+[session.retention]
+enabled = true
+archive_after_days = 30
+retain_newest_global = 20
+retain_newest_per_workspace = 10
+artifacts_days = 30
+logs_days = 14
+
+[limits]
+max_steps_per_turn = 128
+max_length_continues = 2
 
 [mcp]
 enabled = true
+user_config = true
+project_config = true
 connect_timeout_secs = 15
 call_timeout_secs = 120
 max_output_chars = 40960
@@ -125,6 +146,10 @@ max_output_chars = 40960
 
 [skills]
 enabled = true
+moc_user = true
+moc_project = true
+agents_user = true
+agents_project = true
 dirs = []
 disable = []
 catalog_char_budget = 24576
