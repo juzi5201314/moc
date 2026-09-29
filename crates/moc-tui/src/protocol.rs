@@ -50,8 +50,8 @@ pub enum AppEvent {
         params: AskParams,
         reply: tokio::sync::oneshot::Sender<Result<AskResult, RpcError>>,
     },
-    /// 剪贴板图片读取结果（ctrl+v；`None` = 无图片或读取失败）。
-    ClipboardImage(Option<(String, Vec<u8>)>),
+    /// 剪贴板粘贴结果（ctrl+v）：图片优先，其次纯文本；`None` = 空或读取失败。
+    ClipboardPaste(Option<ClipboardPayload>),
     /// OpenViking 记忆目录列表。
     Memories(Vec<moc_protocol::methods::OpenVikingEntry>),
     /// OpenViking 正文读取完成。
@@ -72,6 +72,12 @@ pub enum AppEvent {
     Notice(String),
     /// git 分支就绪（statusline 异步刷新）。
     GitBranch(String),
+}
+
+/// 剪贴板粘贴载荷：图片以 base64 承载，文本内联。
+pub enum ClipboardPayload {
+    Image { media_type: String, data: String },
+    Text(String),
 }
 
 /// 一条内嵌连接。

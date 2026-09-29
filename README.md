@@ -69,7 +69,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Ctrl+T` | 全局展开 / 收起思考内容 |
 | `Ctrl+H` | 快捷键帮助（键位可配置，重绑后表内同步） |
 | `Ctrl+O` | 全局展开 / 收起工具调用 |
-| `Ctrl+V` | 粘贴剪贴板图片（wl-paste / xclip） |
+| `Ctrl+V` | 粘贴剪贴板图片或文本（图片优先） |
 | `Ctrl+P` | 模型选择菜单 |
 | `Ctrl+R` | 会话恢复菜单 |
 | `Ctrl+G` | 打开配置 |
@@ -79,6 +79,15 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Ctrl+C` | 轮次运行中取消；空闲时双击退出 |
 
 斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/compact` `/config` `/quit`。
+
+### 剪贴板
+
+`Ctrl+V` 先取剪贴板里的图片（WSL 走 `powershell.exe` 读 Windows 剪贴板；Wayland 用
+`wl-paste`，X11 用 `xclip`），没有图片时按纯文本粘贴；`y` 复制选区会同时发 OSC52
+并写系统剪贴板。Windows Terminal 默认把 `Ctrl+V` 留给终端自身的粘贴，应用收不到这个
+按键：此时 moc 用终端送来的空括号粘贴（终端发现剪贴板里没有文本可粘）触发同一条读取
+路径，所以不需要改终端配置；若希望纯文本剪贴板也由 moc 处理，可把 `ctrl+v` 改绑到
+`sendInput` 转发 `\u0016`。
 
 ### statusline
 

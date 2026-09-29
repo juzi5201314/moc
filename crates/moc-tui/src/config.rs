@@ -60,7 +60,7 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
         ("help", "帮助", &["ctrl+h"]),
         ("thinking", "展开／折叠思考", &["ctrl+t"]),
         ("tools", "展开／折叠工具输出", &["ctrl+o"]),
-        ("paste_image", "粘贴图片", &["ctrl+v"]),
+        ("paste_image", "粘贴图片或文本", &["ctrl+v"]),
         ("model", "选择模型", &["ctrl+p"]),
         ("resume", "恢复会话", &["ctrl+r"]),
         ("mode", "切换会话模式", &["ctrl+m"]),

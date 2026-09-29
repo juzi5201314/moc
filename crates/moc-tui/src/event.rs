@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::app::{App, Focus};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::Modal;
-use crate::protocol::{AppEvent, EmbeddedConnection, connect_embedded};
+use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
 use crate::render;
 use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
@@ -296,14 +296,14 @@ async fn event_loop(
                             }
                         }
                     }
-                    Some(AppEvent::ClipboardImage(image)) => match image {
-                        Some((media_type, bytes)) => {
-                            let encoded = crate::clipboard::base64_encode(&bytes);
-                            app.prompt.insert_image(media_type, encoded);
+                    Some(AppEvent::ClipboardPaste(payload)) => match payload {
+                        Some(ClipboardPayload::Image { media_type, data }) => {
+                            app.prompt.insert_image(media_type, data);
                             app.set_notice("已附加剪贴板图片");
                         }
+                        Some(ClipboardPayload::Text(text)) => app.prompt.insert_text(&text),
                         None => {
-                            app.set_notice("剪贴板中没有图片");
+                            app.set_notice("剪贴板中没有可粘贴的图片或文本");
                         }
                     },
                     Some(AppEvent::Permission { params, reply }) => {
@@ -441,6 +441,9 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
             handle_key(app, connection, key.modifiers, key.code);
         }
         Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
+        // 终端在没有文本可粘时会送一个空括号粘贴（Windows Terminal、GNOME
+        // Terminal 等）；剪贴板里通常是图片，转为读取系统剪贴板。
+        Event::Paste(text) if text.is_empty() => spawn_clipboard_paste(app.events.clone()),
         Event::Paste(text) => app.prompt.insert_text(&text),
         Event::Resize(_, _) => {} // 下一次 draw 自动按新尺寸重算
         Event::FocusGained => app.terminal_focused = true,
@@ -678,7 +681,7 @@ fn handle_key(
                 "工具调用：展开"
             });
         }
-        (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_image(app.events.clone()),
+        (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
         (KeyCode::Char('m'), KeyModifiers::CONTROL) => cycle_mode(app, connection),
@@ -1536,13 +1539,22 @@ pub(crate) fn cancel_turn(client: &ClientHandle, app: &App) {
     });
 }
 
-/// ctrl+v：异步读剪贴板图片，完成后经事件队列回主循环。
-fn spawn_clipboard_image(events: UnboundedSender<AppEvent>) {
+/// ctrl+v：异步读剪贴板（图片优先，其次文本），完成后经事件队列回主循环。
+/// 两条通道并行探测，图片命中时不留文本读取的等待。
+fn spawn_clipboard_paste(events: UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
-        let image = crate::clipboard::read_clipboard_image()
-            .await
-            .map(|image| (image.media_type, image.bytes));
-        let _ = events.send(AppEvent::ClipboardImage(image));
+        let (image, text) = tokio::join!(
+            crate::clipboard::read_clipboard_image(),
+            crate::clipboard::read_clipboard_text()
+        );
+        let payload = match image {
+            Some(image) => Some(ClipboardPayload::Image {
+                media_type: image.media_type,
+                data: crate::clipboard::base64_encode(&image.bytes),
+            }),
+            None => text.map(ClipboardPayload::Text),
+        };
+        let _ = events.send(AppEvent::ClipboardPaste(payload));
     });
 }
 
@@ -1803,18 +1815,30 @@ fn copy_selection(app: &mut App) {
         }
         text.push('\n');
     }
-    if text.is_empty() {
+    let body = text.trim_end().to_owned();
+    if body.is_empty() {
         return;
     }
-    let text_for_clipboard = text.clone();
+    write_osc52(&body);
     tokio::spawn(async move {
-        match crate::clipboard::copy_text_to_clipboard(text_for_clipboard.trim_end()).await {
+        match crate::clipboard::copy_text_to_clipboard(&body).await {
             Ok(()) => tracing::debug!("选区已复制"),
             Err(error) => tracing::debug!(%error, "复制选区失败"),
         }
     });
     app.selection = None;
     app.set_notice("已复制选中内容");
+}
+
+/// 通过 OSC52 把文本交给终端自身的剪贴板；与绘制同线程写出，不会与帧交错。
+fn write_osc52(text: &str) {
+    use std::io::{IsTerminal, Write};
+    let mut stdout = std::io::stdout();
+    if !stdout.is_terminal() {
+        return;
+    }
+    let _ = stdout.write_all(crate::clipboard::osc52_sequence(text).as_bytes());
+    let _ = stdout.flush();
 }
 
 fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
