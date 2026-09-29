@@ -53,7 +53,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     let (events, mut event_rx) = unbounded_channel::<AppEvent>();
     let connection = connect_embedded(Arc::clone(&core), events.clone())
         .await
-        .context("连接内嵌 core 失败")?;
+        .context("连接后台服务失败")?;
 
     let mut app = App::new(theme, events.clone());
     app.show_thinking = preferences.show_thinking && !opts.hide_thinking;
@@ -303,7 +303,7 @@ async fn event_loop(
                             app.set_notice("已附加剪贴板图片");
                         }
                         None => {
-                            app.set_notice("剪贴板中没有图片（需要 wl-paste 或 xclip）");
+                            app.set_notice("剪贴板中没有图片");
                         }
                     },
                     Some(AppEvent::Permission { params, reply }) => {
@@ -359,12 +359,12 @@ async fn event_loop(
                             app.modal = Some(Modal::MemoryEditor { uri: document.uri, editor, dirty: false, root_uri, entries, picker });
                         }
                     }
-                    Some(AppEvent::MemorySaved(uri)) => {
+                    Some(AppEvent::MemorySaved(_)) => {
                         let root = match app.modal.take() {
                             Some(Modal::MemoryEditor { root_uri, .. }) => root_uri,
                             other => { app.modal = other; String::new() }
                         };
-                        if root.is_empty() { app.set_notice(format!("已保存 OpenViking 记忆：{uri}")); }
+                        if root.is_empty() { app.set_notice("记忆已保存"); }
                         else {
                             app.modal = Some(Modal::Memories { root_uri: root.clone(), entries: Vec::new(), picker: crate::modal::PickerState { loading: true, ..Default::default() } });
                             let client = connection.client.clone();
@@ -372,7 +372,7 @@ async fn event_loop(
                             tokio::spawn(async move {
                                 match client.call::<OpenVikingList>(OpenVikingListParams { uri: root, recursive: false, limit: 128 }).await {
                                     Ok(result) => { let _ = events.send(AppEvent::Memories(result.entries)); }
-                                    Err(error) => { let _ = events.send(AppEvent::PickerError(format!("刷新 OpenViking 记忆失败：{error}"))); }
+                                    Err(error) => { let _ = events.send(AppEvent::PickerError(format!("刷新记忆列表失败：{error}"))); }
                                 }
                             });
                         }
@@ -651,7 +651,7 @@ fn handle_key(
                     app.should_quit = true;
                 } else {
                     app.cancel_pending = true;
-                    app.set_notice("轮次取消中；再按一次 Ctrl+C 退出");
+                    app.set_notice("正在停止；再按一次 Ctrl+C 退出");
                     cancel_turn(&connection.client, app);
                 }
             } else if app.cancel_pending {
@@ -879,7 +879,7 @@ fn handle_modal_key(
                         )));
                     }
                     close = true;
-                    app.set_notice("授权已搁置（按拒绝处理）");
+                    app.set_notice("未授权，已按拒绝处理");
                 }
                 _ => {}
             }
@@ -1144,9 +1144,8 @@ fn handle_modal_key(
                             let _ = events.send(AppEvent::MemorySaved(uri));
                         }
                         Err(error) => {
-                            let _ = events.send(AppEvent::PickerError(format!(
-                                "保存 OpenViking 记忆失败：{error}"
-                            )));
+                            let _ = events
+                                .send(AppEvent::PickerError(format!("保存记忆失败：{error}")));
                         }
                     }
                 });
@@ -1480,22 +1479,24 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             });
         }
         SessionUpdate::ContextCompacted {
-            method,
             tokens_before,
             tokens_after,
+            ..
         } => {
             app.push_note(
-                format!("上下文已压缩（{method}）：{tokens_before} → {tokens_after}"),
+                format!(
+                    "上下文已压缩：{} → {}",
+                    crate::render::short_number(tokens_before),
+                    crate::render::short_number(tokens_after)
+                ),
                 false,
             );
         }
         SessionUpdate::JobFinished {
             command, exit_code, ..
         } => {
-            app.push_note(
-                format!("后台任务结束：{command}（exit {exit_code:?}）"),
-                false,
-            );
+            let code = exit_code.map_or_else(String::new, |code| format!("（退出码 {code}）"));
+            app.push_note(format!("后台任务结束：{command}{code}"), false);
         }
         SessionUpdate::WorkspaceChanged { .. } => {
             if let Some(session) = app.session.as_ref() {
@@ -1509,7 +1510,13 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::Error {
             message, retryable, ..
         } => {
-            app.push_note(format!("错误：{message}（可重试：{retryable}）"), true);
+            app.push_note(
+                format!(
+                    "错误：{message}{}",
+                    if retryable { "（可以重试）" } else { "" }
+                ),
+                true,
+            );
         }
     }
 }
@@ -1619,9 +1626,8 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                         let _ = events.send(AppEvent::Memories(result.entries));
                     }
                     Err(error) => {
-                        let _ = events.send(AppEvent::PickerError(format!(
-                            "读取 OpenViking 记忆失败：{error}"
-                        )));
+                        let _ =
+                            events.send(AppEvent::PickerError(format!("读取记忆失败：{error}")));
                     }
                 }
             });
@@ -1730,7 +1736,10 @@ fn cycle_thinking_level(app: &mut App, connection: &EmbeddedConnection) {
             .await
         {
             Ok(_) => {
-                let _ = events.send(AppEvent::Notice(format!("思考等级：{next}")));
+                let _ = events.send(AppEvent::Notice(format!(
+                    "思考等级：{}",
+                    crate::app::thinking_label(&next)
+                )));
             }
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换思考等级失败：{error}")));

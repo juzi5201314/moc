@@ -124,6 +124,7 @@ async fn anthropic_discovery_uses_auth_and_follows_opaque_ids() {
             }else{ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"a.1"}],"last_id":"a.1","has_more":true}))}
         }).expect(2).mount(&server).await;
     let models = discovery::models(
+        "demo",
         json!({"api":"anthropic_messages","base_url":server.uri(),"api_key":"test-key"}),
     )
     .await

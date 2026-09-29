@@ -112,12 +112,12 @@ pub(super) async fn manage(
                 Path::new(&cwd),
             )?))
         }
-        ConfigAction::Models { mut provider } => {
+        ConfigAction::Models { id, mut provider } => {
             editor::remove_nulls(&mut provider);
             let cancel = ctx.cancel();
             tokio::select! {
                 _ = cancel.cancelled() => Err(CoreError::Cancelled),
-                models = discovery::models(provider) => models.map(ConfigReply::Models),
+                models = discovery::models(&id, provider) => models.map(ConfigReply::Models),
             }
         }
         ConfigAction::Maintenance { apply } => {

@@ -1,5 +1,16 @@
 use super::*;
 
+pub(super) fn hint_for(kind: &FieldKind) -> &'static str {
+    match kind {
+        FieldKind::Choice(_) => "↑↓ 选择 · Enter 应用 · Esc 取消",
+        FieldKind::Strings => "每行一项 · Ctrl+Enter 应用 · Esc 取消",
+        FieldKind::Object => "JSON 格式 · Ctrl+Enter 应用 · Esc 取消",
+        FieldKind::Multiline => "Ctrl+Enter 应用 · Esc 取消",
+        FieldKind::Secret => "F6 显示或隐藏 · Enter 应用 · Esc 取消",
+        _ => "Enter 应用 · Esc 取消",
+    }
+}
+
 pub(super) fn format_value(value: &Value, kind: &FieldKind) -> String {
     if value.is_null() {
         return String::new();
@@ -22,6 +33,17 @@ pub(super) fn format_value(value: &Value, kind: &FieldKind) -> String {
             .unwrap_or_else(|| value.to_string()),
     }
 }
+
+/// 编辑框里的初始文本：候选值显示标签，其余按原值。
+pub(super) fn edit_text(value: &Value, kind: &FieldKind) -> String {
+    if let (FieldKind::Choice(options), Some(current)) = (kind, value.as_str())
+        && let Some(option) = options.iter().find(|option| option.value == current)
+    {
+        return option.label.clone();
+    }
+    format_value(value, kind)
+}
+
 fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -54,11 +76,12 @@ fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
             value
         }
         FieldKind::Choice(options) => {
-            anyhow::ensure!(
-                options.iter().any(|option| option == trimmed),
-                "请从列出的可用选项中选择"
-            );
-            json!(trimmed)
+            let chosen = options
+                .iter()
+                .find(|option| option.value == trimmed || option.label == trimmed)
+                .map(|option| option.value.as_str());
+            let value = chosen.ok_or_else(|| anyhow::anyhow!("请从列出的候选值中选择"))?;
+            json!(value)
         }
         _ => json!(text),
     })
@@ -71,425 +94,455 @@ pub(super) fn key(
     mods: KeyModifiers,
     code: KeyCode,
 ) -> bool {
-    let view = std::mem::replace(&mut panel.view, View::Fields);
-    match view {
-        View::Edit {
-            target,
-            kind,
-            mut input,
-            mut reveal,
-        } => {
-            if code == KeyCode::Esc {
-                return false;
+    if panel.edit.is_some() {
+        return edit_key(panel, app, connection, mods, code);
+    }
+    match &panel.view {
+        View::Fields => fields_key(panel, app, connection, mods, code),
+        View::Confirm { .. } => confirm_key(panel, app, connection, code),
+        View::Models { .. } => models_key(panel, app, connection, code),
+        View::Workspaces { .. } => workspaces_key(panel, code),
+        View::Maintenance(_) => maintenance_key(panel, code),
+    }
+}
+
+/// 编辑态按键：Enter 保存、Esc 取消，候选值用 ↑↓ 切换。
+fn edit_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mods: KeyModifiers,
+    code: KeyCode,
+) -> bool {
+    let Some(mut edit) = panel.edit.take() else {
+        return false;
+    };
+    if code == KeyCode::Esc {
+        return false;
+    }
+    if code == KeyCode::F(6) {
+        edit.reveal = !edit.reveal;
+        panel.edit = Some(edit);
+        return false;
+    }
+    let multiline = matches!(
+        edit.kind,
+        FieldKind::Multiline | FieldKind::Strings | FieldKind::Object
+    );
+    let submit = code == KeyCode::Enter && (mods.contains(KeyModifiers::CONTROL) || !multiline);
+    if submit {
+        match apply_edit(
+            panel,
+            app,
+            connection,
+            &edit.target,
+            &edit.kind,
+            &edit.input.text,
+            &edit.title,
+        ) {
+            Ok(()) => panel.error = None,
+            Err(error) => {
+                panel.error = Some(error.to_string());
+                panel.edit = Some(edit);
             }
-            if code == KeyCode::F(6) {
-                reveal = !reveal;
-            }
-            let multiline = matches!(
-                kind,
-                FieldKind::Multiline | FieldKind::Strings | FieldKind::Object
-            );
-            let submit =
-                code == KeyCode::Enter && (mods.contains(KeyModifiers::CONTROL) || !multiline);
-            if submit {
-                let result =
-                    apply_edit(panel, &target, &kind, &input.text, connection, &app.events);
-                match result {
-                    Ok(()) => {
-                        panel.error = None;
-                        return false;
-                    }
-                    Err(error) => panel.error = Some(error.to_string()),
-                }
+        }
+        return false;
+    }
+    match (&edit.kind, code) {
+        (FieldKind::Choice(options), KeyCode::Up | KeyCode::Down) if !options.is_empty() => {
+            let current = options
+                .iter()
+                .position(|option| option.label == edit.input.text)
+                .unwrap_or(0);
+            let next = if code == KeyCode::Up {
+                current.checked_sub(1).unwrap_or(options.len() - 1)
             } else {
-                match (&kind, code) {
-                    (FieldKind::Choice(options), KeyCode::Up | KeyCode::Down)
-                        if !options.is_empty() =>
-                    {
-                        let current = options
-                            .iter()
-                            .position(|option| option == &input.text)
-                            .unwrap_or(0);
-                        let next = if code == KeyCode::Up {
-                            current.checked_sub(1).unwrap_or(options.len() - 1)
-                        } else {
-                            (current + 1) % options.len()
-                        };
-                        input.text = options[next].clone();
-                        input.cursor = input.text.len();
-                    }
-                    _ => edit_key(&mut input, mods, code),
-                }
-            }
-            panel.view = View::Edit {
-                target,
-                kind,
-                input,
-                reveal,
+                (current + 1) % options.len()
             };
+            edit.input.text = options[next].label.clone();
+            edit.input.cursor = edit.input.text.len();
         }
-        View::Confirm { text, action } => {
-            if matches!(code, KeyCode::Esc | KeyCode::Char('n')) {
+        _ => edit_input(&mut edit.input, mods, code),
+    }
+    panel.edit = Some(edit);
+    false
+}
+
+fn fields_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mods: KeyModifiers,
+    code: KeyCode,
+) -> bool {
+    if code == KeyCode::Esc {
+        // 改动都是即时保存的，直接返回即可。
+        return true;
+    }
+    if code == KeyCode::F(2) {
+        switch_scope(panel, app, connection);
+        return false;
+    }
+    if code == KeyCode::F(4) {
+        panel.advanced = !panel.advanced;
+        panel.rebuild_rows();
+        return false;
+    }
+    if code == KeyCode::Tab || code == KeyCode::BackTab {
+        let previous = mods.contains(KeyModifiers::SHIFT) || code == KeyCode::BackTab;
+        panel.select_tab(if previous {
+            panel.tab.checked_sub(1).unwrap_or(TABS.len() - 1)
+        } else {
+            (panel.tab + 1) % TABS.len()
+        });
+        return false;
+    }
+    if panel.busy {
+        return false;
+    }
+    if mods.contains(KeyModifiers::CONTROL) {
+        let shift = mods.contains(KeyModifiers::SHIFT);
+        match code {
+            KeyCode::Char('y' | 'Y') => {
+                panel.redo(app, connection);
                 return false;
             }
-            if code == KeyCode::Char('y') {
-                match action {
-                    ConfirmAction::Close => return true,
-                    ConfirmAction::Remove(path) => {
-                        if path.first().is_some_and(|part| part == "tui") {
-                            remove(&mut panel.tui, &path[1..]);
-                        } else if let Some(data) = &mut panel.data {
-                            remove(&mut data.document, &path);
-                        }
-                        panel.rebuild();
-                    }
-                    ConfirmAction::Run(action) => {
-                        panel.request(connection, &app.events, action, false)
-                    }
-                }
-            } else {
-                panel.view = View::Confirm { text, action };
-            }
-        }
-        View::Models {
-            provider,
-            rows,
-            mut checked,
-            mut selected,
-            mut offset,
-        } => {
-            if code == KeyCode::Esc {
+            KeyCode::Char('z' | 'Z') if shift => {
+                panel.redo(app, connection);
                 return false;
             }
-            match code {
-                KeyCode::Up => selected = selected.saturating_sub(1),
-                KeyCode::Down => selected = (selected + 1).min(rows.len().saturating_sub(1)),
-                KeyCode::PageUp => selected = selected.saturating_sub(10),
-                KeyCode::PageDown => selected = (selected + 10).min(rows.len().saturating_sub(1)),
-                KeyCode::Char(' ') => {
-                    if let Some(row) = rows.get(selected) {
-                        let path = vec![
-                            "providers".into(),
-                            provider.clone(),
-                            "models".into(),
-                            row.id.clone(),
-                        ];
-                        if panel.value(&path).is_none() && !checked.remove(&row.id) {
-                            checked.insert(row.id.clone());
-                        }
-                    }
-                }
-                KeyCode::Enter if !panel.busy => {
-                    if checked.is_empty() {
-                        panel.error =
-                            Some("请先用 Space 或鼠标勾选要添加的模型，不会默认全部加入".into());
-                    } else {
-                        for id in &checked {
-                            if panel
-                                .value(&[
-                                    "providers".into(),
-                                    provider.clone(),
-                                    "models".into(),
-                                    id.clone(),
-                                ])
-                                .is_none()
-                                && let Err(error) = panel.add_model(&provider, id)
-                            {
-                                panel.error = Some(error.to_string());
-                            }
-                        }
-                        panel.message = Some(format!(
-                            "已将 {} 个勾选模型加入草稿；Ctrl+S 保存",
-                            checked.len()
-                        ));
-                        panel.select_tab(0);
-                        return false;
-                    }
-                }
-                _ => {}
-            }
-            offset = offset.min(selected);
-            panel.view = View::Models {
-                provider,
-                rows,
-                checked,
-                selected,
-                offset,
-            };
-        }
-        View::Workspaces {
-            rows,
-            mut selected,
-            offset,
-        } => {
-            if code == KeyCode::Esc {
+            KeyCode::Char('z' | 'Z') => {
+                panel.undo(app, connection);
                 return false;
             }
-            match code {
-                KeyCode::Up => selected = selected.saturating_sub(1),
-                KeyCode::Down => selected = (selected + 1).min(rows.len().saturating_sub(1)),
-                KeyCode::Enter => {
-                    if let Some(binding) = rows.get(selected) {
-                        panel.begin_named(EditTarget::Rebind(binding.clone()));
-                        return false;
-                    }
-                }
-                KeyCode::Delete => {
-                    if let Some(binding) = rows.get(selected) {
-                        panel.view = View::Confirm {
-                            text: if binding.shared {
-                                format!(
-                                    "解除路径 {} 的绑定？此知识域还有其他路径使用，远程记忆会保留。",
-                                    binding.path
-                                )
-                            } else {
-                                format!(
-                                    "删除 {} 的专属知识域 {}？共享记忆不会删除，此操作不可撤销。",
-                                    binding.path, binding.peer_id
-                                )
-                            },
-                            action: ConfirmAction::Run(ConfigAction::DeleteWorkspace {
-                                url: binding.url.clone(),
-                                path: binding.path.clone(),
-                                confirmed_peer: binding.peer_id.clone(),
-                            }),
-                        };
-                        return false;
-                    }
-                }
-                _ => {}
-            }
-            panel.view = View::Workspaces {
-                rows,
-                selected,
-                offset,
-            };
-        }
-        View::Maintenance(report) => {
-            if code == KeyCode::Esc {
-                return false;
-            }
-            if code == KeyCode::Enter && !report.applied {
-                panel.view = View::Confirm {
-                    text: format!(
-                        "重新扫描并执行维护？预计归档 {} 个冷会话、删除 {} 个未引用产物；运行中或保留名单内的会话不处理。",
-                        report.archived.len(),
-                        report.removed.len()
-                    ),
-                    action: ConfirmAction::Run(ConfigAction::Maintenance { apply: true }),
-                };
-            } else {
-                if code == KeyCode::Down {
-                    panel.offset =
-                        (panel.offset + 1).min(report.archived.len() + report.removed.len());
-                }
-                if code == KeyCode::Up {
-                    panel.offset = panel.offset.saturating_sub(1);
-                }
-                panel.view = View::Maintenance(report);
-            }
-        }
-        View::Fields => {
-            if code == KeyCode::Esc {
-                if panel.dirty() {
-                    panel.view = View::Confirm {
-                        text: "放弃尚未保存的配置草稿并关闭？".into(),
-                        action: ConfirmAction::Close,
-                    };
-                } else {
-                    return true;
-                }
-            } else if mods == KeyModifiers::CONTROL && code == KeyCode::Char('s') {
-                if TABS[panel.tab] == "TUI" {
-                    let result = (|| {
-                        let mut preferences: TuiConfig = serde_json::from_value(panel.tui.clone())?;
-                        preferences.statusline = preferences
-                            .statusline
-                            .filter(|text| !text.trim().is_empty());
-                        let keys = KeyMap::compile(&preferences)?;
-                        app.tui_store
-                            .as_mut()
-                            .ok_or_else(|| anyhow::anyhow!("TUI 存储尚未初始化"))?
-                            .save(&preferences)?;
-                        app.show_thinking = preferences.show_thinking;
-                        app.tools_collapsed = !preferences.expand_tools;
-                        app.statusline_template = preferences.statusline.clone();
-                        panel.tui = serde_json::to_value(&preferences)?;
-                        app.preferences = preferences;
-                        app.keymap = keys;
-                        app.view_gen = app.view_gen.wrapping_add(1);
-                        Ok::<_, anyhow::Error>(())
-                    })();
-                    match result {
-                        Ok(()) => {
-                            panel.tui_original = panel.tui.clone();
-                            panel.message = Some("TUI 偏好已保存并应用，不写入 core 配置".into());
-                        }
-                        Err(error) => panel.error = Some(error.to_string()),
-                    }
-                } else if let Some(data) = &panel.data {
-                    panel.request(
-                        connection,
-                        &app.events,
-                        ConfigAction::Save {
-                            scope: panel.scope,
-                            cwd: panel.cwd.clone(),
-                            document: data.document.clone(),
-                            revision: data.revision.clone(),
-                        },
-                        true,
-                    );
-                }
-            } else if code == KeyCode::F(2) {
-                if panel
-                    .data
-                    .as_ref()
-                    .is_some_and(|data| data.document != panel.core_original)
-                {
-                    panel.error = Some("请先保存或重置 core 草稿再切换配置来源".into());
-                } else {
-                    panel.scope = match panel.scope {
-                        ConfigScope::Global => ConfigScope::Project,
-                        ConfigScope::Project => ConfigScope::Global,
-                    };
-                    panel.request(
-                        connection,
-                        &app.events,
-                        ConfigAction::Read {
-                            scope: panel.scope,
-                            cwd: panel.cwd.clone(),
-                        },
-                        false,
-                    );
-                }
-            } else if code == KeyCode::F(4) {
-                panel.advanced = !panel.advanced;
-                panel.filter_fields();
-            } else if code == KeyCode::Tab || code == KeyCode::BackTab {
-                let previous = mods.contains(KeyModifiers::SHIFT) || code == KeyCode::BackTab;
-                panel.select_tab(if previous {
-                    panel.tab.checked_sub(1).unwrap_or(TABS.len() - 1)
-                } else {
-                    (panel.tab + 1) % TABS.len()
-                });
-            } else if !panel.busy {
-                match code {
-                    KeyCode::Up => panel.selected = panel.selected.saturating_sub(1),
-                    KeyCode::Down => {
-                        panel.selected =
-                            (panel.selected + 1).min(panel.visible.len().saturating_sub(1))
-                    }
-                    KeyCode::PageUp => panel.selected = panel.selected.saturating_sub(10),
-                    KeyCode::PageDown => {
-                        panel.selected =
-                            (panel.selected + 10).min(panel.visible.len().saturating_sub(1))
-                    }
-                    KeyCode::Enter => panel.begin_edit(),
-                    KeyCode::Char(' ') => {
-                        if let Some(field) = panel.field().cloned() {
-                            if matches!(field.kind, FieldKind::Bool) {
-                                let value = !panel
-                                    .value(&field.path)
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false);
-                                panel.change(&field.path, json!(value));
-                            } else {
-                                panel.begin_edit();
-                            }
-                        }
-                    }
-                    KeyCode::Char('a') => panel.add(),
-                    KeyCode::Char('f') => panel.fetch(connection, &app.events),
-                    KeyCode::Char('w') if TABS[panel.tab] == "OpenViking" => {
-                        panel.request(connection, &app.events, ConfigAction::Workspaces, false)
-                    }
-                    KeyCode::Char('g') if TABS[panel.tab] == "会话" => panel.request(
-                        connection,
-                        &app.events,
-                        ConfigAction::Maintenance { apply: false },
-                        false,
-                    ),
-                    KeyCode::Char('d') if mods == KeyModifiers::CONTROL => {
-                        panel.begin_named(EditTarget::ModelDefaults)
-                    }
-                    KeyCode::Char('/') => panel.begin_named(EditTarget::Filter),
-                    KeyCode::Char('r') => {
-                        if let Some(field) = panel.field().cloned() {
-                            if field.path[0] == "tui" {
-                                let defaults =
-                                    serde_json::to_value(TuiConfig::default()).expect("默认设置");
-                                panel.change(
-                                    &field.path,
-                                    get(&defaults, &field.path[1..])
-                                        .cloned()
-                                        .unwrap_or(Value::Null),
-                                );
-                            } else if let Some(data) = &mut panel.data {
-                                remove(&mut data.document, &field.path);
-                                panel.rebuild();
-                            }
-                        }
-                    }
-                    KeyCode::Delete => {
-                        if let Some(field) = panel.field() {
-                            let mut path = field.path.clone();
-                            if path.first().is_some_and(|part| part == "providers") {
-                                path.truncate(
-                                    if path.get(2).is_some_and(|part| part == "models") {
-                                        4
-                                    } else {
-                                        2
-                                    },
-                                );
-                            } else if path.starts_with(&["mcp".into(), "servers".into()]) {
-                                path.truncate(3);
-                            }
-                            panel.view = View::Confirm {
-                                text: format!(
-                                    "删除当前文件中的 {}？继承项不会从其他文件中删除。",
-                                    path.join(" / ")
-                                ),
-                                action: ConfirmAction::Remove(path),
-                            };
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            _ => {}
         }
     }
+    let last = panel.rows.len().saturating_sub(1);
+    match code {
+        KeyCode::Up => panel.selected = panel.selected.saturating_sub(1),
+        KeyCode::Down => panel.selected = (panel.selected + 1).min(last),
+        KeyCode::PageUp => panel.selected = panel.selected.saturating_sub(10),
+        KeyCode::PageDown => panel.selected = (panel.selected + 10).min(last),
+        KeyCode::Home => panel.selected = 0,
+        KeyCode::End => panel.selected = last,
+        KeyCode::Enter | KeyCode::Char(' ') => panel.begin_edit(app, connection),
+        KeyCode::Left => collapse(panel, false),
+        KeyCode::Right => collapse(panel, true),
+        KeyCode::Char('a') => panel.add(),
+        KeyCode::Char('f') => panel.fetch(connection, &app.events),
+        KeyCode::Char('w') if TABS[panel.tab] == "OpenViking" => panel.request(
+            connection,
+            &app.events,
+            ConfigAction::Workspaces,
+            Job::Workspaces,
+        ),
+        KeyCode::Char('g') if TABS[panel.tab] == "会话" => panel.request(
+            connection,
+            &app.events,
+            ConfigAction::Maintenance { apply: false },
+            Job::Maintenance,
+        ),
+        KeyCode::Char('d') if mods == KeyModifiers::CONTROL => panel.begin_named(
+            EditTarget::ModelDefaults,
+            "添加模型默认设置",
+            "填写模型名匹配，例如 gpt-*",
+            "",
+        ),
+        KeyCode::Char('/') => {
+            let current = panel.filter.clone();
+            panel.begin_named(
+                EditTarget::Filter,
+                "搜索设置项",
+                "输入名称或关键字，留空显示全部",
+                &current,
+            )
+        }
+        KeyCode::Char('r') => reset_field(panel, app, connection),
+        KeyCode::Delete => delete_group(panel),
+        _ => {}
+    }
+    false
+}
+
+/// 分组行的展开与收起；字段行不动。
+fn collapse(panel: &mut SettingsPanel, expand: bool) {
+    let Some((key, depth)) = panel
+        .rows
+        .get(panel.selected)
+        .and_then(|row| match &row.kind {
+            RowKind::Group(group) => Some((group.key.clone(), row.depth)),
+            RowKind::Field(_) => None,
+        })
+    else {
+        return;
+    };
+    if panel.is_expanded(&key, usize::from(depth)) != expand {
+        panel.toggle_group(&key, depth);
+    }
+}
+
+/// R：删除该项在当前文件中的设置，回到默认值。
+fn reset_field(panel: &mut SettingsPanel, app: &mut App, connection: &EmbeddedConnection) {
+    let Some(field) = panel.field().cloned() else {
+        return;
+    };
+    let label = format!("恢复默认：{}", field.label);
+    let path = field.path.clone();
+    let _ = panel.commit(&label, app, connection, |panel| {
+        panel.remove_value(&path);
+        Ok(Store::of(&path))
+    });
+}
+
+/// Delete：删除选中的整个分组（供应商、模型、MCP 服务或默认设置）。
+fn delete_group(panel: &mut SettingsPanel) {
+    let Some(group) = panel.group() else {
+        return;
+    };
+    let Some(path) = group.path.clone() else {
+        panel.error = Some("这一组不能整组删除；可逐项按 R 恢复默认值".into());
+        return;
+    };
+    panel.view = View::Confirm {
+        text: format!("删除“{}”？按 Ctrl+Z 可以撤回。", group.title),
+        action: ConfirmAction::Remove(path),
+    };
+}
+
+/// F2：在全局配置与项目配置之间切换。
+fn switch_scope(panel: &mut SettingsPanel, app: &mut App, connection: &EmbeddedConnection) {
+    if app.saving_config() {
+        panel.message = Some("正在保存改动，请稍候再切换范围".into());
+        return;
+    }
+    let scope = match panel.scope {
+        ConfigScope::Global => ConfigScope::Project,
+        ConfigScope::Project => ConfigScope::Global,
+    };
+    panel.set_scope(scope, app, connection);
+}
+
+fn confirm_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    code: KeyCode,
+) -> bool {
+    let View::Confirm { text, action } = std::mem::replace(&mut panel.view, View::Fields) else {
+        return false;
+    };
+    if matches!(code, KeyCode::Esc | KeyCode::Char('n')) {
+        return false;
+    }
+    if code != KeyCode::Char('y') {
+        panel.view = View::Confirm { text, action };
+        return false;
+    }
+    match action {
+        ConfirmAction::Remove(path) => {
+            let label = format!("删除 {}", path.last().cloned().unwrap_or_default());
+            let _ = panel.commit(&label, app, connection, |panel| {
+                panel.remove_value(&path);
+                Ok(Store::of(&path))
+            });
+        }
+        ConfirmAction::Run(action) => panel.request(connection, &app.events, action, Job::Update),
+    }
+    false
+}
+
+fn models_key(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    code: KeyCode,
+) -> bool {
+    let View::Models {
+        provider,
+        rows,
+        mut checked,
+        mut selected,
+    } = std::mem::replace(&mut panel.view, View::Fields)
+    else {
+        return false;
+    };
+    if code == KeyCode::Esc {
+        return false;
+    }
+    let last = rows.len().saturating_sub(1);
+    match code {
+        KeyCode::Up => selected = selected.saturating_sub(1),
+        KeyCode::Down => selected = (selected + 1).min(last),
+        KeyCode::PageUp => selected = selected.saturating_sub(10),
+        KeyCode::PageDown => selected = (selected + 10).min(last),
+        KeyCode::Char(' ') => {
+            if let Some(row) = rows.get(selected) {
+                let path = vec![
+                    "providers".into(),
+                    provider.clone(),
+                    "models".into(),
+                    row.id.clone(),
+                ];
+                if panel.value(&path).is_none() && !checked.remove(&row.id) {
+                    checked.insert(row.id.clone());
+                }
+            }
+        }
+        KeyCode::Enter if !panel.busy => {
+            if checked.is_empty() {
+                panel.error = Some("请先用 Space 勾选要添加的模型".into());
+            } else {
+                let added: Vec<String> = checked
+                    .iter()
+                    .filter(|id| {
+                        panel
+                            .value(&[
+                                "providers".into(),
+                                provider.clone(),
+                                "models".into(),
+                                (*id).clone(),
+                            ])
+                            .is_none()
+                    })
+                    .cloned()
+                    .collect();
+                let label = if added.len() == 1 {
+                    format!("添加模型 {}", added[0])
+                } else {
+                    format!("添加 {} 个模型", added.len())
+                };
+                let target = provider.clone();
+                if let Err(error) = panel.commit(&label, app, connection, |panel| {
+                    for id in &added {
+                        panel.insert_model(&target, id)?;
+                    }
+                    Ok(Store::Core)
+                }) {
+                    panel.error = Some(error.to_string());
+                }
+                panel.message = Some(format!("已添加 {} 个模型，可继续调整设置", added.len()));
+                panel.select_tab(0);
+                if let Some(id) = added.first() {
+                    panel.select_path(&["providers".into(), provider, "models".into(), id.clone()]);
+                }
+                return false;
+            }
+        }
+        _ => {}
+    }
+    panel.view = View::Models {
+        provider,
+        rows,
+        checked,
+        selected,
+    };
+    false
+}
+
+fn workspaces_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
+    let View::Workspaces { rows, mut selected } = std::mem::replace(&mut panel.view, View::Fields)
+    else {
+        return false;
+    };
+    if code == KeyCode::Esc {
+        return false;
+    }
+    match code {
+        KeyCode::Up => selected = selected.saturating_sub(1),
+        KeyCode::Down => selected = (selected + 1).min(rows.len().saturating_sub(1)),
+        KeyCode::Enter => {
+            if let Some(binding) = rows.get(selected) {
+                panel.begin_named(
+                    EditTarget::Rebind(binding.clone()),
+                    "改绑工作区目录",
+                    "填写新的目录路径",
+                    &binding.path,
+                );
+                return false;
+            }
+        }
+        KeyCode::Delete => {
+            if let Some(binding) = rows.get(selected) {
+                panel.view = View::Confirm {
+                    text: if binding.shared {
+                        format!(
+                            "解除 {} 的记忆绑定？这个目录与其他工作区共享记忆，记忆本身会保留。",
+                            binding.path
+                        )
+                    } else {
+                        format!(
+                            "删除 {} 的专属记忆？共享记忆不会删除，此操作不可撤销。",
+                            binding.path
+                        )
+                    },
+                    action: ConfirmAction::Run(ConfigAction::DeleteWorkspace {
+                        url: binding.url.clone(),
+                        path: binding.path.clone(),
+                        confirmed_peer: binding.peer_id.clone(),
+                    }),
+                };
+                return false;
+            }
+        }
+        _ => {}
+    }
+    panel.view = View::Workspaces { rows, selected };
+    false
+}
+
+fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
+    let View::Maintenance(report) = std::mem::replace(&mut panel.view, View::Fields) else {
+        return false;
+    };
+    if code == KeyCode::Esc {
+        return false;
+    }
+    if code == KeyCode::Enter && !report.applied {
+        panel.view = View::Confirm {
+            text: format!(
+                "执行维护？预计归档 {} 个会话、删除 {} 个临时文件；正在使用的会话不会处理。",
+                report.archived.len(),
+                report.removed.len()
+            ),
+            action: ConfirmAction::Run(ConfigAction::Maintenance { apply: true }),
+        };
+        return false;
+    }
+    if code == KeyCode::Down {
+        panel.offset = (panel.offset + 1).min(report.archived.len() + report.removed.len());
+    }
+    if code == KeyCode::Up {
+        panel.offset = panel.offset.saturating_sub(1);
+    }
+    panel.view = View::Maintenance(report);
     false
 }
 
 fn apply_edit(
     panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
     target: &EditTarget,
     kind: &FieldKind,
     text: &str,
-    connection: &EmbeddedConnection,
-    events: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    label: &str,
 ) -> anyhow::Result<()> {
     match target {
         EditTarget::Field(path) => {
-            let kind = if path.starts_with(&["models".into(), "roles".into()]) {
-                &FieldKind::Text
-            } else {
-                kind
-            };
             let value = parse(text, kind)?;
-            if value.is_null() {
-                if path.first().is_some_and(|part| part == "tui") {
-                    remove(&mut panel.tui, &path[1..]);
-                } else if let Some(data) = &mut panel.data {
-                    remove(&mut data.document, path);
+            let path = path.clone();
+            panel.commit(label, app, connection, |panel| {
+                if value.is_null() {
+                    panel.remove_value(&path);
+                } else {
+                    panel.set_value(&path, value);
                 }
-                panel.rebuild();
-            } else {
-                panel.change(path, value);
-            }
+                Ok(Store::of(&path))
+            })?;
         }
         EditTarget::Provider => {
-            let name = text.trim();
+            let name = text.trim().to_owned();
             anyhow::ensure!(
                 !name.is_empty() && !name.contains(['/', '\n']),
                 "供应商标识不能为空，也不能包含斜线或换行"
@@ -498,62 +551,86 @@ fn apply_edit(
                 panel
                     .effective
                     .get("providers")
-                    .and_then(|providers| providers.get(name))
+                    .and_then(|providers| providers.get(&name))
                     .is_none(),
                 "供应商 {name} 已存在"
             );
-            panel.change(
-                &["providers".into(), name.into()],
-                json!({"api":"openai_chat","base_url":"","api_key":"","models":{}}),
-            );
-            let index = panel.visible.iter().position(|index| {
-                panel.fields[*index]
-                    .path
-                    .get(1)
-                    .is_some_and(|part| part == name)
-            });
-            if let Some(index) = index {
-                panel.selected = index;
-            }
-            panel.message =
-                Some("供应商已加入草稿；填写地址和密钥后按 F 获取模型，或到模型页手动添加".into());
+            let path = vec!["providers".into(), name];
+            let target = path.clone();
+            panel.commit(label, app, connection, |panel| {
+                panel.set_value(
+                    &target,
+                    json!({"api":"openai_chat","base_url":"","api_key":"","models":{}}),
+                );
+                Ok(Store::Core)
+            })?;
+            panel.select_path(&path);
+            panel.message = Some("已添加供应商，请填写服务地址与密钥".into());
         }
         EditTarget::Model(provider) => {
-            panel.add_model(provider, text.trim())?;
+            let id = text.trim().to_owned();
+            anyhow::ensure!(!id.is_empty(), "模型 ID 不能为空");
+            let path = vec![
+                "providers".into(),
+                provider.clone(),
+                "models".into(),
+                id.clone(),
+            ];
+            let target = provider.clone();
+            let _ = panel.commit(label, app, connection, |panel| {
+                panel.insert_model(&target, &id)?;
+                Ok(Store::Core)
+            });
+            panel.select_tab(0);
+            panel.select_path(&path);
         }
         EditTarget::Mcp => {
-            let name = text.trim();
-            moc_mcp_name(name)?;
-            let path = vec!["mcp".into(), "servers".into(), name.into()];
-            anyhow::ensure!(panel.value(&path).is_none(), "同名 MCP 已存在");
-            panel.change(&path,json!({"type":"stdio","command":"","args":[],"env":{},"headers":{},"enabled":true,"tools":{"allow":[],"deny":[]}}));
+            let name = text.trim().to_owned();
+            moc_mcp_name(&name)?;
+            let path = vec!["mcp".into(), "servers".into(), name];
+            anyhow::ensure!(panel.value(&path).is_none(), "同名 MCP 服务已存在");
+            let target = path.clone();
+            panel.commit(label, app, connection, |panel| {
+                panel.set_value(&target, json!({"type":"stdio","command":"","args":[],"env":{},"headers":{},"enabled":true,"tools":{"allow":[],"deny":[]}}));
+                Ok(Store::Core)
+            })?;
+            panel.message = Some("已添加 MCP 服务，请填写启动程序或地址".into());
         }
         EditTarget::ModelDefaults => {
-            let pattern = text.trim();
-            anyhow::ensure!(!pattern.is_empty(), "模型匹配模式不能为空");
-            panel.change(
-                &["defaults".into(), "models".into(), pattern.into()],
-                json!({"context_window":200000,"max_output_tokens":32000,"reasoning":false}),
-            );
-            panel.select_tab(TABS.len() - 1);
+            let pattern = text.trim().to_owned();
+            anyhow::ensure!(!pattern.is_empty(), "模型名匹配不能为空");
+            let path = vec!["defaults".into(), "models".into(), pattern];
+            let target = path.clone();
+            panel.commit(label, app, connection, |panel| {
+                panel.set_value(
+                    &target,
+                    json!({"context_window":200000,"max_output_tokens":32000,"reasoning":false}),
+                );
+                Ok(Store::Core)
+            })?;
+            panel.select_tab(0);
+            panel.select_path(&path);
         }
         EditTarget::Rebind(binding) => panel.request(
             connection,
-            events,
+            &app.events,
             ConfigAction::RebindWorkspace {
                 url: binding.url.clone(),
                 path: binding.path.clone(),
                 new_path: text.trim().into(),
             },
-            false,
+            Job::Update,
         ),
         EditTarget::Filter => {
             panel.filter = text.trim().into();
-            panel.filter_fields();
+            panel.selected = 0;
+            panel.offset = 0;
+            panel.rebuild_rows();
         }
     }
     Ok(())
 }
+
 fn moc_mcp_name(name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         !name.is_empty()
@@ -567,7 +644,7 @@ fn moc_mcp_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn edit_key(input: &mut PromptState, mods: KeyModifiers, code: KeyCode) {
+fn edit_input(input: &mut PromptState, mods: KeyModifiers, code: KeyCode) {
     match (code, mods) {
         (KeyCode::Enter, _) => input.insert_char('\n'),
         (KeyCode::Backspace, _) => input.backspace(),

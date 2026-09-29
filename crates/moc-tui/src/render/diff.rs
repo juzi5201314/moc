@@ -147,7 +147,7 @@ fn render_file(
     }
     if truncated {
         out.push(Line::from(Span::styled(
-            format!("{}⋯ diff 已截断（超出上限）", " ".repeat(gutter_width + 1)),
+            format!("{}⋯ 改动过多，已省略部分内容", " ".repeat(gutter_width + 1)),
             Style::new().fg(theme.accent_warning),
         )));
     }

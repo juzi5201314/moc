@@ -894,7 +894,7 @@ impl AgentService for Core {
             .collect();
         let piece_tokens: u64 = sections.iter().map(|section| section.tokens).sum();
         sections.push(ContextUsageSection {
-            name: "系统消息结构".into(),
+            name: "格式开销".into(),
             tokens: system_tokens.saturating_sub(piece_tokens),
         });
         sections.push(ContextUsageSection {
@@ -909,13 +909,6 @@ impl AgentService for Core {
             context_window: model.context_window,
             total_tokens,
             sections,
-            compaction_threshold:compact::threshold(&config,model.context_window),
-            notes:vec![
-                format!("自动压缩阈值 {} token，仅按上下文窗口计算，不扣除 max_output_tokens。",compact::threshold(&config,model.context_window)),
-                format!("指令文件共享 {} token 预算，超限会在注入内容标注截断；Skills 目录预算 {} bytes。",config.context_files.max_tokens,config.skills.catalog_char_budget),
-                format!("OpenViking 每轮召回预算 {} token；工具输出预算为开头 {} + 结尾 {} bytes。",config.openviking.max_context_tokens,config.tools.output.head_bytes,config.tools.output.tail_bytes),
-                "此处为当前基础请求估算；按问题召回的临时记忆和运行时提醒在发起请求时计入压缩判断，实际 token 以服务端用量为准。".into(),
-            ],
         })
     }
 

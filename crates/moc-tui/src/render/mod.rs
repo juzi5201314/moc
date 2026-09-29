@@ -71,8 +71,9 @@ fn prompt_content_rows(app: &App, width: u16) -> usize {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
+    let saving = app.saving_config();
     if let Some(panel) = &mut app.settings {
-        crate::settings::draw(frame, panel, app.theme);
+        crate::settings::draw(frame, panel, saving, app.theme);
         if app.modal.is_some() {
             modal::draw_modal(frame, app);
         }
@@ -349,12 +350,13 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
     let inner = usize::from(area.width).saturating_sub(2);
     let y = area.y + area.height - 1;
 
-    let model = app.model_display().to_owned();
+    let model = app.model_display();
     let mode = app
         .session
         .as_ref()
-        .map(|session| format!("{:?}", session.mode).to_lowercase())
-        .unwrap_or_else(|| "idle".into());
+        .map(|session| crate::app::mode_label(session.mode))
+        .unwrap_or("未连接")
+        .to_owned();
     let right = [
         (model, theme.gray),
         (" · ".to_owned(), theme.border),
@@ -521,8 +523,8 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
         right.push(Span::styled(
             format!(
                 " {} / {}",
-                format_number(data.context_used),
-                format_number(window)
+                short_number(data.context_used),
+                short_number(window)
             ),
             Style::new().fg(theme.gray),
         ));
@@ -598,8 +600,8 @@ fn statusline_data(app: &App) -> StatuslineData {
     let mode = app
         .session
         .as_ref()
-        .map(|session| format!("{:?}", session.mode).to_lowercase())
-        .unwrap_or_else(|| "idle".into());
+        .map(|session| crate::app::mode_label(session.mode).to_owned())
+        .unwrap_or_else(|| "未连接".into());
     let context_window = app.context_window().filter(|window| *window > 0);
     let context_used = app.context_used();
     let context_percent = context_window.map(|window| context_used as f64 * 100.0 / window as f64);
@@ -615,7 +617,7 @@ fn statusline_data(app: &App) -> StatuslineData {
     };
     let cost = (app.cost_usd > 0.0).then_some(app.cost_usd);
     StatuslineData {
-        model: app.model_display().to_owned(),
+        model: app.model_display(),
         mode,
         context_percent,
         context_used,
@@ -671,6 +673,17 @@ fn context_bar_color(percent: f64, theme: &crate::theme::Theme) -> ratatui::styl
     }
 }
 
+/// token 数缩写（120000 → 120K）。
+pub fn short_number(value: u64) -> String {
+    if value >= 1_000_000 {
+        format!("{:.1}M", value as f64 / 1_000_000.0)
+    } else if value >= 1_000 {
+        format!("{}K", value / 1_000)
+    } else {
+        value.to_string()
+    }
+}
+
 /// 内置渲染：左侧 todo 进度，右侧 token 统计（模型/模式/目录/上下文在信息条与输入框）。
 fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     let theme = app.theme;
@@ -690,8 +703,8 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     // 右侧统计段
     let right = format!(
         " ⇅ {} › {} › {:.0} tok/s{}",
-        format_number(data.tokens_in),
-        format_number(data.tokens_out),
+        short_number(data.tokens_in),
+        short_number(data.tokens_out),
         data.tok_s,
         data.turn_elapsed
             .map(|elapsed| format!(" › ⏱ {}s", elapsed.as_secs()))
@@ -737,7 +750,7 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "mode" => Some((data.mode.clone(), theme.accent_tool)),
             "context" => data
                 .context_percent
-                .map(|_| (format_number(data.context_used), theme.text_secondary)),
+                .map(|_| (short_number(data.context_used), theme.text_secondary)),
             "context_percent" => data
                 .context_percent
                 .map(|percent| (format_context_percent(percent), theme.text_secondary)),
@@ -749,8 +762,8 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "todo" => data
                 .todo
                 .map(|(done, total)| (format!("☑ {done}/{total}"), theme.accent_success)),
-            "tokens_in" => Some((format_number(data.tokens_in), theme.text_secondary)),
-            "tokens_out" => Some((format_number(data.tokens_out), theme.text_secondary)),
+            "tokens_in" => Some((short_number(data.tokens_in), theme.text_secondary)),
+            "tokens_out" => Some((short_number(data.tokens_out), theme.text_secondary)),
             "tok_s" => Some((format!("{:.1} tok/s", data.tok_s), theme.accent_running)),
             "turn_elapsed" => Some((
                 data.turn_elapsed
@@ -783,17 +796,6 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
         spans.push(Span::styled(plain, Style::new().fg(theme.gray)));
     }
     Line::from(spans)
-}
-
-/// token 数缩写（120000 → 120K）。
-fn format_number(value: u64) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}M", value as f64 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{}K", value / 1_000)
-    } else {
-        value.to_string()
-    }
 }
 
 /// 上下文百分比标签：非零但不足 1% 时显示 `<1%`，避免截断成 0%。

@@ -1,7 +1,7 @@
 //! 前端偏好只保存在 tui.toml，不进入 core 配置或模型上下文。
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use moc_protocol::{ConfigField, FieldKind};
+use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -53,26 +53,26 @@ impl Default for TuiConfig {
 /// 保持动作语义稳定，物理按键可以全部改写；配置页面自身的导航键保持可恢复。
 pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'static str])] {
     &[
-        ("send", "发送／补充消息", &["enter"]),
-        ("queue", "加入后续任务队列", &["ctrl+enter"]),
+        ("send", "发送消息", &["enter"]),
+        ("queue", "排队发送", &["ctrl+enter"]),
         ("newline", "插入换行", &["shift+enter", "alt+enter"]),
-        ("cancel", "取消轮次／退出", &["ctrl+c"]),
-        ("help", "快捷键帮助", &["ctrl+h"]),
+        ("cancel", "停止当前回答／退出", &["ctrl+c"]),
+        ("help", "帮助", &["ctrl+h"]),
         ("thinking", "展开／折叠思考", &["ctrl+t"]),
-        ("tools", "展开／折叠工具", &["ctrl+o"]),
+        ("tools", "展开／折叠工具输出", &["ctrl+o"]),
         ("paste_image", "粘贴图片", &["ctrl+v"]),
         ("model", "选择模型", &["ctrl+p"]),
         ("resume", "恢复会话", &["ctrl+r"]),
         ("mode", "切换会话模式", &["ctrl+m"]),
         ("thinking_level", "切换思考等级", &["shift+tab"]),
-        ("focus", "切换输入／转写焦点", &["tab"]),
+        ("focus", "切换输入焦点", &["tab"]),
         ("clear", "清空输入", &["ctrl+u"]),
         ("line_start", "移动到行首", &["home", "ctrl+a"]),
         ("line_end", "移动到行尾", &["end", "ctrl+e"]),
         ("delete_word", "删除前一词", &["ctrl+w"]),
         ("delete_to_end", "删除至行尾", &["ctrl+k"]),
-        ("config", "打开配置", &["ctrl+g"]),
-        ("queue_edit", "编辑队首消息", &["alt+up"]),
+        ("config", "打开设置", &["ctrl+g"]),
+        ("queue_edit", "编辑排队中的消息", &["alt+up"]),
     ]
 }
 
@@ -257,7 +257,7 @@ impl TuiStore {
         )?;
         anyhow::ensure!(
             read_optional(&self.path)? == self.original,
-            "tui.toml 已被其他窗口修改，请重新加载；当前草稿保留"
+            "设置文件已被其他窗口修改；请重新打开设置页再保存，当前修改不会丢失"
         );
         let text = toml::to_string_pretty(config)?;
         let temp = parent.join(format!(".tui-{}.tmp", std::process::id()));
@@ -294,37 +294,40 @@ pub fn fields() -> Vec<ConfigField> {
         (
             "show_thinking",
             "默认展开思考",
-            "新思考块默认展开；会话内仍可用快捷键临时切换。",
+            "模型思考过程默认展开显示。",
             FieldKind::Bool,
         ),
         (
             "expand_tools",
-            "默认展开工具",
-            "新工具块默认展开；会话内的折叠不回写默认值。",
+            "默认展开工具输出",
+            "工具运行结果默认展开显示。",
             FieldKind::Bool,
         ),
         (
             "notify_complete",
-            "完成通知",
-            "终端不在前台时，轮次完成发送终端通知；由终端负责系统通知呈现。",
+            "完成时通知",
+            "窗口不在前台时，任务完成发送终端通知。",
             FieldKind::Bool,
         ),
         (
             "notify_waiting",
-            "等待回答通知",
-            "终端不在前台时，提问与权限询问发送终端通知。",
+            "需要你回答时通知",
+            "窗口不在前台时，需要你确认或回答时发送终端通知。",
             FieldKind::Bool,
         ),
         (
             "active_submit",
-            "运行中 Enter 行为",
-            "steering 在安全工具边界补充指令；interrupt 取消当前轮次并以此消息启动下一轮。Ctrl+Enter 始终排队。",
-            FieldKind::Choice(vec!["steering".into(), "interrupt".into()]),
+            "运行中按 Enter",
+            "任务运行中按 Enter：补充要求，或先停下再重新提问。",
+            FieldKind::Choice(vec![
+                ChoiceOption::new("steering", "补充要求"),
+                ChoiceOption::new("interrupt", "先停下再重新提问"),
+            ]),
         ),
         (
             "statusline",
             "状态栏模板",
-            "留空使用内置状态栏；支持 {model} {mode} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {turn_elapsed} {cost}。",
+            "自定义底部状态栏；留空使用默认样式。可用 {model} {mode} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {turn_elapsed} {cost}。",
             FieldKind::Text,
         ),
     ];
@@ -332,17 +335,20 @@ pub fn fields() -> Vec<ConfigField> {
         .into_iter()
         .map(|(key, label, description, kind)| ConfigField {
             path: vec!["tui".into(), key.into()],
-            tab: "TUI".into(),
+            tab: "界面".into(),
             label: label.into(),
             description: description.into(),
             kind,
             advanced: false,
         })
         .collect();
-    output.extend(actions().iter().map(|(name,label,_)| ConfigField {
-        path:vec!["tui".into(),"keybindings".into(),(*name).into()],tab:"TUI".into(),label:format!("键位 · {label}"),
-        description:"逐行填写按键，例如 ctrl+g、alt+enter、f2；可有多个绑定，空列表禁用。Ctrl+Enter 等增强按键需要终端支持，不能凭空区分被终端合并的编码。".into(),
-        kind:FieldKind::Strings,advanced:false,
+    output.extend(actions().iter().map(|(name, label, _)| ConfigField {
+        path: vec!["tui".into(), "keybindings".into(), (*name).into()],
+        tab: "界面".into(),
+        label: format!("快捷键 · {label}"),
+        description: "逐行填写按键，例如 ctrl+g、alt+enter、f2；留空表示禁用。".into(),
+        kind: FieldKind::Strings,
+        advanced: false,
     }));
     output
 }

@@ -365,7 +365,10 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             let offset = picker.offset.min(filtered.len().saturating_sub(visible));
             let mut lines = vec![
                 Line::from(Span::styled(
-                    format!("当前：{}", ellipsize(current, width)),
+                    format!(
+                        "当前：{}",
+                        ellipsize(&crate::app::model_selector_label(current), width)
+                    ),
                     Style::new().fg(theme.gray),
                 )),
                 Line::from(Span::styled(
@@ -411,7 +414,10 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     };
                     let mut detail = model.id.clone();
                     if let Some(window) = model.context_window {
-                        detail.push_str(&format!(" · {} tokens", format_number(window)));
+                        detail.push_str(&format!(
+                            " · 上下文 {}",
+                            crate::render::short_number(window)
+                        ));
                     }
                     lines.push(Line::from(Span::styled(
                         ellipsize(&format!("{marker}{detail}"), width),
@@ -450,7 +456,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             ))];
             if picker.loading {
                 lines.push(Line::from(Span::styled(
-                    "正在加载 OpenViking 记忆…",
+                    "正在加载记忆…",
                     Style::new().fg(theme.accent_running),
                 )));
             } else if let Some(error) = &picker.error {
@@ -628,43 +634,34 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 Some(usage) => {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "估算占用：{} / {} ({:.1}%)",
-                            format_number(usage.total_tokens),
-                            format_number(usage.context_window),
+                            "{} / {}（{:.1}%）",
+                            crate::render::short_number(usage.total_tokens),
+                            crate::render::short_number(usage.context_window),
                             usage.total_tokens as f64 * 100.0 / usage.context_window.max(1) as f64,
                         ),
                         Style::new()
                             .fg(theme.text_primary)
                             .add_modifier(Modifier::BOLD),
                     )));
-                    lines.push(Line::from(Span::styled(
-                        "各项按当前模型请求格式估算，实际用量以响应为准。",
-                        Style::new()
-                            .fg(theme.gray_dim)
-                            .add_modifier(Modifier::ITALIC),
-                    )));
                     lines.push(Line::from(String::new()));
                     let total = usage.total_tokens.max(1) as f64;
                     for section in &usage.sections {
+                        let pad = 14usize.saturating_sub(str_width(&section.name));
                         lines.push(Line::from(vec![
                             Span::styled(
-                                format!("  {:<10}", section.name),
+                                format!("  {}{}", section.name, " ".repeat(pad)),
                                 Style::new().fg(theme.text_secondary),
                             ),
                             Span::styled(
                                 format!(
-                                    "{} ({:.1}%)",
-                                    format_number(section.tokens),
+                                    "{}（{:.1}%）",
+                                    crate::render::short_number(section.tokens),
                                     section.tokens as f64 * 100.0 / total,
                                 ),
                                 Style::new().fg(theme.accent_model),
                             ),
                         ]));
                     }
-                    lines.push(Line::from(""));
-                    lines.extend(usage.notes.iter().map(|note| {
-                        Line::from(Span::styled(note.clone(), Style::new().fg(theme.gray)))
-                    }));
                 }
                 None => lines.push(Line::from(Span::styled(
                     "正在计算上下文…",
@@ -688,15 +685,4 @@ fn ellipsize(text: &str, width: usize) -> String {
         return text.to_owned();
     }
     crate::render::scrollback::truncate_to_width(text.to_owned(), width.max(1))
-}
-
-/// token 数缩写（120000 → 120K）。
-fn format_number(value: u64) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}M", value as f64 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{}K", value / 1_000)
-    } else {
-        value.to_string()
-    }
 }

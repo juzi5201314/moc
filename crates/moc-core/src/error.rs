@@ -30,3 +30,17 @@ pub enum CoreError {
     #[error("操作已取消")]
     Cancelled,
 }
+
+impl CoreError {
+    /// 错误原文，不带“配置错误：”这类分类前缀；用于把错误再包一层时避免前缀重复。
+    pub fn detail(&self) -> String {
+        match self {
+            CoreError::Config(text)
+            | CoreError::Session(text)
+            | CoreError::Tool(text)
+            | CoreError::Protocol(text)
+            | CoreError::ContextOverflow(text) => text.clone(),
+            other => other.to_string(),
+        }
+    }
+}

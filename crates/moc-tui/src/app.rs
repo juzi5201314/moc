@@ -112,6 +112,10 @@ pub struct App {
     pub tui_store: Option<crate::config::TuiStore>,
     pub settings: Option<crate::settings::SettingsPanel>,
     pub next_config_id: u64,
+    /// 设置页正在写入的配置范围；`Some` 时新改动先排队。
+    pub config_flight: Option<moc_protocol::ConfigScope>,
+    /// 排队等待写入的配置改动；写入串行，期间的改动合并到最近一次。
+    pub config_queue: Option<ConfigWrite>,
     pub startup_cwd: String,
     pub startup_mode: SessionMode,
     pub startup_pending: Option<String>,
@@ -129,6 +133,15 @@ pub struct App {
     tool_indices: HashMap<String, usize>,
     /// 增量阶段累积的参数：`tool_call_id → JSON 片段拼接`（在工具块创建前到达）。
     pending_args: HashMap<String, String>,
+}
+
+/// 排队等待写入的配置改动。
+pub struct ConfigWrite {
+    pub scope: moc_protocol::ConfigScope,
+    pub cwd: String,
+    pub document: serde_json::Value,
+    /// 上一次成功写入后的文件版本；写入回执会刷新它。
+    pub revision: String,
 }
 
 impl App {
@@ -175,6 +188,8 @@ impl App {
             tui_store: None,
             settings: None,
             next_config_id: 0,
+            config_flight: None,
+            config_queue: None,
             startup_cwd: String::new(),
             startup_mode: SessionMode::Normal,
             startup_pending: None,
@@ -192,6 +207,44 @@ impl App {
         }
     }
 
+    /// 写入配置：有写入在途时先排队，等回执落地后带着新版本接着写。
+    pub fn write_config(
+        &mut self,
+        connection: &crate::protocol::EmbeddedConnection,
+        write: ConfigWrite,
+    ) {
+        if self.config_flight.is_some() {
+            self.config_queue = Some(write);
+            return;
+        }
+        self.config_flight = Some(write.scope);
+        let client = connection.client.clone();
+        let events = self.events.clone();
+        let panel = self.settings.as_ref().map_or(0, |panel| panel.id);
+        let action = moc_protocol::ConfigAction::Save {
+            scope: write.scope,
+            cwd: write.cwd,
+            document: write.document,
+            revision: write.revision,
+        };
+        tokio::spawn(async move {
+            let result = client
+                .call::<moc_protocol::ConfigManage>(action)
+                .await
+                .map_err(anyhow::Error::from);
+            let _ = events.send(AppEvent::SettingsResponse {
+                panel,
+                job: crate::settings::Job::Save,
+                result,
+            });
+        });
+    }
+
+    /// 是否有配置写入在途或排队。
+    pub fn saving_config(&self) -> bool {
+        self.config_flight.is_some() || self.config_queue.is_some()
+    }
+
     /// 设置一次性提示并刷新计时。
     pub fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some(text.into());
@@ -207,14 +260,13 @@ impl App {
         }
     }
 
-    /// 当前模型展示名。
-    pub fn model_display(&self) -> &str {
+    /// 当前模型展示名（含思考等级的友好写法）。
+    pub fn model_display(&self) -> String {
         self.session
             .as_ref()
-            .map(|session| session.model.as_str())
-            .unwrap_or("未连接")
+            .map(|session| model_selector_label(&session.model))
+            .unwrap_or_else(|| "未连接".into())
     }
-
     /// 找到指定调用 ID 的工具条目。
     pub fn tool_entry_mut(&mut self, tool_call_id: &str) -> Option<&mut Entry> {
         let index = *self.tool_indices.get(tool_call_id)?;
@@ -348,7 +400,7 @@ impl App {
     /// 打开模型选择器。
     pub fn open_model_picker(&mut self) {
         if self.models.is_empty() {
-            self.set_notice("模型目录为空");
+            self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
         let current = self
@@ -528,5 +580,37 @@ impl App {
             .filter(|item| item.status == moc_protocol::methods::TodoStatus::Completed)
             .count();
         (done, total)
+    }
+}
+
+/// 会话模式的展示名。
+pub fn mode_label(mode: SessionMode) -> &'static str {
+    match mode {
+        SessionMode::Normal => "标准",
+        SessionMode::Ask => "问答",
+        SessionMode::Plan => "计划",
+    }
+}
+
+/// 思考等级的展示名；未知等级原样显示。
+pub fn thinking_label(level: &str) -> &str {
+    match level {
+        "off" => "关闭",
+        "low" => "低",
+        "medium" => "中",
+        "high" => "高",
+        "xhigh" => "极高",
+        "max" => "最高",
+        other => other,
+    }
+}
+
+/// 模型选择串的展示：`供应商/模型:等级` → `供应商/模型（思考：低）`。
+pub fn model_selector_label(selector: &str) -> String {
+    match selector.rsplit_once(':') {
+        Some((base, level)) if !base.is_empty() && !level.is_empty() => {
+            format!("{base}（思考：{}）", thinking_label(level))
+        }
+        _ => selector.to_owned(),
     }
 }

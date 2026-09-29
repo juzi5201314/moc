@@ -1,10 +1,10 @@
-//! /config：普通字段表单、模型候选勾选、维护预览与工作区管理。
+//! /config：字段树、行内编辑与小弹窗编辑、模型候选勾选、维护预览与工作区管理。
 
 mod forms;
 mod render;
 
 use crate::{
-    app::App,
+    app::{App, ConfigWrite},
     config::{KeyMap, TuiConfig},
     protocol::{AppEvent, EmbeddedConnection},
     widgets::prompt::PromptState,
@@ -18,17 +18,19 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 pub use render::draw;
+
+/// 选项卡名称；字段归属由 core 的字段目录给出。
 pub const TABS: &[&str] = &[
     "模型",
     "供应商",
-    "来源",
+    "指令",
+    "技能",
     "工具",
     "上下文",
     "会话",
-    "Skills",
     "MCP",
     "OpenViking",
-    "TUI",
+    "界面",
     "高级",
 ];
 
@@ -38,43 +40,160 @@ pub struct SettingsPanel {
     pub scope: ConfigScope,
     pub data: Option<SettingsDocument>,
     pub tui: Value,
-    pub tui_original: Value,
-    pub core_original: Value,
     pub effective: Value,
     pub fields: Vec<ConfigField>,
-    pub visible: Vec<usize>,
+    /// 当前选项卡展开后的可见行：分组头 + 字段。
+    pub rows: Vec<Row>,
+    /// 用户折叠的顶层分组（顶层默认展开）。
+    pub collapsed: BTreeSet<String>,
+    /// 用户展开的嵌套分组（嵌套默认折叠）。
+    pub expanded: BTreeSet<String>,
     pub tab: usize,
     pub selected: usize,
     pub offset: usize,
     pub advanced: bool,
     pub filter: String,
-    pub view: View,
+    /// 正在进行的编辑：行内单行输入或小弹窗。
+    pub edit: Option<EditState>,
     pub error: Option<String>,
     pub message: Option<String>,
     pub busy: bool,
     pub hits: Vec<(ratatui::layout::Rect, Hit)>,
     pub pending: Option<tokio::task::AbortHandle>,
+    pub view: View,
+    /// 本次进程内的改动历史；只留在内存里，不落盘。
+    pub history: History,
+    /// 撤回／重做的提示语，写入完成后仍然保留。
+    pub outcome: Option<String>,
+    /// 切换范围后才能套用的历史快照。
+    pub restore: Option<Restore>,
+}
+
+/// 请求类型：决定回执如何落到面板上。
+#[derive(Clone, Copy)]
+pub enum Job {
+    /// 读取当前范围的配置文件。
+    Load,
+    /// 写入配置文件并让核心立即生效。
+    Save,
+    /// 获取供应商的模型候选。
+    Models,
+    /// 工作区记忆清单。
+    Workspaces,
+    /// 存储维护的预览或执行结果。
+    Maintenance,
+    /// 改绑目录、删除工作区记忆等其他一次性写入。
+    Update,
+}
+
+/// 改动落在哪一份配置上。
+#[derive(Clone, Copy)]
+enum Store {
+    /// 本进程的界面偏好（界面页）。
+    Tui,
+    /// 核心的配置文件（其余各页）。
+    Core,
+}
+
+impl Store {
+    /// 界面偏好的字段路径以 `tui` 开头。
+    fn of(path: &[String]) -> Self {
+        if path.first().is_some_and(|part| part == "tui") {
+            Store::Tui
+        } else {
+            Store::Core
+        }
+    }
+}
+
+/// 一次改动的快照：撤回时整体恢复，含改动发生的范围。
+#[derive(Clone)]
+pub struct Snapshot {
+    pub scope: ConfigScope,
+    pub document: Value,
+    pub tui: Value,
+    /// 这次改动做了什么，用于选中项与提示文案。
+    pub label: String,
+}
+
+/// 撤回／重做要套用的快照：改动发生在别的范围时，先切回去再套用。
+pub struct Restore {
+    pub entry: Snapshot,
+    pub message: String,
+    /// 这次是撤回（`true`）还是重做。
+    pub undo: bool,
+}
+
+/// 进程内的撤回与重做栈。
+#[derive(Default)]
+pub struct History {
+    pub undo: Vec<Snapshot>,
+    pub redo: Vec<Snapshot>,
+}
+
+impl History {
+    /// 记录一条快照：`undo` 为真时是新的改动，进撤回栈并清空重做栈；
+    /// 否则是撤回/重做过程中把当前状态推回另一侧。
+    fn put(&mut self, snapshot: Snapshot, undo: bool) {
+        if undo {
+            self.redo.clear();
+        }
+        let stack = if undo { &mut self.undo } else { &mut self.redo };
+        if stack.len() >= HISTORY_LIMIT {
+            stack.remove(0);
+        }
+        stack.push(snapshot);
+    }
+}
+
+/// 撤回栈与重做栈共享的上限；超出后丢弃最早的记录。
+const HISTORY_LIMIT: usize = 100;
+
+/// 分组链的一项：`(分组键, 标题, 分组路径, 可删除路径)`。
+type GroupPath = (String, String, Vec<String>, Option<Vec<String>>);
+
+/// 字段树的一行。
+pub struct Row {
+    /// 缩进层级。
+    pub depth: u8,
+    pub kind: RowKind,
+}
+pub enum RowKind {
+    Group(Group),
+    /// 指向 [`SettingsPanel::fields`] 的下标。
+    Field(usize),
+}
+/// 可折叠分组：供应商、模型、模型角色与按用途划分的设置组。
+pub struct Group {
+    pub key: String,
+    pub title: String,
+    pub detail: String,
+    /// 删除整组时提交的配置路径；`None` 表示该分组不可删除。
+    pub path: Option<Vec<String>>,
+}
+/// 编辑态：行内单行输入，或带标题与提示的小弹窗。
+pub struct EditState {
+    pub target: EditTarget,
+    pub kind: FieldKind,
+    pub input: PromptState,
+    pub reveal: bool,
+    /// 小弹窗编辑；`false` 为原地行内编辑。
+    pub popup: bool,
+    pub title: String,
+    pub hint: String,
 }
 
 pub enum View {
     Fields,
-    Edit {
-        target: EditTarget,
-        kind: FieldKind,
-        input: PromptState,
-        reveal: bool,
-    },
     Models {
         provider: String,
         rows: Vec<CatalogModel>,
         checked: BTreeSet<String>,
         selected: usize,
-        offset: usize,
     },
     Workspaces {
         rows: Vec<WorkspaceBinding>,
         selected: usize,
-        offset: usize,
     },
     Maintenance(MaintenanceReport),
     Confirm {
@@ -92,26 +211,18 @@ pub enum EditTarget {
     Filter,
 }
 pub enum ConfirmAction {
-    Close,
     Remove(Vec<String>),
     Run(ConfigAction),
 }
 #[derive(Clone)]
 pub enum Hit {
     Tab(usize),
+    /// 字段树行。
     Row(usize),
-    Edit,
-    Save,
-    Add,
-    Fetch,
-    Advanced,
-    Scope,
-    Back,
-    Workspace,
-    Maintenance,
-    Delete,
-    Apply,
+    /// 模型候选或工作区列表行。
     Check(usize),
+    /// 工具栏按钮：等价于按下某个按键。
+    Key(KeyCode, KeyModifiers),
 }
 
 impl Drop for SettingsPanel {
@@ -139,42 +250,280 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
         scope: ConfigScope::Global,
         data: None,
         tui: tui.clone(),
-        tui_original: tui,
-        core_original: json!({}),
         effective: json!({}),
         fields: Vec::new(),
-        visible: Vec::new(),
+        rows: Vec::new(),
+        collapsed: BTreeSet::new(),
+        expanded: BTreeSet::new(),
         tab: if app.session.is_none() { 1 } else { 0 },
         selected: 0,
         offset: 0,
         advanced: false,
         filter: String::new(),
-        view: View::Fields,
+        edit: None,
         error: None,
         message: None,
         busy: false,
         hits: Vec::new(),
         pending: None,
+        view: View::Fields,
+        history: History::default(),
+        outcome: None,
+        restore: None,
     };
-    panel.request(
-        connection,
-        &app.events,
-        ConfigAction::Read {
-            scope: panel.scope,
-            cwd,
-        },
-        false,
-    );
+    if !app.saving_config() {
+        panel.ensure_loaded(app, connection);
+    }
     app.settings = Some(panel);
     app.completion = None;
 }
 
 impl SettingsPanel {
-    pub fn dirty(&self) -> bool {
-        self.data
-            .as_ref()
-            .is_some_and(|data| data.document != self.core_original)
-            || self.tui != self.tui_original
+    /// 改动前状态的快照，撤回时整体恢复。
+    fn snapshot(&self, label: &str) -> Snapshot {
+        Snapshot {
+            scope: self.scope,
+            document: self
+                .data
+                .as_ref()
+                .map(|data| data.document.clone())
+                .unwrap_or(Value::Null),
+            tui: self.tui.clone(),
+            label: label.into(),
+        }
+    }
+    /// 一次用户改动：记录快照 → 改内存 → 立刻写入并生效。
+    ///
+    /// 闭包只负责内存修改，并说明改动落在哪份配置上；出错时不留历史记录，
+    /// 界面偏好还会回滚到改动前的样子。
+    fn commit(
+        &mut self,
+        label: &str,
+        app: &mut App,
+        connection: &EmbeddedConnection,
+        apply: impl FnOnce(&mut Self) -> anyhow::Result<Store>,
+    ) -> anyhow::Result<()> {
+        if self.data.is_none() {
+            self.error = Some("设置还没读取完，请稍候".into());
+            anyhow::bail!("设置还没读取完，请稍候");
+        }
+        let restore = self.snapshot(label);
+        let store = match apply(self) {
+            Ok(store) => store,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return Err(error);
+            }
+        };
+        if matches!(store, Store::Tui)
+            && let Err(error) = self.save_prefs(app)
+        {
+            self.tui = restore.tui;
+            self.rebuild();
+            self.error = Some(error.to_string());
+            return Err(error);
+        }
+        self.history.put(restore, true);
+        self.error = None;
+        self.rebuild();
+        match store {
+            Store::Core => {
+                self.message = None;
+                self.outcome = None;
+                self.flush(app, connection);
+            }
+            Store::Tui => {
+                self.outcome = None;
+                self.message = Some("界面设置已保存并生效".into());
+            }
+        }
+        Ok(())
+    }
+    /// 把内存里的配置写入文件并立刻生效；有写入在途时先排队合并。
+    fn flush(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let Some(data) = &self.data else {
+            return;
+        };
+        app.write_config(
+            connection,
+            ConfigWrite {
+                scope: self.scope,
+                cwd: self.cwd.clone(),
+                document: data.document.clone(),
+                revision: data.revision.clone(),
+            },
+        );
+    }
+    /// 写入界面偏好文件，并把新设置应用到当前界面。
+    fn save_prefs(&mut self, app: &mut App) -> anyhow::Result<()> {
+        let mut preferences: TuiConfig = serde_json::from_value(self.tui.clone())?;
+        preferences.statusline = preferences
+            .statusline
+            .filter(|text| !text.trim().is_empty());
+        let keys = KeyMap::compile(&preferences)?;
+        app.tui_store
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("界面设置存储尚未初始化"))?
+            .save(&preferences)?;
+        app.show_thinking = preferences.show_thinking;
+        app.tools_collapsed = !preferences.expand_tools;
+        app.statusline_template = preferences.statusline.clone();
+        self.tui = serde_json::to_value(&preferences)?;
+        app.preferences = preferences;
+        app.keymap = keys;
+        app.view_gen = app.view_gen.wrapping_add(1);
+        Ok(())
+    }
+    /// Ctrl+Z：撤回最近一次改动。
+    fn undo(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let Some(entry) = self.history.undo.pop() else {
+            self.message = Some("没有可以撤回的改动".into());
+            return;
+        };
+        self.step(entry, true, app, connection);
+    }
+    /// Ctrl+Y 或 Ctrl+Shift+Z：重做刚刚撤回的改动。
+    fn redo(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let Some(entry) = self.history.redo.pop() else {
+            self.message = Some("没有可以重做的改动".into());
+            return;
+        };
+        self.step(entry, false, app, connection);
+    }
+    /// 套用一条历史快照；改动发生在别的范围时先切回去。
+    fn step(
+        &mut self,
+        entry: Snapshot,
+        undo: bool,
+        app: &mut App,
+        connection: &EmbeddedConnection,
+    ) {
+        let label = entry.label.clone();
+        let verb = if undo { "已撤回" } else { "已重做" };
+        if entry.scope != self.scope {
+            if app.saving_config() {
+                self.history.put(entry, undo);
+                self.message = Some("正在保存改动，请稍候".into());
+                return;
+            }
+            // 当前状态要等切过去读到磁盘内容才知道，那时再记进另一侧栈。
+            let scope = entry.scope;
+            self.restore = Some(Restore {
+                entry,
+                message: format!("{verb}：{label}"),
+                undo,
+            });
+            self.set_scope(scope, app, connection);
+            return;
+        }
+        let current = self.snapshot(&label);
+        self.history.put(current, !undo);
+        self.apply_snapshot(entry, app, connection);
+        self.message = Some(format!("{verb}：{label}"));
+        self.outcome = self.message.clone();
+    }
+    /// 把快照套回内存并立刻写入生效。
+    fn apply_snapshot(&mut self, entry: Snapshot, app: &mut App, connection: &EmbeddedConnection) {
+        let prefs = entry.tui != self.tui;
+        let mut document = false;
+        self.tui = entry.tui;
+        if let Some(data) = &mut self.data
+            && data.document != entry.document
+        {
+            data.document = entry.document;
+            document = true;
+        }
+        self.error = None;
+        self.rebuild();
+        if prefs && let Err(error) = self.save_prefs(app) {
+            self.error = Some(error.to_string());
+        }
+        if document {
+            self.flush(app, connection);
+        }
+    }
+    /// 切换全局／项目范围：重新读取该范围的配置文件。
+    fn set_scope(&mut self, scope: ConfigScope, app: &mut App, connection: &EmbeddedConnection) {
+        if self.busy {
+            self.message = Some("正在读取设置，请稍候".into());
+            return;
+        }
+        self.scope = scope;
+        self.data = None;
+        self.collapsed.clear();
+        self.expanded.clear();
+        self.selected = 0;
+        self.offset = 0;
+        self.edit = None;
+        self.request(
+            connection,
+            &app.events,
+            ConfigAction::Read {
+                scope,
+                cwd: self.cwd.clone(),
+            },
+            Job::Load,
+        );
+    }
+    /// 读取、发现、维护等回执：并入面板视图。
+    fn handle_response(
+        &mut self,
+        app: &mut App,
+        connection: &EmbeddedConnection,
+        result: anyhow::Result<ConfigReply>,
+    ) {
+        match result {
+            Err(error) => {
+                self.restore = None;
+                self.message = None;
+                self.error = Some(error.to_string());
+            }
+            Ok(ConfigReply::Settings(data)) => {
+                self.data = Some(data);
+                match self.restore.take() {
+                    // 撤回／重做发生在别的范围：切回来之后先记下磁盘状态，再套用快照。
+                    Some(restore) => {
+                        let current = self.snapshot(&restore.entry.label);
+                        self.history.put(current, !restore.undo);
+                        self.apply_snapshot(restore.entry, app, connection);
+                        self.message = Some(restore.message.clone());
+                        self.outcome = Some(restore.message);
+                    }
+                    None => {
+                        self.message = None;
+                        self.rebuild();
+                    }
+                }
+            }
+            Ok(ConfigReply::Models(rows)) => {
+                if let View::Models { rows: current, .. } = &mut self.view {
+                    *current = rows;
+                }
+            }
+            Ok(ConfigReply::Workspaces(rows)) => {
+                self.view = View::Workspaces { rows, selected: 0 };
+            }
+            Ok(ConfigReply::Maintenance(report)) => self.view = View::Maintenance(report),
+            Ok(ConfigReply::Updated(message)) => {
+                self.view = View::Fields;
+                self.message = Some(message);
+            }
+        }
+    }
+    /// 确保已经读到配置文件；仍有改动在写入时先等着，免得读到旧内容又覆盖回去。
+    fn ensure_loaded(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        if self.data.is_some() || self.busy {
+            return;
+        }
+        self.request(
+            connection,
+            &app.events,
+            ConfigAction::Read {
+                scope: self.scope,
+                cwd: self.cwd.clone(),
+            },
+            Job::Load,
+        );
     }
     pub fn rebuild(&mut self) {
         let Some(data) = &self.data else {
@@ -186,66 +535,302 @@ impl SettingsPanel {
         self.fields = moc_core::config::catalog::fields(&self.effective);
         self.fields.extend(crate::config::fields());
         self.effective["tui"] = self.tui.clone();
-        self.filter_fields();
+        self.rebuild_rows();
     }
-    fn filter_fields(&mut self) {
+    fn rebuild_rows(&mut self) {
         let filter = self.filter.to_lowercase();
-        self.visible = self
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, field)| {
-                let tab = if field.advanced {
-                    "高级"
-                } else {
-                    field.tab.as_str()
+        let searching = !filter.is_empty();
+        let mut rows = Vec::new();
+        let mut open: Vec<String> = Vec::new();
+        for (index, field) in self.fields.iter().enumerate() {
+            if !self.matches_tab(field) || !matches_filter(field, &filter) {
+                continue;
+            }
+            let chain = self.group_chain(&field.path);
+            let common = chain
+                .iter()
+                .zip(&open)
+                .take_while(|(group, key)| group.0 == **key)
+                .count();
+            for (depth, group) in chain.iter().enumerate().skip(common) {
+                let detail = self.group_detail(&group.2);
+                rows.push(Row {
+                    depth: u8::try_from(depth).unwrap_or(u8::MAX),
+                    kind: RowKind::Group(Group {
+                        key: group.0.clone(),
+                        title: group.1.clone(),
+                        detail,
+                        path: group.3.clone(),
+                    }),
+                });
+            }
+            open = chain.iter().map(|group| group.0.clone()).collect();
+            let visible = searching
+                || chain
+                    .iter()
+                    .enumerate()
+                    .all(|(depth, group)| self.is_expanded(&group.0, depth));
+            if visible {
+                rows.push(Row {
+                    depth: u8::try_from(chain.len()).unwrap_or(u8::MAX),
+                    kind: RowKind::Field(index),
+                });
+            }
+        }
+        self.rows = rows;
+        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        if self.filter.is_empty() {
+            self.offset = 0;
+        }
+    }
+    fn matches_tab(&self, field: &ConfigField) -> bool {
+        let tab = TABS[self.tab];
+        if !field.advanced {
+            return field.tab == tab;
+        }
+        tab == "高级" || (self.advanced && field.tab == tab)
+    }
+    /// 字段所属分组链：`(分组键, 标题, 分组路径, 可删除路径)`。
+    fn group_chain(&self, path: &[String]) -> Vec<GroupPath> {
+        let mut chain = Vec::new();
+        let second = path.get(1).map(String::as_str);
+        match path.first().map(String::as_str) {
+            Some("providers") => {
+                let Some(provider) = path.get(1) else {
+                    return chain;
                 };
-                (tab == TABS[self.tab] || (self.advanced && field.tab == TABS[self.tab]))
-                    && (filter.is_empty()
-                        || field.path.join(".").to_lowercase().contains(&filter)
-                        || field.label.to_lowercase().contains(&filter))
-            })
-            .map(|(index, _)| index)
-            .collect();
-        self.selected = self.selected.min(self.visible.len().saturating_sub(1));
+                chain.push((
+                    format!("providers/{provider}"),
+                    provider.clone(),
+                    vec!["providers".into(), provider.clone()],
+                    Some(vec!["providers".into(), provider.clone()]),
+                ));
+                if path.get(2).is_some_and(|part| part == "models")
+                    && let Some(model) = path.get(3)
+                {
+                    chain.push((
+                        format!("providers/{provider}/models/{model}"),
+                        model.clone(),
+                        vec![
+                            "providers".into(),
+                            provider.clone(),
+                            "models".into(),
+                            model.clone(),
+                        ],
+                        Some(vec![
+                            "providers".into(),
+                            provider.clone(),
+                            "models".into(),
+                            model.clone(),
+                        ]),
+                    ));
+                }
+            }
+            Some("models") if second == Some("roles") => chain.push((
+                "models/roles".into(),
+                "模型角色".into(),
+                vec!["models".into(), "roles".into()],
+                None,
+            )),
+            Some("defaults") if path.len() >= 3 => {
+                let Some(pattern) = path.get(2) else {
+                    return chain;
+                };
+                chain.push((
+                    format!("defaults/models/{pattern}"),
+                    format!("默认 {pattern}"),
+                    vec!["defaults".into(), "models".into(), pattern.clone()],
+                    Some(vec!["defaults".into(), "models".into(), pattern.clone()]),
+                ));
+            }
+            // 工具按子命令分组，避免同名设置（搜索超时、单文件上限）互相混淆。
+            Some("tools") if path.len() >= 3 => {
+                let tool = path[1].clone();
+                if let Some(title) = tool_title(&tool) {
+                    chain.push((
+                        format!("tools/{tool}"),
+                        title.into(),
+                        vec!["tools".into(), tool],
+                        None,
+                    ));
+                }
+            }
+            Some("compaction") if path.len() >= 3 => {
+                let title = match second {
+                    Some("shake") => "本地修剪",
+                    Some("remote") => "服务端压缩",
+                    _ => return chain,
+                };
+                let method = path[1].clone();
+                chain.push((
+                    format!("compaction/{method}"),
+                    title.into(),
+                    vec!["compaction".into(), method],
+                    None,
+                ));
+            }
+            Some("session") if second == Some("retention") && path.len() >= 3 => chain.push((
+                "session/retention".into(),
+                "会话保留".into(),
+                vec!["session".into(), "retention".into()],
+                None,
+            )),
+            Some("mcp") if second == Some("servers") && path.len() >= 3 => {
+                let Some(name) = path.get(2) else {
+                    return chain;
+                };
+                chain.push((
+                    format!("mcp/servers/{name}"),
+                    name.clone(),
+                    vec!["mcp".into(), "servers".into(), name.clone()],
+                    Some(vec!["mcp".into(), "servers".into(), name.clone()]),
+                ));
+            }
+            _ => {}
+        }
+        chain
+    }
+    /// 分组行右侧的摘要：供应商显示模型数量，模型显示关键设置，其余显示子项数量。
+    fn group_detail(&self, group: &[String]) -> String {
+        match group {
+            [root, provider] if root == "providers" => {
+                let count = self
+                    .effective
+                    .get("providers")
+                    .and_then(|providers| providers.get(provider))
+                    .and_then(|provider| provider.get("models"))
+                    .and_then(Value::as_object)
+                    .map_or(0, serde_json::Map::len);
+                if count > 0 {
+                    format!("{count} 个模型")
+                } else {
+                    "尚未添加模型".into()
+                }
+            }
+            [root, provider, models, model] if root == "providers" && models == "models" => {
+                self.model_summary(provider, model)
+            }
+            [root, roles] if root == "models" && roles == "roles" => String::new(),
+            [root, name] if root == "mcp" => match self.value(group).map(server_address) {
+                Some(address) if !address.is_empty() => address,
+                _ => String::new(),
+            },
+            [root, ..] if root == "defaults" => "模型默认值".into(),
+            _ => String::new(),
+        }
+    }
+    /// 模型行的摘要：上下文长度、回复上限、思考与主模型标记。
+    fn model_summary(&self, provider: &str, model: &str) -> String {
+        let Some(value) = self
+            .effective
+            .get("providers")
+            .and_then(|providers| providers.get(provider))
+            .and_then(|provider| provider.get("models"))
+            .and_then(|models| models.get(model))
+        else {
+            return String::new();
+        };
+        let mut parts = Vec::new();
+        if let Some(window) = value.get("context_window").and_then(Value::as_u64) {
+            parts.push(format!("上下文 {}", crate::render::short_number(window)));
+        }
+        if let Some(output) = value.get("max_output_tokens").and_then(Value::as_u64) {
+            parts.push(format!("回复 {}", crate::render::short_number(output)));
+        }
+        if value
+            .get("reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            parts.push("支持思考".into());
+        }
+        let primary = self
+            .effective
+            .get("models")
+            .and_then(|models| models.get("roles"))
+            .and_then(|roles| roles.get("default"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if primary.split(':').next() == Some(&format!("{provider}/{model}")) {
+            parts.push("主模型".into());
+        }
+        parts.join(" · ")
+    }
+    pub fn is_expanded(&self, key: &str, depth: usize) -> bool {
+        if !self.filter.is_empty() {
+            return true;
+        }
+        if depth == 0 {
+            !self.collapsed.contains(key)
+        } else {
+            self.expanded.contains(key)
+        }
+    }
+    fn toggle_group(&mut self, key: &str, depth: u8) {
+        let key = key.to_owned();
+        if depth == 0 {
+            if !self.collapsed.remove(&key) {
+                self.collapsed.insert(key);
+            }
+        } else if !self.expanded.remove(&key) {
+            self.expanded.insert(key);
+        }
+        self.rebuild_rows();
+    }
+    pub fn row(&self) -> Option<&RowKind> {
+        self.rows.get(self.selected).map(|row| &row.kind)
     }
     pub fn field(&self) -> Option<&ConfigField> {
-        self.visible
-            .get(self.selected)
-            .map(|index| &self.fields[*index])
+        match self.row()? {
+            RowKind::Field(index) => self.fields.get(*index),
+            RowKind::Group(_) => None,
+        }
+    }
+    pub fn group(&self) -> Option<&Group> {
+        match self.row()? {
+            RowKind::Group(group) => Some(group),
+            RowKind::Field(_) => None,
+        }
     }
     pub fn value(&self, path: &[String]) -> Option<&Value> {
         get(&self.effective, path)
     }
-    fn change(&mut self, path: &[String], value: Value) {
+    /// 字段是否由当前配置文件显式设置（界面偏好没有继承概念）。
+    pub fn explicit(&self, path: &[String]) -> bool {
+        self.data
+            .as_ref()
+            .is_some_and(|data| get(&data.document, path).is_some())
+    }
+    /// 在配置里写入一项；`tui` 开头的路径写界面偏好。
+    fn set_value(&mut self, path: &[String], value: Value) {
         if path.first().is_some_and(|part| part == "tui") {
             set(&mut self.tui, &path[1..], value);
         } else if let Some(data) = &mut self.data {
             set(&mut data.document, path, value);
         }
-        self.error = None;
-        self.rebuild();
+    }
+    /// 恢复默认：删掉配置文件里的这一项；界面偏好则写回默认值。
+    fn remove_value(&mut self, path: &[String]) {
+        if path.first().is_some_and(|part| part == "tui") {
+            let defaults = serde_json::to_value(TuiConfig::default()).expect("默认设置");
+            let value = get(&defaults, &path[1..]).cloned().unwrap_or(Value::Null);
+            set(&mut self.tui, &path[1..], value);
+        } else if let Some(data) = &mut self.data {
+            remove(&mut data.document, path);
+        }
     }
     fn request(
         &mut self,
         connection: &EmbeddedConnection,
         events: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
         action: ConfigAction,
-        saved: bool,
+        job: Job,
     ) {
         if self.busy {
             return;
         }
         self.busy = true;
         self.error = None;
-        self.message = Some(
-            if saved {
-                "正在保存；运行中的轮次结束后应用"
-            } else {
-                "正在加载"
-            }
-            .into(),
-        );
         let client = connection.client.clone();
         let events = events.clone();
         let panel = self.id;
@@ -254,11 +839,7 @@ impl SettingsPanel {
                 .call::<ConfigManage>(action)
                 .await
                 .map_err(anyhow::Error::from);
-            let _ = events.send(AppEvent::SettingsResponse {
-                panel,
-                result,
-                saved,
-            });
+            let _ = events.send(AppEvent::SettingsResponse { panel, job, result });
         });
         self.pending = Some(task.abort_handle());
     }
@@ -266,78 +847,155 @@ impl SettingsPanel {
         self.tab = index;
         self.selected = 0;
         self.offset = 0;
-        self.view = View::Fields;
-        self.filter_fields();
+        self.edit = None;
+        self.rebuild_rows();
     }
-    fn begin_edit(&mut self) {
-        let Some(field) = self.field().cloned() else {
+    /// 选中指定路径对应的行，必要时展开其分组。
+    fn select_path(&mut self, path: &[String]) {
+        for (index, row) in self.rows.iter().enumerate() {
+            let matched = match &row.kind {
+                RowKind::Field(field) => self.fields[*field].path == path,
+                RowKind::Group(group) => group.path.as_deref() == Some(path),
+            };
+            if matched {
+                self.selected = index;
+                return;
+            }
+        }
+    }
+    /// 开始编辑选中行：单行字段原地编辑，复杂字段用小弹窗。
+    fn begin_edit(&mut self, app: &mut App, connection: &EmbeddedConnection) {
+        let Some(RowKind::Field(index)) = self.row() else {
+            if let Some((key, depth)) =
+                self.rows
+                    .get(self.selected)
+                    .and_then(|row| match &row.kind {
+                        RowKind::Group(group) => Some((group.key.clone(), row.depth)),
+                        RowKind::Field(_) => None,
+                    })
+            {
+                self.toggle_group(&key, depth);
+            }
             return;
         };
+        let field = self.fields[*index].clone();
         let value = self.value(&field.path).cloned().unwrap_or(Value::Null);
-        let mut kind = field.kind;
-        if field.path.starts_with(&["models".into(), "roles".into()]) {
-            let mut choices = Vec::new();
-            if field.path.last().is_some_and(|name| name != "default") {
-                choices.push("inherit".into());
-            }
-            if let Some(providers) = self.effective.get("providers").and_then(Value::as_object) {
-                for (provider, value) in providers {
-                    if let Some(models) = value.get("models").and_then(Value::as_object) {
-                        choices.extend(models.keys().map(|model| format!("{provider}/{model}")));
+        let kind = self.field_kind(&field, &value);
+        if let FieldKind::Bool = kind {
+            let current = value.as_bool().unwrap_or(false);
+            let label = field.label.clone();
+            let path = field.path.clone();
+            let _ = self.commit(&label, app, connection, |panel| {
+                panel.set_value(&path, json!(!current));
+                Ok(Store::of(&path))
+            });
+            return;
+        }
+        let popup = matches!(
+            kind,
+            FieldKind::Multiline | FieldKind::Strings | FieldKind::Object
+        );
+        self.edit = Some(EditState {
+            target: EditTarget::Field(field.path),
+            hint: forms::hint_for(&kind).into(),
+            input: PromptState::from_text(forms::edit_text(&value, &kind)),
+            kind,
+            reveal: false,
+            popup,
+            title: field.label,
+        });
+    }
+    /// 字段的编辑类型：模型角色改为候选列表。
+    fn field_kind(&self, field: &ConfigField, value: &Value) -> FieldKind {
+        if !field.path.starts_with(&["models".into(), "roles".into()]) {
+            return field.kind.clone();
+        }
+        let mut choices = Vec::new();
+        if field.path.last().is_some_and(|name| name != "default") {
+            choices.push(moc_protocol::ChoiceOption::new("inherit", "沿用主模型"));
+        }
+        if let Some(providers) = self.effective.get("providers").and_then(Value::as_object) {
+            for (provider, value) in providers {
+                if let Some(models) = value.get("models").and_then(Value::as_object) {
+                    for model in models.keys() {
+                        let value = format!("{provider}/{model}");
+                        let label = crate::app::model_selector_label(&value);
+                        choices.push(moc_protocol::ChoiceOption::new(&value, &label));
                     }
                 }
             }
-            if let Some(current) = value.as_str().filter(|current| !current.is_empty())
-                && !choices.iter().any(|choice| choice == current)
-            {
-                choices.push(current.into());
-            }
-            kind = FieldKind::Choice(choices);
         }
-        let text = forms::format_value(&value, &kind);
-        self.view = View::Edit {
-            target: EditTarget::Field(field.path),
-            kind,
-            input: PromptState::from_text(text),
-            reveal: false,
-        };
+        if let Some(current) = value.as_str().filter(|current| !current.is_empty())
+            && !choices.iter().any(|choice| choice.value == current)
+        {
+            let label = crate::app::model_selector_label(current);
+            choices.push(moc_protocol::ChoiceOption::new(current, &label));
+        }
+        FieldKind::Choice(choices)
     }
-    fn begin_named(&mut self, target: EditTarget) {
-        self.view = View::Edit {
+    /// 打开一个只有一行输入的弹窗（新增条目、搜索等）。
+    fn begin_named(&mut self, target: EditTarget, title: &str, hint: &str, initial: &str) {
+        self.edit = Some(EditState {
             target,
             kind: FieldKind::Text,
-            input: PromptState::default(),
+            input: PromptState::from_text(initial.into()),
             reveal: false,
-        };
+            popup: true,
+            title: title.into(),
+            hint: hint.into(),
+        });
     }
+    /// 当前上下文对应的供应商：选中的分组或其字段，退化为第一个供应商。
     fn provider(&self) -> Option<String> {
-        self.field()
-            .filter(|field| field.path.first().is_some_and(|part| part == "providers"))
-            .and_then(|field| field.path.get(1))
+        if let Some(RowKind::Group(group)) = self.row()
+            && let Some(name) = group.path.as_ref().and_then(|path| path.get(1))
+            && group
+                .path
+                .as_ref()
+                .is_some_and(|path| path.first().is_some_and(|part| part == "providers"))
+        {
+            return Some(name.clone());
+        }
+        if let Some(path) = self.field().map(|field| &field.path)
+            && path.first().is_some_and(|part| part == "providers")
+        {
+            return path.get(1).cloned();
+        }
+        self.effective
+            .get("providers")?
+            .as_object()?
+            .keys()
+            .next()
             .cloned()
-            .or_else(|| {
-                self.effective
-                    .get("providers")?
-                    .as_object()?
-                    .keys()
-                    .next()
-                    .cloned()
-            })
     }
     fn add(&mut self) {
         match TABS[self.tab] {
-            "供应商" => self.begin_named(EditTarget::Provider),
+            "供应商" => self.begin_named(
+                EditTarget::Provider,
+                "添加供应商",
+                "填写供应商标识，例如 local",
+                "",
+            ),
             "模型" => {
                 if let Some(provider) = self.provider() {
-                    self.begin_named(EditTarget::Model(provider));
+                    self.begin_named(
+                        EditTarget::Model(provider.clone()),
+                        &format!("为 {provider} 添加模型"),
+                        "填写模型 ID，例如 gpt-4o",
+                        "",
+                    );
                 } else {
-                    self.error = Some("请先在供应商选项卡添加供应商".into());
+                    self.error = Some("请先在“供应商”页添加供应商".into());
                 }
             }
-            "MCP" => self.begin_named(EditTarget::Mcp),
+            "MCP" => self.begin_named(
+                EditTarget::Mcp,
+                "添加 MCP 服务",
+                "填写服务标识，例如 filesystem",
+                "",
+            ),
             _ => {
-                self.error =
-                    Some("可在供应商、模型、MCP 选项卡添加条目；模型默认模式使用 Ctrl+D".into())
+                self.error = Some("“供应商”“模型”“MCP”页可以添加条目".into());
             }
         }
     }
@@ -347,25 +1005,28 @@ impl SettingsPanel {
         events: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
     ) {
         let Some(provider) = self.provider() else {
-            self.error = Some("请先添加并选中一个供应商，填写 API 地址与密钥".into());
+            self.error = Some("请先在“供应商”页填写服务地址与密钥".into());
             return;
         };
         let value = self.effective["providers"][&provider].clone();
         self.view = View::Models {
-            provider,
+            provider: provider.clone(),
             rows: Vec::new(),
             checked: BTreeSet::new(),
             selected: 0,
-            offset: 0,
         };
         self.request(
             connection,
             events,
-            ConfigAction::Models { provider: value },
-            false,
+            ConfigAction::Models {
+                id: provider,
+                provider: value,
+            },
+            Job::Models,
         );
     }
-    fn add_model(&mut self, provider: &str, id: &str) -> anyhow::Result<()> {
+    /// 在配置里登记一个模型；主模型为空时顺带设为它。
+    fn insert_model(&mut self, provider: &str, id: &str) -> anyhow::Result<()> {
         anyhow::ensure!(!id.trim().is_empty(), "模型 ID 不能为空");
         let path = vec![
             "providers".into(),
@@ -374,14 +1035,14 @@ impl SettingsPanel {
             id.into(),
         ];
         anyhow::ensure!(self.value(&path).is_none(), "模型 {provider}/{id} 已存在");
-        self.change(&path, json!({}));
+        self.set_value(&path, json!({}));
         let primary = self
             .effective
             .pointer("/models/roles/default")
             .and_then(Value::as_str)
             .unwrap_or_default();
         if primary.is_empty() {
-            self.change(
+            self.set_value(
                 &["models".into(), "roles".into(), "default".into()],
                 json!(format!("{provider}/{id}")),
             );
@@ -390,64 +1051,159 @@ impl SettingsPanel {
     }
 }
 
+fn matches_filter(field: &ConfigField, filter: &str) -> bool {
+    filter.is_empty()
+        || field.path.join(".").to_lowercase().contains(filter)
+        || field.label.to_lowercase().contains(filter)
+}
+
+/// 工具分组标题：配置键 → 用户能看懂的用途。
+fn tool_title(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "output" => "工具输出",
+        "bash" => "命令执行",
+        "read" => "读取文件",
+        "edit" => "编辑文件",
+        "write" => "写入文件",
+        "grep" => "搜索内容",
+        "find" => "查找文件",
+        "todo" => "任务清单",
+        "job" => "后台任务",
+        _ => return None,
+    })
+}
+
+/// MCP 服务的连接摘要：本地命令或远程地址。
+fn server_address(server: &Value) -> String {
+    if let Some(command) = server
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|command| !command.is_empty())
+    {
+        return format!("本地程序：{command}");
+    }
+    match server
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())
+    {
+        Some(url) => format!("远程服务：{url}"),
+        None => String::new(),
+    }
+}
+
 pub fn response(
     app: &mut App,
     connection: &EmbeddedConnection,
     id: u64,
+    job: Job,
     result: anyhow::Result<ConfigReply>,
-    saved: bool,
 ) {
-    let Some(panel) = app.settings.as_mut().filter(|panel| panel.id == id) else {
+    if matches!(job, Job::Save) {
+        finish_save(app, connection, result);
+        return;
+    }
+    let Some(mut panel) = app.settings.take().filter(|panel| panel.id == id) else {
         return;
     };
-    panel.busy = false;
     panel.pending = None;
-    panel.message = None;
+    panel.busy = false;
+    panel.handle_response(app, connection, result);
+    app.settings = Some(panel);
+}
+
+/// 写入回执：带着新版本先把排队的改动接着写完，再把结果并入面板。
+pub fn finish_save(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    result: anyhow::Result<ConfigReply>,
+) {
+    app.config_flight = None;
     match result {
-        Err(error) => panel.error = Some(error.to_string()),
         Ok(ConfigReply::Settings(data)) => {
-            panel.core_original = data.document.clone();
-            panel.data = Some(data);
-            panel.rebuild();
-            if saved {
-                panel.message = Some("配置已保存并应用；会话目录变更重启生效".into());
-            }
-        }
-        Ok(ConfigReply::Models(rows)) => {
-            if let View::Models { rows: current, .. } = &mut panel.view {
-                *current = rows;
-            }
-        }
-        Ok(ConfigReply::Workspaces(rows)) => {
-            panel.view = View::Workspaces {
-                rows,
-                selected: 0,
-                offset: 0,
-            }
-        }
-        Ok(ConfigReply::Maintenance(report)) => panel.view = View::Maintenance(report),
-        Ok(ConfigReply::Updated(message)) => {
-            panel.message = Some(message);
-            panel.view = View::Fields;
-        }
-    }
-    if saved && panel.error.is_none() {
-        let client = connection.client.clone();
-        let events = app.events.clone();
-        tokio::spawn(async move {
-            match client
-                .call::<moc_protocol::ConfigGet>(moc_protocol::ConfigGetParams {})
-                .await
-            {
-                Ok(config) => {
-                    let _ = events.send(AppEvent::ConfigurationLoaded(config));
+            let keep_local = match &mut app.config_queue {
+                // 写入期间又有改动：只取回新版本号，等下一轮写入。
+                Some(write) => {
+                    write.revision.clone_from(&data.revision);
+                    true
                 }
-                Err(error) => {
-                    let _ = events.send(AppEvent::Notice(format!("刷新模型列表失败：{error}")));
-                }
+                None => false,
+            };
+            if keep_local && let Some(write) = app.config_queue.take() {
+                app.write_config(connection, write);
             }
-        });
+            adopt(app, connection, data, keep_local);
+        }
+        Err(error) => {
+            app.config_queue = None;
+            let text = error.to_string();
+            match app.settings.as_mut() {
+                Some(panel) => {
+                    panel.message = None;
+                    panel.outcome = None;
+                    panel.error = Some(text);
+                }
+                None => app.set_notice(format!("配置保存失败：{text}")),
+            }
+        }
+        Ok(_) => {}
     }
+    reload_if_waiting(app, connection);
+}
+
+/// 设置页若在等写入落地后才读取配置，这里补上。
+fn reload_if_waiting(app: &mut App, connection: &EmbeddedConnection) {
+    if app.saving_config() {
+        return;
+    }
+    if let Some(mut panel) = app.settings.take() {
+        panel.ensure_loaded(app, connection);
+        app.settings = Some(panel);
+    }
+}
+
+/// 把写入结果并入设置面板，并在配置稳定后刷新模型信息。
+fn adopt(app: &mut App, connection: &EmbeddedConnection, data: SettingsDocument, keep_local: bool) {
+    let Some(panel) = app.settings.as_mut() else {
+        return;
+    };
+    let document = if keep_local {
+        panel.data.as_ref().map(|current| current.document.clone())
+    } else {
+        None
+    };
+    panel.data = Some(data);
+    if let Some(document) = document
+        && let Some(current) = &mut panel.data
+    {
+        current.document = document;
+    }
+    panel.error = None;
+    panel.rebuild();
+    if keep_local {
+        return;
+    }
+    panel.message = Some(
+        panel
+            .outcome
+            .take()
+            .unwrap_or_else(|| "已保存并生效".into()),
+    );
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<moc_protocol::ConfigGet>(moc_protocol::ConfigGetParams {})
+            .await
+        {
+            Ok(config) => {
+                let _ = events.send(AppEvent::ConfigurationLoaded(config));
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("刷新模型信息失败：{error}")));
+            }
+        }
+    });
 }
 
 pub fn handle_key(
@@ -468,27 +1224,31 @@ pub fn handle_key(
 }
 pub fn paste(app: &mut App, text: &str) {
     if let Some(panel) = &mut app.settings
-        && let View::Edit { input, .. } = &mut panel.view
+        && let Some(edit) = &mut panel.edit
     {
-        input.insert_str_raw(text);
+        edit.input.insert_str_raw(text);
     }
 }
 pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) {
     let Some(panel) = &mut app.settings else {
         return;
     };
-    if event.kind == MouseEventKind::ScrollDown {
-        panel.selected = panel
-            .selected
-            .saturating_add(3)
-            .min(panel.visible.len().saturating_sub(1));
-        return;
+    match event.kind {
+        MouseEventKind::ScrollDown => {
+            panel.selected = panel
+                .selected
+                .saturating_add(3)
+                .min(panel.rows.len().saturating_sub(1));
+            return;
+        }
+        MouseEventKind::ScrollUp => {
+            panel.selected = panel.selected.saturating_sub(3);
+            return;
+        }
+        MouseEventKind::Down(MouseButton::Left) => {}
+        _ => return,
     }
-    if event.kind == MouseEventKind::ScrollUp {
-        panel.selected = panel.selected.saturating_sub(3);
-        return;
-    }
-    if event.kind != MouseEventKind::Down(MouseButton::Left) {
+    if panel.edit.is_some() {
         return;
     }
     let Some(hit) = panel
@@ -503,7 +1263,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         Hit::Tab(index) => panel.select_tab(index),
         Hit::Row(index) => {
             panel.selected = index;
-            panel.begin_edit();
+            handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
         }
         Hit::Check(index) => match &mut panel.view {
             View::Models {
@@ -522,28 +1282,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
             View::Workspaces { selected, .. } => *selected = index,
             _ => {}
         },
-        hit => {
-            let key = match hit {
-                Hit::Edit => KeyCode::Enter,
-                Hit::Save => KeyCode::Char('s'),
-                Hit::Add => KeyCode::Char('a'),
-                Hit::Fetch => KeyCode::Char('f'),
-                Hit::Advanced => KeyCode::F(4),
-                Hit::Scope => KeyCode::F(2),
-                Hit::Back => KeyCode::Esc,
-                Hit::Workspace => KeyCode::Char('w'),
-                Hit::Maintenance => KeyCode::Char('g'),
-                Hit::Delete => KeyCode::Delete,
-                Hit::Apply => KeyCode::Enter,
-                _ => return,
-            };
-            let modifiers = if matches!(hit, Hit::Save) {
-                KeyModifiers::CONTROL
-            } else {
-                KeyModifiers::NONE
-            };
-            handle_key(app, connection, modifiers, key);
-        }
+        Hit::Key(code, modifiers) => handle_key(app, connection, modifiers, code),
     }
 }
 

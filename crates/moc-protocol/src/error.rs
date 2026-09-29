@@ -25,9 +25,10 @@ use serde_json::Value;
 ///
 /// `code` 保持 `i32` 而不是枚举：core 升级后新增的错误码必须能透传到老前端，
 /// 前端据 [`RpcErrorCode::from_code`] 判定能否识别，识别不了就按通用失败展示。
+/// 展示只给人类消息，错误码留给日志与程序判断（`Debug` 仍带码）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[serde(deny_unknown_fields)]
-#[error("{code}: {message}")]
+#[error("{message}")]
 pub struct RpcError {
     /// 错误码，取值见 [`RpcErrorCode`]；未知码原样保留。
     pub code: i32,
@@ -279,7 +280,7 @@ impl From<io::Error> for ProtocolError {
 #[non_exhaustive]
 pub enum RpcCallError {
     /// 对端回了 `error` 对象（含 `-32601` 这类可预期拒绝）。
-    #[error("RPC 错误：{0}")]
+    #[error(transparent)]
     Rpc(#[from] RpcError),
     /// 请求被取消：反向请求在轮次取消或连接关闭时触发。
     #[error("请求已被取消")]

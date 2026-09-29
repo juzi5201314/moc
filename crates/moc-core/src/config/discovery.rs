@@ -5,12 +5,13 @@ use crate::CoreError;
 use moc_llm::{Auth, EndpointStyle, Protocol};
 
 pub async fn models(
+    id: &str,
     value: serde_json::Value,
 ) -> Result<Vec<moc_protocol::CatalogModel>, CoreError> {
     let mut document: ProviderDocument =
         serde_json::from_value(value).map_err(|error| CoreError::Config(error.to_string()))?;
     document.models.clear();
-    let defaults = ResolvedProvider::from_document("模型发现", document)?;
+    let defaults = ResolvedProvider::from_document(id, document)?;
     let config = defaults.catalog_config();
     let mut client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     if let Some(seconds) = config.connect_timeout_secs {
@@ -51,12 +52,12 @@ pub async fn models(
         let rows = body
             .get("data")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| CoreError::Config("模型端点未返回 data 数组".into()))?;
+            .ok_or_else(|| CoreError::Config("模型服务没有返回模型列表".into()))?;
         for row in rows {
             let id = row
                 .get("id")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| CoreError::Config("模型列表条目缺少 id".into()))?;
+                .ok_or_else(|| CoreError::Config("模型列表里有条目缺少模型 ID".into()))?;
             result.push(moc_protocol::CatalogModel {
                 id: id.into(),
                 name: row
@@ -74,9 +75,11 @@ pub async fn models(
             .get("last_id")
             .and_then(serde_json::Value::as_str)
             .or_else(|| rows.last()?.get("id")?.as_str())
-            .ok_or_else(|| CoreError::Config("分页模型列表没有下一页游标".into()))?;
+            .ok_or_else(|| CoreError::Config("模型列表的分页数据不完整".into()))?;
         if cursor.as_deref() == Some(next) {
-            return Err(CoreError::Config("模型端点重复返回同一分页游标".into()));
+            return Err(CoreError::Config(
+                "模型服务重复返回同一页，已停止获取".into(),
+            ));
         }
         cursor = Some(next.into());
     }

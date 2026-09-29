@@ -182,7 +182,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(
         Block::bordered()
             .title(format!(
-                " 后续队列 {} · 滚轮浏览 · 点击编辑 / × 取消 ",
+                " 待发送 {} · 滚轮浏览 · 点击编辑 / × 取消 ",
                 queue.len()
             ))
             .style(

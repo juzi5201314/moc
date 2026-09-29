@@ -27,6 +27,7 @@ pub enum ConfigAction {
         revision: String,
     },
     Models {
+        id: String,
         provider: Value,
     },
     RebindWorkspace {
@@ -81,7 +82,31 @@ pub enum FieldKind {
     Multiline,
     Strings,
     Object,
-    Choice(Vec<String>),
+    Choice(Vec<ChoiceOption>),
+}
+
+/// 枚举候选：`value` 是写入配置的原文，`label` 是界面展示的说明。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChoiceOption {
+    pub value: String,
+    pub label: String,
+}
+
+impl ChoiceOption {
+    pub fn new(value: &str, label: &str) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+        }
+    }
+    /// 展示文本：标签与取值相同时只显示一次。
+    pub fn display(&self) -> String {
+        if self.label == self.value {
+            self.value.clone()
+        } else {
+            format!("{}（{}）", self.label, self.value)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

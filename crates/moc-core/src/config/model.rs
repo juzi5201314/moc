@@ -247,7 +247,9 @@ impl std::str::FromStr for ThinkingLevel {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
-            _ => Err(CoreError::Config(format!("未知 thinking level `{value}`"))),
+            _ => Err(CoreError::Config(format!(
+                "未知的思考等级 {value}；可用值：off、low、medium、high、xhigh、max"
+            ))),
         }
     }
 }
@@ -341,11 +343,11 @@ impl ResolvedProvider {
     pub(super) fn from_document(id: &str, document: ProviderDocument) -> Result<Self, CoreError> {
         let api = document
             .api
-            .ok_or_else(|| CoreError::Config(format!("providers.{id}.api 未配置")))?;
+            .ok_or_else(|| CoreError::Config(format!("供应商 {id} 没有选择 API 格式")))?;
         if !(document.base_url.starts_with("https://") || document.base_url.starts_with("http://"))
         {
             return Err(CoreError::Config(format!(
-                "providers.{id}.base_url 必须是 http(s) URL"
+                "供应商 {id} 的服务地址必须以 http:// 或 https:// 开头"
             )));
         }
         // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每个 step 都触发压缩。
@@ -515,12 +517,10 @@ impl<'a> ModelSelector<'a> {
             (value, None)
         };
         let (provider_id, model_id) = path.split_once('/').ok_or_else(|| {
-            CoreError::Config(format!(
-                "模型 selector `{value}` 必须是 provider/model[:level]"
-            ))
+            CoreError::Config(format!("模型写法“{value}”不正确，应为 供应商/模型"))
         })?;
         if provider_id.is_empty() || model_id.is_empty() {
-            return Err(CoreError::Config(format!("模型 selector `{value}` 不完整")));
+            return Err(CoreError::Config(format!("模型写法“{value}”不完整")));
         }
         Ok(Self {
             provider_id,
@@ -570,7 +570,7 @@ pub(super) fn resolve_one(
     let level = parsed.level.or(fallback_level).unwrap_or(default_level);
     if model.reasoning && level != ThinkingLevel::Off && !thinking_levels.contains(&level) {
         return Err(CoreError::Config(format!(
-            "模型 selector `{selector}` 的 thinking level `{}` 不在模型 thinking_levels 中",
+            "模型 {selector} 不支持思考等级 {}；可在模型的“可选思考等级”中调整",
             level.as_str()
         )));
     }
@@ -660,18 +660,18 @@ pub(super) fn validate_roles(
         return Ok(());
     }
     for (role, selector) in [
-        ("default", roles.default.as_str()),
-        ("smol", roles.smol.as_str()),
-        ("slow", roles.slow.as_str()),
-        ("plan", roles.plan.as_str()),
+        ("主模型", roles.default.as_str()),
+        ("轻量模型", roles.smol.as_str()),
+        ("深度模型", roles.slow.as_str()),
+        ("计划模型", roles.plan.as_str()),
     ] {
-        let selector = if selector == "inherit" && role != "default" {
+        let selector = if selector == "inherit" && role != "主模型" {
             &roles.default
         } else {
             selector
         };
         resolve_one(providers, selector, None)
-            .map_err(|error| CoreError::Config(format!("models.roles.{role} 无法解析：{error}")))?;
+            .map_err(|error| CoreError::Config(format!("{role}无法解析：{}", error.detail())))?;
     }
     Ok(())
 }

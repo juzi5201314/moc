@@ -7,15 +7,13 @@ use crate::{
 
 pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEvent) {
     match event {
-        AppEvent::SettingsResponse {
-            panel,
-            result,
-            saved,
-        } => crate::settings::response(app, connection, panel, result, saved),
+        AppEvent::SettingsResponse { panel, job, result } => {
+            crate::settings::response(app, connection, panel, job, result)
+        }
         AppEvent::ConfigurationLoaded(config) => {
             app.models = config.models;
             if app.session.is_none() && config.default_model.is_some() {
-                if app.settings.as_ref().is_some_and(|panel| !panel.dirty()) {
+                if app.settings.is_some() && !app.saving_config() {
                     app.settings = None;
                 }
                 let client = connection.client.clone();
@@ -58,9 +56,9 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 match result {
                     Ok(()) => crate::queue::dispatch(app, connection),
                     Err(_) if interrupted => crate::queue::dispatch(app, connection),
-                    Err(error) => {
-                        app.set_notice(format!("轮次结束：{error}；待发队列保留，可编辑后重新发送"))
-                    }
+                    Err(error) => app.set_notice(format!(
+                        "未能完成：{error}；已排队的消息仍保留，可编辑后重发"
+                    )),
                 }
             }
         }
@@ -77,7 +75,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         .is_some_and(|current| current.id == session)
                     {
                         app.push_user(prompt.draft.text);
-                        app.set_notice("补充消息已接收，将在安全工具边界交给模型");
+                        app.set_notice("已收到补充要求，会在安全时机交给模型");
                     }
                 }
                 Ok(false) => {
@@ -87,7 +85,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 }
                 Err(error) => {
                     app.queues.entry(session).or_default().push_front(prompt);
-                    app.set_notice(format!("补充消息未送达，已保留在队列中：{error}"));
+                    app.set_notice(format!("未能送达，已排到待发送：{error}"));
                 }
             }
         }

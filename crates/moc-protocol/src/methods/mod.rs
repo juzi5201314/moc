@@ -44,8 +44,9 @@ pub use initialize::{
     Ping, PingResult, ServerCapabilities, ServerInfo,
 };
 pub use management::{
-    CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
-    MaintenanceReport, SessionSteer, SettingsDocument, SteerParams, SteerResult, WorkspaceBinding,
+    CatalogModel, ChoiceOption, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope,
+    FieldKind, MaintenanceReport, SessionSteer, SettingsDocument, SteerParams, SteerResult,
+    WorkspaceBinding,
 };
 pub use openviking::{
     OpenVikingDelete, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingEntry,

@@ -290,8 +290,14 @@ fn thinking_block(text: &str, entry: &Entry, app: &App, width: usize) -> Vec<Lin
         ),
     ];
     if !expanded {
+        let key = app
+            .preferences
+            .keybindings
+            .get("thinking")
+            .and_then(|keys| keys.first())
+            .map_or("ctrl+t", String::as_str);
         spans.push(Span::styled(
-            "  Ctrl+T 展开".to_owned(),
+            format!("  {key} 展开"),
             Style::new().fg(theme.gray_dim),
         ));
     }
@@ -630,7 +636,7 @@ fn render_todo(
     let mut lines = vec![Line::from(vec![
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled(
-            "◆ TODO".to_owned(),
+            "◆ 任务".to_owned(),
             Style::new()
                 .fg(theme.accent_user)
                 .add_modifier(Modifier::BOLD),

@@ -11,7 +11,7 @@ pub struct SlashCommand {
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/config",
-        description: "配置模型、供应商、来源、TUI 与知识域",
+        description: "打开设置：模型、供应商、界面等",
     },
     SlashCommand {
         name: "/help",
@@ -31,11 +31,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/mode",
-        description: "切换 Normal / Ask / Plan",
+        description: "切换会话模式：标准／问答／计划",
     },
     SlashCommand {
         name: "/memories",
-        description: "浏览 OpenViking 工作区记忆",
+        description: "浏览工作区记忆",
     },
     SlashCommand {
         name: "/compact",
@@ -43,7 +43,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/context",
-        description: "查看上下文组成与占用比例",
+        description: "查看上下文占用明细",
     },
     SlashCommand {
         name: "/quit",

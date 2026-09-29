@@ -25,7 +25,7 @@ fn revision(text: &str) -> String {
     format!("{:032x}", xxhash_rust::xxh3::xxh3_128(text.as_bytes()))
 }
 fn parse(text: &str) -> Result<toml::Value, CoreError> {
-    toml::from_str(text).map_err(|error| CoreError::Config(format!("TOML 配置无法解析：{error}")))
+    toml::from_str(text).map_err(|error| CoreError::Config(format!("配置文件格式有误：{error}")))
 }
 
 fn merged(
@@ -106,7 +106,7 @@ pub fn save(
         crate::session::lock::SessionLockGuard::acquire(parent.join("config.lock"), "config")?;
     if revision(&contents(&target)?) != expected {
         return Err(CoreError::Config(
-            "文件已被其他窗口修改，请重新加载后再保存；当前草稿未丢失".into(),
+            "配置文件已被其他窗口修改；按 Ctrl+Z 撤回这次改动，或重新打开设置页读取最新配置".into(),
         ));
     }
     remove_nulls(&mut document);

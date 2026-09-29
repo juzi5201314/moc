@@ -24,8 +24,9 @@ use tokio_util::sync::CancellationToken;
 pub enum AppEvent {
     SettingsResponse {
         panel: u64,
+        /// 该回执对应的请求类型。
+        job: crate::settings::Job,
         result: anyhow::Result<moc_protocol::ConfigReply>,
-        saved: bool,
     },
     ConfigurationLoaded(moc_protocol::ConfigGetResult),
     TurnReturned {
@@ -167,7 +168,7 @@ pub async fn connect_embedded(
         .context("内嵌连接握手失败")?;
     anyhow::ensure!(
         handshake.server.name == "moc-core",
-        "内嵌服务不是 moc-core：{}",
+        "内置服务不可用：{}",
         handshake.server.name
     );
     Ok(EmbeddedConnection {
