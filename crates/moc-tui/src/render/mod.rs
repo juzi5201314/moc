@@ -1,7 +1,7 @@
 //! 帧绘制：布局切分 + 各区域渲染。
 //!
 //! 留白 → 输入框 → statusline。所有内容左右各留 [`MARGIN_X`] 格边距，行与行
-//! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝快捷键提示，右＝模型 · 模式）。
+//! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝帮助键提示，右＝模型 · 模式）。
 //! 整帧先铺主题底色，滚动区由 [`ScrollbackView`] 按行缓存直写 buffer。
 
 pub mod diff;
@@ -337,7 +337,7 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     )
 }
 
-/// 输入框下边框上的图例：左＝快捷键提示，右＝模型 · 思考预算 · 模式。
+/// 输入框下边框上的图例：左＝帮助键提示，右＝模型 · 模式。
 ///
 /// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
 /// 右侧的当前模型与模式仍然保留。
@@ -365,44 +365,26 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let binding = |action: &str| {
-        app.preferences
-            .keybindings
-            .get(action)
-            .and_then(|keys| keys.first())
-            .map(String::as_str)
-            .unwrap_or("—")
-    };
-    let tips: [(&str, &str); 5] = [
-        (binding("help"), "快捷键"),
-        (binding("thinking"), "思考"),
-        (binding("tools"), "工具"),
-        (binding("mode"), "模式"),
-        (binding("thinking_level"), "预算"),
-    ];
-    let tips_width: usize = tips
-        .iter()
-        .map(|(key, label)| str_width(key) + 1 + str_width(label))
-        .sum::<usize>()
-        + 3 * (tips.len() - 1);
+    let help_key = app
+        .preferences
+        .keybindings
+        .get("help")
+        .and_then(|keys| keys.first())
+        .map_or("—", String::as_str);
+    const HELP_TIP: &str = "快捷键帮助";
+    let tips_width = str_width(help_key) + 1 + str_width(HELP_TIP);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
     if show_tips {
         let mut x = area.x + 3;
         buffer.set_string(area.x + 2, y, " ", Style::new());
-        for (index, (key, label)) in tips.iter().enumerate() {
-            if index > 0 {
-                buffer.set_string(x, y, " · ", Style::new().fg(theme.gray_dim));
-                x += 3;
-            }
-            buffer.set_string(x, y, key, Style::new().fg(theme.gray_bright));
-            x += cell_width(key);
-            buffer.set_string(x, y, " ", Style::new());
-            x += 1;
-            buffer.set_string(x, y, label, Style::new().fg(theme.gray_dim));
-            x += cell_width(label);
-        }
+        buffer.set_string(x, y, help_key, Style::new().fg(theme.gray_bright));
+        x += cell_width(help_key);
+        buffer.set_string(x, y, " ", Style::new());
+        x += 1;
+        buffer.set_string(x, y, HELP_TIP, Style::new().fg(theme.gray_dim));
+        x += cell_width(HELP_TIP);
         buffer.set_string(x, y, " ", Style::new());
     }
 
@@ -421,7 +403,7 @@ fn cell_width(text: &str) -> u16 {
     u16::try_from(str_width(text)).unwrap_or(u16::MAX)
 }
 
-/// 输入框内容行：`❯` 提示符、chip 占位高亮、空输入给 placeholder。
+/// 输入框内容行：`❯` 提示符、chip 占位高亮，空输入只有提示符。
 ///
 /// 首行 `❯ ` 起头，续行按提示符宽度悬挂对齐，与正文的缩进节奏一致。
 fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
@@ -440,14 +422,7 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         )
     };
     if text.is_empty() {
-        return vec![Line::from(vec![
-            Span::styled(" ".to_owned(), Style::new()),
-            marker(),
-            Span::styled(
-                "输入消息，/ 唤起命令…".to_owned(),
-                Style::new().fg(theme.gray_dim),
-            ),
-        ])];
+        return vec![Line::from(vec![Span::raw(" "), marker()])];
     }
     let lines: Vec<Line<'static>> = text
         .split('\n')

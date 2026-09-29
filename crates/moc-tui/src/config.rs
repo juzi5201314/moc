@@ -76,6 +76,41 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
     ]
 }
 
+/// 把一组绑定渲染成紧凑键位列：同一键码的多个修饰键合并成 `shift/alt + enter`，
+/// 不同键码之间以 ` / ` 分隔。修饰键与键码之间留空格，长组合不再挤压描述列。
+pub(crate) fn display_keys(keys: &[String]) -> String {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for key in keys {
+        let code = code_of(key);
+        let modifiers = &key[..key.len() - code.len()];
+        let modifiers = modifiers.strip_suffix('+').unwrap_or_default().to_owned();
+        match groups.iter_mut().find(|(group, _)| group == code) {
+            Some((_, alternatives)) => alternatives.push(modifiers),
+            None => groups.push((code.to_owned(), vec![modifiers])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(code, modifiers)| {
+            let modifiers: Vec<_> = modifiers
+                .into_iter()
+                .filter(|modifier| !modifier.is_empty())
+                .collect();
+            if modifiers.is_empty() {
+                code
+            } else {
+                format!("{} + {code}", modifiers.join("/"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// 绑定文本里的键码部分（`ctrl+enter` → `enter`；`home` → `home`）。
+fn code_of(key: &str) -> &str {
+    key.rsplit_once('+').map_or(key, |(_, code)| code)
+}
+
 pub struct KeyMap {
     bindings: Vec<(KeyModifiers, KeyCode, String, KeyModifiers, KeyCode)>,
     reserved: Vec<(KeyModifiers, KeyCode)>,
@@ -328,6 +363,18 @@ pub fn notify(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_column_merges_alternative_modifiers() {
+        let keys = |list: &[&str]| list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            display_keys(&keys(&["shift+enter", "alt+enter"])),
+            "shift/alt + enter"
+        );
+        assert_eq!(display_keys(&keys(&["home", "ctrl+a"])), "home / ctrl + a");
+        assert_eq!(display_keys(&keys(&["ctrl+shift+p"])), "ctrl+shift + p");
+        assert_eq!(display_keys(&keys(&[])), "");
+    }
 
     #[test]
     fn partial_key_map_keeps_unrelated_actions_and_rejects_conflicts() {

@@ -1,7 +1,7 @@
 //! 浮层渲染：斜杠补全菜单与模态卡片。
 //!
-//! 浮层画在滚动区之后（覆盖其内容）；模态居中，最大宽度为终端的 3/4，
-//! 高度按内容收缩。全部使用主题槽位。
+//! 浮层画在滚动区之后（覆盖其内容）；模态居中，宽度按内容取值（帮助为双列快捷键表，
+//! 普通模态上限 96 列），高度按内容收缩。全部使用主题槽位。
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::modal::Modal;
+use crate::render::wrap::str_width;
 use crate::widgets::completion::CompletionState;
 
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
@@ -78,13 +79,22 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
     frame
         .buffer_mut()
         .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
-    let width = if area.width < 70 {
-        area.width.saturating_sub(4).max(16)
-    } else {
-        area.width.min(96)
-    };
     let max_content = usize::from(area.height.saturating_sub(6)).max(1);
-    let content_width = usize::from(width.saturating_sub(4)).max(8);
+    let (width, content_width) = if matches!(modal, Modal::Help) {
+        // 帮助是双列快捷键表：按内容自然宽度取值，窄终端由 help_lines 退回单列。
+        let (_, natural) = help_lines(app, usize::from(area.width).saturating_sub(6), max_content);
+        let width = u16::try_from(natural + 2)
+            .unwrap_or(u16::MAX)
+            .min(area.width.saturating_sub(4));
+        (width, usize::from(width.saturating_sub(2)))
+    } else {
+        let width = if area.width < 70 {
+            area.width.saturating_sub(4).max(16)
+        } else {
+            area.width.min(96)
+        };
+        (width, usize::from(width.saturating_sub(4)).max(8))
+    };
     let lines = modal_lines(app, modal, content_width, max_content);
     let content_height = lines.len().max(1) as u16;
     let height = content_height
@@ -113,6 +123,124 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         modal_area,
     );
+}
+
+/// 快捷键帮助：键位列与描述列之间的间距（格）。
+const HELP_KEY_GAP: usize = 2;
+/// 快捷键帮助：两列之间的间距（格）。
+const HELP_COLUMN_GAP: usize = 4;
+/// 快捷键帮助：快捷键行左缩进（格）。
+const HELP_INDENT: usize = 2;
+/// 快捷键帮助：页脚（留白 + 两行说明）占用的行数。
+const HELP_FOOTER_ROWS: usize = 3;
+
+/// 一列快捷键的（键位列宽，整列宽）。
+type HelpColumn = (usize, usize);
+
+/// 量出一列快捷键的键位列宽与整列宽。
+fn measure_column(rows: &[(String, &'static str)]) -> HelpColumn {
+    let key_width = rows
+        .iter()
+        .map(|(key, _)| str_width(key))
+        .max()
+        .unwrap_or(0);
+    let description_width = rows
+        .iter()
+        .map(|(_, description)| str_width(description))
+        .max()
+        .unwrap_or(0);
+    (key_width, key_width + HELP_KEY_GAP + description_width)
+}
+
+/// 快捷键帮助内容：默认双列（左列先排满），宽度不足时退回单列。
+///
+/// 键位列按该列最长绑定取齐——键位可配置，固定宽度会让 `shift/alt + enter` 这类
+/// 长组合挤出描述列；返回内容的自然宽度，模态据此收窄到刚好容纳。
+/// 页脚（`/config` 提示与 Esc 说明）左缩进为 0，与快捷键行的 [`HELP_INDENT`] 区分。
+fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'static>>, usize) {
+    let theme = app.theme;
+    let mut rows: Vec<(String, &'static str)> = crate::config::actions()
+        .iter()
+        .map(|(action, description, _)| {
+            let keys = app
+                .preferences
+                .keybindings
+                .get(*action)
+                .map_or_else(|| "—".to_owned(), |keys| crate::config::display_keys(keys));
+            (keys, *description)
+        })
+        .collect();
+    // 双列按行序对半切开，两列各自收窄；退回单列时两列并作一列取并集。
+    let unified = measure_column(&rows);
+    let split = rows.len().div_ceil(2);
+    let (left, right) = rows.split_at(split);
+    let left_column = measure_column(left);
+    let right_column = measure_column(right);
+    let two_columns =
+        HELP_INDENT + left_column.1 + HELP_COLUMN_GAP + right_column.1 <= max_width && split > 0;
+    let (columns, width) = if two_columns {
+        (
+            [left_column, right_column],
+            HELP_INDENT + left_column.1 + HELP_COLUMN_GAP + right_column.1,
+        )
+    } else {
+        ([unified; 2], HELP_INDENT + unified.1)
+    };
+    let row_budget = max_lines
+        .saturating_sub(HELP_FOOTER_ROWS)
+        .max(1)
+        .saturating_mul(if two_columns { 2 } else { 1 });
+    rows.truncate(row_budget);
+    let split = if two_columns {
+        rows.len().div_ceil(2)
+    } else {
+        rows.len()
+    };
+    let mut lines: Vec<Line<'static>> = (0..split)
+        .map(|index| {
+            let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
+            spans.extend(help_cell(&rows[index], columns[0], theme));
+            if let Some(right) = rows.get(split + index) {
+                spans.push(Span::styled(" ".repeat(HELP_COLUMN_GAP), Style::new()));
+                spans.extend(help_cell(right, columns[1], theme));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    lines.push(Line::from(String::new()));
+    for footer in ["/config 编辑配置和键位", "Esc 关闭帮助"] {
+        lines.push(Line::from(Span::styled(
+            footer,
+            Style::new().fg(theme.gray_dim),
+        )));
+    }
+    (lines, width)
+}
+
+/// 帮助表的一格：键位右补齐到列内 `key_width`，整格再补齐到列宽。
+fn help_cell(
+    row: &(String, &'static str),
+    column: HelpColumn,
+    theme: &crate::theme::Theme,
+) -> [Span<'static>; 4] {
+    let (key_width, column_width) = column;
+    let (key, description) = row;
+    let key_cells = str_width(key);
+    let description_cells = str_width(description);
+    // 键位先补齐到 key_width，整格再补齐到列宽，同一列的描述才能上下对齐。
+    let pad = column_width.saturating_sub(key_width + HELP_KEY_GAP + description_cells);
+    [
+        Span::styled(key.clone(), Style::new().fg(theme.accent_user)),
+        Span::styled(
+            " ".repeat(key_width.saturating_sub(key_cells) + HELP_KEY_GAP),
+            Style::new(),
+        ),
+        Span::styled(
+            (*description).to_owned(),
+            Style::new().fg(theme.text_secondary),
+        ),
+        Span::styled(" ".repeat(pad), Style::new()),
+    ]
 }
 
 /// 模态内容行（按类型分派）。
@@ -549,25 +677,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             )));
             lines
         }
-        Modal::Help => crate::config::actions()
-            .iter()
-            .map(|(action, description, _)| {
-                let key = app
-                    .preferences
-                    .keybindings
-                    .get(*action)
-                    .map(|keys| keys.join(" / "))
-                    .unwrap_or_default();
-                Line::from(vec![
-                    Span::styled(format!("  {key:<20}"), Style::new().fg(theme.accent_user)),
-                    Span::styled(
-                        (*description).to_owned(),
-                        Style::new().fg(theme.text_secondary),
-                    ),
-                ])
-            })
-            .chain([Line::from("/config 编辑配置和键位；Esc 关闭帮助")])
-            .collect(),
+        Modal::Help => help_lines(app, width, max_lines).0,
     };
     lines.truncate(max_lines.max(1));
     lines
