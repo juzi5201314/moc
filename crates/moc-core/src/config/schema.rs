@@ -38,10 +38,20 @@ pub struct SkillsConfig {
     pub dirs: Vec<String>,
     /// 按名称禁用的 skill。
     pub disable: Vec<String>,
-    /// `<skills>` 目录总预算（字节）；超预算条目降级为短语，名字永远可见。
-    pub catalog_char_budget: usize,
+    /// `<skills>` 目录预算：占上下文窗口的百分比（0 表示只用下限）。
+    pub catalog_budget_percent: u64,
+    /// `<skills>` 目录预算下限（token）；预算取比例值与它的较大者。
+    pub catalog_budget_min_tokens: u64,
     /// 单条 description 的截断长度（字符）。
     pub description_max_chars: usize,
+}
+
+impl SkillsConfig {
+    /// `<skills>` 目录预算（token）：上下文窗口的百分比预算与下限取较大者。
+    pub fn catalog_budget_tokens(&self, context_window: u64) -> u64 {
+        let by_percent = context_window.saturating_mul(self.catalog_budget_percent) / 100;
+        by_percent.max(self.catalog_budget_min_tokens)
+    }
 }
 
 impl Default for SkillsConfig {
@@ -54,7 +64,8 @@ impl Default for SkillsConfig {
             agents_project: true,
             dirs: Vec::new(),
             disable: Vec::new(),
-            catalog_char_budget: 24_576,
+            catalog_budget_percent: 1,
+            catalog_budget_min_tokens: 8000,
             description_max_chars: 1024,
         }
     }
@@ -380,6 +391,15 @@ pub(super) fn validate_compaction(config: &CompactionConfig) -> Result<(), CoreE
             "压缩阈值：百分比须为 1–100，token 数须大于 0".into(),
         )),
     }
+}
+
+pub(super) fn validate_skills(config: &SkillsConfig) -> Result<(), CoreError> {
+    if config.catalog_budget_percent > 100 {
+        return Err(CoreError::Config(
+            "技能列表预算比例：百分比须为 0–100".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]

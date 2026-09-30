@@ -95,7 +95,9 @@ pub fn system_pieces(
         });
     }
     // skill 目录属于稳定前缀（会话内索引不变），保持 prompt cache 命中。
-    if let Some(catalog) = crate::skills::catalog::render(skills, &config.skills) {
+    if let Some(catalog) =
+        crate::skills::catalog::render(skills, &config.skills, model.context_window)
+    {
         sections.push(PromptPiece {
             title: "技能列表",
             text: catalog,

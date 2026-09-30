@@ -152,5 +152,6 @@ agents_user = true
 agents_project = true
 dirs = []
 disable = []
-catalog_char_budget = 24576
+catalog_budget_percent = 1
+catalog_budget_min_tokens = 8000
 description_max_chars = 1024

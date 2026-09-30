@@ -2,43 +2,51 @@
 //!
 //! 业界基线是「每 skill 约 50-100 token 的元数据常驻 + 正文按需加载」。
 //! 本模块实现三级降级，保证**所有 skill 名字永远可见**（模型因此会主动
-//! 使用 skill 工具），同时把目录总量限制在预算内：
+//! 使用 skill 工具），同时把目录总量限制在
+//! [`SkillsConfig::catalog_budget_tokens`] 给出的预算内：
 //! 1. 预算内：完整 description（单条截断到 `description_max_chars`）；
 //! 2. 超预算：降级为 name + 80 字符短语；
 //! 3. 仍超预算：仅列 name。
 
 use super::SkillIndex;
+use crate::compact::estimate_tokens;
 use crate::config::SkillsConfig;
 
 /// 降级短语的最大字符数。
 const DEGRADED_CHARS: usize = 80;
 
 /// 渲染 `<skills>` 段；无可用 skill 时返回 `None`。
-pub fn render(index: &SkillIndex, config: &SkillsConfig) -> Option<String> {
+///
+/// `context_window` 用于换算目录预算：占上下文窗口的百分比与配置下限取较大者。
+pub fn render(index: &SkillIndex, config: &SkillsConfig, context_window: u64) -> Option<String> {
     if index.is_empty() {
         return None;
     }
     let mut lines = vec![
         "以下 skill 可用。执行与某个 skill 描述相关的任务前，先调用 skill 工具加载其完整说明并严格遵循，不要凭名称臆测其内容。".to_owned(),
     ];
-    let mut budget = config.catalog_char_budget.saturating_sub(lines[0].len());
+    let mut budget = config
+        .catalog_budget_tokens(context_window)
+        .saturating_sub(estimate_tokens(&lines[0]));
     let mut degraded = 0usize;
     for skill in index.list().filter(|skill| skill.model_invocable) {
         let line = full_line(skill, config);
-        if line.len() <= budget {
-            budget -= line.len();
+        let cost = estimate_tokens(&line);
+        if cost <= budget {
+            budget -= cost;
             lines.push(line);
             continue;
         }
         degraded += 1;
         let short = short_line(skill);
-        if short.len() <= budget {
-            budget -= short.len();
+        let cost = estimate_tokens(&short);
+        if cost <= budget {
+            budget -= cost;
             lines.push(short);
             continue;
         }
         let bare = format!("- {}", skill.name);
-        budget = budget.saturating_sub(bare.len());
+        budget = budget.saturating_sub(estimate_tokens(&bare));
         lines.push(bare);
     }
     if degraded > 0 {
@@ -109,16 +117,31 @@ mod tests {
         index
     }
 
-    fn config(budget: usize) -> SkillsConfig {
+    /// 关闭比例项、以 token 下限固定预算，便于断言。
+    fn config(budget_tokens: u64) -> SkillsConfig {
         SkillsConfig {
-            catalog_char_budget: budget,
+            catalog_budget_percent: 0,
+            catalog_budget_min_tokens: budget_tokens,
             ..SkillsConfig::default()
         }
     }
 
     #[test]
     fn empty_index_renders_nothing() {
-        assert!(render(&SkillIndex::empty(), &config(1024)).is_none());
+        assert!(render(&SkillIndex::empty(), &config(1024), 0).is_none());
+    }
+
+    #[test]
+    fn budget_takes_larger_of_percent_and_floor() {
+        let config = SkillsConfig {
+            catalog_budget_percent: 1,
+            catalog_budget_min_tokens: 8000,
+            ..SkillsConfig::default()
+        };
+        // 500k 窗口的 1% 是 5000，低于下限 → 用下限。
+        assert_eq!(config.catalog_budget_tokens(500_000), 8000);
+        // 1M 窗口的 1% 是 10000，高于下限 → 用比例值。
+        assert_eq!(config.catalog_budget_tokens(1_000_000), 10_000);
     }
 
     #[test]
@@ -130,7 +153,7 @@ mod tests {
             meta("hidden-name", &long_description),
         ];
         let index = index_of(metas);
-        let rendered = render(&index, &config(400)).unwrap();
+        let rendered = render(&index, &config(400), 0).unwrap();
         assert!(rendered.contains("<skills>"));
         // 名字全部可见。
         assert!(rendered.contains("- short-one"));
@@ -144,7 +167,7 @@ mod tests {
     #[test]
     fn description_truncated_to_configured_limit() {
         let index = index_of(vec![meta("toolong", "字".repeat(2000).as_str())]);
-        let rendered = render(&index, &config(8000)).unwrap();
+        let rendered = render(&index, &config(8000), 0).unwrap();
         assert!(rendered.contains('…'));
         assert!(rendered.chars().count() < 2000);
     }
@@ -154,7 +177,7 @@ mod tests {
         let mut skill = meta("annotated", "描述");
         skill.globs = vec!["*.rs".into()];
         skill.when_to_use = Some("写 Rust 时".into());
-        let rendered = render(&index_of(vec![skill]), &config(8000)).unwrap();
+        let rendered = render(&index_of(vec![skill]), &config(8000), 0).unwrap();
         assert!(rendered.contains("（适用: *.rs）"));
         assert!(rendered.contains("何时使用: 写 Rust 时"));
     }
@@ -163,7 +186,7 @@ mod tests {
     fn model_hidden_skills_are_excluded() {
         let mut skill = meta("manual-only", "仅手动调用");
         skill.model_invocable = false;
-        let rendered = render(&index_of(vec![skill]), &config(8000)).unwrap();
+        let rendered = render(&index_of(vec![skill]), &config(8000), 0).unwrap();
         assert!(!rendered.contains("manual-only"));
     }
 
@@ -173,7 +196,7 @@ mod tests {
             meta("a-very-long-skill-name", "描述"),
             meta("b", "描述"),
         ]);
-        let rendered = render(&index, &config(10)).unwrap();
+        let rendered = render(&index, &config(10), 0).unwrap();
         assert!(rendered.contains("- a-very-long-skill-name") || rendered.contains("a-very-long"));
         assert!(rendered.contains("- b"));
     }

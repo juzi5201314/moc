@@ -11,7 +11,7 @@ use toml::Value;
 use crate::CoreConfig;
 use crate::error::CoreError;
 use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
-use schema::{ConfigDocument, validate_compaction};
+use schema::{ConfigDocument, validate_compaction, validate_skills};
 
 pub mod catalog;
 pub mod discovery;
@@ -148,6 +148,7 @@ impl ResolvedConfig {
         let providers = resolve_catalog(&document.providers)?;
         validate_roles(&document.models.roles, &providers)?;
         validate_compaction(&document.compaction)?;
+        validate_skills(&document.skills)?;
         if document.tools.job.max_running == 0 {
             return Err(CoreError::Config("后台进程上限必须大于 0".into()));
         }

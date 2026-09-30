@@ -124,8 +124,9 @@ fn rank(key: &str) -> usize {
         "agents_project" => 4,
         "dirs" => 5,
         "disable" => 6,
-        "catalog_char_budget" => 7,
-        "description_max_chars" => 8,
+        "catalog_budget_percent" => 7,
+        "catalog_budget_min_tokens" => 8,
+        "description_max_chars" => 9,
         // 上下文压缩
         "auto" => 1,
         "threshold" => 2,
@@ -206,6 +207,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 | "hash_echo_min_hits"
                 | "max_candidate_files"
                 | "max_scan_entries"
+                | "catalog_budget_min_tokens"
                 | "description_max_chars"
                 | "line_max_bytes"
         );
@@ -501,7 +503,14 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "dirs" => ("额外技能目录", "逐行填写目录路径，支持 ~。"),
             "disable" => ("禁用的技能", "逐行填写技能名，这些技能不会被加载。"),
-            "catalog_char_budget" => ("技能列表长度上限", "技能说明合计最多显示多少字符。"),
+            "catalog_budget_percent" => (
+                "技能列表预算比例",
+                "技能目录最多占用模型上下文窗口的百分比；0 表示只用下限。",
+            ),
+            "catalog_budget_min_tokens" => (
+                "技能列表预算下限",
+                "按比例算出的预算低于此值时改用此值，单位 token。",
+            ),
             "description_max_chars" => ("单个技能说明长度", "每条技能说明最多显示多少字符。"),
             "command" => ("启动程序", "本地 MCP 服务要运行的可执行程序。"),
             "args" => ("启动参数", "逐行填写，每行一个参数。"),
