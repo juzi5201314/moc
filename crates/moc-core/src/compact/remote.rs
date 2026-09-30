@@ -9,7 +9,7 @@ use crate::error::CoreError;
 use crate::service::CoreInner;
 use crate::session::state::SessionState;
 
-use super::{messages_tokens, record_compaction};
+use super::{CompactionBudget, messages_tokens, record_compaction};
 
 pub(crate) async fn compact(
     inner: &CoreInner,
@@ -18,8 +18,12 @@ pub(crate) async fn compact(
     config: &ResolvedConfig,
     model: &crate::ResolvedModel,
     messages: &[moc_llm::Message],
-    tokens_before: u64,
+    budget: CompactionBudget,
 ) -> Result<moc_protocol::methods::CompactResult, CoreError> {
+    let CompactionBudget {
+        tokens_before,
+        fixed_tokens,
+    } = budget;
     if !config.compaction.remote.enabled
         || !model.remote_compaction
         || model.llm.protocol != Protocol::OpenAiResponses
@@ -75,7 +79,8 @@ pub(crate) async fn compact(
         return Err(CoreError::Tool("Responses 压缩端点返回空 output".into()));
     }
     let retained = config.compaction.remote.retained_message_tokens as u64;
-    let (first_kept_id, tokens_after) = retained_boundary(state, retained);
+    let (first_kept_id, retained_tokens) = retained_boundary(state, retained);
+    let mut tokens_after = fixed_tokens.saturating_add(retained_tokens);
     let tail_start = first_kept_id
         .as_ref()
         .and_then(|id| state.transcript.iter().position(|entry| &entry.id == id))
@@ -104,7 +109,11 @@ pub(crate) async fn compact(
             "压缩端点仅返回原始尾部，没有生成 checkpoint".into(),
         ));
     }
-    let native = Some(Box::new(Value::Array(native_items)));
+    let native_value = Value::Array(native_items);
+    let native_tokens = serde_json::to_string(&native_value)
+        .map_or(0, |serialized| super::estimate_tokens(&serialized));
+    tokens_after = tokens_after.saturating_add(native_tokens);
+    let native = Some(Box::new(native_value));
     let summary = checkpoint_summary(state);
     record_compaction(
         inner,

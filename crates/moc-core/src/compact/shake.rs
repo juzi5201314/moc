@@ -1,6 +1,6 @@
 //! 在保护窗口之外修剪工具结果，保留调用配对与原始日志地址。
 
-use super::{messages_tokens, record_compaction};
+use super::{CompactionBudget, messages_tokens, record_compaction};
 use crate::session::{entries::Entry, state::SessionState};
 use crate::{config::ResolvedConfig, error::CoreError, service::CoreInner};
 use moc_llm::{ContentPart, Role};
@@ -12,8 +12,13 @@ pub(crate) async fn compact(
     ctx: &RequestContext,
     state: &SessionState,
     config: &ResolvedConfig,
-    tokens_before: u64,
+    model: &crate::ResolvedModel,
+    budget: CompactionBudget,
 ) -> Result<moc_protocol::CompactResult, CoreError> {
+    let CompactionBudget {
+        tokens_before,
+        fixed_tokens,
+    } = budget;
     let mut entries = state.entries.clone();
     if !prune(&mut entries, &config.compaction) {
         return Err(CoreError::ContextOverflow(
@@ -23,7 +28,13 @@ pub(crate) async fn compact(
     inner.sessions.rewrite(&state.session.id, entries).await?;
     let record = inner.sessions.get(&state.session.id).await?;
     let snapshot = record.state.lock().await.clone();
-    let tokens_after = messages_tokens(&super::replay::model_messages(&snapshot, None, None));
+    let tokens_after = fixed_tokens
+        .saturating_add(super::native_input_tokens(&snapshot))
+        .saturating_add(messages_tokens(&super::replay::model_messages(
+            &snapshot,
+            None,
+            Some(model),
+        )));
     let first_kept = state.first_kept_id.clone().or_else(|| {
         state
             .transcript

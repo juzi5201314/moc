@@ -352,12 +352,17 @@ async fn run_turn_locked(
             }));
         }
         let mut messages = model_messages(&snapshot, Some(system.clone()), Some(&model));
+        let context_tokens = compact::context_tokens_with_additional(
+            &snapshot,
+            &messages,
+            &tools_available,
+            compact::messages_tokens(&reminder_messages),
+        );
         messages.extend(reminder_messages.iter().cloned());
         if project_config.compaction.enabled
             && project_config.compaction.auto
             && (step == 0 || project_config.compaction.mid_turn)
-            && compact::context_tokens(&snapshot, &messages, &tools_available)
-                > compact::threshold(&project_config, model.context_window)
+            && context_tokens > compact::threshold(&project_config, model.context_window)
         {
             match compact::compact(
                 inner,
@@ -365,11 +370,22 @@ async fn run_turn_locked(
                 &params.session_id,
                 compact::CompactReason::Threshold,
                 None,
+                compact::ContextBudget {
+                    additional_tokens: compact::messages_tokens(&reminder_messages),
+                },
             )
             .await
             {
-                Ok(_) => {
-                    if !project_config.compaction.auto_continue {
+                Ok(report) => {
+                    if !report.created_headroom {
+                        tracing::warn!(
+                            session_id = %params.session_id,
+                            tokens_after = report.result.tokens_after,
+                            recovery_band = compact::recovery_band(&project_config, model.context_window),
+                            "压缩未创建足够上下文空间，停止自动继续以避免重复压缩"
+                        );
+                    }
+                    if !report.created_headroom || !project_config.compaction.auto_continue {
                         final_reason = FinishReason::Other("compacted".into());
                         break 'steps;
                     }
@@ -438,22 +454,33 @@ async fn run_turn_locked(
                         }) =>
                 {
                     overflow_attempts += 1;
-                    if let Err(compact_error) = compact::compact(
+                    match compact::compact(
                         inner,
                         ctx,
                         &params.session_id,
                         compact::CompactReason::Overflow,
                         None,
+                        compact::ContextBudget {
+                            additional_tokens: compact::messages_tokens(&reminder_messages),
+                        },
                     )
                     .await
                     {
-                        if cancel.is_cancelled() {
-                            final_reason = FinishReason::Cancelled;
-                            break 'steps;
+                        Ok(report) if report.created_headroom => {}
+                        Ok(_) => {
+                            let message = format!("{error}; 溢出恢复未创建足够上下文空间");
+                            emit_fatal(&update, &params.session_id, &turn_id, &message).await?;
+                            return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
                         }
-                        let message = format!("{error}; 溢出恢复失败：{compact_error}");
-                        emit_fatal(&update, &params.session_id, &turn_id, &message).await?;
-                        return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
+                        Err(compact_error) => {
+                            if cancel.is_cancelled() {
+                                final_reason = FinishReason::Cancelled;
+                                break 'steps;
+                            }
+                            let message = format!("{error}; 溢出恢复失败：{compact_error}");
+                            emit_fatal(&update, &params.session_id, &turn_id, &message).await?;
+                            return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
+                        }
                     }
                     if !project_config.compaction.auto_continue {
                         final_reason = FinishReason::Other("compacted".into());
@@ -523,15 +550,22 @@ async fn run_turn_locked(
         drop(request_permit);
         let Some(response) = response else {
             stream_overflows += 1;
-            compact::compact(
+            let compact_report = compact::compact(
                 inner,
                 ctx,
                 &params.session_id,
                 compact::CompactReason::Overflow,
                 None,
+                compact::ContextBudget {
+                    additional_tokens: compact::messages_tokens(&reminder_messages),
+                },
             )
             .await
             .map_err(to_rpc)?;
+            if !compact_report.created_headroom {
+                final_reason = FinishReason::Length;
+                break 'steps;
+            }
             if !project_config.compaction.auto_continue {
                 final_reason = FinishReason::Length;
                 break 'steps;
@@ -570,10 +604,18 @@ async fn run_turn_locked(
         let server_compacted = response.compaction.is_some();
         if let Some(item) = response.compaction {
             let compact_state = record.state.lock().await.clone();
-            let (first_kept_id, tokens_after) = compact::remote::retained_boundary(
+            let (first_kept_id, retained_tokens) = compact::remote::retained_boundary(
                 &compact_state,
                 project_config.compaction.remote.retained_message_tokens as u64,
             );
+            let native = Value::Array(vec![*item]);
+            let native_tokens = serde_json::to_string(&native)
+                .map_or(0, |serialized| compact::estimate_tokens(&serialized));
+            let tokens_after = compact::messages_tokens(std::slice::from_ref(&system))
+                .saturating_add(compact::tools_tokens(&tools_available))
+                .saturating_add(compact::messages_tokens(&reminder_messages))
+                .saturating_add(retained_tokens)
+                .saturating_add(native_tokens);
             compact::record_compaction(
                 inner,
                 ctx,
@@ -585,7 +627,7 @@ async fn run_turn_locked(
                     tokens_before: response.usage.input_tokens,
                     tokens_after,
                     instructions: None,
-                    native: Some(Box::new(Value::Array(vec![*item]))),
+                    native: Some(Box::new(native)),
                 },
             )
             .await

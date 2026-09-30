@@ -71,14 +71,29 @@ pub fn tools_tokens(tools: &[ToolDef]) -> u64 {
     estimate_tokens(&text)
 }
 
-/// 有上游用量时以其为基准，仅估算响应之后追加的消息；无用量时全量估算并计入工具。
-pub(crate) fn context_tokens(
+/// 估算 Responses 原生压缩载荷在本地回放视图中的 token 占用。
+fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
+    state
+        .native_input
+        .as_ref()
+        .and_then(|items| serde_json::to_string(items).ok())
+        .map_or(0, |serialized| estimate_tokens(&serialized))
+}
+
+/// 有上游用量时以其为基准，仅估算响应之后追加的消息；同时以完整本地
+/// 会话估算作为下限，避免请求前变换导致上下文历史被低估。
+pub(crate) fn context_tokens_with_additional(
     state: &crate::session::state::SessionState,
     messages: &[Message],
     tools: &[ToolDef],
+    additional_tokens: u64,
 ) -> u64 {
+    let stored_estimate = messages_tokens(messages)
+        .saturating_add(tools_tokens(tools))
+        .saturating_add(native_input_tokens(state))
+        .saturating_add(additional_tokens);
     if state.usage.input_tokens == 0 || state.usage_at == 0 {
-        return messages_tokens(messages).saturating_add(tools_tokens(tools));
+        return stored_estimate;
     }
     let added = state
         .transcript
@@ -86,11 +101,13 @@ pub(crate) fn context_tokens(
         .skip(state.usage_at)
         .map(|entry| messages_tokens(std::slice::from_ref(&entry.message)))
         .sum::<u64>();
-    state
+    let provider_anchor = state
         .usage
         .input_tokens
         .saturating_add(state.usage.output_tokens)
         .saturating_add(added)
+        .saturating_add(additional_tokens);
+    provider_anchor.max(stored_estimate)
 }
 
 /// 只使用模型上下文窗口，绝不扣除模型输出上限；上游溢出仍走自动压缩恢复。
@@ -102,6 +119,40 @@ pub fn threshold(config: &ResolvedConfig, context_window: u64) -> u64 {
         crate::config::CompactionThreshold::Tokens(tokens) => tokens,
     }
 }
+/// 一次压缩调用中不属于 transcript 的当前请求内容。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ContextBudget {
+    pub additional_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CompactionBudget {
+    pub tokens_before: u64,
+    pub fixed_tokens: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct CompactReport {
+    pub result: CompactResult,
+    pub created_headroom: bool,
+}
+
+/// 触发阈值以下仍需保留的恢复空间比例，参考 OMP 核心的 0.8 recovery band。
+const RECOVERY_BAND_PERCENT: u64 = 80;
+
+pub(crate) fn recovery_band(config: &ResolvedConfig, context_window: u64) -> u64 {
+    threshold(config, context_window).saturating_mul(RECOVERY_BAND_PERCENT) / 100
+}
+
+/// 当前压缩原因需要达到的占用上限。
+fn required_tokens(config: &ResolvedConfig, context_window: u64, reason: CompactReason) -> u64 {
+    match reason {
+        CompactReason::Overflow => threshold(config, context_window),
+        CompactReason::Threshold | CompactReason::Manual | CompactReason::PreApprove => {
+            recovery_band(config, context_window)
+        }
+    }
+}
 
 /// 按配置执行压缩链；显式指令只交给摘要模型。
 pub(crate) async fn manual(
@@ -110,7 +161,16 @@ pub(crate) async fn manual(
     session_id: &str,
     instructions: Option<&str>,
 ) -> Result<CompactResult, CoreError> {
-    compact(inner, ctx, session_id, CompactReason::Manual, instructions).await
+    compact(
+        inner,
+        ctx,
+        session_id,
+        CompactReason::Manual,
+        instructions,
+        ContextBudget::default(),
+    )
+    .await
+    .map(|report| report.result)
 }
 
 pub(crate) async fn compact(
@@ -119,7 +179,8 @@ pub(crate) async fn compact(
     session_id: &str,
     reason: CompactReason,
     instructions: Option<&str>,
-) -> Result<CompactResult, CoreError> {
+    context: ContextBudget,
+) -> Result<CompactReport, CoreError> {
     let record = inner.sessions.get(session_id).await?;
     let mut state = record.state.lock().await.clone();
     let config = inner.project_config(std::path::Path::new(&state.session.cwd))?;
@@ -129,12 +190,48 @@ pub(crate) async fn compact(
         ));
     }
     let model = config.resolve_model(&state.model)?;
+    let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
+    let system = crate::prompt::system_message(
+        &config,
+        &model,
+        state.mode,
+        std::path::Path::new(&state.session.cwd),
+        &skills,
+    );
+    let tools = inner.tools.definitions(
+        state.mode,
+        inner.client_supports_ask(ctx.connection_id()),
+        &config,
+    );
+    let fixed_tokens = messages_tokens(std::slice::from_ref(&system))
+        .saturating_add(tools_tokens(&tools))
+        .saturating_add(context.additional_tokens);
     let mut current_messages = replay::model_messages(&state, None, Some(&model));
-    let tokens_before = messages_tokens(&current_messages);
+    let mut measured_messages = Vec::with_capacity(current_messages.len() + 1);
+    measured_messages.push(system);
+    measured_messages.extend(current_messages.iter().cloned());
+    let tokens_before = context_tokens_with_additional(
+        &state,
+        &measured_messages,
+        &tools,
+        context.additional_tokens,
+    );
+    let budget = CompactionBudget {
+        tokens_before,
+        fixed_tokens,
+    };
+    let required_tokens = required_tokens(&config, model.context_window, reason);
+
     if instructions.is_some() {
-        return soft::compact(inner, ctx, &state, &config, instructions, tokens_before).await;
+        let result = soft::compact(inner, ctx, &state, &config, instructions, budget).await?;
+        return Ok(CompactReport {
+            created_headroom: result.tokens_after <= required_tokens,
+            result,
+        });
     }
+
     let mut failures = Vec::with_capacity(config.compaction.method_order.len());
+    let mut last_result = None;
     for method in &config.compaction.method_order {
         let result = match method {
             CompactionMethod::Remote => {
@@ -145,32 +242,39 @@ pub(crate) async fn compact(
                     &config,
                     &model,
                     &current_messages,
-                    tokens_before,
+                    budget,
                 )
                 .await
             }
             CompactionMethod::Shake => {
-                shake::compact(inner, ctx, &state, &config, tokens_before).await
+                shake::compact(inner, ctx, &state, &config, &model, budget).await
             }
             CompactionMethod::Soft => {
-                soft::compact(inner, ctx, &state, &config, instructions, tokens_before).await
+                soft::compact(inner, ctx, &state, &config, instructions, budget).await
             }
         };
         match result {
-            Ok(result)
-                if *method == CompactionMethod::Shake
-                    && result.tokens_after >= threshold(&config, model.context_window) =>
-            {
+            Ok(result) => {
+                let report = CompactReport {
+                    created_headroom: result.tokens_after <= required_tokens,
+                    result,
+                };
+                if report.created_headroom || *method == CompactionMethod::Soft {
+                    return Ok(report);
+                }
+                last_result = Some(report);
                 state = record.state.lock().await.clone();
                 current_messages = replay::model_messages(&state, None, Some(&model));
             }
-            Ok(result) => return Ok(result),
             Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => return Err(error),
             Err(error) => {
                 tracing::warn!(session_id, method = ?method, %error, "上下文压缩方法失败，尝试下一方法");
                 failures.push(format!("{method:?}: {error}"));
             }
         }
+    }
+    if let Some(report) = last_result {
+        return Ok(report);
     }
     Err(CoreError::ContextOverflow(format!(
         "所有上下文压缩方法均失败（{reason:?}）：{}",
@@ -269,6 +373,26 @@ mod tests {
     }
 
     #[test]
+    fn recovery_band_requires_headroom_below_trigger_threshold() {
+        let config = test_config();
+        assert_eq!(threshold(&config, 200_000), 170_000);
+        assert_eq!(recovery_band(&config, 200_000), 136_000);
+        assert_eq!(
+            required_tokens(&config, 200_000, CompactReason::Threshold),
+            136_000
+        );
+        assert_eq!(
+            required_tokens(&config, 200_000, CompactReason::Overflow),
+            170_000
+        );
+        assert!(165_000 > recovery_band(&config, 200_000));
+        assert!(130_000 <= recovery_band(&config, 200_000));
+
+        let fixed = config_with("\n[compaction]\nthreshold = { mode = 'tokens', value = 50000 }\n");
+        assert_eq!(recovery_band(&fixed, 200_000), 40_000);
+    }
+
+    #[test]
     fn threshold_ignores_max_output_tokens() {
         // 500k 窗口 / 384k 最大输出：阈值仍为 85% 窗口，不因输出上限提前压缩。
         let config = config_with("max_output_tokens = 393216\n");
@@ -307,7 +431,7 @@ mod tests {
         assert!(tools_tokens(&tools) > 0);
         let state = SessionState::from_entries(vec![header_entry()]).unwrap();
         assert_eq!(
-            context_tokens(&state, &messages, &tools),
+            context_tokens_with_additional(&state, &messages, &tools, 0),
             messages_tokens(&messages) + tools_tokens(&tools)
         );
         // 有 usage 时上游基数已含工具 schema，只追加新消息，不再重复计入。
@@ -316,7 +440,20 @@ mod tests {
             SessionState::from_entries(vec![header.clone(), message_entry(&header)]).unwrap();
         state.usage.input_tokens = 100;
         state.usage_at = state.transcript.len();
-        assert_eq!(context_tokens(&state, &messages, &tools), 100);
+        assert_eq!(
+            context_tokens_with_additional(&state, &messages, &tools, 0),
+            100
+        );
+        assert_eq!(
+            context_tokens_with_additional(&state, &messages, &tools, 20),
+            120
+        );
+
+        let long_messages = vec![Message::user_text("x".repeat(800))];
+        assert_eq!(
+            context_tokens_with_additional(&state, &long_messages, &[], 0),
+            messages_tokens(&long_messages)
+        );
     }
 
     fn header_entry() -> Entry {

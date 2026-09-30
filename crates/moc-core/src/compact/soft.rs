@@ -9,7 +9,7 @@ use crate::error::CoreError;
 use crate::service::CoreInner;
 use crate::session::state::SessionState;
 
-use super::{estimate_tokens, messages_tokens, record_compaction};
+use super::{CompactionBudget, estimate_tokens, messages_tokens, record_compaction};
 
 const SUMMARY_SYSTEM: &str = "You are compressing an agent conversation into a checkpoint. Output only the checkpoint text; do not call tools; do not mention this compression request. Use concise engineering English. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures and code fragments. Record user corrections verbatim.";
 
@@ -19,8 +19,12 @@ pub(crate) async fn compact(
     state: &SessionState,
     config: &ResolvedConfig,
     instructions: Option<&str>,
-    tokens_before: u64,
+    budget: CompactionBudget,
 ) -> Result<moc_protocol::methods::CompactResult, CoreError> {
+    let CompactionBudget {
+        tokens_before,
+        fixed_tokens,
+    } = budget;
     let visible_start = visible_history_start(state);
     let history: Vec<Message> = state
         .transcript
@@ -85,7 +89,9 @@ pub(crate) async fn compact(
         .transcript
         .get(visible_start + start)
         .map(|entry| entry.id.clone());
-    let tokens_after = estimate_tokens(&summary).saturating_add(retained);
+    let tokens_after = fixed_tokens
+        .saturating_add(estimate_tokens(&summary))
+        .saturating_add(retained);
     record_compaction(
         inner,
         ctx,
