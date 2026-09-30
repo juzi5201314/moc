@@ -127,10 +127,10 @@ impl Tool for WriteTool {
                     "已写入 {}（{lines} 行，{} 字节）",
                     path.display(),
                     content.len()
-                ),
+                )
+                .into(),
                 is_error: false,
                 images: Vec::new(),
-                summary: None,
                 control: super::ToolControl::Continue,
                 status: None,
                 diff,

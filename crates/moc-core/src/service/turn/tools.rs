@@ -5,7 +5,7 @@ use crate::{
     config::{ApprovalMode, ToolApproval},
     error::CoreError,
     service::{CoreInner, SessionRuntime, protocol_to_rpc, snapshot_workspace, to_rpc},
-    tools::{Tier, ToolControl, ToolCtx, ToolOutcome},
+    tools::{Tier, ToolControl, ToolCtx, ToolOutcome, ToolOutput},
 };
 use futures_util::{
     FutureExt,
@@ -152,7 +152,7 @@ pub(super) async fn execute_tool_batch(
             outcome.status = Some(ToolStatus::Cancelled);
             (Ok(outcome), 0)
         });
-        let outcome = match result {
+        let mut outcome = match result {
             Ok(outcome) => outcome,
             Err(CoreError::Protocol(message)) => {
                 if stop_reason.is_none() {
@@ -165,6 +165,19 @@ pub(super) async fn execute_tool_batch(
             }
             Err(error) => ToolOutcome::failure("E_TOOL", error.to_string()),
         };
+        let content = match crate::tools::output::prepare(
+            outcome.content,
+            &config.tools.output,
+            &tool_ctx.paths,
+        )
+        .await
+        {
+            Ok(content) => content,
+            Err(error) => {
+                outcome.is_error = true;
+                format!("[E_ARTIFACT] 工具已执行，但输出交付失败：{error}")
+            }
+        };
         let status = outcome.status.unwrap_or(if outcome.is_error {
             ToolStatus::Error
         } else {
@@ -172,7 +185,7 @@ pub(super) async fn execute_tool_batch(
         });
         let tool_result = moc_llm::ToolResult {
             tool_call_id: call.id.clone(),
-            content: outcome.content.clone(),
+            content,
             is_error: outcome.is_error,
             images: outcome.images.clone(),
         };
@@ -206,7 +219,7 @@ pub(super) async fn execute_tool_batch(
                     "-"
                 )
             );
-            let message = serde_json::json!({"role":"tool","tool_call_id":call.id,"tool_name":call.name,"parts":[{"type":"text","text":outcome.content.chars().take(4096).collect::<String>()}]});
+            let message = serde_json::json!({"role":"tool","tool_call_id":call.id,"tool_name":call.name,"parts":[{"type":"text","text":tool_result.content.chars().take(4096).collect::<String>()}]});
             let _ = client.append_messages(&session, &[message], peer).await;
         }
         if let Err(error) = update
@@ -289,7 +302,6 @@ async fn execute_tool(
                 content: "[E_PERMISSION_DENIED] 用户拒绝执行该工具".into(),
                 is_error: true,
                 images: Vec::new(),
-                summary: None,
                 control: ToolControl::Continue,
                 status: Some(ToolStatus::Denied),
                 diff: None,
@@ -535,11 +547,14 @@ pub(super) async fn repair_pending_calls(
         pending
     };
     for id in pending {
+        let ToolOutput::Text(content) = cancelled_outcome().content else {
+            unreachable!("取消结果必须是文本");
+        };
         persist_tool_result(
             inner,
             session_id,
             id,
-            cancelled_outcome().content,
+            content,
             true,
             ToolStatus::Cancelled,
             0,

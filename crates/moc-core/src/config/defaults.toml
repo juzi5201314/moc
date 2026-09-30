@@ -140,7 +140,6 @@ user_config = true
 project_config = true
 connect_timeout_secs = 15
 call_timeout_secs = 120
-max_output_chars = 40960
 
 [mcp.servers]
 

@@ -116,7 +116,6 @@ fn rank(key: &str) -> usize {
         "project_config" => 2,
         "connect_timeout_secs" => 3,
         "call_timeout_secs" => 4,
-        "max_output_chars" => 5,
         // 技能来源
         "moc_user" => 1,
         "moc_project" => 2,
@@ -396,7 +395,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "head_bytes" => (
                 "超长输出保留开头",
-                "工具输出过长时保留开头的字节数，其余折叠。",
+                "所有工具与 MCP 输出共用的开头字节预算；超出首尾总预算时归档完整结果。",
             ),
             "tail_bytes" => ("超长输出保留结尾", "工具输出过长时保留结尾的字节数。"),
             "max_file_bytes" => ("单文件大小上限", "工具处理单个文件的最大字节数。"),
@@ -497,10 +496,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "logs_days" => ("任务日志保留天数", "过期且没有被引用的任务日志会被清理。"),
             "call_timeout_secs" => ("调用超时（秒）", "一次 MCP 工具调用的最长等待时间。"),
-            "max_output_chars" => (
-                "MCP 输出上限",
-                "MCP 结果过长时只显示预览，完整内容另存为文件。",
-            ),
             "dirs" => ("额外技能目录", "逐行填写目录路径，支持 ~。"),
             "disable" => ("禁用的技能", "逐行填写技能名，这些技能不会被加载。"),
             "catalog_budget_percent" => (

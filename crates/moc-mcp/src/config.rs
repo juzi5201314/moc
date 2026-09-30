@@ -168,8 +168,6 @@ pub struct McpDocument {
     pub connect_timeout_secs: u64,
     #[serde(default = "default_call_timeout")]
     pub call_timeout_secs: u64,
-    #[serde(default = "default_max_output_chars")]
-    pub max_output_chars: usize,
     #[serde(default)]
     pub servers: BTreeMap<String, RawServerSpec>,
 }
@@ -182,7 +180,6 @@ impl Default for McpDocument {
             project_config: true,
             connect_timeout_secs: default_connect_timeout(),
             call_timeout_secs: default_call_timeout(),
-            max_output_chars: default_max_output_chars(),
             servers: BTreeMap::new(),
         }
     }
@@ -196,9 +193,6 @@ fn default_connect_timeout() -> u64 {
 }
 fn default_call_timeout() -> u64 {
     120
-}
-fn default_max_output_chars() -> usize {
-    40_960
 }
 
 /// 展开字符串中的 `${VAR}` 与 `${VAR:-default}`；未设置且无默认值时展开为空并告警。

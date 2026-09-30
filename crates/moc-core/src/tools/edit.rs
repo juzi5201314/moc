@@ -119,10 +119,9 @@ impl Tool for EditTool {
                         ));
                     }
                     Ok(ToolOutcome {
-                        content: output.content,
+                        content: output.content.into(),
                         is_error: false,
                         images: Vec::new(),
-                        summary: None,
                         control: ToolControl::Continue,
                         status: None,
                         diff: output.diff,
@@ -137,14 +136,16 @@ impl Tool for EditTool {
                             let fresh = super::read::ReadTool
                                 .run(ctx, serde_json::json!({"path":path}))
                                 .await?;
-                            content.push_str(&format!("\n当前内容的新锚点：\n{}", fresh.content));
+                            let super::ToolOutput::Text(text) = fresh.content else {
+                                unreachable!("read 返回文本分页结果");
+                            };
+                            content.push_str(&format!("\n当前内容的新锚点：\n{text}"));
                         }
                     }
                     Ok(ToolOutcome {
-                        content,
+                        content: content.into(),
                         is_error: true,
                         images: Vec::new(),
-                        summary: None,
                         control: ToolControl::Continue,
                         status: None,
                         diff: None,

@@ -91,12 +91,33 @@ impl Tool for ReadTool {
                 .max(1);
             let start = offset.saturating_sub(1).min(snapshot.lines.len());
             let end = start.saturating_add(limit).min(snapshot.lines.len());
+            let mut output = format!("[{}]\n", path.display());
+            let mut notices = String::new();
+            if snapshot.bytes.len() > 4 * 1024 * 1024 {
+                notices.push_str(
+                    "\n[文件超过 4 MiB 快照上限，未授权锚点编辑；请使用 bash 或 write。]",
+                );
+            }
+            if std::str::from_utf8(&snapshot.bytes).is_err() {
+                notices.push_str(
+                    "\n[警告：文件包含无效 UTF-8 字节，展示时已替换为 U+FFFD；编辑会重写为 UTF-8]",
+                );
+            }
+            let total = snapshot.lines.len();
+            let footer_budget = page_footer(total, total.saturating_sub(1), total).len();
+            let page_budget = ctx
+                .config
+                .tools
+                .read
+                .max_bytes
+                .min(super::output::budget(&ctx.config.tools.output))
+                .saturating_sub(output.len() + notices.len() + footer_budget);
             let max_line_bytes = ctx
                 .config
                 .tools
                 .read
                 .line_max_bytes
-                .min(ctx.config.tools.read.max_bytes.saturating_sub(7));
+                .min(page_budget.saturating_sub(7));
             let mut selected = Vec::new();
             let mut served_rows = Vec::new();
             let mut rendered_bytes = 0usize;
@@ -114,9 +135,7 @@ impl Tool for ReadTool {
                     })?;
                     format!("{anchor}│{line}")
                 };
-                if rendered_bytes.saturating_add(rendered.len() + 1)
-                    > ctx.config.tools.read.max_bytes
-                {
+                if rendered_bytes.saturating_add(rendered.len() + 1) > page_budget {
                     break;
                 }
                 rendered_bytes += rendered.len() + 1;
@@ -125,32 +144,14 @@ impl Tool for ReadTool {
                 }
                 selected.push(rendered);
             }
-            let mut output = format!("[{}]\n", path.display());
             if selected.is_empty() && snapshot.lines.is_empty() {
                 output.push_str("(empty file)");
             } else {
                 output.push_str(&selected.join("\n"));
             }
             let shown_end = start + selected.len();
-            if shown_end < snapshot.lines.len() {
-                output.push_str(&format!(
-                    "\n[Showing lines {}-{} of {}. Use offset={} to continue.]",
-                    start + 1,
-                    shown_end,
-                    snapshot.lines.len(),
-                    shown_end + 1
-                ));
-            }
-            if snapshot.bytes.len() > 4 * 1024 * 1024 {
-                output.push_str(
-                    "\n[文件超过 4 MiB 快照上限，未授权锚点编辑；请使用 bash 或 write。]",
-                );
-            }
-            if std::str::from_utf8(&snapshot.bytes).is_err() {
-                output.push_str(
-                    "\n[警告：文件包含无效 UTF-8 字节，展示时已替换为 U+FFFD；编辑会重写为 UTF-8]",
-                );
-            }
+            output.push_str(&page_footer(start + 1, shown_end, total));
+            output.push_str(&notices);
             if snapshot.bytes.len() <= 4 * 1024 * 1024 {
                 ctx.anchors.record_served(path, &served_rows, snapshot);
             } else {
@@ -158,6 +159,17 @@ impl Tool for ReadTool {
             }
             Ok(ToolOutcome::success(output))
         })
+    }
+}
+
+fn page_footer(start: usize, end: usize, total: usize) -> String {
+    if end < total {
+        format!(
+            "\n[Showing lines {start}-{end} of {total}. Use offset={} to continue.]",
+            end + 1
+        )
+    } else {
+        String::new()
     }
 }
 

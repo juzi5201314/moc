@@ -11,7 +11,7 @@ use moc_llm::ToolDef;
 use moc_mcp::{McpError, McpManager, McpToolInfo};
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, truncate_output_with_artifact};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome};
 
 pub struct McpTool {
     manager: Arc<McpManager>,
@@ -78,24 +78,7 @@ impl Tool for McpTool {
                 }
                 Err(error) => return Ok(ToolOutcome::failure("E_MCP", error.to_string())),
             };
-            let max_chars = ctx.config.mcp.max_output_chars;
-            let content = if output.text.len() > max_chars {
-                let artifact = ctx
-                    .paths
-                    .artifacts()
-                    .join(format!("{}-mcp.txt", crate::ids::entry_id()));
-                tokio::fs::create_dir_all(ctx.paths.artifacts())
-                    .await
-                    .map_err(|error| ToolError::new("E_ARTIFACT", error.to_string()))?;
-                tokio::fs::write(&artifact, output.text.as_bytes())
-                    .await
-                    .map_err(|error| ToolError::new("E_ARTIFACT", error.to_string()))?;
-                let head = max_chars * 3 / 4;
-                truncate_output_with_artifact(&output.text, head, max_chars - head, &artifact)
-            } else {
-                output.text
-            };
-            let mut outcome = ToolOutcome::success(content);
+            let mut outcome = ToolOutcome::success(output.text);
             outcome.is_error = output.is_error;
             outcome.images = output
                 .images

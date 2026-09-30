@@ -7,13 +7,15 @@ pub mod find;
 pub mod grep;
 pub mod job;
 pub mod mcp;
+pub mod output;
 pub mod plan;
 pub mod read;
 pub mod todo;
 pub mod write;
 pub use job::JobManager;
+pub use output::ToolOutput;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::ResolvedConfig;
@@ -43,14 +45,13 @@ pub enum ToolControl {
     EndTurn,
 }
 
-/// 一个工具的完整模型可见结果。
+/// 工具的原始输出来源与执行结果；模型可见文本由统一出口生成。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutcome {
-    pub content: String,
+    pub content: ToolOutput,
     pub is_error: bool,
     /// 结果携带的图片；仅 MCP 桥接工具会填充。
     pub images: Vec<moc_llm::ImageSource>,
-    pub summary: Option<String>,
     pub control: ToolControl,
     pub status: Option<moc_protocol::methods::ToolStatus>,
     /// 文件变更的结构化 diff；仅 `edit` / `write` 成功时给出，随
@@ -59,12 +60,11 @@ pub struct ToolOutcome {
 }
 
 impl ToolOutcome {
-    pub fn success(content: impl Into<String>) -> Self {
+    pub fn success(content: impl Into<ToolOutput>) -> Self {
         Self {
             content: content.into(),
             is_error: false,
             images: Vec::new(),
-            summary: None,
             control: ToolControl::Continue,
             status: None,
             diff: None,
@@ -73,22 +73,20 @@ impl ToolOutcome {
 
     pub fn failure(code: &str, message: impl AsRef<str>) -> Self {
         Self {
-            content: format!("[{code}] {}", message.as_ref()),
+            content: format!("[{code}] {}", message.as_ref()).into(),
             is_error: true,
             images: Vec::new(),
-            summary: None,
             control: ToolControl::Continue,
             status: None,
             diff: None,
         }
     }
 
-    pub fn end_turn(content: impl Into<String>) -> Self {
+    pub fn end_turn(content: impl Into<ToolOutput>) -> Self {
         Self {
             content: content.into(),
             is_error: false,
             images: Vec::new(),
-            summary: None,
             control: ToolControl::EndTurn,
             status: None,
             diff: None,
@@ -121,10 +119,9 @@ impl ToolError {
 
     pub fn into_outcome(self) -> ToolOutcome {
         ToolOutcome {
-            content: self.to_string(),
+            content: self.to_string().into(),
             is_error: true,
             images: Vec::new(),
-            summary: None,
             control: ToolControl::Continue,
             status: (self.code == "E_CANCELLED").then_some(moc_protocol::ToolStatus::Cancelled),
             diff: None,
@@ -283,41 +280,6 @@ impl ToolRegistry {
     }
 }
 
-/// 保留输出首尾，并仅在截断标记中插入归档路径。
-pub fn truncate_output_with_artifact(
-    text: &str,
-    head_bytes: usize,
-    tail_bytes: usize,
-    artifact_path: &Path,
-) -> String {
-    if text.len() <= head_bytes.saturating_add(tail_bytes) {
-        return text.to_owned();
-    }
-    let head_end = floor_char_boundary(text, head_bytes.min(text.len()));
-    let tail_start = ceil_char_boundary(text, text.len().saturating_sub(tail_bytes));
-    let omitted = tail_start.saturating_sub(head_end);
-    format!(
-        "{}\n[… {omitted} 字节已省略；完整输出：{}]\n{}",
-        &text[..head_end],
-        artifact_path.display(),
-        &text[tail_start..]
-    )
-}
-
-fn floor_char_boundary(text: &str, mut position: usize) -> usize {
-    while !text.is_char_boundary(position) {
-        position -= 1;
-    }
-    position
-}
-
-fn ceil_char_boundary(text: &str, mut position: usize) -> usize {
-    while position < text.len() && !text.is_char_boundary(position) {
-        position += 1;
-    }
-    position
-}
-
 pub(crate) fn schema(properties: Value, required: &[&str]) -> Value {
     serde_json::json!({
         "type": "object",
@@ -444,28 +406,5 @@ mod dynamic_registry_tests {
                 .len(),
             10
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn output_truncation_preserves_utf8_boundaries_and_both_edges() {
-        let output =
-            truncate_output_with_artifact("前中后尾外", 6, 6, Path::new("/tmp/output.txt"));
-        assert!(output.starts_with("前中"));
-        assert!(output.ends_with("尾外"));
-        assert!(output.contains("已省略"));
-    }
-
-    #[test]
-    fn truncation_does_not_rewrite_literal_file_content() {
-        let text = "未归档：正文完整输出：未归档abcdefghijklmnopqrstuvwxyz未归档";
-        let output = truncate_output_with_artifact(text, 48, 9, Path::new("/tmp/output.txt"));
-        assert!(output.starts_with("未归档：正文完整输出：未归档"));
-        assert!(output.ends_with("未归档"));
-        assert_eq!(output.matches("/tmp/output.txt").count(), 1);
     }
 }

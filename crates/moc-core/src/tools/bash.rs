@@ -9,9 +9,8 @@ use grep_matcher::Matcher;
 use moc_llm::ToolDef;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
 mod group;
 pub(crate) use group::ProcessGroup;
@@ -119,23 +118,13 @@ impl Tool for BashTool {
                     output_path.display()
                 )));
             };
-            let output = read_bounded_file(
-                &output_path,
-                ctx.config.tools.output.head_bytes,
-                ctx.config.tools.output.tail_bytes,
-            )
-            .await
-            .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
             Ok(ToolOutcome {
-                content: render_exit(
-                    &output,
-                    result.code.unwrap_or(-1),
-                    result.timed_out,
-                    (timeout > 0).then_some(Duration::from_secs(timeout)),
-                ),
+                content: ToolOutput::File {
+                    path: output_path,
+                    suffix: render_exit(result.code.unwrap_or(-1), result.timed_out, timeout),
+                },
                 is_error: result.timed_out || result.code != Some(0),
                 images: Vec::new(),
-                summary: None,
                 control: super::ToolControl::Continue,
                 status: None,
                 diff: None,
@@ -275,62 +264,14 @@ async fn next_job_id(ctx: &ToolCtx) -> Result<String, ToolError> {
     }
 }
 
-async fn read_bounded_file(
-    path: &Path,
-    head_bytes: usize,
-    tail_bytes: usize,
-) -> std::io::Result<String> {
-    let metadata = tokio::fs::metadata(path).await?;
-    let mut file = tokio::fs::File::open(path).await?;
-    let head_len = metadata.len().min(head_bytes as u64) as usize;
-    let mut head = vec![0; head_len];
-    file.read_exact(&mut head).await?;
-    let tail_len = metadata
-        .len()
-        .saturating_sub(head_len as u64)
-        .min(tail_bytes as u64) as usize;
-    let tail_start = metadata.len().saturating_sub(tail_len as u64);
-    if tail_start > head_len as u64 {
-        use tokio::io::AsyncSeekExt;
-        file.seek(std::io::SeekFrom::Start(tail_start)).await?;
-    }
-    let mut tail = vec![0; tail_len];
-    if tail_len > 0 {
-        file.read_exact(&mut tail).await?;
-    }
-    let text = if tail_start > head_len as u64 {
-        format!(
-            "{}\n[… {} 字节已省略；完整输出：{}]\n{}",
-            String::from_utf8_lossy(&head),
-            tail_start - head_len as u64,
-            path.display(),
-            String::from_utf8_lossy(&tail)
-        )
-    } else {
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&head),
-            String::from_utf8_lossy(&tail)
-        )
-    };
-    Ok(text)
-}
-
-fn render_exit(output: &str, status: i32, timed_out: bool, timeout: Option<Duration>) -> String {
-    let mut output = if output.is_empty() {
-        "(no output)".to_owned()
-    } else {
-        output.to_owned()
-    };
+fn render_exit(status: i32, timed_out: bool, timeout: u64) -> String {
     if timed_out {
-        output.push_str(&format!(
-            "\n(超时 {} 秒后被终止)",
-            timeout.map_or(0, |duration| duration.as_secs())
-        ));
+        format!("\n(超时 {timeout} 秒后被终止)")
     } else if status != 0 {
-        output.push_str(&format!("\n(exit {status})"));
+        format!("\n(exit {status})")
+    } else {
+        String::new()
     }
-    output
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema, truncate_output_with_artifact};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,25 +77,7 @@ impl Tool for GrepTool {
             let result = tokio::task::spawn_blocking(move || search.run())
                 .await
                 .map_err(|error| ToolError::new("E_GREP", error.to_string()))??;
-            let output_path = ctx
-                .paths
-                .artifacts()
-                .join(format!("{}-grep.txt", crate::ids::entry_id()));
-            let config = &ctx.config.tools.output;
-            if result.len() > config.head_bytes.saturating_add(config.tail_bytes) {
-                tokio::fs::create_dir_all(ctx.paths.artifacts())
-                    .await
-                    .map_err(|error| ToolError::new("E_ARTIFACT", error.to_string()))?;
-                tokio::fs::write(&output_path, result.as_bytes())
-                    .await
-                    .map_err(|error| ToolError::new("E_ARTIFACT", error.to_string()))?;
-            }
-            Ok(ToolOutcome::success(truncate_output_with_artifact(
-                &result,
-                config.head_bytes,
-                config.tail_bytes,
-                &output_path,
-            )))
+            Ok(ToolOutcome::success(result))
         })
     }
 }

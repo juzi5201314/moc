@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobStatus {
@@ -152,11 +152,23 @@ impl JobManager {
                 JobStatus::TimedOut => (None, "timeout".into()),
                 JobStatus::Running | JobStatus::Killing => unreachable!("任务已回收"),
             };
-            let tail = read_tail(&log_path, 40).await.unwrap_or_default();
+            let output = super::output::prepare(
+                ToolOutput::File {
+                    path: log_path.clone(),
+                    suffix: String::new(),
+                },
+                &ctx.config.tools.output,
+                &ctx.paths,
+            )
+            .await;
+            let output = match output {
+                Ok(output) => output,
+                Err(error) => format!("[E_JOB_LOG] 无法读取日志：{error}"),
+            };
             {
                 let mut state = ctx.state.lock().await;
                 state.notices.push(format!(
-                    "后台任务 {id} 已结束（{exit_label}），输出尾部：\n{tail}\n完整输出：{}",
+                    "后台任务 {id} 已结束（{exit_label}），输出预览：\n{output}\n完整输出：{}",
                     log_path.display()
                 ));
             }
@@ -208,14 +220,18 @@ impl JobManager {
         self.jobs.lock().get(id).cloned()
     }
 
-    pub async fn output(&self, id: &str, lines: usize) -> Result<String, ToolError> {
+    pub async fn output(&self, id: &str, lines: usize) -> Result<ToolOutput, ToolError> {
         let job = self
             .info(id)
             .await
             .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("未知 job `{id}`")))?;
-        read_tail(&job.path, lines)
+        let text = read_tail(&job.path, lines)
             .await
-            .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))
+            .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
+        Ok(ToolOutput::Excerpt {
+            text,
+            path: job.path,
+        })
     }
 
     pub async fn kill(&self, id: &str) -> Result<JobStatus, ToolError> {
@@ -348,7 +364,7 @@ impl Tool for JobTool {
         Box::pin(async move {
             let args: JobArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let output = match args.op.as_str() {
+            let output: ToolOutput = match args.op.as_str() {
                 "list" => {
                     let jobs = ctx.jobs.list().await;
                     if jobs.is_empty() {
@@ -366,6 +382,7 @@ impl Tool for JobTool {
                             })
                             .collect::<Vec<_>>()
                             .join("\n")
+                            .into()
                     }
                 }
                 "output" => {
@@ -376,7 +393,7 @@ impl Tool for JobTool {
                 }
                 "kill" => {
                     let id = require_id(args.job_id)?;
-                    format!("{:?}", ctx.jobs.kill(&id).await?)
+                    format!("{:?}", ctx.jobs.kill(&id).await?).into()
                 }
                 "wait" => {
                     let id = require_id(args.job_id)?;
@@ -387,12 +404,15 @@ impl Tool for JobTool {
                             Duration::from_secs(args.timeout_secs.unwrap_or(60).clamp(1, 600)),
                         )
                         .await?;
-                    let output = ctx
+                    let mut output = ctx
                         .jobs
                         .output(&id, args.tail_lines.unwrap_or(200).clamp(1, 2000))
-                        .await
-                        .unwrap_or_default();
-                    format!("{status:?}\n{output}")
+                        .await?;
+                    let ToolOutput::Excerpt { text, .. } = &mut output else {
+                        unreachable!("后台日志返回选定尾部片段");
+                    };
+                    text.insert_str(0, &format!("{status:?}\n"));
+                    output
                 }
                 _ => {
                     return Err(ToolError::new(
