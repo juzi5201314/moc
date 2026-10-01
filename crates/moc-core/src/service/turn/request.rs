@@ -149,7 +149,7 @@ fn image_media_type(path: &str) -> Option<&'static str> {
     }
 }
 
-pub(super) fn build_request(
+pub(crate) fn build_request(
     model: &crate::ResolvedModel,
     _config: &crate::ResolvedConfig,
     messages: Vec<Message>,
@@ -164,21 +164,21 @@ pub(super) fn build_request(
     } else {
         model.echo_reasoning
     };
-    use crate::config::model::CachePolicy;
-    let anthropic = model.llm.protocol == moc_llm::Protocol::AnthropicMessages;
-    // Anthropic 缓存稳定系统前缀及最后两条历史；OpenAI 默认只发送路由键，
-    // 不把所有兼容端点误判为支持显式断点和 30m 协议。
-    let breakpoints = if anthropic {
-        let mut points = vec![0];
-        for index in messages.len().saturating_sub(2)..messages.len() {
-            if index != 0 {
-                points.push(index);
-            }
-        }
-        points
-    } else {
-        Vec::new()
-    };
+    let (messages, image_budget) = crate::compact::images::apply(
+        messages,
+        &tools,
+        native_input.as_deref(),
+        model.max_request_bytes,
+    );
+    if image_budget.evicted > 0 {
+        tracing::info!(
+            body_bytes = image_budget.body_bytes,
+            body_bytes_after = image_budget.body_bytes_after,
+            evicted = image_budget.evicted,
+            "请求图片已按字节预算淘汰"
+        );
+    }
+    let message_count = messages.len();
     ChatRequest {
         messages,
         native_input,
@@ -199,20 +199,42 @@ pub(super) fn build_request(
         parallel_tool_calls: Some(model.llm.wire.parallel_tool_calls),
         options: RequestOptions {
             echo_reasoning,
-            cache: (model.cache != CachePolicy::Off
-                && (model.supports_prompt_cache_key || anthropic))
-                .then(|| CacheConfig {
-                    key: (!anthropic).then(|| session_id.to_owned()),
-                    breakpoints,
-                    ttl: match (anthropic, model.cache) {
-                        (true, CachePolicy::Long) => Some(moc_llm::CacheTtl::OneHour),
-                        (true, CachePolicy::Short) => Some(moc_llm::CacheTtl::FiveMinutes),
-                        _ => None,
-                    },
-                }),
+            cache: cache_options(model, message_count, session_id),
             ..RequestOptions::default()
         },
     }
+}
+
+pub(crate) fn cache_options(
+    model: &crate::ResolvedModel,
+    message_count: usize,
+    session_id: &str,
+) -> Option<CacheConfig> {
+    use crate::config::model::CachePolicy;
+    let anthropic = model.llm.protocol == moc_llm::Protocol::AnthropicMessages;
+    if model.cache == CachePolicy::Off || (!model.supports_prompt_cache_key && !anthropic) {
+        return None;
+    }
+    let breakpoints = if anthropic {
+        let mut points = vec![0];
+        for index in message_count.saturating_sub(2)..message_count {
+            if index != 0 {
+                points.push(index);
+            }
+        }
+        points
+    } else {
+        Vec::new()
+    };
+    Some(CacheConfig {
+        key: (!anthropic).then(|| session_id.to_owned()),
+        breakpoints,
+        ttl: match (anthropic, model.cache) {
+            (true, CachePolicy::Long) => Some(moc_llm::CacheTtl::OneHour),
+            (true, CachePolicy::Short) => Some(moc_llm::CacheTtl::FiveMinutes),
+            _ => None,
+        },
+    })
 }
 #[cfg(test)]
 mod tests {

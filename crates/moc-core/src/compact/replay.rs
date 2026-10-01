@@ -44,6 +44,19 @@ pub fn model_messages(
             )));
         }
     }
+    if !state.todos.is_empty() {
+        let marker = "<active-todos>";
+        let already_in_transcript = state
+            .transcript
+            .iter()
+            .skip(start)
+            .any(|entry| entry.message.text().contains(marker));
+        if !already_in_transcript && let Ok(todos) = serde_json::to_string(&state.todos) {
+            messages.push(Message::user_text(format!(
+                "{marker}\n{todos}\n</active-todos>"
+            )));
+        }
+    }
     messages.extend(
         state.transcript[start..]
             .iter()
@@ -169,6 +182,34 @@ mod tests {
         let messages = model_messages(&state, None, None);
         assert!(messages[0].text().contains("keep intent"));
         assert_eq!(messages.last().unwrap().text(), "new");
+    }
+
+    #[test]
+    fn model_messages_reinject_structured_todos_after_compaction() {
+        use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus};
+
+        let header = Entry::header(
+            "ses_todo123456".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            None,
+            "title".into(),
+            1,
+        );
+        let mut state = SessionState::new(header).unwrap();
+        state.todos = vec![TodoPhase {
+            phase: "执行".into(),
+            items: vec![TodoItem {
+                status: TodoStatus::InProgress,
+                task: "保留当前任务".into(),
+                reason: None,
+            }],
+        }];
+        let messages = model_messages(&state, None, None);
+        assert!(messages.iter().any(|message| {
+            message.text().contains("<active-todos>") && message.text().contains("保留当前任务")
+        }));
     }
 
     #[test]

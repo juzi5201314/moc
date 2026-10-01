@@ -82,6 +82,8 @@ pub enum AppEvent {
     },
     /// 非模态异步操作的用户可见提示。
     Notice(String),
+    /// 选择器或记忆加载失败。
+    PickerError(String),
     /// git 分支就绪（statusline 异步刷新）。
     GitBranch(String),
 }

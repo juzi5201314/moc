@@ -133,6 +133,8 @@ where
 pub(super) struct ModelDocument {
     pub context_window: u64,
     pub max_output_tokens: u32,
+    /// 请求体字节上限；留空使用协议无关的 50 MiB 默认值。
+    pub max_request_bytes: Option<u64>,
     pub reasoning: bool,
     /// `None` 表示使用统一的默认推理等级集合。
     pub thinking_levels: Option<Vec<ThinkingLevel>>,
@@ -143,12 +145,12 @@ pub(super) struct ModelDocument {
     /// 每百万 token 定价（美元）；未配置时前端隐藏费用段。
     pub pricing: Option<moc_protocol::ModelPricing>,
 }
-
 impl Default for ModelDocument {
     fn default() -> Self {
         Self {
             context_window: 200_000,
             max_output_tokens: 32_000,
+            max_request_bytes: None,
             reasoning: false,
             thinking_levels: None,
             input: vec![ModelInput::Text],
@@ -284,9 +286,10 @@ pub struct ResolvedModel {
     pub model_id: String,
     /// 模型请求能力。
     pub capabilities: ModelCapabilities,
-    /// 上下文 token 上限。
+    /// 模型上下文窗口上限。
     pub context_window: u64,
-    /// 模型输出 token 上限。
+    /// 请求体字节上限；`None` 时由图片预算模块采用默认值。
+    pub max_request_bytes: Option<u64>,
     pub max_output_tokens: u32,
     /// 解析后的模型 thinking level。
     pub thinking_level: ThinkingLevel,
@@ -355,6 +358,11 @@ impl ResolvedProvider {
             if model.context_window == 0 {
                 return Err(CoreError::Config(format!(
                     "providers.{id}.models.{model_id}.context_window 必须大于 0"
+                )));
+            }
+            if model.max_request_bytes == Some(0) {
+                return Err(CoreError::Config(format!(
+                    "providers.{id}.models.{model_id}.max_request_bytes 必须大于 0"
                 )));
             }
             if let Some(levels) = &model.thinking_levels
@@ -460,6 +468,7 @@ impl ResolvedProvider {
                 reasoning: model.reasoning,
             },
             context_window: model.context_window,
+            max_request_bytes: model.max_request_bytes,
             max_output_tokens: model.max_output_tokens,
             thinking_level: level,
             thinking_levels,

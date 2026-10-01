@@ -16,7 +16,7 @@ use moc_protocol::{
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 
-pub(super) mod request;
+pub(crate) mod request;
 mod stream;
 mod tools;
 mod workspace;

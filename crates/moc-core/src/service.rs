@@ -154,6 +154,11 @@ impl CoreInner {
                 .or_insert_with(|| Arc::new(SessionRuntime::new(Arc::clone(&self.job_slots)))),
         )
     }
+    pub(crate) async fn reset_loaded_skills(&self, session_id: &str) {
+        if let Some(runtime) = self.runtimes.lock().await.get(session_id).cloned() {
+            runtime.loaded_skills.write().clear();
+        }
+    }
 
     pub(crate) fn client_supports_ask(&self, connection_id: u64) -> bool {
         self.capabilities
@@ -1076,4 +1081,4 @@ pub(crate) async fn snapshot_workspace(
 
 mod management;
 mod mode;
-mod turn;
+pub(crate) mod turn;

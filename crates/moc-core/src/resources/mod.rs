@@ -409,17 +409,30 @@ fn local_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resource
 }
 
 fn history_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<ResourceCandidate> {
-    let uri = format!("history://{}/transcript", context.session_id);
-    if uri.starts_with(prefix) || prefix == "history://" {
-        return vec![ResourceCandidate {
-            uri: uri.clone(),
+    let transcript = format!("history://{}/transcript", context.session_id);
+    let mut values = Vec::new();
+    if transcript.starts_with(prefix) || prefix == "history://" {
+        values.push(ResourceCandidate {
+            uri: transcript,
             label: "transcript".into(),
             description: "当前会话 JSONL transcript".into(),
             kind: "file".into(),
             append_space: true,
-        }];
+        });
     }
-    Vec::new()
+    let index = format!("history://{}/compaction/INDEX.md", context.session_id);
+    if context.paths.compaction().join("INDEX.md").is_file()
+        && (index.starts_with(prefix) || prefix == "history://")
+    {
+        values.push(ResourceCandidate {
+            uri: index,
+            label: "compaction index".into(),
+            description: "压缩前历史分段索引".into(),
+            kind: "file".into(),
+            append_space: true,
+        });
+    }
+    values
 }
 
 fn resolve_skill(
@@ -497,14 +510,28 @@ fn resolve_history(
             "history 资源不属于当前会话",
         ));
     }
-    if uri.path_segments() != ["transcript"] {
+    let segments = uri.path_segments();
+    let path = if segments.len() == 1 && segments[0] == "transcript" {
+        fs::canonicalize(&context.paths.transcript)
+            .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
+    } else if segments.len() == 2
+        && segments[0] == "compaction"
+        && (segments[1] == "INDEX.md" || segments[1].starts_with("segment-"))
+    {
+        let candidate = checked_child(
+            &context.paths.compaction(),
+            &segments[1],
+            "E_HISTORY_URI",
+            "E_HISTORY_NOT_FOUND",
+        )?;
+        fs::canonicalize(candidate)
+            .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
+    } else {
         return Err(ResourceError::new(
             "E_HISTORY_URI",
-            "history 只支持 transcript",
+            "history 只支持 transcript 或 compaction 分段",
         ));
-    }
-    let path = fs::canonicalize(&context.paths.transcript)
-        .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?;
+    };
     Ok(ResolvedResource {
         uri: input.into(),
         display_name: input.into(),

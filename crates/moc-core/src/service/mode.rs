@@ -181,7 +181,7 @@ pub async fn approve_plan(
 pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     match mode {
         SessionMode::Normal => &[
-            "read", "grep", "find", "todo", "job", "bash", "edit", "write", "ask",
+            "read", "grep", "find", "todo", "job", "bash", "edit", "write", "ask", "skill",
         ],
         SessionMode::Ask => &[
             "read", "grep", "find", "todo", "job", "bash", "ask", "skill",

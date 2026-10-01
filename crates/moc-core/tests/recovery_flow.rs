@@ -1001,10 +1001,15 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
         let request: Value = serde_json::from_slice(&body).unwrap();
         assert_ne!(request["stream"], true);
         assert!(
-            request["messages"][0]["content"]
-                .as_str()
+            request["messages"]
+                .as_array()
                 .unwrap()
-                .contains("compressing an agent conversation")
+                .iter()
+                .any(|message| {
+                    message["content"].as_str().is_some_and(|content| {
+                        content.contains("You are compressing an agent conversation")
+                    })
+                })
         );
         entered.send(()).unwrap();
         let _ = gate.await;

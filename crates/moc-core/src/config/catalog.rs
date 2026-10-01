@@ -11,7 +11,7 @@ pub fn provider_template() -> Value {
 }
 
 pub fn model_template() -> Value {
-    json!({"context_window":200000,"max_output_tokens":32000,"reasoning":false,
+    json!({"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
         "thinking_levels":null,"input":["text"],"remote_compaction":null,"pricing":null,
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
@@ -97,11 +97,12 @@ fn rank(key: &str) -> usize {
         // 模型：先规模，再能力，最后价格与兼容
         "context_window" => 0,
         "max_output_tokens" => 1,
-        "reasoning" => 2,
-        "thinking_levels" => 3,
-        "input" => 4,
-        "remote_compaction" => 5,
-        "pricing" => 6,
+        "max_request_bytes" => 2,
+        "reasoning" => 3,
+        "thinking_levels" => 4,
+        "input" => 5,
+        "remote_compaction" => 6,
+        "pricing" => 7,
         // 模型角色：主模型 → 轻量 → 深度 → 计划
         "default" => 0,
         "smol" => 1,
@@ -284,7 +285,10 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         FieldKind::Strings
     } else if key == "remote_compaction" {
         FieldKind::Bool
-    } else if matches!(key, "timeout_secs" | "connect_timeout_secs") {
+    } else if matches!(
+        key,
+        "timeout_secs" | "connect_timeout_secs" | "max_request_bytes"
+    ) {
         FieldKind::Number
     } else {
         match value {
@@ -377,7 +381,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "模型一次能记住的内容量，用于估算何时需要压缩对话。",
             ),
             "max_output_tokens" => ("回复长度上限", "模型单次回复的最大长度。"),
-            "reasoning" => ("支持思考", "该模型是否支持思考模式。"),
+            "max_request_bytes" => (
+                "请求体字节上限",
+                "图片请求超过该字节数时按旧到新淘汰图片；留空使用 50 MiB 默认值。",
+            ),
             "thinking_levels" => (
                 "可选思考等级",
                 "逐行填写可选的思考等级，例如 low、high；留空使用默认。",

@@ -38,6 +38,9 @@ impl SessionPaths {
     pub fn artifacts(&self) -> PathBuf {
         self.sidecar.join("artifacts")
     }
+    pub fn compaction(&self) -> PathBuf {
+        self.sidecar.join("compaction")
+    }
 }
 
 /// 单会话 JSONL 文件句柄，写入与重写互斥。

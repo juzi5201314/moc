@@ -32,6 +32,7 @@ thinking_levels = ["low", "medium", "high", "xhigh", "max"]
 [providers.provider.models.model]
 context_window = 200000
 max_output_tokens = 32000
+max_request_bytes = 52428800
 input = ["text"]
 
 [tools]
@@ -67,7 +68,8 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 ### 请求、进程与输出预算
 
 - `providers.<id>.max_concurrency`：同一供应商跨会话共享并发限额，`0` 表示不限；取消等待不会占用名额。模型生成和压缩请求使用同一限额。
-- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 缓存系统前缀及近期历史，OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。
+- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 缓存系统前缀及近期历史，OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。`smol = "inherit"` 时软压缩沿用主请求的 system/tools 前缀和缓存路由。
+- 模型的 `max_request_bytes` 控制单次 JSON 请求体，留空为 50 MiB。达到高水位后，core 只在请求副本中按旧到新淘汰图片，压缩和会话原始历史不被改写；图片 token 按固定视觉估算，不按 Base64 字节计量。
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
 - `tools.output`：所有工具（包括 MCP）共用首尾输出预算（各 20 KiB）和读写文件容量上限（100 MiB），超出预算的完整文本自动归档；工具本身的分页、搜索和专项限制仍在各自分组。
 
@@ -75,11 +77,11 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 `compaction.threshold` 表示开始压缩的触发阈值，默认 `{ mode = "percent", value = 85 }`；固定 token 可写为 `{ mode = "tokens", value = 120000 }`。百分比只乘上下文窗口，不扣除模型 `max_output_tokens`。自动压缩完成还必须进入触发阈值的 80% recovery band；例如 200k 窗口的 170k 触发线要求压缩后不高于 136k，避免在临界线附近反复压缩。上下文溢出恢复只要求压缩后重新放入可用窗口，再继续请求。
 
-上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。压缩改变历史后会清除旧锚点并重新估算。上下文详情按系统提示、指令文件、技能、工具定义及会话历史展示占用分解；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
+上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按系统提示、指令文件、技能、工具定义及会话历史展示占用分解；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
 
 ### 会话保留与工作区记忆
 
-`session.retention` 默认启用：30 天后归档会话，保护全局最新 20 个、每个工作区最新 10 个以及已加载／锁定会话；未引用产物保留 30 天，后台日志保留 14 天。在 `/config` 的会话页按 `G` 预览，再明确确认执行。会话归档为 gzip，仍能列出和恢复；历史、压缩归档及恢复备份引用的产物不会被删除。保留策略与上下文压缩互不替代。
+`session.retention` 默认启用：30 天后归档会话，保护全局最新 20 个、每个工作区最新 10 个以及已加载／锁定会话；未引用产物保留 30 天，后台日志保留 14 天。在 `/config` 的会话页按 `G` 预览，再明确确认执行。会话归档为 gzip，仍能列出和恢复；历史、压缩归档及恢复备份引用的产物不会被删除。压缩前的历史会写入 `history://<session>/compaction/INDEX.md` 分段索引，模型可通过 `read` 回读被摘要省略的精确细节。保留策略与上下文压缩互不替代。
 
 OpenViking 页集中管理服务配置和工作区绑定。按 `W` 查看知识域，`Enter` 将旧路径迁移到新目录并保持同一身份；目录不存在只标记，不自动清理。`Delete` 需要明确确认：共享知识域只解除当前路径绑定，最后一个绑定才删除远程记忆。非 Git 工作区同样支持持久身份，目录改名后应使用迁移操作而不是创建新知识域。
 

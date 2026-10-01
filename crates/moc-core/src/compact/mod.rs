@@ -1,11 +1,13 @@
 //! 上下文预算、压缩方法调度与 checkpoint 提交。
 
+pub mod archive;
+pub mod images;
 pub mod remote;
 pub mod replay;
 pub mod shake;
 pub mod soft;
 
-use moc_llm::{Message, ToolDef};
+use moc_llm::{ContentPart, Message, ToolDef};
 use moc_protocol::RequestContext;
 use moc_protocol::methods::{CompactResult, SessionUpdate};
 
@@ -53,14 +55,29 @@ pub fn prefix_within_tokens(text: &str, budget: u64) -> &str {
     text
 }
 
+/// 按内容块估算消息 token；图片按固定视觉 token 计量，不把 Base64 字节当成文本。
 pub fn messages_tokens(messages: &[Message]) -> u64 {
-    messages
-        .iter()
-        .map(|message| {
-            let text = serde_json::to_string(message).unwrap_or_default();
-            estimate_tokens(&text)
-        })
-        .sum()
+    messages.iter().map(message_tokens).sum()
+}
+
+fn message_tokens(message: &Message) -> u64 {
+    8u64.saturating_add(message.content.iter().map(content_part_tokens).sum())
+}
+
+fn content_part_tokens(part: &ContentPart) -> u64 {
+    match part {
+        ContentPart::Text(text) => estimate_tokens(text),
+        ContentPart::Image { .. } => images::IMAGE_TOKEN_ESTIMATE,
+        ContentPart::Reasoning(reasoning) => {
+            serde_json::to_string(reasoning).map_or(0, |text| estimate_tokens(&text))
+        }
+        ContentPart::ToolCall(call) => {
+            serde_json::to_string(call).map_or(0, |text| estimate_tokens(&text))
+        }
+        ContentPart::ToolResult(result) => estimate_tokens(&result.content).saturating_add(
+            (result.images.len() as u64).saturating_mul(images::IMAGE_TOKEN_ESTIMATE),
+        ),
+    }
 }
 
 /// 工具定义整体序列化后估算一次；工具 schema 随每次请求发送，必须计入基数。
@@ -208,7 +225,7 @@ pub(crate) async fn compact(
         .saturating_add(context.additional_tokens);
     let mut current_messages = replay::model_messages(&state, None, Some(&model));
     let mut measured_messages = Vec::with_capacity(current_messages.len() + 1);
-    measured_messages.push(system);
+    measured_messages.push(system.clone());
     measured_messages.extend(current_messages.iter().cloned());
     let tokens_before = context_tokens_with_additional(
         &state,
@@ -221,9 +238,18 @@ pub(crate) async fn compact(
         fixed_tokens,
     };
     let required_tokens = required_tokens(&config, model.context_window, reason);
-
     if instructions.is_some() {
-        let result = soft::compact(inner, ctx, &state, &config, instructions, budget).await?;
+        let result = soft::compact(soft::SoftContext {
+            inner,
+            ctx,
+            state: &state,
+            config: &config,
+            system: &system,
+            tools: &tools,
+            instructions,
+            budget,
+        })
+        .await?;
         return Ok(CompactReport {
             created_headroom: result.tokens_after <= required_tokens,
             result,
@@ -250,7 +276,17 @@ pub(crate) async fn compact(
                 shake::compact(inner, ctx, &state, &config, &model, budget).await
             }
             CompactionMethod::Soft => {
-                soft::compact(inner, ctx, &state, &config, instructions, budget).await
+                soft::compact(soft::SoftContext {
+                    inner,
+                    ctx,
+                    state: &state,
+                    config: &config,
+                    system: &system,
+                    tools: &tools,
+                    instructions,
+                    budget,
+                })
+                .await
             }
         };
         match result {
@@ -300,13 +336,15 @@ pub(crate) async fn record_compaction(
 ) -> Result<CompactResult, CoreError> {
     let Checkpoint {
         method,
-        summary,
+        mut summary,
         first_kept_id,
         tokens_before,
         tokens_after,
         instructions,
         native,
     } = checkpoint;
+    append_runtime_checkpoint(inner, session_id, &mut summary).await?;
+    inner.reset_loaded_skills(session_id).await;
     let summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
     inner
         .sessions
@@ -340,6 +378,53 @@ pub(crate) async fn record_compaction(
         tokens_after,
         summary_chars,
     })
+}
+
+async fn append_runtime_checkpoint(
+    inner: &CoreInner,
+    session_id: &str,
+    summary: &mut String,
+) -> Result<(), CoreError> {
+    let record = inner.sessions.get(session_id).await?;
+    let state = record.state.lock().await.clone();
+    let archive_uri = archive::write(&record.paths, session_id, &state).await?;
+    let jobs = inner.runtime(session_id).await.jobs.list().await;
+    if archive_uri.is_none() && state.todos.is_empty() && jobs.is_empty() {
+        return Ok(());
+    }
+    if let Some(uri) = archive_uri {
+        summary.push_str("\n\n<compaction-history>压缩前的完整分段历史：");
+        summary.push_str(&uri);
+        summary.push_str("；需要精确细节时先读取该索引。</compaction-history>");
+    }
+    let has_runtime_state = !state.todos.is_empty() || !jobs.is_empty();
+    if has_runtime_state {
+        summary.push_str("\n\n<compaction-runtime>\n");
+        if !state.todos.is_empty() {
+            summary.push_str("结构化 todo 状态（以当前快照为准）：\n");
+            summary.push_str(&serde_json::to_string(&state.todos).map_err(|error| {
+                CoreError::Session(format!("序列化 compaction todo 状态失败：{error}"))
+            })?);
+            summary.push('\n');
+        }
+        for job in jobs {
+            let status = match job.status {
+                crate::tools::job::JobStatus::Running => "running",
+                crate::tools::job::JobStatus::Finished(Some(0)) => "finished(0)",
+                crate::tools::job::JobStatus::Finished(Some(_)) => "finished(nonzero)",
+                crate::tools::job::JobStatus::Finished(None) => "finished",
+                crate::tools::job::JobStatus::Killing => "killing",
+                crate::tools::job::JobStatus::Killed => "killed",
+                crate::tools::job::JobStatus::TimedOut => "timed_out",
+            };
+            summary.push_str(&format!(
+                "后台任务 {} [{}]：{}\n",
+                job.id, status, job.command
+            ));
+        }
+        summary.push_str("</compaction-runtime>");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
