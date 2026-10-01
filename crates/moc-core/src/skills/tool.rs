@@ -78,15 +78,18 @@ impl Tool for SkillTool {
             let parsed = super::frontmatter::parse(&text)
                 .map_err(|error| ToolError::new("E_SKILL", error.to_string()))?;
             let mut output = format!(
-                "<skill_content name=\"{}\" base=\"{}\">\n{}\n</skill_content>",
+                "<skill_content name=\"{}\" base=\"skill://{}\">\n{}\n</skill_content>",
                 skill.name,
-                skill.base_dir.display(),
+                skill.name,
                 parsed.body.trim()
             );
-            let resources = list_resources(&skill.base_dir);
+            let resources = list_resources(&skill.base_dir)
+                .into_iter()
+                .map(|resource| format!("skill://{}/{}", skill.name, resource))
+                .collect::<Vec<_>>();
             if !resources.is_empty() {
                 output.push_str(&format!(
-                    "\n\n本 skill 附带文件（相对 base 目录可用 read 读取）：\n{}",
+                    "\n\n本 skill 附带文件（使用 read 读取）：\n{}",
                     resources.join("\n")
                 ));
             }
@@ -128,10 +131,22 @@ pub fn render_for_invocation(
         .map_err(|error| format!("读取 skill 失败：{error}"))?;
     let parsed = super::frontmatter::parse(&text).map_err(|error| error.to_string())?;
     loaded.insert(name.to_owned());
+    let resources = list_resources(&skill.base_dir)
+        .into_iter()
+        .map(|resource| format!("skill://{}/{}", skill.name, resource))
+        .collect::<Vec<_>>();
+    let resources = if resources.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n本 skill 附带文件（使用 read 读取）：\n{}",
+            resources.join("\n")
+        )
+    };
     Ok(format!(
-        "<skill_content name=\"{}\" base=\"{}\">\n{}\n</skill_content>",
+        "<skill_content name=\"{}\" base=\"skill://{}\">\n{}\n</skill_content>{resources}",
         skill.name,
-        skill.base_dir.display(),
+        skill.name,
         parsed.body.trim()
     ))
 }

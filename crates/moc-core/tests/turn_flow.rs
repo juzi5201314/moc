@@ -298,7 +298,8 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
         .iter()
         .find(|plan| plan.status == PlanStatus::Submitted)
         .expect("submitted plan projection");
-    assert!(std::path::Path::new(&plan.path).is_file());
+    assert!(plan.path.starts_with("local://"));
+    assert!(!plan.path.contains("/sessions/"));
     let approved = client
         .call::<SessionPlanApprove>(SessionPlanApproveParams {
             session_id: session.id,

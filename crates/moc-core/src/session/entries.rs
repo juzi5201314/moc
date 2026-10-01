@@ -276,6 +276,36 @@ impl Entry {
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
+    /// 把非头部 entry 接到新的 transcript 父节点上。
+    pub fn set_parent_id(&mut self, parent_id: String) {
+        match self {
+            Self::Header { .. } => {}
+            Self::Message {
+                parent_id: value, ..
+            }
+            | Self::Compaction {
+                parent_id: value, ..
+            }
+            | Self::ModeChange {
+                parent_id: value, ..
+            }
+            | Self::ModelChange {
+                parent_id: value, ..
+            }
+            | Self::TitleChange {
+                parent_id: value, ..
+            }
+            | Self::Todos {
+                parent_id: value, ..
+            }
+            | Self::Plan {
+                parent_id: value, ..
+            }
+            | Self::ResetBoundary {
+                parent_id: value, ..
+            } => *value = Some(parent_id),
+        }
+    }
 
     pub fn at_ms(&self) -> u64 {
         match self {

@@ -3,9 +3,10 @@
 //! 每种模态自带键盘状态（选中项等）与答复通道（oneshot sender）；键盘
 //! 事件优先路由给打开的模态（见 `crate::event`），渲染浮层在 `crate::render`。
 
+use moc_protocol::Role;
 use moc_protocol::methods::{
     AskParams, AskResult, ContextUsageResult, ModelInfo, PermissionRequestParams, PermissionResult,
-    SessionInfo,
+    SessionInfo, TranscriptEntry,
 };
 
 /// 可搜索列表模态的状态。
@@ -61,6 +62,81 @@ impl PickerState {
         self.offset = self.offset.min(count.saturating_sub(page));
     }
 }
+/// 消息回退选择器状态；每个用户消息是一列，列内按 transcript 顺序上下移动。
+pub struct RewindState {
+    pub turns: Vec<Vec<TranscriptEntry>>,
+    pub selected_turn: usize,
+    pub selected_item: usize,
+    pub loading: bool,
+    pub error: Option<String>,
+}
+
+impl Default for RewindState {
+    fn default() -> Self {
+        Self {
+            turns: Vec::new(),
+            selected_turn: 0,
+            selected_item: 0,
+            loading: true,
+            error: None,
+        }
+    }
+}
+
+impl RewindState {
+    pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>) {
+        self.turns.clear();
+        for entry in entries {
+            if entry.message.role == Role::User {
+                self.turns.push(vec![entry]);
+            } else if let Some(turn) = self.turns.last_mut() {
+                turn.push(entry);
+            }
+        }
+        self.selected_turn = self.turns.len().saturating_sub(1);
+        self.selected_item = self
+            .turns
+            .last()
+            .map_or(0, |turn| turn.len().saturating_sub(1));
+        self.loading = false;
+        self.error = None;
+    }
+
+    pub fn selected(&self) -> Option<&TranscriptEntry> {
+        self.turns
+            .get(self.selected_turn)
+            .and_then(|turn| turn.get(self.selected_item))
+    }
+
+    pub fn move_vertical(&mut self, delta: i32) {
+        let Some(turn) = self.turns.get(self.selected_turn) else {
+            return;
+        };
+        let max = turn.len().saturating_sub(1);
+        self.selected_item = if delta < 0 {
+            self.selected_item
+                .saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            self.selected_item.saturating_add(delta as usize).min(max)
+        };
+    }
+
+    pub fn move_horizontal(&mut self, delta: i32) {
+        if self.turns.is_empty() {
+            return;
+        }
+        let max = self.turns.len().saturating_sub(1);
+        self.selected_turn = if delta < 0 {
+            self.selected_turn
+                .saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            self.selected_turn.saturating_add(delta as usize).min(max)
+        };
+        self.selected_item = self
+            .selected_item
+            .min(self.turns[self.selected_turn].len().saturating_sub(1));
+    }
+}
 
 /// 打开的模态。
 pub enum Modal {
@@ -103,6 +179,8 @@ pub enum Modal {
         entries: Vec<moc_protocol::methods::OpenVikingEntry>,
         picker: PickerState,
     },
+    /// 消息回退选择器。
+    Rewind { state: RewindState },
     /// 会话恢复（`session/list` + `session/load`）。
     Sessions {
         sessions: Vec<SessionInfo>,
@@ -140,6 +218,7 @@ impl Modal {
             Modal::MemoryEditor { uri, dirty, .. } => {
                 format!("{}{}", if *dirty { "* " } else { "" }, uri)
             }
+            Modal::Rewind { .. } => "消息回退".into(),
             Modal::Sessions { .. } => "恢复会话".into(),
             Modal::Plan { title, .. } => format!("计划审批：{title}"),
             Modal::Help => "快捷键帮助".into(),
@@ -171,6 +250,7 @@ impl Modal {
                 })
                 .count(),
             Modal::MemoryEditor { .. } => 0,
+            Modal::Rewind { .. } => 0,
             Modal::Sessions { picker, sessions } => {
                 filtered_sessions(sessions, &picker.query).len()
             }
@@ -190,6 +270,7 @@ impl Modal {
             }
             Modal::Ask { .. }
             | Modal::MemoryEditor { .. }
+            | Modal::Rewind { .. }
             | Modal::Help
             | Modal::Context { .. } => {}
             Modal::Model { picker, .. }
@@ -248,7 +329,9 @@ pub fn filtered_sessions<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::PickerState;
+    use super::{PickerState, RewindState};
+    use moc_protocol::methods::TranscriptEntry;
+    use moc_protocol::{Message, Role};
 
     #[test]
     fn picker_keeps_selected_item_inside_viewport() {
@@ -263,5 +346,32 @@ mod tests {
         picker.move_selection(-9, 20, 8);
         assert_eq!(picker.selected, 0);
         assert_eq!(picker.offset, 0);
+    }
+    #[test]
+    fn rewind_navigation_moves_within_turns_and_between_users() {
+        let entry = |id: &str, message: Message| TranscriptEntry {
+            id: id.into(),
+            at_ms: 0,
+            message,
+            tool: None,
+        };
+        let mut state = RewindState::default();
+        state.set_entries(vec![
+            entry("u1", Message::user_text("第一条")),
+            entry("a1", Message::assistant_text("回复")),
+            entry("t1", Message::tool_result("call", "结果", false)),
+            entry("u2", Message::user_text("第二条")),
+        ]);
+        assert_eq!(state.turns.len(), 2);
+        assert_eq!(state.turns[0].len(), 3);
+        assert_eq!(state.selected_turn, 1);
+        assert_eq!(state.selected_item, 0);
+
+        state.move_horizontal(-1);
+        state.move_vertical(2);
+        assert_eq!((state.selected_turn, state.selected_item), (0, 2));
+        state.move_horizontal(1);
+        assert_eq!((state.selected_turn, state.selected_item), (1, 0));
+        assert_eq!(state.selected().expect("选中条目").message.role, Role::User);
     }
 }

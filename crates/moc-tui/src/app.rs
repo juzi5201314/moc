@@ -60,6 +60,10 @@ pub struct App {
     pub prompt: PromptState,
     /// 斜杠补全菜单；`None` = 关闭。
     pub completion: Option<CompletionState>,
+    /// 输入文本变更代次；异步资源补全只接受最新代次。
+    pub prompt_revision: u64,
+    /// 当前资源补全请求的 prefix。
+    pub completion_prefix: Option<String>,
     /// 打开的模态；键盘优先路由给它。
     pub modal: Option<Modal>,
     /// 待审批计划（`PlanSubmitted` 的最新一份）。
@@ -76,6 +80,8 @@ pub struct App {
     pub scroll_offset: usize,
     /// 是否有在飞轮次。
     pub turn_running: bool,
+    /// 是否已经发出取消当前轮次的请求。
+    pub cancel_requested: bool,
     /// 当前轮次开始时间（statusline 计时）。
     pub turn_started_at: Option<std::time::Instant>,
     /// 最新一步的累计 token 用量（`AssistantDelta::Usage` 刷新）。
@@ -158,6 +164,8 @@ impl App {
             view_gen: 0,
             prompt: PromptState::default(),
             completion: None,
+            prompt_revision: 0,
+            completion_prefix: None,
             modal: None,
             pending_plan: None,
             focus: Focus::Prompt,
@@ -166,6 +174,7 @@ impl App {
             context_usage: None,
             scroll_offset: 0,
             turn_running: false,
+            cancel_requested: false,
             turn_started_at: None,
             usage: Usage::default(),
             usage_samples: Vec::new(),
@@ -344,9 +353,14 @@ impl App {
     /// 轮次收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
     pub fn finish_turn(&mut self) {
         let elapsed = self.turn_started_at.map(|at| at.elapsed());
+        let was_cancel_requested = self.cancel_requested;
         self.turn_running = false;
+        self.cancel_requested = false;
         self.cancel_pending = false;
         self.turn_started_at = None;
+        if was_cancel_requested {
+            self.set_notice("Stopped");
+        }
         let Some(elapsed) = elapsed else {
             return;
         };
@@ -434,6 +448,12 @@ impl App {
             },
         });
     }
+    /// 打开消息回退选择器；数据由调用方异步加载。
+    pub fn open_rewind(&mut self) {
+        self.modal = Some(Modal::Rewind {
+            state: crate::modal::RewindState::default(),
+        });
+    }
 
     /// 用加载的会话替换当前会话与转写。
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
@@ -483,10 +503,16 @@ impl App {
 
     // ---------- 输入框编辑（委托给 PromptState） ----------
 
+    pub fn prompt_changed(&mut self) {
+        self.prompt_revision = self.prompt_revision.wrapping_add(1);
+        self.completion = CompletionState::derive(&self.prompt.text);
+        self.completion_prefix = None;
+    }
+
     /// 插入一个字符。
     pub fn prompt_insert_char(&mut self, ch: char) {
         self.prompt.insert_char(ch);
-        self.completion = CompletionState::derive(&self.prompt.text);
+        self.prompt_changed();
     }
 
     /// 输入框当前文本快照。
@@ -610,5 +636,18 @@ mod tests {
         assert_eq!(mode_label(SessionMode::Normal), "normal");
         assert_eq!(mode_label(SessionMode::Ask), "ask");
         assert_eq!(mode_label(SessionMode::Plan), "plan");
+    }
+
+    #[test]
+    fn finish_turn_reports_stop_after_cancel_request() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.turn_running = true;
+        app.cancel_requested = true;
+        app.finish_turn();
+
+        assert!(!app.turn_running);
+        assert!(!app.cancel_requested);
+        assert_eq!(app.notice.as_deref(), Some("Stopped"));
     }
 }

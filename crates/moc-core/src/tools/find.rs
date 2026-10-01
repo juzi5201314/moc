@@ -74,6 +74,24 @@ impl Tool for FindTool {
         Box::pin(async move {
             let args: FindArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            if let Some(path) = args.path.as_deref()
+                && path.contains("://")
+                && !path.starts_with("ov://")
+                && !path.starts_with("viking://")
+            {
+                let _ = crate::resources::ResourceRouter::resolve_read(ctx, path)
+                    .map_err(|error| ToolError::new(error.code, error.message))?
+                    .ok_or_else(|| {
+                        ToolError::new(
+                            "E_URI_UNSUPPORTED",
+                            "资源 URI 不能作为 find 根，请使用 read 或 grep",
+                        )
+                    })?;
+                return Err(ToolError::new(
+                    "E_URI_UNSUPPORTED",
+                    "资源 URI 不能作为 find 根，请使用 read 或 grep",
+                ));
+            }
             let cancel = ctx.cancel.child_token();
             let _cancel_on_drop = cancel.clone().drop_guard();
             let scan = Scan {

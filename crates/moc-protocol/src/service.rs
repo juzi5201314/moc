@@ -32,11 +32,11 @@ use crate::methods::{
     InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
     OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
     OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams,
-    SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionSetModeParams,
-    SessionSetModelParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
-    SessionUpdateParams, TurnResult,
+    ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams, SessionContextParams,
+    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
+    SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
+    SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, TurnResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -99,6 +99,14 @@ pub trait AgentService: Send + Sync + 'static {
         params: OpenVikingDeleteParams,
     ) -> impl Future<Output = Result<OpenVikingDeleteResult, RpcError>> + Send;
 
+    fn resource_complete(
+        &self,
+        _ctx: RequestContext,
+        _params: ResourceCompleteParams,
+    ) -> impl Future<Output = Result<ResourceCompleteResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 新建会话。
     fn session_new(
         &self,
@@ -119,6 +127,14 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionLoadParams,
     ) -> impl Future<Output = Result<SessionLoadResult, RpcError>> + Send;
+    /// 回退到指定 transcript 消息；用户消息本身不保留。
+    fn session_rewind(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionRewindParams,
+    ) -> impl Future<Output = Result<SessionLoadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
 
     /// 释放会话常驻资源：不删除会话、不影响列表。
     fn session_unload(

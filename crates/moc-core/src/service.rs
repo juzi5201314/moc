@@ -10,11 +10,12 @@ use moc_protocol::methods::{
     ContextUsageResult, ContextUsageSection, Empty, InitializeParams, InitializeResult, ModelInfo,
     OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
-    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
-    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
-    SessionLoadResult, SessionMode, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionSetModeParams, SessionSetModelParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
+    ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
+    SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionMode,
+    SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, TurnResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -25,7 +26,7 @@ use crate::CoreConfig;
 use crate::compact;
 use crate::config::{ResolvedConfig, resolve_models};
 use crate::error::CoreError;
-use crate::session::SessionTable;
+use crate::session::{SessionTable, TranscriptEntryId};
 use crate::tools::{JobManager, ToolRegistry};
 use crate::workspace::watch::WorkspaceSnapshot;
 
@@ -549,6 +550,42 @@ impl AgentService for Core {
         })
     }
 
+    async fn resource_complete(
+        &self,
+        _ctx: RequestContext,
+        params: ResourceCompleteParams,
+    ) -> Result<ResourceCompleteResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
+        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
+        let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
+        let context = crate::resources::ResourceContext {
+            session_id: &params.session_id,
+            cwd: &cwd,
+            paths: &record.paths,
+            skills: &skills,
+            sessions: &self.inner.sessions,
+            openviking_configured: !config.openviking.url.trim().is_empty(),
+        };
+        let candidates = crate::resources::ResourceRouter::complete(&context, &params.prefix)
+            .map_err(|error| RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string()))?
+            .into_iter()
+            .map(|candidate| moc_protocol::ResourceCandidate {
+                uri: candidate.uri,
+                label: candidate.label,
+                description: candidate.description,
+                kind: candidate.kind,
+                append_space: candidate.append_space,
+            })
+            .collect();
+        Ok(ResourceCompleteResult { candidates })
+    }
+
     async fn session_new(
         &self,
         _ctx: RequestContext,
@@ -616,6 +653,34 @@ impl AgentService for Core {
             .load(&params.session_id, params.max_entries)
             .await
             .map_err(to_rpc)
+    }
+    async fn session_rewind(
+        &self,
+        ctx: RequestContext,
+        params: SessionRewindParams,
+    ) -> Result<SessionLoadResult, RpcError> {
+        let entry_id = TranscriptEntryId::new(params.entry_id);
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _file_lock = self
+            .inner
+            .sessions
+            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .await
+            .map_err(to_rpc)?;
+        let mut loaded = self
+            .inner
+            .sessions
+            .rewind(&params.session_id, &entry_id)
+            .await
+            .map_err(to_rpc)?;
+        loaded.session.lock = None;
+        Ok(loaded)
     }
 
     async fn session_unload(

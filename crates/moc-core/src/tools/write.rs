@@ -9,6 +9,7 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, resolve_tool_path, schema};
+use crate::resources::ResourceRouter;
 use moc_protocol::{ToolDiff, ToolFileDiff};
 
 #[derive(Deserialize)]
@@ -53,6 +54,8 @@ impl Tool for WriteTool {
         Box::pin(async move {
             let args: WriteArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            ResourceRouter::write(&args.path)
+                .map_err(|error| ToolError::new(error.code, error.message))?;
             if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
                 let Some(client) = &ctx.openviking else {
                     return Err(ToolError::new(

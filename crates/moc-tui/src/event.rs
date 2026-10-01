@@ -4,18 +4,20 @@
 //! （不阻塞协议读循环），输入线程独立，绘制按 16ms 帧预算节流（预算窗口内
 //! 的事件合并为一帧），空闲时主循环完全 park。
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use moc_core::Core;
 use moc_protocol::{
-    ClientHandle, ConfigGet, ConfigGetParams, InputPart, OpenVikingList, OpenVikingListParams,
-    OpenVikingRead, OpenVikingReadParams, OpenVikingWrite, OpenVikingWriteParams, PromptParams,
+    ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, OpenVikingList,
+    OpenVikingListParams, OpenVikingRead, OpenVikingReadParams, OpenVikingWrite,
+    OpenVikingWriteParams, PromptParams, ResourceComplete, ResourceCompleteParams, Role,
     SessionCompact, SessionCompactParams, SessionContext, SessionInfo, SessionList,
     SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams,
-    SessionPlanApprove, SessionPlanApproveParams, SessionSetMode, SessionSetModeParams,
-    SessionSetModel, SessionSetModelParams, SessionUpdate,
+    SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
+    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUpdate,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -211,6 +213,75 @@ fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     });
     refresh_context(app, connection, true);
 }
+fn apply_rewind_loaded(app: &mut App, result: anyhow::Result<moc_protocol::SessionLoadResult>) {
+    let Some(Modal::Rewind { state }) = app.modal.as_mut() else {
+        return;
+    };
+    match result {
+        Ok(loaded) => state.set_entries(loaded.entries),
+        Err(error) => {
+            state.loading = false;
+            state.error = Some(format!("加载消息历史失败：{error}"));
+        }
+    }
+}
+
+fn apply_rewound(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    selected: moc_protocol::methods::TranscriptEntry,
+    result: anyhow::Result<moc_protocol::SessionLoadResult>,
+) {
+    let loaded = match result {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            if let Some(Modal::Rewind { state }) = app.modal.as_mut() {
+                state.loading = false;
+                state.error = Some(format!("消息回退失败：{error}"));
+            }
+            return;
+        }
+    };
+    let restore_user = selected.message.role == Role::User;
+    let selected_message = selected.message;
+    app.modal = None;
+    app.switch_session(
+        loaded.session,
+        crate::transcript_restore::blocks_from_entries(&loaded.entries),
+    );
+    app.todos = loaded.todos;
+    app.pending_plan = None;
+    app.prompt.clear();
+    if restore_user {
+        restore_user_message(&mut app.prompt, &selected_message);
+    }
+    app.prompt_changed();
+    app.focus = Focus::Prompt;
+    app.usage = Default::default();
+    app.usage_samples.clear();
+    app.set_notice("会话已回退");
+    refresh_context(app, connection, false);
+}
+
+fn restore_user_message(
+    prompt: &mut crate::widgets::prompt::PromptState,
+    message: &moc_protocol::Message,
+) {
+    for part in &message.content {
+        match part {
+            ContentPart::Text(text) => prompt.insert_str_raw(text),
+            ContentPart::Image {
+                source: ImageSource::Base64 { media_type, data },
+                ..
+            } => prompt.insert_image(media_type.clone(), data.clone()),
+            ContentPart::Image {
+                source: ImageSource::Url(url),
+                ..
+            } => prompt.insert_str_raw(url),
+            _ => {}
+        }
+    }
+}
 
 /// 主循环。
 ///
@@ -224,8 +295,10 @@ async fn event_loop(
     connection: &EmbeddedConnection,
 ) -> anyhow::Result<()> {
     const FRAME_BUDGET: std::time::Duration = std::time::Duration::from_millis(16);
+    const ACTIVITY_TICK: std::time::Duration = std::time::Duration::from_millis(120);
     let mut view = render::ScrollbackView::new();
     let mut next_frame = tokio::time::Instant::now();
+    let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
     let mut dirty = true;
     let mut deferred_event: Option<AppEvent> = None;
     loop {
@@ -243,6 +316,7 @@ async fn event_loop(
         }
         // 空闲（无 dirty）时完全 park 在事件上；dirty 但未到预算点才等待
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
+        let activity_tick_enabled = app.turn_running;
         // notice 显示中：安排 TTL 到点重绘，擦除 toast
         let notice_deadline = app.notice_visible().then(|| {
             tokio::time::Instant::from_std(app.notice_at.unwrap_or_else(std::time::Instant::now))
@@ -255,6 +329,10 @@ async fn event_loop(
             _ = tokio::time::sleep_until(
                     notice_deadline.unwrap_or_else(tokio::time::Instant::now),
                 ), if notice_deadline.is_some() => {
+                dirty = true;
+            }
+            _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
+                next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
                 dirty = true;
             }
             input_event = input.recv() => {
@@ -279,6 +357,10 @@ async fn event_loop(
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
                         | AppEvent::TurnReturned {..} | AppEvent::SteerReturned {..})) => {
                         crate::interaction::handle_event(app, connection, event);
+                    }
+                    Some(AppEvent::RewindLoaded(result)) => apply_rewind_loaded(app, result),
+                    Some(AppEvent::Rewound { selected, result }) => {
+                        apply_rewound(app, connection, selected, result);
                     }
                     Some(AppEvent::Update(params)) => {
                         if !app.session.as_ref().is_some_and(|session| session.id == params.session_id) { continue; }
@@ -396,6 +478,31 @@ async fn event_loop(
                             app.set_notice(error);
                         }
                     }
+                    Some(AppEvent::ResourceCompletion {
+                        session_id,
+                        revision,
+                        prefix,
+                        result,
+                    }) => {
+                        let current_session = app.session.as_ref().map(|session| session.id.as_str());
+                        let current_prefix = app.completion_prefix.as_deref();
+                        if current_session == Some(session_id.as_str())
+                            && app.prompt_revision == revision
+                            && current_prefix == Some(prefix.as_str())
+                        {
+                            match result {
+                                Ok(candidates) => {
+                                    app.completion = crate::widgets::completion::CompletionState::from_resources(
+                                        candidates,
+                                        current_token_range(&app.prompt),
+                                    );
+                                }
+                                Err(_) => {
+                                    app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
+                                }
+                            }
+                        }
+                    }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
                     Some(AppEvent::Loaded(info, blocks)) => {
                         app.modal = None;
@@ -438,18 +545,79 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
     }
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            let previous_revision = app.prompt_revision;
             handle_key(app, connection, key.modifiers, key.code);
+            if app.focus == Focus::Prompt {
+                if app.prompt_revision == previous_revision {
+                    app.prompt_changed();
+                }
+                request_resource_completion(app, connection);
+            }
         }
         Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
-        // 终端在没有文本可粘时会送一个空括号粘贴（Windows Terminal、GNOME
-        // Terminal 等）；剪贴板里通常是图片，转为读取系统剪贴板。
+        // 终端在没有文本可粘时会送一个空括号粘贴；剪贴板里通常是图片，转为读取系统剪贴板。
         Event::Paste(text) if text.is_empty() => spawn_clipboard_paste(app.events.clone()),
-        Event::Paste(text) => app.prompt.insert_text(&text),
+        Event::Paste(text) => {
+            app.prompt.insert_text(&text);
+            app.prompt_changed();
+            request_resource_completion(app, connection);
+        }
         Event::Resize(_, _) => {} // 下一次 draw 自动按新尺寸重算
         Event::FocusGained => app.terminal_focused = true,
         Event::FocusLost => app.terminal_focused = false,
         _ => {}
     }
+}
+
+fn current_token_range(prompt: &crate::widgets::prompt::PromptState) -> Range<usize> {
+    let line_start = prompt.text[..prompt.cursor]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let token_start = prompt.text[line_start..prompt.cursor]
+        .rfind(char::is_whitespace)
+        .map_or(line_start, |index| line_start + index + 1);
+    let token_end = prompt.text[prompt.cursor..]
+        .find(char::is_whitespace)
+        .map_or(prompt.text.len(), |index| prompt.cursor + index);
+    token_start..token_end
+}
+
+fn resource_prefix(prompt: &crate::widgets::prompt::PromptState) -> Option<(String, Range<usize>)> {
+    let range = current_token_range(prompt);
+    let prefix = prompt.text[range.start..prompt.cursor].to_owned();
+    let is_uri = prefix == "//" || prefix.ends_with(":/") || prefix.contains("://");
+    is_uri.then_some((prefix, range))
+}
+
+fn request_resource_completion(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.completion_prefix = None;
+        return;
+    };
+    let Some((prefix, _range)) = resource_prefix(&app.prompt) else {
+        app.completion_prefix = None;
+        return;
+    };
+    let revision = app.prompt_revision;
+    app.completion_prefix = Some(prefix.clone());
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<ResourceComplete>(ResourceCompleteParams {
+                session_id: session_id.clone(),
+                prefix: prefix.clone(),
+            })
+            .await
+            .map(|result| result.candidates)
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::ResourceCompletion {
+            session_id,
+            revision,
+            prefix,
+            result,
+        });
+    });
 }
 
 /// 鼠标事件：上下文点击需要连接，其余交互保持无连接处理。
@@ -593,6 +761,10 @@ fn handle_key(
             crate::settings::open(app, connection);
             return;
         }
+        Some("mode") => {
+            cycle_mode(app, connection);
+            return;
+        }
         Some("queue") => {
             crate::queue::submit(app, connection, true);
             return;
@@ -654,14 +826,15 @@ fn handle_key(
                     app.should_quit = true;
                 } else {
                     app.cancel_pending = true;
-                    app.set_notice("正在停止；再按一次 Ctrl+C 退出");
+                    app.cancel_requested = true;
+                    app.set_notice("Stopping... Press Ctrl+C again to exit");
                     cancel_turn(&connection.client, app);
                 }
             } else if app.cancel_pending {
                 app.should_quit = true;
             } else {
                 app.cancel_pending = true;
-                app.set_notice("再次按 Ctrl+C 退出");
+                app.set_notice("Press Ctrl+C again to exit");
             }
         }
         (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help),
@@ -684,12 +857,17 @@ fn handle_key(
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
-        (KeyCode::Char('m'), KeyModifiers::CONTROL) => cycle_mode(app, connection),
         (KeyCode::Char('y'), KeyModifiers::NONE) => copy_selection(app),
         (KeyCode::Esc, _) => {
             if app.selection.is_some() {
                 app.selection = None;
-            } else if !app.prompt_text().is_empty() {
+            } else if app.turn_running {
+                if !app.cancel_requested {
+                    app.cancel_requested = true;
+                    app.set_notice("Stopping...");
+                    cancel_turn(&connection.client, app);
+                }
+            } else if app.focus == Focus::Prompt && !app.prompt_text().is_empty() {
                 if app.clear_pending {
                     app.prompt.clear();
                     app.clear_pending = false;
@@ -697,6 +875,12 @@ fn handle_key(
                     app.clear_pending = true;
                     app.set_notice("再次按 Esc 清空输入");
                 }
+            } else if app.focus == Focus::Prompt && app.clear_pending {
+                app.clear_pending = false;
+                open_rewind(app, connection);
+            } else if app.focus == Focus::Prompt {
+                app.clear_pending = true;
+                app.set_notice("再次按 Esc 打开消息回退");
             }
         }
         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
@@ -776,8 +960,9 @@ fn accept_completion(app: &mut App) -> bool {
     let Some(completion) = app.completion.take() else {
         return false;
     };
-    let chosen = completion.chosen();
-    app.prompt.replace_current_token(chosen);
+    let chosen = completion.chosen().clone();
+    app.prompt
+        .replace_range(completion.replace_range, &chosen.value, chosen.append_space);
     true
 }
 
@@ -800,6 +985,26 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
         return;
     }
     crate::queue::submit(app, connection, false);
+}
+/// 空输入框双击 Esc：加载当前会话的 transcript 回退选择器。
+fn open_rewind(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    app.open_rewind();
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionLoad>(SessionLoadParams {
+                session_id,
+                max_entries: None,
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::RewindLoaded(result));
+    });
 }
 
 /// ctrl+r / `/resume`：拉取会话列表后打开选择器。
@@ -975,6 +1180,42 @@ fn handle_modal_key(
                 _ => {}
             }
         }
+        Modal::Rewind { state } => match (code, modifiers) {
+            (KeyCode::Up, _) => state.move_vertical(-1),
+            (KeyCode::Down, _) => state.move_vertical(1),
+            (KeyCode::Left, _) => state.move_horizontal(-1),
+            (KeyCode::Right, _) => state.move_horizontal(1),
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                if state.loading {
+                    return;
+                }
+                let Some(selected) = state.selected().cloned() else {
+                    state.error = Some("当前会话没有可回退的消息".into());
+                    return;
+                };
+                let Some(session_id) = session_id.clone() else {
+                    state.error = Some("当前没有活动会话".into());
+                    return;
+                };
+                state.loading = true;
+                state.error = None;
+                let client = connection.client.clone();
+                let events = events.clone();
+                tokio::spawn(async move {
+                    let result = client
+                        .call::<SessionRewind>(SessionRewindParams {
+                            session_id,
+                            entry_id: selected.id.clone(),
+                        })
+                        .await
+                        .map_err(anyhow::Error::from);
+                    let _ = events.send(AppEvent::Rewound { selected, result });
+                });
+            }
+            (KeyCode::Esc, _) if state.loading && !state.turns.is_empty() => {}
+            (KeyCode::Esc, _) => close = true,
+            _ => {}
+        },
         Modal::Model { models, picker, .. } => {
             let filtered = crate::modal::filtered_models(models, &picker.query);
             match (code, modifiers) {
@@ -1361,6 +1602,7 @@ fn advance_ask(
 }
 
 fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, update: SessionUpdate) {
+    let turn_started = matches!(&update, SessionUpdate::TurnStarted { .. });
     if matches!(&update, SessionUpdate::TurnFinished { .. })
         && !app.terminal_focused
         && app.preferences.notify_complete
@@ -1375,6 +1617,9 @@ fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, upda
             | SessionUpdate::ContextCompacted { .. }
     );
     apply_update(app, update);
+    if turn_started && app.cancel_requested {
+        cancel_turn(&connection.client, app);
+    }
     if refresh {
         refresh_context(app, connection, false);
     }
@@ -1448,7 +1693,9 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             app.turn_running = true;
             app.cancel_pending = false;
             app.turn_started_at = Some(std::time::Instant::now());
-            app.notice = None;
+            if !app.cancel_requested {
+                app.notice = None;
+            }
         }
         SessionUpdate::TurnFinished { .. } => app.finish_turn(),
         SessionUpdate::TitleChanged { title } => {
@@ -1987,7 +2234,7 @@ mod tests {
         assert_eq!(
             app.completion
                 .as_ref()
-                .map(|completion| completion.chosen()),
+                .map(|completion| completion.chosen().value.as_str()),
             Some("/mode")
         );
         assert!(handle_completion_key(
@@ -2026,5 +2273,67 @@ mod tests {
             },
         );
         assert_eq!(app.focus, Focus::Prompt);
+    }
+
+    #[tokio::test]
+    async fn alt_m_cycles_the_session_mode() {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        let session_id = session.id.clone();
+        app.session = Some(session);
+
+        handle_key(&mut app, &connection, KeyModifiers::ALT, KeyCode::Char('m'));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let session = connection
+                    .client
+                    .call::<SessionLoad>(SessionLoadParams {
+                        session_id: session_id.clone(),
+                        max_entries: None,
+                    })
+                    .await
+                    .unwrap()
+                    .session;
+                if session.mode == SessionMode::Ask {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("Alt+M 应切换到 Ask 模式");
+
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 }

@@ -168,7 +168,7 @@ pub(super) async fn execute_tool_batch(
         let content = match crate::tools::output::prepare(
             outcome.content,
             &config.tools.output,
-            &tool_ctx.paths,
+            &tool_ctx.artifact_store(),
         )
         .await
         {

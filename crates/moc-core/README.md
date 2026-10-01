@@ -92,7 +92,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/mode`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。Ctrl+C 取消当前轮次；空闲时退出。`--print` 不输出流式通知，只打印最后一条 assistant 正文。
+交互命令包括 `/mode`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。Ctrl+C 取消当前轮次；TUI 输入框为空时双击 `Esc` 可通过消息回退选择器创建保留原会话的分支并重建上下文。`--print` 不输出流式通知，只打印最后一条 assistant 正文。
 
 ## 嵌入接口
 

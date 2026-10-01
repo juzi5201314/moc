@@ -62,12 +62,24 @@ pub enum AppEvent {
     ContextUsage(ContextUsageResult),
     /// 会话列表就绪。
     Sessions(Vec<moc_protocol::SessionInfo>),
+    /// 会话回退选择器的数据加载结果。
+    RewindLoaded(anyhow::Result<moc_protocol::SessionLoadResult>),
     /// 会话加载完成。
     Loaded(moc_protocol::SessionInfo, Vec<crate::transcript::Entry>),
-    /// 选择器请求失败，保留浮层展示错误与重试提示。
-    PickerError(String),
+    /// 会话回退完成；保留选中的消息以便用户消息恢复到输入框。
+    Rewound {
+        selected: moc_protocol::methods::TranscriptEntry,
+        result: anyhow::Result<moc_protocol::SessionLoadResult>,
+    },
     /// 模型切换完成（关闭选择器）。
     ModelSwitched,
+    /// resource/complete 返回；输入版本与 prefix 在 app 侧校验。
+    ResourceCompletion {
+        session_id: String,
+        revision: u64,
+        prefix: String,
+        result: anyhow::Result<Vec<moc_protocol::ResourceCandidate>>,
+    },
     /// 非模态异步操作的用户可见提示。
     Notice(String),
     /// git 分支就绪（statusline 异步刷新）。

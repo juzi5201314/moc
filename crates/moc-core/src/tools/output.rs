@@ -5,7 +5,15 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::config::OutputConfig;
-use crate::session::store::SessionPaths;
+use crate::resources::{ArtifactStore, ResourceError};
+
+#[derive(Debug, thiserror::Error)]
+pub enum OutputError {
+    #[error("输出文件 I/O 失败：{0}")]
+    Io(#[from] std::io::Error),
+    #[error("artifact 归档失败：{0}")]
+    Resource(#[from] ResourceError),
+}
 
 /// 工具只声明输出来源，归档和预览由交付出口处理。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,21 +47,19 @@ impl From<&str> for ToolOutput {
 pub(crate) async fn prepare(
     output: ToolOutput,
     config: &OutputConfig,
-    paths: &SessionPaths,
-) -> std::io::Result<String> {
+    artifacts: &ArtifactStore,
+) -> Result<String, OutputError> {
     match output {
         ToolOutput::Text(text) => {
             if text.len() <= budget(config) {
                 return Ok(text);
             }
-            let directory = paths.artifacts();
-            tokio::fs::create_dir_all(&directory).await?;
-            let path = directory.join(format!("{}-output.txt", crate::ids::entry_id()));
-            tokio::fs::write(&path, text.as_bytes()).await?;
-            Ok(preview(&text, config, &path))
+            let uri = artifacts.archive_text(&text).await?;
+            Ok(preview(&text, config, &uri))
         }
         ToolOutput::File { path, suffix } => {
-            let mut text = preview_file(&path, config).await?;
+            let uri = artifacts.uri_for_path(&path)?;
+            let mut text = preview_file(&path, config, &uri).await?;
             if text.is_empty() {
                 text.push_str("(no output)");
             }
@@ -64,7 +70,8 @@ pub(crate) async fn prepare(
             if text.len() <= budget(config) {
                 Ok(text)
             } else {
-                Ok(preview(&text, config, &path))
+                let uri = artifacts.uri_for_path(&path)?;
+                Ok(preview(&text, config, &uri))
             }
         }
     }
@@ -75,7 +82,7 @@ pub(crate) fn budget(config: &OutputConfig) -> usize {
     config.head_bytes.saturating_add(config.tail_bytes)
 }
 
-fn preview(text: &str, config: &OutputConfig, path: &Path) -> String {
+fn preview(text: &str, config: &OutputConfig, uri: &str) -> String {
     let mut head_end = config.head_bytes.min(text.len());
     while !text.is_char_boundary(head_end) {
         head_end -= 1;
@@ -88,11 +95,11 @@ fn preview(text: &str, config: &OutputConfig, path: &Path) -> String {
         &text[..head_end],
         &text[tail_start..],
         tail_start - head_end,
-        path,
+        uri,
     )
 }
 
-async fn preview_file(path: &Path, config: &OutputConfig) -> std::io::Result<String> {
+async fn preview_file(path: &Path, config: &OutputConfig, uri: &str) -> std::io::Result<String> {
     let mut file = tokio::fs::File::open(path).await?;
     let length = file.metadata().await?.len();
     if length <= budget(config) as u64 {
@@ -118,20 +125,18 @@ async fn preview_file(path: &Path, config: &OutputConfig) -> std::io::Result<Str
         &String::from_utf8_lossy(&head),
         &String::from_utf8_lossy(tail),
         length - head.len() as u64 - tail.len() as u64,
-        path,
+        uri,
     ))
 }
 
-fn render_preview(head: &str, tail: &str, omitted: impl std::fmt::Display, path: &Path) -> String {
-    format!(
-        "{head}\n[… {omitted} 字节已省略；完整输出：{}]\n{tail}",
-        path.display()
-    )
+fn render_preview(head: &str, tail: &str, omitted: impl std::fmt::Display, uri: &str) -> String {
+    format!("{head}\n[… {omitted} 字节已省略；完整输出：{uri}]\n{tail}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::store::SessionPaths;
 
     fn paths(root: &Path) -> SessionPaths {
         SessionPaths {
@@ -151,14 +156,24 @@ mod tests {
         };
         let at_limit = "abcdefghijklmn";
         assert_eq!(
-            prepare(at_limit.into(), &config, &paths)
-                .await
-                .expect("交付"),
+            prepare(
+                at_limit.into(),
+                &config,
+                &ArtifactStore::new("ses_1", paths.clone())
+            )
+            .await
+            .expect("交付"),
             at_limit
         );
         assert!(!paths.artifacts().exists(), "阈值内不归档");
         let text = "前中后尾外后前中";
-        let result = prepare(text.into(), &config, &paths).await.expect("归档");
+        let result = prepare(
+            text.into(),
+            &config,
+            &ArtifactStore::new("ses_1", paths.clone()),
+        )
+        .await
+        .expect("归档");
         assert!(result.starts_with("前中\n"));
         assert!(result.ends_with("前中"));
         assert!(!result.contains('\u{fffd}'));
@@ -181,7 +196,10 @@ mod tests {
     async fn existing_file_and_excerpt_reuse_original_without_copying() {
         let root = tempfile::tempdir().expect("临时目录");
         let paths = paths(root.path());
-        let path = root.path().join("job.log");
+        tokio::fs::create_dir_all(paths.jobs())
+            .await
+            .expect("job 目录");
+        let path = paths.jobs().join("job.log");
         let text = "前中后尾外后前中";
         tokio::fs::write(&path, text).await.expect("日志");
         let config = OutputConfig {
@@ -195,25 +213,25 @@ mod tests {
                 suffix: "\n(exit 1)".into(),
             },
             &config,
-            &paths,
+            &ArtifactStore::new("ses_1", paths.clone()),
         )
         .await
         .expect("日志交付");
         assert!(result.starts_with("前中\n"));
         assert!(result.ends_with("前中\n(exit 1)"));
         assert!(!result.contains('\u{fffd}'));
-        assert!(result.contains(path.to_str().expect("路径")));
+        assert!(result.contains("artifact://ses_1/jobs/job.log"));
         let excerpt = prepare(
             ToolOutput::Excerpt {
                 text: text.into(),
                 path: path.clone(),
             },
             &config,
-            &paths,
+            &ArtifactStore::new("ses_1", paths.clone()),
         )
         .await
         .expect("片段交付");
-        assert!(excerpt.contains(path.to_str().expect("路径")));
+        assert!(excerpt.contains("artifact://ses_1/jobs/job.log"));
         assert!(!paths.artifacts().exists(), "已有输出不再复制归档");
         assert_eq!(tokio::fs::read_to_string(path).await.expect("原日志"), text);
     }

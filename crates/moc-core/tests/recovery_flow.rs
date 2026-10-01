@@ -842,8 +842,29 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     assert!(output("pty_wait").contains("pty-ready"));
     assert_eq!(output("pty_kill"), "Killed");
     assert!(results.iter().all(|result| !result.is_error));
-    let original_log =
-        std::path::PathBuf::from(output("pipe_start").split("日志：").nth(1).unwrap());
+    let original_uri = output("pipe_start")
+        .split("日志：")
+        .nth(1)
+        .expect("后台日志 URI");
+    assert!(original_uri.starts_with("artifact://"));
+    let (session_component, file_name) = original_uri
+        .strip_prefix("artifact://")
+        .expect("artifact scheme")
+        .split_once("/jobs/")
+        .expect("job namespace");
+    let original_log = h
+        .root
+        .path()
+        .join("sessions")
+        .read_dir()
+        .expect("sessions")
+        .filter_map(Result::ok)
+        .find(|entry| entry.path().join(session_component).is_dir())
+        .expect("session sidecar")
+        .path()
+        .join(session_component)
+        .join("jobs")
+        .join(file_name);
     let before = std::fs::read(&original_log).unwrap();
     h.client
         .call::<SessionUnload>(SessionUnloadParams {

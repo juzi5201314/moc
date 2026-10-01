@@ -158,25 +158,29 @@ impl JobManager {
                     suffix: String::new(),
                 },
                 &ctx.config.tools.output,
-                &ctx.paths,
+                &ctx.artifact_store(),
             )
             .await;
             let output = match output {
                 Ok(output) => output,
                 Err(error) => format!("[E_JOB_LOG] 无法读取日志：{error}"),
             };
+            let log_uri = ctx
+                .artifact_store()
+                .uri_for_path(&log_path)
+                .map_err(|error| format!("[{}] {}", error.code, error.message))
+                .expect("后台日志必须位于当前会话 jobs sidecar");
             {
                 let mut state = ctx.state.lock().await;
                 state.notices.push(format!(
-                    "后台任务 {id} 已结束（{exit_label}），输出预览：\n{output}\n完整输出：{}",
-                    log_path.display()
+                    "后台任务 {id} 已结束（{exit_label}），输出预览：\n{output}\n完整输出：{log_uri}"
                 ));
             }
             let update = SessionUpdate::JobFinished {
                 job_id: id.clone(),
                 command,
                 exit_code,
-                log_path: log_path.to_string_lossy().into_owned(),
+                log_path: log_uri,
             };
             if let Err(error) = ctx.request.updates().emit(ctx.session_id, update).await {
                 tracing::warn!(job_id = %id, %error, "发送后台任务完成通知失败");
@@ -372,12 +376,16 @@ impl Tool for JobTool {
                     } else {
                         jobs.iter()
                             .map(|job| {
+                                let uri = ctx
+                                    .artifact_store()
+                                    .uri_for_path(&job.path)
+                                    .expect("job 日志必须位于当前会话 sidecar");
                                 format!(
                                     "{}\t{:?}\t{}\t{}",
                                     job.id,
                                     job.status,
                                     job.command.lines().next().unwrap_or(""),
-                                    job.path.display()
+                                    uri
                                 )
                             })
                             .collect::<Vec<_>>()

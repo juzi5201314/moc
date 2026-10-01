@@ -105,17 +105,23 @@ impl Tool for BashTool {
                     process,
                     permit.expect("后台任务已预留名额"),
                 )?;
+                let uri = ctx
+                    .artifact_store()
+                    .uri_for_path(&output_path)
+                    .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "后台任务已启动：{job_id}，日志：{}",
-                    output_path.display()
+                    "后台任务已启动：{job_id}，日志：{uri}"
                 )));
             }
             let result =
                 wait_foreground(ctx, process, job_id.clone(), command, output_path.clone()).await?;
             let Some(result) = result else {
+                let uri = ctx
+                    .artifact_store()
+                    .uri_for_path(&output_path)
+                    .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "命令运行超过自动转后台阈值，任务 {job_id} 继续执行，日志：{}",
-                    output_path.display()
+                    "命令运行超过自动转后台阈值，任务 {job_id} 继续执行，日志：{uri}"
                 )));
             };
             Ok(ToolOutcome {

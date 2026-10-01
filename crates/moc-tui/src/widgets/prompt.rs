@@ -145,6 +145,25 @@ impl PromptState {
         self.cursor += content.len();
         self.break_history_browse();
     }
+    /// 用补全候选给出的范围替换文本；URI namespace 不会提前插入空格。
+    pub fn replace_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        replacement: &str,
+        append_space: bool,
+    ) {
+        self.text.replace_range(range.clone(), replacement);
+        self.cursor = range.start + replacement.len();
+        if append_space
+            && (self.cursor == self.text.len()
+                || self.text.as_bytes().get(self.cursor) != Some(&b' '))
+        {
+            self.text.insert(self.cursor, ' ');
+            self.cursor += 1;
+        }
+        self.break_history_browse();
+    }
+
     /// 用补全命令替换当前 token，不破坏多行草稿的其余内容。
     pub fn replace_current_token(&mut self, replacement: &str) {
         let line_start = self.text[..self.cursor]
@@ -156,13 +175,7 @@ impl PromptState {
         let token_end = self.text[self.cursor..]
             .find(char::is_whitespace)
             .map_or(self.text.len(), |index| self.cursor + index);
-        self.text.replace_range(token_start..token_end, replacement);
-        self.cursor = token_start + replacement.len();
-        if self.cursor == self.text.len() || self.text.as_bytes().get(self.cursor) != Some(&b' ') {
-            self.text.insert(self.cursor, ' ');
-            self.cursor += 1;
-        }
-        self.break_history_browse();
+        self.replace_range(token_start..token_end, replacement, true);
     }
 
     /// 光标移到当前逻辑行行首。
@@ -484,5 +497,16 @@ mod tests {
         assert_eq!(&prompt.text[..prompt.cursor], "中文");
         prompt.right();
         assert_eq!(&prompt.text[..prompt.cursor], "中文a");
+    }
+    #[test]
+    fn resource_completion_replaces_token_without_space_or_multiline_loss() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("前 local:/\n保留内容");
+        let start = "前 ".len();
+        let end = "前 local:/".len();
+        prompt.cursor = end;
+        prompt.replace_range(start..end, "local://ses_1/plans/", false);
+        assert_eq!(prompt.text, "前 local://ses_1/plans/\n保留内容");
+        assert_eq!(prompt.cursor, start + "local://ses_1/plans/".len());
     }
 }

@@ -154,6 +154,23 @@ pub struct ToolCtx {
     pub loaded_skills: Arc<parking_lot::RwLock<crate::skills::LoadedSkills>>,
 }
 
+impl ToolCtx {
+    pub fn resource_context(&self) -> crate::resources::ResourceContext<'_> {
+        crate::resources::ResourceContext {
+            session_id: &self.session_id,
+            cwd: &self.cwd,
+            paths: &self.paths,
+            skills: &self.skills,
+            sessions: &self.sessions,
+            openviking_configured: !self.config.openviking.url.trim().is_empty(),
+        }
+    }
+
+    pub fn artifact_store(&self) -> crate::resources::ArtifactStore {
+        crate::resources::ArtifactStore::new(self.session_id.clone(), self.paths.clone())
+    }
+}
+
 /// 工具实例由注册表持有；实现将同步 schema 与异步执行分开。
 ///
 /// `name` / `description` 返回动态 `&str`：MCP 桥接工具的标识来自运行期

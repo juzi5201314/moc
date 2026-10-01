@@ -29,6 +29,19 @@ pub struct SessionList;
 /// `session/load`：读取会话 transcript。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionLoad;
+/// `session/rewind`：把会话历史回退到指定消息。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionRewind;
+
+/// `session/rewind` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRewindParams {
+    /// 目标会话。
+    pub session_id: String,
+    /// 目标 transcript 消息 ID；用户消息本身不保留，会恢复到输入框。
+    pub entry_id: String,
+}
 
 /// `session/unload`：释放会话的常驻资源（不删除会话、不影响列表）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -343,6 +356,13 @@ impl Method for SessionLoad {
 }
 
 impl ClientRequest for SessionLoad {}
+impl Method for SessionRewind {
+    const NAME: &'static str = "session/rewind";
+    type Params = SessionRewindParams;
+    type Result = SessionLoadResult;
+}
+
+impl ClientRequest for SessionRewind {}
 
 impl Method for SessionUnload {
     const NAME: &'static str = "session/unload";

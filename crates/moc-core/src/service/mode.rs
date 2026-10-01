@@ -114,7 +114,7 @@ pub async fn approve_plan(
                 EntryPayload::Plan {
                     plan_id: plan.plan_id.clone(),
                     title: plan.title.clone(),
-                    path: child_path.to_string_lossy().into_owned(),
+                    path: format!("local://{}/plans/{}.md", child.id, plan.plan_id),
                     markdown: plan.markdown.clone(),
                     status: PlanStatus::Approved,
                 },

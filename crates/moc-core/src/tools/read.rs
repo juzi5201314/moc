@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 use crate::hashline::{encode_anchor, served::read_snapshot};
+use crate::resources::{ResourceBacking, ResourceRouter};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,14 +77,35 @@ impl Tool for ReadTool {
                     "读取 OpenViking 内容失败",
                 ));
             }
-            let path = resolve_path(&ctx.cwd, &args.path)?;
+            let (path, display, immutable) = match ResourceRouter::resolve_read(ctx, &args.path)
+                .map_err(|error| ToolError::new(error.code, error.message))?
+            {
+                Some(resource) => match resource.backing {
+                    ResourceBacking::File(path) => (path, resource.uri, true),
+                    ResourceBacking::Text(text) => {
+                        return Ok(ToolOutcome::success(render_text_resource(
+                            &resource.uri,
+                            &text,
+                            args.offset,
+                            args.limit.unwrap_or(ctx.config.tools.read.default_limit),
+                        )));
+                    }
+                },
+                None => (
+                    resolve_path(&ctx.cwd, &args.path)?,
+                    args.path.clone(),
+                    false,
+                ),
+            };
             if path.is_dir() {
                 return Ok(ToolOutcome::success(list_directory(&path, &ctx.cwd)?));
             }
             let max_bytes = ctx.config.tools.output.max_file_bytes;
-            let mut snapshot = read_snapshot(&path, max_bytes)
-                .map_err(|error| map_read_error(path.to_string_lossy().as_ref(), error))?;
-            ctx.anchors.reuse_hashes(&path, &mut snapshot);
+            let mut snapshot =
+                read_snapshot(&path, max_bytes).map_err(|error| map_read_error(&display, error))?;
+            if !immutable {
+                ctx.anchors.reuse_hashes(&path, &mut snapshot);
+            }
             let offset = args.offset.unwrap_or(1).max(1);
             let limit = args
                 .limit
@@ -91,7 +113,7 @@ impl Tool for ReadTool {
                 .max(1);
             let start = offset.saturating_sub(1).min(snapshot.lines.len());
             let end = start.saturating_add(limit).min(snapshot.lines.len());
-            let mut output = format!("[{}]\n", path.display());
+            let mut output = format!("[{display}]\n");
             let mut notices = String::new();
             if snapshot.bytes.len() > 4 * 1024 * 1024 {
                 notices.push_str(
@@ -129,6 +151,8 @@ impl Tool for ReadTool {
                         position + 1,
                         line.len().div_ceil(1024)
                     )
+                } else if immutable {
+                    line.clone()
                 } else {
                     let anchor = encode_anchor(snapshot.hashes[position]).map_err(|error| {
                         ToolError::new("E_ANCHOR_SPACE_EXHAUSTED", error.to_string())
@@ -139,7 +163,7 @@ impl Tool for ReadTool {
                     break;
                 }
                 rendered_bytes += rendered.len() + 1;
-                if line.len() <= max_line_bytes {
+                if !immutable && line.len() <= max_line_bytes {
                     served_rows.push((position, snapshot.hashes[position]));
                 }
                 selected.push(rendered);
@@ -152,14 +176,32 @@ impl Tool for ReadTool {
             let shown_end = start + selected.len();
             output.push_str(&page_footer(start + 1, shown_end, total));
             output.push_str(&notices);
-            if snapshot.bytes.len() <= 4 * 1024 * 1024 {
+            if !immutable && snapshot.bytes.len() <= 4 * 1024 * 1024 {
                 ctx.anchors.record_served(path, &served_rows, snapshot);
-            } else {
+            } else if !immutable {
                 ctx.anchors.invalidate(&path);
             }
             Ok(ToolOutcome::success(output))
         })
     }
+}
+
+fn render_text_resource(uri: &str, text: &str, offset: Option<usize>, limit: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = offset
+        .unwrap_or(1)
+        .max(1)
+        .saturating_sub(1)
+        .min(lines.len());
+    let end = start.saturating_add(limit.max(1)).min(lines.len());
+    let mut output = format!("[{uri}]\n");
+    if lines.is_empty() {
+        output.push_str("(empty resource)");
+    } else {
+        output.push_str(&lines[start..end].join("\n"));
+        output.push_str(&page_footer(start + 1, end, lines.len()));
+    }
+    output
 }
 
 fn page_footer(start: usize, end: usize, total: usize) -> String {

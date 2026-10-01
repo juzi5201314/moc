@@ -13,7 +13,7 @@ pub mod wrap;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -21,6 +21,8 @@ pub use scrollback::ScrollbackView;
 
 use self::wrap::str_width;
 use crate::app::{App, Focus};
+use crate::modal::Modal;
+use crate::transcript::Block as TranscriptBlock;
 
 /// 内容区左右边距（格）。
 const MARGIN_X: u16 = 2;
@@ -338,7 +340,7 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     )
 }
 
-/// 输入框下边框上的图例：左＝帮助键提示，右＝模型 · 模式。
+/// 输入框下边框上的图例：运行时显示停止操作，否则显示帮助键。
 ///
 /// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
 /// 右侧的当前模型与模式仍然保留。
@@ -371,20 +373,36 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         .get("help")
         .and_then(|keys| keys.first())
         .map_or("—", String::as_str);
-    const HELP_TIP: &str = "Help";
-    let tips_width = str_width(help_key) + 1 + str_width(HELP_TIP);
+    let (left_key, left_tip, left_color) = if app.turn_running {
+        (
+            "Esc",
+            if app.cancel_requested {
+                "Stopping"
+            } else {
+                "Stop"
+            },
+            if app.cancel_requested {
+                theme.accent_warning
+            } else {
+                theme.accent_running
+            },
+        )
+    } else {
+        (help_key, "Help", theme.gray_dim)
+    };
+    let tips_width = str_width(left_key) + 1 + str_width(left_tip);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
     if show_tips {
         let mut x = area.x + 3;
         buffer.set_string(area.x + 2, y, " ", Style::new());
-        buffer.set_string(x, y, help_key, Style::new().fg(theme.gray_bright));
-        x += cell_width(help_key);
+        buffer.set_string(x, y, left_key, Style::new().fg(theme.gray_bright));
+        x += cell_width(left_key);
         buffer.set_string(x, y, " ", Style::new());
         x += 1;
-        buffer.set_string(x, y, HELP_TIP, Style::new().fg(theme.gray_dim));
-        x += cell_width(HELP_TIP);
+        buffer.set_string(x, y, left_tip, Style::new().fg(left_color));
+        x += cell_width(left_tip);
         buffer.set_string(x, y, " ", Style::new());
     }
 
@@ -682,13 +700,94 @@ pub fn short_number(value: u64) -> String {
     }
 }
 
-/// 内置渲染：左侧 todo 进度，右侧 token 统计（模型/模式/目录/上下文在信息条与输入框）。
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+struct Activity {
+    label: &'static str,
+    color: Color,
+}
+
+fn activity(app: &App) -> Option<Activity> {
+    if !app.turn_running {
+        return None;
+    }
+    if app.cancel_requested {
+        return Some(Activity {
+            label: "Stopping",
+            color: app.theme.accent_warning,
+        });
+    }
+    if app
+        .modal
+        .as_ref()
+        .is_some_and(|modal| matches!(modal, Modal::Permission { .. } | Modal::Ask { .. }))
+    {
+        return Some(Activity {
+            label: "Waiting",
+            color: app.theme.accent_warning,
+        });
+    }
+    if app
+        .blocks
+        .iter()
+        .rev()
+        .any(|entry| matches!(&entry.block, TranscriptBlock::Tool(tool) if tool.running))
+    {
+        return Some(Activity {
+            label: "Running",
+            color: app.theme.accent_running,
+        });
+    }
+    let label = match app.blocks.last().map(|entry| &entry.block) {
+        Some(TranscriptBlock::Thinking { .. }) => "Thinking",
+        Some(TranscriptBlock::Assistant { .. }) => "Responding",
+        _ => "Working",
+    };
+    Some(Activity {
+        label,
+        color: app.theme.accent_running,
+    })
+}
+
+fn spinner_frame(app: &App) -> &'static str {
+    let elapsed_ms = app
+        .turn_started_at
+        .map_or(0, |started| started.elapsed().as_millis());
+    let frame_count = u128::try_from(SPINNER_FRAMES.len()).expect("spinner frame count fits u128");
+    let frame = (elapsed_ms / 120) % frame_count;
+    let index = usize::try_from(frame).expect("spinner frame index fits usize");
+    SPINNER_FRAMES[index]
+}
+
+/// 内置渲染：左侧运行状态与 todo 进度，右侧 token 统计。
 fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     let theme = app.theme;
     let data = statusline_data(app);
     let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut has_left = false;
+    if let Some(activity) = activity(app) {
+        spans.push(Span::styled(
+            spinner_frame(app),
+            Style::new().fg(activity.color),
+        ));
+        spans.push(Span::styled(" ", Style::new()));
+        spans.push(Span::styled(
+            activity.label,
+            Style::new().fg(activity.color),
+        ));
+        if let Some(elapsed) = data.turn_elapsed {
+            spans.push(Span::styled(
+                format!(" · {}s", elapsed.as_secs()),
+                Style::new().fg(theme.gray),
+            ));
+        }
+        has_left = true;
+    }
     if let Some((done, total)) = data.todo {
-        spans.push(Span::styled("☑ ".to_owned(), Style::new().fg(theme.border)));
+        if has_left {
+            spans.push(Span::styled(" · ", Style::new().fg(theme.border)));
+        }
+        spans.push(Span::styled("☑ ", Style::new().fg(theme.border)));
         spans.push(Span::styled(
             format!("{done}/{total}"),
             Style::new().fg(if done == total {
@@ -700,13 +799,10 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     }
     // 右侧统计段
     let right = format!(
-        " ⇅ {} › {} › {:.0} tok/s{}",
+        " ⇅ {} › {} › {:.0} tok/s",
         short_number(data.tokens_in),
         short_number(data.tokens_out),
         data.tok_s,
-        data.turn_elapsed
-            .map(|elapsed| format!(" › ⏱ {}s", elapsed.as_secs()))
-            .unwrap_or_default(),
     );
     let mut right_cost = data
         .cost
@@ -826,5 +922,30 @@ mod tests {
 
         app.prompt.text = "长输入\n".repeat(40);
         assert_eq!(prompt_content_rows(&app, 60), PROMPT_MAX_ROWS, "再长也封顶");
+    }
+
+    #[test]
+    fn running_statusline_uses_english_activity_labels() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.turn_running = true;
+        app.turn_started_at = Some(std::time::Instant::now());
+
+        let line = statusline_builtin(&app, 80);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("Working"));
+
+        app.cancel_requested = true;
+        let line = statusline_builtin(&app, 80);
+        let rendered = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("Stopping"));
     }
 }

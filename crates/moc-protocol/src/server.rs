@@ -34,10 +34,10 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     ClientInfo, ConfigGet, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead,
-    OpenVikingWrite, Ping, PingResult, PromptParams, SessionCancel, SessionCancelResult,
-    SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad, SessionNew,
-    SessionPlanApprove, SessionPrompt, SessionRename, SessionSetMode, SessionSetModel,
-    SessionUnload, SessionUnlock,
+    OpenVikingWrite, Ping, PingResult, PromptParams, ResourceComplete, SessionCancel,
+    SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
+    SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
+    SessionSetModel, SessionUnload, SessionUnlock,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -501,6 +501,15 @@ impl<S: AgentService> ServerDispatch<S> {
                         .await?,
                 )
             }
+            <ResourceComplete as Method>::NAME => {
+                let params = params_from_value::<ResourceComplete>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .resource_complete(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
             <SessionNew as Method>::NAME => {
                 let params = params_from_value::<SessionNew>(params)?;
                 let result = self
@@ -525,6 +534,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_load(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionRewind as Method>::NAME => {
+                let params = params_from_value::<SessionRewind>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_rewind(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

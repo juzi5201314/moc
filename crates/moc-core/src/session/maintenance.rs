@@ -177,21 +177,26 @@ impl SessionTable {
                 }
             }
         }
-        // 完整扫描日志、归档与恢复备份后才能授权删除；损坏压缩流导致整个预览失败。
-        // 文件名匹配还保护相对路径引用，宁可保留同名文件也不破坏历史可读性。
+        // 只按完整 canonical URI 或旧 transcript 中的完整物理路径保护，不按 basename 串联不同会话。
         let mut referenced = HashSet::new();
         if !files.is_empty() {
-            let names: Vec<_> = files
+            let references: Vec<String> = files
                 .iter()
-                .map(|file| {
-                    file.path
-                        .file_name()
-                        .expect("产物文件名")
-                        .to_string_lossy()
-                        .into_owned()
+                .flat_map(|file| {
+                    let mut values = Vec::with_capacity(2);
+                    if let Ok(uri) = crate::resources::ArtifactStore::new(
+                        file.session.clone(),
+                        file.paths.clone(),
+                    )
+                    .uri_for_path(&file.path)
+                    {
+                        values.push(uri);
+                    }
+                    values.push(file.path.to_string_lossy().into_owned());
+                    values
                 })
                 .collect();
-            let matcher = aho_corasick::AhoCorasick::new(&names)
+            let matcher = aho_corasick::AhoCorasick::new(&references)
                 .map_err(|error| CoreError::Session(error.to_string()))?;
             let mut directories = fs::read_dir(self.store.root()).await?;
             while let Some(directory) = directories.next_entry().await? {
@@ -216,7 +221,7 @@ impl SessionTable {
                             break;
                         }
                         for found in matcher.find_overlapping_iter(&line) {
-                            referenced.insert(names[found.pattern().as_usize()].clone());
+                            referenced.insert(references[found.pattern().as_usize()].clone());
                         }
                     }
                 }
@@ -250,12 +255,14 @@ impl SessionTable {
                 .push(candidate.path.to_string_lossy().into_owned());
         }
         for candidate in files {
-            let name = candidate
-                .path
-                .file_name()
-                .expect("产物文件名")
-                .to_string_lossy();
-            if referenced.contains(name.as_ref())
+            let uri = crate::resources::ArtifactStore::new(
+                candidate.session.clone(),
+                candidate.paths.clone(),
+            )
+            .uri_for_path(&candidate.path)
+            .ok();
+            if uri.as_deref().is_some_and(|uri| referenced.contains(uri))
+                || referenced.contains(&candidate.path.to_string_lossy().into_owned())
                 || self.records.read().contains_key(&candidate.session)
             {
                 report.protected += 1;

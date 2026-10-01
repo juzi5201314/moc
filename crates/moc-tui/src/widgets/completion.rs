@@ -1,4 +1,8 @@
-//! 斜杠命令与补全菜单状态。
+//! 斜杠命令与资源 URI 补全菜单状态。
+
+use std::ops::Range;
+
+use moc_protocol::ResourceCandidate;
 
 /// 一条斜杠命令。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,11 +55,49 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionSource {
+    Slash,
+    Uri,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionCandidate {
+    pub value: String,
+    pub label: String,
+    pub description: String,
+    pub append_space: bool,
+    pub source: CompletionSource,
+}
+
+impl CompletionCandidate {
+    fn slash(command: &SlashCommand) -> Self {
+        Self {
+            value: command.name.into(),
+            label: command.name.into(),
+            description: command.description.into(),
+            append_space: true,
+            source: CompletionSource::Slash,
+        }
+    }
+
+    pub fn resource(candidate: ResourceCandidate) -> Self {
+        Self {
+            value: candidate.uri,
+            label: candidate.label,
+            description: candidate.description,
+            append_space: candidate.append_space,
+            source: CompletionSource::Uri,
+        }
+    }
+}
+
 /// 补全菜单状态：`None` = 未打开。
 #[derive(Debug, Clone)]
 pub struct CompletionState {
-    pub candidates: Vec<&'static SlashCommand>,
+    pub candidates: Vec<CompletionCandidate>,
     pub selected: usize,
+    pub replace_range: Range<usize>,
 }
 
 impl CompletionState {
@@ -63,13 +105,13 @@ impl CompletionState {
     pub fn derive(text: &str) -> Option<Self> {
         let first_line = text.lines().next().unwrap_or_default();
         let query = first_line.strip_prefix('/')?;
-        if query.contains(' ') {
-            // 已进入参数阶段：菜单关闭
+        if query.contains(char::is_whitespace) {
             return None;
         }
-        let candidates: Vec<&'static SlashCommand> = SLASH_COMMANDS
+        let candidates: Vec<_> = SLASH_COMMANDS
             .iter()
             .filter(|command| command.name[1..].starts_with(query))
+            .map(CompletionCandidate::slash)
             .collect();
         if candidates.is_empty() {
             return None;
@@ -77,6 +119,22 @@ impl CompletionState {
         Some(Self {
             candidates,
             selected: 0,
+            replace_range: 0..first_line.len(),
+        })
+    }
+
+    pub fn from_resources(
+        candidates: Vec<ResourceCandidate>,
+        replace_range: Range<usize>,
+    ) -> Option<Self> {
+        let candidates = candidates
+            .into_iter()
+            .map(CompletionCandidate::resource)
+            .collect::<Vec<_>>();
+        (!candidates.is_empty()).then_some(Self {
+            candidates,
+            selected: 0,
+            replace_range,
         })
     }
 
@@ -88,9 +146,8 @@ impl CompletionState {
         self.selected = self.selected.saturating_sub(1);
     }
 
-    /// 选中命令的名字（含 `/`）。
-    pub fn chosen(&self) -> &'static str {
-        self.candidates[self.selected].name
+    pub fn chosen(&self) -> &CompletionCandidate {
+        &self.candidates[self.selected]
     }
 }
 
@@ -102,8 +159,8 @@ mod tests {
     fn prefix_filters_and_keeps_order() {
         let state = CompletionState::derive("/mo").expect("有候选");
         assert_eq!(state.candidates.len(), 2);
-        assert_eq!(state.candidates[0].name, "/model");
-        assert_eq!(state.candidates[1].name, "/mode");
+        assert_eq!(state.candidates[0].value, "/model");
+        assert_eq!(state.candidates[1].value, "/mode");
     }
 
     #[test]
@@ -111,5 +168,21 @@ mod tests {
         assert!(CompletionState::derive("/model ").is_none());
         assert!(CompletionState::derive("聊天文本").is_none());
         assert!(CompletionState::derive("/zzz").is_none());
+    }
+    #[test]
+    fn resource_candidate_keeps_namespace_without_space() {
+        let state = CompletionState::from_resources(
+            vec![ResourceCandidate {
+                uri: "local://ses_1/plans/".into(),
+                label: "plans/".into(),
+                description: "计划目录".into(),
+                kind: "namespace".into(),
+                append_space: false,
+            }],
+            0..7,
+        )
+        .expect("资源候选");
+        assert_eq!(state.chosen().value, "local://ses_1/plans/");
+        assert!(!state.chosen().append_space);
     }
 }

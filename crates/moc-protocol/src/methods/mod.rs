@@ -7,7 +7,7 @@
 //! | [`initialize::Initialize`] | C→S | core | 未初始化 | `-32003` |
 //! | [`initialize::Ping`] | C→S | 协议层自答 | 无 | — |
 //! | [`config::ConfigGet`] | C→S | core | 已初始化 | `-32014` |
-//! | [`session::SessionNew`] / `SessionList` / `SessionLoad` / `SessionUnload` | C→S | core | 已初始化 | `-32010` / `-32014` |
+//! | [`session::SessionNew`] / `SessionList` / `SessionLoad` / `SessionRewind` / `SessionUnload` | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`session::SessionSetMode`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
@@ -29,6 +29,7 @@ pub mod management;
 pub mod openviking;
 pub mod permission;
 pub mod plan;
+pub mod resources;
 pub mod session;
 pub mod todo;
 pub mod turn;
@@ -62,14 +63,17 @@ pub use plan::{
     PlanAction, PlanInfo, PlanStatus, SessionPlanApprove, SessionPlanApproveParams,
     SessionPlanApproveResult,
 };
+pub use resources::{
+    ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
+};
 pub use session::{
     CompactResult, ContextUsageResult, ContextUsageSection, SessionCompact, SessionCompactParams,
     SessionContext, SessionContextParams, SessionDelete, SessionDeleteParams, SessionInfo,
     SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
     SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionRename,
-    SessionRenameParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams,
-    ToolExecution, ToolStatus, TranscriptEntry,
+    SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams,
+    SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUnlock,
+    SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use turn::{
@@ -106,9 +110,10 @@ mod tests {
             <SessionNew as Method>::NAME,
             <SessionList as Method>::NAME,
             <SessionLoad as Method>::NAME,
+            <SessionDelete as Method>::NAME,
+            <SessionRewind as Method>::NAME,
             <SessionUnload as Method>::NAME,
             <SessionRename as Method>::NAME,
-            <SessionDelete as Method>::NAME,
             <SessionUnlock as Method>::NAME,
             <SessionSetMode as Method>::NAME,
             <SessionSetModel as Method>::NAME,
@@ -121,6 +126,7 @@ mod tests {
             <OpenVikingRead as Method>::NAME,
             <OpenVikingWrite as Method>::NAME,
             <OpenVikingDelete as Method>::NAME,
+            <ResourceComplete as Method>::NAME,
         ];
         let server_methods = [
             <SessionRequestPermission as Method>::NAME,
@@ -134,6 +140,7 @@ mod tests {
             "session/new",
             "session/list",
             "session/load",
+            "session/rewind",
             "session/unload",
             "session/rename",
             "session/delete",
@@ -146,6 +153,7 @@ mod tests {
             "openviking/read",
             "openviking/write",
             "openviking/delete",
+            "resource/complete",
             "session/context",
             "session/plan_approve",
             "session/compact",
@@ -174,6 +182,7 @@ mod tests {
         assert_eq!(<SessionNew as Method>::NAME, "session/new");
         assert_eq!(<SessionList as Method>::NAME, "session/list");
         assert_eq!(<SessionLoad as Method>::NAME, "session/load");
+        assert_eq!(<SessionRewind as Method>::NAME, "session/rewind");
         assert_eq!(<SessionUnload as Method>::NAME, "session/unload");
         assert_eq!(<SessionRename as Method>::NAME, "session/rename");
         assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
@@ -204,6 +213,7 @@ mod tests {
         fn server_notification<M: ServerNotification>() {}
         client::<Initialize>();
         client::<SessionPrompt>();
+        client::<SessionRewind>();
         server_request::<SessionRequestPermission>();
         client::<SessionSetMode>();
         client::<SessionSetModel>();

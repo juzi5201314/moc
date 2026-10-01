@@ -39,6 +39,7 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     } else if app.preferences.active_submit == ActiveSubmit::Interrupt {
         app.interrupt_pending.insert(session.clone());
         app.queues.entry(session).or_default().push_front(prompt);
+        app.cancel_requested = true;
         crate::event::cancel_turn(&connection.client, app);
     } else {
         let client = connection.client.clone();

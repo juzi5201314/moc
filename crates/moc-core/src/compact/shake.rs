@@ -136,9 +136,10 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
 }
 
 fn artifact_path(text: &str) -> Option<&str> {
-    text.rsplit_once("完整输出：")
-        .map(|(_, path)| path.split(['\n', ']']).next().unwrap_or(path).trim())
-        .filter(|path| path.starts_with('/'))
+    let path = text
+        .rsplit_once("完整输出：")
+        .map(|(_, path)| path.split(['\n', ']']).next().unwrap_or(path).trim())?;
+    (path.starts_with("artifact://") || path.starts_with('/')).then_some(path)
 }
 
 fn trim_text(text: &str, head: usize, tail: usize, path: &str) -> String {

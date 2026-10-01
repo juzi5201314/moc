@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::future::BoxFuture;
+use grep_matcher::Matcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use moc_llm::ToolDef;
 use parking_lot::Mutex;
@@ -14,6 +15,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
+use crate::resources::{ResourceBacking, ResourceRouter};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +73,20 @@ impl Tool for GrepTool {
         Box::pin(async move {
             let args: GrepArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            if let Some(path) = args.path.as_deref()
+                && let Some(resource) = ResourceRouter::resolve_read(ctx, path)
+                    .map_err(|error| ToolError::new(error.code, error.message))?
+            {
+                let output = match resource.backing {
+                    ResourceBacking::File(path) => {
+                        search_resource_file(&resource.uri, &path, &args, &ctx.config.tools.grep)?
+                    }
+                    ResourceBacking::Text(text) => {
+                        search_resource_text(&resource.uri, &text, &args, &ctx.config.tools.grep)?
+                    }
+                };
+                return Ok(ToolOutcome::success(output));
+            }
             let cancel = ctx.cancel.child_token();
             let _cancel_on_drop = cancel.clone().drop_guard();
             let search = Search::new(args, ctx.cwd.clone(), ctx.config.tools.grep.clone(), cancel)?;
@@ -80,6 +96,78 @@ impl Tool for GrepTool {
             Ok(ToolOutcome::success(result))
         })
     }
+}
+
+fn search_resource_file(
+    uri: &str,
+    path: &Path,
+    args: &GrepArgs,
+    config: &crate::config::GrepConfig,
+) -> Result<String, ToolError> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
+    if metadata.len() > config.max_file_bytes {
+        return Ok("No matches found".into());
+    }
+    let bytes =
+        std::fs::read(path).map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
+    search_resource_text(uri, &String::from_utf8_lossy(&bytes), args, config)
+}
+
+fn search_resource_text(
+    uri: &str,
+    text: &str,
+    args: &GrepArgs,
+    config: &crate::config::GrepConfig,
+) -> Result<String, ToolError> {
+    if args.pattern.is_empty() {
+        return Err(ToolError::new("E_BAD_REGEX", "pattern 不能为空"));
+    }
+    let matcher = grep_regex::RegexMatcherBuilder::new()
+        .case_insensitive(!args.case.unwrap_or(true))
+        .build(&args.pattern)
+        .map_err(|error| ToolError::new("E_BAD_REGEX", error.to_string()))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let mut matches = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if matcher
+            .is_match(line.as_bytes())
+            .map_err(|error| ToolError::new("E_GREP", error.to_string()))?
+        {
+            matches.push(index);
+        }
+    }
+    let skip = args.skip.unwrap_or(0);
+    let selected = matches
+        .into_iter()
+        .skip(skip)
+        .take(config.max_matches_total);
+    let mut rows = std::collections::BTreeSet::new();
+    for index in selected {
+        let before = args.context_before.unwrap_or(config.context_before);
+        let after = args.context_after.unwrap_or(config.context_after);
+        rows.extend(
+            index.saturating_sub(before)..=(index + after).min(lines.len().saturating_sub(1)),
+        );
+    }
+    let mut output = String::new();
+    for index in rows {
+        let marker = if matcher
+            .is_match(lines[index].as_bytes())
+            .map_err(|error| ToolError::new("E_GREP", error.to_string()))?
+        {
+            ':'
+        } else {
+            '-'
+        };
+        use std::fmt::Write;
+        writeln!(output, "{uri}{marker}{}{marker}{}", index + 1, lines[index])
+            .expect("写入 String 不失败");
+    }
+    if output.is_empty() {
+        output.push_str("No matches found");
+    }
+    Ok(output.trim_end_matches('\n').to_owned())
 }
 
 struct Search {

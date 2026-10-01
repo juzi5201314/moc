@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use moc_llm::{FinishReason, Message};
+use moc_llm::{FinishReason, Message, Role};
 use moc_protocol::methods::{
     SessionInfo, SessionLoadResult, SessionMode, SessionRenameParams, ToolExecution,
 };
@@ -24,6 +24,20 @@ use crate::ids;
 use self::entries::{Entry, EntryPayload};
 use self::state::SessionState;
 use self::store::{SessionFile, SessionPaths, SessionStore, now_ms};
+
+/// transcript 条目标识，避免与会话标识在内部调用中混淆。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptEntryId(String);
+
+impl TranscriptEntryId {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// 一份加载中的会话。
 pub struct SessionRecord {
@@ -172,6 +186,89 @@ impl SessionTable {
             todos: state.todos.clone(),
             plans: state.plans.clone(),
         })
+    }
+    /// 创建一个回退分支，并从目标消息重建该分支的上下文。
+    ///
+    /// 用户消息作为待重新编辑的起点，不写入回退分支；助手工具调用会连同
+    /// 紧随其后的工具结果一并保留，避免留下不完整的工具历史。原会话保持不变。
+    pub async fn rewind(
+        &self,
+        session_id: &str,
+        entry_id: &TranscriptEntryId,
+    ) -> Result<SessionLoadResult, CoreError> {
+        let record = self.get(session_id).await?;
+        let entries = {
+            let state = record.state.lock().await;
+            let Some(target) = state
+                .entries
+                .iter()
+                .position(|entry| entry.id() == entry_id.as_str())
+            else {
+                return Err(CoreError::Session(format!(
+                    "INVALID_PARAMS: transcript 消息不存在：{}",
+                    entry_id.as_str()
+                )));
+            };
+            let Entry::Message { message, .. } = &state.entries[target] else {
+                return Err(CoreError::Session(
+                    "INVALID_PARAMS: 回退目标不是 transcript 消息".into(),
+                ));
+            };
+            let mut end = if message.role == Role::User {
+                target
+            } else {
+                target + 1
+            };
+            if message.role == Role::Assistant {
+                let call_ids: Vec<&str> =
+                    message.tool_calls().map(|call| call.id.as_str()).collect();
+                while end < state.entries.len() {
+                    let Entry::Message { message: next, .. } = &state.entries[end] else {
+                        break;
+                    };
+                    if next.role != Role::Tool
+                        || !next
+                            .tool_results()
+                            .all(|result| call_ids.contains(&result.tool_call_id.as_str()))
+                    {
+                        break;
+                    }
+                    end += 1;
+                }
+            }
+            state.entries[..end].to_vec()
+        };
+        let source = self.get(session_id).await?;
+        let source_info = source.state.lock().await.session_info();
+        let child_title = format!("回退：{}", source_info.title);
+        let child_info = self
+            .create(
+                &source_info.cwd,
+                &source_info.model,
+                source_info.mode,
+                Some(&child_title),
+                Some(source_info.id.clone()),
+            )
+            .await?;
+        let child = self.get(&child_info.id).await?;
+        let child_header = child
+            .state
+            .lock()
+            .await
+            .entries
+            .first()
+            .cloned()
+            .ok_or_else(|| CoreError::Session("回退分支缺少会话头部".into()))?;
+        let mut child_entries = Vec::with_capacity(entries.len());
+        child_entries.push(child_header);
+        child_entries.extend(entries.into_iter().skip(1));
+        let mut parent_id = child_entries[0].id().to_owned();
+        for entry in &mut child_entries[1..] {
+            entry.set_parent_id(parent_id.clone());
+            parent_id = entry.id().to_owned();
+        }
+        self.rewrite(&child_info.id, child_entries).await?;
+        self.load(&child_info.id, None).await
     }
 
     /// 追加新 entry；状态锁不跨越文件 I/O await。
@@ -402,7 +499,8 @@ fn sanitize_title(title: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use moc_protocol::methods::{SessionMode, SessionRenameParams};
+    use moc_llm::{ContentPart, Role, ToolCall};
+    use moc_protocol::methods::{SessionMode, SessionRenameParams, ToolStatus};
 
     use super::*;
 
@@ -540,5 +638,69 @@ mod tests {
             .unwrap();
         assert_eq!(restored.entries.len(), 2);
         assert_eq!(restored.entries[1].message.text(), "续写");
+    }
+    #[tokio::test]
+    async fn rewind_truncates_user_message_and_keeps_tool_history_complete() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .await
+            .expect("创建会话");
+        let first_user = table
+            .append_message(&info.id, Message::user_text("第一条"), None, None)
+            .await
+            .expect("追加用户消息");
+        let assistant = table
+            .append_message(
+                &info.id,
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::ToolCall(ToolCall::new("call_1", "read", "{}"))],
+                },
+                None,
+                None,
+            )
+            .await
+            .expect("追加工具调用");
+        table
+            .append_message(
+                &info.id,
+                Message::tool_result("call_1", "结果", false),
+                Some(ToolExecution {
+                    tool_call_id: "call_1".into(),
+                    status: ToolStatus::Completed,
+                    duration_ms: Some(1),
+                }),
+                None,
+            )
+            .await
+            .expect("追加工具结果");
+        let second_user = table
+            .append_message(&info.id, Message::user_text("第二条"), None, None)
+            .await
+            .expect("追加第二条用户消息");
+        let second_user_id = TranscriptEntryId::new(second_user.id());
+        let assistant_id = TranscriptEntryId::new(assistant.id());
+
+        let rewound = table
+            .rewind(&info.id, &second_user_id)
+            .await
+            .expect("回退到用户消息");
+        assert_eq!(rewound.entries.len(), 3);
+        assert_eq!(
+            rewound.entries.last().expect("工具结果").message.role,
+            Role::Tool
+        );
+        assert_ne!(rewound.session.id, info.id);
+        let original = table.load(&info.id, None).await.expect("读取原会话");
+        assert_eq!(original.entries.len(), 4);
+
+        let rewound_again = table
+            .rewind(&info.id, &assistant_id)
+            .await
+            .expect("回退到助手工具调用");
+        assert_eq!(rewound_again.entries.len(), 3);
+        assert_eq!(rewound_again.entries[0].id, first_user.id());
     }
 }

@@ -145,8 +145,8 @@
 //!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
-//!     SessionRenameParams, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
-//!     SessionUnlockParams, SessionUpdate, TurnResult,
+//!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
+//!     SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
