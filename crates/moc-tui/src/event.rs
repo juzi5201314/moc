@@ -678,8 +678,8 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
     let position = (mouse.column, mouse.row);
     match mouse.kind {
-        MouseEventKind::ScrollUp => scroll(app, -3),
-        MouseEventKind::ScrollDown => scroll(app, 3),
+        MouseEventKind::ScrollUp => scroll(app, 3),
+        MouseEventKind::ScrollDown => scroll(app, -3),
         MouseEventKind::Down(MouseButton::Left) => {
             let area = app.prompt_area;
             if position.0 >= area.x
@@ -721,6 +721,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     }
 }
 
+/// 滚动视口：`delta > 0` 向历史方向推进（更早的行），`delta < 0` 回到尾部。
+///
+/// [`App::scroll_offset`] 的语义是「距尾部行数」，因此正向 delta 直接增大偏移。
 fn scroll(app: &mut App, delta: i32) {
     if delta < 0 {
         app.scroll_offset = app
@@ -796,19 +799,19 @@ fn handle_key(
     if app.focus == Focus::Scrollback {
         match (code, modifiers) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                scroll(app, -3);
-                return;
-            }
-            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
                 scroll(app, 3);
                 return;
             }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                scroll(app, -3);
+                return;
+            }
             (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                scroll(app, -10);
+                scroll(app, 10);
                 return;
             }
             (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-                scroll(app, 10);
+                scroll(app, -10);
                 return;
             }
             (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => {
@@ -2364,5 +2367,31 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// 滚轮方向：上滚进入更早的历史，下滚回到尾部（offset 语义为距尾部行数）。
+    #[test]
+    fn wheel_scrolls_toward_and_away_from_tail() {
+        fn mouse(kind: MouseEventKind) -> MouseEvent {
+            MouseEvent {
+                kind,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.scroll_offset = 10;
+
+        handle_mouse(&mut app, mouse(MouseEventKind::ScrollUp));
+        assert_eq!(app.scroll_offset, 13, "上滚应查看更早的历史");
+        handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
+        assert_eq!(app.scroll_offset, 10, "下滚应回到尾部");
+
+        app.scroll_offset = 1;
+        handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
+        assert_eq!(app.scroll_offset, 0, "已在尾部时下滚饱和为 0");
     }
 }

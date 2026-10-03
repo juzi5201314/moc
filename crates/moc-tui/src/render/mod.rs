@@ -245,6 +245,25 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// 滚动条滑块顶端行号（0 = 轨道顶）。
+///
+/// 位置语义与 [`App::scroll_offset`] 相反：`scroll_offset == 0` 表示视口跟随尾部，
+/// 滑块应贴底；`scroll_offset == max_offset` 表示停在历史顶端，滑块贴顶。
+fn scrollbar_thumb_top(
+    track: u16,
+    thumb_height: u16,
+    max_offset: usize,
+    scroll_offset: usize,
+) -> u16 {
+    debug_assert!(max_offset > 0, "无溢出空间时不应绘制滑块");
+    debug_assert!(thumb_height <= track);
+    let travel = f64::from(track - thumb_height);
+    // 距历史顶端的比例：行数规模远小于 2^53，f64 表示无精度损失
+    let distance_from_top = max_offset.saturating_sub(scroll_offset) as f64 / max_offset as f64;
+    // 结果已 clamp 到 [0, travel]，且 travel ≤ u16::MAX，窄化不会截断
+    (travel * distance_from_top).round().clamp(0.0, travel) as u16
+}
+
 /// 右缘自绘滚动条：跟随态半暗，浏览态亮起。
 fn draw_scrollbar(frame: &mut Frame, app: &App, area: Rect, max_offset: usize) {
     if max_offset == 0 || area.width < 2 || area.height < 2 {
@@ -255,8 +274,8 @@ fn draw_scrollbar(frame: &mut Frame, app: &App, area: Rect, max_offset: usize) {
     let total = (max_offset as u32) + area.height as u32;
     let thumb_height =
         ((area.height as u32 * area.height as u32) / total.max(1)).clamp(1, track as u32) as u16;
-    let position_ratio = app.scroll_offset as f64 / max_offset as f64;
-    let thumb_top = ((track - thumb_height) as f64 * position_ratio).round() as u16;
+    let thumb_top =
+        scrollbar_thumb_top(track, thumb_height, max_offset, app.scroll_offset);
     // 贴终端右缘（在内容边距之外），不压内容
     let x = frame.area().width.saturating_sub(1);
     let color = if app.scroll_offset == 0 {
@@ -919,6 +938,18 @@ mod tests {
 
         app.prompt.text = "长输入\n".repeat(40);
         assert_eq!(prompt_content_rows(&app, 60), PROMPT_MAX_ROWS, "再长也封顶");
+    }
+
+    /// 滑块方向：跟随尾部贴底，滚向历史顶端时上移；滚轮上滚让滑块上移。
+    #[test]
+    fn scrollbar_thumb_tracks_offset_from_history_top() {
+        // 轨道 20 行、滑块 4 行 → 可移动 16 行
+        assert_eq!(scrollbar_thumb_top(20, 4, 100, 0), 16, "跟随尾部时滑块贴底");
+        assert_eq!(scrollbar_thumb_top(20, 4, 100, 100), 0, "历史顶端时滑块贴顶");
+        assert_eq!(scrollbar_thumb_top(20, 4, 100, 50), 8);
+        assert!(scrollbar_thumb_top(20, 4, 100, 75) < scrollbar_thumb_top(20, 4, 100, 25));
+        // 滑块与轨道等高（无溢出空间）时位置恒定
+        assert_eq!(scrollbar_thumb_top(10, 10, 3, 3), 0);
     }
 
     #[test]
