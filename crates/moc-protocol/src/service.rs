@@ -7,7 +7,7 @@
 //! # 取消树
 //!
 //! ```text
-//! Server::shutdown() ──► 连接令牌 ──► 每请求令牌（prompt 请求额外登记进轮次注册表）
+//! Server::shutdown() ──► 连接令牌 ──► 每请求令牌（提示请求额外登记进提示注册表）
 //! ```
 //!
 //! 于是「前端调 `session/cancel`」「连接断开」「server 关闭」三条路径都通过
@@ -31,12 +31,12 @@ use crate::methods::{
     CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty, InitializeParams,
     InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
     OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
-    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams,
+    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams, SessionContextParams,
     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, TurnResult,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -199,15 +199,15 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionContextParams,
     ) -> impl Future<Output = Result<ContextUsageResult, RpcError>> + Send;
 
-    /// 跑一轮 agent 工作：挂到本轮结束才返回，过程增量走 `session/update` 通知。
+    /// 跑一次提示 agent 工作：挂到本次提示结束才返回，过程增量走 `session/update` 通知。
     ///
-    /// 轮次结束时必须自行 emit `turn_finished`，且其 `message` / `finish_reason` /
+    /// 提示结束时必须自行 emit `prompt_finished`，且其 `message` / `finish_reason` /
     /// `usage` 与返回值一致（前端据此把流式内容替换为权威版本）。
     fn session_prompt(
         &self,
         ctx: RequestContext,
         params: PromptParams,
-    ) -> impl Future<Output = Result<TurnResult, RpcError>> + Send;
+    ) -> impl Future<Output = Result<PromptResult, RpcError>> + Send;
 }
 
 /// 一次请求的上下文，按值传入服务方法。
@@ -272,7 +272,7 @@ impl RequestContext {
     /// 向发起该请求的前端要一次授权。
     ///
     /// 等价于 `requester().request::<SessionRequestPermission>(params)`；独立成方法
-    /// 是因为这是 core 最常用的反向请求。前端未注册处理器、连接断开、轮次被取消时
+    /// 是因为这是 core 最常用的反向请求。前端未注册处理器、连接断开、提示被取消时
     /// 都以 `Err` 返回，core 应当按「未授权」处理。
     pub async fn ask_permission(
         &self,
@@ -288,7 +288,7 @@ impl RequestContext {
 ///
 /// 出站队列满时 `emit` 会 `await`：背压直接传回 core 的 LLM 流读取，天然限速，
 /// 不会在协议层堆出无界缓冲。连接已死时返回 [`ProtocolError::ConnectionClosed`]，
-/// core 据此中止本轮。
+/// core 据此中止本次提示。
 #[derive(Clone)]
 pub struct UpdateSink {
     traffic: Arc<Traffic>,
@@ -327,7 +327,7 @@ impl Requester {
     /// 发起一次反向请求。
     ///
     /// - 客户端回错（如未注册处理器时的 `-32601`）→ [`RpcCallError::Rpc`]。
-    /// - 轮次被取消、连接关闭、前端始终不回 → [`RpcCallError::Cancelled`]。
+    /// - 提示被取消、连接关闭、前端始终不回 → [`RpcCallError::Cancelled`]。
     pub async fn request<M: crate::method::ServerRequest>(
         &self,
         params: M::Params,

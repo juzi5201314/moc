@@ -22,7 +22,7 @@ pub struct SessionState {
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
     pub parent_session_id: Option<String>,
-    pub turn_sequence: u64,
+    pub prompt_sequence: u64,
     pub job_sequence: u64,
     pub notices: Vec<String>,
     pub usage: Usage,
@@ -71,7 +71,7 @@ impl SessionState {
             plans: Vec::new(),
             child_calls: Vec::new(),
             parent_session_id: parent_session_id.clone(),
-            turn_sequence: 0,
+            prompt_sequence: 0,
             job_sequence: 0,
             usage: Usage::default(),
             usage_at: 0,
@@ -102,7 +102,7 @@ impl SessionState {
             Entry::Header { .. } => {}
             Entry::Message { message, .. } => {
                 if message.role == Role::User {
-                    self.turn_sequence = self.turn_sequence.saturating_add(1);
+                    self.prompt_sequence = self.prompt_sequence.saturating_add(1);
                 }
                 if let Some(projected) = entry.transcript_entry() {
                     self.transcript.push(projected);
@@ -269,7 +269,7 @@ mod tests {
         ));
         assert_eq!(state.plans[0].status, PlanStatus::Approved);
         assert_eq!(state.session.updated_at_ms, 14);
-        assert_eq!(state.turn_sequence, 1);
+        assert_eq!(state.prompt_sequence, 1);
     }
 
     #[test]

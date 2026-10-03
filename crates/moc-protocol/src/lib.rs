@@ -12,7 +12,7 @@
 //! | 并发门禁、取消传播、反向请求、更新推送 | 锁的持有、模型调用、工具执行 |
 //! | 方法契约（DTO 与错误码） | 每个方法的具体语义 |
 //!
-//! 协议层**不持有任何会话状态**：唯一的连接内状态是「哪个会话有在飞轮次」的注册表
+//! 协议层**不持有任何会话状态**：唯一的连接内状态是「哪个会话有进行中的提示」的注册表
 //! （`session/prompt` 的并发门禁与 `session/cancel` 的落点）。
 //!
 //! 依赖方向是 `moc-core → moc-protocol → moc-llm`；协议层依赖 `moc-llm` 只为复用
@@ -30,8 +30,8 @@
 //! | `session/rename` / `delete` / `unlock` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/set_mode` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
-//! | `session/compact` | 前端→core | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32011` / `-32014` |
-//! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32015` / `-32011` |
+//! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
+//! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
 //! | `session/cancel` | 前端→core | 协议层自答 | 已初始化 | — |
 //! | `session/request_permission` / `session/request_ask` | core→前端 | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | `session/update` | core→前端 | 前端 | — | — |
@@ -43,9 +43,9 @@
 //!
 //! ```json
 //! {"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"session_id":"ses_7f3a","input":[{"type":"text","text":"看一下 README"}]}}
-//! {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"ses_7f3a","update":{"type":"assistant_delta","turn_id":"turn_1","delta":{"type":"text","delta":"好的"}}}}
-//! {"jsonrpc":"2.0","id":-1,"method":"session/request_permission","params":{"session_id":"ses_7f3a","turn_id":"turn_1","request_id":"perm_1","tool_call_id":"call_9","tool_name":"bash","title":"执行命令：cargo test","body":null,"options":[{"id":"allow_once","label":"允许一次","kind":"allow_once"},{"id":"reject_once","label":"拒绝","kind":"reject_once"}]}}
-//! {"jsonrpc":"2.0","id":1,"result":{"session_id":"ses_7f3a","turn_id":"turn_1","message":{"role":"Assistant","content":[{"Text":"好的"}]},"finish_reason":"Stop","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":null,"cached_input_tokens":null,"cache_creation_input_tokens":null,"reasoning_tokens":null}}}
+//! {"jsonrpc":"2.0","method":"session/update","params":{"session_id":"ses_7f3a","update":{"type":"assistant_delta","prompt_id":"prompt_1","delta":{"type":"text","delta":"好的"}}}}
+//! {"jsonrpc":"2.0","id":-1,"method":"session/request_permission","params":{"session_id":"ses_7f3a","prompt_id":"prompt_1","request_id":"perm_1","tool_call_id":"call_9","tool_name":"bash","title":"执行命令：cargo test","body":null,"options":[{"id":"allow_once","label":"允许一次","kind":"allow_once"},{"id":"reject_once","label":"拒绝","kind":"reject_once"}]}}
+//! {"jsonrpc":"2.0","id":1,"result":{"session_id":"ses_7f3a","prompt_id":"prompt_1","message":{"role":"Assistant","content":[{"Text":"好的"}]},"finish_reason":"Stop","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":null,"cached_input_tokens":null,"cache_creation_input_tokens":null,"reasoning_tokens":null}}}
 //! ```
 //!
 //! 两类 ID 天然分离：前端发起的调用用从 `1` 递增的正整数，core 发起的反向请求用从
@@ -56,7 +56,7 @@
 //! - **版本协商**：`initialize` 只比较 [`PROTOCOL_VERSION`] 的第一个 `.` 之前部分
 //!   （major）；不一致回 `-32003`，`data.server_version` 给出服务端版本。
 //! - **未知 `type` 必须忽略**：[`methods::update::SessionUpdate`] /
-//!   [`methods::update::AssistantDelta`] / [`methods::turn::InputPart`] 是会增长的
+//!   [`methods::update::AssistantDelta`] / [`methods::prompt::InputPart`] 是会增长的
 //!   枚举，core 可以新增变体而不升 major。前端反序列化失败时必须**整条丢弃**，
 //!   不报错、不断连接（[`ClientBuilder`] 的通知分发已经这么做）。
 //! - **未知错误码原样透传**：[`RpcError::code`] 是 `i32` 而不是枚举，老前端遇到新
@@ -146,7 +146,7 @@
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-//!     SessionUnloadParams, SessionUnlockParams, SessionUpdate, TurnResult,
+//!     SessionUnloadParams, SessionUnlockParams, SessionUpdate, PromptResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
@@ -157,7 +157,7 @@
 //!     // 会话表、配置、上下文与状态机……
 //! }
 //!
-//! /// 推送失败几乎总是「前端已经断开」：core 应当据此中止本轮。
+//! /// 推送失败几乎总是「前端已经断开」：core 应当据此中止本次提示。
 //! fn emit_error(error: moc_protocol::ProtocolError) -> RpcError {
 //!     RpcError::new(RpcErrorCode::InternalError.code(), error.to_string())
 //! }
@@ -180,22 +180,22 @@
 //!         &self,
 //!         ctx: RequestContext,
 //!         params: PromptParams,
-//!     ) -> Result<TurnResult, RpcError> {
+//!     ) -> Result<PromptResult, RpcError> {
 //!         let session_id = params.session_id.as_str();
-//!         let turn_id = "turn_1";
+//!         let prompt_id = "prompt_1";
 //!         let usage = Usage { input_tokens: 12, output_tokens: 3, ..Usage::default() };
 //!
 //!         // 1) 过程增量走通知；`ctx.cancel()` 在长任务里 `select!`，覆盖前端取消、
 //!         //    连接断开、server 关闭三条路径
 //!         ctx.updates()
-//!             .emit(session_id, SessionUpdate::turn_started(turn_id, "deepseek-flash", 0))
+//!             .emit(session_id, SessionUpdate::prompt_started(prompt_id, "deepseek-flash", 0))
 //!             .await
 //!             .map_err(emit_error)?;
 //!
-//!         // 2) 要动本地环境就先要授权；前端未注册处理器 / 轮次被取消都会拿到 Err
+//!         // 2) 要动本地环境就先要授权；前端未注册处理器 / 提示被取消都会拿到 Err
 //!         let permission = moc_protocol::methods::PermissionRequestParams {
 //!             session_id: session_id.to_owned(),
-//!             turn_id: turn_id.to_owned(),
+//!             prompt_id: prompt_id.to_owned(),
 //!             request_id: "perm_1".to_owned(),
 //!             tool_call_id: "call_1".to_owned(),
 //!             tool_name: "bash".to_owned(),
@@ -206,14 +206,14 @@
 //!         };
 //!         let allowed = ctx.ask_permission(permission).await.is_ok();
 //!
-//!         // 3) 轮次结束时给出权威内容：`message` 应当与 `turn_finished` 逐字段相同
+//!         // 3) 提示结束时给出权威内容：`message` 应当与 `prompt_finished` 逐字段相同
 //!         let message = Message::assistant_text("已按你的授权执行");
 //!         let finish_reason = if allowed { FinishReason::Stop } else { FinishReason::Refusal };
 //!         ctx.updates()
 //!             .emit(
 //!                 session_id,
-//!                 SessionUpdate::TurnFinished {
-//!                     turn_id: turn_id.to_owned(),
+//!                 SessionUpdate::PromptFinished {
+//!                     prompt_id: prompt_id.to_owned(),
 //!                     message: message.clone(),
 //!                     finish_reason: finish_reason.clone(),
 //!                     usage,
@@ -221,16 +221,16 @@
 //!             )
 //!             .await
 //!             .map_err(emit_error)?;
-//!         Ok(TurnResult {
+//!         Ok(PromptResult {
 //!             session_id: params.session_id.clone(),
-//!             turn_id: turn_id.to_owned(),
+//!             prompt_id: prompt_id.to_owned(),
 //!             message,
 //!             finish_reason,
 //!             usage,
 //!         })
 //!     }
 //!
-//!     // 其余方法同理：从 core 自己的状态机取数据后返回。本轮未实现的能力
+//!     // 其余方法同理：从 core 自己的状态机取数据后返回。本次提示未实现的能力
 //!     // 明确回 `-32014`，不要静默降级。
 //!     async fn config_get(&self, _ctx: RequestContext, _params: ConfigGetParams) -> Result<ConfigGetResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))

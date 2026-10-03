@@ -64,8 +64,8 @@ impl PickerState {
 }
 /// 消息回退选择器状态；每个用户消息是一列，列内按 transcript 顺序上下移动。
 pub struct RewindState {
-    pub turns: Vec<Vec<TranscriptEntry>>,
-    pub selected_turn: usize,
+    pub prompts: Vec<Vec<TranscriptEntry>>,
+    pub selected_prompt: usize,
     pub selected_item: usize,
     pub loading: bool,
     pub error: Option<String>,
@@ -74,8 +74,8 @@ pub struct RewindState {
 impl Default for RewindState {
     fn default() -> Self {
         Self {
-            turns: Vec::new(),
-            selected_turn: 0,
+            prompts: Vec::new(),
+            selected_prompt: 0,
             selected_item: 0,
             loading: true,
             error: None,
@@ -85,34 +85,34 @@ impl Default for RewindState {
 
 impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>) {
-        self.turns.clear();
+        self.prompts.clear();
         for entry in entries {
             if entry.message.role == Role::User {
-                self.turns.push(vec![entry]);
-            } else if let Some(turn) = self.turns.last_mut() {
-                turn.push(entry);
+                self.prompts.push(vec![entry]);
+            } else if let Some(prompt) = self.prompts.last_mut() {
+                prompt.push(entry);
             }
         }
-        self.selected_turn = self.turns.len().saturating_sub(1);
+        self.selected_prompt = self.prompts.len().saturating_sub(1);
         self.selected_item = self
-            .turns
+            .prompts
             .last()
-            .map_or(0, |turn| turn.len().saturating_sub(1));
+            .map_or(0, |prompt| prompt.len().saturating_sub(1));
         self.loading = false;
         self.error = None;
     }
 
     pub fn selected(&self) -> Option<&TranscriptEntry> {
-        self.turns
-            .get(self.selected_turn)
-            .and_then(|turn| turn.get(self.selected_item))
+        self.prompts
+            .get(self.selected_prompt)
+            .and_then(|prompt| prompt.get(self.selected_item))
     }
 
     pub fn move_vertical(&mut self, delta: i32) {
-        let Some(turn) = self.turns.get(self.selected_turn) else {
+        let Some(prompt) = self.prompts.get(self.selected_prompt) else {
             return;
         };
-        let max = turn.len().saturating_sub(1);
+        let max = prompt.len().saturating_sub(1);
         self.selected_item = if delta < 0 {
             self.selected_item
                 .saturating_sub(delta.unsigned_abs() as usize)
@@ -122,19 +122,19 @@ impl RewindState {
     }
 
     pub fn move_horizontal(&mut self, delta: i32) {
-        if self.turns.is_empty() {
+        if self.prompts.is_empty() {
             return;
         }
-        let max = self.turns.len().saturating_sub(1);
-        self.selected_turn = if delta < 0 {
-            self.selected_turn
+        let max = self.prompts.len().saturating_sub(1);
+        self.selected_prompt = if delta < 0 {
+            self.selected_prompt
                 .saturating_sub(delta.unsigned_abs() as usize)
         } else {
-            self.selected_turn.saturating_add(delta as usize).min(max)
+            self.selected_prompt.saturating_add(delta as usize).min(max)
         };
         self.selected_item = self
             .selected_item
-            .min(self.turns[self.selected_turn].len().saturating_sub(1));
+            .min(self.prompts[self.selected_prompt].len().saturating_sub(1));
     }
 }
 
@@ -362,16 +362,16 @@ mod tests {
             entry("t1", Message::tool_result("call", "结果", false)),
             entry("u2", Message::user_text("第二条")),
         ]);
-        assert_eq!(state.turns.len(), 2);
-        assert_eq!(state.turns[0].len(), 3);
-        assert_eq!(state.selected_turn, 1);
+        assert_eq!(state.prompts.len(), 2);
+        assert_eq!(state.prompts[0].len(), 3);
+        assert_eq!(state.selected_prompt, 1);
         assert_eq!(state.selected_item, 0);
 
         state.move_horizontal(-1);
         state.move_vertical(2);
-        assert_eq!((state.selected_turn, state.selected_item), (0, 2));
+        assert_eq!((state.selected_prompt, state.selected_item), (0, 2));
         state.move_horizontal(1);
-        assert_eq!((state.selected_turn, state.selected_item), (1, 0));
+        assert_eq!((state.selected_prompt, state.selected_item), (1, 0));
         assert_eq!(state.selected().expect("选中条目").message.role, Role::User);
     }
 }

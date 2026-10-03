@@ -117,6 +117,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
+                mode: None,
             })
             .await
     });
@@ -226,6 +227,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
             input: vec![InputPart::Text {
                 text: "失败请求".into(),
             }],
+            mode: None,
         })
         .await;
     assert!(result.is_err());
@@ -405,6 +407,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
+                mode: None,
             })
             .await
     });
@@ -762,7 +765,7 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['shake']\nprotect_recent_tool_tokens=0\nthreshold={mode='tokens',value=900000}\n[compaction.shake]\nkeep_last_turns=0\nsoft_trim_chars=64").await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['shake']\nprotect_recent_tool_tokens=0\nthreshold={mode='tokens',value=900000}\n[compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=64").await;
     std::fs::write(h.root.path().join("work/large.txt"), "内容".repeat(2500)).unwrap();
     let id = h.session(SessionMode::Normal).await;
     h.prompt(&id, "第一次读取").await;
@@ -1030,6 +1033,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
                 input: vec![InputPart::Text {
                     text: "压缩时取消".into(),
                 }],
+                mode: None,
             })
             .await
     });

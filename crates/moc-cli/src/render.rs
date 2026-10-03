@@ -150,7 +150,7 @@ impl Renderer {
                     duration_ms.unwrap_or_default()
                 );
             }
-            SessionUpdate::TurnFinished { usage, .. } => {
+            SessionUpdate::PromptFinished { usage, .. } => {
                 let _ = writeln!(
                     out,
                     "\n[用量：输入 {}，输出 {} token]",
@@ -244,7 +244,7 @@ impl Renderer {
                 let _ = writeln!(out, "\n[等待工具授权：{tool_call_id}]");
             }
             SessionUpdate::PermissionResolved { .. }
-            | SessionUpdate::TurnStarted { .. }
+            | SessionUpdate::PromptStarted { .. }
             | SessionUpdate::LockChanged { .. } => {}
         }
     }

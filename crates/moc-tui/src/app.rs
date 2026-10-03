@@ -83,16 +83,20 @@ pub struct App {
     pub mode_area: Rect,
     /// 就地模式菜单；`None` = 关闭。
     pub mode_menu: Option<ModeMenu>,
+    /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
+    ///
+    /// 只影响图例与状态栏的展示，会话持久模式仍以 `session.mode` 为准。
+    pub transient_mode: Option<SessionMode>,
     /// Core 估算的上下文组成与总量。
     pub context_usage: Option<ContextUsageResult>,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
     pub scroll_offset: usize,
-    /// 是否有在飞轮次。
-    pub turn_running: bool,
-    /// 是否已经发出取消当前轮次的请求。
+    /// 是否有进行中的提示。
+    pub prompt_running: bool,
+    /// 是否已经发出取消当前提示的请求。
     pub cancel_requested: bool,
-    /// 当前轮次开始时间（statusline 计时）。
-    pub turn_started_at: Option<std::time::Instant>,
+    /// 当前提示开始时间（statusline 计时）。
+    pub prompt_started_at: Option<std::time::Instant>,
     /// 当前 thinking block 开始时间（用于计算 duration_ms）。
     pub thinking_started_at: Option<std::time::Instant>,
     pub usage: Usage,
@@ -141,7 +145,7 @@ pub struct App {
     pub startup_pending: Option<String>,
     pub terminal_focused: bool,
     pub queues: HashMap<String, std::collections::VecDeque<crate::queue::QueuedPrompt>>,
-    pub inflight_turns: std::collections::HashSet<String>,
+    pub inflight_prompts: std::collections::HashSet<String>,
     pub next_queue_id: u64,
     pub queue_hits: Vec<(u64, Rect, Rect)>,
     pub queue_area: Rect,
@@ -187,11 +191,12 @@ impl App {
             context_area: Rect::default(),
             mode_area: Rect::default(),
             mode_menu: None,
+            transient_mode: None,
             context_usage: None,
             scroll_offset: 0,
-            turn_running: false,
+            prompt_running: false,
             cancel_requested: false,
-            turn_started_at: None,
+            prompt_started_at: None,
             thinking_started_at: None,
             usage: Usage::default(),
             usage_samples: Vec::new(),
@@ -223,7 +228,7 @@ impl App {
             startup_pending: None,
             terminal_focused: true,
             queues: HashMap::new(),
-            inflight_turns: std::collections::HashSet::new(),
+            inflight_prompts: std::collections::HashSet::new(),
             next_queue_id: 0,
             queue_hits: Vec::new(),
             queue_area: Rect::default(),
@@ -281,7 +286,7 @@ impl App {
 
     /// 设置上游配置不一致告警并刷新计时。
     ///
-    /// 只保留最新一条：同一轮内多次不一致（多个工具调用步骤各自一次请求）会彼此
+    /// 只保留最新一条：同一次提示内多次不一致（多轮各自一次请求）会彼此
     /// 覆盖，绝不堆叠。
     pub fn set_warning(&mut self, text: impl Into<String>) {
         self.warning = Some(text.into());
@@ -434,15 +439,16 @@ impl App {
         }
     }
 
-    /// 轮次收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
-    pub fn finish_turn(&mut self) {
+    /// 提示收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
+    pub fn finish_prompt(&mut self) {
         self.finish_thinking();
-        let elapsed = self.turn_started_at.map(|at| at.elapsed());
+        let elapsed = self.prompt_started_at.map(|at| at.elapsed());
         let was_cancel_requested = self.cancel_requested;
-        self.turn_running = false;
+        self.prompt_running = false;
         self.cancel_requested = false;
         self.cancel_pending = false;
-        self.turn_started_at = None;
+        self.prompt_started_at = None;
+        self.transient_mode = None;
         if was_cancel_requested {
             self.set_notice("Stopped");
         }
@@ -456,7 +462,7 @@ impl App {
             .rev()
             .find(|entry| matches!(entry.block, Block::Assistant { .. }))
         {
-            entry.stamp_turn(crate::transcript::now_ms(), elapsed_ms);
+            entry.stamp_prompt(crate::transcript::now_ms(), elapsed_ms);
         }
     }
 
@@ -525,15 +531,15 @@ impl App {
 
     /// 打开就地模式菜单：高亮当前模式，并让出可能叠在输入框上方的补全菜单。
     pub fn open_mode_menu(&mut self) {
-        let Some(session) = self.session.as_ref() else {
+        if self.session.is_none() {
             self.set_notice("当前没有活动会话");
             return;
-        };
+        }
         self.completion = None;
+        let current = self.display_mode();
         self.mode_menu = Some(ModeMenu {
-            selected: MODES
-                .iter()
-                .position(|mode| *mode == session.mode)
+            selected: current
+                .and_then(|mode| MODES.iter().position(|candidate| *candidate == mode))
                 .unwrap_or(0),
             area: Rect::default(),
         });
@@ -723,6 +729,12 @@ impl App {
             .count();
         (done, total)
     }
+
+    /// 图例与状态栏展示的模式：本次提示覆盖优先，否则取会话模式。
+    pub fn display_mode(&self) -> Option<SessionMode> {
+        self.transient_mode
+            .or_else(|| self.session.as_ref().map(|session| session.mode))
+    }
 }
 
 /// 会话模式的展示名：与模型同处图例，沿用界面原有的英文标识。
@@ -736,12 +748,9 @@ pub fn mode_label(mode: SessionMode) -> &'static str {
 }
 
 /// 会话模式顺序：就地菜单条目与键盘循环共用同一份顺序。
-pub const MODES: [SessionMode; 4] = [
-    SessionMode::Normal,
-    SessionMode::Ask,
-    SessionMode::Plan,
-    SessionMode::Ptc,
-];
+///
+/// 不含 `Ask`：问答是单条消息的临时意图，由 `/ask` 按提示注入，不是可持久选择的模式。
+pub const MODES: [SessionMode; 3] = [SessionMode::Normal, SessionMode::Plan, SessionMode::Ptc];
 
 /// 点击图例模式名后就地弹出的菜单。
 pub struct ModeMenu {
@@ -790,12 +799,12 @@ mod tests {
     fn mode_menu_hit_testing_skips_borders() {
         let menu = ModeMenu {
             selected: 1,
-            area: Rect::new(10, 5, 24, 6),
+            area: Rect::new(10, 5, 24, 5),
         };
         assert_eq!(menu.entry_at(11, 5), None, "上边框不是条目");
         assert_eq!(menu.entry_at(11, 6), Some(0));
-        assert_eq!(menu.entry_at(11, 9), Some(3));
-        assert_eq!(menu.entry_at(11, 10), None, "下边框不是条目");
+        assert_eq!(menu.entry_at(11, 8), Some(2));
+        assert_eq!(menu.entry_at(11, 9), None, "下边框不是条目");
         assert_eq!(menu.entry_at(9, 6), None, "左缘之外不命中");
         assert_eq!(menu.entry_at(34, 6), None, "右缘之外不命中");
         assert_eq!(menu.entry_at(11, 4), None, "菜单上方不命中");
@@ -815,11 +824,11 @@ mod tests {
     fn finish_turn_reports_stop_after_cancel_request() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = super::App::new(crate::theme::Theme::global(), events);
-        app.turn_running = true;
+        app.prompt_running = true;
         app.cancel_requested = true;
-        app.finish_turn();
+        app.finish_prompt();
 
-        assert!(!app.turn_running);
+        assert!(!app.prompt_running);
         assert!(!app.cancel_requested);
         assert_eq!(app.notice.as_deref(), Some("Stopped"));
     }

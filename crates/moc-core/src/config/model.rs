@@ -305,7 +305,7 @@ pub struct ResolvedModel {
     pub cache: CachePolicy,
     /// 默认思维链回传策略。
     pub echo_reasoning: ReasoningEcho,
-    /// Chat/Responses 上游是否接受 prompt_cache_key。
+    /// Chat/Responses 上游是否接受提示_cache_key。
     pub supports_prompt_cache_key: bool,
     /// 工具调用回传 reasoning_content 的上游约束。
     pub requires_reasoning_content_for_tool_calls: bool,
@@ -353,7 +353,7 @@ impl ResolvedProvider {
                 "供应商 {id} 的服务地址必须以 http:// 或 https:// 开头"
             )));
         }
-        // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每个 step 都触发压缩。
+        // 上下文窗口为 0 会使压缩阈值饱和为 0，导致每一轮都触发压缩。
         for (model_id, model) in &document.models {
             if model.context_window == 0 {
                 return Err(CoreError::Config(format!(

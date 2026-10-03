@@ -1,4 +1,4 @@
-//! 持久化提交的计划并结束当前模型轮次。
+//! 持久化提交的计划并结束当前提示。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -23,7 +23,7 @@ impl Tool for SubmitPlanTool {
         "submit_plan"
     }
     fn description(&self) -> &'static str {
-        "提交计划给用户审阅；提交后本轮立即结束，不要继续执行计划。"
+        "提交计划给用户审阅；提交后本次提示立即结束，不要继续执行计划。"
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -93,7 +93,7 @@ impl Tool for SubmitPlanTool {
                 )
                 .await
                 .map_err(|error| ToolError::new("E_UPDATE", error.to_string()))?;
-            Ok(ToolOutcome::end_turn(format!(
+            Ok(ToolOutcome::end_prompt(format!(
                 "计划已提交（{plan_id}）。等待用户批准，不要继续修改任何文件。"
             )))
         })

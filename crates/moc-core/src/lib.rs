@@ -1,4 +1,4 @@
-//! moc-core：会话持久化、工具执行与模型轮次编排。
+//! moc-core：会话持久化、工具执行与提示编排。
 //!
 //! [`moc_protocol`] 是稳定的前端 JSON-RPC 边界；[`moc_llm`] 管理上游协议兼容，
 //! 本 crate 负责会话状态、工具与上下文生命周期。
@@ -10,11 +10,11 @@ mod error;
 pub mod hashline;
 pub mod ids;
 mod paths;
-pub mod prompt;
 pub mod resources;
 pub mod service;
 pub mod session;
 pub mod skills;
+pub mod system_prompt;
 pub mod tools;
 pub mod workspace;
 pub use service::Core;

@@ -33,7 +33,7 @@ pub(crate) async fn compact(
     }
     let mut full_messages = Vec::with_capacity(messages.len() + 1);
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
-    full_messages.push(crate::prompt::system_message(
+    full_messages.push(crate::system_prompt::build(
         config,
         model,
         state.mode,

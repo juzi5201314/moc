@@ -6,7 +6,7 @@ use std::collections::HashMap;
 pub(super) async fn forward_event(
     update: &moc_protocol::UpdateSink,
     session_id: &str,
-    turn_id: &str,
+    prompt_id: &str,
     event: StreamEvent,
     calls: &mut HashMap<usize, String>,
 ) -> Result<(), moc_protocol::ProtocolError> {
@@ -44,7 +44,7 @@ pub(super) async fn forward_event(
             .emit(
                 session_id.to_owned(),
                 SessionUpdate::AssistantDelta {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     delta,
                 },
             )

@@ -1,4 +1,4 @@
-//! 固定上游响应下验证 core 的 JSON-RPC 轮次闭环。
+//! 固定上游响应下验证 core 的 JSON-RPC 提示闭环。
 
 #[path = "support/content.rs"]
 mod content;
@@ -49,7 +49,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
-             [limits]\nmax_steps_per_turn=4\n",
+             [limits]\nmax_turns_per_prompt=4\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -101,11 +101,12 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             input: vec![InputPart::Text {
                 text: "Say hello".into(),
             }],
+            mode: None,
         })
         .await
-        .expect("run model turn");
+        .expect("run model prompt");
 
-    assert_eq!(result.turn_id, "turn_1");
+    assert_eq!(result.prompt_id, "prompt_1");
     assert_eq!(result.message.text(), "Hello from core.");
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
@@ -124,10 +125,10 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
         let finished = updates
             .iter()
             .find_map(|update| match update {
-                SessionUpdate::TurnFinished { message, .. } => Some(message),
+                SessionUpdate::PromptFinished { message, .. } => Some(message),
                 _ => None,
             })
-            .expect("turn_finished update");
+            .expect("prompt_finished update");
         assert_eq!(finished, &result.message);
         assert!(
             updates
@@ -221,7 +222,7 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
-             [limits]\nmax_steps_per_turn=4\n",
+             [limits]\nmax_turns_per_prompt=4\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -272,6 +273,7 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
             input: vec![InputPart::Text {
                 text: "Design the change".into(),
             }],
+            mode: None,
         })
         .await
         .expect("submit plan via model tool call");
@@ -332,6 +334,7 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
             input: vec![InputPart::Text {
                 text: approved.auto_prompt.unwrap(),
             }],
+            mode: None,
         })
         .await
         .expect("start approved implementation");
@@ -457,7 +460,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
-             [limits]\nmax_steps_per_turn=4\n",
+             [limits]\nmax_turns_per_prompt=4\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -508,9 +511,10 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             input: vec![InputPart::Text {
                 text: "Read and update target.txt".into(),
             }],
+            mode: None,
         })
         .await
-        .expect("run read-edit-tool turn");
+        .expect("run read-edit-tool prompt");
 
     assert_eq!(result.message.text(), "Updated target.txt.");
     assert_eq!(
@@ -626,7 +630,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
              [workspace]\nwatch=true\nmax_scan_entries=1000\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
-             [limits]\nmax_steps_per_turn=4\n",
+             [limits]\nmax_turns_per_prompt=4\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -677,9 +681,10 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
             input: vec![InputPart::Text {
                 text: "Inspect without changing files".into(),
             }],
+            mode: None,
         })
         .await
-        .expect("run read-only plan turn");
+        .expect("run read-only plan prompt");
     assert_eq!(result.message.text(), "I will stop.");
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
@@ -735,6 +740,159 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
 }
 
 #[tokio::test]
+async fn transient_prompt_mode_is_read_only_and_not_persisted() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::json;
+
+    // 上游先让我调用 bash 写文件，再收尾：用来观察本次提示是否被按只读模式约束。
+    let first = json!({
+        "id": "chatcmpl-ask-bash",
+        "model": "model",
+        "choices": [{"index": 0, "delta": {
+            "role": "assistant",
+            "tool_calls": [{"index": 0, "id": "call_bash", "type": "function", "function": {
+                "name": "bash",
+                "arguments": "{\"command\":\"printf changed > violation.txt\"}",
+            }}],
+        }, "finish_reason": null}],
+    });
+    let response = format!(
+        "data: {first}\n\ndata: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
+    );
+    let final_response = concat!(
+        "data: {\"id\":\"chatcmpl-ask-done\",\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"I will stop.\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let responses = [response, final_response.to_owned()];
+    let response_index = Arc::new(AtomicUsize::new(0));
+    let response_counter = Arc::clone(&response_index);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = response_counter.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_raw(responses[index].clone(), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+
+    let root = tempfile::tempdir().expect("temporary project root");
+    let home = root.path().join("home");
+    let cwd = root.path().join("workspace");
+    let sessions = root.path().join("sessions");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&cwd).expect("create workspace");
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
+             [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
+             [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
+             [session]\ndir={:?}\n\
+             [workspace]\nwatch=true\nmax_scan_entries=1000\n\
+             [context_files]\nenabled=false\n\
+             [compaction]\nenabled=false\n\
+             [limits]\nmax_turns_per_prompt=4\n",
+            upstream.uri(),
+            sessions.to_string_lossy(),
+        ),
+    )
+    .expect("write config");
+
+    let core = Core::new(CoreConfig {
+        home,
+        cwd: cwd.clone(),
+        overlays: Vec::new(),
+        session_dir: None,
+        client: Client::new(),
+    })
+    .expect("construct core");
+    let (core_side, frontend_side) = transport::duplex(64 * 1024);
+    let server = Server::with_options((*core).clone(), ServerOptions::default());
+    let connection = server.spawn(core_side);
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let update_sink = Arc::clone(&updates);
+    let (client, _) = ClientBuilder::new(ClientInfo {
+        name: "moc-core-ask-once-test".into(),
+        version: "0.1.0".into(),
+        frontend: "test".into(),
+    })
+    .capabilities(ClientCapabilities {
+        permission_requests: true,
+        ask_requests: true,
+    })
+    .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
+        update_sink.lock().push(params.update);
+        std::future::ready(())
+    })
+    .connect(frontend_side)
+    .await
+    .expect("connect embedded protocol client");
+
+    let session = client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("create normal session");
+    let result = client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "看一下有没有遗留文件".into(),
+            }],
+            mode: Some(SessionMode::Ask),
+        })
+        .await
+        .expect("run ask-once prompt");
+    assert_eq!(result.message.text(), "I will stop.");
+
+    // 本次提示按只读约束：写操作被执行但必须被标记为违规，并注入到下一次请求的提醒里。
+    let violation = updates.lock().iter().any(|update| matches!(
+        update,
+        SessionUpdate::WorkspaceChanged { violation: true, changes }
+            if changes.iter().any(|change| change.path == "violation.txt" && change.kind == "added")
+    ));
+    assert!(violation, "提示级问答模式必须按只读判定工作区改动");
+
+    let requests = upstream
+        .received_requests()
+        .await
+        .expect("capture model requests");
+    let first_request: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("first request JSON");
+    let system = content::content_text(&first_request["messages"][0]["content"]);
+    assert!(system.contains("当前是问答模式"), "{system}");
+
+    // 覆盖不落地：既没有 ModeChanged 通知，重载后会话模式仍是 Normal。
+    assert!(
+        !updates
+            .lock()
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ModeChanged { .. })),
+        "提示级覆盖不得广播为会话模式变更"
+    );
+    let loaded = client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id: session.id,
+            max_entries: None,
+        })
+        .await
+        .expect("load session after ask-once prompt");
+    assert_eq!(loaded.session.mode, SessionMode::Normal);
+
+    core.shutdown().await;
+    drop(client);
+    drop(connection);
+    drop(server);
+}
+
+#[tokio::test]
 async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
@@ -766,7 +924,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
              [compaction]\nenabled=false\n\
-             [limits]\nmax_steps_per_turn=4\n",
+             [limits]\nmax_turns_per_prompt=4\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -818,9 +976,10 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
             input: vec![InputPart::Text {
                 text: "Say hello".into(),
             }],
+            mode: None,
         })
         .await
-        .expect("run model turn");
+        .expect("run model prompt");
 
     let fields = updates
         .lock()

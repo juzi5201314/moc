@@ -26,7 +26,7 @@ pub struct Entry {
     /// 块落地时刻（UNIX 毫秒）：用户消息与助手回复据此显示时间戳。
     /// `None` 表示无从得知（如从历史恢复的会话）。
     pub at_ms: Option<u64>,
-    /// 该块所在轮次的耗时（毫秒）：轮次结束时回填到助手块，
+    /// 该块所在提示的耗时（毫秒）：提示结束时回填到助手块，
     /// 渲染为 `Worked for` 尾注。
     pub elapsed_ms: Option<u64>,
 }
@@ -55,8 +55,8 @@ impl Entry {
         self.generation += 1;
     }
 
-    /// 轮次收尾：把结束时刻与耗时回填到助手块（`Worked for` 尾注 + 回复时间）。
-    pub fn stamp_turn(&mut self, at_ms: u64, elapsed_ms: u64) {
+    /// 提示收尾：把结束时刻与耗时回填到助手块（`Worked for` 尾注 + 回复时间）。
+    pub fn stamp_prompt(&mut self, at_ms: u64, elapsed_ms: u64) {
         if !matches!(self.block, Block::Assistant { .. }) {
             return;
         }

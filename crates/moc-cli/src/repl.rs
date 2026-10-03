@@ -253,7 +253,7 @@ async fn run_repl(
     let mut mode = session.mode;
 
     if let Some(prompt) = initial_prompt {
-        match send_prompt(client, &session.id, prompt).await {
+        match send_prompt(client, &session.id, prompt, None).await {
             Ok(result) if args.print => {
                 println!("{}", result.message.text());
                 return Ok(());
@@ -292,7 +292,7 @@ async fn run_repl(
                 Err(error) => eprintln!("命令失败：{error:#}"),
             }
         } else {
-            if let Err(error) = send_prompt(client, &session.id, line.to_owned()).await {
+            if let Err(error) = send_prompt(client, &session.id, line.to_owned(), None).await {
                 eprintln!("请求失败：{error:#}");
             }
         }
@@ -320,9 +320,9 @@ async fn run_command(
             println!(
                 "{}",
                 if result.cancelled {
-                    "轮次取消请求已发送"
+                    "提示取消请求已发送"
                 } else {
-                    "当前没有在飞轮次"
+                    "当前没有进行中的提示"
                 }
             );
         }
@@ -363,7 +363,19 @@ async fn run_command(
                 })
                 .await?;
             *mode = SessionMode::Plan;
-            send_prompt(client, &session.id, argument.to_owned()).await?;
+            send_prompt(client, &session.id, argument.to_owned(), None).await?;
+        }
+        "ask" => {
+            if argument.is_empty() {
+                bail!("用法：/ask <问题>");
+            }
+            send_prompt(
+                client,
+                &session.id,
+                argument.to_owned(),
+                Some(SessionMode::Ask),
+            )
+            .await?;
         }
         "approve" => approve_plan(client, argument, session, mode).await?,
         "compact" => {
@@ -436,7 +448,7 @@ async fn approve_plan(
         println!("\n{markdown}\n");
     }
     if let Some(prompt) = approved.auto_prompt {
-        send_prompt(client, &session.id, prompt).await?;
+        send_prompt(client, &session.id, prompt, None).await?;
     }
     Ok(())
 }
@@ -445,10 +457,12 @@ async fn send_prompt(
     client: &ClientHandle,
     session_id: &str,
     prompt: String,
-) -> anyhow::Result<moc_protocol::methods::TurnResult> {
+    mode: Option<SessionMode>,
+) -> anyhow::Result<moc_protocol::methods::PromptResult> {
     let pending = client.call::<SessionPrompt>(moc_protocol::methods::PromptParams {
         session_id: session_id.to_owned(),
         input: vec![InputPart::Text { text: prompt }],
+        mode,
     });
     tokio::pin!(pending);
     tokio::select! {
@@ -584,10 +598,9 @@ fn rpc_io_error(error: std::io::Error) -> RpcError {
 fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
     match mode {
         "normal" => Ok(SessionMode::Normal),
-        "ask" => Ok(SessionMode::Ask),
         "plan" => Ok(SessionMode::Plan),
         "ptc" => Ok(SessionMode::Ptc),
-        _ => bail!("模式必须是 normal、ask、plan 或 ptc"),
+        _ => bail!("模式必须是 normal、plan 或 ptc；单条消息的问答请用 /ask <问题>"),
     }
 }
 
@@ -602,9 +615,9 @@ fn print_sessions(sessions: &[SessionInfo]) {
 
 fn print_help() {
     println!(
-        "/mode <normal|ask|plan|ptc>  切换工作模式\n/plan <提示词>            切换计划模式并发送提示词\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|plan|ptc>     切换工作模式\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
     );
-    println!("/cancel                  取消当前轮次（运行中按 Ctrl+C）");
+    println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
 }
 
 enum CommandResult {

@@ -231,15 +231,15 @@ fn assistant_message(text: &str, entry: &Entry, width: usize, theme: &Theme) -> 
             .into_iter()
             .map(indent_prose)
             .collect();
-    if let Some(footer) = turn_footer(entry, width, theme) {
+    if let Some(footer) = prompt_footer(entry, width, theme) {
         lines.push(footer);
     }
     lines.push(Line::from(String::new()));
     lines
 }
 
-/// 助手回复尾注：左侧 `耗时`、右侧本地时间；轮次未结束（或耗时未知）时不占行。
-fn turn_footer(entry: &Entry, width: usize, theme: &Theme) -> Option<Line<'static>> {
+/// 助手回复尾注：左侧 `耗时`、右侧本地时间；提示未结束（或耗时未知）时不占行。
+fn prompt_footer(entry: &Entry, width: usize, theme: &Theme) -> Option<Line<'static>> {
     let elapsed = format_duration(entry.elapsed_ms?);
     let clock = entry.at_ms.and_then(format_clock);
     let text = format!("耗时 {elapsed}");

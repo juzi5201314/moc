@@ -130,7 +130,7 @@ fn rank(key: &str) -> usize {
         // 上下文压缩
         "auto" => 1,
         "threshold" => 2,
-        "mid_turn" => 3,
+        "mid_prompt" => 3,
         "auto_continue" => 4,
         "method_order" => 5,
         "keep_recent_tokens" => 6,
@@ -449,7 +449,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "protect_recent_tool_tokens" => {
                 ("保留最近工具结果", "压缩时不清理最近这部分工具结果。")
             }
-            "mid_turn" => ("任务中途压缩", "长任务执行过程中也检查是否需要压缩。"),
+            "mid_prompt" => ("任务中途压缩", "长任务执行过程中也检查是否需要压缩。"),
             "auto" => ("自动压缩", "上下文接近上限时自动压缩；关闭后仍可手动压缩。"),
             "auto_continue" => ("压缩后继续", "自动压缩完成后继续当前任务。"),
             "soft_trim_chars" => (
@@ -458,8 +458,11 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "head_chars" => ("修剪保留开头", "修剪时保留开头的字符数。"),
             "tail_chars" => ("修剪保留结尾", "修剪时保留结尾的字符数。"),
-            "hard_clear_turns" => ("清空旧结果轮数", "超过这么多轮之前的旧工具结果会被清空。"),
-            "keep_last_turns" => ("保护最近轮数", "最近这些轮的工具结果不会被清空。"),
+            "hard_clear_prompts" => (
+                "清空旧结果提示数",
+                "超过这么多次提示之前的旧工具结果会被清空。",
+            ),
+            "keep_last_prompts" => ("保护最近提示数", "最近这些次提示的工具结果不会被清空。"),
             "supersede_reads" => (
                 "丢弃过期的读取",
                 "同一文件被重新读取后，旧的读取内容不再保留。",
@@ -468,7 +471,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "retained_message_tokens" => {
                 ("服务端压缩保留量", "压缩后仍保留的最近对话长度（token）。")
             }
-            "max_steps_per_turn" => ("单轮步骤上限", "一次提问最多连续执行多少步操作。"),
+            "max_turns_per_prompt" => (
+                "单次提示轮数上限",
+                "一次提示最多连续执行多少轮（每轮是一次模型请求加其工具调用）。",
+            ),
             "max_length_continues" => (
                 "中断后继续次数",
                 "回复因长度上限中断后，自动接着生成的次数。",
@@ -483,7 +489,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "watch" => ("工作区变更检测", "检测工具之外的文件改动并报告。"),
             "max_scan_entries" => ("工作区扫描上限", "一次扫描最多检查多少个文件条目。"),
             "url" => ("服务地址", "OpenViking 服务的完整地址。"),
-            "recall" => ("自动召回记忆", "每次提问时自动查找相关的历史记忆。"),
+            "recall" => ("自动召回记忆", "每次提示时自动查找相关的历史记忆。"),
             "capture" => ("自动记录经验", "把对话内容交给 OpenViking 提取记忆。"),
             "skills" => ("远程技能", "从 OpenViking 获取技能；本地同名技能优先。"),
             "peer_scope" => ("召回范围", "只召回当前工作区，或允许跨工作区。"),

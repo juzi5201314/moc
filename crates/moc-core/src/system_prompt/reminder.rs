@@ -12,7 +12,7 @@ pub struct ReminderState {
 }
 
 impl ReminderState {
-    /// 返回本轮待注入的提醒；无新事实则返回 `None`。
+    /// 返回本次提示待注入的提醒；无新事实则返回 `None`。
     pub fn render(
         &mut self,
         now_local: &str,
@@ -46,7 +46,7 @@ impl ReminderState {
                     "你在只读模式下修改了工作区：{paths}。立即停止修改并向用户说明原因。"
                 ));
             } else {
-                messages.push(format!("工作区在本轮外发生了变更：{paths}。"));
+                messages.push(format!("工作区在本次提示之外发生了变更：{paths}。"));
             }
         }
         (!messages.is_empty()).then(|| {

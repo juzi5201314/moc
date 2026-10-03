@@ -79,7 +79,7 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
         return;
     };
     let theme = app.theme;
-    let current = app.session.as_ref().map(|session| session.mode);
+    let current = app.display_mode();
     let selected = menu.selected;
     let label_width = crate::app::MODES
         .iter()
@@ -675,7 +675,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 "↑↓ 选择当前用户消息内的条目 · ←→ 切换用户消息",
                 Style::new().fg(theme.gray_dim),
             ))];
-            if state.loading && state.turns.is_empty() {
+            if state.loading && state.prompts.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "正在加载消息历史…",
                     Style::new().fg(theme.accent_running),
@@ -689,20 +689,20 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     "Enter 重试 · Esc 关闭",
                     Style::new().fg(theme.gray_dim),
                 )));
-            } else if state.turns.is_empty() {
+            } else if state.prompts.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "当前会话没有可回退的消息",
                     Style::new().fg(theme.gray),
                 )));
             } else {
-                let turn = &state.turns[state.selected_turn];
+                let prompt = &state.prompts[state.selected_prompt];
                 lines.push(Line::from(Span::styled(
                     format!(
                         "用户消息 {}/{} · 当前条目 {}/{}",
-                        state.selected_turn + 1,
-                        state.turns.len(),
+                        state.selected_prompt + 1,
+                        state.prompts.len(),
                         state.selected_item + 1,
-                        turn.len()
+                        prompt.len()
                     ),
                     Style::new().fg(theme.accent_model),
                 )));
@@ -710,7 +710,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 let offset = state
                     .selected_item
                     .saturating_sub(visible.saturating_sub(1));
-                for (index, entry) in turn.iter().skip(offset).take(visible).enumerate() {
+                for (index, entry) in prompt.iter().skip(offset).take(visible).enumerate() {
                     let actual = offset + index;
                     let selected = actual == state.selected_item;
                     let marker = if selected { "❯ " } else { "  " };

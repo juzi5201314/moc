@@ -84,7 +84,7 @@ method_order = ["remote", "shake", "soft"]
 threshold = { mode = "percent", value = 85 }
 keep_recent_tokens = 20000
 protect_recent_tool_tokens = 20000
-mid_turn = true
+mid_prompt = true
 auto = true
 auto_continue = true
 
@@ -92,8 +92,8 @@ auto_continue = true
 soft_trim_chars = 4000
 head_chars = 1500
 tail_chars = 1500
-hard_clear_turns = 10
-keep_last_turns = 3
+hard_clear_prompts = 10
+keep_last_prompts = 3
 supersede_reads = true
 
 [compaction.remote]
@@ -139,7 +139,7 @@ artifacts_days = 30
 logs_days = 14
 
 [limits]
-max_steps_per_turn = 128
+max_turns_per_prompt = 128
 max_length_continues = 2
 
 [mcp]

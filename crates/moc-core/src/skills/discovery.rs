@@ -56,7 +56,7 @@ pub fn discover_index(
     if !config.enabled {
         return SkillIndex::empty();
     }
-    let git_root = crate::prompt::context_files::git_root(cwd);
+    let git_root = crate::system_prompt::context_files::git_root(cwd);
     let mut roots: Vec<(u32, PathBuf, String)> = Vec::new();
     for (depth, dir) in project_dirs(cwd, git_root.as_deref())
         .into_iter()

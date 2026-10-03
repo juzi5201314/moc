@@ -419,10 +419,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let y = area.y + area.height - 1;
 
     let model = app.model_display();
-    let mode = app
-        .session
-        .as_ref()
-        .map_or("idle", |session| crate::app::mode_label(session.mode));
+    let mode = app.display_mode().map_or("idle", crate::app::mode_label);
     let right = [
         (model, theme.gray),
         (" | ", theme.border),
@@ -439,7 +436,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         .get("help")
         .and_then(|keys| keys.first())
         .map_or("—", String::as_str);
-    let (left_key, left_tip, left_color) = if app.turn_running {
+    let (left_key, left_tip, left_color) = if app.prompt_running {
         (
             "Esc",
             if app.cancel_requested {
@@ -679,16 +676,15 @@ struct StatuslineData {
     tokens_in: u64,
     tokens_out: u64,
     tok_s: f64,
-    turn_elapsed: Option<std::time::Duration>,
+    prompt_elapsed: Option<std::time::Duration>,
     cost: Option<f64>,
 }
 
 fn statusline_data(app: &App) -> StatuslineData {
-    let mode = app
-        .session
-        .as_ref()
-        .map(|session| crate::app::mode_label(session.mode).to_owned())
-        .unwrap_or_else(|| "idle".into());
+    let mode = app.display_mode().map_or_else(
+        || "idle".into(),
+        |mode| crate::app::mode_label(mode).to_owned(),
+    );
     let context_window = app.context_window().filter(|window| *window > 0);
     let context_used = app.context_used();
     let context_percent = context_window.map(|window| context_used as f64 * 100.0 / window as f64);
@@ -697,8 +693,8 @@ fn statusline_data(app: &App) -> StatuslineData {
         .as_ref()
         .map(|session| short_workdir(&session.cwd))
         .unwrap_or_default();
-    let turn_elapsed = if app.turn_running {
-        app.turn_started_at.map(|at| at.elapsed())
+    let prompt_elapsed = if app.prompt_running {
+        app.prompt_started_at.map(|at| at.elapsed())
     } else {
         None
     };
@@ -718,7 +714,7 @@ fn statusline_data(app: &App) -> StatuslineData {
         tokens_in: app.usage.input_tokens,
         tokens_out: app.usage.output_tokens,
         tok_s: app.tokens_per_second(),
-        turn_elapsed,
+        prompt_elapsed,
         cost,
     }
 }
@@ -779,7 +775,7 @@ struct Activity {
 }
 
 fn activity(app: &App) -> Option<Activity> {
-    if !app.turn_running {
+    if !app.prompt_running {
         return None;
     }
     if app.cancel_requested {
@@ -822,7 +818,7 @@ fn activity(app: &App) -> Option<Activity> {
 
 fn spinner_frame(app: &App) -> &'static str {
     let elapsed_ms = app
-        .turn_started_at
+        .prompt_started_at
         .map_or(0, |started| started.elapsed().as_millis());
     let frame_count = u128::try_from(SPINNER_FRAMES.len()).expect("spinner frame count fits u128");
     let frame = (elapsed_ms / 120) % frame_count;
@@ -846,7 +842,7 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
             activity.label,
             Style::new().fg(activity.color),
         ));
-        if let Some(elapsed) = data.turn_elapsed {
+        if let Some(elapsed) = data.prompt_elapsed {
             spans.push(Span::styled(
                 format!(" · {}s", elapsed.as_secs()),
                 Style::new().fg(theme.gray),
@@ -930,8 +926,8 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "tokens_in" => Some((short_number(data.tokens_in), theme.text_secondary)),
             "tokens_out" => Some((short_number(data.tokens_out), theme.text_secondary)),
             "tok_s" => Some((format!("{:.1} tok/s", data.tok_s), theme.accent_running)),
-            "turn_elapsed" => Some((
-                data.turn_elapsed
+            "prompt_elapsed" => Some((
+                data.prompt_elapsed
                     .map(|elapsed| format!("⏱ {}s", elapsed.as_secs()))
                     .unwrap_or_else(|| "⏱ -".into()),
                 theme.gray,
@@ -1049,7 +1045,7 @@ mod tests {
         app.open_mode_menu();
         assert_eq!(
             app.mode_menu.as_ref().map(|menu| menu.selected),
-            Some(2),
+            Some(1),
             "默认高亮当前模式"
         );
         terminal
@@ -1092,14 +1088,32 @@ mod tests {
                 .fg,
             Theme::global().text_primary
         );
+
+        // 本次提示临时问答：图例改显 `ask`，会话持久模式不变；关闭菜单后即恢复 plan。
+        app.mode_menu = None;
+        app.transient_mode = Some(moc_protocol::SessionMode::Ask);
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert_eq!(row_text(&terminal, app.mode_area), "ask");
+        assert_eq!(
+            app.session.as_ref().map(|session| session.mode),
+            Some(moc_protocol::SessionMode::Plan),
+            "临时覆盖不得改写会话模式"
+        );
+        app.transient_mode = None;
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert_eq!(row_text(&terminal, app.mode_area), "plan");
     }
 
     #[test]
     fn running_statusline_uses_english_activity_labels() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(Theme::global(), events);
-        app.turn_running = true;
-        app.turn_started_at = Some(std::time::Instant::now());
+        app.prompt_running = true;
+        app.prompt_started_at = Some(std::time::Instant::now());
 
         let line = statusline_builtin(&app, 80);
         let rendered = line

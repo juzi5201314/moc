@@ -37,7 +37,7 @@ fn ok_response(protocol: Protocol) -> Value {
         }),
         Protocol::AnthropicMessages => json!({
             "content": [{"type": "text", "text": "ok"}],
-            "stop_reason": "end_turn",
+            "stop_reason": "end_prompt",
         }),
     }
 }

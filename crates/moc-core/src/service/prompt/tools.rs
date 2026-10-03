@@ -1,6 +1,6 @@
 //! 工具批次的有界并发、授权、取消与结果配对。
 
-use super::workspace::check_workspace;
+use super::workspace::{WorkspaceScope, check_workspace};
 use crate::{
     config::{ApprovalMode, ToolApproval},
     error::CoreError,
@@ -31,7 +31,7 @@ pub(super) async fn execute_tool_batch(
 ) -> Result<bool, RpcError> {
     let config = &tool_ctx.config;
     let session_id = tool_ctx.session_id.as_str();
-    let turn_id = tool_ctx.turn_id.as_str();
+    let prompt_id = tool_ctx.prompt_id.as_str();
     let cwd = &tool_ctx.cwd;
     let update = tool_ctx.request.updates();
     let tool_batch_before =
@@ -73,7 +73,7 @@ pub(super) async fn execute_tool_batch(
             .emit(
                 session_id.to_owned(),
                 SessionUpdate::ToolStarted {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     tool_call_id: call.id.clone(),
                     name: call.name.clone(),
                 },
@@ -125,7 +125,7 @@ pub(super) async fn execute_tool_batch(
         }
     }
 
-    let mut end_turn = false;
+    let mut end_prompt = false;
     for (index, call) in calls.iter().enumerate() {
         if !started[index]
             && stop_reason.is_none()
@@ -133,7 +133,7 @@ pub(super) async fn execute_tool_batch(
                 .emit(
                     session_id.to_owned(),
                     SessionUpdate::ToolStarted {
-                        turn_id: turn_id.to_owned(),
+                        prompt_id: prompt_id.to_owned(),
                         tool_call_id: call.id.clone(),
                         name: call.name.clone(),
                     },
@@ -144,7 +144,7 @@ pub(super) async fn execute_tool_batch(
         }
         let (result, duration_ms) = results[index].take().unwrap_or_else(|| {
             let (code, message) = if stop_reason.is_some() {
-                ("E_CANCELLED", "轮次中止，该调用未执行。")
+                ("E_CANCELLED", "提示中止，该调用未执行。")
             } else {
                 ("E_TURN_ENDED", "计划已提交，后续调用未执行。")
             };
@@ -226,7 +226,7 @@ pub(super) async fn execute_tool_batch(
             .emit(
                 session_id.to_owned(),
                 SessionUpdate::ToolFinished {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     tool_call_id: call.id.clone(),
                     status,
                     result: tool_result,
@@ -239,23 +239,26 @@ pub(super) async fn execute_tool_batch(
         {
             stop_reason = Some(protocol_to_rpc(error));
         }
-        end_turn |= outcome.control == ToolControl::EndTurn;
+        end_prompt |= outcome.control == ToolControl::EndTurn;
     }
 
     check_workspace(
         &update,
         runtime,
         record,
-        session_id,
-        cwd,
-        config,
-        tool_batch_before.as_ref(),
+        WorkspaceScope {
+            session_id,
+            cwd,
+            config,
+            mode,
+            before_tools: tool_batch_before.as_ref(),
+        },
     )
     .await?;
     if let Some(error) = stop_reason {
         return Err(error);
     }
-    Ok(end_turn)
+    Ok(end_prompt)
 }
 async fn execute_tool(
     inner: &CoreInner,
@@ -368,7 +371,7 @@ async fn authorize(
     let config = &ctx.config;
     let request = &ctx.request;
     let session_id = ctx.session_id.as_str();
-    let turn_id = ctx.turn_id.as_str();
+    let prompt_id = ctx.prompt_id.as_str();
     let tool_name = tool.name();
     let policy = config.tool_approval.lookup(tool_name);
     if policy == Some(ToolApproval::Deny) {
@@ -405,7 +408,7 @@ async fn authorize(
         .emit(
             session_id.to_owned(),
             SessionUpdate::PermissionRequested {
-                turn_id: turn_id.to_owned(),
+                prompt_id: prompt_id.to_owned(),
                 request_id: request_id.clone(),
                 tool_call_id: tool_call_id.to_owned(),
             },
@@ -439,7 +442,7 @@ async fn authorize(
     let answer = request
         .ask_permission(moc_protocol::methods::PermissionRequestParams {
             session_id: session_id.to_owned(),
-            turn_id: turn_id.to_owned(),
+            prompt_id: prompt_id.to_owned(),
             request_id: request_id.clone(),
             tool_call_id: tool_call_id.to_owned(),
             tool_name: tool_name.to_owned(),
@@ -490,7 +493,7 @@ async fn authorize(
         .emit(
             session_id.to_owned(),
             SessionUpdate::PermissionResolved {
-                turn_id: turn_id.to_owned(),
+                prompt_id: prompt_id.to_owned(),
                 request_id,
                 option_id: selected.clone(),
             },
@@ -543,7 +546,7 @@ pub(super) async fn persist_tool_result(
 }
 
 fn cancelled_outcome() -> ToolOutcome {
-    let mut outcome = ToolOutcome::failure("E_CANCELLED", "轮次被取消，该调用未执行或已终止。");
+    let mut outcome = ToolOutcome::failure("E_CANCELLED", "提示被取消，该调用未执行或已终止。");
     outcome.status = Some(ToolStatus::Cancelled);
     outcome
 }

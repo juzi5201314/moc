@@ -1,7 +1,7 @@
 //! 会话生命周期方法：`session/new` / `list` / `load` / `unload` / `rename` / `delete` / `unlock` / `set_mode` / `compact`。
 //!
 //! 会话状态、持久化与锁的实际持有全在 core；协议层只搬运 [`SessionInfo::lock`] 这类
-//! 投影。锁语义只有一条：**某进程正在该会话里跑一轮 agent 工作时上锁；其它 core
+//! 投影。锁语义只有一条：**某进程正在该会话里跑一次提示 agent 工作时上锁；其它 core
 //! 可读不可写**。
 //!
 //! | 操作 | 被他人持锁时 |
@@ -65,6 +65,11 @@ pub struct SessionUnlock;
 pub enum SessionMode {
     #[default]
     Normal,
+    /// 只读问答模式。
+    ///
+    /// 不作为可持久选择的会话模式暴露给前端：它由 `session/prompt` 的
+    /// [`PromptParams::mode`](super::PromptParams::mode) 按提示注入（`/ask`），
+    /// 或者由旧版本会话的历史记录重放得到。
     Ask,
     Plan,
     Ptc,
@@ -153,7 +158,7 @@ pub struct SessionInfo {
     pub created_at_ms: u64,
     /// 最近一次更新的 UNIX 毫秒时间戳。
     pub updated_at_ms: u64,
-    /// 锁投影；`None` 表示当前没有其它进程在该会话里跑轮次。
+    /// 锁投影；`None` 表示当前没有其它进程在该会话里跑提示。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock: Option<SessionLockInfo>,
 }
@@ -274,7 +279,7 @@ pub enum ToolStatus {
     Error,
     /// 未获授权。
     Denied,
-    /// 轮次被取消。
+    /// 提示被取消。
     Cancelled,
 }
 

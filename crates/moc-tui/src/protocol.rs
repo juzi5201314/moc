@@ -29,7 +29,7 @@ pub enum AppEvent {
         result: anyhow::Result<moc_protocol::ConfigReply>,
     },
     ConfigurationLoaded(moc_protocol::ConfigGetResult),
-    TurnReturned {
+    PromptReturned {
         session: String,
         result: anyhow::Result<()>,
     },

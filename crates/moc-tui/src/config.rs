@@ -56,7 +56,7 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
         ("send", "发送消息", &["enter"]),
         ("queue", "排队发送", &["ctrl+enter"]),
         ("newline", "插入换行", &["shift+enter", "alt+enter"]),
-        ("cancel", "Stop current turn / exit", &["ctrl+c"]),
+        ("cancel", "Stop current prompt / exit", &["ctrl+c"]),
         ("help", "帮助", &["ctrl+h"]),
         ("thinking", "展开／折叠思考", &["ctrl+t"]),
         ("tools", "展开／折叠工具输出", &["ctrl+o"]),
@@ -327,7 +327,7 @@ pub fn fields() -> Vec<ConfigField> {
         (
             "statusline",
             "状态栏模板",
-            "自定义底部状态栏；留空使用默认样式。可用 {model} {mode} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {turn_elapsed} {cost}。",
+            "自定义底部状态栏；留空使用默认样式。可用 {model} {mode} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}。",
             FieldKind::Text,
         ),
     ];

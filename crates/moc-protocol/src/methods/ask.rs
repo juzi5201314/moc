@@ -21,7 +21,7 @@ impl ServerRequest for SessionRequestAsk {}
 #[serde(deny_unknown_fields)]
 pub struct AskParams {
     pub session_id: String,
-    pub turn_id: String,
+    pub prompt_id: String,
     pub request_id: String,
     pub questions: Vec<AskQuestion>,
 }
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(<SessionRequestAsk as Method>::NAME, "session/request_ask");
         let params = AskParams {
             session_id: "ses_1".into(),
-            turn_id: "turn_2".into(),
+            prompt_id: "prompt_2".into(),
             request_id: "ask_3".into(),
             questions: vec![AskQuestion {
                 id: "choice".into(),
@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&params).expect("参数可序列化"),
             serde_json::json!({
-                "session_id": "ses_1", "turn_id": "turn_2", "request_id": "ask_3",
+                "session_id": "ses_1", "prompt_id": "prompt_2", "request_id": "ask_3",
                 "questions": [{
                     "id": "choice", "question": "选哪个？", "header": "方案",
                     "multi": false, "recommended": 1,

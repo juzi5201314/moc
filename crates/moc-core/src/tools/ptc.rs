@@ -1,7 +1,7 @@
 //! PTC 的 QuickJS 子进程与受控 JSON IPC。
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
-use crate::service::turn::tools::execute_nested_tool;
+use crate::service::prompt::tools::execute_nested_tool;
 use futures_util::future::BoxFuture;
 use moc_llm::{ToolCall, ToolDef};
 use moc_protocol::methods::{SessionUpdate, ToolStatus, session::TranscriptChildCall};
@@ -201,7 +201,7 @@ async fn drive_worker(
                         .emit(
                             ctx.session_id.clone(),
                             SessionUpdate::PtcChildStarted {
-                                turn_id: ctx.turn_id.clone(),
+                                prompt_id: ctx.prompt_id.clone(),
                                 parent_tool_call_id: parent_id.clone(),
                                 tool_call_id: call.id.clone(),
                                 name: name.clone(),
@@ -247,7 +247,7 @@ async fn drive_worker(
                         .emit(
                             ctx.session_id.clone(),
                             SessionUpdate::PtcChildFinished {
-                                turn_id: ctx.turn_id.clone(),
+                                prompt_id: ctx.prompt_id.clone(),
                                 parent_tool_call_id: parent_id,
                                 tool_call_id: call.id.clone(),
                                 status,

@@ -43,7 +43,7 @@ impl From<&str> for ToolOutput {
     }
 }
 
-/// 在持久化和发送给模型之前调用；不改变工具错误、图片、diff 或轮次控制。
+/// 在持久化和发送给模型之前调用；不改变工具错误、图片、diff 或提示控制。
 pub(crate) async fn prepare(
     output: ToolOutput,
     config: &OutputConfig,

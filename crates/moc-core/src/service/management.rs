@@ -1,4 +1,4 @@
-//! 配置保存与运行轮次的原子切换，以及安全工具边界的补充消息投递。
+//! 配置保存与运行提示的原子切换，以及安全工具边界的补充消息投递。
 
 use super::CoreInner;
 use crate::{
@@ -23,7 +23,7 @@ pub(super) async fn steer(
     let snapshot = record.state.lock().await.clone();
     let config = inner.project_config(Path::new(&snapshot.session.cwd))?;
     let model = config.resolve_model(&snapshot.model)?;
-    let message = super::turn::request::project_input(
+    let message = super::prompt::request::project_input(
         params.input,
         model.capabilities.image,
         Path::new(&snapshot.session.cwd),
@@ -85,7 +85,7 @@ pub(super) async fn manage(
         } => {
             let cancel = ctx.cancel();
             let _write = inner.config_write.lock().await;
-            // 正在运行的轮次使用同一份配置；保存等待其收尾，不中途撤销 MCP 连接。
+            // 正在运行的提示使用同一份配置；保存等待其收尾，不中途撤销 MCP 连接。
             let _epoch = tokio::select! {
                 _ = cancel.cancelled() => return Err(CoreError::Cancelled),
                 epoch = inner.config_epoch.write() => epoch,

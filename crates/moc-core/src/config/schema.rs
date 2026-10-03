@@ -360,7 +360,7 @@ pub struct CompactionConfig {
     pub threshold: CompactionThreshold,
     pub keep_recent_tokens: u32,
     pub protect_recent_tool_tokens: u32,
-    pub mid_turn: bool,
+    pub mid_prompt: bool,
     /// 阈值自动触发开关；关闭后仅剩手动压缩与 Overflow 恢复，不影响 [`Self::enabled`]。
     pub auto: bool,
     pub auto_continue: bool,
@@ -380,7 +380,7 @@ impl Default for CompactionConfig {
             threshold: CompactionThreshold::default(),
             keep_recent_tokens: 20_000,
             protect_recent_tool_tokens: 20_000,
-            mid_turn: true,
+            mid_prompt: true,
             auto: true,
             auto_continue: true,
             shake: ShakeConfig::default(),
@@ -432,8 +432,8 @@ pub struct ShakeConfig {
     pub soft_trim_chars: usize,
     pub head_chars: usize,
     pub tail_chars: usize,
-    pub hard_clear_turns: usize,
-    pub keep_last_turns: usize,
+    pub hard_clear_prompts: usize,
+    pub keep_last_prompts: usize,
     pub supersede_reads: bool,
 }
 
@@ -443,8 +443,8 @@ impl Default for ShakeConfig {
             soft_trim_chars: 4000,
             head_chars: 1500,
             tail_chars: 1500,
-            hard_clear_turns: 10,
-            keep_last_turns: 3,
+            hard_clear_prompts: 10,
+            keep_last_prompts: 3,
             supersede_reads: true,
         }
     }
@@ -471,14 +471,14 @@ impl Default for RemoteCompactionConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LimitsConfig {
-    pub max_steps_per_turn: usize,
+    pub max_turns_per_prompt: usize,
     pub max_length_continues: usize,
 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
-            max_steps_per_turn: 128,
+            max_turns_per_prompt: 128,
             max_length_continues: 2,
         }
     }

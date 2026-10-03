@@ -133,7 +133,7 @@ impl Tool for AskTool {
             let request_id = crate::ids::entry_id();
             let params = AskParams {
                 session_id: ctx.session_id.clone(),
-                turn_id: ctx.turn_id.clone(),
+                prompt_id: ctx.prompt_id.clone(),
                 request_id,
                 questions: questions.clone(),
             };

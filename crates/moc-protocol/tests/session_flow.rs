@@ -1,4 +1,4 @@
-//! 会话流测试：用 crate 客户端跑完整调用链（握手 → 轮次 → 锁 → 生命周期）。
+//! 会话流测试：用 crate 客户端跑完整调用链（握手 → prompt → 锁 → 生命周期）。
 
 mod support;
 
@@ -144,7 +144,7 @@ async fn request_ask_round_trips_through_frontend_handler() {
     handle
         .call::<SessionPrompt>(prompt_params("ses_1", "选择实现语言"))
         .await
-        .expect("提问往返及轮次成功");
+        .expect("提示往返与成功");
 
     let request = observed
         .lock()
@@ -152,13 +152,13 @@ async fn request_ask_round_trips_through_frontend_handler() {
         .clone()
         .expect("前端收到 ask 请求");
     assert_eq!(request.session_id, "ses_1");
-    assert_eq!(request.turn_id, "turn_1");
+    assert_eq!(request.prompt_id, "prompt_1");
     assert_eq!(request.questions[0].id, "choice");
     assert_eq!(service.state().ask_results[0].answers[0].selected, ["Rust"]);
 }
 
 #[tokio::test]
-async fn turn_streams_updates_and_matches_result() {
+async fn prompt_streams_updates_and_matches_result() {
     let service = ScriptedService::new();
     let log = UpdateLog::default();
     let (_server, _connection, handle, _) =
@@ -167,13 +167,13 @@ async fn turn_streams_updates_and_matches_result() {
     let result = handle
         .call::<SessionPrompt>(prompt_params("ses_1", "看一下 README"))
         .await
-        .expect("prompt 成功");
+        .expect("提示成功");
 
     // 通知按线上顺序原地落地：响应到达时更新序列已经完整
     assert_eq!(
         log.tags(),
         [
-            "turn_started",
+            "prompt_started",
             "assistant_delta",
             "assistant_delta",
             "assistant_delta",
@@ -184,11 +184,11 @@ async fn turn_streams_updates_and_matches_result() {
             "permission_resolved",
             "tool_finished",
             "assistant_delta",
-            "turn_finished",
+            "prompt_finished",
         ]
     );
 
-    // 拿到这次轮次的全部更新后统一检查：先看顺序，再看内容
+    // 拿到这次提示的全部更新后统一检查：先看顺序，再看内容
     let updates = log.take();
 
     // 工具参数增量按 tool_call_id 归组，拼起来就是完整参数
@@ -207,23 +207,23 @@ async fn turn_streams_updates_and_matches_result() {
     let finished = updates
         .iter()
         .find_map(|update| match update {
-            update @ SessionUpdate::TurnFinished { .. } => Some(update.clone()),
+            update @ SessionUpdate::PromptFinished { .. } => Some(update.clone()),
             _ => None,
         })
-        .expect("收到 turn_finished");
+        .expect("收到提示_finished");
     match finished {
-        SessionUpdate::TurnFinished {
+        SessionUpdate::PromptFinished {
             message,
             finish_reason,
             usage,
-            turn_id,
+            prompt_id,
         } => {
             assert_eq!(message, result.message, "通知与响应必须是同一份权威内容");
             assert_eq!(finish_reason, result.finish_reason);
             assert_eq!(usage, result.usage);
-            assert_eq!(turn_id, result.turn_id);
+            assert_eq!(prompt_id, result.prompt_id);
         }
-        other => panic!("期待 turn_finished，收到 {other:?}"),
+        other => panic!("期待提示_finished，收到 {other:?}"),
     }
     assert_eq!(result.finish_reason, FinishReason::ToolCalls);
     assert_eq!(service.state().asks, vec![Ok("allow_once".to_owned())]);
@@ -239,7 +239,7 @@ async fn permission_denied_yields_tool_status_denied() {
     let result = handle
         .call::<SessionPrompt>(prompt_params("ses_1", "跑测试"))
         .await
-        .expect("被拒授权不该让整轮失败");
+        .expect("被拒授权不该让整次提示失败");
 
     let denied = log
         .take()
@@ -261,7 +261,7 @@ async fn cancel_from_second_task_ends_turn_cancelled() {
     let (_server, _connection, handle, _) =
         local_client(service.clone(), builder(UpdateLog::default(), "allow_once")).await;
 
-    // 一条任务在跑轮次，另一条任务发取消：并发调用靠同一条连接的 ID 空间区分
+    // 一条任务在跑提示，另一条任务发取消：并发调用靠同一条连接的 ID 空间区分
     let prompt_handle = handle.clone();
     let prompt = tokio::spawn(async move {
         prompt_handle
@@ -278,11 +278,11 @@ async fn cancel_from_second_task_ends_turn_cancelled() {
         .expect("取消成功");
     assert!(cancelled.cancelled);
 
-    let result = prompt.await.expect("任务正常结束").expect("轮次正常收尾");
+    let result = prompt.await.expect("任务正常结束").expect("提示正常收尾");
     assert_eq!(result.finish_reason, FinishReason::Cancelled);
     assert_eq!(service.state().cancel_seen, 1);
 
-    // 幂等：没有在飞轮次时也是成功，只是什么都没取消
+    // 幂等：没有进行中的提示时也是成功，只是什么都没取消
     let again = handle
         .call::<SessionCancel>(SessionCancelParams {
             session_id: "ses_1".to_owned(),
@@ -320,7 +320,7 @@ async fn same_session_second_prompt_is_busy_and_other_sessions_run_concurrently(
             instructions: None,
         })
         .await
-        .expect_err("活动轮次期间拒绝压缩");
+        .expect_err("活动提示期间拒绝压缩");
     assert_eq!(compact_busy.code(), Some(RpcErrorCode::SessionBusy.code()));
 
     // 另一个会话并发跑
@@ -333,13 +333,13 @@ async fn same_session_second_prompt_is_busy_and_other_sessions_run_concurrently(
     wait_until(|| service.state().running_prompts == 2).await;
     gate.notify_waiters();
 
-    first.await.expect("任务正常结束").expect("第一轮成功");
-    second.await.expect("任务正常结束").expect("第二轮成功");
+    first.await.expect("任务正常结束").expect("第一次提示成功");
+    second.await.expect("任务正常结束").expect("第二次提示成功");
     assert_eq!(service.state().peak_prompts, 2, "两会话确实重叠执行");
 }
 
 #[tokio::test]
-async fn connection_loss_cancels_running_turn() {
+async fn connection_loss_cancels_running_prompt() {
     let service = ScriptedService::new();
     service.prompt_mode(PromptMode::Hang);
     let (_server, _connection, handle, _) =
@@ -353,7 +353,7 @@ async fn connection_loss_cancels_running_turn() {
     });
     wait_until(|| service.state().running_prompts == 1).await;
 
-    // 前端关闭连接：服务端必须被 drop 掉这一轮的 future，而不是留个孤儿任务
+    // 前端关闭连接：服务端必须被 drop 掉这一次提示的 future，而不是留个孤儿任务
     handle.close().await;
     let outcome = prompt.await.expect("任务正常结束");
     assert!(
@@ -431,7 +431,7 @@ async fn unknown_update_type_is_dropped_without_breaking_the_connection() {
         "session/update",
         serde_json::json!({
             "session_id": "ses_1",
-            "update": { "type": "future_thing", "turn_id": "turn_1", "payload": { "x": 1 } }
+            "update": { "type": "future_thing", "prompt_id": "prompt_1", "payload": { "x": 1 } }
         }),
     ))
     .await;
@@ -517,9 +517,9 @@ async fn session_lock_blocks_writes_but_allows_reads() {
             .expect_err("被锁时禁止删除")
             .code(),
         handle
-            .call::<SessionPrompt>(prompt_params("ses_1", "跑一轮"))
+            .call::<SessionPrompt>(prompt_params("ses_1", "跑一次提示"))
             .await
-            .expect_err("被锁时禁止跑轮次")
+            .expect_err("被锁时禁止跑提示")
             .code(),
     ] {
         assert_eq!(error, Some(RpcErrorCode::SessionLocked.code()));
@@ -566,11 +566,11 @@ async fn session_lock_blocks_writes_but_allows_reads() {
         log.tags()
     );
 
-    // 解锁后写操作恢复：被拒的那一轮没有留下轮次占位
+    // 解锁后写操作恢复：被拒的那次提示没有留下占位
     handle
         .call::<SessionPrompt>(prompt_params("ses_1", "现在可以跑了"))
         .await
-        .expect("解锁后可以跑轮次");
+        .expect("解锁后可以跑提示");
 }
 
 #[tokio::test]

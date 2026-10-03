@@ -1,4 +1,4 @@
-//! 将异步管理操作的回执投影到 UI；队列以 RPC 收尾而非 TurnFinished 通知为边界。
+//! 将异步管理操作的回执投影到 UI；队列以 RPC 收尾而非 PromptFinished 通知为边界。
 
 use crate::{
     app::App,
@@ -42,16 +42,16 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 });
             }
         }
-        AppEvent::TurnReturned { session, result } => {
-            app.inflight_turns.remove(&session);
+        AppEvent::PromptReturned { session, result } => {
+            app.inflight_prompts.remove(&session);
             let interrupted = app.interrupt_pending.remove(&session);
             if app
                 .session
                 .as_ref()
                 .is_some_and(|current| current.id == session)
             {
-                if app.turn_running {
-                    app.finish_turn();
+                if app.prompt_running {
+                    app.finish_prompt();
                 }
                 match result {
                     Ok(()) => crate::queue::dispatch(app, connection),
@@ -79,7 +79,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     }
                 }
                 Ok(false) => {
-                    // UI 发送与轮次关闭相遇：消息没有进入当前轮次，转为下一条正常请求。
+                    // UI 发送与提示关闭相遇：消息没有进入当前提示，转为下一条正常请求。
                     app.queues.entry(session).or_default().push_front(prompt);
                     crate::queue::dispatch(app, connection);
                 }

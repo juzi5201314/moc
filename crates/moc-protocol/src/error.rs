@@ -110,7 +110,7 @@ pub enum RpcErrorCode {
     UnsupportedProtocolVersion,
     /// `-32010`：会话不存在。
     SessionNotFound,
-    /// `-32011`：同一会话已有进行中的轮次。
+    /// `-32011`：同一会话已有进行中的提示。
     SessionBusy,
     /// `-32014`：服务端不支持该操作。
     NotSupported,
@@ -172,7 +172,7 @@ impl RpcErrorCode {
             Self::ServerNotInitialized => "连接尚未完成 initialize",
             Self::UnsupportedProtocolVersion => "协议主版本不兼容",
             Self::SessionNotFound => "会话不存在",
-            Self::SessionBusy => "该会话已有进行中的轮次",
+            Self::SessionBusy => "该会话已有进行中的提示",
             Self::NotSupported => "服务端不支持该操作",
             Self::SessionLocked => "会话被其它进程锁定，只读",
         }
@@ -282,7 +282,7 @@ pub enum RpcCallError {
     /// 对端回了 `error` 对象（含 `-32601` 这类可预期拒绝）。
     #[error(transparent)]
     Rpc(#[from] RpcError),
-    /// 请求被取消：反向请求在轮次取消或连接关闭时触发。
+    /// 请求被取消：反向请求在提示取消或连接关闭时触发。
     #[error("请求已被取消")]
     Cancelled,
     /// 连接已死，请求未送达或结果丢失。

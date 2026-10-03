@@ -1,4 +1,4 @@
-//! `session/update` 通知：core 单向推送轮次过程。
+//! `session/update` 通知：core 单向推送提示过程。
 //!
 //! 通知**不透传** `moc_llm::StreamEvent`：那是供应商细节（内容块序号、签名、
 //! 上游响应 ID），前端既无法渲染也不需要。core 负责把它投影成 UI 友好的
@@ -9,18 +9,18 @@
 //!
 //! | `moc_llm::StreamEvent` | 动作 |
 //! |---|---|
-//! | `Start { id, model, effort }` | 丢弃（`model` 已由 `turn_started` 给出，上游 `id` 前端不需要）。`model` / `effort` 被累加进完整响应，core 在响应结束后与请求值比对，不一致时另发 `upstream_mismatch` |
+//! | `Start { id, model, effort }` | 丢弃（`model` 已由 `prompt_started` 给出，上游 `id` 前端不需要）。`model` / `effort` 被累加进完整响应，core 在响应结束后与请求值比对，不一致时另发 `upstream_mismatch` |
 //! | `TextDelta { index, text }` | `Text { delta: text }` |
 //! | `ReasoningDelta { index, text }` | `Reasoning { delta: text }` |
-//! | `ReasoningSignature { index, signature }` | 丢弃（不透明，前端无法渲染；完整内容随 `turn_finished.message` 给出） |
+//! | `ReasoningSignature { index, signature }` | 丢弃（不透明，前端无法渲染；完整内容随 `prompt_finished.message` 给出） |
 //! | `ReasoningItem { index, item }` | 丢弃（同上） |
 //! | `ToolCallStart { index, id, name }` | `ToolCallStarted { tool_call_id: id, name }`，并记录 `index → id` |
 //! | `ToolCallArgumentsDelta { index, json }` | `ToolCallArgs { tool_call_id: index 映射到的 id, delta: json }`；查不到映射说明对端违约，丢弃并 `warn` |
 //! | `Usage(usage)` | `Usage { usage }` |
 //!
-//! `index` 是同一响应内内容块的位置，只在一次流内有效，因此映射表随轮次销毁。
+//! `index` 是同一响应内内容块的位置，只在一次流内有效，因此映射表随提示销毁。
 //! 若上游先发参数后发名字（无法建立映射），core 应丢弃该次参数增量并 `warn`，
-//! 而不是改协议形状——完整参数随 `turn_finished.message` 一并给出。
+//! 而不是改协议形状——完整参数随 `prompt_finished.message` 一并给出。
 //!
 //! # 兼容规则
 //!
@@ -62,10 +62,10 @@ pub struct SessionUpdateParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
-    /// 轮次开始。
-    TurnStarted {
-        /// 轮次 ID。
-        turn_id: String,
+    /// 提示开始。
+    PromptStarted {
+        /// prompt ID。
+        prompt_id: String,
         /// 实际使用的模型 ID。
         model: String,
         /// 开始时间的 UNIX 毫秒时间戳。
@@ -73,15 +73,15 @@ pub enum SessionUpdate {
     },
     /// assistant 增量。
     AssistantDelta {
-        /// 轮次 ID。
-        turn_id: String,
+        /// prompt ID。
+        prompt_id: String,
         /// 增量内容。
         delta: AssistantDelta,
     },
     /// 一次工具调用开始执行。
     ToolStarted {
-        /// 轮次 ID。
-        turn_id: String,
+        /// prompt ID。
+        prompt_id: String,
         /// 调用 ID，与后续 [`SessionUpdate::ToolFinished`] 配对。
         tool_call_id: String,
         /// 工具名。
@@ -89,8 +89,8 @@ pub enum SessionUpdate {
     },
     /// 一次工具调用结束。
     ToolFinished {
-        /// 轮次 ID。
-        turn_id: String,
+        /// prompt ID。
+        prompt_id: String,
         /// 调用 ID。
         tool_call_id: String,
         /// 终态。
@@ -107,14 +107,14 @@ pub enum SessionUpdate {
     },
     /// PTC JavaScript 发起的嵌套工具开始事件。
     PtcChildStarted {
-        turn_id: String,
+        prompt_id: String,
         parent_tool_call_id: String,
         tool_call_id: String,
         name: String,
     },
     /// PTC JavaScript 发起的嵌套工具结束事件。
     PtcChildFinished {
-        turn_id: String,
+        prompt_id: String,
         parent_tool_call_id: String,
         tool_call_id: String,
         status: ToolStatus,
@@ -129,8 +129,8 @@ pub enum SessionUpdate {
     /// 这两条镜像更新由 **core** 负责发：`ask_permission` 只发反向请求，
     /// 不隐式发通知，好让 transcript 里能内联渲染「等待授权」状态。
     PermissionRequested {
-        /// 轮次 ID。
-        turn_id: String,
+        /// prompt ID。
+        prompt_id: String,
         /// 授权请求 ID。
         request_id: String,
         /// 相关调用 ID。
@@ -138,17 +138,17 @@ pub enum SessionUpdate {
     },
     /// 授权询问结束。
     PermissionResolved {
-        /// 轮次 ID。
-        turn_id: String,
+        /// prompt ID。
+        prompt_id: String,
         /// 授权请求 ID。
         request_id: String,
         /// 前端选中的选项；`None` 表示前端没给选择（未注册处理器、选项非法、连接中断），core 按拒绝处理。
         option_id: Option<String>,
     },
-    /// 轮次结束；`message` 与 `session/prompt` 响应的 [`super::turn::TurnResult::message`] 相同。
-    TurnFinished {
-        /// 轮次 ID。
-        turn_id: String,
+    /// 提示结束；`message` 与 `session/prompt` 响应的 [`super::prompt::PromptResult::message`] 相同。
+    PromptFinished {
+        /// prompt ID。
+        prompt_id: String,
         /// 权威 assistant 消息。
         message: Message,
         /// 结束原因。
@@ -203,14 +203,14 @@ pub enum SessionUpdate {
     /// core 比对一次，只在不一致时推送。前端应把它渲染成醒目的告警，并在重复
     /// 出现时替换而非堆叠。
     UpstreamMismatch {
-        /// 轮次 ID。
-        turn_id: String,
+        /// prompt ID。
+        prompt_id: String,
         /// 每一处不一致；至少一项（空列表没有任何意义，core 不会发送）。
         fields: Vec<UpstreamFieldMismatch>,
     },
-    /// 轮次内不可恢复错误。
+    /// 提示内不可恢复错误。
     Error {
-        turn_id: String,
+        prompt_id: String,
         message: String,
         retryable: bool,
     },
@@ -281,21 +281,25 @@ pub enum AssistantDelta {
     },
 }
 
-/// `session/prompt` 的轮次结束通知与响应共用的构造。
+/// `session/prompt` 的提示结束通知与响应共用的构造。
 impl SessionUpdate {
-    /// 轮次开始。
-    pub fn turn_started(turn_id: impl Into<String>, model: impl Into<String>, at_ms: u64) -> Self {
-        Self::TurnStarted {
-            turn_id: turn_id.into(),
+    /// 提示开始。
+    pub fn prompt_started(
+        prompt_id: impl Into<String>,
+        model: impl Into<String>,
+        at_ms: u64,
+    ) -> Self {
+        Self::PromptStarted {
+            prompt_id: prompt_id.into(),
             model: model.into(),
             at_ms,
         }
     }
 
     /// assistant 增量。
-    pub fn delta(turn_id: impl Into<String>, delta: AssistantDelta) -> Self {
+    pub fn delta(prompt_id: impl Into<String>, delta: AssistantDelta) -> Self {
         Self::AssistantDelta {
-            turn_id: turn_id.into(),
+            prompt_id: prompt_id.into(),
             delta,
         }
     }
@@ -321,7 +325,7 @@ mod tests {
         let params = SessionUpdateParams {
             session_id: "ses_7f3a".into(),
             update: SessionUpdate::delta(
-                "turn_1",
+                "prompt_1",
                 AssistantDelta::Text {
                     delta: "好的".into(),
                 },
@@ -333,7 +337,7 @@ mod tests {
                 "session_id": "ses_7f3a",
                 "update": {
                     "type": "assistant_delta",
-                    "turn_id": "turn_1",
+                    "prompt_id": "prompt_1",
                     "delta": { "type": "text", "delta": "好的" }
                 }
             })
@@ -344,53 +348,53 @@ mod tests {
     fn every_variant_shape() {
         let cases = [
             (
-                SessionUpdate::turn_started("turn_1", "deepseek-flash", 1_724_000_000_000),
-                json!({ "type": "turn_started", "turn_id": "turn_1", "model": "deepseek-flash", "at_ms": 1_724_000_000_000u64 }),
+                SessionUpdate::prompt_started("prompt_1", "deepseek-flash", 1_724_000_000_000),
+                json!({ "type": "prompt_started", "prompt_id": "prompt_1", "model": "deepseek-flash", "at_ms": 1_724_000_000_000u64 }),
             ),
             (
                 SessionUpdate::delta(
-                    "turn_1",
+                    "prompt_1",
                     AssistantDelta::Reasoning {
                         delta: "想".into()
                     },
                 ),
-                json!({ "type": "assistant_delta", "turn_id": "turn_1", "delta": { "type": "reasoning", "delta": "想" } }),
+                json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "reasoning", "delta": "想" } }),
             ),
             (
                 SessionUpdate::delta(
-                    "turn_1",
+                    "prompt_1",
                     AssistantDelta::ToolCallStarted {
                         tool_call_id: "call_9".into(),
                         name: "bash".into(),
                     },
                 ),
-                json!({ "type": "assistant_delta", "turn_id": "turn_1", "delta": { "type": "tool_call_started", "tool_call_id": "call_9", "name": "bash" } }),
+                json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "tool_call_started", "tool_call_id": "call_9", "name": "bash" } }),
             ),
             (
                 SessionUpdate::delta(
-                    "turn_1",
+                    "prompt_1",
                     AssistantDelta::ToolCallArgs {
                         tool_call_id: "call_9".into(),
                         delta: "{\"cmd\":".into(),
                     },
                 ),
-                json!({ "type": "assistant_delta", "turn_id": "turn_1", "delta": { "type": "tool_call_args", "tool_call_id": "call_9", "delta": "{\"cmd\":" } }),
+                json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "tool_call_args", "tool_call_id": "call_9", "delta": "{\"cmd\":" } }),
             ),
             (
-                SessionUpdate::delta("turn_1", AssistantDelta::Usage { usage: usage() }),
-                json!({ "type": "assistant_delta", "turn_id": "turn_1", "delta": { "type": "usage", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": null, "cached_input_tokens": null, "cache_creation_input_tokens": null, "reasoning_tokens": null } } }),
+                SessionUpdate::delta("prompt_1", AssistantDelta::Usage { usage: usage() }),
+                json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "usage", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": null, "cached_input_tokens": null, "cache_creation_input_tokens": null, "reasoning_tokens": null } } }),
             ),
             (
                 SessionUpdate::ToolStarted {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     name: "bash".into(),
                 },
-                json!({ "type": "tool_started", "turn_id": "turn_1", "tool_call_id": "call_9", "name": "bash" }),
+                json!({ "type": "tool_started", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "bash" }),
             ),
             (
                 SessionUpdate::ToolFinished {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     status: ToolStatus::Denied,
                     result: ToolResult {
@@ -402,11 +406,11 @@ mod tests {
                     duration_ms: None,
                     diff: None,
                 },
-                json!({ "type": "tool_finished", "turn_id": "turn_1", "tool_call_id": "call_9", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
+                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
             ),
             (
                 SessionUpdate::ToolFinished {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     status: ToolStatus::Completed,
                     result: ToolResult {
@@ -433,27 +437,27 @@ mod tests {
                         truncated: false,
                     }),
                 },
-                json!({ "type": "tool_finished", "turn_id": "turn_1", "tool_call_id": "call_9", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
+                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
             ),
             (
                 SessionUpdate::PermissionRequested {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     request_id: "perm_1".into(),
                     tool_call_id: "call_9".into(),
                 },
-                json!({ "type": "permission_requested", "turn_id": "turn_1", "request_id": "perm_1", "tool_call_id": "call_9" }),
+                json!({ "type": "permission_requested", "prompt_id": "prompt_1", "request_id": "perm_1", "tool_call_id": "call_9" }),
             ),
             (
                 SessionUpdate::PermissionResolved {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     request_id: "perm_1".into(),
                     option_id: None,
                 },
-                json!({ "type": "permission_resolved", "turn_id": "turn_1", "request_id": "perm_1", "option_id": null }),
+                json!({ "type": "permission_resolved", "prompt_id": "prompt_1", "request_id": "perm_1", "option_id": null }),
             ),
             (
-                SessionUpdate::TurnFinished {
-                    turn_id: "turn_1".into(),
+                SessionUpdate::PromptFinished {
+                    prompt_id: "prompt_1".into(),
                     message: Message {
                         role: Role::Assistant,
                         content: vec![ContentPart::Text("好的".into())],
@@ -461,7 +465,7 @@ mod tests {
                     finish_reason: FinishReason::Stop,
                     usage: usage(),
                 },
-                json!({ "type": "turn_finished", "turn_id": "turn_1", "message": { "role": "Assistant", "content": [{ "Text": "好的" }] }, "finish_reason": "Stop", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": null, "cached_input_tokens": null, "cache_creation_input_tokens": null, "reasoning_tokens": null } }),
+                json!({ "type": "prompt_finished", "prompt_id": "prompt_1", "message": { "role": "Assistant", "content": [{ "Text": "好的" }] }, "finish_reason": "Stop", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": null, "cached_input_tokens": null, "cache_creation_input_tokens": null, "reasoning_tokens": null } }),
             ),
             (
                 SessionUpdate::TitleChanged {
@@ -550,7 +554,7 @@ mod tests {
             ),
             (
                 SessionUpdate::UpstreamMismatch {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     fields: vec![
                         UpstreamFieldMismatch {
                             field: UpstreamField::Model,
@@ -564,18 +568,18 @@ mod tests {
                         },
                     ],
                 },
-                json!({ "type": "upstream_mismatch", "turn_id": "turn_1", "fields": [
+                json!({ "type": "upstream_mismatch", "prompt_id": "prompt_1", "fields": [
                     { "field": "model", "requested": "glm-5.3", "reported": "glm-5.3-air" },
                     { "field": "effort", "requested": "max", "reported": "high" },
                 ] }),
             ),
             (
                 SessionUpdate::Error {
-                    turn_id: "turn_1".into(),
+                    prompt_id: "prompt_1".into(),
                     message: "失败".into(),
                     retryable: false,
                 },
-                json!({ "type": "error", "turn_id": "turn_1", "message": "失败", "retryable": false }),
+                json!({ "type": "error", "prompt_id": "prompt_1", "message": "失败", "retryable": false }),
             ),
         ];
         for (update, expected) in cases {

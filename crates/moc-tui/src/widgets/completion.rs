@@ -35,7 +35,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/mode",
-        description: "切换会话模式：标准／问答／计划／PTC",
+        description: "切换会话模式：标准／计划／PTC",
+    },
+    SlashCommand {
+        name: "/ask",
+        description: "本条消息按问答模式处理（只读）",
     },
     SlashCommand {
         name: "/memories",

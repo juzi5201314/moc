@@ -101,8 +101,8 @@ pub(crate) async fn compact(
         .saturating_sub(role_model.max_output_tokens as u64)
         .saturating_sub(fixed_summary_tokens)
         .saturating_sub(prompt_tokens);
-    let (selected_history, omitted_turns) = fit_summary_history(&summary_history, input_budget);
-    let prompt = summary_prompt(state, instructions, omitted_turns);
+    let (selected_history, omitted_prompts) = fit_summary_history(&summary_history, input_budget);
+    let prompt = summary_prompt(state, instructions, omitted_prompts);
     let messages = if same_model {
         let mut messages = Vec::with_capacity(selected_history.len() + 2);
         messages.push(system.clone());
@@ -116,7 +116,7 @@ pub(crate) async fn compact(
         ]
     };
     let mut request = if same_model {
-        crate::service::turn::request::build_request(
+        crate::service::prompt::request::build_request(
             &role_model,
             config,
             messages,
@@ -179,17 +179,17 @@ fn fit_summary_history(history: &[Message], budget: u64) -> (Vec<Message>, usize
     let mut start = end;
     let mut remaining = budget;
     while end > 0 {
-        let turn_start = history[..end]
+        let prompt_start = history[..end]
             .iter()
             .rposition(|message| message.role == moc_llm::Role::User)
             .unwrap_or(0);
-        let cost = messages_tokens(&history[turn_start..end]);
+        let cost = messages_tokens(&history[prompt_start..end]);
         if start != history.len() && cost > remaining {
             break;
         }
-        start = turn_start;
+        start = prompt_start;
         remaining = remaining.saturating_sub(cost);
-        end = turn_start;
+        end = prompt_start;
     }
     if start == history.len() {
         let message = history
@@ -203,22 +203,22 @@ fn fit_summary_history(history: &[Message], budget: u64) -> (Vec<Message>, usize
         let excerpt: String = serialized.chars().take(max_chars).collect();
         return (
             vec![Message::user_text(format!(
-                "<oversized-turn>\n{excerpt}\n</oversized-turn>"
+                "<oversized-prompt>\n{excerpt}\n</oversized-prompt>"
             ))],
             1,
         );
     }
-    let omitted_turns = history[..start]
+    let omitted_prompts = history[..start]
         .iter()
         .filter(|message| message.role == moc_llm::Role::User)
         .count();
-    (history[start..].to_vec(), omitted_turns)
+    (history[start..].to_vec(), omitted_prompts)
 }
 
 fn summary_prompt(
     state: &SessionState,
     instructions: Option<&str>,
-    omitted_turns: usize,
+    omitted_prompts: usize,
 ) -> String {
     let mut prompt = String::with_capacity(SUMMARY_SYSTEM.len() + SUMMARY_SECTIONS.len() + 64);
     prompt.push_str(SUMMARY_SYSTEM);
@@ -239,9 +239,9 @@ fn summary_prompt(
         prompt.push_str(&plan.markdown);
         prompt.push_str("\n</pending-plan>\n\n");
     }
-    if omitted_turns > 0 {
+    if omitted_prompts > 0 {
         prompt.push_str(&format!(
-            "<older-history-omitted>已省略 {omitted_turns} 个更早完整轮次；必要时通过历史资源回读。</older-history-omitted>\n"
+            "<older-history-omitted>已省略 {omitted_prompts} 个更早完整提示；必要时通过历史资源回读。</older-history-omitted>\n"
         ));
     }
     if let Some(instructions) = instructions {

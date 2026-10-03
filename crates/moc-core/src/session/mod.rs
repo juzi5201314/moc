@@ -1,4 +1,4 @@
-//! 会话表、追加式 transcript 与每会话轮次互斥。
+//! 会话表、追加式 transcript 与每会话提示互斥。
 
 pub mod entries;
 pub mod lock;
@@ -42,7 +42,7 @@ impl TranscriptEntryId {
 /// 一份加载中的会话。
 pub struct SessionRecord {
     pub state: Arc<Mutex<SessionState>>,
-    pub turn_lock: Arc<Mutex<()>>,
+    pub prompt_lock: Arc<Mutex<()>>,
     append_lock: Mutex<()>,
     active: AtomicBool,
     pub paths: SessionPaths,
@@ -52,10 +52,10 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
-    pub fn try_turn_lock(&self) -> Result<OwnedMutexGuard<()>, CoreError> {
-        let guard = Arc::clone(&self.turn_lock)
+    pub fn try_prompt_lock(&self) -> Result<OwnedMutexGuard<()>, CoreError> {
+        let guard = Arc::clone(&self.prompt_lock)
             .try_lock_owned()
-            .map_err(|_| CoreError::Session("SESSION_BUSY: 会话已有在飞轮次".into()))?;
+            .map_err(|_| CoreError::Session("SESSION_BUSY: 会话已有进行中的提示".into()))?;
         if !self.active.load(Ordering::Acquire) {
             return Err(CoreError::Session(
                 "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
@@ -113,7 +113,7 @@ impl SessionTable {
             session_id,
             Arc::new(SessionRecord {
                 state: Arc::new(Mutex::new(state)),
-                turn_lock: Arc::new(Mutex::new(())),
+                prompt_lock: Arc::new(Mutex::new(())),
                 append_lock: Mutex::new(()),
                 active: AtomicBool::new(true),
                 file: Mutex::new(None),
@@ -152,7 +152,7 @@ impl SessionTable {
             .ok_or_else(|| CoreError::Session("transcript 缺少会话头部".into()))?;
         let record = Arc::new(SessionRecord {
             state: Arc::new(Mutex::new(state)),
-            turn_lock: Arc::new(Mutex::new(())),
+            prompt_lock: Arc::new(Mutex::new(())),
             append_lock: Mutex::new(()),
             active: AtomicBool::new(true),
             file: Mutex::new(Some(file)),
@@ -475,12 +475,12 @@ impl SessionTable {
     /// 从内存表卸载会话，不删除 JSONL 或 sidecar。
     pub async fn unload(&self, session_id: &str) -> Result<(), CoreError> {
         let record = self.get(session_id).await?;
-        let _turn = record.try_turn_lock()?;
+        let _prompt = record.try_prompt_lock()?;
         self.unload_locked(session_id, &record);
         Ok(())
     }
 
-    /// 调用者必须持有该 record 的 turn_lock，防止已取得句柄的请求继续写入。
+    /// 调用者必须持有该 record 的提示_lock，防止已取得句柄的请求继续写入。
     pub(crate) fn unload_locked(&self, session_id: &str, record: &SessionRecord) {
         record.active.store(false, Ordering::Release);
         self.records.write().remove(session_id);
@@ -488,7 +488,7 @@ impl SessionTable {
 
     pub async fn delete(&self, session_id: &str) -> Result<(), CoreError> {
         let record = self.get(session_id).await?;
-        let _turn = record.try_turn_lock()?;
+        let _prompt = record.try_prompt_lock()?;
         let _file_lock = self.acquire_lock(session_id, "moc-core").await?;
         self.delete_locked(session_id, &record).await
     }
@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_and_file_locks_reject_parallel_writers() {
+    async fn prompt_and_file_locks_reject_parallel_writers() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
@@ -645,8 +645,8 @@ mod tests {
             .await
             .expect("追加消息");
         let record = table.get(&info.id).await.expect("取会话");
-        let _turn = record.try_turn_lock().expect("取得轮次锁");
-        assert!(record.try_turn_lock().is_err());
+        let _prompt = record.try_prompt_lock().expect("取得提示锁");
+        assert!(record.try_prompt_lock().is_err());
         let guard = table
             .acquire_lock(&info.id, "tui")
             .await

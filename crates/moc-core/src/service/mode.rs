@@ -21,7 +21,7 @@ pub async fn approve_plan(
         .get(&params.session_id)
         .await
         .map_err(to_rpc)?;
-    let _turn = record.try_turn_lock().map_err(to_rpc)?;
+    let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
     let _file_lock = inner
         .sessions
         .acquire_lock(&params.session_id, &ctx.client().frontend)

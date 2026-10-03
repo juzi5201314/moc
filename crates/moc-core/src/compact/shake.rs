@@ -80,7 +80,7 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
         })
         .collect();
     let mut seen_reads = HashSet::new();
-    let mut turns_ago = 0usize;
+    let mut prompts_ago = 0usize;
     let mut protected_tokens = 0u64;
     let mut changed = false;
     for entry in entries.iter_mut().rev() {
@@ -88,13 +88,13 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
             continue;
         };
         if message.role == Role::User {
-            turns_ago += 1;
+            prompts_ago += 1;
         }
         if message.role != Role::Tool {
             continue;
         }
         let cost = messages_tokens(std::slice::from_ref(message));
-        let protected = turns_ago < config.shake.keep_last_turns
+        let protected = prompts_ago < config.shake.keep_last_prompts
             || protected_tokens < config.protect_recent_tool_tokens as u64;
         protected_tokens = protected_tokens.saturating_add(cost);
         for part in &mut message.content {
@@ -109,7 +109,7 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
             }
             let replacement = if config.shake.supersede_reads && superseded {
                 Some("[已被后续读取取代]".to_owned())
-            } else if turns_ago >= config.shake.hard_clear_turns {
+            } else if prompts_ago >= config.shake.hard_clear_prompts {
                 Some("[工具输出已修剪]".to_owned())
             } else if result.content.chars().count() > config.shake.soft_trim_chars {
                 Some(match artifact_path(&result.content) {

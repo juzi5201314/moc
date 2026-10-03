@@ -224,7 +224,7 @@ impl ClientBuilder {
     }
 }
 
-/// 客户端句柄：`Clone + Send + Sync`，可跨任务共享（TUI 一边跑轮次一边接取消键）。
+/// 客户端句柄：`Clone + Send + Sync`，可跨任务共享（TUI 一边跑提示一边接取消键）。
 #[derive(Clone)]
 pub struct ClientHandle {
     inner: Arc<ClientInner>,
@@ -248,7 +248,7 @@ impl Drop for ClientInner {
 impl ClientHandle {
     /// 发起一次调用。
     ///
-    /// 多个任务可以并发调用（TUI 的「跑轮次」与「取消」就是两条并发调用）；
+    /// 多个任务可以并发调用（TUI 的「跑提示」与「取消」就是两条并发调用）；
     /// 连接死亡时在飞调用统一收到 [`RpcCallError::Closed`]。
     pub async fn call<M: ClientRequest>(
         &self,

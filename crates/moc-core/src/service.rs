@@ -10,12 +10,12 @@ use moc_protocol::methods::{
     ContextUsageResult, ContextUsageSection, Empty, InitializeParams, InitializeResult, ModelInfo,
     OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
-    ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
+    PromptResult, ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionMode,
     SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
     SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, TurnResult,
+    SessionUnlockParams, SessionUpdate,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -35,7 +35,7 @@ pub(crate) struct SessionRuntime {
     pub anchors: Arc<crate::hashline::AnchorStore>,
     pub jobs: Arc<JobManager>,
     pub workspace: Mutex<Option<WorkspaceSnapshot>>,
-    pub reminders: tokio::sync::Mutex<crate::prompt::reminder::ReminderState>,
+    pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
     pub permissions: RwLock<HashMap<String, bool>>,
     /// 本会话已加载的 skill 名；`skill` 工具据此去重。
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
@@ -48,7 +48,9 @@ impl SessionRuntime {
             anchors: Arc::new(crate::hashline::AnchorStore::new()),
             jobs: Arc::new(JobManager::with_slots(slots)),
             workspace: Mutex::new(None),
-            reminders: tokio::sync::Mutex::new(crate::prompt::reminder::ReminderState::default()),
+            reminders: tokio::sync::Mutex::new(
+                crate::system_prompt::reminder::ReminderState::default(),
+            ),
             permissions: RwLock::new(HashMap::new()),
             loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
             steering: Mutex::new(management::Steering::default()),
@@ -76,7 +78,7 @@ pub(crate) struct CoreInner {
     pub openviking_clients: Mutex<HashMap<PathBuf, Option<Arc<moc_openviking::OpenVikingClient>>>>,
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
-    pub turns: Mutex<tokio::task::JoinSet<()>>,
+    pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
 }
 
@@ -251,19 +253,19 @@ impl Core {
                 openviking_clients: Mutex::new(HashMap::new()),
                 skill_indexes: RwLock::new(HashMap::new()),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
-                turns: Mutex::new(tokio::task::JoinSet::new()),
+                prompts: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
             }),
         }))
     }
 
-    /// 等待轮次取消收尾，终止后台进程组与 MCP 连接并释放临时状态。
+    /// 等待提示取消收尾，终止后台进程组与 MCP 连接并释放临时状态。
     pub async fn shutdown(&self) {
         self.inner.shutdown.cancel();
-        let mut turns = std::mem::take(&mut *self.inner.turns.lock().await);
-        while let Some(result) = turns.join_next().await {
+        let mut prompts = std::mem::take(&mut *self.inner.prompts.lock().await);
+        while let Some(result) = prompts.join_next().await {
             if let Err(error) = result {
-                tracing::error!(%error, "轮次收尾任务失败");
+                tracing::error!(%error, "提示收尾任务失败");
             }
         }
         let sessions = match self.inner.sessions.list().await {
@@ -302,7 +304,7 @@ impl Core {
     /// 修改空闲会话的模型，作废与旧模型绑定的原生载荷。
     pub async fn set_model(&self, session_id: &str, selector: &str) -> anyhow::Result<String> {
         let record = self.inner.sessions.get(session_id).await?;
-        let _turn = record.try_turn_lock()?;
+        let _prompt = record.try_prompt_lock()?;
         let cwd = record.state.lock().await.session.cwd.clone();
         let config = self.inner.project_config(Path::new(&cwd))?;
         let model = config.resolve_model(selector)?;
@@ -323,7 +325,7 @@ impl Core {
     /// 撤销当前会话最近一次文件编辑。
     pub async fn undo(&self, session_id: &str) -> anyhow::Result<String> {
         let record = self.inner.sessions.get(session_id).await?;
-        let _turn = record.try_turn_lock()?;
+        let _prompt = record.try_prompt_lock()?;
         let _file_lock = self
             .inner
             .sessions
@@ -671,7 +673,7 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let _file_lock = self
             .inner
             .sessions
@@ -717,7 +719,7 @@ impl AgentService for Core {
     ) -> Result<SessionInfo, RpcError> {
         let session_id = params.session_id.clone();
         let record = self.inner.sessions.get(&session_id).await.map_err(to_rpc)?;
-        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let file_lock = self
             .inner
             .sessions
@@ -755,7 +757,7 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let _file_lock = self
             .inner
             .sessions
@@ -800,7 +802,7 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let file_lock = self
             .inner
             .sessions
@@ -847,7 +849,7 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let cwd = record.state.lock().await.session.cwd.clone();
         let config = self
             .inner
@@ -904,7 +906,7 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let _turn = record.try_turn_lock().map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let _file_lock = self
             .inner
             .sessions
@@ -940,8 +942,8 @@ impl AgentService for Core {
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let model = config.resolve_model(&state.model).map_err(to_rpc)?;
         let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
-        let pieces = crate::prompt::system_pieces(&config, &model, state.mode, &cwd, &skills);
-        let system = crate::prompt::compose_system(&pieces);
+        let pieces = crate::system_prompt::pieces(&config, &model, state.mode, &cwd, &skills);
+        let system = crate::system_prompt::compose(&pieces);
         let messages =
             crate::compact::replay::model_messages(&state, Some(system.clone()), Some(&model));
         let tools = self.inner.tools.definitions(
@@ -986,23 +988,23 @@ impl AgentService for Core {
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::PromptParams,
-    ) -> Result<TurnResult, RpcError> {
+    ) -> Result<PromptResult, RpcError> {
         let cancel = ctx.cancel();
         let _cancel_on_drop = cancel.clone().drop_guard();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let inner = Arc::clone(&self.inner);
         {
-            let mut turns = self.inner.turns.lock().await;
+            let mut prompts = self.inner.prompts.lock().await;
             if self.inner.shutdown.is_cancelled() {
                 return Err(RpcError::of(RpcErrorCode::RequestCancelled));
             }
-            while let Some(result) = turns.try_join_next() {
+            while let Some(result) = prompts.try_join_next() {
                 if let Err(error) = result {
-                    tracing::error!(%error, "轮次任务失败");
+                    tracing::error!(%error, "提示任务失败");
                 }
             }
-            turns.spawn(async move {
-                let running = turn::run_turn(Arc::clone(&inner), ctx, params);
+            prompts.spawn(async move {
+                let running = prompt::run_prompt(Arc::clone(&inner), ctx, params);
                 tokio::pin!(running);
                 let result = tokio::select! {
                     biased;
@@ -1081,4 +1083,4 @@ pub(crate) async fn snapshot_workspace(
 
 mod management;
 mod mode;
-pub(crate) mod turn;
+pub(crate) mod prompt;

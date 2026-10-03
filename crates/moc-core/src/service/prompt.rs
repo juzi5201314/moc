@@ -1,17 +1,17 @@
-//! 流式轮次编排、取消收尾、持久化与工具执行。
+//! 流式提示编排、取消收尾、持久化与工具执行。
 
 use crate::{
     compact,
     compact::replay::model_messages,
-    prompt::{reminder_message, system_message},
     service::{CoreInner, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
+    system_prompt::{build, reminder_message},
     tools::ToolCtx,
 };
 use moc_llm::{FinishReason, Message, Usage};
 use moc_protocol::{
     RequestContext, RpcError, RpcErrorCode,
-    methods::{SessionUpdate, ToolStatus, TurnResult},
+    methods::{PromptResult, SessionUpdate, ToolStatus},
 };
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
@@ -24,20 +24,20 @@ mod workspace;
 use request::{build_request, project_input, upstream_mismatches};
 use stream::forward_event;
 use tools::{execute_tool_batch, persist_tool_result, repair_pending_calls};
-use workspace::check_workspace;
+use workspace::{WorkspaceScope, check_workspace};
 
-pub async fn run_turn(
+pub async fn run_prompt(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
-) -> Result<TurnResult, RpcError> {
+) -> Result<PromptResult, RpcError> {
     let session_id = params.session_id.clone();
     let record = inner
         .sessions
         .get(&params.session_id)
         .await
         .map_err(to_rpc)?;
-    let _turn = record.try_turn_lock().map_err(to_rpc)?;
+    let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
     let _epoch = inner.config_epoch.read().await;
     let mut file_lock = inner
         .sessions
@@ -67,7 +67,7 @@ pub async fn run_turn(
         .lock()
         .await
         .accepting = true;
-    let result = run_turn_locked(Arc::clone(&inner), &ctx, params, Arc::clone(&record)).await;
+    let result = run_prompt_locked(Arc::clone(&inner), &ctx, params, Arc::clone(&record)).await;
     inner
         .runtime(&session_id)
         .await
@@ -91,19 +91,19 @@ pub async fn run_turn(
         .map_err(protocol_to_rpc);
     match result {
         Err(error) => Err(error),
-        Ok(turn) => {
+        Ok(outcome) => {
             unlocked?;
-            Ok(turn)
+            Ok(outcome)
         }
     }
 }
 
-async fn run_turn_locked(
+async fn run_prompt_locked(
     inner: Arc<CoreInner>,
     ctx: &RequestContext,
     params: moc_protocol::methods::PromptParams,
     record: Arc<crate::session::SessionRecord>,
-) -> Result<TurnResult, RpcError> {
+) -> Result<PromptResult, RpcError> {
     let update = ctx.updates();
     let state_snapshot = record.state.lock().await.clone();
     let project_config = inner
@@ -179,8 +179,12 @@ async fn run_turn_locked(
 
     let runtime = inner.runtime(&params.session_id).await;
     let state = record.state.lock().await;
-    let turn_id = crate::ids::turn_id(state.turn_sequence);
-    let mode = state.mode;
+    let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
+    // `/ask` 等临时意图通过 `PromptParams::mode` 覆盖本条用户消息的模式：
+    // 一次 `session/prompt` 内部的全部 turn（多次模型请求 + 各组工具调用）共用
+    // 这一个值，且不落地为会话状态。`session/set_mode` 走 `try_prompt_lock`，
+    // 提示在飞时无法调进来改写它。
+    let mode = params.mode.unwrap_or(state.mode);
     let cwd = std::path::PathBuf::from(&state.session.cwd);
     drop(state);
 
@@ -193,8 +197,8 @@ async fn run_turn_locked(
     update
         .emit(
             params.session_id.clone(),
-            SessionUpdate::TurnStarted {
-                turn_id: turn_id.clone(),
+            SessionUpdate::PromptStarted {
+                prompt_id: prompt_id.clone(),
                 model: model.selector.clone(),
                 at_ms: now_ms(),
             },
@@ -203,8 +207,8 @@ async fn run_turn_locked(
         .map_err(protocol_to_rpc)?;
 
     let cancel = ctx.cancel();
-    // MCP 工具在每轮开始时快照一次并整体替换进注册表；list_changed 等变更
-    // 在下一轮生效，保证请求内工具定义顺序与内容稳定。
+    // MCP 工具在每次提示开始时快照一次并整体替换进注册表；list_changed 等变更
+    // 在下次提示生效，保证请求内工具定义顺序与内容稳定。
     let mcp = inner
         .project_mcp(std::path::Path::new(&state_snapshot.session.cwd))
         .await
@@ -244,9 +248,9 @@ async fn run_turn_locked(
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
     let mut stream_overflows = 0usize;
-    let system = system_message(&project_config, &model, mode, &cwd, &skills);
+    let system = build(&project_config, &model, mode, &cwd, &skills);
 
-    'steps: for step in 0..project_config.limits.max_steps_per_turn {
+    'turns: for turn in 0..project_config.limits.max_turns_per_prompt {
         if cancel.is_cancelled() {
             final_reason = FinishReason::Cancelled;
             break;
@@ -256,7 +260,7 @@ async fn run_turn_locked(
             .map_err(to_rpc)?;
         let mut snapshot = record.state.lock().await.clone();
         let mut reminder_messages = Vec::new();
-        if step == 0 {
+        if turn == 0 {
             if project_config.openviking.recall
                 && !project_config.openviking.url.trim().is_empty()
                 && let Some(client) = inner
@@ -336,9 +340,12 @@ async fn run_turn_locked(
                 reminder_messages.push(reminder_message(rendered));
             }
             let mut reminder_state = runtime.reminders.lock().await;
-            if let Some(reminder) =
-                reminder_state.render(&crate::prompt::reminder::local_time(), &[], &[], false)
-            {
+            if let Some(reminder) = reminder_state.render(
+                &crate::system_prompt::reminder::local_time(),
+                &[],
+                &[],
+                false,
+            ) {
                 reminder_messages.push(reminder_message(reminder));
             }
             let notices = std::mem::take(&mut record.state.lock().await.notices);
@@ -361,7 +368,7 @@ async fn run_turn_locked(
         messages.extend(reminder_messages.iter().cloned());
         if project_config.compaction.enabled
             && project_config.compaction.auto
-            && (step == 0 || project_config.compaction.mid_turn)
+            && (turn == 0 || project_config.compaction.mid_prompt)
             && context_tokens > compact::threshold(&project_config, model.context_window)
         {
             match compact::compact(
@@ -387,7 +394,7 @@ async fn run_turn_locked(
                     }
                     if !report.created_headroom || !project_config.compaction.auto_continue {
                         final_reason = FinishReason::Other("compacted".into());
-                        break 'steps;
+                        break 'turns;
                     }
                     snapshot = record.state.lock().await.clone();
                     messages = model_messages(&snapshot, Some(system.clone()), Some(&model));
@@ -424,12 +431,12 @@ async fn run_turn_locked(
                 Ok(permit) => Some(permit),
                 Err(crate::CoreError::Cancelled) => {
                     final_reason = FinishReason::Cancelled;
-                    break 'steps;
+                    break 'turns;
                 }
                 Err(error) => return Err(to_rpc(error)),
             };
             let streamed = tokio::select! {
-                _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'steps; }
+                _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
                 result = inner.client.stream(&llm_config, &request) => result,
             };
             // 错误恢复可能再次请求同一 Provider，必须先归还失败请求的许可。
@@ -469,22 +476,22 @@ async fn run_turn_locked(
                         Ok(report) if report.created_headroom => {}
                         Ok(_) => {
                             let message = format!("{error}; 溢出恢复未创建足够上下文空间");
-                            emit_fatal(&update, &params.session_id, &turn_id, &message).await?;
+                            emit_fatal(&update, &params.session_id, &prompt_id, &message).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
                         }
                         Err(compact_error) => {
                             if cancel.is_cancelled() {
                                 final_reason = FinishReason::Cancelled;
-                                break 'steps;
+                                break 'turns;
                             }
                             let message = format!("{error}; 溢出恢复失败：{compact_error}");
-                            emit_fatal(&update, &params.session_id, &turn_id, &message).await?;
+                            emit_fatal(&update, &params.session_id, &prompt_id, &message).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
                         }
                     }
                     if !project_config.compaction.auto_continue {
                         final_reason = FinishReason::Other("compacted".into());
-                        break 'steps;
+                        break 'turns;
                     }
                     snapshot = record.state.lock().await.clone();
                     let mut retry_messages =
@@ -500,7 +507,7 @@ async fn run_turn_locked(
                     );
                 }
                 Err(error) => {
-                    emit_fatal(&update, &params.session_id, &turn_id, &error.to_string()).await?;
+                    emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
                     return Err(RpcError::new(
                         RpcErrorCode::InternalError.code(),
                         error.to_string(),
@@ -520,7 +527,7 @@ async fn run_turn_locked(
                 event = stream.next_event() => {
                     match event {
                         Some(Ok(event)) => {
-                            if let Err(error) = forward_event(&update, &params.session_id, &turn_id, event, &mut call_ids).await {
+                            if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event, &mut call_ids).await {
                                 interrupted = true;
                                 connection_error = Some(protocol_to_rpc(error));
                                 break Some(stream.interrupt());
@@ -532,14 +539,14 @@ async fn run_turn_locked(
                             break None;
                         }
                         Some(Err(error)) => {
-                            emit_fatal(&update, &params.session_id, &turn_id, &error.to_string()).await?;
+                            emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
                         }
                         None => match stream.finish().await {
                             Ok(response) => break Some(response),
                             Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break None,
                             Err(error) => {
-                                emit_fatal(&update, &params.session_id, &turn_id, &error.to_string()).await?;
+                                emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
                                 return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
                             }
                         },
@@ -564,13 +571,13 @@ async fn run_turn_locked(
             .map_err(to_rpc)?;
             if !compact_report.created_headroom {
                 final_reason = FinishReason::Length;
-                break 'steps;
+                break 'turns;
             }
             if !project_config.compaction.auto_continue {
                 final_reason = FinishReason::Length;
-                break 'steps;
+                break 'turns;
             }
-            continue 'steps;
+            continue 'turns;
         };
         let mismatches = upstream_mismatches(&model, &request, &response);
         if !mismatches.is_empty() {
@@ -578,7 +585,7 @@ async fn run_turn_locked(
                 .emit(
                     params.session_id.clone(),
                     SessionUpdate::UpstreamMismatch {
-                        turn_id: turn_id.clone(),
+                        prompt_id: prompt_id.clone(),
                         fields: mismatches,
                     },
                 )
@@ -666,7 +673,7 @@ async fn run_turn_locked(
                         &inner,
                         &params.session_id,
                         call.id.clone(),
-                        "轮次被取消，该调用未执行。".into(),
+                        "提示被取消，该调用未执行。".into(),
                         true,
                         ToolStatus::Cancelled,
                         0,
@@ -714,7 +721,7 @@ async fn run_turn_locked(
             .map(|identity| identity.peer_id);
         let tool_ctx = ToolCtx {
             session_id: params.session_id.clone(),
-            turn_id: turn_id.clone(),
+            prompt_id: prompt_id.clone(),
             cwd: cwd.clone(),
             paths: record.paths.clone(),
             config: Arc::clone(&project_config),
@@ -753,8 +760,8 @@ async fn run_turn_locked(
             final_reason = FinishReason::Other("compacted".into());
             break;
         }
-        if step + 1 == project_config.limits.max_steps_per_turn {
-            final_reason = FinishReason::Other("max_steps".into());
+        if turn + 1 == project_config.limits.max_turns_per_prompt {
+            final_reason = FinishReason::Other("max_turns".into());
         }
     }
 
@@ -769,17 +776,20 @@ async fn run_turn_locked(
         &update,
         &runtime,
         &record,
-        &params.session_id,
-        &cwd,
-        &project_config,
-        None,
+        WorkspaceScope {
+            session_id: &params.session_id,
+            cwd: &cwd,
+            config: &project_config,
+            mode,
+            before_tools: None,
+        },
     )
     .await?;
     update
         .emit(
             params.session_id.clone(),
-            SessionUpdate::TurnFinished {
-                turn_id: turn_id.clone(),
+            SessionUpdate::PromptFinished {
+                prompt_id: prompt_id.clone(),
                 message: last_message.clone(),
                 finish_reason: final_reason.clone(),
                 usage,
@@ -787,9 +797,9 @@ async fn run_turn_locked(
         )
         .await
         .map_err(protocol_to_rpc)?;
-    Ok(TurnResult {
+    Ok(PromptResult {
         session_id: params.session_id,
-        turn_id,
+        prompt_id,
         message: last_message,
         finish_reason: final_reason,
         usage,
@@ -879,14 +889,14 @@ fn escape_xml(value: &str) -> String {
 async fn emit_fatal(
     update: &moc_protocol::UpdateSink,
     session_id: &str,
-    turn_id: &str,
+    prompt_id: &str,
     message: &str,
 ) -> Result<(), RpcError> {
     update
         .emit(
             session_id.to_owned(),
             SessionUpdate::Error {
-                turn_id: turn_id.to_owned(),
+                prompt_id: prompt_id.to_owned(),
                 message: message.to_owned(),
                 retryable: false,
             },

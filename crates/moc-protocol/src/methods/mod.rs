@@ -11,9 +11,9 @@
 //! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`session::SessionSetMode`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
-//! | [`session::SessionCompact`] | C→S | core | 会话无在飞轮次 | `-32010` / `-32011` / `-32014` |
-//! | [`turn::SessionPrompt`] | C→S | core | 已初始化 + 该会话无在飞轮次 | `-32010` / `-32015` / `-32011` |
-//! | [`turn::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
+//! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
+//! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
+//! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`permission::SessionRequestPermission`] / [`ask::SessionRequestAsk`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
 //!
@@ -29,10 +29,10 @@ pub mod management;
 pub mod openviking;
 pub mod permission;
 pub mod plan;
+pub mod prompt;
 pub mod resources;
 pub mod session;
 pub mod todo;
-pub mod turn;
 pub mod update;
 
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,10 @@ pub use plan::{
     PlanAction, PlanInfo, PlanStatus, SessionPlanApprove, SessionPlanApproveParams,
     SessionPlanApproveResult,
 };
+pub use prompt::{
+    InputPart, PromptParams, PromptResult, SessionCancel, SessionCancelParams, SessionCancelResult,
+    SessionPrompt,
+};
 pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
 };
@@ -76,10 +80,6 @@ pub use session::{
     SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
-pub use turn::{
-    InputPart, PromptParams, SessionCancel, SessionCancelParams, SessionCancelResult,
-    SessionPrompt, TurnResult,
-};
 pub use update::{
     AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
     UpstreamField, UpstreamFieldMismatch,

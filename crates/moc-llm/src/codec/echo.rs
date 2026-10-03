@@ -3,7 +3,7 @@
 //! 需求的核心：部分上游要求把上一轮的思维链原样回传，否则请求会被拒绝——
 //! DeepSeek 在携带 `tools` 的思考模式请求里必须完整回传 `reasoning_content`
 //! （缺失时报 400 `The reasoning_content in the thinking mode must be passed
-//! back to the API.`）；Anthropic 的工具续跑轮次必须回传 `thinking`（含
+//! back to the API.`）；Anthropic 的工具续跑请求必须回传 `thinking`（含
 //! `signature`，逐字节不变）与 `redacted_thinking`，否则报 400
 //! `thinking or redacted_thinking blocks in the latest assistant message cannot
 //! be modified`；Responses 在手动管理上下文（`store:false` / ZDR）时必须把

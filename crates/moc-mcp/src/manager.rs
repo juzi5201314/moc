@@ -75,7 +75,7 @@ pub struct McpNotice {
     pub message: String,
 }
 
-/// 每轮请求取一次的全量快照。
+/// 每次提示请求取一次的全量快照。
 #[derive(Debug, Clone, Default)]
 pub struct McpSnapshot {
     pub statuses: BTreeMap<String, ServerStatus>,

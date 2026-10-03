@@ -35,8 +35,8 @@ impl ServerRequest for SessionRequestPermission {}
 pub struct PermissionRequestParams {
     /// 会话 ID。
     pub session_id: String,
-    /// 轮次 ID。
-    pub turn_id: String,
+    /// prompt ID。
+    pub prompt_id: String,
     /// 本次询问的 ID；与 [`super::update::SessionUpdate::PermissionRequested`] 一致。
     pub request_id: String,
     /// 需要授权的调用 ID。
@@ -126,7 +126,7 @@ mod tests {
     fn request_shape() {
         let params = PermissionRequestParams {
             session_id: "ses_7f3a".into(),
-            turn_id: "turn_1".into(),
+            prompt_id: "prompt_1".into(),
             request_id: "perm_1".into(),
             tool_call_id: "call_9".into(),
             tool_name: "bash".into(),
@@ -139,7 +139,7 @@ mod tests {
             serde_json::to_value(&params).expect("可序列化"),
             json!({
                 "session_id": "ses_7f3a",
-                "turn_id": "turn_1",
+                "prompt_id": "prompt_1",
                 "request_id": "perm_1",
                 "tool_call_id": "call_9",
                 "tool_name": "bash",

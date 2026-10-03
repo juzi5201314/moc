@@ -229,7 +229,7 @@ async fn invalid_params_returns_invalid_params() {
         "参数非法时不得调用 core：{:?}",
         service.calls()
     );
-    // 被拒的请求不该占住会话轮次
+    // 被拒的请求不该占住会话提示
     peer.send(&request(
         4,
         "session/cancel",
@@ -267,7 +267,7 @@ async fn in_flight_limit_returns_server_busy() {
     let (_server, _connection, mut peer) = raw_pair(service.clone(), options);
     handshake(&mut peer).await;
 
-    // 先挂住一轮
+    // 先挂住一次提示
     peer.send(&request(
         2,
         "session/prompt",
@@ -280,10 +280,10 @@ async fn in_flight_limit_returns_server_busy() {
     peer.send(&request(3, "session/list", json!({}))).await;
     assert_eq!(peer.recv_err(3).await, RpcErrorCode::ServerBusy.code());
 
-    // 释放后连接照常可用（这一轮要过权限询问，对端自动放行）
+    // 释放后连接照常可用（这一次提示要过权限询问，对端自动放行）
     gate.notify_waiters();
     let (response, _) = support::recv_with_auto_permission(&mut peer, 2, "allow_once").await;
-    assert!(response.payload.is_ok(), "挂住的轮次应当正常完成");
+    assert!(response.payload.is_ok(), "挂住的提示应当正常完成");
     peer.send(&request(4, "session/list", json!({}))).await;
     peer.recv_ok(4).await;
 }
@@ -320,9 +320,9 @@ async fn server_request_without_handler_returns_method_not_found() {
     )))
     .await;
 
-    // 轮次照常收尾：工具状态记为拒绝
+    // 提示照常收尾：工具状态记为拒绝
     let (response, updates) = support::recv_response_with_updates(&mut peer, 2).await;
-    assert!(response.payload.is_ok(), "缺处理器不该让整轮失败");
+    assert!(response.payload.is_ok(), "缺处理器不该让整次提示失败");
     assert_eq!(
         service.state().asks,
         vec![Err(RpcErrorCode::MethodNotFound.code())]

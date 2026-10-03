@@ -11,7 +11,7 @@ pub struct CliArgs {
     /// 覆盖会话模型 selector。
     #[arg(long)]
     pub model: Option<String>,
-    /// 新会话的工作模式。
+    /// 新会话的工作模式（问答模式按提示生效，请用 REPL 的 /ask）。
     #[arg(long, value_enum, default_value_t = ModeArg::Normal)]
     pub mode: ModeArg,
     /// 会话工作目录。
@@ -32,7 +32,7 @@ pub struct CliArgs {
     /// 列出可用模型 selector。
     #[arg(long)]
     pub models: bool,
-    /// 单轮模式：可从 stdin 读取提示词，只打印最终答案。
+    /// 单次提示模式：可从 stdin 读取提示词，只打印最终答案。
     #[arg(long = "print")]
     pub print: bool,
     /// 强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。
@@ -49,7 +49,6 @@ pub struct CliArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ModeArg {
     Normal,
-    Ask,
     Plan,
     Ptc,
 }
@@ -58,7 +57,6 @@ impl From<ModeArg> for SessionMode {
     fn from(mode: ModeArg) -> Self {
         match mode {
             ModeArg::Normal => Self::Normal,
-            ModeArg::Ask => Self::Ask,
             ModeArg::Plan => Self::Plan,
             ModeArg::Ptc => Self::Ptc,
         }

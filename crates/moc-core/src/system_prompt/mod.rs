@@ -1,4 +1,4 @@
-//! 稳定系统前缀、模式约束与轮次尾部易变提醒。
+//! 稳定系统前缀、模式约束与提示尾部易变提醒。
 
 pub mod context_files;
 pub mod reminder;
@@ -19,17 +19,17 @@ pub struct PromptPiece {
     pub text: String,
 }
 
-pub fn system_message(
+pub fn build(
     config: &ResolvedConfig,
     model: &ResolvedModel,
     mode: SessionMode,
     cwd: &Path,
     skills: &crate::skills::SkillIndex,
 ) -> Message {
-    compose_system(&system_pieces(config, model, mode, cwd, skills))
+    compose(&pieces(config, model, mode, cwd, skills))
 }
 
-pub fn compose_system(pieces: &[PromptPiece]) -> Message {
+pub fn compose(pieces: &[PromptPiece]) -> Message {
     let capacity = pieces.iter().map(|piece| piece.text.len()).sum::<usize>()
         + pieces.len().saturating_sub(1) * 2;
     let mut text = String::with_capacity(capacity);
@@ -43,7 +43,7 @@ pub fn compose_system(pieces: &[PromptPiece]) -> Message {
 }
 
 /// 组装稳定模型前缀；时间、job 与工作区通知不得传入此函数。
-pub fn system_pieces(
+pub fn pieces(
     config: &ResolvedConfig,
     model: &ResolvedModel,
     mode: SessionMode,
@@ -94,7 +94,7 @@ pub fn system_pieces(
             text: rules,
         });
     }
-    // skill 目录属于稳定前缀（会话内索引不变），保持 prompt cache 命中。
+    // skill 目录属于稳定前缀（会话内索引不变），保持提示 cache 命中。
     if let Some(catalog) =
         crate::skills::catalog::render(skills, &config.skills, model.context_window)
     {
@@ -167,8 +167,8 @@ mod tests {
         let config = resolved(&cwd, &home);
         let model = config.resolve_role("default").unwrap();
         let skills = crate::skills::SkillIndex::empty();
-        let normal = system_message(&config, &model, SessionMode::Normal, &cwd, &skills);
-        let ask = system_message(&config, &model, SessionMode::Ask, &cwd, &skills);
+        let normal = build(&config, &model, SessionMode::Normal, &cwd, &skills);
+        let ask = build(&config, &model, SessionMode::Ask, &cwd, &skills);
         let normal = match &normal.content[0] {
             moc_llm::ContentPart::Text(text) => text,
             _ => panic!("系统提示为文本"),
@@ -206,7 +206,7 @@ mod tests {
         let model = config.resolve_role("default").unwrap();
         let skills =
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
-        let message = system_message(&config, &model, SessionMode::Normal, &cwd, &skills);
+        let message = build(&config, &model, SessionMode::Normal, &cwd, &skills);
         let text = match &message.content[0] {
             moc_llm::ContentPart::Text(text) => text,
             _ => panic!("系统提示为文本"),

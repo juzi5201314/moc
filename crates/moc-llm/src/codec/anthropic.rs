@@ -569,11 +569,11 @@ pub(crate) fn decode_response(
 /// Anthropic 的 `stop_reason` 映射。
 fn map_stop_reason(reason: &str) -> FinishReason {
     match reason {
-        "end_turn" => FinishReason::Stop,
+        "end_prompt" => FinishReason::Stop,
         "stop_sequence" => FinishReason::StopSequence,
         "max_tokens" | "model_context_window_exceeded" => FinishReason::Length,
         "tool_use" => FinishReason::ToolCalls,
-        "pause_turn" => FinishReason::PauseTurn,
+        "pause_prompt" => FinishReason::PauseTurn,
         "refusal" => FinishReason::Refusal,
         other => FinishReason::Other(other.to_owned()),
     }
@@ -1610,12 +1610,12 @@ mod tests {
     #[test]
     fn stop_reason_table() {
         let cases = [
-            ("end_turn", FinishReason::Stop),
+            ("end_prompt", FinishReason::Stop),
             ("stop_sequence", FinishReason::StopSequence),
             ("max_tokens", FinishReason::Length),
             ("model_context_window_exceeded", FinishReason::Length),
             ("tool_use", FinishReason::ToolCalls),
-            ("pause_turn", FinishReason::PauseTurn),
+            ("pause_prompt", FinishReason::PauseTurn),
             ("refusal", FinishReason::Refusal),
             ("something_new", FinishReason::Other("something_new".into())),
         ];

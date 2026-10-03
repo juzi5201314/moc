@@ -38,7 +38,7 @@ pub enum Tier {
     Exec,
 }
 
-/// 成功、可继续的失败、或提交计划后的轮次终止。
+/// 成功、可继续的失败、或提交计划后的提示终止。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolControl {
     #[default]
@@ -83,7 +83,7 @@ impl ToolOutcome {
         }
     }
 
-    pub fn end_turn(content: impl Into<ToolOutput>) -> Self {
+    pub fn end_prompt(content: impl Into<ToolOutput>) -> Self {
         Self {
             content: content.into(),
             is_error: false,
@@ -134,7 +134,7 @@ impl ToolError {
 #[derive(Clone)]
 pub struct ToolCtx {
     pub session_id: String,
-    pub turn_id: String,
+    pub prompt_id: String,
     pub cwd: PathBuf,
     pub paths: SessionPaths,
     pub config: Arc<ResolvedConfig>,
@@ -196,7 +196,7 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct ToolRegistry {
     builtins: Vec<Arc<dyn Tool>>,
-    /// 动态工具（MCP 桥接）；每轮请求前由 core 按最新快照整体替换。
+    /// 动态工具（MCP 桥接）；每次提示请求前由 core 按最新快照整体替换。
     dynamic: parking_lot::RwLock<Vec<Arc<dyn Tool>>>,
 }
 

@@ -188,7 +188,7 @@ impl ResolvedConfig {
         let project_files = if self.mcp.project_config {
             moc_mcp::discover_project_json(
                 &self.cwd,
-                crate::prompt::context_files::git_root(&self.cwd).as_deref(),
+                crate::system_prompt::context_files::git_root(&self.cwd).as_deref(),
             )
         } else {
             Vec::new()

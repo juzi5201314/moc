@@ -20,13 +20,13 @@ use moc_protocol::methods::{
     ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult, InputPart,
     ModelInfo, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
     OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
-    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams,
+    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams, PromptResult,
     ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
     SessionLoadResult, SessionLockInfo, SessionMode, SessionNewParams, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
     SessionSetModelParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, TurnResult, default_options,
+    SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -43,15 +43,15 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ───────────────────────────── 脚本化 core ─────────────────────────────
 
-/// 一轮 `session/prompt` 的行为脚本。
+/// 一次 `session/prompt` 的行为脚本。
 #[derive(Clone, Default)]
 pub enum PromptMode {
-    /// 标准剧本：推完整更新序列，中间发一次权限询问，返回 [`TurnResult`]。
+    /// 标准剧本：推完整更新序列，中间发一次权限询问，返回 [`PromptResult`]。
     #[default]
     Full,
-    /// 等 `Notify` 触发后走标准剧本（并发测试用来制造重叠轮次）。
+    /// 等 `Notify` 触发后走标准剧本（并发测试用来制造重叠提示）。
     Gated(Arc<Notify>),
-    /// 等取消令牌触发，然后返回 `finish_reason = Cancelled` 的一轮。
+    /// 等取消令牌触发，然后返回 `finish_reason = Cancelled` 的一次提示。
     UntilCancelled,
     /// 永远挂起：用于验证 future 被 abort 时是否留下了痕迹。
     Hang,
@@ -87,9 +87,9 @@ pub struct State {
     pub capabilities: ServerCapabilities,
     /// 收到的 `initialize` 参数。
     pub initialize: Option<InitializeParams>,
-    /// 一轮行为脚本。
+    /// 一次行为脚本。
     pub prompt_mode: PromptMode,
-    /// 正在跑的轮次数量与峰值（并发观察）。
+    /// 正在跑的提示数量与峰值（并发观察）。
     pub running_prompts: usize,
     /// 并发峰值。
     pub peak_prompts: usize,
@@ -97,7 +97,7 @@ pub struct State {
     pub asks: Vec<Result<String, i32>>,
     /// 收到的用户提问答案。
     pub ask_results: Vec<AskResult>,
-    /// 上一个挂起轮次的 drop 标记。
+    /// 上一个挂起提示的 drop 标记。
     pub prompt_dropped: Option<Arc<AtomicBool>>,
     /// drop 时取消令牌是否已触发。
     pub cancel_at_drop: Option<Arc<AtomicBool>>,
@@ -105,9 +105,9 @@ pub struct State {
     pub cancel_seen: usize,
     /// `config/get` 的额外填充长度（制造超大响应）。
     pub config_padding: usize,
-    /// 会话 / 轮次计数器。
+    /// 会话 / 提示计数器。
     next_session: u32,
-    next_turn: u32,
+    next_prompt: u32,
 }
 
 /// 脚本化 core。
@@ -205,7 +205,7 @@ impl ScriptedService {
                     cancel_seen: 0,
                     config_padding: 0,
                     next_session: 0,
-                    next_turn: 0,
+                    next_prompt: 0,
                 }),
             }),
         }
@@ -225,12 +225,12 @@ impl ScriptedService {
         action(&mut state)
     }
 
-    /// 设置轮次脚本。
+    /// 设置提示脚本。
     pub fn prompt_mode(&self, mode: PromptMode) {
         self.with(|state| state.prompt_mode = mode);
     }
 
-    /// 给某个会话上锁（模拟另一个 core 进程正在跑轮次）。
+    /// 给某个会话上锁（模拟另一个 core 进程正在跑提示）。
     pub fn lock_session(&self, session_id: &str, pid: u32, frontend: &str) {
         self.with(|state| {
             if let Some(record) = state.sessions.get_mut(session_id) {
@@ -291,12 +291,12 @@ fn emit_error(error: ProtocolError) -> RpcError {
 
 impl ScriptedService {
     /// 标准剧本：完整更新序列 + 一次权限询问。
-    async fn run_full_turn(
+    async fn run_full_prompt(
         &self,
         ctx: &RequestContext,
         session_id: &str,
-        turn_id: &str,
-    ) -> Result<TurnResult, RpcError> {
+        prompt_id: &str,
+    ) -> Result<PromptResult, RpcError> {
         let updates = ctx.updates();
         let usage = Usage {
             input_tokens: 12,
@@ -308,7 +308,7 @@ impl ScriptedService {
         updates
             .emit(
                 session_id,
-                SessionUpdate::turn_started(turn_id, "deepseek-flash", 1_700_000_000_000),
+                SessionUpdate::prompt_started(prompt_id, "deepseek-flash", 1_700_000_000_000),
             )
             .await
             .map_err(emit_error)?;
@@ -325,7 +325,7 @@ impl ScriptedService {
             },
         ] {
             updates
-                .emit(session_id, SessionUpdate::delta(turn_id, update))
+                .emit(session_id, SessionUpdate::delta(prompt_id, update))
                 .await
                 .map_err(emit_error)?;
         }
@@ -334,7 +334,7 @@ impl ScriptedService {
                 .emit(
                     session_id,
                     SessionUpdate::delta(
-                        turn_id,
+                        prompt_id,
                         AssistantDelta::ToolCallArgs {
                             tool_call_id: tool_call_id.to_owned(),
                             delta: chunk.to_owned(),
@@ -348,7 +348,7 @@ impl ScriptedService {
             .emit(
                 session_id,
                 SessionUpdate::ToolStarted {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     tool_call_id: tool_call_id.to_owned(),
                     name: "bash".to_owned(),
                 },
@@ -359,7 +359,7 @@ impl ScriptedService {
             .emit(
                 session_id,
                 SessionUpdate::PermissionRequested {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     request_id: "perm_1".to_owned(),
                     tool_call_id: tool_call_id.to_owned(),
                 },
@@ -370,7 +370,7 @@ impl ScriptedService {
         let asked = ctx
             .ask_permission(PermissionRequestParams {
                 session_id: session_id.to_owned(),
-                turn_id: turn_id.to_owned(),
+                prompt_id: prompt_id.to_owned(),
                 request_id: "perm_1".to_owned(),
                 tool_call_id: tool_call_id.to_owned(),
                 tool_name: "bash".to_owned(),
@@ -397,7 +397,7 @@ impl ScriptedService {
             .emit(
                 session_id,
                 SessionUpdate::PermissionResolved {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     request_id: "perm_1".to_owned(),
                     option_id,
                 },
@@ -414,7 +414,7 @@ impl ScriptedService {
             .emit(
                 session_id,
                 SessionUpdate::ToolFinished {
-                    turn_id: turn_id.to_owned(),
+                    prompt_id: prompt_id.to_owned(),
                     tool_call_id: tool_call_id.to_owned(),
                     status,
                     result: ToolResult {
@@ -436,7 +436,7 @@ impl ScriptedService {
         updates
             .emit(
                 session_id,
-                SessionUpdate::delta(turn_id, AssistantDelta::Usage { usage }),
+                SessionUpdate::delta(prompt_id, AssistantDelta::Usage { usage }),
             )
             .await
             .map_err(emit_error)?;
@@ -453,9 +453,9 @@ impl ScriptedService {
                 )),
             ],
         };
-        let result = TurnResult {
+        let result = PromptResult {
             session_id: session_id.to_owned(),
-            turn_id: turn_id.to_owned(),
+            prompt_id: prompt_id.to_owned(),
             message: message.clone(),
             finish_reason: FinishReason::ToolCalls,
             usage,
@@ -463,8 +463,8 @@ impl ScriptedService {
         updates
             .emit(
                 session_id,
-                SessionUpdate::TurnFinished {
-                    turn_id: turn_id.to_owned(),
+                SessionUpdate::PromptFinished {
+                    prompt_id: prompt_id.to_owned(),
                     message,
                     finish_reason: result.finish_reason.clone(),
                     usage,
@@ -476,7 +476,7 @@ impl ScriptedService {
             if let Some(record) = state.sessions.get_mut(session_id) {
                 record.info.updated_at_ms = 400;
                 record.entries.push(TranscriptEntry {
-                    id: format!("{session_id}_turn"),
+                    id: format!("{session_id}_prompt"),
                     at_ms: 400,
                     message: result.message.clone(),
                     tool: None,
@@ -486,8 +486,8 @@ impl ScriptedService {
         Ok(result)
     }
 
-    /// 挂起轮次：记录 drop 与「drop 时取消是否已触发」，然后永远等待。
-    async fn hang_turn(&self, ctx: &RequestContext) -> Result<TurnResult, RpcError> {
+    /// 挂起提示：记录 drop 与「drop 时取消是否已触发」，然后永远等待。
+    async fn hang_prompt(&self, ctx: &RequestContext) -> Result<PromptResult, RpcError> {
         let dropped = Arc::new(AtomicBool::new(false));
         let cancel_at_drop = Arc::new(AtomicBool::new(false));
         self.with(|state| {
@@ -820,8 +820,8 @@ impl AgentService for ScriptedService {
         &self,
         ctx: RequestContext,
         params: PromptParams,
-    ) -> Result<TurnResult, RpcError> {
-        let (mode, turn_id) = {
+    ) -> Result<PromptResult, RpcError> {
+        let (mode, prompt_id) = {
             let mut state = self.state();
             state
                 .calls
@@ -835,23 +835,23 @@ impl AgentService for ScriptedService {
             }
             state.running_prompts += 1;
             state.peak_prompts = state.peak_prompts.max(state.running_prompts);
-            state.next_turn += 1;
+            state.next_prompt += 1;
             (
                 state.prompt_mode.clone(),
-                format!("turn_{}", state.next_turn),
+                format!("prompt_{}", state.next_prompt),
             )
         };
         let session_id = params.session_id.as_str();
         let outcome = match mode {
-            PromptMode::Full => self.run_full_turn(&ctx, session_id, &turn_id).await,
+            PromptMode::Full => self.run_full_prompt(&ctx, session_id, &prompt_id).await,
             PromptMode::Gated(notify) => {
                 notify.notified().await;
-                self.run_full_turn(&ctx, session_id, &turn_id).await
+                self.run_full_prompt(&ctx, session_id, &prompt_id).await
             }
             PromptMode::Ask => {
                 let request = AskParams {
                     session_id: session_id.to_owned(),
-                    turn_id: turn_id.clone(),
+                    prompt_id: prompt_id.clone(),
                     request_id: "ask_1".to_owned(),
                     questions: vec![AskQuestion {
                         id: "choice".to_owned(),
@@ -868,7 +868,7 @@ impl AgentService for ScriptedService {
                 match ctx.requester().request::<SessionRequestAsk>(request).await {
                     Ok(answer) => {
                         self.with(|state| state.ask_results.push(answer));
-                        self.run_full_turn(&ctx, session_id, &turn_id).await
+                        self.run_full_prompt(&ctx, session_id, &prompt_id).await
                     }
                     Err(_) => Err(RpcError::of(RpcErrorCode::InternalError)),
                 }
@@ -876,9 +876,9 @@ impl AgentService for ScriptedService {
             PromptMode::UntilCancelled => {
                 ctx.cancel().cancelled().await;
                 self.with(|state| state.cancel_seen += 1);
-                Ok(TurnResult {
+                Ok(PromptResult {
                     session_id: params.session_id.clone(),
-                    turn_id,
+                    prompt_id,
                     message: Message {
                         role: Role::Assistant,
                         content: vec![ContentPart::Text("已取消".to_owned())],
@@ -887,7 +887,7 @@ impl AgentService for ScriptedService {
                     usage: Usage::default(),
                 })
             }
-            PromptMode::Hang => self.hang_turn(&ctx).await,
+            PromptMode::Hang => self.hang_prompt(&ctx).await,
         };
         self.with(|state| state.running_prompts -= 1);
         outcome
@@ -949,13 +949,13 @@ impl UpdateLog {
 /// 更新的 `type` 标签。
 pub fn update_tag(update: &SessionUpdate) -> &'static str {
     match update {
-        SessionUpdate::TurnStarted { .. } => "turn_started",
+        SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",
         SessionUpdate::ToolStarted { .. } => "tool_started",
         SessionUpdate::ToolFinished { .. } => "tool_finished",
         SessionUpdate::PermissionRequested { .. } => "permission_requested",
         SessionUpdate::PermissionResolved { .. } => "permission_resolved",
-        SessionUpdate::TurnFinished { .. } => "turn_finished",
+        SessionUpdate::PromptFinished { .. } => "prompt_finished",
         SessionUpdate::TitleChanged { .. } => "title_changed",
         SessionUpdate::LockChanged { .. } => "lock_changed",
         SessionUpdate::ModeChanged { .. } => "mode_changed",
@@ -1037,13 +1037,14 @@ pub async fn local_client(
     (server, connection, handle, handshake)
 }
 
-/// 一轮 `session/prompt` 的参数。
+/// 一次 `session/prompt` 的参数。
 pub fn prompt_params(session_id: &str, text: &str) -> PromptParams {
     PromptParams {
         session_id: session_id.to_owned(),
         input: vec![InputPart::Text {
             text: text.to_owned(),
         }],
+        mode: None,
     }
 }
 

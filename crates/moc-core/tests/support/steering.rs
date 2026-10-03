@@ -83,6 +83,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
                 input: vec![InputPart::Text {
                     text: "开始任务".into(),
                 }],
+                mode: None,
             })
             .await
             .unwrap()
@@ -124,7 +125,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
         .unwrap();
     assert!(
         !idle.accepted,
-        "关闭边界之后必须让前端按新轮次投递，不吞掉消息"
+        "关闭边界之后必须让前端按新提示投递，不吞掉消息"
     );
     harness.close().await;
 }

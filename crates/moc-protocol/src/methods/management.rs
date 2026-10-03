@@ -157,7 +157,7 @@ pub struct SteerResult {
     pub accepted: bool,
 }
 
-/// Steering 在下一安全工具边界加入当前轮次；队列由前端等待前轮完成后提交。
+/// Steering 在下一安全工具边界加入当前提示；队列由前端等待前一次提示完成后提交。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SteerParams {

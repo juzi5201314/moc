@@ -38,7 +38,7 @@ impl SkillMeta {
     }
 }
 
-/// 按渲染顺序排列的 skill 索引；会话内不变，保证 system prompt 缓存稳定。
+/// 按渲染顺序排列的 skill 索引；会话内不变，保证 system 提示缓存稳定。
 #[derive(Debug, Clone, Default)]
 pub struct SkillIndex {
     skills: BTreeMap<String, SkillMeta>,

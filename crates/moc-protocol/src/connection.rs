@@ -119,7 +119,7 @@ impl PendingMap {
         let Some(sender) = self.entries().remove(id) else {
             return false;
         };
-        // 等待者可能已被取消（轮次取消、连接收尾），投递失败无所谓
+        // 等待者可能已被取消（提示取消、连接收尾），投递失败无所谓
         sender.send(payload).is_ok()
     }
 
@@ -207,7 +207,7 @@ impl Traffic {
 
     /// 服务端发起的反向请求：负数 ID，等响应。
     ///
-    /// 轮次被取消或连接关闭时返回 [`RpcCallError::Cancelled`]——对 core 来说两者
+    /// 提示被取消或连接关闭时返回 [`RpcCallError::Cancelled`]——对 core 来说两者
     /// 的处理相同（放弃这次询问），不需要再分一层。
     pub(crate) async fn reverse_request<M: ServerRequest>(
         &self,

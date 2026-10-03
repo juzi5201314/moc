@@ -18,9 +18,9 @@ pub fn plan_id() -> String {
     format!("plan_{}", short_uuid())
 }
 
-/// 创建当前会话内单调递增的轮次标识。
-pub fn turn_id(sequence: u64) -> String {
-    format!("turn_{sequence}")
+/// 创建当前会话内单调递增的提示标识。
+pub fn prompt_id(sequence: u64) -> String {
+    format!("prompt_{sequence}")
 }
 
 /// 创建当前会话内单调递增的后台任务标识。
@@ -52,7 +52,7 @@ mod tests {
             assert_eq!(id.len(), 8);
             assert!(id.bytes().all(|byte| byte.is_ascii_hexdigit()));
         }
-        assert_eq!(turn_id(7), "turn_7");
+        assert_eq!(prompt_id(7), "prompt_7");
         assert_eq!(job_id(11), "job_11");
     }
 

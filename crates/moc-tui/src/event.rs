@@ -320,7 +320,7 @@ async fn event_loop(
         }
         // 空闲（无 dirty）时完全 park 在事件上；dirty 但未到预算点才等待
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
-        let activity_tick_enabled = app.turn_running;
+        let activity_tick_enabled = app.prompt_running;
         // notice / warning 显示中：安排 TTL 到点重绘，擦除浮层
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
@@ -362,7 +362,7 @@ async fn event_loop(
                 dirty = true;
                 match app_event {
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
-                        | AppEvent::TurnReturned {..} | AppEvent::SteerReturned {..})) => {
+                        | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..})) => {
                         crate::interaction::handle_event(app, connection, event);
                     }
                     Some(AppEvent::RewindLoaded(result)) => apply_rewind_loaded(app, result),
@@ -878,14 +878,14 @@ fn handle_key(
     }
     match (code, modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            if app.turn_running {
+            if app.prompt_running {
                 if app.cancel_pending {
                     app.should_quit = true;
                 } else {
                     app.cancel_pending = true;
                     app.cancel_requested = true;
                     app.set_notice("Stopping... Press Ctrl+C again to exit");
-                    cancel_turn(&connection.client, app);
+                    cancel_prompt(&connection.client, app);
                 }
             } else if app.cancel_pending {
                 app.should_quit = true;
@@ -918,11 +918,11 @@ fn handle_key(
         (KeyCode::Esc, _) => {
             if app.selection.is_some() {
                 app.selection = None;
-            } else if app.turn_running {
+            } else if app.prompt_running {
                 if !app.cancel_requested {
                     app.cancel_requested = true;
                     app.set_notice("Stopping...");
-                    cancel_turn(&connection.client, app);
+                    cancel_prompt(&connection.client, app);
                 }
             } else if app.focus == Focus::Prompt && !app.prompt_text().is_empty() {
                 if app.clear_pending {
@@ -1269,7 +1269,7 @@ fn handle_modal_key(
                     let _ = events.send(AppEvent::Rewound { selected, result });
                 });
             }
-            (KeyCode::Esc, _) if state.loading && !state.turns.is_empty() => {}
+            (KeyCode::Esc, _) if state.loading && !state.prompts.is_empty() => {}
             (KeyCode::Esc, _) => close = true,
             _ => {}
         },
@@ -1558,7 +1558,7 @@ fn handle_modal_key(
                         let client = connection.client.clone();
                         let plan_id = plan_id.clone();
                         let events = app.events.clone();
-                        app.inflight_turns.insert(session_id.clone());
+                        app.inflight_prompts.insert(session_id.clone());
                         tokio::spawn(async move {
                             let original_session = session_id.clone();
                             let result: anyhow::Result<()> = async {
@@ -1577,6 +1577,7 @@ fn handle_modal_key(
                                     let params = PromptParams {
                                         session_id,
                                         input: vec![InputPart::Text { text: prompt }],
+                                        mode: None,
                                     };
                                     client
                                         .call::<moc_protocol::methods::SessionPrompt>(params)
@@ -1585,7 +1586,7 @@ fn handle_modal_key(
                                 Ok(())
                             }
                             .await;
-                            let _ = events.send(AppEvent::TurnReturned {
+                            let _ = events.send(AppEvent::PromptReturned {
                                 session: original_session,
                                 result,
                             });
@@ -1662,23 +1663,23 @@ fn advance_ask(
 }
 
 fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, update: SessionUpdate) {
-    let turn_started = matches!(&update, SessionUpdate::TurnStarted { .. });
-    if matches!(&update, SessionUpdate::TurnFinished { .. })
+    let prompt_started = matches!(&update, SessionUpdate::PromptStarted { .. });
+    if matches!(&update, SessionUpdate::PromptFinished { .. })
         && !app.terminal_focused
         && app.preferences.notify_complete
     {
-        crate::config::notify("当前轮次已完成");
+        crate::config::notify("当前提示已完成");
     }
     let refresh = matches!(
         &update,
-        SessionUpdate::TurnFinished { .. }
+        SessionUpdate::PromptFinished { .. }
             | SessionUpdate::ModeChanged { .. }
             | SessionUpdate::ModelChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
     );
     apply_update(app, update);
-    if turn_started && app.cancel_requested {
-        cancel_turn(&connection.client, app);
+    if prompt_started && app.cancel_requested {
+        cancel_prompt(&connection.client, app);
     }
     if refresh {
         refresh_context(app, connection, false);
@@ -1771,16 +1772,16 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             diff,
             ..
         } => app.finish_tool_block(tool_call_id, status, result, duration_ms, diff),
-        SessionUpdate::TurnStarted { .. } => {
-            app.turn_running = true;
+        SessionUpdate::PromptStarted { .. } => {
+            app.prompt_running = true;
             app.cancel_pending = false;
-            app.turn_started_at = Some(std::time::Instant::now());
+            app.prompt_started_at = Some(std::time::Instant::now());
             if !app.cancel_requested {
                 app.notice = None;
                 app.warning = None;
             }
         }
-        SessionUpdate::TurnFinished { .. } => app.finish_turn(),
+        SessionUpdate::PromptFinished { .. } => app.finish_prompt(),
         SessionUpdate::TitleChanged { title } => {
             if let Some(session) = app.session.as_mut() {
                 session.title = title;
@@ -1869,8 +1870,8 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
     }
 }
 
-/// 发出取消；core 会终止本轮并给未执行的工具调用补 Cancelled 结果。
-pub(crate) fn cancel_turn(client: &ClientHandle, app: &App) {
+/// 发出取消；core 会终止本次提示并给未执行的工具调用补 Cancelled 结果。
+pub(crate) fn cancel_prompt(client: &ClientHandle, app: &App) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
@@ -2018,13 +2019,14 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             }
         }
         "/mode" => cycle_mode(app, connection),
+        "/ask" => ask_once(app, connection, rest),
         "/model" => app.open_model_picker(),
         "/resume" => open_session_picker(app, connection),
         other => app.set_notice(format!("未知命令：{other}")),
     }
 }
 
-/// 循环切换模式：Normal → Ask → Plan → PTC。
+/// 循环切换模式：Normal → Plan → PTC。
 fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
@@ -2035,6 +2037,27 @@ fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
         .position(|mode| *mode == session.mode)
         .unwrap_or(0);
     set_mode(app, connection, MODES[(index + 1) % MODES.len()]);
+}
+
+/// `/ask <问题>`：仅本条消息进入问答模式（只读），不改变会话模式。
+///
+/// 该次提示无论当前是否空闲都排进队列：模式覆盖是提示级属性，无法注入正在飞行的提示。
+fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
+    let text = rest.trim();
+    if text.is_empty() {
+        app.set_notice("用法：/ask <问题>");
+        return;
+    }
+    if app.session.is_none() {
+        app.set_notice("当前没有活动会话");
+        return;
+    }
+    crate::queue::submit_with_mode(
+        app,
+        connection,
+        crate::widgets::prompt::PromptState::from_text(text.to_owned()),
+        SessionMode::Ask,
+    );
 }
 
 /// 请求 core 切换会话模式（模式循环与就地菜单共用）。
@@ -2268,7 +2291,7 @@ mod tests {
         apply_update(
             &mut app,
             SessionUpdate::UpstreamMismatch {
-                turn_id: "turn_1".into(),
+                prompt_id: "prompt_1".into(),
                 fields: vec![
                     UpstreamFieldMismatch {
                         field: UpstreamField::Model,
@@ -2289,11 +2312,11 @@ mod tests {
         );
         assert!(app.warning_visible());
 
-        // 同一轮的下一次上游请求再次不一致：覆盖而非堆叠。
+        // 同一次提示的下一次上游请求再次不一致：覆盖而非堆叠。
         apply_update(
             &mut app,
             SessionUpdate::UpstreamMismatch {
-                turn_id: "turn_1".into(),
+                prompt_id: "prompt_1".into(),
                 fields: vec![UpstreamFieldMismatch {
                     field: UpstreamField::Effort,
                     requested: "high".into(),
@@ -2352,15 +2375,15 @@ mod tests {
             .unwrap();
         let id = session.id.clone();
         app.session = Some(session);
-        app.turn_running = true;
-        app.inflight_turns.insert(id.clone());
+        app.prompt_running = true;
+        app.inflight_prompts.insert(id.clone());
         app.modal = Some(Modal::Help);
         app.prompt.insert_str_raw("弹窗关闭后继续执行");
         crate::queue::submit(&mut app, &connection, true);
         crate::interaction::handle_event(
             &mut app,
             &connection,
-            AppEvent::TurnReturned {
+            AppEvent::PromptReturned {
                 session: id.clone(),
                 result: Ok(()),
             },
@@ -2369,7 +2392,7 @@ mod tests {
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                if let AppEvent::TurnReturned { result, .. } = receiver.recv().await.unwrap() {
+                if let AppEvent::PromptReturned { result, .. } = receiver.recv().await.unwrap() {
                     result.unwrap();
                     break;
                 }
@@ -2515,14 +2538,76 @@ mod tests {
                     .await
                     .unwrap()
                     .session;
-                if session.mode == SessionMode::Ask {
+                if session.mode == SessionMode::Plan {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("Alt+M 应切换到 Ask 模式");
+        .expect("Alt+M 应切换到 Plan 模式");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// `/ask <问题>`：本次提示带问答模式覆盖排队，不改变会话模式；缺参数只提示。
+    #[tokio::test]
+    async fn ask_command_queues_a_read_only_prompt() {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        let session_id = session.id.clone();
+        app.session = Some(session);
+
+        // 进行中的提示期间只排队：模式覆盖是提示级属性，无法注入正在飞行的提示。
+        app.prompt_running = true;
+        execute_command(&mut app, &connection, "/ask 有没有遗留的临时文件".into());
+        let queued = app.queues.get(&session_id).expect("命令排进待发送队列");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].mode, Some(SessionMode::Ask));
+        assert_eq!(queued[0].draft.text, "有没有遗留的临时文件");
+        assert_eq!(
+            app.session.as_ref().map(|session| session.mode),
+            Some(SessionMode::Normal),
+            "临时问答不得改写会话模式"
+        );
+
+        execute_command(&mut app, &connection, "/ask".into());
+        assert_eq!(app.notice.as_deref(), Some("用法：/ask <问题>"));
+        assert_eq!(
+            app.queues.get(&session_id).map(|queue| queue.len()),
+            Some(1),
+            "缺参数不得产生新队列项"
+        );
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -2593,7 +2678,7 @@ mod tests {
 
         // 图例命中区与菜单区域由绘制回填；这里摆出与渲染一致的坐标。
         app.mode_area = ratatui::layout::Rect::new(60, 20, 4, 1);
-        let menu_area = ratatui::layout::Rect::new(44, 14, 24, 6);
+        let menu_area = ratatui::layout::Rect::new(44, 14, 24, 5);
         let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
             kind,
             column,
@@ -2612,21 +2697,21 @@ mod tests {
 
         // 悬停在条目上即高亮该条，移出菜单不改选择。
         app.mode_menu.as_mut().unwrap().area = menu_area;
-        handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 45, 18));
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(3));
+        handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 45, 17));
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
         handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 10, 5));
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(3));
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
 
-        // 点第二条（ask）直达该模式。
+        // 点第二条（plan）直达该模式。
         handle_mouse_with_connection(
             &mut app,
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 45, 16),
         );
         assert!(app.mode_menu.is_none(), "选中条目后菜单关闭");
-        wait_for_mode(&connection, &session_id, SessionMode::Ask).await;
+        wait_for_mode(&connection, &session_id, SessionMode::Plan).await;
         // core 通过 `ModeChanged` 推送新模式，事件循环据此更新本地会话；此处手动对齐。
-        app.session.as_mut().unwrap().mode = SessionMode::Ask;
+        app.session.as_mut().unwrap().mode = SessionMode::Plan;
 
         // 再点图例开菜单，再点一次图例应关闭而不是重开。
         handle_mouse_with_connection(
@@ -2643,7 +2728,7 @@ mod tests {
         );
         assert!(app.mode_menu.is_none(), "再次点图例关闭菜单");
 
-        // 键盘路径：开菜单后 ↓ 选到 plan，Enter 应用。
+        // 键盘路径：开菜单后 ↓ 选到 ptc，Enter 应用。
         handle_mouse_with_connection(
             &mut app,
             &connection,
@@ -2653,7 +2738,7 @@ mod tests {
         assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         assert!(app.mode_menu.is_none());
-        wait_for_mode(&connection, &session_id, SessionMode::Plan).await;
+        wait_for_mode(&connection, &session_id, SessionMode::Ptc).await;
 
         // 普通输入先关掉菜单再照常处理：菜单不会吞键。
         app.session.as_mut().unwrap().mode = SessionMode::Plan;
@@ -2662,7 +2747,7 @@ mod tests {
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
         );
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(1));
         let revision = app.prompt_revision;
         handle_key(
             &mut app,

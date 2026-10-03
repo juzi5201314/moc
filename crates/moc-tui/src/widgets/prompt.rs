@@ -76,7 +76,7 @@ impl PromptState {
         *self = draft;
     }
 
-    /// Steering 回执到达之前保留原草稿，失败或轮次已结束时仍可编辑、排队。
+    /// Steering 回执到达之前保留原草稿，失败或提示已结束时仍可编辑、排队。
     pub fn preview_parts(&self) -> Vec<InputPart> {
         Self {
             text: self.text.clone(),

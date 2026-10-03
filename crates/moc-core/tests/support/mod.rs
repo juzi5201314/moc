@@ -85,11 +85,12 @@ impl Harness {
             .id
     }
 
-    pub async fn prompt(&self, id: &str, text: &str) -> TurnResult {
+    pub async fn prompt(&self, id: &str, text: &str) -> PromptResult {
         self.client
             .call::<SessionPrompt>(PromptParams {
                 session_id: id.into(),
                 input: vec![InputPart::Text { text: text.into() }],
+                mode: None,
             })
             .await
             .unwrap()

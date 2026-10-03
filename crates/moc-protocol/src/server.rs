@@ -1,4 +1,4 @@
-//! 服务端：路由器、握手门禁、轮次注册表与生命周期。
+//! 服务端：路由器、握手门禁、提示注册表与生命周期。
 //!
 //! 路由用**显式 `match`**（不用宏、不做字符串反射）：方法表就是 crate 文档里那张表，
 //! 新增方法时读代码的人能一眼看全所有分支。
@@ -12,7 +12,7 @@
 //! 4. 分发：`ping` 与 `session/cancel` 由协议层自答；其余进 [`AgentService`]。
 //! 5. 结果序列化失败 → `-32603`。
 //!
-//! `session/prompt` 额外过轮次注册表：同一会话已有在飞轮次 → `-32011`，同样**不调用
+//! `session/prompt` 额外过提示注册表：同一会话已有进行中的提示 → `-32011`，同样**不调用
 //! core**。该注册表同时是 `session/cancel` 的落点，也是协议层唯一持有的「会话相关」
 //! 状态——它只记「谁在飞」，不记任何会话内容。
 
@@ -102,7 +102,7 @@ impl<S: AgentService> Server<S> {
         })
     }
 
-    /// 关闭服务端：取消全部连接的令牌，在飞轮次与请求随之结束。
+    /// 关闭服务端：取消全部连接的令牌，进行中的提示与请求随之结束。
     pub fn shutdown(&self) {
         self.shutdown.cancel();
     }
@@ -122,7 +122,7 @@ impl<S: AgentService> Server<S> {
         self.spawn(crate::transport::stdio())
     }
 
-    /// 顺序 accept 一个 TCP 前端：断线后继续等下一位（本轮不支持多连接同时在线）。
+    /// 顺序 accept 一个 TCP 前端：断线后继续等下一位（本次提示不支持多连接同时在线）。
     ///
     /// 传输层不做鉴权，`listener` 只应绑定回环地址。
     pub fn spawn_tcp(self: &Arc<Self>, listener: TcpListener) -> ServerConnection {
@@ -247,13 +247,13 @@ impl ServerConnection {
     }
 }
 
-/// 连接内的服务端状态：握手、并发门禁、轮次注册表。
+/// 连接内的服务端状态：握手、并发门禁、提示注册表。
 struct ServerDispatch<S: AgentService> {
     server: Arc<Server<S>>,
     connection: Arc<Connection>,
     handshake: Mutex<Handshake>,
     in_flight: Arc<Semaphore>,
-    turns: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 /// 握手状态机。
@@ -269,25 +269,25 @@ enum Handshake {
     Ready(ClientInfo),
 }
 
-/// 轮次注册表的摘除守卫：任务正常结束、被取消、被 abort 都会摘除，绝不留脏记录。
-struct TurnGuard {
-    turns: Arc<Mutex<HashMap<String, CancellationToken>>>,
+/// 提示注册表的摘除守卫：任务正常结束、被取消、被 abort 都会摘除，绝不留脏记录。
+struct PromptGuard {
+    prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
     session_id: String,
 }
 
-/// `session/prompt` 的轮次占位结果。
-enum TurnClaim {
-    /// 不是 prompt，或参数里读不出 `session_id`（后者交给任务报 `-32602`）。
+/// `session/prompt` 的占位结果。
+enum PromptClaim {
+    /// 不是提示，或参数里读不出 `session_id`（后者交给任务报 `-32602`）。
     NotPrompt,
     /// 占位成功，附带 `session_id` 供守卫摘除。
     Claimed(String),
-    /// 同一会话已有在飞轮次。
+    /// 同一会话已有进行中的提示。
     Busy,
 }
 
-impl Drop for TurnGuard {
+impl Drop for PromptGuard {
     fn drop(&mut self) {
-        self.turns
+        self.prompts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&self.session_id);
@@ -302,7 +302,7 @@ impl<S: AgentService> ServerDispatch<S> {
             connection,
             handshake: Mutex::new(Handshake::Fresh),
             in_flight,
-            turns: Arc::new(Mutex::new(HashMap::new())),
+            prompts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -312,20 +312,20 @@ impl<S: AgentService> ServerDispatch<S> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn turns(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
-        self.turns.lock().unwrap_or_else(PoisonError::into_inner)
+    fn prompts(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
+        self.prompts.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 在读循环里为 `session/prompt` 占位轮次注册表。
+    /// 在读循环里为 `session/prompt` 占位提示注册表。
     ///
     /// 只从 `params` 里读 `session_id` 一个字段，不解析整个 DTO——参数里可能带着
     /// 数 MiB 的图片，读循环不该为它做一次完整反序列化。
-    fn claim_turn(&self, request: &Request, cancel: &CancellationToken) -> TurnClaim {
+    fn claim_prompt(&self, request: &Request, cancel: &CancellationToken) -> PromptClaim {
         let method = request.method.as_ref();
         let is_prompt = method == <SessionPrompt as Method>::NAME;
         let is_compact = method == <SessionCompact as Method>::NAME;
         if !is_prompt && !is_compact {
-            return TurnClaim::NotPrompt;
+            return PromptClaim::NotPrompt;
         }
         let Some(session_id) = request
             .params
@@ -333,17 +333,17 @@ impl<S: AgentService> ServerDispatch<S> {
             .and_then(|params| params.get("session_id"))
             .and_then(Value::as_str)
         else {
-            return TurnClaim::NotPrompt;
+            return PromptClaim::NotPrompt;
         };
-        let mut turns = self.turns();
-        if turns.contains_key(session_id) {
-            return TurnClaim::Busy;
+        let mut prompts = self.prompts();
+        if prompts.contains_key(session_id) {
+            return PromptClaim::Busy;
         }
         if is_prompt {
-            turns.insert(session_id.to_owned(), cancel.clone());
-            TurnClaim::Claimed(session_id.to_owned())
+            prompts.insert(session_id.to_owned(), cancel.clone());
+            PromptClaim::Claimed(session_id.to_owned())
         } else {
-            TurnClaim::NotPrompt
+            PromptClaim::NotPrompt
         }
     }
 
@@ -370,7 +370,7 @@ impl<S: AgentService> ServerDispatch<S> {
         self: &Arc<Self>,
         request: Request,
         cancel: CancellationToken,
-        claim: TurnClaim,
+        claim: PromptClaim,
     ) {
         let Request { id, method, params } = request;
         let payload = match method.as_ref() {
@@ -435,7 +435,7 @@ impl<S: AgentService> ServerDispatch<S> {
         method: &str,
         params: Option<Value>,
         cancel: CancellationToken,
-        claim: TurnClaim,
+        claim: PromptClaim,
     ) -> Result<Value, RpcError> {
         match method {
             "config/manage" => {
@@ -629,47 +629,47 @@ impl<S: AgentService> ServerDispatch<S> {
                 value_from(result)
             }
             <SessionPrompt as Method>::NAME => {
-                // 占位已在读循环里完成（保证「先 prompt 后 cancel」的顺序），
+                // 占位已在读循环里完成（保证「先提示后 cancel」的顺序），
                 // 这里只把守卫接过来：解析失败、core 报错、任务被 abort 都会释放占位
-                let turn = match claim {
-                    TurnClaim::Claimed(session_id) => Some(TurnGuard {
-                        turns: Arc::clone(&self.turns),
+                let guard = match claim {
+                    PromptClaim::Claimed(session_id) => Some(PromptGuard {
+                        prompts: Arc::clone(&self.prompts),
                         session_id,
                     }),
                     _ => None,
                 };
                 let params = params_from_value::<SessionPrompt>(params)?;
-                self.prompt(client, params, cancel, turn).await
+                self.prompt(client, params, cancel, guard).await
             }
             // 取消由协议层自答：trip 令牌即可，不经过 core，也不受出站队列拥塞影响
             <SessionCancel as Method>::NAME => {
                 let params = params_from_value::<SessionCancel>(params)?;
-                value_from(self.cancel_turn(&params.session_id))
+                value_from(self.cancel_prompt(&params.session_id))
             }
             _ => Err(RpcError::of(RpcErrorCode::MethodNotFound)),
         }
     }
 
-    /// 跑一轮：进 core，结束后由守卫释放轮次占位。
+    /// 跑一次提示：进 core，结束后由守卫释放占位。
     async fn prompt(
         self: &Arc<Self>,
         client: ClientInfo,
         params: PromptParams,
         cancel: CancellationToken,
-        turn: Option<TurnGuard>,
+        guard: Option<PromptGuard>,
     ) -> Result<Value, RpcError> {
         let result = self
             .server
             .service
             .session_prompt(self.context(client, cancel), params)
             .await;
-        drop(turn);
+        drop(guard);
         value_from(result?)
     }
 
-    /// 取消该会话在飞的轮次；没有在飞轮次时是成功的空操作。
-    fn cancel_turn(&self, session_id: &str) -> SessionCancelResult {
-        match self.turns().get(session_id) {
+    /// 取消该会话在飞的提示；没有进行中的提示时是成功的空操作。
+    fn cancel_prompt(&self, session_id: &str) -> SessionCancelResult {
+        match self.prompts().get(session_id) {
             Some(token) => {
                 token.cancel();
                 SessionCancelResult { cancelled: true }
@@ -691,12 +691,12 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
             });
             return;
         };
-        // 每请求令牌与 prompt 的轮次占位都在读循环里完成：`session/cancel` 是同一
-        // 条连接上的后续报文，因此「先 prompt 后 cancel」的顺序是确定的，取消绝不会
+        // 每请求令牌与提示的占位都在读循环里完成：`session/cancel` 是同一
+        // 条连接上的后续报文，因此「先提示后 cancel」的顺序是确定的，取消绝不会
         // 因为任务调度顺序而落空。
         let cancel = self.connection.closed().child_token();
-        match self.claim_turn(&request, &cancel) {
-            TurnClaim::Busy => {
+        match self.claim_prompt(&request, &cancel) {
+            PromptClaim::Busy => {
                 let connection = Arc::clone(&self.connection);
                 let id = Some(request.id);
                 tasks.spawn(async move {
@@ -716,7 +716,7 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
     }
 
     fn on_notification(self: Arc<Self>, notification: Notification) -> BoxFuture<()> {
-        // 本轮没有「客户端→服务端」通知；通知永远不产生响应，因此只记日志
+        // 本次提示没有「客户端→服务端」通知；通知永远不产生响应，因此只记日志
         tracing::debug!(
             connection = self.connection.id(),
             method = %notification.method,

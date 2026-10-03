@@ -1,4 +1,4 @@
-//! Enter 补充当前轮次，Ctrl+Enter 排队；只有请求真正收尾后才启动下一条。
+//! Enter 补充当前提示，Ctrl+Enter 排队；只有请求真正收尾后才启动下一条。
 
 use crate::{
     app::{App, Focus},
@@ -7,19 +7,48 @@ use crate::{
     widgets::prompt::PromptState,
 };
 use moc_protocol::{
-    ClientHandle, InputPart, PromptParams, SessionPrompt, SessionSteer, SteerParams,
+    ClientHandle, InputPart, PromptParams, SessionMode, SessionPrompt, SessionSteer, SteerParams,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct QueuedPrompt {
     pub id: u64,
     pub draft: PromptState,
+    /// 仅本条消息生效的模式覆盖（`/ask` 注入）；`None` 沿用会话模式。
+    pub mode: Option<SessionMode>,
 }
 
 pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if app.prompt.is_empty() {
         return;
     }
+    let draft = app.prompt.take_draft();
+    if let Some(stash) = app.prompt_stash.take() {
+        app.prompt.restore_draft(stash);
+    }
+    enqueue(app, connection, draft, queued, None);
+}
+
+/// 直接投递一条现成草稿并指定本次提示模式（`/ask <提示词>` 用），不经输入框。
+///
+/// 一律按「忙则排队」处理：本次提示的临时模式无法通过 steering 注入正在飞行的提示，
+/// 因此它必须成为独立的一次提示。
+pub fn submit_with_mode(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    draft: PromptState,
+    mode: SessionMode,
+) {
+    enqueue(app, connection, draft, true, Some(mode));
+}
+
+fn enqueue(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    draft: PromptState,
+    queued: bool,
+    mode: Option<SessionMode>,
+) {
     let Some(session) = app.session.as_ref().map(|session| session.id.clone()) else {
         app.set_notice("请先在 /config 配置一个主模型");
         return;
@@ -27,12 +56,10 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     app.next_queue_id += 1;
     let prompt = QueuedPrompt {
         id: app.next_queue_id,
-        draft: app.prompt.take_draft(),
+        draft,
+        mode,
     };
-    if let Some(stash) = app.prompt_stash.take() {
-        app.prompt.restore_draft(stash);
-    }
-    let busy = app.turn_running || app.inflight_turns.contains(&session);
+    let busy = app.prompt_running || app.inflight_prompts.contains(&session);
     if queued || !busy {
         app.queues.entry(session).or_default().push_back(prompt);
         dispatch(app, connection);
@@ -40,7 +67,7 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
         app.interrupt_pending.insert(session.clone());
         app.queues.entry(session).or_default().push_front(prompt);
         app.cancel_requested = true;
-        crate::event::cancel_turn(&connection.client, app);
+        crate::event::cancel_prompt(&connection.client, app);
     } else {
         let client = connection.client.clone();
         let events = app.events.clone();
@@ -67,8 +94,8 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
-    if app.turn_running
-        || app.inflight_turns.contains(&session)
+    if app.prompt_running
+        || app.inflight_prompts.contains(&session)
         || app.modal.is_some()
         || app.settings.is_some()
     {
@@ -83,15 +110,24 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
     };
     let parts = prompt.draft.build_input_parts();
     app.push_user(crate::event::display_text_of(&parts));
-    app.inflight_turns.insert(session.clone());
-    app.turn_running = true;
-    send_turn(&connection.client, session, parts, app.events.clone());
+    app.inflight_prompts.insert(session.clone());
+    app.prompt_running = true;
+    // 本次提示实际生效的模式：覆盖值只在提示内展示，不改写会话状态。
+    app.transient_mode = prompt.mode;
+    send_prompt(
+        &connection.client,
+        session,
+        parts,
+        prompt.mode,
+        app.events.clone(),
+    );
 }
 
-pub fn send_turn(
+pub fn send_prompt(
     client: &ClientHandle,
     session_id: String,
     parts: Vec<InputPart>,
+    mode: Option<SessionMode>,
     events: UnboundedSender<AppEvent>,
 ) {
     let client = client.clone();
@@ -100,11 +136,12 @@ pub fn send_turn(
             .call::<SessionPrompt>(PromptParams {
                 session_id: session_id.clone(),
                 input: parts,
+                mode,
             })
             .await
             .map(|_| ())
             .map_err(anyhow::Error::from);
-        let _ = events.send(AppEvent::TurnReturned {
+        let _ = events.send(AppEvent::PromptReturned {
             session: session_id,
             result,
         });
