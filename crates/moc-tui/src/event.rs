@@ -22,7 +22,7 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, MODES};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::Modal;
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
@@ -634,6 +634,9 @@ fn handle_mouse_with_connection(
     mouse: crossterm::event::MouseEvent,
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    if handle_mode_menu_mouse(app, connection, &mouse) {
+        return;
+    }
     if app.queue_area.contains((mouse.column, mouse.row).into()) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -649,6 +652,11 @@ fn handle_mouse_with_connection(
     }
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         let position = (mouse.column, mouse.row);
+        // 模式图例：就地在图例上方弹出模式菜单（菜单打开与否由它自己处理）。
+        if app.modal.is_none() && app.mode_area.contains(position.into()) {
+            app.open_mode_menu();
+            return;
+        }
         if let Some((id, _, cancel)) = app
             .queue_hits
             .iter()
@@ -675,6 +683,42 @@ fn handle_mouse_with_connection(
         }
     }
     handle_mouse(app, mouse);
+}
+
+/// 就地模式菜单的鼠标处理：命中条目即切换模式，点到菜单外（含再点一次图例）关闭。
+///
+/// 返回 `true` 表示事件已被菜单消费，不再落到队列、滚动区或输入框。
+fn handle_mode_menu_mouse(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mouse: &crossterm::event::MouseEvent,
+) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    if app.mode_menu.is_none() || app.modal.is_some() {
+        return false;
+    }
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let entry = app
+                .mode_menu
+                .as_ref()
+                .and_then(|menu| menu.entry_at(mouse.column, mouse.row));
+            app.mode_menu = None;
+            if let Some(index) = entry {
+                set_mode(app, connection, MODES[index]);
+            }
+            true
+        }
+        MouseEventKind::Moved => {
+            if let Some(menu) = app.mode_menu.as_mut()
+                && let Some(index) = menu.entry_at(mouse.column, mouse.row)
+            {
+                menu.selected = index;
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 /// 鼠标：滚轮滚动、点击折叠、拖选复制。
@@ -756,6 +800,9 @@ fn handle_key(
     }
     if app.modal.is_some() {
         handle_modal_key(app, connection, modifiers, code);
+        return;
+    }
+    if handle_mode_menu_key(app, connection, modifiers, code) {
         return;
     }
     if matches!(code, KeyCode::Esc) && app.completion.is_some() {
@@ -1977,27 +2024,31 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     }
 }
 
-/// 循环切换 Normal → Ask → Plan。
+/// 循环切换模式：Normal → Ask → Plan → PTC。
 fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
     };
-    let next = match session.mode {
-        SessionMode::Normal => SessionMode::Ask,
-        SessionMode::Ask => SessionMode::Plan,
-        SessionMode::Plan => SessionMode::Ptc,
-        SessionMode::Ptc => SessionMode::Normal,
+    let index = MODES
+        .iter()
+        .position(|mode| *mode == session.mode)
+        .unwrap_or(0);
+    set_mode(app, connection, MODES[(index + 1) % MODES.len()]);
+}
+
+/// 请求 core 切换会话模式（模式循环与就地菜单共用）。
+fn set_mode(app: &mut App, connection: &EmbeddedConnection, mode: SessionMode) {
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
     };
     let client = connection.client.clone();
     let session_id = session.id.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
         match client
-            .call::<SessionSetMode>(SessionSetModeParams {
-                session_id,
-                mode: next,
-            })
+            .call::<SessionSetMode>(SessionSetModeParams { session_id, mode })
             .await
         {
             Ok(_) => {}
@@ -2006,6 +2057,50 @@ fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
             }
         }
     });
+}
+
+/// 就地模式菜单的键盘处理：`↑↓` 选择、`Enter` 应用、`Esc` 关闭。
+///
+/// 与斜杠补全菜单同一套约定：只认方向键与确认键，其他按键先关掉菜单再照常处理，
+/// 菜单不会吞掉正常输入与快捷键。
+fn handle_mode_menu_key(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> bool {
+    let Some(menu) = app.mode_menu.as_ref() else {
+        return false;
+    };
+    let count = MODES.len();
+    let selected = menu.selected.min(count - 1);
+    match (code, modifiers) {
+        (KeyCode::Esc, _) => {
+            app.mode_menu = None;
+            true
+        }
+        (KeyCode::Up, _) => {
+            if let Some(menu) = app.mode_menu.as_mut() {
+                menu.selected = (selected + count - 1) % count;
+            }
+            true
+        }
+        (KeyCode::Down, _) => {
+            if let Some(menu) = app.mode_menu.as_mut() {
+                menu.selected = (selected + 1) % count;
+            }
+            true
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            app.mode_menu = None;
+            set_mode(app, connection, MODES[selected]);
+            true
+        }
+        _ => {
+            app.mode_menu = None;
+            false
+        }
+    }
 }
 
 /// 按当前模型声明的思考等级循环切换。
@@ -2428,6 +2523,156 @@ mod tests {
         })
         .await
         .expect("Alt+M 应切换到 Ask 模式");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 点图例弹出就地菜单：悬停高亮、点条目切换模式、再点图例关闭，键位同样可用。
+    #[tokio::test]
+    async fn mode_menu_switches_the_session_mode() {
+        use moc_core::{Core, CoreConfig};
+
+        async fn wait_for_mode(
+            connection: &EmbeddedConnection,
+            session_id: &str,
+            expected: SessionMode,
+        ) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let session = connection
+                        .client
+                        .call::<SessionLoad>(SessionLoadParams {
+                            session_id: session_id.to_owned(),
+                            max_entries: None,
+                        })
+                        .await
+                        .unwrap()
+                        .session;
+                    if session.mode == expected {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("模式应切换为期望值");
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        let session_id = session.id.clone();
+        app.session = Some(session);
+
+        // 图例命中区与菜单区域由绘制回填；这里摆出与渲染一致的坐标。
+        app.mode_area = ratatui::layout::Rect::new(60, 20, 4, 1);
+        let menu_area = ratatui::layout::Rect::new(44, 14, 24, 6);
+        let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // 点图例开菜单：默认高亮当前模式。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
+        );
+        assert!(app.mode_menu.is_some(), "点模式图例应弹出菜单");
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(0));
+
+        // 悬停在条目上即高亮该条，移出菜单不改选择。
+        app.mode_menu.as_mut().unwrap().area = menu_area;
+        handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 45, 18));
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(3));
+        handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 10, 5));
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(3));
+
+        // 点第二条（ask）直达该模式。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 45, 16),
+        );
+        assert!(app.mode_menu.is_none(), "选中条目后菜单关闭");
+        wait_for_mode(&connection, &session_id, SessionMode::Ask).await;
+        // core 通过 `ModeChanged` 推送新模式，事件循环据此更新本地会话；此处手动对齐。
+        app.session.as_mut().unwrap().mode = SessionMode::Ask;
+
+        // 再点图例开菜单，再点一次图例应关闭而不是重开。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
+        );
+        assert!(app.mode_menu.is_some());
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(1));
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
+        );
+        assert!(app.mode_menu.is_none(), "再次点图例关闭菜单");
+
+        // 键盘路径：开菜单后 ↓ 选到 plan，Enter 应用。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
+        );
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert!(app.mode_menu.is_none());
+        wait_for_mode(&connection, &session_id, SessionMode::Plan).await;
+
+        // 普通输入先关掉菜单再照常处理：菜单不会吞键。
+        app.session.as_mut().unwrap().mode = SessionMode::Plan;
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
+        );
+        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
+        let revision = app.prompt_revision;
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('h'),
+        );
+        assert!(app.mode_menu.is_none(), "输入字符只关菜单");
+        assert_eq!(app.prompt.text, "h", "字符照常进入输入框");
+        assert_ne!(app.prompt_revision, revision);
 
         connection.shutdown().await;
         core.shutdown().await;

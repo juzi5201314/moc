@@ -79,6 +79,10 @@ pub struct App {
     pub prompt_area: Rect,
     /// 顶部上下文占用区域，用于鼠标点击打开详情。
     pub context_area: Rect,
+    /// 输入框下边框右端模式名的屏幕区域（鼠标点击就地弹出模式菜单）。
+    pub mode_area: Rect,
+    /// 就地模式菜单；`None` = 关闭。
+    pub mode_menu: Option<ModeMenu>,
     /// Core 估算的上下文组成与总量。
     pub context_usage: Option<ContextUsageResult>,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
@@ -181,6 +185,8 @@ impl App {
             focus: Focus::Prompt,
             prompt_area: Rect::default(),
             context_area: Rect::default(),
+            mode_area: Rect::default(),
+            mode_menu: None,
             context_usage: None,
             scroll_offset: 0,
             turn_running: false,
@@ -517,6 +523,22 @@ impl App {
         });
     }
 
+    /// 打开就地模式菜单：高亮当前模式，并让出可能叠在输入框上方的补全菜单。
+    pub fn open_mode_menu(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            self.set_notice("当前没有活动会话");
+            return;
+        };
+        self.completion = None;
+        self.mode_menu = Some(ModeMenu {
+            selected: MODES
+                .iter()
+                .position(|mode| *mode == session.mode)
+                .unwrap_or(0),
+            area: Rect::default(),
+        });
+    }
+
     /// 打开会话恢复选择器（列表由调用方异步填充后更新）。
     pub fn open_session_picker(&mut self) {
         self.modal = Some(Modal::Sessions {
@@ -713,6 +735,33 @@ pub fn mode_label(mode: SessionMode) -> &'static str {
     }
 }
 
+/// 会话模式顺序：就地菜单条目与键盘循环共用同一份顺序。
+pub const MODES: [SessionMode; 4] = [
+    SessionMode::Normal,
+    SessionMode::Ask,
+    SessionMode::Plan,
+    SessionMode::Ptc,
+];
+
+/// 点击图例模式名后就地弹出的菜单。
+pub struct ModeMenu {
+    /// 键盘 / 悬停高亮的条目下标（[`MODES`] 顺序）。
+    pub selected: usize,
+    /// 上一帧绘制的菜单区域；鼠标命中使用。
+    pub area: Rect,
+}
+
+impl ModeMenu {
+    /// 命中的条目下标；点在边框和菜单外返回 `None`。
+    pub fn entry_at(&self, column: u16, row: u16) -> Option<usize> {
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
+        let index = usize::from(row.checked_sub(self.area.y.saturating_add(1))?);
+        (index < MODES.len()).then_some(index)
+    }
+}
+
 /// 模型展示名：选择串即 `供应商/模型:等级`，思考关闭时省掉 `:off` 后缀。
 pub fn model_selector_label(selector: &str) -> &str {
     selector.strip_suffix(":off").unwrap_or(selector)
@@ -720,8 +769,9 @@ pub fn model_selector_label(selector: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{mode_label, model_selector_label};
+    use super::{ModeMenu, mode_label, model_selector_label};
     use moc_protocol::SessionMode;
+    use ratatui::layout::Rect;
 
     /// 模型与模式在界面上一律用英文标识，且思考关闭时不出现在模型名里。
     #[test]
@@ -733,6 +783,32 @@ mod tests {
         assert_eq!(mode_label(SessionMode::Ask), "ask");
         assert_eq!(mode_label(SessionMode::Plan), "plan");
         assert_eq!(mode_label(SessionMode::Ptc), "ptc");
+    }
+
+    /// 菜单命中只认边框之间的一行一条目；边框与菜单外都不算条目。
+    #[test]
+    fn mode_menu_hit_testing_skips_borders() {
+        let menu = ModeMenu {
+            selected: 1,
+            area: Rect::new(10, 5, 24, 6),
+        };
+        assert_eq!(menu.entry_at(11, 5), None, "上边框不是条目");
+        assert_eq!(menu.entry_at(11, 6), Some(0));
+        assert_eq!(menu.entry_at(11, 9), Some(3));
+        assert_eq!(menu.entry_at(11, 10), None, "下边框不是条目");
+        assert_eq!(menu.entry_at(9, 6), None, "左缘之外不命中");
+        assert_eq!(menu.entry_at(34, 6), None, "右缘之外不命中");
+        assert_eq!(menu.entry_at(11, 4), None, "菜单上方不命中");
+    }
+
+    /// 没有活动会话就不开菜单，只提示（此时图例本身显示 `idle`）。
+    #[test]
+    fn mode_menu_requires_an_active_session() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.open_mode_menu();
+        assert!(app.mode_menu.is_none());
+        assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
     }
 
     #[test]

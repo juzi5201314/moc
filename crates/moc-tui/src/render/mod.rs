@@ -163,9 +163,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     }
 
     crate::queue::draw(frame, app);
-    // 浮层最后画：补全菜单贴输入框上沿，模态居中（覆盖正文与信息条）
+    // 浮层最后画：补全菜单贴输入框上沿，就地模式菜单贴模式图例，居中模态覆盖全部。
     if let Some(completion) = &app.completion {
         modal::draw_completion_menu(frame, completion, prompt_area);
+    }
+    if app.modal.is_none() {
+        modal::draw_mode_menu(frame, app);
+    } else {
+        // 模态是阻塞层：不再保留就地菜单，避免两层浮层叠加。
+        app.mode_menu = None;
     }
     if app.modal.is_some() {
         modal::draw_modal(frame, app);
@@ -403,7 +409,8 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
 ///
 /// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
 /// 右侧的当前模型与模式仍然保留。
-fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.mode_area = Rect::default();
     if area.height < 3 || area.width < 24 {
         return;
     }
@@ -466,6 +473,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         buffer.set_string(x, y, left_separator, Style::new().fg(theme.border));
     }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
+    let mode_cells = cell_width(mode);
     let mut x = area.x + area.width - 2 - right_cells;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
     for (text, color) in right {
@@ -473,6 +481,13 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         x += cell_width(text);
     }
     buffer.set_string(x, y, " ", Style::new());
+    // 模式名单独留命中区：鼠标点击它就地图例弹出模式菜单，图例本身不变。
+    app.mode_area = Rect {
+        x: area.x + area.width - 2 - mode_cells,
+        y,
+        width: mode_cells,
+        height: 1,
+    };
 }
 
 /// 显示宽度 → 格数（超出 u16 的宽度按终端上限饱和）。
@@ -994,6 +1009,89 @@ mod tests {
         assert!(scrollbar_thumb_top(20, 4, 100, 75) < scrollbar_thumb_top(20, 4, 100, 25));
         // 滑块与轨道等高（无溢出空间）时位置恒定
         assert_eq!(scrollbar_thumb_top(10, 10, 3, 3), 0);
+    }
+
+    /// 模式图例的命中区正好盖住模式名；就地菜单右上对齐图例、整体贴在其上方。
+    #[test]
+    fn mode_legend_hit_area_carries_the_menu() {
+        use moc_protocol::methods::SessionInfo;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.session = Some(SessionInfo {
+            id: "ses_test".into(),
+            title: "测试会话".into(),
+            model: "test/model".into(),
+            mode: moc_protocol::SessionMode::Plan,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        let row_text = |terminal: &Terminal<TestBackend>, area: Rect| {
+            (area.x..area.x.saturating_add(area.width))
+                .filter_map(|x| terminal.backend().buffer().cell((x, area.y)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let legend = app.mode_area;
+        assert_eq!(legend.height, 1);
+        assert_eq!(row_text(&terminal, legend), "plan", "命中区正好是模式名");
+
+        app.open_mode_menu();
+        assert_eq!(
+            app.mode_menu.as_ref().map(|menu| menu.selected),
+            Some(2),
+            "默认高亮当前模式"
+        );
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        let menu = app.mode_menu.as_ref().expect("菜单保持打开");
+        assert_eq!(menu.area.right(), legend.right(), "右缘对齐模式图例");
+        assert_eq!(menu.area.bottom(), legend.y, "整体贴在图例上方");
+        assert_eq!(menu.entry_at(menu.area.x + 4, menu.area.y + 1), Some(0));
+        // 高亮行就是当前模式那一行（图例行上方第 3 行）。
+        let plan_y = legend.y - 3;
+        assert!(
+            row_text(
+                &terminal,
+                Rect {
+                    x: menu.area.x + 1,
+                    y: plan_y,
+                    width: 12,
+                    height: 1,
+                }
+            )
+            .starts_with("❯ plan"),
+            "当前模式行同时是菜单高亮行"
+        );
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((menu.area.x + 3, plan_y))
+                .expect("表头格存在")
+                .fg,
+            Theme::global().accent_model
+        );
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((menu.area.x + 3, menu.area.y + 1))
+                .expect("首行格存在")
+                .fg,
+            Theme::global().text_primary
+        );
     }
 
     #[test]

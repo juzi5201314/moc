@@ -73,6 +73,81 @@ pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, pro
     );
 }
 
+/// 就地模式菜单：右缘对齐图例里的模式名，整体贴在它上方（右键菜单那种小浮层）。
+pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
+    let Some(menu) = app.mode_menu.as_ref() else {
+        return;
+    };
+    let theme = app.theme;
+    let current = app.session.as_ref().map(|session| session.mode);
+    let selected = menu.selected;
+    let label_width = crate::app::MODES
+        .iter()
+        .map(|mode| str_width(crate::app::mode_label(*mode)))
+        .max()
+        .unwrap_or(0);
+    let frame_area = frame.area();
+    let width = u16::try_from(2 + label_width + 2 + 2)
+        .unwrap_or(u16::MAX)
+        .min(frame_area.width);
+    let height = u16::try_from(crate::app::MODES.len() + 2).unwrap_or(u16::MAX);
+    let anchor = app.mode_area;
+    let x = (anchor.x.saturating_add(anchor.width))
+        .saturating_sub(width)
+        .min(frame_area.width.saturating_sub(width))
+        .max(frame_area.x);
+    let area = Rect {
+        x,
+        y: anchor.y.saturating_sub(height).max(frame_area.y),
+        width,
+        height,
+    };
+    let lines: Vec<Line<'static>> = crate::app::MODES
+        .iter()
+        .enumerate()
+        .map(|(index, mode)| {
+            let highlighted = index == selected;
+            let base = if highlighted {
+                Style::new()
+                    .fg(theme.text_primary)
+                    .bg(theme.bg_visual)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text_primary)
+            };
+            // 当前模式沿用图例里的强调色，与菜单高亮（反色）互相独立。
+            let label_style = if Some(*mode) == current {
+                base.fg(theme.accent_model)
+            } else {
+                base
+            };
+            Line::from(vec![
+                Span::styled(if highlighted { "❯ " } else { "  " }, base),
+                Span::styled(
+                    format!(
+                        "{:<label_width$}",
+                        crate::app::mode_label(*mode),
+                        label_width = label_width
+                    ),
+                    label_style,
+                ),
+            ])
+        })
+        .collect();
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_set(ratatui::symbols::border::ROUNDED)
+                .border_style(Style::new().fg(theme.border_active)),
+        ),
+        area,
+    );
+    if let Some(menu) = app.mode_menu.as_mut() {
+        menu.area = area;
+    }
+}
+
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &App) {
     let Some(modal) = &app.modal else {
