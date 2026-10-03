@@ -18,6 +18,7 @@ use moc_protocol::{
     SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams,
     SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
     SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUpdate,
+    UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -320,11 +321,9 @@ async fn event_loop(
         // 空闲（无 dirty）时完全 park 在事件上；dirty 但未到预算点才等待
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
         let activity_tick_enabled = app.turn_running;
-        // notice 显示中：安排 TTL 到点重绘，擦除 toast
-        let notice_deadline = app.notice_visible().then(|| {
-            tokio::time::Instant::from_std(app.notice_at.unwrap_or_else(std::time::Instant::now))
-                + std::time::Duration::from_secs(3)
-        });
+        // notice / warning 显示中：安排 TTL 到点重绘，擦除浮层
+        let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
+        let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
         tokio::select! {
             biased;
             // 到达预算点：回循环顶部绘制（期间到达的事件已合并为一帧）
@@ -332,6 +331,11 @@ async fn event_loop(
             _ = tokio::time::sleep_until(
                     notice_deadline.unwrap_or_else(tokio::time::Instant::now),
                 ), if notice_deadline.is_some() => {
+                dirty = true;
+            }
+            _ = tokio::time::sleep_until(
+                    warning_deadline.unwrap_or_else(tokio::time::Instant::now),
+                ), if warning_deadline.is_some() => {
                 dirty = true;
             }
             _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
@@ -1726,6 +1730,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             app.turn_started_at = Some(std::time::Instant::now());
             if !app.cancel_requested {
                 app.notice = None;
+                app.warning = None;
             }
         }
         SessionUpdate::TurnFinished { .. } => app.finish_turn(),
@@ -1788,6 +1793,21 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::PermissionRequested { .. } => {}
         SessionUpdate::PermissionResolved { .. } => {}
         SessionUpdate::LockChanged { .. } => {}
+        SessionUpdate::UpstreamMismatch { fields, .. } => {
+            let detail = fields
+                .iter()
+                .map(|mismatch| match mismatch.field {
+                    UpstreamField::Model => {
+                        format!("model {} → {}", mismatch.requested, mismatch.reported)
+                    }
+                    UpstreamField::Effort => {
+                        format!("effort {} → {}", mismatch.requested, mismatch.reported)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ｜ ");
+            app.set_warning(detail);
+        }
         SessionUpdate::Error {
             message, retryable, ..
         } => {
@@ -2138,11 +2158,55 @@ fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
 mod tests {
     use super::*;
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use moc_protocol::methods::UpstreamFieldMismatch;
     use tokio::sync::mpsc::unbounded_channel;
 
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
         App::new(Theme::global(), events)
+    }
+
+    /// 上游改写折叠成告警文案：模型与推理强度各成一段、` ｜ ` 连接；再次不一致只替换。
+    #[test]
+    fn upstream_mismatch_folds_into_warning_text() {
+        let mut app = app();
+        apply_update(
+            &mut app,
+            SessionUpdate::UpstreamMismatch {
+                turn_id: "turn_1".into(),
+                fields: vec![
+                    UpstreamFieldMismatch {
+                        field: UpstreamField::Model,
+                        requested: "glm-5.3".into(),
+                        reported: "glm-5.3-air".into(),
+                    },
+                    UpstreamFieldMismatch {
+                        field: UpstreamField::Effort,
+                        requested: "max".into(),
+                        reported: "high".into(),
+                    },
+                ],
+            },
+        );
+        assert_eq!(
+            app.warning.as_deref(),
+            Some("model glm-5.3 → glm-5.3-air ｜ effort max → high")
+        );
+        assert!(app.warning_visible());
+
+        // 同一轮的下一次上游请求再次不一致：覆盖而非堆叠。
+        apply_update(
+            &mut app,
+            SessionUpdate::UpstreamMismatch {
+                turn_id: "turn_1".into(),
+                fields: vec![UpstreamFieldMismatch {
+                    field: UpstreamField::Effort,
+                    requested: "high".into(),
+                    reported: "medium".into(),
+                }],
+            },
+        );
+        assert_eq!(app.warning.as_deref(), Some("effort high → medium"));
     }
 
     #[tokio::test]

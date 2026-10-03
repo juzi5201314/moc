@@ -82,6 +82,7 @@ pub use turn::{
 };
 pub use update::{
     AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
+    UpstreamField, UpstreamFieldMismatch,
 };
 
 /// 空结果：序列化为 `{}`。

@@ -652,6 +652,13 @@ pub struct ChatResponse {
     pub id: Option<String>,
     /// 实际使用的模型名。
     pub model: Option<String>,
+    /// 上游回显的推理强度原文；`None` 表示上游没有回显（与「回显为空」不区分）。
+    ///
+    /// 各网关位置不一（OpenAI 新版 `reasoning.effort`、旧版顶层
+    /// `reasoning_effort`、Anthropic 风格 `output_config.effort`），解码器统一
+    /// 归一化到这里，供 core 与本地请求值比对。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     /// assistant 消息，可直接 push 进下一轮请求的 [`ChatRequest::messages`]。
     pub message: Message,
     /// 结束原因。
@@ -682,11 +689,18 @@ impl Default for FinishReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StreamEvent {
     /// 流开始。
+    ///
+    /// 上游通常把「实际使用的模型」与「实际生效的推理强度」放在首个载荷里；
+    /// 两者都可能缺失，也可能被上游原样回显。累加器只在字段尚未见过时写入，
+    /// 因此同一字段的后续取值不会覆盖首次取值。
     Start {
         /// 上游响应 ID。
         id: Option<String>,
         /// 实际上使用的模型名。
         model: Option<String>,
+        /// 上游回显的推理强度原文；`None` 表示上游没有回显。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     /// 文本增量。
     TextDelta {

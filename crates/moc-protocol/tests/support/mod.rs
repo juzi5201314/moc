@@ -967,6 +967,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::WorkspaceChanged { .. } => "workspace_changed",
         SessionUpdate::PtcChildStarted { .. } => "ptc_child_started",
         SessionUpdate::PtcChildFinished { .. } => "ptc_child_finished",
+        SessionUpdate::UpstreamMismatch { .. } => "upstream_mismatch",
         SessionUpdate::Error { .. } => "error",
     }
 }

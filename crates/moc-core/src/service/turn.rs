@@ -21,7 +21,7 @@ mod stream;
 pub(crate) mod tools;
 mod workspace;
 
-use request::{build_request, project_input};
+use request::{build_request, project_input, upstream_mismatches};
 use stream::forward_event;
 use tools::{execute_tool_batch, persist_tool_result, repair_pending_calls};
 use workspace::check_workspace;
@@ -572,6 +572,19 @@ async fn run_turn_locked(
             }
             continue 'steps;
         };
+        let mismatches = upstream_mismatches(&model, &request, &response);
+        if !mismatches.is_empty() {
+            update
+                .emit(
+                    params.session_id.clone(),
+                    SessionUpdate::UpstreamMismatch {
+                        turn_id: turn_id.clone(),
+                        fields: mismatches,
+                    },
+                )
+                .await
+                .map_err(protocol_to_rpc)?;
+        }
         usage.input_tokens = usage
             .input_tokens
             .saturating_add(response.usage.input_tokens);

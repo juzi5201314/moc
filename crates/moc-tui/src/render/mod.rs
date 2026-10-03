@@ -152,6 +152,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     view.trim_outside(skip_rows, viewport);
     highlight_selection(frame, app, scroll_area);
     draw_notice(frame, app, scroll_area);
+    draw_warning(frame, app, scroll_area);
     // 滚动条贴终端右缘：与内容边距无关，避免压住正文
     draw_scrollbar(frame, app, scroll_area, max_offset);
 
@@ -193,16 +194,58 @@ fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// 一次性提示 toast：贴滚动区右下角的胶囊，TTL 由 [`App::notice_visible`] 决定。
-///
-/// 只铺自己那块（抬升底色 + 左侧强调条 + 图标与正文之间留白），不整行压黑底，
-/// 也不盖正文。
 fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
-    if !app.notice_visible() || area.height == 0 || area.width < 12 {
+    if !app.notice_visible() || area.height == 0 {
         return;
     }
     let Some(text) = app.notice.as_deref() else {
         return;
     };
+    draw_chip(
+        frame.buffer_mut(),
+        app,
+        area,
+        area.y + area.height - 1,
+        text,
+        app.theme.accent_success,
+    );
+}
+
+/// 上游配置不一致告警：贴滚动区右上角的胶囊，TTL 由 [`App::warning_visible`] 决定。
+///
+/// 与 notice 共用 [`draw_chip`]，位置与强调色不同：同屏最多一条，新告警替换旧告警。
+fn draw_warning(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.warning_visible() || area.height == 0 {
+        return;
+    }
+    let Some(text) = app.warning.as_deref() else {
+        return;
+    };
+    draw_chip(
+        frame.buffer_mut(),
+        app,
+        area,
+        area.y,
+        text,
+        app.theme.accent_warning,
+    );
+}
+
+/// 右对齐的一行胶囊：抬升底色 + 左侧强调条 + 菱形图标 + 正文。
+///
+/// 只铺自己那块，不整行压黑底，也不盖正文；`accent` 同时用于强调条与图标。
+/// 直接写 buffer 以便单测断言落位与配色。
+fn draw_chip(
+    buffer: &mut ratatui::buffer::Buffer,
+    app: &App,
+    area: Rect,
+    row: u16,
+    text: &str,
+    accent: Color,
+) {
+    if area.width < 12 || row < area.y || row >= area.y + area.height {
+        return;
+    }
     let theme = app.theme;
     // `▌ ◆ ` 前缀 + 左右各 1 格内边距
     const PREFIX: usize = 5;
@@ -212,10 +255,8 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     let chip_width = u16::try_from(chip_width)
         .unwrap_or(area.width)
         .min(area.width);
-    let row = area.y + area.height - 1;
     let x = area.x + area.width - chip_width;
     let fill = Style::new().bg(theme.bg_highlight);
-    let buffer = frame.buffer_mut();
     buffer.set_style(
         Rect {
             x,
@@ -229,13 +270,13 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
         x,
         row,
         " ▌ ",
-        Style::new().fg(theme.accent_success).bg(theme.bg_highlight),
+        Style::new().fg(accent).bg(theme.bg_highlight),
     );
     buffer.set_string(
         x + 3,
         row,
         "◆ ",
-        Style::new().fg(theme.accent_success).bg(theme.bg_highlight),
+        Style::new().fg(accent).bg(theme.bg_highlight),
     );
     buffer.set_string(
         x + 5,
@@ -274,8 +315,7 @@ fn draw_scrollbar(frame: &mut Frame, app: &App, area: Rect, max_offset: usize) {
     let total = (max_offset as u32) + area.height as u32;
     let thumb_height =
         ((area.height as u32 * area.height as u32) / total.max(1)).clamp(1, track as u32) as u16;
-    let thumb_top =
-        scrollbar_thumb_top(track, thumb_height, max_offset, app.scroll_offset);
+    let thumb_top = scrollbar_thumb_top(track, thumb_height, max_offset, app.scroll_offset);
     // 贴终端右缘（在内容边距之外），不压内容
     let x = frame.area().width.saturating_sub(1);
     let color = if app.scroll_offset == 0 {
@@ -945,7 +985,11 @@ mod tests {
     fn scrollbar_thumb_tracks_offset_from_history_top() {
         // 轨道 20 行、滑块 4 行 → 可移动 16 行
         assert_eq!(scrollbar_thumb_top(20, 4, 100, 0), 16, "跟随尾部时滑块贴底");
-        assert_eq!(scrollbar_thumb_top(20, 4, 100, 100), 0, "历史顶端时滑块贴顶");
+        assert_eq!(
+            scrollbar_thumb_top(20, 4, 100, 100),
+            0,
+            "历史顶端时滑块贴顶"
+        );
         assert_eq!(scrollbar_thumb_top(20, 4, 100, 50), 8);
         assert!(scrollbar_thumb_top(20, 4, 100, 75) < scrollbar_thumb_top(20, 4, 100, 25));
         // 滑块与轨道等高（无溢出空间）时位置恒定
@@ -975,5 +1019,78 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(rendered.contains("Stopping"));
+    }
+
+    /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。
+    ///
+    /// 同时校验强调色：告警用 warning、notice 用 success，用户才能一眼区分。
+    #[test]
+    fn warning_chip_sits_top_right_and_notice_bottom_right() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let area = Rect {
+            x: 2,
+            y: 1,
+            width: 40,
+            height: 10,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("构造测试终端");
+
+        let row_text = |terminal: &Terminal<TestBackend>, row: u16| {
+            (0..60)
+                .filter_map(|x| terminal.backend().buffer().cell((x, row)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+
+        app.set_warning("model model → model-lite");
+        app.set_notice("clipboard image attached");
+        terminal
+            .draw(|frame| {
+                draw_warning(frame, &app, area);
+                draw_notice(frame, &app, area);
+            })
+            .expect("绘制成功");
+
+        let top = row_text(&terminal, area.y);
+        assert!(top.contains("▌ ◆ model model → model-lite"), "{top:?}");
+        let bottom = row_text(&terminal, area.y + area.height - 1);
+        assert!(
+            bottom.contains("▌ ◆ clipboard image attached"),
+            "{bottom:?}"
+        );
+        assert!(
+            row_text(&terminal, area.y + 1).trim().is_empty(),
+            "告警只占一行"
+        );
+
+        // 右对齐：胶囊右端贴 area 右边；图标格配色区分告警与提示
+        let chip_width =
+            u16::try_from(str_width("model model → model-lite") + 7).expect("宽度有界");
+        let icon_x = area.x + area.width - chip_width + 3;
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((icon_x, area.y))
+                .expect("图标格存在")
+                .fg,
+            Theme::global().accent_warning
+        );
+        let notice_width =
+            u16::try_from(str_width("clipboard image attached") + 7).expect("宽度有界");
+        let notice_icon_x = area.x + area.width - notice_width + 3;
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((notice_icon_x, area.y + area.height - 1))
+                .expect("图标格存在")
+                .fg,
+            Theme::global().accent_success
+        );
     }
 }

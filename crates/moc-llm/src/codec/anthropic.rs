@@ -105,10 +105,9 @@ pub(crate) fn encode(
 fn encode_output_config(cfg: &LlmConfig, req: &ChatRequest) -> Map<String, Value> {
     let mut output_config = Map::new();
     if let Some(reasoning) = &req.reasoning
-        && reasoning.enabled
-        && let Some(effort) = reasoning.effort
+        && let Some(effort) = cfg.wire_effort(Some(reasoning))
     {
-        output_config.insert("effort".into(), Value::String(effort.as_str().into()));
+        output_config.insert("effort".into(), Value::String(effort));
     }
     if cfg.wire.response_format_dialect != crate::config::ResponseFormatDialect::Unsupported
         && let Some(format) = &req.response_format
@@ -552,6 +551,7 @@ pub(crate) fn decode_response(
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        reasoning_effort: super::reported_effort(value),
         message: Message {
             role: Role::Assistant,
             content,
@@ -684,6 +684,7 @@ impl AnthropicStreamDecoder {
                     out.push(Ok(StreamEvent::Start {
                         id: optional_string_at(value, "/message/id"),
                         model: optional_string_at(value, "/message/model"),
+                        effort: super::reported_effort(value.get("message").unwrap_or(value)),
                     }));
                 }
                 if let Some(usage) = value.pointer("/message/usage").filter(|u| !u.is_null()) {
@@ -1733,6 +1734,7 @@ mod tests {
                 StreamEvent::Start {
                     id: Some("msg_1".into()),
                     model: Some("claude-sonnet-4-5".into()),
+                    effort: None,
                 },
                 StreamEvent::Usage(Usage {
                     input_tokens: 10,

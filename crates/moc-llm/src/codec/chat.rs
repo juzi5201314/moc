@@ -371,8 +371,10 @@ fn encode_thinking(cfg: &LlmConfig, reasoning: &ReasoningConfig, body: &mut Map<
     if !reasoning.enabled {
         return;
     }
-    if let (Some(field), Some(effort)) = (&wire.effort_field, reasoning.effort) {
-        body.insert(field.clone(), Value::String(wire.effort_value(effort)));
+    if let Some(field) = &wire.effort_field
+        && let Some(value) = cfg.wire_effort(Some(reasoning))
+    {
+        body.insert(field.clone(), Value::String(value));
     }
 }
 
@@ -474,6 +476,7 @@ pub(crate) fn decode_response(
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        reasoning_effort: super::reported_effort(value),
         message: Message {
             role: Role::Assistant,
             content,
@@ -700,6 +703,7 @@ impl StreamDecoder for ChatStreamDecoder {
                     .get("model")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                effort: super::reported_effort(&value),
             }));
         }
         if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
@@ -1456,6 +1460,7 @@ mod tests {
                 StreamEvent::Start {
                     id: Some("chatcmpl-1".into()),
                     model: Some("test-model".into()),
+                    effort: None,
                 },
                 StreamEvent::ToolCallStart {
                     index: 0,
@@ -1510,6 +1515,7 @@ mod tests {
                 StreamEvent::Start {
                     id: None,
                     model: None,
+                    effort: None,
                 },
                 StreamEvent::ToolCallStart {
                     index: 0,
@@ -1550,6 +1556,7 @@ mod tests {
                 StreamEvent::Start {
                     id: Some("chatcmpl-9".into()),
                     model: Some("m".into()),
+                    effort: None,
                 },
                 StreamEvent::ReasoningDelta {
                     index: 0,
@@ -1587,6 +1594,7 @@ mod tests {
                 StreamEvent::Start {
                     id: None,
                     model: None,
+                    effort: None,
                 },
                 StreamEvent::TextDelta {
                     index: 0,

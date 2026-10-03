@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 
-use moc_protocol::methods::{AssistantDelta, SessionUpdate, SessionUpdateParams};
+use moc_protocol::methods::{AssistantDelta, SessionUpdate, SessionUpdateParams, UpstreamField};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -212,6 +212,21 @@ impl Renderer {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(out, "\n[{label}：{paths}]");
+            }
+            SessionUpdate::UpstreamMismatch { fields, .. } => {
+                let detail = fields
+                    .iter()
+                    .map(|mismatch| match mismatch.field {
+                        UpstreamField::Model => {
+                            format!("模型 {} → {}", mismatch.requested, mismatch.reported)
+                        }
+                        UpstreamField::Effort => {
+                            format!("推理强度 {} → {}", mismatch.requested, mismatch.reported)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("，");
+                let _ = writeln!(out, "\n[警告：上游实际配置与请求不一致：{detail}]");
             }
             SessionUpdate::Error { message, .. } => {
                 let _ = writeln!(out, "\n[错误：{message}]");

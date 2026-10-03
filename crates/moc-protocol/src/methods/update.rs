@@ -9,7 +9,7 @@
 //!
 //! | `moc_llm::StreamEvent` | 动作 |
 //! |---|---|
-//! | `Start { id, model }` | 丢弃（`model` 已由 `turn_started` 给出，上游 `id` 前端不需要） |
+//! | `Start { id, model, effort }` | 丢弃（`model` 已由 `turn_started` 给出，上游 `id` 前端不需要）。`model` / `effort` 被累加进完整响应，core 在响应结束后与请求值比对，不一致时另发 `upstream_mismatch` |
 //! | `TextDelta { index, text }` | `Text { delta: text }` |
 //! | `ReasoningDelta { index, text }` | `Reasoning { delta: text }` |
 //! | `ReasoningSignature { index, signature }` | 丢弃（不透明，前端无法渲染；完整内容随 `turn_finished.message` 给出） |
@@ -197,6 +197,17 @@ pub enum SessionUpdate {
         violation: bool,
         changes: Vec<PathChange>,
     },
+    /// 上游实际使用的模型或推理强度与本地请求不一致。
+    ///
+    /// 网关可能静默改写模型（降级 / 映射）或降低推理强度；每次上游请求完成后由
+    /// core 比对一次，只在不一致时推送。前端应把它渲染成醒目的告警，并在重复
+    /// 出现时替换而非堆叠。
+    UpstreamMismatch {
+        /// 轮次 ID。
+        turn_id: String,
+        /// 每一处不一致；至少一项（空列表没有任何意义，core 不会发送）。
+        fields: Vec<UpstreamFieldMismatch>,
+    },
     /// 轮次内不可恢复错误。
     Error {
         turn_id: String,
@@ -211,6 +222,28 @@ pub enum SessionUpdate {
 pub struct PathChange {
     pub path: String,
     pub kind: String,
+}
+
+/// 一处「本地请求值 ≠ 上游回显值」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamFieldMismatch {
+    /// 被改写的字段。
+    pub field: UpstreamField,
+    /// 本地写入请求的值。
+    pub requested: String,
+    /// 上游回显的值。
+    pub reported: String,
+}
+
+/// 可能被上游静默改写的请求字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamField {
+    /// 模型 id（上游 `model` 字段）。
+    Model,
+    /// 推理强度（线上原文，未经 moc-llm 侧的名称映射还原）。
+    Effort,
 }
 
 /// assistant 增量。
@@ -514,6 +547,27 @@ mod tests {
                     }],
                 },
                 json!({ "type": "workspace_changed", "violation": true, "changes": [{ "path": "src/lib.rs", "kind": "modified" }] }),
+            ),
+            (
+                SessionUpdate::UpstreamMismatch {
+                    turn_id: "turn_1".into(),
+                    fields: vec![
+                        UpstreamFieldMismatch {
+                            field: UpstreamField::Model,
+                            requested: "glm-5.3".into(),
+                            reported: "glm-5.3-air".into(),
+                        },
+                        UpstreamFieldMismatch {
+                            field: UpstreamField::Effort,
+                            requested: "max".into(),
+                            reported: "high".into(),
+                        },
+                    ],
+                },
+                json!({ "type": "upstream_mismatch", "turn_id": "turn_1", "fields": [
+                    { "field": "model", "requested": "glm-5.3", "reported": "glm-5.3-air" },
+                    { "field": "effort", "requested": "max", "reported": "high" },
+                ] }),
             ),
             (
                 SessionUpdate::Error {

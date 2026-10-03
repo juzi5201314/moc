@@ -11,7 +11,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::retry::RetryPolicy;
-use crate::types::Effort;
+use crate::types::{Effort, ReasoningConfig};
 
 /// 线上协议。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -293,6 +293,40 @@ impl LlmConfig {
         let mut next = self.clone();
         next.model = model.into();
         next
+    }
+
+    /// 本次请求实际写入请求体的推理强度原文（与三协议编码器同源）。
+    ///
+    /// `None` 表示请求体不含强度字段：Chat 在 `effort_field` 关闭或思考关闭时不发送，
+    /// Anthropic 关闭思考时不发送；Responses 关闭思考时发送 `none`。core 用本方法与
+    /// 上游回显值比对，因此这里必须与 [`crate::codec`] 的编码结果逐字一致。
+    pub fn wire_effort(&self, reasoning: Option<&ReasoningConfig>) -> Option<String> {
+        let reasoning = reasoning?;
+        match self.protocol {
+            Protocol::OpenAiChat => {
+                if !reasoning.enabled {
+                    return None;
+                }
+                self.wire.thinking.effort_field.as_ref()?;
+                reasoning
+                    .effort
+                    .map(|effort| self.wire.thinking.effort_value(effort))
+            }
+            Protocol::OpenAiResponses => {
+                if reasoning.enabled {
+                    reasoning.effort.map(|effort| effort.as_str().to_owned())
+                } else {
+                    Some(Effort::None.as_str().to_owned())
+                }
+            }
+            Protocol::AnthropicMessages => {
+                if reasoning.enabled {
+                    reasoning.effort.map(|effort| effort.as_str().to_owned())
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// 模型目录沿用推理端点的版本路径规则，不包含会话模型或 deployment。

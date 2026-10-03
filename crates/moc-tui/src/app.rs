@@ -37,6 +37,11 @@ impl Focus {
     }
 }
 
+/// 一次性提示（notice）的存活时长。
+const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+/// 上游配置不一致告警的存活时长：比 notice 长，避免用户错过静默改写。
+const WARNING_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// 应用状态。
 pub struct App {
     pub theme: &'static Theme,
@@ -112,6 +117,10 @@ pub struct App {
     pub notice: Option<String>,
     /// 当前 notice 的设置时刻（toast 超时判定）。
     pub notice_at: Option<std::time::Instant>,
+    /// 上游实际配置与请求不一致的告警；同一时刻最多一条，新告警替换旧告警。
+    pub warning: Option<String>,
+    /// 当前 warning 的设置时刻（超时判定）。
+    pub warning_at: Option<std::time::Instant>,
     /// 退出标志。
     pub should_quit: bool,
     pub preferences: crate::config::TuiConfig,
@@ -192,6 +201,8 @@ impl App {
             clear_pending: false,
             notice: None,
             notice_at: None,
+            warning: None,
+            warning_at: None,
             should_quit: false,
             preferences: crate::config::TuiConfig::default(),
             keymap: crate::config::KeyMap::compile(&crate::config::TuiConfig::default())
@@ -262,13 +273,40 @@ impl App {
         self.notice_at = Some(std::time::Instant::now());
     }
 
+    /// 设置上游配置不一致告警并刷新计时。
+    ///
+    /// 只保留最新一条：同一轮内多次不一致（多个工具调用步骤各自一次请求）会彼此
+    /// 覆盖，绝不堆叠。
+    pub fn set_warning(&mut self, text: impl Into<String>) {
+        self.warning = Some(text.into());
+        self.warning_at = Some(std::time::Instant::now());
+    }
+
+    /// notice 的消失时刻；`None` 表示当前没有显示中的 notice。
+    ///
+    /// 只返回仍在未来的时刻，事件循环才能安全地 `sleep_until`——返回已过去的
+    /// 时刻会让 select 立刻再次命中，形成空转。
+    pub fn notice_deadline(&self) -> Option<std::time::Instant> {
+        let at = self.notice_at.filter(|_| self.notice.is_some())?;
+        let deadline = at + NOTICE_TTL;
+        (std::time::Instant::now() < deadline).then_some(deadline)
+    }
+
     /// notice 是否仍在显示期内。
     pub fn notice_visible(&self) -> bool {
-        const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
-        match (&self.notice, self.notice_at) {
-            (Some(_), Some(at)) => at.elapsed() < NOTICE_TTL,
-            _ => false,
-        }
+        self.notice_deadline().is_some()
+    }
+
+    /// warning 的消失时刻；`None` 表示当前没有显示中的告警。语义同 [`Self::notice_deadline`]。
+    pub fn warning_deadline(&self) -> Option<std::time::Instant> {
+        let at = self.warning_at.filter(|_| self.warning.is_some())?;
+        let deadline = at + WARNING_TTL;
+        (std::time::Instant::now() < deadline).then_some(deadline)
+    }
+
+    /// warning 是否仍在显示期内。
+    pub fn warning_visible(&self) -> bool {
+        self.warning_deadline().is_some()
     }
 
     /// 当前模型展示名；未连接时显示 `idle`。
@@ -708,5 +746,30 @@ mod tests {
         assert!(!app.turn_running);
         assert!(!app.cancel_requested);
         assert_eq!(app.notice.as_deref(), Some("Stopped"));
+    }
+
+    /// 告警与 notice 的 TTL：期内可见且给出未来的截止时刻，过期后两者都消失。
+    #[test]
+    fn warning_and_notice_expire_after_their_ttl() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+
+        app.set_warning("effort max → high");
+        app.set_notice("Stopped");
+        assert!(app.warning_visible());
+        assert!(app.notice_visible());
+        // 截止时刻必须落在未来，事件循环才能安全 sleep_until 而非空转
+        assert!(app.warning_deadline().unwrap() > std::time::Instant::now());
+        assert!(app.notice_deadline().unwrap() > std::time::Instant::now());
+
+        let stale = std::time::Instant::now() - std::time::Duration::from_secs(600);
+        app.warning_at = Some(stale);
+        app.notice_at = Some(stale);
+        assert!(!app.warning_visible());
+        assert!(!app.notice_visible());
+        assert!(app.warning_deadline().is_none());
+        assert!(app.notice_deadline().is_none());
+        // 过期的槽位不再需要重绘，事件循环据此不再安排超时分支
+        assert_eq!(app.warning.as_deref(), Some("effort max → high"));
     }
 }

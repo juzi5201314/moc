@@ -63,6 +63,8 @@ enum AccumulatedBlock {
 struct Accumulator {
     id: Option<String>,
     model: Option<String>,
+    /// 上游回显的推理强度；只在 [`StreamEvent::Start`] 首次给出时填充。
+    effort: Option<String>,
     blocks: Vec<AccumulatedBlock>,
     slots: HashMap<(BlockKind, usize), usize>,
     usage: Usage,
@@ -74,12 +76,15 @@ impl Accumulator {
     /// 消费一个事件。
     fn apply(&mut self, event: &StreamEvent) {
         match event {
-            StreamEvent::Start { id, model } => {
+            StreamEvent::Start { id, model, effort } => {
                 if self.id.is_none() {
                     self.id = id.clone();
                 }
                 if self.model.is_none() {
                     self.model = model.clone();
+                }
+                if self.effort.is_none() {
+                    self.effort = effort.clone();
                 }
             }
             StreamEvent::TextDelta { index, text } => {
@@ -186,6 +191,7 @@ impl Accumulator {
         ChatResponse {
             id: self.id.clone(),
             model: self.model.clone(),
+            reasoning_effort: self.effort.clone(),
             message: Message {
                 role: Role::Assistant,
                 content: self.content(protocol, interrupted),
@@ -521,6 +527,7 @@ mod tests {
                 StreamEvent::Start {
                     id: Some("chatcmpl-1".into()),
                     model: Some("test".into()),
+                    effort: None,
                 },
                 StreamEvent::TextDelta {
                     index: 0,

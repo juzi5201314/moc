@@ -10,6 +10,7 @@ use moc_llm::Client;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, InputPart, PromptParams, SessionLoad, SessionLoadParams,
     SessionMode, SessionNew, SessionNewParams, SessionPrompt, SessionUpdate, SessionUpdateMethod,
+    UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -726,6 +727,125 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
     let text = content::content_text(&reminder["content"]);
     assert!(text.contains("只读模式下修改了工作区"), "{text}");
     assert!(text.contains("violation.txt"), "{text}");
+
+    core.shutdown().await;
+    drop(client);
+    drop(connection);
+    drop(server);
+}
+
+#[tokio::test]
+async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            concat!(
+                "data: {\"id\":\"chatcmpl-rewrite\",\"model\":\"model-lite\",\"reasoning_effort\":\"low\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\n",
+                "data: [DONE]\n\n",
+            ),
+            "text/event-stream",
+        ))
+        .mount(&upstream)
+        .await;
+
+    let root = tempfile::tempdir().expect("temporary project root");
+    let home = root.path().join("home");
+    let cwd = root.path().join("workspace");
+    let sessions = root.path().join("sessions");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&cwd).expect("create workspace");
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[models.roles]\ndefault='test/model:high'\nsmol='test/model:high'\nslow='test/model:high'\nplan='test/model:high'\n\
+             [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
+             [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\nreasoning=true\n\
+             [session]\ndir={:?}\n\
+             [workspace]\nwatch=false\n\
+             [context_files]\nenabled=false\n\
+             [compaction]\nenabled=false\n\
+             [limits]\nmax_steps_per_turn=4\n",
+            upstream.uri(),
+            sessions.to_string_lossy(),
+        ),
+    )
+    .expect("write config");
+
+    let core = Core::new(CoreConfig {
+        home,
+        cwd: cwd.clone(),
+        overlays: Vec::new(),
+        session_dir: None,
+        client: Client::new(),
+    })
+    .expect("construct core");
+    let (core_side, frontend_side) = transport::duplex(64 * 1024);
+    let server = Server::with_options((*core).clone(), ServerOptions::default());
+    let connection = server.spawn(core_side);
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let update_sink = Arc::clone(&updates);
+    let (client, _handshake) = ClientBuilder::new(ClientInfo {
+        name: "moc-core-test".into(),
+        version: "0.1.0".into(),
+        frontend: "test".into(),
+    })
+    .capabilities(ClientCapabilities {
+        permission_requests: true,
+        ask_requests: true,
+    })
+    .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
+        update_sink.lock().push(params.update);
+        std::future::ready(())
+    })
+    .connect(frontend_side)
+    .await
+    .expect("connect embedded protocol client");
+
+    let session = client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("create session");
+    client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "Say hello".into(),
+            }],
+        })
+        .await
+        .expect("run model turn");
+
+    let fields = updates
+        .lock()
+        .iter()
+        .find_map(|update| match update {
+            SessionUpdate::UpstreamMismatch { fields, .. } => Some(fields.clone()),
+            _ => None,
+        })
+        .expect("上游改写必须上报 UpstreamMismatch");
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.field == UpstreamField::Model
+                && field.requested == "model"
+                && field.reported == "model-lite"),
+        "{fields:?}"
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field.field == UpstreamField::Effort
+                && field.requested == "high"
+                && field.reported == "low"),
+        "{fields:?}"
+    );
 
     core.shutdown().await;
     drop(client);

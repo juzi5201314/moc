@@ -236,6 +236,54 @@ pub(crate) fn cache_options(
         },
     })
 }
+
+/// 比对上游回显与本地请求，列出所有不一致的字段。
+///
+/// 只比较**双方都给出**的字段：上游没回显（`None` 或空白）不产生结论，避免把
+/// 网关的沉默误报成改写。模型 id 逐字（去首尾空白后）比较——网关降级、别名映射、
+/// 混淆 id 解包正是要暴露的目标；推理强度按 ASCII 大小写不敏感比较，因为上游
+/// 常把强度归一化成小写。
+pub(in crate::service) fn upstream_mismatches(
+    model: &crate::ResolvedModel,
+    request: &ChatRequest,
+    response: &moc_llm::ChatResponse,
+) -> Vec<moc_protocol::methods::UpstreamFieldMismatch> {
+    use moc_protocol::methods::{UpstreamField, UpstreamFieldMismatch};
+
+    let mut mismatches = Vec::new();
+    let reported_model = response
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if let Some(reported) = reported_model
+        && reported != model.model_id
+    {
+        mismatches.push(UpstreamFieldMismatch {
+            field: UpstreamField::Model,
+            requested: model.model_id.clone(),
+            reported: reported.to_owned(),
+        });
+    }
+    let reported_effort = response
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty());
+    if let (Some(requested), Some(reported)) = (
+        model.llm.wire_effort(request.reasoning.as_ref()),
+        reported_effort,
+    ) && !requested.eq_ignore_ascii_case(reported)
+    {
+        mismatches.push(UpstreamFieldMismatch {
+            field: UpstreamField::Effort,
+            requested,
+            reported: reported.to_owned(),
+        });
+    }
+    mismatches
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

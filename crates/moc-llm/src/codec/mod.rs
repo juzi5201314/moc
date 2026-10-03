@@ -182,6 +182,30 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// 从上游回显（响应体或流事件载荷）里提取实际生效的推理强度原文。
+///
+/// 各网关位置不一：OpenAI 新版嵌套在 `reasoning.effort`，旧版是顶层
+/// `reasoning_effort`，Anthropic 风格放在 `output_config.effort`；按此优先级取
+/// 第一个非空字符串。缺失或为空都返回 `None`——「上游没回显」不产生任何比对结论。
+///
+/// 传进来的 `value` 必须是读 `model` 的同一层对象（Chat 是根、Anthropic 是
+/// `/message`、Responses 是 `/response`）。
+pub(crate) fn reported_effort(value: &Value) -> Option<String> {
+    [
+        "/reasoning/effort",
+        "/reasoning_effort",
+        "/output_config/effort",
+    ]
+    .into_iter()
+    .find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .filter(|effort| !effort.trim().is_empty())
+            .map(str::to_owned)
+    })
+}
+
 /// 按字符边界截断，避免把多字节字符切成两半。
 pub(crate) fn truncated(text: &str, max_chars: usize) -> String {
     match text.char_indices().nth(max_chars) {

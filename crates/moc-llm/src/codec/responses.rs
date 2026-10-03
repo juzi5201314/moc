@@ -66,7 +66,7 @@ pub(crate) fn encode(
         body.insert("top_p".into(), json!(top_p));
     }
     if let Some(reasoning) = &req.reasoning
-        && let Some(value) = encode_reasoning(reasoning)
+        && let Some(value) = encode_reasoning(cfg, reasoning)
     {
         body.insert("reasoning".into(), value);
     }
@@ -156,15 +156,15 @@ fn cache_breakpoints(req: &ChatRequest, message_count: usize) -> Result<BTreeSet
     Ok(breakpoints)
 }
 
-fn encode_reasoning(reasoning: &ReasoningConfig) -> Option<Value> {
+fn encode_reasoning(cfg: &LlmConfig, reasoning: &ReasoningConfig) -> Option<Value> {
     let mut object = Map::new();
     if !reasoning.enabled {
         // `none` 是 ReasoningEffort 的合法取值。
         object.insert("effort".into(), Value::String("none".into()));
         return Some(Value::Object(object));
     }
-    if let Some(effort) = reasoning.effort {
-        object.insert("effort".into(), Value::String(effort.as_str().into()));
+    if let Some(effort) = cfg.wire_effort(Some(reasoning)) {
+        object.insert("effort".into(), Value::String(effort));
     }
     if let Some(summary) = reasoning.summary
         && let Some(value) = summary_value(summary)
@@ -548,6 +548,7 @@ pub(crate) fn decode_response(
             .get("model")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        reasoning_effort: super::reported_effort(value),
         message: Message {
             role: Role::Assistant,
             content,
@@ -647,6 +648,7 @@ impl ResponsesStreamDecoder {
                     out.push(Ok(StreamEvent::Start {
                         id: optional_string_at(value, "/response/id"),
                         model: optional_string_at(value, "/response/model"),
+                        effort: super::reported_effort(value.get("response").unwrap_or(value)),
                     }));
                 }
             }
@@ -1580,6 +1582,7 @@ mod tests {
                 StreamEvent::Start {
                     id: Some("resp_1".into()),
                     model: Some("gpt-5".into()),
+                    effort: None,
                 },
                 StreamEvent::ReasoningDelta {
                     index: 0,
