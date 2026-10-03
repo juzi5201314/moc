@@ -247,7 +247,10 @@ fn apply_rewound(
     app.modal = None;
     app.switch_session(
         loaded.session,
-        crate::transcript_restore::blocks_from_entries(&loaded.entries),
+        crate::transcript_restore::blocks_from_entries_with_children(
+            &loaded.entries,
+            &loaded.child_calls,
+        ),
     );
     app.todos = loaded.todos;
     app.pending_plan = None;
@@ -1467,7 +1470,10 @@ fn handle_modal_key(
                             Ok(loaded) => {
                                 let _ = events.send(AppEvent::Loaded(
                                     loaded.session,
-                                    crate::transcript_restore::blocks_from_entries(&loaded.entries),
+                                    crate::transcript_restore::blocks_from_entries_with_children(
+                                        &loaded.entries,
+                                        &loaded.child_calls,
+                                    ),
                                 ));
                             }
                             Err(error) => {
@@ -1631,6 +1637,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
     match update {
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
             moc_protocol::methods::AssistantDelta::Text { delta } => {
+                app.finish_thinking();
                 if !delta.is_empty()
                     && !app.has_streaming(|block| matches!(block, Block::Assistant { .. }))
                 {
@@ -1650,13 +1657,20 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 if !delta.is_empty()
                     && !app.has_streaming(|block| matches!(block, Block::Thinking { .. }))
                 {
+                    app.thinking_started_at = Some(std::time::Instant::now());
                     app.push_block(Block::Thinking {
                         text: String::new(),
+                        reasoning_tokens: None,
+                        duration_ms: None,
                     });
                 }
                 app.append_streaming(
                     |block| match block {
-                        Block::Thinking { text } => Some(text),
+                        Block::Thinking {
+                            text,
+                            reasoning_tokens: _,
+                            duration_ms: _,
+                        } => Some(text),
                         _ => None,
                     },
                     &delta,
@@ -1678,6 +1692,20 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             }
             moc_protocol::methods::AssistantDelta::Usage { usage } => app.apply_usage(usage),
         },
+        SessionUpdate::PtcChildStarted {
+            tool_call_id,
+            name,
+            parent_tool_call_id,
+            ..
+        } => app.start_child_tool_block(tool_call_id, name, parent_tool_call_id),
+        SessionUpdate::PtcChildFinished {
+            tool_call_id,
+            status,
+            result,
+            duration_ms,
+            diff,
+            ..
+        } => app.finish_tool_block(tool_call_id, status, result, duration_ms, diff),
         SessionUpdate::ToolStarted {
             tool_call_id, name, ..
         } => app.start_tool_block(tool_call_id, name),
@@ -1935,7 +1963,8 @@ fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     let next = match session.mode {
         SessionMode::Normal => SessionMode::Ask,
         SessionMode::Ask => SessionMode::Plan,
-        SessionMode::Plan => SessionMode::Normal,
+        SessionMode::Plan => SessionMode::Ptc,
+        SessionMode::Ptc => SessionMode::Normal,
     };
     let client = connection.client.clone();
     let session_id = session.id.clone();

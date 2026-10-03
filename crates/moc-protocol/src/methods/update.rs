@@ -105,6 +105,25 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
     },
+    /// PTC JavaScript 发起的嵌套工具开始事件。
+    PtcChildStarted {
+        turn_id: String,
+        parent_tool_call_id: String,
+        tool_call_id: String,
+        name: String,
+    },
+    /// PTC JavaScript 发起的嵌套工具结束事件。
+    PtcChildFinished {
+        turn_id: String,
+        parent_tool_call_id: String,
+        tool_call_id: String,
+        status: ToolStatus,
+        result: ToolResult,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        diff: Option<ToolDiff>,
+    },
     /// core 正在等前端授权（与 [`SessionUpdate::PermissionResolved`] 成对）。
     ///
     /// 这两条镜像更新由 **core** 负责发：`ask_permission` 只发反向请求，

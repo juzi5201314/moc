@@ -491,7 +491,7 @@ impl<'a> MdRenderer<'a> {
             measure(row, &mut widths);
         }
         // 整体超宽时按比例收缩；边框占用的列数必须从总宽度中完整扣除。
-        let border_width = column_count.saturating_mul(3).saturating_add(1);
+        let border_width = column_count.saturating_mul(5).saturating_add(1);
         let available = self.width.saturating_sub(border_width);
         let total: usize = widths.iter().sum();
         if total > available {
@@ -541,9 +541,9 @@ impl<'a> MdRenderer<'a> {
                 style = style.add_modifier(Modifier::BOLD);
             }
             vec![
-                Span::styled(" ".to_owned(), style),
+                Span::styled("  ".to_owned(), style),
                 Span::styled(shown, style),
-                Span::styled(" ".repeat(width.saturating_sub(shown_width) + 1), style),
+                Span::styled(" ".repeat(width.saturating_sub(shown_width) + 2), style),
             ]
         };
         let render_row = |cells: &[Vec<Run>], bold: bool| -> Line<'static> {
@@ -551,13 +551,13 @@ impl<'a> MdRenderer<'a> {
             for (index, width) in widths.iter().enumerate() {
                 spans.push(Span::styled(
                     "│".to_owned(),
-                    Style::new().fg(self.theme.border),
+                    Style::new().fg(self.theme.border_subtle),
                 ));
                 spans.extend(render_cell(&cell_text(cells, index), *width, bold));
             }
             spans.push(Span::styled(
                 "│".to_owned(),
-                Style::new().fg(self.theme.border),
+                Style::new().fg(self.theme.border_subtle),
             ));
             Line::from(spans)
         };
@@ -573,9 +573,9 @@ impl<'a> MdRenderer<'a> {
                     format!(
                         "{}{}",
                         if index == 0 { head } else { cross },
-                        "─".repeat(width + 2)
+                        "─".repeat(width + 4)
                     ),
-                    Style::new().fg(self.theme.border),
+                    Style::new().fg(self.theme.border_subtle),
                 ));
             }
             let tail = match position {
@@ -585,7 +585,7 @@ impl<'a> MdRenderer<'a> {
             };
             spans.push(Span::styled(
                 tail.to_owned(),
-                Style::new().fg(self.theme.border),
+                Style::new().fg(self.theme.border_subtle),
             ));
             Line::from(spans)
         };

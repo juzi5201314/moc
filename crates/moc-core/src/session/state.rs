@@ -17,6 +17,7 @@ pub struct SessionState {
     pub model: String,
     pub todos: Vec<TodoPhase>,
     pub plans: Vec<PlanInfo>,
+    pub child_calls: Vec<moc_protocol::methods::session::TranscriptChildCall>,
     pub summary: Option<(String, String)>,
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
@@ -68,6 +69,7 @@ impl SessionState {
             model: model.clone(),
             todos: Vec::new(),
             plans: Vec::new(),
+            child_calls: Vec::new(),
             parent_session_id: parent_session_id.clone(),
             turn_sequence: 0,
             job_sequence: 0,
@@ -192,6 +194,7 @@ impl SessionState {
                     self.plans.push(info);
                 }
             }
+            Entry::ChildTool { call, .. } => self.child_calls.push(call.clone()),
         }
         self.last_entry_id = entry.id().to_owned();
         self.entries.push(entry);

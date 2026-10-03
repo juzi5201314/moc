@@ -18,7 +18,7 @@ use std::{collections::HashMap, sync::Arc};
 
 pub(crate) mod request;
 mod stream;
-mod tools;
+pub(crate) mod tools;
 mod workspace;
 
 use request::{build_request, project_input};
@@ -27,7 +27,7 @@ use tools::{execute_tool_batch, persist_tool_result, repair_pending_calls};
 use workspace::check_workspace;
 
 pub async fn run_turn(
-    inner: &CoreInner,
+    inner: Arc<CoreInner>,
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
 ) -> Result<TurnResult, RpcError> {
@@ -57,7 +57,7 @@ pub async fn run_turn(
         .await
         .map_err(protocol_to_rpc)?;
 
-    repair_pending_calls(inner, &session_id, &record)
+    repair_pending_calls(&inner, &session_id, &record)
         .await
         .map_err(to_rpc)?;
     inner
@@ -67,7 +67,7 @@ pub async fn run_turn(
         .lock()
         .await
         .accepting = true;
-    let result = run_turn_locked(inner, &ctx, params, Arc::clone(&record)).await;
+    let result = run_turn_locked(Arc::clone(&inner), &ctx, params, Arc::clone(&record)).await;
     inner
         .runtime(&session_id)
         .await
@@ -75,10 +75,10 @@ pub async fn run_turn(
         .lock()
         .await
         .accepting = false;
-    repair_pending_calls(inner, &session_id, &record)
+    repair_pending_calls(&inner, &session_id, &record)
         .await
         .map_err(to_rpc)?;
-    super::management::drain_steering(inner, &session_id, true)
+    super::management::drain_steering(&inner, &session_id, true)
         .await
         .map_err(to_rpc)?;
     file_lock.take();
@@ -99,7 +99,7 @@ pub async fn run_turn(
 }
 
 async fn run_turn_locked(
-    inner: &CoreInner,
+    inner: Arc<CoreInner>,
     ctx: &RequestContext,
     params: moc_protocol::methods::PromptParams,
     record: Arc<crate::session::SessionRecord>,
@@ -123,7 +123,7 @@ async fn run_turn_locked(
         return Err(RpcError::of(RpcErrorCode::InvalidParams));
     }
     let user_message =
-        apply_skill_invocation(inner, user_message, &state_snapshot.session.cwd).await?;
+        apply_skill_invocation(&inner, user_message, &state_snapshot.session.cwd).await?;
     inner
         .sessions
         .append_message(&params.session_id, user_message.clone(), None, None)
@@ -251,7 +251,7 @@ async fn run_turn_locked(
             final_reason = FinishReason::Cancelled;
             break;
         }
-        super::management::drain_steering(inner, &params.session_id, false)
+        super::management::drain_steering(&inner, &params.session_id, false)
             .await
             .map_err(to_rpc)?;
         let mut snapshot = record.state.lock().await.clone();
@@ -365,7 +365,7 @@ async fn run_turn_locked(
             && context_tokens > compact::threshold(&project_config, model.context_window)
         {
             match compact::compact(
-                inner,
+                &inner,
                 ctx,
                 &params.session_id,
                 compact::CompactReason::Threshold,
@@ -455,7 +455,7 @@ async fn run_turn_locked(
                 {
                     overflow_attempts += 1;
                     match compact::compact(
-                        inner,
+                        &inner,
                         ctx,
                         &params.session_id,
                         compact::CompactReason::Overflow,
@@ -551,7 +551,7 @@ async fn run_turn_locked(
         let Some(response) = response else {
             stream_overflows += 1;
             let compact_report = compact::compact(
-                inner,
+                &inner,
                 ctx,
                 &params.session_id,
                 compact::CompactReason::Overflow,
@@ -617,7 +617,7 @@ async fn run_turn_locked(
                 .saturating_add(retained_tokens)
                 .saturating_add(native_tokens);
             compact::record_compaction(
-                inner,
+                &inner,
                 ctx,
                 &params.session_id,
                 compact::Checkpoint {
@@ -650,7 +650,7 @@ async fn run_turn_locked(
             if interrupted {
                 for call in &calls {
                     persist_tool_result(
-                        inner,
+                        &inner,
                         &params.session_id,
                         call.id.clone(),
                         "轮次被取消，该调用未执行。".into(),
@@ -709,16 +709,22 @@ async fn run_turn_locked(
             anchors: Arc::clone(&runtime.anchors),
             request: ctx.clone(),
             cancel: cancel.clone(),
-            jobs: Arc::clone(&runtime.jobs),
             sessions: Arc::clone(&inner.sessions),
+            core: Arc::clone(&inner),
+            ptc_slots: Arc::new(tokio::sync::Semaphore::new(
+                project_config.tools.ptc.max_concurrent_calls,
+            )),
+            jobs: Arc::clone(&runtime.jobs),
+            runtime: Arc::clone(&runtime),
             openviking,
             openviking_peer,
             mcp: Arc::clone(&mcp),
             skills: Arc::clone(&skills),
+            tool_call_id: String::new(),
             loaded_skills: Arc::clone(&runtime.loaded_skills),
         };
         let control_end =
-            execute_tool_batch(inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
+            execute_tool_batch(&inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
         if control_end {
             final_reason = FinishReason::Stop;
         }

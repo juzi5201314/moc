@@ -25,11 +25,11 @@ use crate::modal::Modal;
 use crate::transcript::Block as TranscriptBlock;
 
 /// 内容区左右边距（格）。
-const MARGIN_X: u16 = 2;
+const MARGIN_X: u16 = 3;
 /// 转写块标题（bullet / 工具名 / TODO）左缩进（格）。
 pub const TITLE_INDENT: usize = 1;
 /// 转写块正文（助手 markdown、工具内容、思考正文）左缩进（格）。
-pub const PROSE_INDENT: usize = 2;
+pub const PROSE_INDENT: usize = 3;
 /// 顶部信息条行数。
 const HEADER_ROWS: u16 = 1;
 /// 输入框上下边框行数。
@@ -359,7 +359,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         .map_or("idle", |session| crate::app::mode_label(session.mode));
     let right = [
         (model, theme.gray),
-        (" · ", theme.border),
+        (" | ", theme.border),
         (mode, theme.accent_model),
     ];
     let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
@@ -390,7 +390,8 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         (help_key, "Help", theme.gray_dim)
     };
-    let tips_width = str_width(left_key) + 1 + str_width(left_tip);
+    let left_separator = " | ";
+    let tips_width = str_width(left_key) + 1 + str_width(left_tip) + str_width(left_separator);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
     let buffer = frame.buffer_mut();
@@ -403,9 +404,8 @@ fn draw_prompt_legends(frame: &mut Frame, app: &App, area: Rect) {
         x += 1;
         buffer.set_string(x, y, left_tip, Style::new().fg(left_color));
         x += cell_width(left_tip);
-        buffer.set_string(x, y, " ", Style::new());
+        buffer.set_string(x, y, left_separator, Style::new().fg(theme.border));
     }
-
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let mut x = area.x + area.width - 2 - right_cells;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
@@ -496,15 +496,12 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let theme = app.theme;
     let data = statusline_data(app);
-    let mut spans: Vec<Span<'static>> = vec![
-        Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_model)),
-        Span::styled(
-            "moc".to_owned(),
-            Style::new()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+        "moc".to_owned(),
+        Style::new()
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::BOLD),
+    )];
     if let Some(branch) = &data.branch {
         spans.push(Span::styled(
             "  ⎇ ".to_owned(),

@@ -312,7 +312,9 @@ async fn execute_tool(
     if ctx.cancel.is_cancelled() {
         return Ok(cancelled_outcome());
     }
-    let execution = AssertUnwindSafe(tool.run(ctx, args)).catch_unwind();
+    let mut execution_ctx = ctx.clone();
+    execution_ctx.tool_call_id = call.id.clone();
+    let execution = AssertUnwindSafe(tool.run(&execution_ctx, args)).catch_unwind();
     let result = if tool.parallel_safe() || name == "ask" {
         tokio::select! {
             biased;
@@ -332,6 +334,22 @@ async fn execute_tool(
             format!("工具 {name} 执行发生 panic"),
         )),
     }
+}
+
+/// 执行 PTC 子工具：沿用 Normal 的授权、启用、取消与 MCP 路径，但不写入模型消息。
+pub(crate) async fn execute_nested_tool(
+    inner: &CoreInner,
+    ctx: &ToolCtx,
+    call: &moc_llm::ToolCall,
+) -> Result<ToolOutcome, CoreError> {
+    execute_tool(
+        inner,
+        ctx,
+        &ctx.runtime,
+        moc_protocol::methods::SessionMode::Normal,
+        call,
+    )
+    .await
 }
 
 enum Authorization {

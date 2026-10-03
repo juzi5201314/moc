@@ -156,17 +156,18 @@ fn render_entry(entry: &Entry, app: &App, width: u16, first: bool) -> Vec<Line<'
     match &entry.block {
         Block::User { text } => user_message(text, entry.at_ms, first, width, theme),
         Block::Assistant { text } => assistant_message(text, entry, width, theme),
-        Block::Thinking { text } => thinking_block(text, entry, app, width),
+        Block::Thinking {
+            text,
+            reasoning_tokens,
+            duration_ms,
+        } => thinking_block(text, *reasoning_tokens, *duration_ms, entry, app, width),
         Block::Tool(tool) => render_tool(tool, app, width, entry.folded),
         Block::Todo { phases } => render_todo(phases, app, width),
         Block::Note { text, error } => note_block(text, *error, width, theme),
     }
 }
 
-/// 用户消息：整幅圆角边框面板，末行右侧给本地时间。
-///
-/// 面板左右各留 1 格内边距、上下一行边框，背景与转写区一致；长文本吃满面板宽度换行；
-/// 末行放不下时间戳时单独追加一行，绝不与正文重叠。
+/// 用户消息：`>` 前缀、正文与右侧本地时间，不使用额外面板边框。
 fn user_message(
     text: &str,
     at_ms: Option<u64>,
@@ -174,67 +175,51 @@ fn user_message(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let mut pending_clock = at_ms.and_then(format_clock);
-    let inner = width.saturating_sub(2);
-    let text_width = inner.saturating_sub(2).max(8);
-    let border_style = Style::new().fg(theme.border).bg(theme.bg_base);
-    let fill = Style::new().bg(theme.bg_base);
-    let text_style = Style::new().fg(theme.accent_user).bg(theme.bg_base);
-
-    let rows = wrap_text(text, text_width);
-    let last_row = rows.len().saturating_sub(1);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 3);
+    let mut lines: Vec<Line<'static>> = Vec::new();
     if !first {
         lines.push(Line::from(String::new()));
     }
-    lines.push(Line::from(Span::styled(
-        format!("╭{}╮", "─".repeat(inner)),
-        border_style,
-    )));
+
+    let prefix = "> ";
+    let prefix_width = str_width(prefix);
+    let text_width = width.saturating_sub(prefix_width).max(8);
+    let rows = wrap_text(text, text_width);
+    let clock = at_ms.and_then(format_clock);
+    let mut clock_pending = clock.as_ref();
+
     for (index, row) in rows.into_iter().enumerate() {
-        let free = inner.saturating_sub(2 + str_width(&row));
-        let mut spans = vec![
-            Span::styled("│".to_owned(), border_style),
-            Span::styled(" ".to_owned(), fill),
-            Span::styled(row, text_style),
-        ];
-        if index == last_row
-            && let Some(clock) = &pending_clock
-        {
-            let clock_width = str_width(clock);
-            if free >= clock_width + 2 {
-                spans.push(Span::styled(" ".repeat(free - clock_width), fill));
-                spans.push(Span::styled(
-                    clock.clone(),
-                    Style::new().fg(theme.gray).bg(theme.bg_highlight),
-                ));
-                pending_clock = None;
-            }
+        let row_width = str_width(&row);
+        let mut spans = Vec::new();
+        if index == 0 {
+            spans.push(Span::styled(
+                prefix.to_owned(),
+                Style::new().fg(theme.gray_bright),
+            ));
+        } else {
+            spans.push(Span::styled(" ".repeat(prefix_width), Style::new()));
         }
-        spans.push(Span::styled(" ".to_owned(), fill));
-        spans.push(Span::styled("│".to_owned(), border_style));
-        lines.push(pad_line(spans, fill, width));
+        spans.push(Span::styled(row, Style::new().fg(theme.text_primary)));
+
+        if index == 0
+            && let Some(clock) = clock_pending
+            && width.saturating_sub(prefix_width + row_width + str_width(clock)) >= 2
+        {
+            let gap = width - prefix_width - row_width - str_width(clock);
+            spans.push(Span::styled(" ".repeat(gap), Style::new()));
+            spans.push(Span::styled(clock.clone(), Style::new().fg(theme.gray_dim)));
+            clock_pending = None;
+        }
+        lines.push(Line::from(spans));
     }
-    if let Some(clock) = pending_clock {
-        let clock_width = str_width(&clock);
-        let free = inner.saturating_sub(2);
-        lines.push(pad_line(
-            vec![
-                Span::styled("│".to_owned(), border_style),
-                Span::styled(" ".to_owned(), fill),
-                Span::styled(" ".repeat(free.saturating_sub(clock_width)), fill),
-                Span::styled(clock, Style::new().fg(theme.gray).bg(theme.bg_highlight)),
-                Span::styled(" ".to_owned(), fill),
-                Span::styled("│".to_owned(), border_style),
-            ],
-            fill,
-            width,
-        ));
+
+    if let Some(clock) = clock_pending {
+        let clock_width = str_width(clock);
+        lines.push(Line::from(vec![
+            Span::styled(" ".repeat(width.saturating_sub(clock_width)), Style::new()),
+            Span::styled(clock.clone(), Style::new().fg(theme.gray_dim)),
+        ]));
     }
-    lines.push(Line::from(Span::styled(
-        format!("╰{}╯", "─".repeat(inner)),
-        border_style,
-    )));
+
     lines.push(Line::from(String::new()));
     lines
 }
@@ -271,24 +256,36 @@ fn turn_footer(entry: &Entry, width: usize, theme: &Theme) -> Option<Line<'stati
     Some(Line::from(spans))
 }
 
-/// 思维链：折叠时单行标题；展开时引文带（左竖线 + 抬升底色 + 斜体）。
-fn thinking_block(text: &str, entry: &Entry, app: &App, width: usize) -> Vec<Line<'static>> {
+/// 思维链：折叠时显示 `◆ Thought for X.Xs (Yt)`；展开时显示低对比度引文带。
+fn thinking_block(
+    text: &str,
+    reasoning_tokens: Option<u64>,
+    duration_ms: Option<u64>,
+    entry: &Entry,
+    app: &App,
+    width: usize,
+) -> Vec<Line<'static>> {
     let theme = app.theme;
     let expanded = app.show_thinking && !entry.folded;
+    let duration = duration_ms.map_or_else(|| "0.0s".to_owned(), format_duration);
     let mut spans = vec![
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_thinking)),
         Span::styled(
-            "思考内容".to_owned(),
+            "Thought for".to_owned(),
             Style::new()
                 .fg(theme.gray_bright)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!(" · {} 字符", text.chars().count()),
-            Style::new().fg(theme.gray_dim),
-        ),
+        Span::styled(format!(" {duration}"), Style::new().fg(theme.gray_dim)),
     ];
+    if let Some(tokens) = reasoning_tokens {
+        spans.push(Span::styled(
+            format!(" ({tokens}t)"),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
+    spans.push(Span::styled("  ".to_owned(), Style::new()));
     if !expanded {
         let key = app
             .preferences
@@ -312,10 +309,7 @@ fn thinking_block(text: &str, entry: &Entry, app: &App, width: usize) -> Vec<Lin
             spans.extend(line.spans.into_iter().map(|span| {
                 Span::styled(
                     span.content.into_owned(),
-                    span.style
-                        .fg(theme.accent_thinking)
-                        .bg(theme.bg_hover)
-                        .add_modifier(Modifier::ITALIC),
+                    span.style.fg(theme.gray_bright).bg(theme.bg_hover),
                 )
             }));
             lines.push(pad_line(spans, band, width));
@@ -389,9 +383,37 @@ fn format_duration(ms: u64) -> String {
     }
 }
 
+fn tool_depth(app: &App, tool_id: &str) -> usize {
+    let mut depth = 0;
+    let mut current = Some(tool_id);
+    while let Some(id) = current {
+        if depth >= 32 {
+            break;
+        }
+        current = app.blocks.iter().find_map(|entry| match &entry.block {
+            Block::Tool(tool) if tool.id == id => tool.parent_id.as_deref(),
+            _ => None,
+        });
+        depth += usize::from(current.is_some());
+    }
+    depth
+}
+
+fn indent_tool_lines(mut lines: Vec<Line<'static>>, depth: usize) -> Vec<Line<'static>> {
+    if depth == 0 {
+        return lines;
+    }
+    let prefix = Span::raw(" ".repeat(depth * 2));
+    for line in &mut lines {
+        line.spans.insert(0, prefix.clone());
+    }
+    lines
+}
+
 /// 工具块：标题行 + 展开内容（按工具名分派）。
 fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> Vec<Line<'static>> {
     let theme = app.theme;
+    let depth = tool_depth(app, &tool.id);
     let mut lines = Vec::new();
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
 
@@ -414,7 +436,7 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
     ]));
 
     if app.tools_collapsed || folded {
-        return lines;
+        return indent_tool_lines(lines, depth);
     }
 
     let inner_width = width.saturating_sub(4);
@@ -494,7 +516,7 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
         )));
     }
     lines.push(Line::from(String::new()));
-    lines
+    indent_tool_lines(lines, depth)
 }
 
 /// 标题行的参数摘要。
@@ -708,24 +730,23 @@ mod tests {
     use super::*;
     use crate::theme::ColorLevel;
 
-    /// 用户面板：时间戳优先与末行同行，放不下时另起一行，且所有行都不超出面板宽度。
+    /// 用户消息：使用 `>` 前缀，短消息时间戳右对齐，窄宽度时另起一行。
     #[test]
-    fn user_panel_keeps_clock_inside_panel_width() {
+    fn user_message_aligns_clock_without_panel_borders() {
         let theme = Theme::resolved(ColorLevel::TrueColor);
-        // 固定 UNIX 毫秒 ⇒ 固定的本地 `HH:MM`
         let at_ms = 1_700_000_000_000;
         let clock = format_clock(at_ms).expect("演示时间戳应可格式化");
 
-        // 短消息：时间戳与正文同行
         let short = user_message("hi", Some(at_ms), true, 40, &theme);
-        assert_eq!(short.len(), 4, "面板应为 上边框/正文/下边框 + 尾随留白");
-        assert!(short[1].spans.iter().any(|span| span.content == clock));
+        assert_eq!(short.len(), 2, "短消息应只有正文和尾随留白");
+        assert!(short[0].spans.iter().any(|span| span.content == "> "));
+        assert!(short[0].spans.iter().any(|span| span.content == clock));
+        assert!(!short[0].spans.iter().any(|span| span.content.contains('╭')));
 
-        // 正文吃满整行：时间戳另起一行，任何行都不超宽
         let narrow = user_message("一二三四五六七八九十", Some(at_ms), true, 24, &theme);
-        assert_eq!(narrow.len(), 5, "时间戳应独占一行");
+        assert_eq!(narrow.len(), 3, "时间戳应在正文后另起一行");
         for line in &narrow {
-            assert!(line.width() <= 24, "行宽 {} 超出面板", line.width());
+            assert!(line.width() <= 24, "行宽 {} 超出消息区域", line.width());
         }
         let clock_rows = narrow
             .iter()

@@ -67,6 +67,7 @@ pub enum SessionMode {
     Normal,
     Ask,
     Plan,
+    Ptc,
 }
 
 /// `session/set_mode`：切换会话工作模式。
@@ -216,6 +217,23 @@ pub struct SessionLoadResult {
     /// 当前会话计划；空值兼容旧 core。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plans: Vec<PlanInfo>,
+    /// PTC 子工具调用；不进入模型 transcript。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_calls: Vec<TranscriptChildCall>,
+}
+
+/// PTC 中由 JavaScript 发起的嵌套工具调用。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptChildCall {
+    pub id: String,
+    pub parent_tool_call_id: String,
+    pub name: String,
+    pub arguments: String,
+    pub result: String,
+    pub status: ToolStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// 一条 transcript 条目。

@@ -51,6 +51,7 @@ pub enum ModeArg {
     Normal,
     Ask,
     Plan,
+    Ptc,
 }
 
 impl From<ModeArg> for SessionMode {
@@ -59,6 +60,7 @@ impl From<ModeArg> for SessionMode {
             ModeArg::Normal => Self::Normal,
             ModeArg::Ask => Self::Ask,
             ModeArg::Plan => Self::Plan,
+            ModeArg::Ptc => Self::Ptc,
         }
     }
 }

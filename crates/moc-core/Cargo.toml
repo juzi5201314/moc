@@ -37,6 +37,7 @@ reqwest.workspace = true
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 aho-corasick = "1"
 xxhash-rust.workspace = true
+rquickjs = { version = "0.14", features = ["full-async", "parallel"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

@@ -122,6 +122,8 @@ fn tool_policy(mode: SessionMode) -> String {
         policy.push_str("\n当前是问答模式：只允许读取与检索（read/grep/find/bash/todo/ask/job），严禁修改文件或系统状态；回答用户的问题即可。");
     } else if mode == SessionMode::Plan {
         policy.push_str("\n当前是计划模式：只允许读取与检索（read/grep/find/bash/todo/ask/job），严禁通过任何方式修改文件或系统状态；探索完成后调用 submit_plan 提交计划。");
+    } else if mode == SessionMode::Ptc {
+        policy.push_str("\n当前是 PTC 模式：通过 run_code 编写 JavaScript 并调用列出的工具；仅 run_code 可直接调用，子工具仍受其各自授权、启用状态与取消控制。");
     }
     policy
 }

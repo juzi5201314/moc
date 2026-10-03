@@ -9,6 +9,7 @@ pub mod job;
 pub mod mcp;
 pub mod output;
 pub mod plan;
+pub mod ptc;
 pub mod read;
 pub mod todo;
 pub mod write;
@@ -141,6 +142,9 @@ pub struct ToolCtx {
     pub anchors: Arc<AnchorStore>,
     pub request: RequestContext,
     pub sessions: Arc<SessionTable>,
+    pub(crate) core: Arc<crate::service::CoreInner>,
+    pub(crate) ptc_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) runtime: Arc<crate::service::SessionRuntime>,
     pub cancel: CancellationToken,
     pub jobs: Arc<job::JobManager>,
     /// 当前 workspace 的惰性 OpenViking client；未配置时为 None。
@@ -150,10 +154,11 @@ pub struct ToolCtx {
     pub mcp: Arc<moc_mcp::McpManager>,
     /// 该项目的 skill 索引。
     pub skills: Arc<crate::skills::SkillIndex>,
+    /// 当前正在执行的外层工具调用 ID；PTC 用它建立父子调用关系。
+    pub tool_call_id: String,
     /// 本会话已加载的 skill 名。
     pub loaded_skills: Arc<parking_lot::RwLock<crate::skills::LoadedSkills>>,
 }
-
 impl ToolCtx {
     pub fn resource_context(&self) -> crate::resources::ResourceContext<'_> {
         crate::resources::ResourceContext {
@@ -209,6 +214,7 @@ impl ToolRegistry {
                 Arc::new(write::WriteTool),
                 Arc::new(ask::AskTool),
                 Arc::new(plan::SubmitPlanTool),
+                Arc::new(crate::tools::ptc::RunCodeTool),
                 Arc::new(crate::skills::tool::SkillTool),
             ],
             dynamic: parking_lot::RwLock::new(Vec::new()),
@@ -263,6 +269,7 @@ impl ToolRegistry {
                             | "skill"
                             | "submit_plan"
                     ),
+                    SessionMode::Ptc => name == "run_code",
                 }) && (name != "ask" || ask_supported)
                     && (name != "todo" || config.tools.todo.enabled)
                     && (name != "job" || config.tools.job.enabled)
@@ -282,6 +289,7 @@ impl ToolRegistry {
                 .filter(|tool| match mode {
                     SessionMode::Normal => true,
                     SessionMode::Ask | SessionMode::Plan => tool.tier() == Tier::Read,
+                    SessionMode::Ptc => false,
                 })
                 .map(|tool| {
                     let mut definition = tool.def();
@@ -407,7 +415,10 @@ mod dynamic_registry_tests {
         assert!(registry.get("read").is_some());
 
         let normal = registry.definitions(SessionMode::Normal, true, &config());
-        assert_eq!(normal.len(), 12, "10 内置（无 submit_plan）+ 2 动态");
+        assert_eq!(normal.len(), 13, "11 内置（无 submit_plan）+ 2 动态");
+        let ptc = registry.definitions(SessionMode::Ptc, true, &config());
+        assert_eq!(ptc.len(), 1);
+        assert_eq!(ptc[0].name, "run_code");
 
         let ask = registry.definitions(SessionMode::Ask, true, &config());
         assert_eq!(ask.len(), 9, "Ask 模式只放行只读动态工具");
@@ -421,7 +432,7 @@ mod dynamic_registry_tests {
             registry
                 .definitions(SessionMode::Normal, true, &config())
                 .len(),
-            10
+            11
         );
     }
 }

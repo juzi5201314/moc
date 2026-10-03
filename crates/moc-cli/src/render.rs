@@ -67,6 +67,19 @@ impl Renderer {
                 }
                 AssistantDelta::Reasoning { .. } | AssistantDelta::Usage { .. } => {}
             },
+            SessionUpdate::PtcChildStarted {
+                tool_call_id, name, ..
+            } => {
+                let call = state
+                    .calls
+                    .entry(tool_call_id)
+                    .or_insert_with(|| ToolCallView {
+                        name,
+                        arguments: String::new(),
+                        announced: false,
+                    });
+                announce_call(&mut out, call);
+            }
             SessionUpdate::ToolStarted {
                 tool_call_id, name, ..
             } => {
@@ -79,6 +92,34 @@ impl Renderer {
                         announced: false,
                     });
                 announce_call(&mut out, call);
+            }
+            SessionUpdate::PtcChildFinished {
+                tool_call_id,
+                status,
+                result,
+                duration_ms,
+                ..
+            } => {
+                let mut call = state.calls.remove(&tool_call_id).unwrap_or(ToolCallView {
+                    name: "ptc-child".into(),
+                    arguments: String::new(),
+                    announced: false,
+                });
+                if !call.announced {
+                    announce_call(&mut out, &mut call);
+                }
+                let _ = writeln!(
+                    out,
+                    "  {}: {} ({status:?}, {} ms)",
+                    call.name,
+                    result
+                        .content
+                        .lines()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    duration_ms.unwrap_or_default()
+                );
             }
             SessionUpdate::ToolFinished {
                 tool_call_id,

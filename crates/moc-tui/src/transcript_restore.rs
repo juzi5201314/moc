@@ -3,7 +3,9 @@
 //! transcript 里 assistant 消息携带 ToolCall、后随的 Tool 消息携带
 //! ToolResult；恢复时按 tool_call_id 把结果回填到调用块上。
 
-use moc_protocol::methods::{ToolExecution, ToolStatus, TranscriptEntry};
+use moc_protocol::methods::{
+    ToolExecution, ToolStatus, TranscriptEntry, session::TranscriptChildCall,
+};
 use moc_protocol::{ContentPart, Role};
 
 use crate::transcript::{Block, Entry, ToolCallBlock};
@@ -34,11 +36,14 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                                 text: reasoning
                                     .display_text()
                                     .unwrap_or_else(|| "（思维链内容不可用）".into()),
+                                reasoning_tokens: None,
+                                duration_ms: None,
                             }));
                         }
                         ContentPart::ToolCall(call) => {
                             let block = ToolCallBlock {
                                 id: call.id.clone(),
+                                parent_id: None,
                                 name: call.name.clone(),
                                 arguments: call.arguments.clone(),
                                 status: None,
@@ -90,6 +95,45 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             tool_block.running = false;
             entry.touch();
         }
+    }
+    blocks
+}
+
+/// 在模型 transcript 基础上恢复 PTC 子工具，并按父调用插入层级块。
+pub fn blocks_from_entries_with_children(
+    entries: &[TranscriptEntry],
+    child_calls: &[TranscriptChildCall],
+) -> Vec<Entry> {
+    let mut blocks = blocks_from_entries(entries);
+    let mut next_positions = std::collections::HashMap::<String, usize>::new();
+    for child in child_calls {
+        let Some(parent_index) = blocks.iter().position(|entry| {
+            matches!(&entry.block, Block::Tool(tool) if tool.id == child.parent_tool_call_id)
+        }) else {
+            continue;
+        };
+        let insert_at = next_positions
+            .get(&child.parent_tool_call_id)
+            .copied()
+            .unwrap_or(parent_index + 1);
+        for position in next_positions.values_mut() {
+            if *position >= insert_at {
+                *position += 1;
+            }
+        }
+        let block = ToolCallBlock {
+            id: child.id.clone(),
+            parent_id: Some(child.parent_tool_call_id.clone()),
+            name: child.name.clone(),
+            arguments: child.arguments.clone(),
+            status: Some(child.status),
+            result: Some(child.result.clone()),
+            diff: None,
+            duration_ms: child.duration_ms,
+            running: false,
+        };
+        blocks.insert(insert_at, Entry::new(Block::Tool(block)));
+        next_positions.insert(child.parent_tool_call_id.clone(), insert_at + 1);
     }
     blocks
 }
@@ -166,5 +210,34 @@ mod tests {
         };
         assert_eq!(tool.status, Some(ToolStatus::Completed));
         assert_eq!(tool.result.as_deref(), Some("a.rs"));
+    }
+
+    #[test]
+    fn restores_ptc_children_under_parent_tool() {
+        let entries = [entry(
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentPart::ToolCall(ToolCall::new(
+                    "parent", "run_code", "{}",
+                ))],
+            },
+            None,
+        )];
+        let children = [TranscriptChildCall {
+            id: "parent:child".into(),
+            parent_tool_call_id: "parent".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+            result: "ok".into(),
+            status: ToolStatus::Completed,
+            duration_ms: Some(3),
+        }];
+        let blocks = blocks_from_entries_with_children(&entries, &children);
+        assert_eq!(blocks.len(), 2);
+        let Block::Tool(child) = &blocks[1].block else {
+            panic!("第二个块应是 PTC 子工具");
+        };
+        assert_eq!(child.parent_id.as_deref(), Some("parent"));
+        assert_eq!(child.result.as_deref(), Some("ok"));
     }
 }

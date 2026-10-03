@@ -76,7 +76,7 @@ impl Entry {
     /// 续写流式文本（Assistant / Thinking）。
     pub fn push_text(&mut self, delta: &str) {
         match &mut self.block {
-            Block::Assistant { text } | Block::Thinking { text } => text.push_str(delta),
+            Block::Assistant { text } | Block::Thinking { text, .. } => text.push_str(delta),
             _ => return,
         }
         self.touch();
@@ -116,6 +116,8 @@ impl Entry {
 pub struct ToolCallBlock {
     /// 调用 ID（与协议的 `tool_call_id` 一致）。
     pub id: String,
+    /// 父工具调用 ID；PTC 子调用据此在滚动区缩进展示。
+    pub parent_id: Option<String>,
     pub name: String,
     /// 完整参数 JSON（增量拼接而成）。
     pub arguments: String,
@@ -137,7 +139,11 @@ pub enum Block {
     /// 助手正文（markdown，流式拼接）。
     Assistant { text: String },
     /// 思维链（流式拼接；展示由全局开关与折叠状态共同决定）。
-    Thinking { text: String },
+    Thinking {
+        text: String,
+        reasoning_tokens: Option<u64>,
+        duration_ms: Option<u64>,
+    },
     /// 一次工具调用。
     Tool(ToolCallBlock),
     /// Todo 清单快照（`TodoChanged` 时替换前一块，而非追加）。

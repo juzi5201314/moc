@@ -90,6 +90,13 @@ pub enum Entry {
         markdown: String,
         status: PlanStatus,
     },
+    /// PTC 子工具结果；独立于模型 transcript。
+    ChildTool {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        call: moc_protocol::methods::session::TranscriptChildCall,
+    },
     /// `/clear` 后模型上下文重建边界。
     ResetBoundary {
         id: String,
@@ -133,6 +140,9 @@ pub enum EntryPayload {
         path: String,
         markdown: String,
         status: PlanStatus,
+    },
+    ChildTool {
+        call: moc_protocol::methods::session::TranscriptChildCall,
     },
     ResetBoundary,
 }
@@ -241,6 +251,12 @@ impl Entry {
                 markdown,
                 status,
             },
+            EntryPayload::ChildTool { call } => Self::ChildTool {
+                id,
+                parent_id,
+                at_ms,
+                call,
+            },
             EntryPayload::ResetBoundary => Self::ResetBoundary {
                 id,
                 parent_id,
@@ -259,6 +275,7 @@ impl Entry {
             | Self::TitleChange { id, .. }
             | Self::Todos { id, .. }
             | Self::Plan { id, .. }
+            | Self::ChildTool { id, .. }
             | Self::ResetBoundary { id, .. } => id,
         }
     }
@@ -273,6 +290,7 @@ impl Entry {
             | Self::TitleChange { parent_id, .. }
             | Self::Todos { parent_id, .. }
             | Self::Plan { parent_id, .. }
+            | Self::ChildTool { parent_id, .. }
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
@@ -301,6 +319,9 @@ impl Entry {
             | Self::Plan {
                 parent_id: value, ..
             }
+            | Self::ChildTool {
+                parent_id: value, ..
+            }
             | Self::ResetBoundary {
                 parent_id: value, ..
             } => *value = Some(parent_id),
@@ -317,6 +338,7 @@ impl Entry {
             | Self::TitleChange { at_ms, .. }
             | Self::Todos { at_ms, .. }
             | Self::Plan { at_ms, .. }
+            | Self::ChildTool { at_ms, .. }
             | Self::ResetBoundary { at_ms, .. } => *at_ms,
         }
     }

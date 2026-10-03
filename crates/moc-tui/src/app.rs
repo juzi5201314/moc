@@ -84,7 +84,8 @@ pub struct App {
     pub cancel_requested: bool,
     /// 当前轮次开始时间（statusline 计时）。
     pub turn_started_at: Option<std::time::Instant>,
-    /// 最新一步的累计 token 用量（`AssistantDelta::Usage` 刷新）。
+    /// 当前 thinking block 开始时间（用于计算 duration_ms）。
+    pub thinking_started_at: Option<std::time::Instant>,
     pub usage: Usage,
     /// 输出 token 采样（tok/s 滑动窗口）。
     pub usage_samples: Vec<(std::time::Instant, u64)>,
@@ -176,6 +177,7 @@ impl App {
             turn_running: false,
             cancel_requested: false,
             turn_started_at: None,
+            thinking_started_at: None,
             usage: Usage::default(),
             usage_samples: Vec::new(),
             cost_usd: 0.0,
@@ -286,10 +288,30 @@ impl App {
 
     /// 工具执行开始：把增量阶段累积的信息落地成转写块。
     pub fn start_tool_block(&mut self, tool_call_id: String, name: String) {
+        self.start_tool_block_with_parent(tool_call_id, name, None);
+    }
+
+    /// PTC 子工具开始：保留父调用关系供滚动区缩进展示。
+    pub fn start_child_tool_block(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        parent_id: String,
+    ) {
+        self.start_tool_block_with_parent(tool_call_id, name, Some(parent_id));
+    }
+
+    fn start_tool_block_with_parent(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        parent_id: Option<String>,
+    ) {
         let arguments = self.pending_args.remove(&tool_call_id).unwrap_or_default();
         let index = self.blocks.len();
         self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
             id: tool_call_id.clone(),
+            parent_id,
             name,
             arguments,
             status: None,
@@ -316,6 +338,7 @@ impl App {
             let index = self.blocks.len();
             self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
                 id: tool_call_id.clone(),
+                parent_id: None,
                 name: result.tool_call_id.clone(),
                 arguments: String::new(),
                 status: Some(status),
@@ -349,9 +372,27 @@ impl App {
     pub fn push_block(&mut self, block: Block) {
         self.blocks.push(Entry::timed(block));
     }
+    /// 结束当前思考块并记录实际思考时长。
+    pub fn finish_thinking(&mut self) {
+        let Some(started_at) = self.thinking_started_at.take() else {
+            return;
+        };
+        let elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if let Some(entry) = self
+            .blocks
+            .iter_mut()
+            .rev()
+            .find(|entry| matches!(entry.block, Block::Thinking { .. }))
+            && let Block::Thinking { duration_ms, .. } = &mut entry.block
+        {
+            *duration_ms = Some(elapsed_ms);
+            entry.touch();
+        }
+    }
 
     /// 轮次收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
     pub fn finish_turn(&mut self) {
+        self.finish_thinking();
         let elapsed = self.turn_started_at.map(|at| at.elapsed());
         let was_cancel_requested = self.cancel_requested;
         self.turn_running = false;
@@ -578,6 +619,22 @@ impl App {
             self.usage_samples.retain(|(at, _)| *at >= cutoff);
         }
         self.usage = usage;
+        // 将 reasoning_tokens 更新到最近的 Thinking block
+        if let Some(reasoning_tokens) = usage.reasoning_tokens
+            && let Some(entry) = self
+                .blocks
+                .iter_mut()
+                .rev()
+                .find(|entry| matches!(entry.block, Block::Thinking { .. }))
+            && let Block::Thinking {
+                reasoning_tokens: stored,
+                ..
+            } = &mut entry.block
+            && *stored != Some(reasoning_tokens)
+        {
+            *stored = Some(reasoning_tokens);
+            entry.touch();
+        }
     }
 
     /// 滑动窗口内的输出速率（tok/s）。
@@ -614,6 +671,7 @@ pub fn mode_label(mode: SessionMode) -> &'static str {
         SessionMode::Normal => "normal",
         SessionMode::Ask => "ask",
         SessionMode::Plan => "plan",
+        SessionMode::Ptc => "ptc",
     }
 }
 
@@ -636,6 +694,7 @@ mod tests {
         assert_eq!(mode_label(SessionMode::Normal), "normal");
         assert_eq!(mode_label(SessionMode::Ask), "ask");
         assert_eq!(mode_label(SessionMode::Plan), "plan");
+        assert_eq!(mode_label(SessionMode::Ptc), "ptc");
     }
 
     #[test]

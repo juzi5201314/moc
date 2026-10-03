@@ -83,8 +83,8 @@ pub struct Theme {
 
     // 边框
     pub border: Color,
+    pub border_subtle: Color,
     pub border_active: Color,
-
     // diff
     pub diff_delete_bg: Color,
     pub diff_delete_fg: Color,
@@ -142,8 +142,9 @@ define_theme! {
     accent_running:     (0xe0, 0xaf, 0x68),
     accent_warning:     (0xff, 0x9e, 0x64),
     accent_model:       (0x7a, 0xa2, 0xf7),
-    // 边框：聚焦态明显更亮，让焦点位置一眼可辨
+    // 边框：内容边框更克制，聚焦态明显更亮。
     border:             (0x32, 0x32, 0x37),
+    border_subtle:      (0x2a, 0x2a, 0x2e),
     border_active:      (0x50, 0x50, 0x58),
     // diff 底色：量化到 256 后依然红是红、绿是绿
     diff_delete_bg:     (0x42, 0x0e, 0x14),
@@ -152,7 +153,7 @@ define_theme! {
     diff_insert_fg:     (0x9e, 0xce, 0x6a),
     diff_gutter_fg:     (0x58, 0x58, 0x58),
     // 内容
-    code_bg:            (0x1c, 0x1c, 0x1c),
+    code_bg:            (0x18, 0x18, 0x1b),
     link:               (0x7a, 0xa6, 0xda),
     path:               (0x7d, 0xcf, 0xff),
     command:            (0x9e, 0xce, 0x6a),

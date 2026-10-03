@@ -164,6 +164,7 @@ pub struct ToolsConfig {
     pub find: FindConfig,
     pub todo: FeatureConfig,
     pub job: JobConfig,
+    pub ptc: PtcConfig,
 }
 
 impl Default for ToolsConfig {
@@ -180,6 +181,29 @@ impl Default for ToolsConfig {
             find: FindConfig::default(),
             todo: FeatureConfig::default(),
             job: JobConfig::default(),
+            ptc: PtcConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PtcConfig {
+    pub default_timeout_secs: u64,
+    pub max_timeout_secs: u64,
+    pub memory_limit_bytes: usize,
+    pub max_output_bytes: usize,
+    pub max_concurrent_calls: usize,
+}
+
+impl Default for PtcConfig {
+    fn default() -> Self {
+        Self {
+            default_timeout_secs: 300,
+            max_timeout_secs: 1800,
+            memory_limit_bytes: 128 * 1024 * 1024,
+            max_output_bytes: 4 * 1024 * 1024,
+            max_concurrent_calls: 16,
         }
     }
 }

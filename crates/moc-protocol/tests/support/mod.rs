@@ -669,6 +669,7 @@ impl AgentService for ScriptedService {
             truncated,
             todos: Vec::new(),
             plans: Vec::new(),
+            child_calls: Vec::new(),
         })
     }
 
@@ -964,6 +965,8 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::ContextCompacted { .. } => "context_compacted",
         SessionUpdate::JobFinished { .. } => "job_finished",
         SessionUpdate::WorkspaceChanged { .. } => "workspace_changed",
+        SessionUpdate::PtcChildStarted { .. } => "ptc_child_started",
+        SessionUpdate::PtcChildFinished { .. } => "ptc_child_finished",
         SessionUpdate::Error { .. } => "error",
     }
 }

@@ -35,7 +35,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/mode",
-        description: "切换会话模式：标准／问答／计划",
+        description: "切换会话模式：标准／问答／计划／PTC",
     },
     SlashCommand {
         name: "/memories",
