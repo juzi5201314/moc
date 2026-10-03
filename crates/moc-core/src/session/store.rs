@@ -43,10 +43,14 @@ impl SessionPaths {
     }
 }
 
-/// 单会话 JSONL 文件句柄，写入与重写互斥。
+/// 单会话 JSONL 文件句柄；支持磁盘尚无文件的延迟初始化。
+///
+/// 新会话创建时只登记内存，首次 append/rewrite 才把 header（及后续 entry）
+/// 真正写入磁盘。这样从未产生任何 entry 的空会话不会留下 JSONL 文件，
+/// 也就不会出现在 `session/list` 中。
 pub struct SessionFile {
     path: PathBuf,
-    file: tokio::sync::Mutex<File>,
+    file: tokio::sync::Mutex<Option<File>>,
     revision: RwLock<crate::hashline::SnapshotId>,
 }
 
@@ -55,8 +59,60 @@ impl SessionFile {
         &self.path
     }
 
+    /// 在目标路径创建新的 transcript 文件并写入 header 作为第一行。
+    ///
+    /// 供延迟落盘使用：目录按需创建，`create_new` 保证并发下只有一个
+    /// 写入者胜出，输者因文件已存在而报错（由上层互斥锁避免）。
+    pub async fn create_with_header(path: &Path, header: &Entry) -> Result<Self, CoreError> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| CoreError::Session("transcript 路径缺少父目录".into()))?;
+        fs::create_dir_all(parent).await?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create_new(true)
+            .open(path)
+            .await?;
+        let mut revision = crate::hashline::SnapshotId {
+            device: 0,
+            inode: 0,
+            modified_secs: 0,
+            modified_nanos: 0,
+            changed_secs: 0,
+            changed_nanos: 0,
+            size: 0,
+            content_hash: 0,
+        };
+        let mut line = serde_json::to_vec(header).map_err(|error| {
+            CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
+        })?;
+        line.push(b'\n');
+        let write_result = async {
+            file.write_all(&line).await?;
+            file.flush().await?;
+            revision = crate::hashline::SnapshotId::from_metadata(&file.metadata().await?);
+            Ok::<(), CoreError>(())
+        }
+        .await;
+        if let Err(error) = write_result {
+            drop(file);
+            let _ = fs::remove_file(path).await;
+            return Err(error);
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            file: tokio::sync::Mutex::new(Some(file)),
+            revision: RwLock::new(revision),
+        })
+    }
+
     pub async fn changed_on_disk(&self) -> Result<bool, CoreError> {
-        let metadata = fs::metadata(&self.path).await?;
+        let metadata = match fs::metadata(&self.path).await {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(error) => return Err(error.into()),
+        };
         Ok(*self.revision.read() != crate::hashline::SnapshotId::from_metadata(&metadata))
     }
 
@@ -69,27 +125,58 @@ impl SessionFile {
             .await?;
         *self.revision.write() =
             crate::hashline::SnapshotId::from_metadata(&reopened.metadata().await?);
-        *current = reopened;
+        *current = Some(reopened);
         Ok(())
     }
 
-    /// 追加一条完整 JSONL 记录并 flush。
-    pub async fn append(&self, entry: &Entry) -> Result<(), CoreError> {
+    /// 追加一条完整 JSONL 记录并 flush；磁盘文件缺失时以 header 起步重建。
+    pub async fn append(&self, entry: &Entry, header: Option<&Entry>) -> Result<(), CoreError> {
         let mut line = serde_json::to_vec(entry).map_err(|error| {
             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
         })?;
         line.push(b'\n');
         let mut file = self.file.lock().await;
-        file.write_all(&line).await?;
-        file.flush().await?;
+        if file.is_none() {
+            let parent = self
+                .path
+                .parent()
+                .ok_or_else(|| CoreError::Session("transcript 路径缺少父目录".into()))?;
+            fs::create_dir_all(parent).await?;
+            let created = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create_new(true)
+                .open(&self.path)
+                .await?;
+            *file = Some(created);
+            if let Some(header) = header {
+                let mut header_line = serde_json::to_vec(header).map_err(|error| {
+                    CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
+                })?;
+                header_line.push(b'\n');
+                file.as_mut()
+                    .expect("刚创建的句柄")
+                    .write_all(&header_line)
+                    .await?;
+            }
+        }
+        let handle = file.as_mut().expect("延迟初始化后句柄必然存在");
+        handle.write_all(&line).await?;
+        handle.flush().await?;
         *self.revision.write() =
-            crate::hashline::SnapshotId::from_metadata(&file.metadata().await?);
+            crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
         Ok(())
     }
 
     /// 原子替换完整 transcript；rename 前刷写并 fsync 临时文件。
+    /// 磁盘文件不存在时同样适用：整份 entries 经临时文件 rename 发布。
     pub async fn rewrite(&self, entries: &[Entry]) -> Result<(), CoreError> {
         let mut current = self.file.lock().await;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| CoreError::Session("transcript 路径缺少父目录".into()))?;
+        fs::create_dir_all(parent).await?;
         let temp = self
             .path
             .with_extension(format!("jsonl.{}.tmp", crate::ids::entry_id()));
@@ -115,9 +202,14 @@ impl SessionFile {
                 .await?;
             drop(replacement);
             fs::rename(&temp, &self.path).await?;
-            *current = reopened;
-            *self.revision.write() =
-                crate::hashline::SnapshotId::from_metadata(&current.metadata().await?);
+            *current = Some(reopened);
+            *self.revision.write() = crate::hashline::SnapshotId::from_metadata(
+                &current
+                    .as_ref()
+                    .expect("rename 后句柄必然存在")
+                    .metadata()
+                    .await?,
+            );
             Ok::<(), CoreError>(())
         }
         .await;
@@ -146,56 +238,41 @@ impl SessionStore {
         &self.root
     }
 
-    /// 创建 sidecar 与 transcript，并把 header 写为第一行。
-    pub async fn create(
-        &self,
-        cwd: &Path,
-        session_id: &str,
-        created_at_ms: u64,
-        header: &Entry,
-    ) -> Result<(SessionPaths, SessionFile), CoreError> {
-        if header.header_fields().is_none() {
-            return Err(CoreError::Session(
-                "创建 transcript 时传入的第一条记录不是 header".into(),
-            ));
-        }
+    /// 只计算 transcript 与 sidecar 的路径，不触碰磁盘。
+    pub fn paths_for(&self, cwd: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
         let directory = self.root.join(encode_cwd(cwd));
-        fs::create_dir_all(&directory).await?;
-        let paths = SessionPaths {
+        SessionPaths {
             transcript: directory.join(format!(
                 "{}_{}.jsonl",
                 timestamp_name(created_at_ms),
                 session_id
             )),
             sidecar: directory.join(session_id),
-        };
-        fs::create_dir_all(paths.plans()).await?;
-        fs::create_dir_all(paths.jobs()).await?;
-        fs::create_dir_all(paths.artifacts()).await?;
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create_new(true)
-            .open(&paths.transcript)
-            .await?;
-        let revision = RwLock::new(crate::hashline::SnapshotId::from_metadata(
-            &file.metadata().await?,
-        ));
-        let session_file = SessionFile {
-            path: paths.transcript.clone(),
-            file: tokio::sync::Mutex::new(file),
-            revision,
-        };
-        if let Err(error) = session_file.append(header).await {
-            drop(session_file);
-            let _ = fs::remove_file(&paths.transcript).await;
-            let _ = fs::remove_dir_all(&paths.sidecar).await;
-            return Err(error);
         }
+    }
+
+    /// 登记一个尚未落盘的会话句柄；首次 append 时才创建 transcript 文件。
+    pub fn open_deferred(&self, cwd: &Path, session_id: &str, created_at_ms: u64) -> SessionFile {
+        let paths = self.paths_for(cwd, session_id, created_at_ms);
         self.index
             .write()
             .insert(session_id.to_owned(), paths.clone());
-        Ok((paths, session_file))
+        SessionFile {
+            path: paths.transcript.clone(),
+            file: tokio::sync::Mutex::new(None),
+            // 零值纪元仅表示「磁盘上还没有文件」；changed_on_disk 在
+            // NotFound 时同样返回 true，两条路径语义一致。
+            revision: RwLock::new(crate::hashline::SnapshotId {
+                device: 0,
+                inode: 0,
+                modified_secs: 0,
+                modified_nanos: 0,
+                changed_secs: 0,
+                changed_nanos: 0,
+                size: 0,
+                content_hash: 0,
+            }),
+        }
     }
 
     /// 通过会话 ID 查找记录路径，必要时扫描磁盘目录。
@@ -248,7 +325,7 @@ impl SessionStore {
         ));
         Ok(SessionFile {
             path: paths.transcript.clone(),
-            file: tokio::sync::Mutex::new(file),
+            file: tokio::sync::Mutex::new(Some(file)),
             revision,
         })
     }
@@ -272,6 +349,7 @@ impl SessionStore {
     }
 
     /// 流式投影元信息，跳过消息载荷分配，并按更新时间降序列会话。
+    /// 只有 header、从未产生任何 entry 的空会话不出现在列表中。
     pub async fn list(&self) -> Result<Vec<moc_protocol::methods::SessionInfo>, CoreError> {
         let mut result = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -292,9 +370,12 @@ impl SessionStore {
                 if !seen.insert(path.clone()) {
                     continue;
                 }
-                let Some(mut info) = read_session_info(&path).await? else {
+                let Some((mut info, has_entries)) = read_session_info(&path).await? else {
                     continue;
                 };
+                if !has_entries {
+                    continue;
+                }
                 info.lock = super::lock::read(
                     path.parent()
                         .unwrap_or(&self.root)
@@ -336,9 +417,11 @@ impl SessionStore {
     }
 }
 
+/// 读取 header 与轻量元信息；`has_entries` 为 `false` 表示文件只有 header，
+/// 该会话从未产生任何对话内容（延迟落盘前被抛弃的空会话）。
 async fn read_session_info(
     path: &Path,
-) -> Result<Option<moc_protocol::methods::SessionInfo>, CoreError> {
+) -> Result<Option<(moc_protocol::methods::SessionInfo, bool)>, CoreError> {
     let mut reader = super::maintenance::reader(path).await?;
     let mut line = String::new();
     if reader.read_line(&mut line).await? == 0 {
@@ -349,6 +432,7 @@ async fn read_session_info(
     let Some(mut info) = header.session_info(None) else {
         return Ok(None);
     };
+    let mut has_entries = false;
     // 忽略大消息字段；无需构造正文、工具参数或思维链的对象树。
     #[derive(serde::Deserialize)]
     struct Metadata {
@@ -364,6 +448,7 @@ async fn read_session_info(
         if reader.read_line(&mut line).await? == 0 {
             break;
         }
+        has_entries = true;
         let metadata: Metadata = serde_json::from_str(&line)
             .map_err(|error| CoreError::Session(format!("{}：{error}", path.display())))?;
         info.updated_at_ms = metadata.at_ms;
@@ -386,7 +471,7 @@ async fn read_session_info(
             _ => {}
         }
     }
-    Ok(Some(info))
+    Ok(Some((info, has_entries)))
 }
 
 /// 把 cwd 编码成 omp 风格的可读目录名。
@@ -491,13 +576,12 @@ mod tests {
             "会话".into(),
             1_728_000_000_123,
         );
-        let (paths, file) = store
-            .create(
-                Path::new("/tmp/project"),
-                "ses_123456789abc",
-                1_728_000_000_123,
-                &header,
-            )
+        let paths = store.paths_for(
+            Path::new("/tmp/project"),
+            "ses_123456789abc",
+            1_728_000_000_123,
+        );
+        let file = SessionFile::create_with_header(&paths.transcript, &header)
             .await
             .expect("创建会话文件");
         let message = Entry::from_payload(
@@ -509,7 +593,7 @@ mod tests {
             header.id().into(),
             1_728_000_000_124,
         );
-        file.append(&message).await.expect("追加消息");
+        file.append(&message, None).await.expect("追加消息");
         let listed = store.list().await.expect("列出会话");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].updated_at_ms, 1_728_000_000_124);
@@ -545,8 +629,8 @@ mod tests {
             "旧标题".into(),
             100,
         );
-        let (_, file) = store
-            .create(Path::new("/tmp/project"), "ses_metadata", 100, &header)
+        let paths = store.paths_for(Path::new("/tmp/project"), "ses_metadata", 100);
+        let file = SessionFile::create_with_header(&paths.transcript, &header)
             .await
             .unwrap();
         let mut parent = header.id().to_owned();
@@ -566,7 +650,7 @@ mod tests {
         {
             let entry = Entry::from_payload(payload, parent, 101 + index as u64);
             parent = entry.id().to_owned();
-            file.append(&entry).await.unwrap();
+            file.append(&entry, None).await.unwrap();
         }
         let listed = SessionStore::new(directory.path()).list().await.unwrap();
         assert_eq!(listed[0].title, "新标题");

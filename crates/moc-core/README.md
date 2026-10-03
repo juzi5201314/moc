@@ -111,7 +111,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - hashline 编辑只能引用 read 实际展示的完整行。未服务、漂移或过期范围拒绝执行，并附当前锚点；重启后必须重新建立许可。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
-- 会话使用追加式 JSONL，逐条 flush；压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。
+- 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。
 - 压缩依次尝试 remote、shake、soft；原生载荷只用于兼容模型，换模型或载荷失效时恢复日志视图。`auto_continue=false` 会在轮次内压缩完成后停止继续请求模型。
 
 ## 验证

@@ -300,7 +300,7 @@ mod tests {
     use super::*;
     use crate::session::{
         entries::{Entry, EntryPayload},
-        store::SessionStore,
+        store::{SessionFile, SessionStore},
     };
     use moc_protocol::SessionMode;
 
@@ -318,7 +318,11 @@ mod tests {
             "归档测试".into(),
             1,
         );
-        let (paths, file) = store.create(root.path(), id, 1, &header).await.unwrap();
+        let paths = store.paths_for(root.path(), id, 1);
+        let file = SessionFile::create_with_header(&paths.transcript, &header)
+            .await
+            .unwrap();
+        std::fs::create_dir_all(paths.artifacts()).unwrap();
         let kept = paths.artifacts().join("kept.txt");
         let garbage = paths.artifacts().join("unused.txt");
         fs::write(&kept, "仍被引用").await.unwrap();
@@ -332,7 +336,7 @@ mod tests {
             header.id().into(),
             2,
         );
-        file.append(&entry).await.unwrap();
+        file.append(&entry, None).await.unwrap();
         drop(file);
         let table = SessionTable::new(store.root(), true);
         let policy = RetentionConfig {

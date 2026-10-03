@@ -11,12 +11,17 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
     let harness = support::Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     let session_id = harness.session(moc_protocol::SessionMode::Normal).await;
 
-    let roots = std::fs::read_dir(harness.root.path().join("sessions"))
-        .expect("session root")
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    let workspace = roots.first().expect("workspace session directory").path();
-    let sidecar = workspace.join(&session_id);
+    // harness 的 cwd 固定为 root/work；sessions 目录按 encode_cwd 规则组织。
+    let workspace_dir =
+        harness
+            .root
+            .path()
+            .join("sessions")
+            .join(moc_core::session::store::encode_cwd(
+                &harness.root.path().join("work"),
+            ));
+    let sidecar = workspace_dir.join(&session_id);
+    std::fs::create_dir_all(sidecar.join("artifacts")).expect("artifacts 目录");
     std::fs::write(
         sidecar.join("artifacts").join("output.txt"),
         "middle line\n",
@@ -92,15 +97,16 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
     )
     .await;
     let session_id = harness.session(moc_protocol::SessionMode::Normal).await;
-    let roots = std::fs::read_dir(harness.root.path().join("sessions"))
-        .expect("session root")
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    let sidecar = roots
-        .first()
-        .expect("workspace session directory")
-        .path()
-        .join(&session_id);
+    let workspace_dir =
+        harness
+            .root
+            .path()
+            .join("sessions")
+            .join(moc_core::session::store::encode_cwd(
+                &harness.root.path().join("work"),
+            ));
+    let sidecar = workspace_dir.join(&session_id);
+    std::fs::create_dir_all(sidecar.join("artifacts")).expect("artifacts 目录");
     let artifact = sidecar.join("artifacts").join("roundtrip.txt");
     std::fs::write(&artifact, "first line\nmiddle line\nlast line\n").expect("artifact");
     let uri = format!("artifact://{session_id}/artifacts/roundtrip.txt");

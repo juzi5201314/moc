@@ -245,7 +245,9 @@ async fn run_repl(
             })
             .await?
     };
-    if let Some(selector) = &args.model {
+    if let Some(selector) = &args.model
+        && selector != &session.model
+    {
         session.model = core.set_model(&session.id, selector).await?;
     }
     let mut mode = session.mode;
@@ -584,7 +586,8 @@ fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
         "normal" => Ok(SessionMode::Normal),
         "ask" => Ok(SessionMode::Ask),
         "plan" => Ok(SessionMode::Plan),
-        _ => bail!("模式必须是 normal、ask 或 plan"),
+        "ptc" => Ok(SessionMode::Ptc),
+        _ => bail!("模式必须是 normal、ask、plan 或 ptc"),
     }
 }
 
@@ -599,7 +602,7 @@ fn print_sessions(sessions: &[SessionInfo]) {
 
 fn print_help() {
     println!(
-        "/mode <normal|ask|plan>  切换工作模式\n/plan <提示词>            切换计划模式并发送提示词\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|ask|plan|ptc>  切换工作模式\n/plan <提示词>            切换计划模式并发送提示词\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
     );
     println!("/cancel                  取消当前轮次（运行中按 Ctrl+C）");
 }

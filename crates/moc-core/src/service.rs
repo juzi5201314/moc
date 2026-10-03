@@ -629,7 +629,7 @@ impl AgentService for Core {
             )
             .await
             .map_err(to_rpc)?;
-        if params.mode != SessionMode::Normal && config.workspace.watch {
+        if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) && config.workspace.watch {
             let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
                 .await
                 .map_err(to_rpc)?;
@@ -816,7 +816,7 @@ impl AgentService for Core {
         drop(file_lock);
         info.lock = None;
         let runtime = self.inner.runtime(&params.session_id).await;
-        if params.mode != SessionMode::Normal {
+        if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) {
             let cwd = PathBuf::from(&info.cwd);
             let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
             if config.workspace.watch {
@@ -1002,7 +1002,7 @@ impl AgentService for Core {
                 }
             }
             turns.spawn(async move {
-                let running = turn::run_turn(&inner, ctx, params);
+                let running = turn::run_turn(Arc::clone(&inner), ctx, params);
                 tokio::pin!(running);
                 let result = tokio::select! {
                     biased;

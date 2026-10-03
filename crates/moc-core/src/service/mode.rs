@@ -8,6 +8,7 @@ use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
 
 use super::{CoreInner, protocol_to_rpc, to_rpc};
 use crate::compact;
+use crate::error::CoreError;
 use crate::session::entries::EntryPayload;
 
 pub async fn approve_plan(
@@ -104,6 +105,10 @@ pub async fn approve_plan(
             .paths
             .plans()
             .join(format!("{}.md", plan.plan_id));
+        tokio::fs::create_dir_all(child_record.paths.plans())
+            .await
+            .map_err(CoreError::Io)
+            .map_err(to_rpc)?;
         tokio::fs::write(&child_path, &plan.markdown)
             .await
             .map_err(protocol_to_rpc)?;
@@ -197,6 +202,7 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "skill",
             "submit_plan",
         ],
+        SessionMode::Ptc => &["run_code"],
     }
 }
 
@@ -214,5 +220,6 @@ pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> b
     match mode {
         SessionMode::Normal => true,
         SessionMode::Ask | SessionMode::Plan => tier == crate::tools::Tier::Read,
+        SessionMode::Ptc => false,
     }
 }

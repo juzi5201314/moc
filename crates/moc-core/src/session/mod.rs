@@ -46,7 +46,9 @@ pub struct SessionRecord {
     append_lock: Mutex<()>,
     active: AtomicBool,
     pub paths: SessionPaths,
-    file: SessionFile,
+    /// 磁盘上还没有 transcript 文件时为 `None`；首次 append 延迟落盘。
+    file: Mutex<Option<SessionFile>>,
+    header: Entry,
 }
 
 impl SessionRecord {
@@ -79,7 +81,7 @@ impl SessionTable {
         }
     }
 
-    /// 创建 JSONL transcript 与 sidecar，并登记内存状态。
+    /// 只登记内存状态；transcript 由首次 append 延迟落盘，空会话不残留文件。
     pub async fn create(
         &self,
         cwd: impl AsRef<Path>,
@@ -105,10 +107,7 @@ impl SessionTable {
             created_at_ms,
         );
         let state = SessionState::new(header.clone())?;
-        let (paths, file) = self
-            .store
-            .create(cwd, &session_id, created_at_ms, &header)
-            .await?;
+        let paths = self.store.paths_for(cwd, &session_id, created_at_ms);
         let info = state.session_info();
         self.records.write().insert(
             session_id,
@@ -117,8 +116,9 @@ impl SessionTable {
                 turn_lock: Arc::new(Mutex::new(())),
                 append_lock: Mutex::new(()),
                 active: AtomicBool::new(true),
+                file: Mutex::new(None),
+                header,
                 paths,
-                file,
             }),
         );
         Ok(info)
@@ -145,13 +145,19 @@ impl SessionTable {
             )));
         }
         let file = self.store.open(&paths).await?;
+        let header = state
+            .entries
+            .first()
+            .cloned()
+            .ok_or_else(|| CoreError::Session("transcript 缺少会话头部".into()))?;
         let record = Arc::new(SessionRecord {
             state: Arc::new(Mutex::new(state)),
             turn_lock: Arc::new(Mutex::new(())),
             append_lock: Mutex::new(()),
             active: AtomicBool::new(true),
+            file: Mutex::new(Some(file)),
+            header,
             paths,
-            file,
         });
         let mut records = self.records.write();
         Ok(Arc::clone(
@@ -185,6 +191,7 @@ impl SessionTable {
             truncated: start > 0,
             todos: state.todos.clone(),
             plans: state.plans.clone(),
+            child_calls: state.child_calls.clone(),
         })
     }
     /// 创建一个回退分支，并从目标消息重建该分支的上下文。
@@ -272,6 +279,9 @@ impl SessionTable {
     }
 
     /// 追加新 entry；状态锁不跨越文件 I/O await。
+    ///
+    /// transcript 文件缺失时（新会话尚未落盘）先写入 header 再写 entry，
+    /// 完成延迟落盘；因此从未产生 entry 的会话不会在磁盘上留下文件。
     pub async fn append(
         &self,
         session_id: &str,
@@ -290,7 +300,18 @@ impl SessionTable {
                 let state = record.state.lock().await;
                 Entry::from_payload(payload, state.last_entry_id.clone(), now_ms())
             };
-            record.file.append(&entry).await?;
+            let mut file_slot = record.file.lock().await;
+            if file_slot.is_none() {
+                *file_slot = Some(
+                    SessionFile::create_with_header(&record.paths.transcript, &record.header)
+                        .await?,
+                );
+            }
+            file_slot
+                .as_ref()
+                .expect("延迟落盘或已打开的句柄必然存在")
+                .append(&entry, None)
+                .await?;
             record.state.lock().await.apply_entry(entry.clone());
             Ok(entry)
         })
@@ -333,7 +354,18 @@ impl SessionTable {
                     "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
                 ));
             }
-            record.file.rewrite(&entries).await?;
+            let mut file_slot = record.file.lock().await;
+            if file_slot.is_none() {
+                *file_slot = Some(
+                    SessionFile::create_with_header(&record.paths.transcript, &record.header)
+                        .await?,
+                );
+            }
+            file_slot
+                .as_ref()
+                .expect("延迟落盘或已打开的句柄必然存在")
+                .rewrite(&entries)
+                .await?;
             let mut current = record.state.lock().await;
             state.notices = std::mem::take(&mut current.notices);
             state.job_sequence = current.job_sequence;
@@ -408,12 +440,19 @@ impl SessionTable {
         if !self.locking {
             return Ok(None);
         }
+        // 锁文件与 transcript 同目录；延迟落盘时该目录可能还不存在，先补建。
+        if let Some(directory) = record.paths.transcript.parent() {
+            tokio::fs::create_dir_all(directory).await?;
+        }
         let guard = lock::SessionLockGuard::acquire(record.paths.lock_file(session_id), frontend)?;
         let _append = record.append_lock.lock().await;
-        if record.file.changed_on_disk().await? {
+        let file_slot = record.file.lock().await;
+        if let Some(file) = file_slot.as_ref()
+            && file.changed_on_disk().await?
+        {
             let entries = self.store.read_entries(&record.paths).await?;
             let mut fresh = SessionState::from_entries(entries)?;
-            record.file.reopen().await?;
+            file.reopen().await?;
             let mut current = record.state.lock().await;
             fresh.notices = std::mem::take(&mut current.notices);
             fresh.job_sequence = current.job_sequence;
@@ -505,6 +544,37 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn fresh_session_is_deferred_to_disk_until_first_entry() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .await
+            .expect("创建会话");
+        // 未产生任何 entry 前：磁盘上既无 transcript 也无 sidecar，列表不收录。
+        let paths = table.store.paths_for(
+            std::path::Path::new("/tmp/project"),
+            &info.id,
+            info.created_at_ms,
+        );
+        assert!(!paths.transcript.exists());
+        assert!(table.list().await.expect("列出会话").is_empty());
+        // append 之后：header 与 entry 一并落盘，列表收录。
+        table
+            .append_message(&info.id, Message::user_text("第一条消息"), None, None)
+            .await
+            .expect("追加消息");
+        assert!(paths.transcript.exists());
+        let entries = table
+            .store
+            .read_entries(&paths)
+            .await
+            .expect("读取 transcript");
+        assert_eq!(entries.len(), 2, "header 加一条用户消息");
+        assert_eq!(table.list().await.expect("列出会话").len(), 1);
+    }
+
+    #[tokio::test]
     async fn session_lifecycle_persists_transcript_and_true_truncation() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
@@ -570,6 +640,10 @@ mod tests {
             .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
             .await
             .expect("创建会话");
+        table
+            .append_message(&info.id, Message::user_text("落盘"), None, None)
+            .await
+            .expect("追加消息");
         let record = table.get(&info.id).await.expect("取会话");
         let _turn = record.try_turn_lock().expect("取得轮次锁");
         assert!(record.try_turn_lock().is_err());
@@ -589,6 +663,10 @@ mod tests {
         let first = SessionTable::new(directory.path(), true);
         let info = first
             .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .await
+            .unwrap();
+        first
+            .append_message(&info.id, Message::user_text("落盘"), None, None)
             .await
             .unwrap();
         let second = SessionTable::new(directory.path(), true);
@@ -621,11 +699,11 @@ mod tests {
         first.rewrite(&info.id, entries).await.unwrap();
         drop(guard);
         let guard = second.acquire_lock(&info.id, "second").await.unwrap();
+        let loaded = second.load(&info.id, None).await.unwrap();
         assert_eq!(
-            second.load(&info.id, None).await.unwrap().entries[0]
-                .message
-                .text(),
-            "外部追加"
+            loaded.entries[1].message.text(),
+            "外部追加",
+            "锁刷新后应看到 other 进程追加的消息"
         );
         second
             .append_message(&info.id, Message::assistant_text("续写"), None, None)
@@ -636,8 +714,8 @@ mod tests {
             .load(&info.id, None)
             .await
             .unwrap();
-        assert_eq!(restored.entries.len(), 2);
-        assert_eq!(restored.entries[1].message.text(), "续写");
+        assert_eq!(restored.entries.len(), 3);
+        assert_eq!(restored.entries[2].message.text(), "续写");
     }
     #[tokio::test]
     async fn rewind_truncates_user_message_and_keeps_tool_history_complete() {
