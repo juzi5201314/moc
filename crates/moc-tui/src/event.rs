@@ -22,7 +22,7 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, Focus, MODES};
+use crate::app::{App, CtrlCPending, Focus, MODES};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::Modal;
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
@@ -871,7 +871,7 @@ fn handle_key(
         (code, modifiers),
         (KeyCode::Char('c'), KeyModifiers::CONTROL)
     ) {
-        app.cancel_pending = false;
+        app.ctrl_c_pending = None;
     }
     if !matches!(code, KeyCode::Esc) {
         app.clear_pending = false;
@@ -957,18 +957,30 @@ fn handle_key(
     match (code, modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
             if app.prompt_running {
-                if app.cancel_pending {
+                if app.take_ctrl_c_pending(CtrlCPending::Quit) {
                     app.should_quit = true;
                 } else {
-                    app.cancel_pending = true;
+                    app.ctrl_c_pending =
+                        Some((CtrlCPending::Quit, std::time::Instant::now()));
                     app.cancel_requested = true;
                     app.set_notice("Stopping... Press Ctrl+C again to exit");
                     cancel_prompt(&connection.client, app);
                 }
-            } else if app.cancel_pending {
+            } else if !app.prompt_text().is_empty() {
+                if app.take_ctrl_c_pending(CtrlCPending::ClearPrompt) {
+                    app.prompt.clear();
+                    app.notice = None;
+                    app.notice_at = None;
+                } else {
+                    app.ctrl_c_pending =
+                        Some((CtrlCPending::ClearPrompt, std::time::Instant::now()));
+                    app.set_notice("clear input");
+                }
+            } else if app.take_ctrl_c_pending(CtrlCPending::Quit) {
                 app.should_quit = true;
             } else {
-                app.cancel_pending = true;
+                app.ctrl_c_pending =
+                    Some((CtrlCPending::Quit, std::time::Instant::now()));
                 app.set_notice("Press Ctrl+C again to exit");
             }
         }
@@ -1199,6 +1211,7 @@ fn handle_modal_key(
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
+    app.ctrl_c_pending = None;
     match modal {
         Modal::Permission {
             params,
@@ -1981,7 +1994,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         } => app.finish_tool_block(tool_call_id, status, result, duration_ms, diff),
         SessionUpdate::PromptStarted { .. } => {
             app.prompt_running = true;
-            app.cancel_pending = false;
+            app.ctrl_c_pending = None;
             app.prompt_started_at = Some(std::time::Instant::now());
             if !app.cancel_requested {
                 app.notice = None;
@@ -3204,5 +3217,121 @@ mod tests {
         app.scroll_offset = 1;
         handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
         assert_eq!(app.scroll_offset, 0, "已在尾部时下滚饱和为 0");
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_clears_input_when_nonempty_within_three_seconds() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_text("hello moc");
+        assert_eq!(app.prompt_text(), "hello moc");
+
+        // 第一次 Ctrl+C：提示 "clear input"，不应清空
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.prompt_text(), "hello moc");
+        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert!(!app.should_quit);
+        assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
+
+        // 3 秒内第二次 Ctrl+C：清空输入框
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.prompt_text(), "");
+        assert!(!app.should_quit);
+        assert!(!app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
+
+        // 此时输入框变空，再次按 Ctrl+C：应提示退出
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+        assert!(!app.should_quit);
+        assert!(app.has_ctrl_c_pending(CtrlCPending::Quit));
+
+        // 3 秒内第四次 Ctrl+C：退出
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert!(app.should_quit);
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_quits_when_input_is_empty_within_three_seconds() {
+        let (core, connection, mut app) = setup_test_app().await;
+        assert_eq!(app.prompt_text(), "");
+
+        // 第一次 Ctrl+C：提示退出
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+        assert!(!app.should_quit);
+        assert!(app.has_ctrl_c_pending(CtrlCPending::Quit));
+
+        // 3 秒内第二次 Ctrl+C：退出
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert!(app.should_quit);
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_times_out_after_three_seconds() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_text("some text");
+
+        // 非空输入框：第一次按 Ctrl+C
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.notice.as_deref(), Some("clear input"));
+
+        // 模拟超过 3 秒
+        if let Some((_, at)) = app.ctrl_c_pending.as_mut() {
+            *at = *at - std::time::Duration::from_secs(4);
+        }
+
+        // 再次按 Ctrl+C：超时，不应清空，应重新触发第一次提示
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.prompt_text(), "some text");
+        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
+
+        // 清空后测试空输入框超时
+        app.prompt.clear();
+        app.ctrl_c_pending = None;
+
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+        assert!(!app.should_quit);
+
+        // 模拟超过 3 秒
+        if let Some((_, at)) = app.ctrl_c_pending.as_mut() {
+            *at = *at - std::time::Duration::from_secs(4);
+        }
+
+        // 再次按 Ctrl+C：超时，不应退出
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert!(!app.should_quit);
+        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn other_key_resets_ctrl_c_pending() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_text("hello");
+
+        // 第一次 Ctrl+C
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
+
+        // 按其他键（例如向右光标键）
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        assert!(!app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
+
+        // 再次按 Ctrl+C：应当重新作为第一次按，提示而不是清空
+        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(app.prompt_text(), "hello");
+        assert_eq!(app.notice.as_deref(), Some("clear input"));
+
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 }

@@ -41,6 +41,18 @@ impl Focus {
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 /// 上游配置不一致告警的存活时长：比 notice 长，避免用户错过静默改写。
 const WARNING_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+/// Ctrl+C 二次确认的动作类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtrlCPending {
+    /// 输入框非空时首次按 Ctrl+C，再次按下清空输入框。
+    ClearPrompt,
+    /// 输入框为空（或中止 Prompt 后）首次按 Ctrl+C，再次按下退出应用。
+    Quit,
+}
+
+/// Ctrl+C 二次确认有效窗口（3 秒内）。
+pub const CTRL_C_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
 
 /// 应用状态。
 pub struct App {
@@ -118,8 +130,9 @@ pub struct App {
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
     pub pending_click: Option<(u16, u16)>,
-    /// ctrl+c / Esc 的二次确认状态。
-    pub cancel_pending: bool,
+    /// ctrl+c 二次确认状态及触发时刻（3 秒内有效）。
+    pub ctrl_c_pending: Option<(CtrlCPending, std::time::Instant)>,
+    /// Esc 二次确认状态。
     pub clear_pending: bool,
     /// 一次性提示（操作反馈、启动警告）；带 TTL 自动消失。
     pub notice: Option<String>,
@@ -208,7 +221,7 @@ impl App {
             paint_lines: Vec::new(),
             selection: None,
             pending_click: None,
-            cancel_pending: false,
+            ctrl_c_pending: None,
             clear_pending: false,
             notice: None,
             notice_at: None,
@@ -301,6 +314,25 @@ impl App {
         let at = self.notice_at.filter(|_| self.notice.is_some())?;
         let deadline = at + NOTICE_TTL;
         (std::time::Instant::now() < deadline).then_some(deadline)
+    }
+
+    /// 检查当前是否存在指定类型且在 3 秒 TTL 内有效的 Ctrl+C 待确认状态。
+    pub fn has_ctrl_c_pending(&self, expected: CtrlCPending) -> bool {
+        match self.ctrl_c_pending {
+            Some((kind, at)) => kind == expected && at.elapsed() <= CTRL_C_TTL,
+            None => false,
+        }
+    }
+
+    /// 消费指定类型的 Ctrl+C 待确认状态，若在 3 秒 TTL 内有效则重置为 None 并返回 true。
+    pub fn take_ctrl_c_pending(&mut self, expected: CtrlCPending) -> bool {
+        if self.has_ctrl_c_pending(expected) {
+            self.ctrl_c_pending = None;
+            true
+        } else {
+            self.ctrl_c_pending = None;
+            false
+        }
     }
 
     /// notice 是否仍在显示期内。
@@ -446,7 +478,7 @@ impl App {
         let was_cancel_requested = self.cancel_requested;
         self.prompt_running = false;
         self.cancel_requested = false;
-        self.cancel_pending = false;
+        self.ctrl_c_pending = None;
         self.prompt_started_at = None;
         self.transient_mode = None;
         if was_cancel_requested {
