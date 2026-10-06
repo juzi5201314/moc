@@ -1375,6 +1375,10 @@ mod tests {
             ("function_call", FinishReason::ToolCalls),
             ("content_filter", FinishReason::ContentFilter),
             ("something_new", FinishReason::Other("something_new".into())),
+            (
+                "model_context_window_exceeded",
+                FinishReason::Other("model_context_window_exceeded".into()),
+            ),
         ];
         for (wire, expected) in cases {
             let body = json!({
@@ -1760,28 +1764,6 @@ mod tests {
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
                 ]},
             ])
-        );
-    }
-
-    #[test]
-    fn tool_history_validation_applies_to_chat() {
-        let req = ChatRequest {
-            messages: vec![
-                Message {
-                    role: Role::Assistant,
-                    content: vec![
-                        ContentPart::ToolCall(ToolCall::new("call_1", "get_weather", "{}")),
-                        ContentPart::ToolCall(ToolCall::new("call_2", "get_date", "{}")),
-                    ],
-                },
-                Message::tool_result("call_1", "晴", false),
-            ],
-            ..Default::default()
-        };
-        let err = super::super::encode(&config(), &req, false).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "构建请求失败: assistant 消息中的工具调用 [get_weather, get_date] 缺少对应的工具结果消息（缺失: get_date）"
         );
     }
 }

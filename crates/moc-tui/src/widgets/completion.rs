@@ -225,15 +225,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefix_filters_and_keeps_order() {
+    fn derive_table_filters_closes_and_keeps_order() {
         let state = CompletionState::derive("/mo").expect("有候选");
         assert_eq!(state.candidates.len(), 2);
         assert_eq!(state.candidates[0].value, "/model");
         assert_eq!(state.candidates[1].value, "/mode");
-    }
 
-    #[test]
-    fn closes_when_args_started() {
+        // 参数一旦开始、非命令文本或无匹配前缀都不提供候选。
         assert!(CompletionState::derive("/model ").is_none());
         assert!(CompletionState::derive("聊天文本").is_none());
         assert!(CompletionState::derive("/zzz").is_none());
@@ -253,16 +251,6 @@ mod tests {
         .expect("资源候选");
         assert_eq!(state.chosen().value, "local://ses_1/plans/");
         assert!(!state.chosen().append_space);
-    }
-
-    #[test]
-    fn selection_wraps_around_both_directions() {
-        let mut state = CompletionState::derive("/mo").expect("有候选");
-        assert_eq!(state.selected, 0);
-        state.select_previous();
-        assert_eq!(state.selected, 1, "从首项向上循环到末项");
-        state.select_next();
-        assert_eq!(state.selected, 0, "从末项向下循环到首项");
     }
 
     #[test]

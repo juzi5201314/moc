@@ -101,109 +101,53 @@ mod tests {
 
     use super::*;
 
-    /// 方法名唯一，且与各标记类型的 `Method::NAME` 一致。
+    /// 方法名表：逐类型对照文档字面量，并校验集合无重复。
     #[test]
-    fn method_names_are_unique_and_consistent() {
+    fn method_names_match_documented_table() {
         let client_methods = [
-            <Initialize as Method>::NAME,
-            <Ping as Method>::NAME,
-            <ConfigGet as Method>::NAME,
-            <SessionNew as Method>::NAME,
-            <SessionList as Method>::NAME,
-            <SessionLoad as Method>::NAME,
-            <SessionDelete as Method>::NAME,
-            <SessionRewind as Method>::NAME,
-            <SessionUnload as Method>::NAME,
-            <SessionRename as Method>::NAME,
-            <SessionUnlock as Method>::NAME,
-            <SessionSetMode as Method>::NAME,
-            <SessionSetModel as Method>::NAME,
-            <SessionPlanApprove as Method>::NAME,
-            <SessionCompact as Method>::NAME,
-            <SessionContext as Method>::NAME,
-            <SessionPrompt as Method>::NAME,
-            <SessionCancel as Method>::NAME,
-            <OpenVikingList as Method>::NAME,
-            <OpenVikingRead as Method>::NAME,
-            <OpenVikingWrite as Method>::NAME,
-            <OpenVikingDelete as Method>::NAME,
-            <ResourceComplete as Method>::NAME,
+            (<Initialize as Method>::NAME, "initialize"),
+            (<Ping as Method>::NAME, "ping"),
+            (<ConfigGet as Method>::NAME, "config/get"),
+            (<SessionNew as Method>::NAME, "session/new"),
+            (<SessionList as Method>::NAME, "session/list"),
+            (<SessionLoad as Method>::NAME, "session/load"),
+            (<SessionRewind as Method>::NAME, "session/rewind"),
+            (<SessionUnload as Method>::NAME, "session/unload"),
+            (<SessionRename as Method>::NAME, "session/rename"),
+            (<SessionDelete as Method>::NAME, "session/delete"),
+            (<SessionUnlock as Method>::NAME, "session/unlock"),
+            (<SessionSetMode as Method>::NAME, "session/set_mode"),
+            (<SessionSetModel as Method>::NAME, "session/set_model"),
+            (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
+            (<SessionCompact as Method>::NAME, "session/compact"),
+            (<SessionContext as Method>::NAME, "session/context"),
+            (<SessionPrompt as Method>::NAME, "session/prompt"),
+            (<SessionCancel as Method>::NAME, "session/cancel"),
+            (<OpenVikingList as Method>::NAME, "openviking/list"),
+            (<OpenVikingRead as Method>::NAME, "openviking/read"),
+            (<OpenVikingWrite as Method>::NAME, "openviking/write"),
+            (<OpenVikingDelete as Method>::NAME, "openviking/delete"),
+            (<ResourceComplete as Method>::NAME, "resource/complete"),
         ];
-        let server_methods = [
-            <SessionRequestPermission as Method>::NAME,
-            <SessionRequestAsk as Method>::NAME,
-            <SessionUpdateMethod as Method>::NAME,
-        ];
-        let expected: HashSet<&str> = [
-            "initialize",
-            "ping",
-            "config/get",
-            "session/new",
-            "session/list",
-            "session/load",
-            "session/rewind",
-            "session/unload",
-            "session/rename",
-            "session/delete",
-            "session/unlock",
-            "session/set_mode",
-            "session/set_model",
-            "session/prompt",
-            "session/cancel",
-            "openviking/list",
-            "openviking/read",
-            "openviking/write",
-            "openviking/delete",
-            "resource/complete",
-            "session/context",
-            "session/plan_approve",
-            "session/compact",
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(client_methods.into_iter().collect::<HashSet<_>>(), expected);
-        assert_eq!(
-            server_methods.into_iter().collect::<HashSet<_>>(),
-            [
-                "session/request_permission",
-                "session/request_ask",
-                "session/update",
-            ]
-            .into_iter()
-            .collect::<HashSet<_>>()
-        );
-    }
+        for (actual, expected) in client_methods {
+            assert_eq!(actual, expected);
+        }
+        let unique: HashSet<&str> = client_methods.iter().map(|(name, _)| *name).collect();
+        assert_eq!(unique.len(), client_methods.len(), "客户端方法名不得重复");
 
-    /// 标记类型的方法名与 crate 文档里那张表逐字一致。
-    #[test]
-    fn names_match_documented_table() {
-        assert_eq!(<Initialize as Method>::NAME, "initialize");
-        assert_eq!(<Ping as Method>::NAME, "ping");
-        assert_eq!(<ConfigGet as Method>::NAME, "config/get");
-        assert_eq!(<SessionNew as Method>::NAME, "session/new");
-        assert_eq!(<SessionList as Method>::NAME, "session/list");
-        assert_eq!(<SessionLoad as Method>::NAME, "session/load");
-        assert_eq!(<SessionRewind as Method>::NAME, "session/rewind");
-        assert_eq!(<SessionUnload as Method>::NAME, "session/unload");
-        assert_eq!(<SessionRename as Method>::NAME, "session/rename");
-        assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
-        assert_eq!(<SessionUnlock as Method>::NAME, "session/unlock");
-        assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
-        assert_eq!(<SessionSetModel as Method>::NAME, "session/set_model");
-        assert_eq!(<SessionPlanApprove as Method>::NAME, "session/plan_approve");
-        assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
-        assert_eq!(<SessionPrompt as Method>::NAME, "session/prompt");
-        assert_eq!(<SessionCancel as Method>::NAME, "session/cancel");
-        assert_eq!(<OpenVikingList as Method>::NAME, "openviking/list");
-        assert_eq!(<OpenVikingRead as Method>::NAME, "openviking/read");
-        assert_eq!(<OpenVikingWrite as Method>::NAME, "openviking/write");
-        assert_eq!(<OpenVikingDelete as Method>::NAME, "openviking/delete");
-        assert_eq!(<SessionRequestAsk as Method>::NAME, "session/request_ask");
-        assert_eq!(
-            <SessionRequestPermission as Method>::NAME,
-            "session/request_permission"
-        );
-        assert_eq!(<SessionUpdateMethod as Method>::NAME, "session/update");
+        let server_methods = [
+            (
+                <SessionRequestPermission as Method>::NAME,
+                "session/request_permission",
+            ),
+            (<SessionRequestAsk as Method>::NAME, "session/request_ask"),
+            (<SessionUpdateMethod as Method>::NAME, "session/update"),
+        ];
+        for (actual, expected) in server_methods {
+            assert_eq!(actual, expected);
+        }
+        let unique: HashSet<&str> = server_methods.iter().map(|(name, _)| *name).collect();
+        assert_eq!(unique.len(), server_methods.len(), "服务端方法名不得重复");
     }
 
     /// 方向标记的静态证据：编译期就需要这些 impl 存在。

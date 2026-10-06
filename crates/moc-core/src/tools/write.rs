@@ -267,7 +267,7 @@ async fn stage(path: &Path, content: &[u8]) -> Result<PathBuf, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashline::{AnchorStore, ServedFile, assign_hashes, served::read_snapshot};
+    use crate::hashline::{AnchorStore, assign_hashes, served::read_snapshot};
     use std::fs;
 
     #[test]
@@ -300,6 +300,5 @@ mod tests {
     fn line_endings_are_preserved_without_normalizing_content_semantics() {
         assert_eq!(normalize_line_endings("a\nb\n", b"\r\n"), "a\r\nb\r\n");
         assert_eq!(line_ending(b"a\r\nb\r\n"), b"\r\n");
-        assert!(ServedFile::new().hashes.is_empty());
     }
 }

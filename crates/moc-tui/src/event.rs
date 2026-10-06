@@ -2760,24 +2760,20 @@ mod tests {
     }
 
     #[test]
-    fn tab_accepts_the_selected_command_instead_of_changing_focus() {
+    fn completion_tab_accepts_the_selected_command() {
+        // 初始选中第 0 项：Tab 直接接受，而不是切换焦点。
         let mut app = app_with_completion();
-
         assert!(handle_completion_key(
             &mut app,
             KeyModifiers::NONE,
             KeyCode::Tab
         ));
-
         assert_eq!(app.prompt.text, "/model ");
         assert!(app.completion.is_none());
         assert_eq!(app.focus, Focus::Prompt);
-    }
 
-    #[test]
-    fn completion_arrows_select_the_command_tab_accepts() {
+        // 方向键切换选中项后，Tab 接受当前项。
         let mut app = app_with_completion();
-
         assert!(handle_completion_key(
             &mut app,
             KeyModifiers::NONE,
@@ -2794,8 +2790,8 @@ mod tests {
             KeyModifiers::NONE,
             KeyCode::Tab
         ));
-
         assert_eq!(app.prompt.text, "/mode ");
+        assert!(app.completion.is_none());
     }
 
     #[test]
@@ -3362,25 +3358,6 @@ mod tests {
         assert!(app.has_ctrl_c_pending(CtrlCPending::Quit));
 
         // 3 秒内第四次 Ctrl+C：退出
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
-        assert!(app.should_quit);
-
-        connection.shutdown().await;
-        core.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn ctrl_c_quits_when_input_is_empty_within_three_seconds() {
-        let (core, connection, mut app) = setup_test_app().await;
-        assert_eq!(app.prompt_text(), "");
-
-        // 第一次 Ctrl+C：提示退出
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
-        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
-        assert!(!app.should_quit);
-        assert!(app.has_ctrl_c_pending(CtrlCPending::Quit));
-
-        // 3 秒内第二次 Ctrl+C：退出
         handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
         assert!(app.should_quit);
 

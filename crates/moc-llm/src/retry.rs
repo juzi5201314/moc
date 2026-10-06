@@ -86,44 +86,40 @@ mod tests {
         }
     }
 
+    /// `delay(attempt, retry_after)`：指数退避并在 max 封顶；`retry_after` 更大时优先；
+    /// 0 退避钳制到 1ms；越过 max_attempts 后不再等待。
     #[test]
-    fn backoff_doubles_and_stops_at_max_attempts() {
-        let policy = policy(0.5, 20.0, 8);
-        let delays: Vec<f64> = (1..8)
-            .map(|attempt| policy.delay(attempt, None).unwrap().as_secs_f64())
-            .collect();
-        assert_eq!(delays, vec![0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 20.0]);
-        assert_eq!(policy.delay(8, None), None);
-        assert_eq!(policy.delay(9, None), None);
-    }
+    fn delay_table() {
+        let exp = policy(0.5, 20.0, 8);
+        let expected_ms = [500u64, 1000, 2000, 4000, 8000, 16000, 20000];
+        for (index, expected) in expected_ms.iter().enumerate() {
+            let attempt = index as u32 + 1;
+            assert_eq!(
+                exp.delay(attempt, None),
+                Some(Duration::from_millis(*expected)),
+                "attempt {attempt} 应指数翻倍并在 max 封顶"
+            );
+        }
+        assert_eq!(exp.delay(8, None), None);
+        assert_eq!(exp.delay(9, None), None);
 
-    #[test]
-    fn retry_after_wins_over_smaller_backoff() {
-        let policy = policy(0.5, 20.0, 3);
-        let delay = policy.delay(1, Some(Duration::from_secs(7))).unwrap();
-        assert_eq!(delay, Duration::from_secs(7));
-
-        let smaller = policy.delay(2, Some(Duration::from_secs(0))).unwrap();
-        assert_eq!(smaller, Duration::from_secs(1));
-    }
-
-    #[test]
-    fn zero_backoff_is_clamped_to_one_millisecond() {
-        let policy = policy(0.0, 20.0, 3);
-        assert_eq!(policy.delay(1, None), Some(Duration::from_millis(1)));
+        // retry_after 更大时优先；更小时按退避（第 2 次尝试为 0.5s 翻倍后的 1s）。
+        let retry = policy(0.5, 20.0, 3);
         assert_eq!(
-            policy.delay(1, Some(Duration::from_secs(0))),
+            retry.delay(1, Some(Duration::from_secs(7))),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            retry.delay(2, Some(Duration::from_secs(0))),
+            Some(Duration::from_secs(1))
+        );
+
+        let zero = policy(0.0, 20.0, 3);
+        assert_eq!(zero.delay(1, None), Some(Duration::from_millis(1)));
+        assert_eq!(
+            zero.delay(1, Some(Duration::from_secs(0))),
             Some(Duration::from_millis(1))
         );
-    }
-
-    #[test]
-    fn attempts_beyond_max_yield_no_delay() {
-        let policy = RetryPolicy {
-            max_attempts: 1,
-            ..policy(0.5, 20.0, 1)
-        };
-        assert_eq!(policy.delay(1, None), None);
     }
 
     #[test]

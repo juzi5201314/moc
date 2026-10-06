@@ -1079,33 +1079,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_result_then_steer_text_in_one_message() {
-        let req = ChatRequest {
-            messages: vec![
-                Message::user_text("查天气"),
-                assistant_with_tools(&[("call_1", "get_weather")]),
-                Message::tool_result("call_1", "晴", false),
-                Message::user_text("改用另一种方案"),
-            ],
-            max_output_tokens: Some(1024),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        let messages = body["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 3);
-        assert_eq!(
-            messages[2],
-            json!({
-                "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "call_1", "content": "晴", "is_error": false},
-                    {"type": "text", "text": "改用另一种方案"},
-                ],
-            })
-        );
-    }
-
-    #[test]
     fn disable_parallel_tool_use_synthesized() {
         let mut req = ChatRequest {
             messages: vec![Message::user_text("hi")],
@@ -1233,35 +1206,51 @@ mod tests {
         );
     }
 
+    /// reasoning 配置 → thinking 与 output_config.effort 的映射。
     #[test]
-    fn thinking_levels_use_adaptive_and_output_config_effort() {
-        let adaptive = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: true,
-                effort: Some(Effort::High),
-                summary: Some(ReasoningSummary::Omitted),
-            }),
-            ..base_request()
-        };
-        let body = encode_body(&config(), &adaptive, false);
-        assert_eq!(
-            body["thinking"],
-            json!({"type": "adaptive", "display": "omitted"})
-        );
-        assert_eq!(body["output_config"]["effort"], "high");
-
-        let disabled = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: false,
-                ..Default::default()
-            }),
-            ..base_request()
-        };
-        let body = encode_body(&config(), &disabled, false);
-        assert_eq!(body["thinking"], json!({"type": "disabled"}));
-
-        let body = encode_body(&config(), &base_request(), false);
-        assert!(body.get("thinking").is_none());
+    fn thinking_and_effort_map_to_wire_fields() {
+        let cases: [(Option<ReasoningConfig>, Option<Value>, Option<Value>); 4] = [
+            (
+                Some(ReasoningConfig {
+                    enabled: true,
+                    effort: Some(Effort::High),
+                    summary: Some(ReasoningSummary::Omitted),
+                }),
+                Some(json!({"type": "adaptive", "display": "omitted"})),
+                Some(json!({"effort": "high"})),
+            ),
+            (
+                Some(ReasoningConfig {
+                    enabled: true,
+                    effort: Some(Effort::Medium),
+                    ..Default::default()
+                }),
+                Some(json!({"type": "adaptive"})),
+                Some(json!({"effort": "medium"})),
+            ),
+            (
+                Some(ReasoningConfig {
+                    enabled: false,
+                    effort: Some(Effort::Medium),
+                    ..Default::default()
+                }),
+                Some(json!({"type": "disabled"})),
+                None,
+            ),
+            (None, None, None),
+        ];
+        for (reasoning, thinking, effort) in cases {
+            let req = ChatRequest {
+                reasoning,
+                ..base_request()
+            };
+            let body = encode_body(&config(), &req, false);
+            assert_eq!(body.get("thinking"), thinking.as_ref(), "{body}");
+            match effort {
+                Some(effort) => assert_eq!(body.get("output_config"), Some(&effort), "{body}"),
+                None => assert!(body.get("output_config").is_none(), "{body}"),
+            }
+        }
     }
 
     #[test]
@@ -1272,33 +1261,6 @@ mod tests {
         };
         let err = encode(&config(), &req, false).unwrap_err();
         assert!(err.to_string().contains("max_output_tokens"), "{err}");
-    }
-
-    #[test]
-    fn effort_maps_to_output_config() {
-        let req = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: true,
-                effort: Some(crate::types::Effort::Medium),
-                ..Default::default()
-            }),
-            ..base_request()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["output_config"], json!({"effort": "medium"}));
-
-        // 关闭推理时不发送 effort。
-        let off = ChatRequest {
-            reasoning: Some(ReasoningConfig {
-                enabled: false,
-                effort: Some(crate::types::Effort::Medium),
-                ..Default::default()
-            }),
-            ..base_request()
-        };
-        let body = encode_body(&config(), &off, false);
-        assert_eq!(body["thinking"], json!({"type": "disabled"}));
-        assert!(body.get("output_config").is_none());
     }
 
     #[test]

@@ -744,26 +744,16 @@ mod tests {
     }
 
     #[test]
-    fn tables_get_box_borders() {
-        let out = lines("| 尝试 | 结果 |\n|---|---|\n| a | b |", 40);
-        let joined = out.join("\n");
-        assert!(joined.contains('┌') && joined.contains('┐'), "{out:?}");
-        assert!(joined.contains('├') && joined.contains('┼'), "{out:?}");
-        assert!(out.iter().any(|line| line.contains("尝试")), "{out:?}");
-    }
-
-    #[test]
-    fn inline_code_and_bold_styles_merge_runs() {
-        let out = lines("普通 **加粗** `code`", 60);
-        let joined = out.join("");
+    fn tables_render_box_borders_and_keep_cell_content_in_order() {
+        let single = lines("| 尝试 | 结果 |\n|---|---|\n| a | b |", 40);
+        let joined = single.join("\n");
+        assert!(joined.contains('┌') && joined.contains('┐'), "{single:?}");
+        assert!(joined.contains('├') && joined.contains('┼'), "{single:?}");
         assert!(
-            joined.contains("普通") && joined.contains("加粗") && joined.contains("code"),
-            "{out:?}"
+            single.iter().any(|line| line.contains("尝试")),
+            "{single:?}"
         );
-    }
 
-    #[test]
-    fn tables_keep_cell_content_and_row_boundaries() {
         let out = lines(
             "| 工具 | 用途 |\n|---|---|\n| `read` | 读取文件 |\n| `bash` | 执行命令 |",
             40,
@@ -777,14 +767,21 @@ mod tests {
     }
 
     #[test]
-    fn soft_breaks_remain_visible_line_breaks() {
-        let out = lines("工具用途\n`bash`执行 shell 命令", 40);
-        assert_eq!(out, vec!["工具用途", " bash 执行 shell 命令"]);
+    fn inline_code_and_bold_styles_merge_runs() {
+        let out = lines("普通 **加粗** `code`", 60);
+        let joined = out.join("");
+        assert!(
+            joined.contains("普通") && joined.contains("加粗") && joined.contains("code"),
+            "{out:?}"
+        );
     }
 
     #[test]
-    fn inline_code_has_readable_padding() {
-        let out = lines("前缀`bash`后缀", 40);
-        assert_eq!(out, vec!["前缀 bash 后缀"]);
+    fn soft_breaks_and_inline_code_padding_render_inline() {
+        assert_eq!(
+            lines("工具用途\n`bash`执行 shell 命令", 40),
+            vec!["工具用途", " bash 执行 shell 命令"]
+        );
+        assert_eq!(lines("前缀`bash`后缀", 40), vec!["前缀 bash 后缀"]);
     }
 }

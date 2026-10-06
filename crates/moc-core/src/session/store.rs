@@ -564,16 +564,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn jsonl_store_appends_lists_loads_and_rewrites_atomically() {
+    async fn jsonl_store_appends_metadata_lists_and_rewrites_atomically() {
+        use super::super::entries::EntryPayload;
         let directory = tempfile::tempdir().expect("临时目录");
         let store = SessionStore::new(directory.path());
         let header = Entry::header(
             "ses_123456789abc".into(),
             "/tmp/project".into(),
-            "p/model".into(),
+            "p/old".into(),
             SessionMode::Normal,
             None,
-            "会话".into(),
+            "旧标题".into(),
             1_728_000_000_123,
         );
         let paths = store.paths_for(
@@ -585,7 +586,7 @@ mod tests {
             .await
             .expect("创建会话文件");
         let message = Entry::from_payload(
-            super::super::entries::EntryPayload::Message {
+            EntryPayload::Message {
                 message: moc_llm::Message::user_text("第一条"),
                 tool: None,
                 finish_reason: None,
@@ -594,11 +595,35 @@ mod tests {
             1_728_000_000_124,
         );
         file.append(&message, None).await.expect("追加消息");
+        let mut parent = message.id().to_owned();
+        for (offset, payload) in [
+            EntryPayload::TitleChange {
+                title: "新标题".into(),
+            },
+            EntryPayload::ModelChange {
+                model: "p/new".into(),
+            },
+            EntryPayload::ModeChange {
+                mode: SessionMode::Plan,
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let entry = Entry::from_payload(payload, parent, 1_728_000_000_125 + offset as u64);
+            parent = entry.id().to_owned();
+            file.append(&entry, None).await.expect("追加元数据");
+        }
+
         let listed = store.list().await.expect("列出会话");
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].updated_at_ms, 1_728_000_000_124);
+        assert_eq!(listed[0].title, "新标题");
+        assert_eq!(listed[0].model, "p/new");
+        assert_eq!(listed[0].mode, SessionMode::Plan);
+        assert_eq!(listed[0].updated_at_ms, 1_728_000_000_127);
+
         let entries = store.read_entries(&paths).await.expect("读取 JSONL");
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 5);
         assert_eq!(entries[1].parent_id(), Some(entries[0].id()));
         file.rewrite(&entries[..1]).await.expect("原子重写");
         assert_eq!(
@@ -613,49 +638,5 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("2024-10-04T00-00-00-123Z_")
         );
-    }
-
-    #[tokio::test]
-    async fn fresh_store_lists_latest_title_model_and_mode() {
-        use super::super::entries::EntryPayload;
-        let directory = tempfile::tempdir().unwrap();
-        let store = SessionStore::new(directory.path());
-        let header = Entry::header(
-            "ses_metadata".into(),
-            "/tmp/project".into(),
-            "p/old".into(),
-            SessionMode::Normal,
-            None,
-            "旧标题".into(),
-            100,
-        );
-        let paths = store.paths_for(Path::new("/tmp/project"), "ses_metadata", 100);
-        let file = SessionFile::create_with_header(&paths.transcript, &header)
-            .await
-            .unwrap();
-        let mut parent = header.id().to_owned();
-        for (index, payload) in [
-            EntryPayload::TitleChange {
-                title: "新标题".into(),
-            },
-            EntryPayload::ModelChange {
-                model: "p/new".into(),
-            },
-            EntryPayload::ModeChange {
-                mode: SessionMode::Plan,
-            },
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let entry = Entry::from_payload(payload, parent, 101 + index as u64);
-            parent = entry.id().to_owned();
-            file.append(&entry, None).await.unwrap();
-        }
-        let listed = SessionStore::new(directory.path()).list().await.unwrap();
-        assert_eq!(listed[0].title, "新标题");
-        assert_eq!(listed[0].model, "p/new");
-        assert_eq!(listed[0].mode, SessionMode::Plan);
-        assert_eq!(listed[0].updated_at_ms, 103);
     }
 }

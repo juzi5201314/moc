@@ -125,7 +125,6 @@ pub struct EmptyParams {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::method::Method;
     use serde_json::json;
 
     #[test]
@@ -203,18 +202,5 @@ mod tests {
         }))
         .expect("可反序列化");
         assert_eq!(parsed.capabilities, ServerCapabilities::default());
-    }
-
-    #[test]
-    fn ping_shape() {
-        assert_eq!(
-            serde_json::to_value(PingResult {
-                server_time_ms: 1_724_000_000_000
-            })
-            .expect("可序列化"),
-            json!({ "server_time_ms": 1_724_000_000_000u64 })
-        );
-        assert_eq!(<Ping as Method>::NAME, "ping");
-        assert_eq!(<Initialize as Method>::NAME, "initialize");
     }
 }

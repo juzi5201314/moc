@@ -222,7 +222,7 @@ mod tests {
         fs::create_dir_all(root.path().join("sub")).expect("子目录");
         fs::write(
             root.path().join("AGENTS.md"),
-            "root rules\n@shared.md\n```md\n@ignored.md\n```\n",
+            "root rules\n@shared.md\n```md\n@ignored.md\n```\n`@missing.md`\n@absent.md\n",
         )
         .expect("根规则");
         fs::write(root.path().join("shared.md"), "shared rules\n@details.md\n").expect("shared");
@@ -251,22 +251,8 @@ mod tests {
         assert!(prompt.contains("global rules"));
         assert!(!prompt.contains("not imported"));
         assert_eq!(prompt.matches("shared rules").count(), 1);
-    }
-
-    #[test]
-    fn fenced_and_inline_import_markers_are_not_expanded() {
-        let root = tempfile::tempdir().expect("临时目录");
-        fs::write(
-            root.path().join("AGENTS.md"),
-            "`@missing.md`\n```\n@missing.md\n```\n@absent.md\n",
-        )
-        .expect("写规则");
-        let files = load_context_files(
-            root.path(),
-            root.path().join("none").as_path(),
-            &crate::config::ContextFilesConfig::default(),
-        );
-        assert!(files[0].content.contains("@missing.md"));
+        // 行内反引号标记与解析失败的标记都原样保留，不展开也不清除。
+        assert!(files[0].content.contains("`@missing.md`"));
         assert!(files[0].content.contains("@absent.md"));
     }
 }

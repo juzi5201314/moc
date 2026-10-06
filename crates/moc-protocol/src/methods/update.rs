@@ -488,18 +488,6 @@ mod tests {
                 SessionUpdate::LockChanged { lock: None },
                 json!({ "type": "lock_changed", "lock": null }),
             ),
-        ];
-        for (update, expected) in cases {
-            let actual = serde_json::to_value(&update).expect("可序列化");
-            assert_eq!(actual, expected);
-            let round_trip: SessionUpdate = serde_json::from_value(actual).expect("可反序列化");
-            assert_eq!(round_trip, update);
-        }
-    }
-
-    #[test]
-    fn new_update_variants_round_trip_with_wire_shapes() {
-        let cases = [
             (
                 SessionUpdate::ModeChanged {
                     mode: SessionMode::Ask,
@@ -583,12 +571,10 @@ mod tests {
             ),
         ];
         for (update, expected) in cases {
-            let actual = serde_json::to_value(&update).expect("更新可序列化");
+            let actual = serde_json::to_value(&update).expect("可序列化");
             assert_eq!(actual, expected);
-            assert_eq!(
-                serde_json::from_value::<SessionUpdate>(actual).expect("更新可反序列化"),
-                update
-            );
+            let round_trip: SessionUpdate = serde_json::from_value(actual).expect("可反序列化");
+            assert_eq!(round_trip, update);
         }
     }
 

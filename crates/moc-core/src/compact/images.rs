@@ -71,20 +71,6 @@ pub fn apply(
     )
 }
 
-pub fn message_image_tokens(message: &Message) -> u64 {
-    message
-        .content
-        .iter()
-        .map(|part| match part {
-            ContentPart::Image { .. } => IMAGE_TOKEN_ESTIMATE,
-            ContentPart::ToolResult(result) => {
-                (result.images.len() as u64).saturating_mul(IMAGE_TOKEN_ESTIMATE)
-            }
-            _ => 0,
-        })
-        .sum()
-}
-
 pub fn strip_images(message: &mut Message) -> usize {
     match message.role {
         moc_llm::Role::User => {
@@ -157,31 +143,5 @@ mod tests {
         assert_eq!(outcome.evicted, 1);
         assert!(outcome.body_bytes_after < outcome.body_bytes);
         assert!(matches!(messages[0].content[0], ContentPart::Text(_)));
-    }
-
-    #[test]
-    fn image_tokens_are_fixed_independent_of_base64_length() {
-        let short = Message {
-            role: moc_llm::Role::User,
-            content: vec![ContentPart::Image {
-                source: ImageSource::Base64 {
-                    media_type: "image/png".into(),
-                    data: "x".into(),
-                },
-                detail: None,
-            }],
-        };
-        let long = Message {
-            role: moc_llm::Role::User,
-            content: vec![ContentPart::Image {
-                source: ImageSource::Base64 {
-                    media_type: "image/png".into(),
-                    data: "x".repeat(100_000),
-                },
-                detail: None,
-            }],
-        };
-        assert_eq!(message_image_tokens(&short), IMAGE_TOKEN_ESTIMATE);
-        assert_eq!(message_image_tokens(&long), IMAGE_TOKEN_ESTIMATE);
     }
 }

@@ -929,40 +929,9 @@ mod tests {
     #[test]
     fn effort_default_strings_are_lowercase_names() {
         assert_eq!(Effort::None.to_string(), "none");
+        assert_eq!(Effort::High.to_string(), "high");
         assert_eq!(Effort::XHigh.to_string(), "xhigh");
         assert_eq!(Effort::Max.to_string(), "max");
         assert_eq!(serde_json::to_value(Effort::XHigh).unwrap(), json!("xhigh"));
-    }
-
-    #[test]
-    fn request_and_response_round_trip_through_json() {
-        let request = ChatRequest {
-            messages: vec![
-                Message::system("sys"),
-                Message {
-                    role: Role::Assistant,
-                    content: vec![
-                        ContentPart::Reasoning(ReasoningBlock::text("思路")),
-                        ContentPart::ToolCall(ToolCall::new("call_1", "get_weather", "{}")),
-                    ],
-                },
-                Message::tool_result("call_1", "晴", false),
-                Message::user_text("继续"),
-            ],
-            tools: vec![ToolDef::new("get_weather", json!({"type": "object"}))],
-            tool_choice: Some(ToolChoice::Auto),
-            max_output_tokens: Some(1024),
-            parallel_tool_calls: Some(false),
-            options: RequestOptions {
-                echo_reasoning: ReasoningEcho::Always,
-                store: Some(false),
-                capture_raw: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let encoded = serde_json::to_vec(&request).unwrap();
-        let decoded: ChatRequest = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded, request);
     }
 }

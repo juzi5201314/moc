@@ -134,12 +134,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn method_names() {
-        assert_eq!(<SessionPrompt as Method>::NAME, "session/prompt");
-        assert_eq!(<SessionCancel as Method>::NAME, "session/cancel");
-    }
-
-    #[test]
     fn prompt_params_shape() {
         let params = PromptParams {
             session_id: "ses_7f3a".into(),

@@ -486,7 +486,7 @@ impl std::fmt::Debug for ChatStream {
 mod tests {
     use super::*;
     use crate::config::{Auth, EndpointStyle};
-    use crate::types::{Effort, ReasoningEcho};
+    use crate::types::ReasoningEcho;
 
     fn config(protocol: Protocol) -> LlmConfig {
         LlmConfig {
@@ -1165,12 +1165,6 @@ mod tests {
                 .content
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn effort_reexport_is_usable() {
-        // 该断言只是保证测试模块引用的类型确实来自公开面。
-        assert_eq!(Effort::High.to_string(), "high");
     }
 
     #[test]

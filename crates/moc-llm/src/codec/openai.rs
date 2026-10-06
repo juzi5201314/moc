@@ -81,36 +81,46 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn usage_decodes_chat_field_names() {
-        let usage = decode_usage(&json!({
-            "prompt_tokens": 100,
-            "completion_tokens": 40,
-            "total_tokens": 140,
-            "prompt_tokens_details": {"cached_tokens": 64},
-            "completion_tokens_details": {"reasoning_tokens": 12}
-        }));
-        assert_eq!(usage.input_tokens, 100);
-        assert_eq!(usage.output_tokens, 40);
-        assert_eq!(usage.total_tokens, Some(140));
-        assert_eq!(usage.cached_input_tokens, Some(64));
-        assert_eq!(usage.reasoning_tokens, Some(12));
-        assert_eq!(usage.cache_creation_input_tokens, None);
-    }
-
-    #[test]
-    fn usage_decodes_responses_field_names() {
-        let usage = decode_usage(&json!({
-            "input_tokens": 200,
-            "output_tokens": 30,
-            "total_tokens": 230,
-            "input_tokens_details": {"cached_tokens": 128},
-            "output_tokens_details": {"reasoning_tokens": 7}
-        }));
-        assert_eq!(usage.input_tokens, 200);
-        assert_eq!(usage.output_tokens, 30);
-        assert_eq!(usage.total_tokens, Some(230));
-        assert_eq!(usage.cached_input_tokens, Some(128));
-        assert_eq!(usage.reasoning_tokens, Some(7));
+    fn usage_decodes_both_dialect_field_names() {
+        let cases = [
+            (
+                json!({
+                    "prompt_tokens": 100,
+                    "completion_tokens": 40,
+                    "total_tokens": 140,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                    "completion_tokens_details": {"reasoning_tokens": 12}
+                }),
+                Usage {
+                    input_tokens: 100,
+                    output_tokens: 40,
+                    total_tokens: Some(140),
+                    cached_input_tokens: Some(64),
+                    reasoning_tokens: Some(12),
+                    ..Default::default()
+                },
+            ),
+            (
+                json!({
+                    "input_tokens": 200,
+                    "output_tokens": 30,
+                    "total_tokens": 230,
+                    "input_tokens_details": {"cached_tokens": 128},
+                    "output_tokens_details": {"reasoning_tokens": 7}
+                }),
+                Usage {
+                    input_tokens: 200,
+                    output_tokens: 30,
+                    total_tokens: Some(230),
+                    cached_input_tokens: Some(128),
+                    reasoning_tokens: Some(7),
+                    ..Default::default()
+                },
+            ),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(decode_usage(&value), expected, "{value}");
+        }
     }
 
     #[test]
@@ -118,24 +128,6 @@ mod tests {
         let usage = decode_usage(&json!({}));
         assert_eq!(usage, Usage::default());
         assert_eq!(usage.total_tokens(), 0);
-    }
-
-    #[test]
-    fn finish_reason_table() {
-        let cases = [
-            ("stop", FinishReason::Stop),
-            ("length", FinishReason::Length),
-            ("tool_calls", FinishReason::ToolCalls),
-            ("function_call", FinishReason::ToolCalls),
-            ("content_filter", FinishReason::ContentFilter),
-            (
-                "model_context_window_exceeded",
-                FinishReason::Other("model_context_window_exceeded".into()),
-            ),
-        ];
-        for (wire, expected) in cases {
-            assert_eq!(map_finish_reason(wire), expected, "{wire}");
-        }
     }
 
     #[test]

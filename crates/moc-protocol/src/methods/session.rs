@@ -457,21 +457,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn method_names() {
-        assert_eq!(<SessionNew as Method>::NAME, "session/new");
-        assert_eq!(<SessionList as Method>::NAME, "session/list");
-        assert_eq!(<SessionLoad as Method>::NAME, "session/load");
-        assert_eq!(<SessionUnload as Method>::NAME, "session/unload");
-        assert_eq!(<SessionRename as Method>::NAME, "session/rename");
-        assert_eq!(<SessionDelete as Method>::NAME, "session/delete");
-        assert_eq!(<SessionUnlock as Method>::NAME, "session/unlock");
-        assert_eq!(<SessionSetMode as Method>::NAME, "session/set_mode");
-        assert_eq!(<SessionSetModel as Method>::NAME, "session/set_model");
-        assert_eq!(<SessionCompact as Method>::NAME, "session/compact");
-        assert_eq!(<SessionContext as Method>::NAME, "session/context");
-    }
-
-    #[test]
     fn session_new_accepts_partial_params() {
         let parsed: SessionNewParams =
             serde_json::from_value(serde_json::json!({})).expect("可反序列化");

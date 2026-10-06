@@ -185,12 +185,6 @@ mod tests {
         assert!(ask.contains("当前是问答模式"));
         assert!(!ask.contains("当前是计划模式"));
     }
-    use moc_llm::Role;
-    #[test]
-    fn volatile_reminder_is_a_user_message() {
-        let message = reminder_message("<system-reminder>job 完成</system-reminder>".into());
-        assert_eq!(message.role, Role::User);
-    }
 
     #[test]
     fn skill_catalog_is_included_when_present() {

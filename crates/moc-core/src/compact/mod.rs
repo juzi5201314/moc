@@ -437,19 +437,9 @@ mod tests {
     const MODEL_BASE: &str = "[models.roles]\ndefault='p/m'\nsmol='p/m'\nslow='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
 
     #[test]
-    fn token_estimator_and_threshold_follow_configured_precedence() {
+    fn token_estimator_and_threshold_modes() {
+        // 估算按 4 字符 1 token 折算：abcd 记 1，中日韩字符各记 1。
         assert_eq!(estimate_tokens("abcd你好"), 3);
-        let config = test_config();
-        assert_eq!(threshold(&config, 200_000), 170_000);
-        let _ = (
-            CompactReason::Threshold,
-            CompactReason::Overflow,
-            CompactReason::PreApprove,
-        );
-    }
-
-    #[test]
-    fn threshold_selects_exactly_one_strategy() {
         let tokens =
             config_with("\n[compaction]\nthreshold = { mode = 'tokens', value = 50000 }\n");
         assert_eq!(threshold(&tokens, 200_000), 50_000);

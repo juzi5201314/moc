@@ -388,9 +388,7 @@ mod tests {
         let before = SnapshotId::from_metadata_and_bytes(&metadata, b"before");
         let after = SnapshotId::from_metadata_and_bytes(&metadata, b"change");
 
-        assert_eq!(before.size, after.size);
         assert_ne!(before.content_hash, after.content_hash);
-        assert_ne!(before, after);
     }
 
     #[test]

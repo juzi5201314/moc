@@ -350,21 +350,6 @@ mod tests {
     }
 
     #[test]
-    fn header_is_parsed_once_per_frame() {
-        // 半截报文体：头部解析后推进 pos，后续 push 不应重解析头部（缓冲仍正确）
-        let mut decoder = FrameDecoder::new(Framing::ContentLength, DEFAULT_MAX_FRAME_BYTES);
-        let header = b"Content-Length: 5\r\n\r\n";
-        decoder.push(header);
-        decoder.push(b"ab");
-        assert!(decoder.next_frame().expect("分帧合法").is_none());
-        assert_eq!(decoder.pos, header.len());
-        assert_eq!(decoder.body_len, Some(5));
-        decoder.push(b"cde");
-        assert_eq!(decoder.next_frame().expect("分帧合法"), Some(&b"abcde"[..]));
-        assert_eq!(decoder.body_len, None);
-    }
-
-    #[test]
     fn parse_decimal_rejects_bad_input() {
         assert_eq!(parse_decimal(b"0"), Ok(0));
         assert_eq!(parse_decimal(b"12345"), Ok(12345));

@@ -115,14 +115,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn method_name() {
-        assert_eq!(
-            <SessionRequestPermission as Method>::NAME,
-            "session/request_permission"
-        );
-    }
-
-    #[test]
     fn request_shape() {
         let params = PermissionRequestParams {
             session_id: "ses_7f3a".into(),

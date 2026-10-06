@@ -464,16 +464,14 @@ mod tests {
         let parsed = parse_mcp_json(bare).unwrap();
         assert!(parsed.contains_key("b"));
 
+        // 未知社区字段被忽略，不阻断已知字段解析。
+        let community =
+            r#"{"mcpServers":{"x":{"command":"c","startup_timeout_ms":3000,"version":"1"}}}"#;
+        let parsed = parse_mcp_json(community).unwrap();
+        assert_eq!(parsed["x"].command.as_deref(), Some("c"));
+
         assert!(parse_mcp_json("[]").is_err());
         assert!(parse_mcp_json("not json").is_err());
-    }
-
-    #[test]
-    fn ignores_unknown_community_fields() {
-        let text =
-            r#"{"mcpServers":{"x":{"command":"c","startup_timeout_ms":3000,"version":"1"}}}"#;
-        let parsed = parse_mcp_json(text).unwrap();
-        assert!(parsed["x"].command.as_deref() == Some("c"));
     }
 
     #[test]

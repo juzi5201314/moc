@@ -351,16 +351,4 @@ mod tests {
         fn assert_send_sync<T: Send + Sync + Clone>() {}
         assert_send_sync::<Client>();
     }
-
-    #[test]
-    fn retries_exhausted_reports_attempt_count() {
-        let policy = crate::RetryPolicy {
-            max_attempts: 2,
-            initial_backoff_secs: 0.0,
-            jitter: false,
-            ..Default::default()
-        };
-        assert_eq!(policy.delay(1, None), Some(Duration::from_millis(1)));
-        assert_eq!(policy.delay(2, None), None);
-    }
 }

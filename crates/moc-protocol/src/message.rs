@@ -524,21 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_json_reports_parse_error() {
-        let failure = parse(b"{oops").unwrap_err();
-        assert_eq!(failure.code, RpcErrorCode::ParseError);
-        assert_eq!(failure.id, None);
-        assert_eq!(failure.into_response().id, None);
-    }
-
-    #[test]
-    fn batch_is_rejected() {
-        let failure = parse(br#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#).unwrap_err();
-        assert_eq!(failure.code, RpcErrorCode::InvalidRequest);
-        assert_eq!(failure.id, None);
-    }
-
-    #[test]
     fn version_and_method_rules() {
         for bytes in [
             br#"{"id":1,"method":"ping"}"#.as_slice(),

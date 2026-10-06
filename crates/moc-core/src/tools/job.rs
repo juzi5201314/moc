@@ -444,9 +444,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn manager_waits_for_job_and_reads_bounded_log_tail() {
+    async fn read_tail_returns_last_lines_within_bound() {
         let dir = tempfile::tempdir().unwrap();
-        let manager = Arc::new(JobManager::new());
         let path = dir.path().join("job.log");
         tokio::fs::write(
             &path,
@@ -459,6 +458,5 @@ mod tests {
         let output = read_tail(&path, 2000).await.unwrap();
         assert!(output.starts_with("line 500"));
         assert!(output.ends_with("line 2499"));
-        assert!(manager.list().await.is_empty());
     }
 }

@@ -165,20 +165,6 @@ impl PromptState {
         self.break_history_browse();
     }
 
-    /// 用补全命令替换当前 token，不破坏多行草稿的其余内容。
-    pub fn replace_current_token(&mut self, replacement: &str) {
-        let line_start = self.text[..self.cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let token_start = self.text[line_start..self.cursor]
-            .rfind(char::is_whitespace)
-            .map_or(line_start, |index| line_start + index + 1);
-        let token_end = self.text[self.cursor..]
-            .find(char::is_whitespace)
-            .map_or(self.text.len(), |index| self.cursor + index);
-        self.replace_range(token_start..token_end, replacement, true);
-    }
-
     /// 光标移到当前逻辑行行首。
     pub fn move_line_start(&mut self) {
         let line_start = self.text[..self.cursor]
@@ -568,16 +554,6 @@ impl PromptState {
 #[cfg(test)]
 mod tests {
     use super::PromptState;
-
-    #[test]
-    fn completion_replaces_token_without_destroying_multiline_draft() {
-        let mut prompt = PromptState::default();
-        prompt.insert_str_raw("/mo\n保留内容");
-        prompt.cursor = 3;
-        prompt.replace_current_token("/model");
-        assert_eq!(prompt.text, "/model \n保留内容");
-        assert_eq!(prompt.cursor, 7);
-    }
 
     #[test]
     fn wide_character_cursor_moves_on_utf8_boundaries() {

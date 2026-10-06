@@ -414,24 +414,39 @@ mod tests {
     }
     #[test]
     fn endpoint_urls_normalize_v1_and_honor_escape_marker() {
-        for (base_url, expected) in [
-            ("https://example.com/", "https://example.com/v1/responses"),
-            ("https://example.com/v1", "https://example.com/v1/responses"),
+        for (protocol, base_url, expected) in [
             (
+                Protocol::OpenAiChat,
+                "https://api.deepseek.com/v1",
+                "https://api.deepseek.com/v1/chat/completions",
+            ),
+            (
+                Protocol::OpenAiResponses,
+                "https://example.com/",
+                "https://example.com/v1/responses",
+            ),
+            (
+                Protocol::OpenAiResponses,
+                "https://example.com/v1",
+                "https://example.com/v1/responses",
+            ),
+            (
+                Protocol::OpenAiResponses,
                 "https://example.com/v1/",
                 "https://example.com/v1/responses",
             ),
             (
+                Protocol::OpenAiResponses,
                 "https://example.com/v1/v1#",
                 "https://example.com/v1/v1/responses",
             ),
         ] {
             let config = LlmConfig {
-                protocol: Protocol::OpenAiResponses,
+                protocol,
                 base_url: base_url.into(),
                 ..Default::default()
             };
-            assert_eq!(config.endpoint_url(), expected);
+            assert_eq!(config.endpoint_url(), expected, "{protocol:?} {base_url}");
         }
     }
 
@@ -584,29 +599,6 @@ mod tests {
         let text = format!("{err:#}");
         assert!(text.contains("MOC_LLM_TEST_MISSING_KEY_7f3a"), "{text}");
         assert!(text.contains("读取环境变量"), "{text}");
-    }
-
-    #[test]
-    fn endpoint_url_joins_base_and_path() {
-        let config = LlmConfig {
-            protocol: Protocol::OpenAiChat,
-            base_url: "https://api.deepseek.com/v1".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            config.endpoint_url(),
-            "https://api.deepseek.com/v1/chat/completions"
-        );
-
-        let responses = LlmConfig {
-            protocol: Protocol::OpenAiResponses,
-            base_url: "https://api.openai.com/v1/".into(),
-            ..Default::default()
-        };
-        assert_eq!(
-            responses.endpoint_url(),
-            "https://api.openai.com/v1/responses"
-        );
     }
 
     #[test]

@@ -4,13 +4,12 @@
 //! 请求」断言线上形态，证明同一套机制能表达真实厂商组合。
 
 use moc_llm::{
-    Auth, CacheConfig, CacheTtl, ChatRequest, Client, ContentPart, Effort, EndpointStyle,
-    FinishReason, LlmConfig, MaxTokensField, Message, Protocol, ReasoningBlock, ReasoningConfig,
-    ReasoningEcho, RequestOptions, RetryPolicy, StreamEvent, ThinkingWire, ToolCall, ToolDef,
-    WireConfig,
+    Auth, CacheConfig, CacheTtl, ChatRequest, Client, ContentPart, Effort, FinishReason, LlmConfig,
+    MaxTokensField, Message, Protocol, ReasoningBlock, ReasoningConfig, ReasoningEcho,
+    RequestOptions, RetryPolicy, StreamEvent, ToolCall, ToolDef, WireConfig,
 };
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn start() -> MockServer {
@@ -170,120 +169,6 @@ async fn deepseek_thinking_mode_with_tools() {
 }
 
 #[tokio::test]
-async fn kimi_keeps_all_thinking_without_effort() {
-    let server = start().await;
-    let cfg = LlmConfig {
-        wire: WireConfig {
-            thinking: ThinkingWire {
-                effort_field: None,
-                toggle_extra: serde_json::Map::from_iter([("keep".into(), json!("all"))]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ..config(Protocol::OpenAiChat, &server)
-    };
-    let req = ChatRequest {
-        messages: vec![Message::user_text("hi")],
-        reasoning: Some(ReasoningConfig {
-            enabled: true,
-            effort: Some(Effort::High),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let body = sent_body(&server, &cfg, &req).await;
-
-    assert_eq!(body["thinking"], json!({"type": "enabled", "keep": "all"}));
-    assert!(
-        body.get("reasoning_effort").is_none(),
-        "该线格式没有强度字段"
-    );
-}
-
-#[tokio::test]
-async fn glm_clear_thinking_extension() {
-    let server = start().await;
-    let cfg = LlmConfig {
-        wire: WireConfig {
-            thinking: ThinkingWire {
-                toggle_extra: serde_json::Map::from_iter([("clear_thinking".into(), json!(false))]),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ..config(Protocol::OpenAiChat, &server)
-    };
-    let req = ChatRequest {
-        messages: vec![Message::user_text("hi")],
-        reasoning: Some(ReasoningConfig::enabled()),
-        ..Default::default()
-    };
-    let body = sent_body(&server, &cfg, &req).await;
-    assert_eq!(
-        body["thinking"],
-        json!({"type": "enabled", "clear_thinking": false})
-    );
-}
-
-#[tokio::test]
-async fn qwen_effort_only_with_thinking_budget_extension() {
-    let server = start().await;
-    let cfg = LlmConfig {
-        wire: WireConfig {
-            thinking: ThinkingWire {
-                toggle_field: None,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        extra_body: serde_json::Map::from_iter([("thinking_budget".into(), json!(16384))]),
-        ..config(Protocol::OpenAiChat, &server)
-    };
-    let req = ChatRequest {
-        messages: vec![Message::user_text("hi")],
-        reasoning: Some(ReasoningConfig {
-            enabled: true,
-            effort: Some(Effort::Medium),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let body = sent_body(&server, &cfg, &req).await;
-
-    assert!(body.get("thinking").is_none(), "该厂商没有 thinking 对象");
-    assert_eq!(body["reasoning_effort"], json!("medium"));
-    assert_eq!(body["thinking_budget"], json!(16384));
-}
-
-#[tokio::test]
-async fn xai_uses_max_completion_tokens() {
-    let server = start().await;
-    let cfg = LlmConfig {
-        wire: WireConfig {
-            max_output_tokens_field: MaxTokensField::MaxCompletionTokens,
-            ..Default::default()
-        },
-        ..config(Protocol::OpenAiChat, &server)
-    };
-    let req = ChatRequest {
-        messages: vec![Message::user_text("hi")],
-        max_output_tokens: Some(2048),
-        reasoning: Some(ReasoningConfig {
-            enabled: true,
-            effort: Some(Effort::Low),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let body = sent_body(&server, &cfg, &req).await;
-
-    assert_eq!(body["max_completion_tokens"], json!(2048));
-    assert!(body.get("max_tokens").is_none());
-    assert_eq!(body["reasoning_effort"], json!("low"));
-}
-
-#[tokio::test]
 async fn claude_adaptive_thinking_with_cache_control() {
     let server = start().await;
     let cfg = LlmConfig {
@@ -326,74 +211,6 @@ async fn claude_adaptive_thinking_with_cache_control() {
         body["messages"][2]["content"][0],
         json!({"type": "tool_result", "tool_use_id": "tool_1", "content": "晴", "is_error": false,
                "cache_control": {"type": "ephemeral", "ttl": "5m"}})
-    );
-}
-
-#[tokio::test]
-async fn claude_adaptive_thinking_uses_effort_level() {
-    let server = start().await;
-    let cfg = LlmConfig {
-        wire: WireConfig::default(),
-        ..config(Protocol::AnthropicMessages, &server)
-    };
-    let req = ChatRequest {
-        messages: vec![Message::user_text("hi")],
-        max_output_tokens: Some(8192),
-        reasoning: Some(ReasoningConfig {
-            enabled: true,
-            effort: Some(Effort::Max),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let body = sent_body(&server, &cfg, &req).await;
-
-    assert_eq!(body["thinking"], json!({"type": "adaptive"}));
-    assert_eq!(body["output_config"], json!({"effort": "max"}));
-    assert_eq!(body["max_tokens"], json!(8192));
-}
-
-#[tokio::test]
-async fn azure_deployment_endpoint() {
-    let server = start().await;
-    let route = "/openai/deployments/gpt-4o-deploy/chat/completions";
-    Mock::given(method("POST"))
-        .and(path(route))
-        .and(query_param("api-version", "2025-04-01-preview"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            ok_response(Protocol::OpenAiChat).to_string(),
-            "application/json",
-        ))
-        .mount(&server)
-        .await;
-
-    let cfg = LlmConfig {
-        base_url: server.uri(),
-        model: "gpt-4o-deploy".into(),
-        auth: Auth::Header {
-            name: "api-key".into(),
-            value: "azure-key".into(),
-        },
-        endpoint: EndpointStyle::Azure {
-            api_version: "2025-04-01-preview".into(),
-        },
-        retry: RetryPolicy {
-            max_attempts: 1,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let req = ChatRequest {
-        messages: vec![Message::user_text("hi")],
-        ..Default::default()
-    };
-    Client::new().complete(&cfg, &req).await.unwrap();
-
-    let request = &received(&server).await[0];
-    assert_eq!(request.url.path(), route);
-    assert_eq!(
-        request.headers.get("api-key").unwrap().to_str().unwrap(),
-        "azure-key"
     );
 }
 

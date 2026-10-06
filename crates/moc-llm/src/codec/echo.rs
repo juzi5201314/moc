@@ -113,34 +113,87 @@ mod tests {
         }
     }
 
+    /// 回显模式 × 协议决定 plan；变体白名单按协议逐一断言。
     #[test]
-    fn chat_protocol_mode_echoes_only_with_tools() {
-        let cfg = config(Protocol::OpenAiChat);
-        assert_eq!(
-            plan(&cfg, &request(ReasoningEcho::Protocol, 1)),
-            ReasoningEchoPlan::TextOnly
+    fn protocol_echo_modes_select_plan_and_variant_whitelist() {
+        let cases = [
+            (
+                Protocol::OpenAiChat,
+                ReasoningEcho::Protocol,
+                1,
+                ReasoningEchoPlan::TextOnly,
+            ),
+            (
+                Protocol::OpenAiChat,
+                ReasoningEcho::Protocol,
+                0,
+                ReasoningEchoPlan::Strip,
+            ),
+            (
+                Protocol::OpenAiChat,
+                ReasoningEcho::Always,
+                0,
+                ReasoningEchoPlan::TextOnly,
+            ),
+            (
+                Protocol::OpenAiChat,
+                ReasoningEcho::Never,
+                3,
+                ReasoningEchoPlan::Strip,
+            ),
+            (
+                Protocol::AnthropicMessages,
+                ReasoningEcho::Protocol,
+                0,
+                ReasoningEchoPlan::TextAndOpaque,
+            ),
+            (
+                Protocol::OpenAiResponses,
+                ReasoningEcho::Protocol,
+                0,
+                ReasoningEchoPlan::ItemsOnly,
+            ),
+        ];
+        for (protocol, echo, tools, expected) in cases {
+            let cfg = config(protocol);
+            assert_eq!(
+                plan(&cfg, &request(echo, tools)),
+                expected,
+                "{protocol:?} / {echo:?} / {tools} 个工具"
+            );
+        }
+
+        // Anthropic 按变体白名单过滤：redacted_thinking 与 thinking 同等对待，
+        // 不能写成 `type == "thinking"` 的单类型判断。
+        let anthropic = plan(
+            &config(Protocol::AnthropicMessages),
+            &request(ReasoningEcho::Protocol, 0),
         );
-        assert_eq!(
-            plan(&cfg, &request(ReasoningEcho::Protocol, 0)),
-            ReasoningEchoPlan::Strip
+        assert!(anthropic.keeps(&text_block()));
+        assert!(anthropic.keeps(&ReasoningBlock::Redacted {
+            data: "opaque".into()
+        }));
+        assert!(!anthropic.keeps(&ReasoningBlock::Item(Box::new(
+            serde_json::json!({"type": "reasoning"})
+        ))));
+
+        // Responses 只回传原生 reasoning item。
+        let responses = plan(
+            &config(Protocol::OpenAiResponses),
+            &request(ReasoningEcho::Protocol, 0),
         );
+        assert!(responses.keeps(&ReasoningBlock::Item(Box::new(
+            serde_json::json!({"type": "reasoning", "id": "rs_1"})
+        ))));
+        assert!(!responses.keeps(&text_block()));
+        assert!(!responses.keeps(&ReasoningBlock::Redacted {
+            data: "opaque".into()
+        }));
     }
 
+    /// 自定义 `reasoning_field` 必须真的决定 assistant 消息的线上字段名。
     #[test]
-    fn chat_always_and_never_override_protocol_rule() {
-        let cfg = config(Protocol::OpenAiChat);
-        assert_eq!(
-            plan(&cfg, &request(ReasoningEcho::Always, 0)),
-            ReasoningEchoPlan::TextOnly
-        );
-        assert_eq!(
-            plan(&cfg, &request(ReasoningEcho::Never, 3)),
-            ReasoningEchoPlan::Strip
-        );
-    }
-
-    #[test]
-    fn chat_custom_field_name() {
+    fn chat_custom_reasoning_field_name_is_used_on_the_wire() {
         let cfg = LlmConfig {
             protocol: Protocol::OpenAiChat,
             wire: WireConfig {
@@ -149,48 +202,24 @@ mod tests {
             },
             ..Default::default()
         };
-        assert_eq!(reasoning_field(&cfg), "reasoning");
-    }
-
-    #[test]
-    fn anthropic_protocol_mode_echoes_thinking_and_redacted() {
-        let cfg = config(Protocol::AnthropicMessages);
-        let plan = plan(&cfg, &request(ReasoningEcho::Protocol, 0));
-        assert_eq!(plan, ReasoningEchoPlan::TextAndOpaque);
-        // 按变体白名单过滤：redacted_thinking 与 thinking 同等对待，
-        // 不能写成 `type == "thinking"` 的单类型判断。
-        assert!(plan.keeps(&text_block()));
-        assert!(plan.keeps(&ReasoningBlock::Redacted {
-            data: "opaque".into()
-        }));
-        assert!(!plan.keeps(&ReasoningBlock::Item(Box::new(
-            serde_json::json!({"type": "reasoning"})
-        ))));
-    }
-
-    #[test]
-    fn anthropic_never_strips_thinking_blocks() {
-        let cfg = config(Protocol::AnthropicMessages);
-        let plan = plan(&cfg, &request(ReasoningEcho::Never, 0));
-        assert_eq!(plan, ReasoningEchoPlan::Strip);
-        assert!(!plan.keeps(&text_block()));
-        assert!(!plan.keeps(&ReasoningBlock::Redacted {
-            data: "opaque".into()
-        }));
-    }
-
-    #[test]
-    fn responses_protocol_mode_echoes_reasoning_items() {
-        let cfg = config(Protocol::OpenAiResponses);
-        let plan = plan(&cfg, &request(ReasoningEcho::Protocol, 0));
-        assert_eq!(plan, ReasoningEchoPlan::ItemsOnly);
-        assert!(plan.keeps(&ReasoningBlock::Item(Box::new(
-            serde_json::json!({"type": "reasoning", "id": "rs_1"})
-        ))));
-        assert!(!plan.keeps(&text_block()));
-        assert!(!plan.keeps(&ReasoningBlock::Redacted {
-            data: "opaque".into()
-        }));
+        let req = ChatRequest {
+            messages: vec![Message {
+                role: crate::types::Role::Assistant,
+                content: vec![
+                    crate::types::ContentPart::Reasoning(text_block()),
+                    crate::types::ContentPart::Text("正文".into()),
+                ],
+            }],
+            options: crate::types::RequestOptions {
+                echo_reasoning: ReasoningEcho::Always,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let encoded = crate::codec::encode(&cfg, &req, false).expect("可编码");
+        let body: serde_json::Value = serde_json::from_slice(&encoded.body).expect("请求体是 JSON");
+        assert_eq!(body["messages"][0]["reasoning"], serde_json::json!("思路"));
+        assert!(body["messages"][0].get("reasoning_content").is_none());
     }
 
     #[test]
@@ -213,26 +242,5 @@ mod tests {
                 assert!(!plan.keeps(&block), "{protocol:?} 应剔除 {block:?}");
             }
         }
-    }
-
-    #[test]
-    fn message_helpers_used_by_encoders_agree_with_plan() {
-        let message = Message {
-            role: crate::types::Role::Assistant,
-            content: vec![
-                crate::types::ContentPart::Reasoning(text_block()),
-                crate::types::ContentPart::Text("正文".into()),
-            ],
-        };
-        let plan = ReasoningEchoPlan::TextOnly;
-        let kept: Vec<&ReasoningBlock> = message
-            .content
-            .iter()
-            .filter_map(|part| match part {
-                crate::types::ContentPart::Reasoning(block) if plan.keeps(block) => Some(block),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(kept.len(), 1);
     }
 }
