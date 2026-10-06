@@ -27,6 +27,7 @@ pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'s
         heading: None,
         list_stack: Vec::new(),
         item_prefix: String::new(),
+        item_indent: 0,
         code_info: None,
         code_buf: String::new(),
         table: None,
@@ -77,6 +78,7 @@ struct MdRenderer<'a> {
     list_stack: Vec<ListFrame>,
     /// 当前列表项的前缀（bullet / 序号 + 缩进），flush 时应用。
     item_prefix: String,
+    item_indent: usize,
     code_info: Option<String>,
     code_buf: String,
     table: Option<TableAcc>,
@@ -199,6 +201,7 @@ impl<'a> MdRenderer<'a> {
                     Some(_) => "  ".repeat(depth - 1) + "• ",
                     None => String::new(),
                 };
+                self.item_indent = str_width(&prefix);
                 self.item_prefix.push_str(&prefix);
             }
             Tag::Table(_) => {
@@ -255,7 +258,10 @@ impl<'a> MdRenderer<'a> {
             TagEnd::List(_) => {
                 self.list_stack.pop();
             }
-            TagEnd::Item => self.flush_inline(),
+            TagEnd::Item => {
+                self.flush_inline();
+                self.item_indent = 0;
+            }
             TagEnd::Table => {
                 self.flush_inline();
                 if let Some(table) = self.table.take() {
@@ -381,7 +387,13 @@ impl<'a> MdRenderer<'a> {
         if self.inline.is_empty() {
             return;
         }
-        let prefix = std::mem::take(&mut self.item_prefix);
+        let prefix = if !self.item_prefix.is_empty() {
+            std::mem::take(&mut self.item_prefix)
+        } else if self.item_indent > 0 {
+            " ".repeat(self.item_indent)
+        } else {
+            String::new()
+        };
         let quote = "│ ".repeat(self.quote_depth);
         let full_prefix = format!("{quote}{prefix}");
         let prefix_width = str_width(&full_prefix);
@@ -448,23 +460,45 @@ impl<'a> MdRenderer<'a> {
         }
         let highlighted = highlight::highlight(&info, &code);
         let bg_style = Style::new().bg(self.theme.code_bg);
+        let code_width = self.width.saturating_sub(2).max(8);
+        if !info.trim().is_empty() {
+            let tag = info.trim();
+            let mut top_line = vec![
+                Span::styled("  ", bg_style),
+                Span::styled(
+                    tag.to_owned(),
+                    Style::new()
+                        .fg(self.theme.accent_tool)
+                        .bg(self.theme.code_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            let used = 2 + str_width(tag);
+            if used < code_width {
+                top_line.push(Span::styled(" ".repeat(code_width - used), bg_style));
+            }
+            self.out.push(Line::from(top_line));
+        }
         for spans in &highlighted.lines {
             let mut line: Vec<Span<'static>> = vec![Span::styled("  ", bg_style)];
-            line.extend(spans.iter().map(|span| {
+            let mut line_used = 2;
+            for span in spans {
                 let fg = span
                     .fg
                     .map(highlight::rgb_to_color)
                     .unwrap_or(self.theme.text_primary);
-                Span::styled(
+                line_used += str_width(&span.text);
+                line.push(Span::styled(
                     span.text.clone(),
                     Style::new().fg(fg).bg(self.theme.code_bg),
-                )
-            }));
+                ));
+            }
+            if line_used < code_width {
+                line.push(Span::styled(" ".repeat(code_width - line_used), bg_style));
+            }
             self.out.push(Line::from(line));
         }
-        // 代码块与后续内容的空隙
-        self.out
-            .push(Line::from(Span::styled(String::new(), bg_style)));
+        self.out.push(Line::from(String::new()));
     }
 
     /// 表格：内容宽度定列宽（整体不超过可用宽度），画全边框盒。

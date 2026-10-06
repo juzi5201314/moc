@@ -400,6 +400,7 @@ async fn event_loop(
                         app.modal = Some(Modal::Permission {
                             params,
                             selected: 0,
+                            scroll_offset: 0,
                             reply: Some(reply),
                         });
                         app.focus = crate::app::Focus::Prompt;
@@ -416,8 +417,7 @@ async fn event_loop(
                                 question
                                     .recommended
                                     .and_then(|index| question.options.get(index as usize))
-                                    .map(|option| vec![option.label.clone()])
-                                    .unwrap_or_default()
+                                    .map_or_else(Vec::new, |option| vec![option.label.clone()])
                             })
                             .collect();
                         app.modal = Some(Modal::Ask {
@@ -426,6 +426,7 @@ async fn event_loop(
                             highlight,
                             selected,
                             custom: String::new(),
+                            custom_cursor: 0,
                             editing_custom: false,
                             reply: Some(reply),
                         });
@@ -779,8 +780,28 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
     let position = (mouse.column, mouse.row);
     match mouse.kind {
-        MouseEventKind::ScrollUp => scroll(app, 3),
-        MouseEventKind::ScrollDown => scroll(app, -3),
+        MouseEventKind::ScrollUp => {
+            if let Some(Modal::Plan { scroll_offset, .. }) = app.modal.as_mut() {
+                *scroll_offset = scroll_offset.saturating_sub(3);
+                return;
+            }
+            if let Some(Modal::Permission { scroll_offset, .. }) = app.modal.as_mut() {
+                *scroll_offset = scroll_offset.saturating_sub(3);
+                return;
+            }
+            scroll(app, 3);
+        }
+        MouseEventKind::ScrollDown => {
+            if let Some(Modal::Plan { scroll_offset, .. }) = app.modal.as_mut() {
+                *scroll_offset = scroll_offset.saturating_add(3);
+                return;
+            }
+            if let Some(Modal::Permission { scroll_offset, .. }) = app.modal.as_mut() {
+                *scroll_offset = scroll_offset.saturating_add(3);
+                return;
+            }
+            scroll(app, -3);
+        }
         MouseEventKind::Down(MouseButton::Left) => {
             let area = app.prompt_area;
             if position.0 >= area.x
@@ -789,6 +810,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 && position.1 < area.y.saturating_add(area.height)
             {
                 app.focus = Focus::Prompt;
+                if let Some(cursor) = crate::render::prompt_cursor_from_point(&app.prompt.text, area, position.0, position.1) {
+                    app.prompt.cursor = cursor;
+                }
             }
             app.pending_click = Some(position);
         }
@@ -815,8 +839,9 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     entry.toggle_fold();
                 }
                 app.selection = None;
+            } else if app.selection.is_some() {
+                app.set_notice("按 y 复制选中内容");
             }
-            // 拖选结束：保留高亮，等待 y 复制
         }
         _ => {}
     }
@@ -1020,6 +1045,20 @@ fn handle_key(
             app.prompt.delete();
             app.prompt_changed();
         }
+        (KeyCode::Left, KeyModifiers::CONTROL)
+            | (KeyCode::Left, KeyModifiers::ALT)
+            | (KeyCode::Char('b'), KeyModifiers::ALT)
+            if app.focus == crate::app::Focus::Prompt =>
+        {
+            app.prompt.move_word_back();
+        }
+        (KeyCode::Right, KeyModifiers::CONTROL)
+            | (KeyCode::Right, KeyModifiers::ALT)
+            | (KeyCode::Char('f'), KeyModifiers::ALT)
+            if app.focus == crate::app::Focus::Prompt =>
+        {
+            app.prompt.move_word_forward();
+        }
         (KeyCode::Left, _) if app.focus == crate::app::Focus::Prompt => app.prompt.left(),
         (KeyCode::Right, _) if app.focus == crate::app::Focus::Prompt => app.prompt.right(),
         (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL)
@@ -1164,10 +1203,17 @@ fn handle_modal_key(
         Modal::Permission {
             params,
             selected,
+            scroll_offset,
             reply,
         } => {
             let option_count = params.options.len();
             match (code, modifiers) {
+                (KeyCode::PageUp, _) => {
+                    *scroll_offset = scroll_offset.saturating_sub(6);
+                }
+                (KeyCode::PageDown, _) => {
+                    *scroll_offset = scroll_offset.saturating_add(6);
+                }
                 (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                     *selected = selected.saturating_sub(1);
                 }
@@ -1217,6 +1263,7 @@ fn handle_modal_key(
             highlight,
             selected,
             custom,
+            custom_cursor,
             editing_custom,
             reply,
         } => {
@@ -1226,16 +1273,49 @@ fn handle_modal_key(
             let option_count = current.options.len();
             if *editing_custom {
                 match (code, modifiers) {
-                    (KeyCode::Esc, _) | (KeyCode::Enter, _) => *editing_custom = false,
+                    (KeyCode::Esc, _) => *editing_custom = false,
+                    (KeyCode::Enter, _) => {
+                        *editing_custom = false;
+                        close |= advance_ask(params, question, selected, custom, reply);
+                    }
+                    (KeyCode::Left, _) => {
+                        *custom_cursor = custom_cursor.saturating_sub(1);
+                    }
+                    (KeyCode::Right, _) => {
+                        *custom_cursor = (*custom_cursor + 1).min(custom.len());
+                    }
+                    (KeyCode::Home, _) => *custom_cursor = 0,
+                    (KeyCode::End, _) => *custom_cursor = custom.len(),
+                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                        custom.clear();
+                        *custom_cursor = 0;
+                    }
                     (KeyCode::Backspace, _) => {
-                        custom.pop();
+                        if *custom_cursor > 0 && !custom.is_empty() {
+                            let mut prev_char_len = 1;
+                            if let Some((idx, ch)) = custom[..*custom_cursor].char_indices().next_back() {
+                                prev_char_len = ch.len_utf8();
+                                custom.remove(idx);
+                            }
+                            *custom_cursor = custom_cursor.saturating_sub(prev_char_len);
+                        }
+                    }
+                    (KeyCode::Delete, _) => {
+                        if *custom_cursor < custom.len() {
+                            custom.remove(*custom_cursor);
+                        }
                     }
                     (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                         if !ch.is_control() =>
                     {
-                        custom.push(ch);
+                        let pos = (*custom_cursor).min(custom.len());
+                        custom.insert(pos, ch);
+                        *custom_cursor += ch.len_utf8();
                     }
                     _ => {}
+                }
+                if close {
+                    app.modal = None;
                 }
                 return;
             }
@@ -1249,6 +1329,7 @@ fn handle_modal_key(
                 (KeyCode::Char('z'), KeyModifiers::NONE) => {
                     highlight[*question] = option_count;
                     *editing_custom = true;
+                    *custom_cursor = custom.len();
                 }
                 (KeyCode::Char(' '), KeyModifiers::NONE) => {
                     // 多选切换；自定义行上无效
@@ -1268,9 +1349,8 @@ fn handle_modal_key(
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) => {
                     if highlight[*question] == option_count {
-                        // 自定义行提交并推进
-                        *editing_custom = false;
-                        close |= advance_ask(params, question, selected, custom, reply);
+                        *editing_custom = true;
+                        *custom_cursor = custom.len();
                     } else if let Some(option) = current.options.get(highlight[*question]) {
                         let label = option.label.clone();
                         if current.multi {
@@ -1285,8 +1365,13 @@ fn handle_modal_key(
                         }
                     }
                 }
-                (KeyCode::Tab, _) => {
+                (KeyCode::Tab, KeyModifiers::NONE) => {
                     close |= advance_ask(params, question, selected, custom, reply);
+                }
+                (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
+                    if *question > 0 {
+                        *question -= 1;
+                    }
                 }
                 (KeyCode::Esc, _) => {
                     if let Some(reply) = reply.take() {
@@ -1349,6 +1434,21 @@ fn handle_modal_key(
                 (KeyCode::End, _) => {
                     picker.selected = filtered.len().saturating_sub(1);
                     picker.keep_visible(8, filtered.len());
+                }
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                    picker.query.clear();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                    while picker.query.ends_with(' ') {
+                        picker.query.pop();
+                    }
+                    while !picker.query.is_empty() && !picker.query.ends_with(' ') {
+                        picker.query.pop();
+                    }
+                    picker.selected = 0;
+                    picker.offset = 0;
                 }
                 (KeyCode::Backspace, _) => {
                     picker.query.pop();
@@ -1415,6 +1515,21 @@ fn handle_modal_key(
                 (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
                 (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
                 (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                    picker.query.clear();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                    while picker.query.ends_with(' ') {
+                        picker.query.pop();
+                    }
+                    while !picker.query.is_empty() && !picker.query.ends_with(' ') {
+                        picker.query.pop();
+                    }
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
                 (KeyCode::Backspace, _) => {
                     picker.query.pop();
                     picker.selected = 0;
@@ -1551,6 +1666,21 @@ fn handle_modal_key(
                     picker.selected = filtered.len().saturating_sub(1);
                     picker.keep_visible(8, filtered.len());
                 }
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                    picker.query.clear();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
+                (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                    while picker.query.ends_with(' ') {
+                        picker.query.pop();
+                    }
+                    while !picker.query.is_empty() && !picker.query.ends_with(' ') {
+                        picker.query.pop();
+                    }
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
                 (KeyCode::Backspace, _) => {
                     picker.query.pop();
                     picker.selected = 0;
@@ -1604,9 +1734,24 @@ fn handle_modal_key(
             }
         }
         Modal::Plan {
-            plan_id, selected, ..
+            plan_id,
+            selected,
+            scroll_offset,
+            ..
         } => {
             match (code, modifiers) {
+                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                    *scroll_offset = scroll_offset.saturating_sub(1);
+                }
+                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                    *scroll_offset = scroll_offset.saturating_add(1);
+                }
+                (KeyCode::PageUp, _) => {
+                    *scroll_offset = scroll_offset.saturating_sub(10);
+                }
+                (KeyCode::PageDown, _) => {
+                    *scroll_offset = scroll_offset.saturating_add(10);
+                }
                 (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => *selected = 0,
                 (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => *selected = 1,
                 (KeyCode::Tab, _) => *selected = 1 - *selected,
@@ -1872,6 +2017,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 title,
                 markdown,
                 selected: 0,
+                scroll_offset: 0,
             });
         }
         SessionUpdate::ContextCompacted {

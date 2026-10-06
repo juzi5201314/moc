@@ -144,6 +144,7 @@ pub enum Modal {
     Permission {
         params: PermissionRequestParams,
         selected: usize,
+        scroll_offset: usize,
         reply: Option<tokio::sync::oneshot::Sender<Result<PermissionResult, RpcErrorOf>>>,
     },
     /// `ask` 工具的用户提问（可多问、可多选、可自定义输入）。
@@ -155,6 +156,7 @@ pub enum Modal {
         /// 每问已选中的 option label 集合。
         selected: Vec<Vec<String>>,
         custom: String,
+        custom_cursor: usize,
         editing_custom: bool,
         reply: Option<tokio::sync::oneshot::Sender<Result<AskResult, RpcErrorOf>>>,
     },
@@ -192,6 +194,7 @@ pub enum Modal {
         title: String,
         markdown: String,
         selected: usize,
+        scroll_offset: usize,
     },
     /// 快捷键帮助。
     Help,

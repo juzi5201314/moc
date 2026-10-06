@@ -184,6 +184,7 @@ fn user_message(
     let prefix_width = str_width(prefix);
     let text_width = width.saturating_sub(prefix_width).max(8);
     let rows = wrap_text(text, text_width);
+    let row_count = rows.len();
     let clock = at_ms.and_then(format_clock);
     let mut clock_pending = clock.as_ref();
 
@@ -200,7 +201,7 @@ fn user_message(
         }
         spans.push(Span::styled(row, Style::new().fg(theme.text_primary)));
 
-        if index == 0
+        if index + 1 == row_count
             && let Some(clock) = clock_pending
             && width.saturating_sub(prefix_width + row_width + str_width(clock)) >= 2
         {
@@ -272,7 +273,7 @@ fn thinking_block(
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_thinking)),
         Span::styled(
-            "Thought for".to_owned(),
+            "思考耗时".to_owned(),
             Style::new()
                 .fg(theme.gray_bright)
                 .add_modifier(Modifier::BOLD),
@@ -300,19 +301,18 @@ fn thinking_block(
     }
     let mut lines = vec![Line::from(spans)];
     if expanded {
-        let band = Style::new().bg(theme.bg_hover);
-        for line in render_markdown(text, width.saturating_sub(PROSE_INDENT + 1).max(8), theme) {
-            let mut spans = vec![Span::styled(
-                "▏ ".to_owned(),
-                Style::new().fg(theme.accent_thinking).bg(theme.bg_hover),
-            )];
+        for line in render_markdown(text, width.saturating_sub(PROSE_INDENT + 2).max(8), theme) {
+            let mut spans = vec![
+                Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+                Span::styled("▏ ".to_owned(), Style::new().fg(theme.accent_thinking)),
+            ];
             spans.extend(line.spans.into_iter().map(|span| {
                 Span::styled(
                     span.content.into_owned(),
-                    span.style.fg(theme.gray_bright).bg(theme.bg_hover),
+                    span.style.fg(theme.gray),
                 )
             }));
-            lines.push(pad_line(spans, band, width));
+            lines.push(Line::from(spans));
         }
     }
     lines.push(Line::from(String::new()));
@@ -345,15 +345,6 @@ fn note_block(text: &str, error: bool, width: usize, theme: &Theme) -> Vec<Line<
     lines
 }
 
-/// 用 `fill` 补满到 `width`：所有行都自带底色，面板/引文带才成形。
-fn pad_line(spans: Vec<Span<'static>>, fill: Style, width: usize) -> Line<'static> {
-    let used: usize = spans.iter().map(|span| str_width(&span.content)).sum();
-    let mut spans = spans;
-    if used < width {
-        spans.push(Span::styled(" ".repeat(width - used), fill));
-    }
-    Line::from(spans)
-}
 
 /// 正文统一左缩进（助手回复、工具内容共用同一列）。
 fn indent_prose(line: Line<'static>) -> Line<'static> {

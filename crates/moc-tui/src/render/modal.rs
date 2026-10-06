@@ -595,11 +595,14 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
     let theme = app.theme;
     let mut lines = match modal {
         Modal::Permission {
-            params, selected, ..
+            params,
+            selected,
+            scroll_offset,
+            ..
         } => {
-            let mut lines = Vec::new();
+            let mut all_content = Vec::new();
             if let Some(body) = &params.body {
-                lines.extend(body.lines().take(4).map(|row| {
+                all_content.extend(body.lines().map(|row| {
                     Line::from(Span::styled(
                         format!("  {row}"),
                         Style::new().fg(theme.text_secondary),
@@ -607,11 +610,18 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }));
             }
             if let Some(diff) = &params.diff {
-                lines.extend(
-                    crate::render::diff::render_diff(diff, width, theme)
-                        .into_iter()
-                        .take(max_lines.saturating_sub(lines.len() + 3)),
-                );
+                all_content.extend(crate::render::diff::render_diff(diff, width, theme));
+            }
+            let options_rows = params.options.len() + 2;
+            let max_content_rows = max_lines.saturating_sub(options_rows).max(2);
+            let offset = (*scroll_offset).min(all_content.len().saturating_sub(max_content_rows));
+            let mut lines: Vec<Line<'static>> = all_content
+                .into_iter()
+                .skip(offset)
+                .take(max_content_rows)
+                .collect();
+            if lines.is_empty() {
+                lines.push(Line::from(String::new()));
             }
             lines.push(Line::from(String::new()));
             for (index, option) in params.options.iter().enumerate() {
@@ -637,6 +647,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             highlight,
             selected,
             custom,
+            custom_cursor,
             editing_custom,
             ..
         } => {
@@ -686,16 +697,23 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             } else {
                 Style::new().fg(theme.gray)
             };
+            let custom_display = if *editing_custom {
+                let cursor_pos = (*custom_cursor).min(custom.len());
+                let (before, after) = custom.split_at(cursor_pos);
+                format!("{before}▏{after}")
+            } else {
+                custom.clone()
+            };
             lines.push(Line::from(Span::styled(
                 format!(
-                    " {} ✎ 自定义：{custom}",
+                    " {} ✎ 自定义：{custom_display}",
                     if editing_here { "❯" } else { " " }
                 ),
                 custom_style,
             )));
             lines.push(Line::from(Span::styled(
                 format!(
-                    "space 切换 · enter 选择{} · tab 下一问 · esc 取消",
+                    "space 切换 · enter 选择{} · tab 下一问/Shift+Tab 上一问 · esc 取消",
                     if current.multi { "（多选）" } else { "" }
                 ),
                 Style::new().fg(theme.gray_dim),
@@ -1042,10 +1060,34 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             lines
         }
         Modal::Plan {
-            markdown, selected, ..
+            markdown,
+            selected,
+            scroll_offset,
+            ..
         } => {
-            let mut lines = crate::render::markdown::render_markdown(markdown, width, theme);
-            lines.push(Line::from(String::new()));
+            let all_lines = crate::render::markdown::render_markdown(markdown, width, theme);
+            let total = all_lines.len();
+            let action_rows = 3;
+            let content_rows = max_lines.saturating_sub(action_rows).max(1);
+            let offset = (*scroll_offset).min(total.saturating_sub(content_rows));
+            let mut lines: Vec<Line<'static>> = all_lines
+                .into_iter()
+                .skip(offset)
+                .take(content_rows)
+                .collect();
+            if total > content_rows {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  ↑↓/PgUp/PgDn 滚动查看 ({}..{}/{}) · Tab 切换按钮",
+                        offset + 1,
+                        (offset + content_rows).min(total),
+                        total
+                    ),
+                    Style::new().fg(theme.gray_dim),
+                )));
+            } else {
+                lines.push(Line::from(String::new()));
+            }
             lines.push(Line::from(vec![
                 Span::styled(
                     "  [ 执行计划 ]",

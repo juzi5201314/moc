@@ -5,7 +5,7 @@
 //! 扩展名做语法高亮；hunk 之间用 `⋯ N 行未变` 分隔。
 
 use moc_protocol::methods::{DiffLineKind, ToolDiff, ToolFileDiff};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::highlight;
@@ -77,7 +77,18 @@ fn render_file(
                 Style::new().fg(theme.gray_dim),
             )));
         }
-        for line in &hunk.lines {
+        let hunk_lines = &hunk.lines;
+        let mut intra_ranges: Vec<Option<std::ops::Range<usize>>> = vec![None; hunk_lines.len()];
+        for i in 0..hunk_lines.len().saturating_sub(1) {
+            if hunk_lines[i].kind == DiffLineKind::Delete && hunk_lines[i + 1].kind == DiffLineKind::Insert {
+                if let Some((del_range, ins_range)) = find_intra_line_diff(&hunk_lines[i].text, &hunk_lines[i + 1].text) {
+                    intra_ranges[i] = Some(del_range);
+                    intra_ranges[i + 1] = Some(ins_range);
+                }
+            }
+        }
+
+        for (line_idx, line) in hunk.lines.iter().enumerate() {
             if out.len() > MAX_RENDERED_ROWS {
                 return;
             }
@@ -113,29 +124,35 @@ fn render_file(
                 Span::styled(gutter + " ", Style::new().fg(number_color).bg(bg)),
                 Span::styled("  ".to_owned(), Style::new().bg(bg)),
             ];
-            // 内容逐行独立高亮——diff 行在文件里不连续，共享解析状态会着色错误
+            let changed_range = intra_ranges.get(line_idx).and_then(Option::as_ref);
             let highlighted = highlight::highlight(&syntax_token, &line.text);
             if let Some(spans_of_line) = highlighted.lines.first() {
+                let mut byte_offset = 0;
                 for span in spans_of_line {
-                    spans.push(Span::styled(
-                        span.text.clone(),
-                        Style::new()
-                            .fg(span.fg.map(highlight::rgb_to_color).unwrap_or(fallback_fg))
-                            .bg(bg),
-                    ));
+                    let span_len = span.text.len();
+                    let span_range = byte_offset..byte_offset + span_len;
+                    byte_offset += span_len;
+                    let is_changed = changed_range.is_some_and(|r| {
+                        span_range.start < r.end && span_range.end > r.start
+                    });
+                    let mut style = Style::new()
+                        .fg(span.fg.map(highlight::rgb_to_color).unwrap_or(fallback_fg))
+                        .bg(bg);
+                    if is_changed {
+                        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+                    }
+                    spans.push(Span::styled(span.text.clone(), style));
                 }
             }
-            // 行内容宽度不足时用背景色补齐，保证变更行的底色贯穿整行
             let content_width_used: usize = highlighted
                 .lines
                 .first()
-                .map(|spans| {
+                .map_or(0, |spans| {
                     spans
                         .iter()
                         .map(|span| super::wrap::str_width(&span.text))
                         .sum()
-                })
-                .unwrap_or(0);
+                });
             if content_width_used < content_width && line.kind != DiffLineKind::Equal {
                 spans.push(Span::styled(
                     " ".repeat(content_width - content_width_used),
@@ -145,11 +162,46 @@ fn render_file(
             out.push(Line::from(spans));
         }
     }
+
     if truncated {
         out.push(Line::from(Span::styled(
             format!("{}⋯ 改动过多，已省略部分内容", " ".repeat(gutter_width + 1)),
             Style::new().fg(theme.accent_warning),
         )));
+    }
+}
+
+fn find_intra_line_diff(del: &str, ins: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    if del == ins || del.is_empty() || ins.is_empty() {
+        return None;
+    }
+    let del_b = del.as_bytes();
+    let ins_b = ins.as_bytes();
+    let mut prefix = 0;
+    while prefix < del_b.len() && prefix < ins_b.len() && del_b[prefix] == ins_b[prefix] {
+        prefix += 1;
+    }
+    while prefix > 0 && !del.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+
+    let mut suffix_del = del_b.len();
+    let mut suffix_ins = ins_b.len();
+    while suffix_del > prefix && suffix_ins > prefix && del_b[suffix_del - 1] == ins_b[suffix_ins - 1] {
+        suffix_del -= 1;
+        suffix_ins -= 1;
+    }
+    while suffix_del < del.len() && !del.is_char_boundary(suffix_del) {
+        suffix_del += 1;
+    }
+    while suffix_ins < ins.len() && !ins.is_char_boundary(suffix_ins) {
+        suffix_ins += 1;
+    }
+
+    if prefix <= suffix_del && prefix <= suffix_ins && (prefix < suffix_del || prefix < suffix_ins) {
+        Some((prefix..suffix_del, prefix..suffix_ins))
+    } else {
+        None
     }
 }
 

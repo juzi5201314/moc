@@ -364,6 +364,19 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn prompt_scroll_offset(visual_row: usize, total_rows: usize, visible_rows: usize) -> usize {
+    if total_rows <= visible_rows {
+        0
+    } else {
+        let max_start = total_rows.saturating_sub(visible_rows);
+        if visual_row >= max_start {
+            max_start
+        } else {
+            visual_row
+        }
+    }
+}
+
 fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     let text_width = usize::from(area.width)
         .saturating_sub(2 + PROMPT_PAD + PROMPT_MARKER)
@@ -379,8 +392,7 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     let current_rows = wrap::wrap_text(current, text_width);
     let column = current_rows
         .last()
-        .map(|row| str_width(row))
-        .unwrap_or(0)
+        .map_or(0, |row| str_width(row))
         .min(text_width);
     let total_rows = app
         .prompt
@@ -390,7 +402,7 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
         .sum::<usize>()
         .max(1);
     let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
-    let start = total_rows.saturating_sub(visible_rows);
+    let start = prompt_scroll_offset(visual_row, total_rows, visible_rows);
     let row = visual_row.saturating_sub(start).min(visible_rows - 1);
     let x = area
         .x
@@ -403,6 +415,57 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
         x.min(area.x.saturating_add(area.width.saturating_sub(2))),
         y,
     )
+}
+
+pub(crate) fn prompt_cursor_from_point(text: &str, area: Rect, col: u16, row: u16) -> Option<usize> {
+    if area.width < 6 || area.height < 3 {
+        return None;
+    }
+    let inner_width = usize::from(area.width.saturating_sub(2));
+    let text_width = inner_width
+        .saturating_sub(PROMPT_PAD + PROMPT_MARKER)
+        .max(4);
+    let top = area.y + 1;
+    let visible_rows = usize::from(area.height.saturating_sub(2)).max(1);
+    if row < top || row >= top + visible_rows as u16 {
+        return None;
+    }
+    let left = area.x + 1 + PROMPT_PAD as u16 + PROMPT_MARKER as u16;
+    let target_col = usize::from(col.saturating_sub(left));
+
+    let mut visual_rows: Vec<(usize, usize, String)> = Vec::new();
+    let mut offset = 0;
+    for line in text.split('\n') {
+        let wrapped = wrap::wrap_text(line, text_width);
+        let mut line_offset = offset;
+        for sub in wrapped {
+            let len = sub.len();
+            visual_rows.push((line_offset, line_offset + len, sub));
+            line_offset += len;
+            if line_offset < text.len() && text.as_bytes()[line_offset] == b' ' {
+                line_offset += 1;
+            }
+        }
+        offset += line.len() + 1;
+    }
+    let total_rows = visual_rows.len().max(1);
+    let start = total_rows.saturating_sub(visible_rows);
+    let clicked_visual_row = start + usize::from(row - top);
+    if let Some((start_offset, _, sub_text)) = visual_rows.get(clicked_visual_row) {
+        let mut accumulated_width = 0;
+        let mut char_offset = 0;
+        for ch in sub_text.chars() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if accumulated_width + w > target_col {
+                break;
+            }
+            accumulated_width += w;
+            char_offset += ch.len_utf8();
+        }
+        Some((*start_offset + char_offset).min(text.len()))
+    } else {
+        Some(text.len())
+    }
 }
 
 /// 输入框下边框上的图例：运行时显示停止操作，否则显示帮助键。
@@ -555,8 +618,14 @@ fn prompt_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         })
         .collect();
     let visible = usize::from(area.height.saturating_sub(2)).max(1);
-    let start = lines.len().saturating_sub(visible);
-    lines.into_iter().skip(start).collect()
+    let before = &app.prompt.text[..app.prompt.cursor.min(app.prompt.text.len())];
+    let mut visual_row = 0usize;
+    for line in before.split('\n') {
+        visual_row += wrap::wrap_text(line, text_width).len();
+    }
+    visual_row = visual_row.saturating_sub(1);
+    let start = prompt_scroll_offset(visual_row, lines.len().max(1), visible);
+    lines.into_iter().skip(start).take(visible).collect()
 }
 
 /// 顶部信息条：左＝品牌 · git 分支 · 工作目录，右＝上下文进度 · 累计费用。

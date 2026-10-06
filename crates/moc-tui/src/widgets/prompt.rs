@@ -6,6 +6,7 @@
 
 use moc_protocol::ImageSource;
 use moc_protocol::methods::InputPart;
+use unicode_width::UnicodeWidthChar;
 
 /// 粘贴超过该行数时 chip 化。
 const PASTE_CHIP_LINES: usize = 4;
@@ -282,6 +283,75 @@ impl PromptState {
         }
     }
 
+    /// 光标按词向前跳转（跳到前一个词的首部）。
+    pub fn move_word_back(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let prefix = &self.text[..self.cursor];
+        let mut indices = prefix.char_indices().rev();
+        let mut target = 0;
+        // 先跳过连续空白
+        let mut saw_word = false;
+        let mut word_alnum = false;
+        while let Some((idx, ch)) = indices.next() {
+            if ch.is_whitespace() {
+                if saw_word {
+                    target = idx + ch.len_utf8();
+                    self.cursor = target;
+                    return;
+                }
+            } else {
+                let is_alnum = ch.is_alphanumeric() || ch == '_';
+                if !saw_word {
+                    saw_word = true;
+                    word_alnum = is_alnum;
+                    target = idx;
+                } else if is_alnum != word_alnum {
+                    target = idx + ch.len_utf8();
+                    self.cursor = target;
+                    return;
+                } else {
+                    target = idx;
+                }
+            }
+        }
+        self.cursor = target;
+    }
+
+    /// 光标按词向后跳转（跳到下一个词的尾部/下一个词首）。
+    pub fn move_word_forward(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let rest = &self.text[self.cursor..];
+        let mut chars = rest.char_indices();
+        let mut saw_word = false;
+        let mut word_alnum = false;
+        let mut target = self.text.len();
+        while let Some((idx, ch)) = chars.next() {
+            let abs_idx = self.cursor + idx;
+            if ch.is_whitespace() {
+                if saw_word {
+                    target = abs_idx;
+                    self.cursor = target;
+                    return;
+                }
+            } else {
+                let is_alnum = ch.is_alphanumeric() || ch == '_';
+                if !saw_word {
+                    saw_word = true;
+                    word_alnum = is_alnum;
+                } else if is_alnum != word_alnum {
+                    target = abs_idx;
+                    self.cursor = target;
+                    return;
+                }
+            }
+        }
+        self.cursor = target;
+    }
+
     /// 光标所在的逻辑行号。
     fn cursor_line(&self) -> usize {
         self.text[..self.cursor].matches('\n').count()
@@ -291,42 +361,62 @@ impl PromptState {
         self.text.matches('\n').count() + 1
     }
 
-    /// 上：光标在首行时翻历史，否则行内上移。
+    /// 上：光标在首行且已在开头时翻历史，否则在行首或向上移动。
     pub fn up(&mut self) -> bool {
-        if self.cursor_line() == 0 && self.history_up() {
+        if self.cursor_line() == 0 {
+            if self.cursor == 0 {
+                return self.history_up();
+            }
+            self.cursor = 0;
             return true;
         }
         self.move_line(-1);
         true
     }
 
-    /// 下：光标在末行时翻历史，否则行内下移。
+    /// 下：光标在末行且已在末尾时翻历史，否则在行尾或向下移动。
     pub fn down(&mut self) -> bool {
-        if self.cursor_line() + 1 == self.line_count() && self.history_down() {
+        if self.cursor_line() + 1 == self.line_count() {
+            if self.cursor == self.text.len() {
+                return self.history_down();
+            }
+            self.cursor = self.text.len();
             return true;
         }
         self.move_line(1);
         true
     }
 
-    /// 在文本内按行移动光标（保持列近似）。
+    /// 在文本内按行移动光标（按终端单元格显示列宽对齐）。
     fn move_line(&mut self, delta: i32) {
         let line = self.cursor_line();
         let target = line as i32 + delta;
         if target < 0 || target as usize >= self.line_count() {
             return;
         }
-        let column = self.text[..self.cursor]
+        let current_line_text = self.text[..self.cursor]
             .rsplit('\n')
             .next()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let current_cell_width: usize = current_line_text
             .chars()
-            .count();
+            .map(|ch| ch.width().unwrap_or(0))
+            .sum();
+
         let lines: Vec<&str> = self.text.split('\n').collect();
         let target_line = lines[target as usize];
-        let offset_in_line: usize = target_line.chars().take(column).map(char::len_utf8).sum();
+        let mut target_offset = 0;
+        let mut accumulated_width = 0;
+        for ch in target_line.chars() {
+            let w = ch.width().unwrap_or(0);
+            if accumulated_width + w > current_cell_width {
+                break;
+            }
+            accumulated_width += w;
+            target_offset += ch.len_utf8();
+        }
         let line_start: usize = lines[..target as usize].iter().map(|l| l.len() + 1).sum();
-        self.cursor = line_start + offset_in_line.min(target_line.len());
+        self.cursor = line_start + target_offset.min(target_line.len());
     }
 
     /// 历史：上一条。
@@ -508,5 +598,28 @@ mod tests {
         prompt.replace_range(start..end, "local://ses_1/plans/", false);
         assert_eq!(prompt.text, "前 local://ses_1/plans/\n保留内容");
         assert_eq!(prompt.cursor, start + "local://ses_1/plans/".len());
+    }
+
+    #[test]
+    fn word_navigation_moves_by_word_boundaries() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("hello world_123 /path/test");
+        prompt.move_word_back();
+        assert_eq!(&prompt.text[prompt.cursor..], "test");
+        prompt.move_word_back();
+        assert_eq!(&prompt.text[prompt.cursor..], "/test");
+        prompt.move_word_back();
+        assert_eq!(&prompt.text[prompt.cursor..], "path/test");
+    }
+    #[test]
+    fn prompt_up_first_moves_to_start_before_history() {
+        let mut prompt = PromptState::default();
+        prompt.histories.push("old_command".into());
+        prompt.insert_str_raw("my current long prompt");
+        assert!(prompt.up());
+        assert_eq!(prompt.cursor, 0);
+        assert_eq!(prompt.text, "my current long prompt");
+        assert!(prompt.up());
+        assert_eq!(prompt.text, "old_command");
     }
 }
