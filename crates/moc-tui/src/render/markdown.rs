@@ -30,6 +30,7 @@ pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'s
         item_indent: 0,
         code_info: None,
         code_buf: String::new(),
+        in_code: false,
         table: None,
         table_cell: Vec::new(),
         in_table_head: false,
@@ -81,6 +82,8 @@ struct MdRenderer<'a> {
     item_indent: usize,
     code_info: Option<String>,
     code_buf: String,
+    /// 是否位于代码块内（缩进代码块无 info 串，需与 [`Self::code_info`] 分开记）。
+    in_code: bool,
     table: Option<TableAcc>,
     table_cell: Vec<Run>,
     in_table_head: bool,
@@ -142,10 +145,8 @@ impl<'a> MdRenderer<'a> {
             }
             Event::FootnoteReference(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
             Event::Html(html) | Event::InlineHtml(html) => {
-                self.push_run(Run {
-                    style: Style::new().fg(self.theme.gray_dim),
-                    text: html.to_string(),
-                });
+                let style = Style::new().fg(self.theme.gray_dim);
+                self.push_inline_text(&html, style);
             }
         }
     }
@@ -173,6 +174,8 @@ impl<'a> MdRenderer<'a> {
             Tag::CodeBlock(kind) => {
                 self.flush_inline();
                 self.ensure_block_gap();
+                // 缩进代码块没有 info 串，代码块判定必须与 info 分开记。
+                self.in_code = true;
                 self.code_info = match kind {
                     CodeBlockKind::Fenced(info) => Some(info.to_string()),
                     CodeBlockKind::Indented => None,
@@ -254,7 +257,10 @@ impl<'a> MdRenderer<'a> {
                     .push(Line::from(Span::styled(String::new(), Style::new())));
             }
             TagEnd::BlockQuote(_) => self.quote_depth = self.quote_depth.saturating_sub(1),
-            TagEnd::CodeBlock => self.flush_code(),
+            TagEnd::CodeBlock => {
+                self.in_code = false;
+                self.flush_code();
+            }
             TagEnd::List(_) => {
                 self.list_stack.pop();
             }
@@ -313,14 +319,36 @@ impl<'a> MdRenderer<'a> {
     }
 
     fn text(&mut self, text: &str) {
-        if self.code_info.is_some() {
+        if self.in_code {
             self.code_buf.push_str(text);
             return;
         }
-        self.push_run(Run {
-            style: self.current_style(),
-            text: text.to_owned(),
-        });
+        let style = self.current_style();
+        self.push_inline_text(text, style);
+    }
+
+    /// 逐行压入 inline 片段：事件可能整块携带换行（HTML 块等），换行
+    /// 按软换行结算，保证输出行内不留 `\n`——换行与宽度计算都假设
+    /// 「一行即一行」。
+    fn push_inline_text(&mut self, text: &str, style: Style) {
+        for (index, segment) in text.split('\n').enumerate() {
+            if index > 0 {
+                if self.in_table_cell {
+                    self.push_run(Run {
+                        style,
+                        text: " ".to_owned(),
+                    });
+                } else {
+                    self.flush_inline();
+                }
+            }
+            if !segment.is_empty() {
+                self.push_run(Run {
+                    style,
+                    text: segment.to_owned(),
+                });
+            }
+        }
     }
 
     /// 合成当前 inline 样式（嵌套修饰叠加）。
@@ -687,6 +715,32 @@ mod tests {
         let joined = out.join("");
         assert!(joined.contains("fn"), "{out:?}");
         assert!(joined.contains("main"), "{out:?}");
+    }
+
+    /// 缩进代码块同样逐行渲染：ASCII 示意图不能挤成一行，行内也不许带换行。
+    #[test]
+    fn indented_code_blocks_keep_one_line_per_source_line() {
+        let out = lines("    ╭──────╮\n    │ 对齐 │\n    ╰──────╯", 40);
+        for (index, glyph) in ["╭──────╮", "│ 对齐 │", "╰──────╯"].iter().enumerate()
+        {
+            assert!(out[index].contains(glyph), "第 {index} 行：{out:?}");
+        }
+        assert!(
+            out.iter().all(|line| !line.contains('\n')),
+            "渲染行内不得残留换行：{out:?}"
+        );
+    }
+
+    /// HTML 块整块送文本，也必须按行拆开而不是塞进同一行。
+    #[test]
+    fn html_blocks_split_into_lines() {
+        let out = lines("<div>\nfoo\n</div>\n\n正文", 40);
+        assert!(
+            out.iter().all(|line| !line.contains('\n')),
+            "渲染行内不得残留换行：{out:?}"
+        );
+        assert!(out.iter().any(|line| line.contains("正文")), "{out:?}");
+        assert!(out.iter().any(|line| line.contains("foo")), "{out:?}");
     }
 
     #[test]
