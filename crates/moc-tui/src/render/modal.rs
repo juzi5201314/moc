@@ -18,9 +18,11 @@ use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
 
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
-pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, prompt_area: Rect) {
-    let visible = completion.candidates.len().min(20);
-    let rows = visible as u16 + u16::from(completion.candidates.len() > visible);
+pub fn draw_completion_menu(frame: &mut Frame, completion: &mut CompletionState, prompt_area: Rect) {
+    let total = completion.candidates.len();
+    let max_visible = 20usize.min(usize::from(prompt_area.y.saturating_sub(3)));
+    let visible = total.min(max_visible);
+    let rows = u16::try_from(visible).unwrap_or(u16::MAX) + u16::from(total > visible);
     let width = prompt_area.width.clamp(20, 72);
     let height = (rows + 3).min(prompt_area.y);
     if height == 0 {
@@ -32,11 +34,22 @@ pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, pro
         width,
         height,
     };
+    completion.area = area;
+    completion.visible_count = visible;
+    completion.adjust_scroll();
+
     let theme = crate::theme::Theme::global();
     frame.render_widget(Clear, area);
     let content_width = usize::from(width.saturating_sub(4));
-    let mut lines = Vec::with_capacity(visible + 1);
-    for (index, candidate) in completion.candidates.iter().take(visible).enumerate() {
+    let mut lines = Vec::with_capacity(visible + 2);
+    for (rel_index, candidate) in completion
+        .candidates
+        .iter()
+        .skip(completion.offset)
+        .take(visible)
+        .enumerate()
+    {
+        let index = completion.offset + rel_index;
         let selected = index == completion.selected;
         let prefix = if selected { "❯ " } else { "  " };
         let style = if selected {
@@ -55,9 +68,9 @@ pub fn draw_completion_menu(frame: &mut Frame, completion: &CompletionState, pro
             style,
         )));
     }
-    if completion.candidates.len() > visible {
+    if total > visible {
         lines.push(Line::from(Span::styled(
-            format!("… 还有 {} 条", completion.candidates.len() - visible),
+            format!("… 还有 {} 条", total - visible),
             Style::new().fg(theme.gray_dim),
         )));
     }

@@ -164,7 +164,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
 
     crate::queue::draw(frame, app);
     // 浮层最后画：补全菜单贴输入框上沿，就地模式菜单贴模式图例，居中模态覆盖全部。
-    if let Some(completion) = &app.completion {
+    if let Some(completion) = &mut app.completion {
         modal::draw_completion_menu(frame, completion, prompt_area);
     }
     if app.modal.is_none() {

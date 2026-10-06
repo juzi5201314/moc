@@ -554,10 +554,7 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
         Event::Key(key) if key.kind == KeyEventKind::Press => {
             let previous_revision = app.prompt_revision;
             handle_key(app, connection, key.modifiers, key.code);
-            if app.focus == Focus::Prompt {
-                if app.prompt_revision == previous_revision {
-                    app.prompt_changed();
-                }
+            if app.focus == Focus::Prompt && app.prompt_revision != previous_revision {
                 request_resource_completion(app, connection);
             }
         }
@@ -637,6 +634,9 @@ fn handle_mouse_with_connection(
     if handle_mode_menu_mouse(app, connection, &mouse) {
         return;
     }
+    if handle_completion_mouse(app, &mouse) {
+        return;
+    }
     if app.queue_area.contains((mouse.column, mouse.row).into()) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -714,6 +714,59 @@ fn handle_mode_menu_mouse(
                 && let Some(index) = menu.entry_at(mouse.column, mouse.row)
             {
                 menu.selected = index;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 斜杠与资源补全菜单的鼠标处理：命中条目即选中并确认，点到外部关闭菜单。
+fn handle_completion_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    if app.completion.is_none() || app.modal.is_some() {
+        return false;
+    }
+    let Some(completion) = &app.completion else {
+        return false;
+    };
+    let in_area = completion.area.contains((mouse.column, mouse.row).into());
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if in_area {
+                if let Some(index) = completion.entry_at(mouse.column, mouse.row)
+                    && let Some(comp) = app.completion.as_mut()
+                {
+                    comp.selected = index;
+                    accept_completion(app);
+                }
+                true
+            } else {
+                app.completion = None;
+                false
+            }
+        }
+        MouseEventKind::Moved => {
+            if in_area {
+                if let Some(index) = completion.entry_at(mouse.column, mouse.row)
+                    && let Some(comp) = app.completion.as_mut()
+                {
+                    comp.selected = index;
+                }
+                true
+            } else {
+                false
+            }
+        }
+        MouseEventKind::ScrollUp if in_area => {
+            if let Some(comp) = app.completion.as_mut() {
+                comp.select_previous();
+            }
+            true
+        }
+        MouseEventKind::ScrollDown if in_area => {
+            if let Some(comp) = app.completion.as_mut() {
+                comp.select_next();
             }
             true
         }
@@ -947,7 +1000,8 @@ fn handle_key(
         (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT)
             if app.focus == crate::app::Focus::Prompt =>
         {
-            app.prompt.insert_char('\n')
+            app.prompt.insert_char('\n');
+            app.prompt_changed();
         }
         (KeyCode::Enter, KeyModifiers::NONE) if app.focus == crate::app::Focus::Prompt => {
             commit_prompt(app, connection)
@@ -960,9 +1014,12 @@ fn handle_key(
         }
         (KeyCode::Backspace, _) if app.focus == crate::app::Focus::Prompt => {
             app.prompt.backspace();
-            sync_completion(app);
+            app.prompt_changed();
         }
-        (KeyCode::Delete, _) if app.focus == crate::app::Focus::Prompt => app.prompt.delete(),
+        (KeyCode::Delete, _) if app.focus == crate::app::Focus::Prompt => {
+            app.prompt.delete();
+            app.prompt_changed();
+        }
         (KeyCode::Left, _) if app.focus == crate::app::Focus::Prompt => app.prompt.left(),
         (KeyCode::Right, _) if app.focus == crate::app::Focus::Prompt => app.prompt.right(),
         (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL)
@@ -975,11 +1032,17 @@ fn handle_key(
         {
             app.prompt.move_line_end()
         }
-        (KeyCode::Char('k'), KeyModifiers::CONTROL) => app.prompt.clear_line_to_end(),
-        (KeyCode::Char('u'), KeyModifiers::CONTROL) => app.prompt.clear(),
-        (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+        (KeyCode::Char('k'), KeyModifiers::CONTROL) if app.focus == crate::app::Focus::Prompt => {
+            app.prompt.clear_line_to_end();
+            app.prompt_changed();
+        }
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) if app.focus == crate::app::Focus::Prompt => {
+            app.prompt.clear();
+            app.prompt_changed();
+        }
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) if app.focus == crate::app::Focus::Prompt => {
             app.prompt.delete_word_back();
-            sync_completion(app);
+            app.prompt_changed();
         }
         (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
             if app.focus == crate::app::Focus::Prompt && !ch.is_control() =>
@@ -996,7 +1059,9 @@ fn handle_completion_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
     }
     match (code, modifiers) {
         (KeyCode::Tab, KeyModifiers::SHIFT) => false,
-        (KeyCode::Tab, KeyModifiers::NONE) => accept_completion(app),
+        (KeyCode::Tab, KeyModifiers::NONE) | (KeyCode::Enter, KeyModifiers::NONE) => {
+            accept_completion(app)
+        }
         (KeyCode::Up, _) => {
             if let Some(completion) = app.completion.as_mut() {
                 completion.select_previous();
@@ -1020,11 +1085,8 @@ fn accept_completion(app: &mut App) -> bool {
     let chosen = completion.chosen().clone();
     app.prompt
         .replace_range(completion.replace_range, &chosen.value, chosen.append_space);
+    app.prompt_changed();
     true
-}
-
-fn sync_completion(app: &mut App) {
-    app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
 }
 
 /// 提交输入：补全确认 > 斜杠命令 > 普通发送。
@@ -2458,6 +2520,215 @@ mod tests {
         ));
 
         assert_eq!(app.prompt.text, "/mode ");
+    }
+
+    #[test]
+    fn completion_navigation_wraps_and_accepts_with_enter() {
+        let mut app = app_with_completion();
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
+
+        // 向上循环到最后一项
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Up
+        ));
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(2));
+
+        // 向下循环回到第一项
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Down
+        ));
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
+
+        // Enter 键确认当前选中的补全
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Enter
+        ));
+        assert_eq!(app.prompt.text, "/model ");
+        assert!(app.completion.is_none());
+    }
+
+    async fn setup_test_app() -> (std::sync::Arc<moc_core::Core>, EmbeddedConnection, App) {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        app.session = Some(session);
+        (core, connection, app)
+    }
+
+    #[tokio::test]
+    async fn terminal_event_arrows_preserve_completion_selection() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_str_raw("/co");
+        app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
+        assert!(app.completion.is_some());
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
+
+        // 经由终端事件向下移动选中项，不应被 prompt_changed 重置
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            )),
+        );
+        assert_eq!(
+            app.completion.as_ref().map(|c| c.selected),
+            Some(1),
+            "下方向键应切换到下一个候选而不被重置"
+        );
+
+        // 再次向下
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            )),
+        );
+        assert_eq!(
+            app.completion.as_ref().map(|c| c.selected),
+            Some(2),
+            "再次按下方向键继续切换"
+        );
+
+        // 向上移动
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Up,
+                KeyModifiers::NONE,
+            )),
+        );
+        assert_eq!(
+            app.completion.as_ref().map(|c| c.selected),
+            Some(1),
+            "上方向键应切换回上一项"
+        );
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn completion_mouse_click_selects_and_accepts_candidate() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_str_raw("/co");
+        let mut completion =
+            crate::widgets::completion::CompletionState::derive(app.prompt_text()).unwrap();
+        let menu_area = ratatui::layout::Rect::new(2, 10, 40, 6);
+        completion.area = menu_area;
+        completion.visible_count = 3;
+        app.completion = Some(completion);
+
+        let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // 点击第 2 个候选（/compact，row = menu_area.y + 2 = 12）
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 10, 12),
+        );
+        assert_eq!(app.prompt.text, "/compact ");
+        assert!(app.completion.is_none(), "点击条目应接受补全并关闭菜单");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn completion_mouse_hover_and_scroll_and_dismiss() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_str_raw("/co");
+        let mut completion =
+            crate::widgets::completion::CompletionState::derive(app.prompt_text()).unwrap();
+        let menu_area = ratatui::layout::Rect::new(2, 10, 40, 6);
+        completion.area = menu_area;
+        completion.visible_count = 3;
+        app.completion = Some(completion);
+
+        let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // 鼠标悬停到第 3 个候选（row = 13）
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Moved, 10, 13),
+        );
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(2));
+
+        // 鼠标滚轮在菜单区域向上滚动
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::ScrollUp, 10, 12),
+        );
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(1));
+
+        // 鼠标滚轮在菜单区域向下滚动
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::ScrollDown, 10, 12),
+        );
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(2));
+
+        // 点击菜单外部（比如 row = 20）
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse(MouseEventKind::Down(MouseButton::Left), 10, 20),
+        );
+        assert!(app.completion.is_none(), "点击外部应关闭补全菜单");
+
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     #[test]

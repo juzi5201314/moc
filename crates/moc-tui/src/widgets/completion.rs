@@ -3,6 +3,7 @@
 use std::ops::Range;
 
 use moc_protocol::ResourceCandidate;
+use ratatui::layout::Rect;
 
 /// 一条斜杠命令。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,12 @@ pub struct CompletionState {
     pub candidates: Vec<CompletionCandidate>,
     pub selected: usize,
     pub replace_range: Range<usize>,
+    /// 上一帧绘制的菜单区域；鼠标命中使用。
+    pub area: Rect,
+    /// 视口滚动偏移量（跳过的前部候选数）。
+    pub offset: usize,
+    /// 上一帧渲染的可见候选行数。
+    pub visible_count: usize,
 }
 
 impl CompletionState {
@@ -124,6 +131,9 @@ impl CompletionState {
             candidates,
             selected: 0,
             replace_range: 0..first_line.len(),
+            area: Rect::default(),
+            offset: 0,
+            visible_count: 0,
         })
     }
 
@@ -139,15 +149,70 @@ impl CompletionState {
             candidates,
             selected: 0,
             replace_range,
+            area: Rect::default(),
+            offset: 0,
+            visible_count: 0,
         })
     }
 
     pub fn select_next(&mut self) {
-        self.selected = (self.selected + 1).min(self.candidates.len() - 1);
+        if self.candidates.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1) % self.candidates.len();
+        self.adjust_scroll();
     }
 
     pub fn select_previous(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        if self.candidates.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + self.candidates.len() - 1) % self.candidates.len();
+        self.adjust_scroll();
+    }
+
+    pub fn adjust_scroll(&mut self) {
+        let page = if self.visible_count > 0 {
+            self.visible_count
+        } else {
+            20
+        };
+        let count = self.candidates.len();
+        if count == 0 {
+            self.offset = 0;
+            self.selected = 0;
+            return;
+        }
+        self.selected = self.selected.min(count - 1);
+        if self.selected < self.offset {
+            self.offset = self.selected;
+        } else if self.selected >= self.offset + page {
+            self.offset = self.selected + 1 - page;
+        }
+        self.offset = self.offset.min(count.saturating_sub(page));
+    }
+
+    /// 命中的候选条目下标；点在边框、说明行或菜单外返回 `None`。
+    pub fn entry_at(&self, column: u16, row: u16) -> Option<usize> {
+        if !self.area.contains((column, row).into()) {
+            return None;
+        }
+        if column == self.area.x
+            || column == self.area.x.saturating_add(self.area.width).saturating_sub(1)
+        {
+            return None;
+        }
+        let rel_y = usize::from(row.checked_sub(self.area.y.saturating_add(1))?);
+        let count = if self.visible_count > 0 {
+            self.visible_count
+        } else {
+            self.candidates.len()
+        };
+        if rel_y >= count {
+            return None;
+        }
+        let index = self.offset + rel_y;
+        (index < self.candidates.len()).then_some(index)
     }
 
     pub fn chosen(&self) -> &CompletionCandidate {
@@ -188,5 +253,30 @@ mod tests {
         .expect("资源候选");
         assert_eq!(state.chosen().value, "local://ses_1/plans/");
         assert!(!state.chosen().append_space);
+    }
+
+    #[test]
+    fn selection_wraps_around_both_directions() {
+        let mut state = CompletionState::derive("/mo").expect("有候选");
+        assert_eq!(state.selected, 0);
+        state.select_previous();
+        assert_eq!(state.selected, 1, "从首项向上循环到末项");
+        state.select_next();
+        assert_eq!(state.selected, 0, "从末项向下循环到首项");
+    }
+
+    #[test]
+    fn entry_at_detects_candidate_rows_and_ignores_borders() {
+        let mut state = CompletionState::derive("/mo").expect("有候选");
+        state.area = Rect::new(10, 5, 30, 5);
+        state.visible_count = 2;
+
+        assert_eq!(state.entry_at(10, 6), None, "左边框忽略");
+        assert_eq!(state.entry_at(39, 6), None, "右边框忽略");
+        assert_eq!(state.entry_at(15, 5), None, "上边框忽略");
+        assert_eq!(state.entry_at(15, 6), Some(0), "第 1 条候选命中");
+        assert_eq!(state.entry_at(15, 7), Some(1), "第 2 条候选命中");
+        assert_eq!(state.entry_at(15, 8), None, "超出候选行（说明文字/下边框）忽略");
+        assert_eq!(state.entry_at(5, 6), None, "区域外忽略");
     }
 }
