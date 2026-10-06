@@ -605,11 +605,7 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(bar_color),
         ));
         right.push(Span::styled(
-            format!(
-                " {} / {}",
-                short_number(data.context_used),
-                short_number(window)
-            ),
+            format!(" {} / {}", tokens_k(data.context_used), tokens_k(window)),
             Style::new().fg(theme.gray),
         ));
     }
@@ -756,14 +752,21 @@ fn context_bar_color(percent: f64, theme: &crate::theme::Theme) -> ratatui::styl
     }
 }
 
-/// token 数缩写（120000 → 120K）。
-pub fn short_number(value: u64) -> String {
-    if value >= 1_000_000 {
-        format!("{:.1}M", value as f64 / 1_000_000.0)
-    } else if value >= 1_000 {
-        format!("{}K", value / 1_000)
-    } else {
-        value.to_string()
+/// token 数统一以 k 为单位显示：`3000 → 3k`、`30 → 0.03k`、`0 → 0k`。
+///
+/// 全院统一单位便于横向比较；`0` 之外不足 10 token 的按 `<0.01k` 显示，
+/// 既不谎报成 0k 也不夸大成 0.01k。四舍五入在整数上完成，不引入浮点误差。
+pub fn tokens_k(value: u64) -> String {
+    // 以 0.01k 为单位四舍五入：token 数除以 10 即两位小数的 k 值
+    let hundredths = value.saturating_add(5) / 10;
+    let whole = hundredths / 100;
+    let frac = hundredths % 100;
+    match (value, frac) {
+        (0, _) => "0k".to_owned(),
+        (1..10, _) => "<0.01k".to_owned(),
+        (_, 0) => format!("{whole}k"),
+        (_, frac) if frac.is_multiple_of(10) => format!("{whole}.{}k", frac / 10),
+        (_, frac) => format!("{whole}.{frac:02}k"),
     }
 }
 
@@ -867,8 +870,8 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     // 右侧统计段
     let right = format!(
         " ⇅ {} › {} › {:.0} tok/s",
-        short_number(data.tokens_in),
-        short_number(data.tokens_out),
+        tokens_k(data.tokens_in),
+        tokens_k(data.tokens_out),
         data.tok_s,
     );
     let mut right_cost = data
@@ -911,7 +914,7 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "mode" => Some((data.mode.clone(), theme.accent_tool)),
             "context" => data
                 .context_percent
-                .map(|_| (short_number(data.context_used), theme.text_secondary)),
+                .map(|_| (tokens_k(data.context_used), theme.text_secondary)),
             "context_percent" => data
                 .context_percent
                 .map(|percent| (format_context_percent(percent), theme.text_secondary)),
@@ -923,8 +926,8 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "todo" => data
                 .todo
                 .map(|(done, total)| (format!("☑ {done}/{total}"), theme.accent_success)),
-            "tokens_in" => Some((short_number(data.tokens_in), theme.text_secondary)),
-            "tokens_out" => Some((short_number(data.tokens_out), theme.text_secondary)),
+            "tokens_in" => Some((tokens_k(data.tokens_in), theme.text_secondary)),
+            "tokens_out" => Some((tokens_k(data.tokens_out), theme.text_secondary)),
             "tok_s" => Some((format!("{:.1} tok/s", data.tok_s), theme.accent_running)),
             "prompt_elapsed" => Some((
                 data.prompt_elapsed
@@ -1131,6 +1134,22 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(rendered.contains("Stopping"));
+    }
+
+    /// token 统一按 k 显示：两位小数、去掉多余的 0，0 与非零小值各有明确写法。
+    #[test]
+    fn tokens_share_one_k_unit() {
+        assert_eq!(tokens_k(0), "0k");
+        assert_eq!(tokens_k(9), "<0.01k", "不足 0.01k 不谎报为 0k");
+        assert_eq!(tokens_k(10), "0.01k");
+        assert_eq!(tokens_k(30), "0.03k");
+        assert_eq!(tokens_k(150), "0.15k");
+        assert_eq!(tokens_k(999), "1k", "0.999k 四舍五入到 1k");
+        assert_eq!(tokens_k(1_000), "1k");
+        assert_eq!(tokens_k(1_500), "1.5k");
+        assert_eq!(tokens_k(12_345), "12.35k");
+        assert_eq!(tokens_k(500_000), "500k");
+        assert_eq!(tokens_k(1_200_000), "1200k", "超过百万仍用 k，不换单位");
     }
 
     /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。

@@ -1820,8 +1820,8 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             app.push_note(
                 format!(
                     "上下文已压缩：{} → {}",
-                    crate::render::short_number(tokens_before),
-                    crate::render::short_number(tokens_after)
+                    crate::render::tokens_k(tokens_before),
+                    crate::render::tokens_k(tokens_after)
                 ),
                 false,
             );

@@ -4,7 +4,7 @@
 //! 终端色彩能力（truecolor / 256 / 16 / 无色）统一量化成 ratatui `Color`，
 //! 运行时零分支；diff 底色专门挑选量化到 256 后依然可辨的 RGB。
 
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 use ratatui::style::Color;
 
@@ -101,6 +101,16 @@ pub struct Theme {
     // 滚动条
     pub scrollbar_fg: Color,
     pub scrollbar_bg: Color,
+
+    // 上下文分块调色板：按分块顺序取用，相邻分块颜色可辨
+    pub chart_1: Color,
+    pub chart_2: Color,
+    pub chart_3: Color,
+    pub chart_4: Color,
+    pub chart_5: Color,
+    pub chart_6: Color,
+    pub chart_7: Color,
+    pub chart_8: Color,
 }
 
 macro_rules! define_theme {
@@ -160,13 +170,42 @@ define_theme! {
     // 滚动条
     scrollbar_fg:       (0x3a, 0x3a, 0x3f),
     scrollbar_bg:       (0x11, 0x11, 0x11),
+    // 上下文分块：按顺序取色，量化到 256 色后各分块仍互不相同
+    chart_1:            (0x7a, 0xa2, 0xf7),
+    chart_2:            (0xbb, 0x9a, 0xf7),
+    chart_3:            (0x7d, 0xcf, 0xff),
+    chart_4:            (0x9e, 0xce, 0x6a),
+    chart_5:            (0xe0, 0xaf, 0x68),
+    chart_6:            (0xf7, 0x76, 0x8e),
+    chart_7:            (0x73, 0xda, 0xca),
+    chart_8:            (0xff, 0x9e, 0x64),
 }
 
 impl Theme {
+    /// 上下文分块调色板长度；分块数超过它时循环取色。
+    pub const CHART_LEN: usize = 8;
+
     /// 按终端能力量化后的内置主题（进程内单例，惰性初始化）。
     pub fn global() -> &'static Theme {
-        static THEME: OnceLock<Theme> = OnceLock::new();
-        THEME.get_or_init(|| Theme::resolved(detect_color_level()))
+        static THEME: LazyLock<Theme> = LazyLock::new(|| Theme::resolved(detect_color_level()));
+        &THEME
+    }
+
+    /// 上下文分块的配色：第 `index` 块的颜色，超出调色板长度则循环。
+    ///
+    /// 256 色终端下各分块颜色互不相同（16 色终端会退化到近似色，
+    /// 此时靠分块列表的顺序与色条位置区分）。
+    pub fn chart(&self, index: usize) -> Color {
+        match index % Self::CHART_LEN {
+            0 => self.chart_1,
+            1 => self.chart_2,
+            2 => self.chart_3,
+            3 => self.chart_4,
+            4 => self.chart_5,
+            5 => self.chart_6,
+            6 => self.chart_7,
+            _ => self.chart_8,
+        }
     }
 }
 
@@ -270,6 +309,29 @@ mod tests {
         let insert = nearest_indexed(rgb(0x06, 0x38, 0x06));
         assert_ne!(delete, insert, "diff 底色量化后必须可辨");
         assert!(delete >= 16, "红底不应量化为基础色");
+    }
+
+    /// 上下文分块调色板：量化到 256 色后各分块仍互不相同，且超出长度循环取色。
+    #[test]
+    fn chart_palette_stays_distinct_after_quantization() {
+        let theme = Theme::resolved(ColorLevel::Ansi256);
+        // 索引色最大 255，用位图去重：每个 u64 覆盖 64 个索引
+        let mut seen = [0u64; 4];
+        for index in 0..Theme::CHART_LEN {
+            let Color::Indexed(code) = theme.chart(index) else {
+                panic!("256 色终端应量化为索引色");
+            };
+            let code = usize::from(code);
+            let bit = 1u64 << (code & 63);
+            let slot = &mut seen[code >> 6];
+            assert_eq!(*slot & bit, 0, "第 {index} 个分块配色与前面重复");
+            *slot |= bit;
+        }
+        assert_eq!(
+            theme.chart(Theme::CHART_LEN),
+            theme.chart(0),
+            "超出调色板循环"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@ const DEFAULT_INTRO: &str = "You are a helpful software engineer assistant.";
 const TOOL_POLICY: &str = "工具：bash/read/edit/write/todo/grep/find 可用；搜索代码用 grep，找文件用 find，不要用 bash 跑 grep/find；改文件前先 read（edit 需要 read 给出的行锚点）；只有需要整文件重写或新建文件时才用 write。\n改文件用 edit 的锚点：read 的输出形如 `HZ3│内容`，把锚点填进 edits 的 from/to；不确定当前内容就重新 read，不要凭记忆构造锚点。";
 
 pub struct PromptPiece {
+    /// 分块所属分类（`system`、`project`、`skills`），用于上下文占用聚合。
     pub title: &'static str,
     pub text: String,
 }
@@ -57,16 +58,16 @@ pub fn pieces(
         config.system_prompt.override_text.trim()
     };
     sections.push(PromptPiece {
-        title: "身份说明",
+        title: "system",
         text: intro.to_owned(),
     });
     sections.push(PromptPiece {
-        title: "工具使用规则",
+        title: "system",
         text: tool_policy(mode),
     });
     if !config.system_prompt.append.trim().is_empty() {
         sections.push(PromptPiece {
-            title: "附加系统指令",
+            title: "system",
             text: config.system_prompt.append.trim().to_owned(),
         });
     }
@@ -90,7 +91,7 @@ pub fn pieces(
         }
         rules.push_str("\n</repo-rules>");
         sections.push(PromptPiece {
-            title: "项目与用户指令",
+            title: "project",
             text: rules,
         });
     }
@@ -99,12 +100,12 @@ pub fn pieces(
         crate::skills::catalog::render(skills, &config.skills, model.context_window)
     {
         sections.push(PromptPiece {
-            title: "技能列表",
+            title: "skills",
             text: catalog,
         });
     }
     sections.push(PromptPiece {
-        title: "运行环境",
+        title: "system",
         text: format!(
             "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
             cwd.display(),

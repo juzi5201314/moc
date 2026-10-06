@@ -4,15 +4,17 @@
 //! 普通模态上限 96 列），高度按内容收缩。全部使用主题槽位。
 
 use moc_protocol::Role;
+use moc_protocol::methods::ContextUsageResult;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::modal::Modal;
 use crate::render::wrap::str_width;
+use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
 
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
@@ -170,6 +172,14 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
             .unwrap_or(u16::MAX)
             .min(area.width.saturating_sub(4));
         (width, usize::from(width.saturating_sub(2)))
+    } else if matches!(modal, Modal::Context { .. }) {
+        // 上下文占用卡片：收敛到紧凑宽度，避免宽屏下右侧过度留白且色条过长。
+        let width = area
+            .width
+            .saturating_sub(4)
+            .clamp(16, 58)
+            .min(area.width.saturating_sub(2));
+        (width, usize::from(width.saturating_sub(4)).max(8))
     } else {
         let width = if area.width < 70 {
             area.width.saturating_sub(4).max(16)
@@ -354,6 +364,219 @@ fn rewind_preview(entry: &moc_protocol::methods::TranscriptEntry) -> String {
         .join(" ")
 }
 
+/// 上下文窗：分块色标与分块名的左缩进（格）。
+const CONTEXT_INDENT: usize = 2;
+/// 上下文窗：分块名列宽（格）。
+const CONTEXT_NAME_COL: usize = 16;
+/// 上下文窗：token 列宽（格，右对齐）。
+const CONTEXT_VALUE_COL: usize = 7;
+/// 上下文窗：占比列宽（格，右对齐）。
+const CONTEXT_PERCENT_COL: usize = 6;
+/// 上下文窗：token 列与占比列之间的间距（格）。
+const CONTEXT_GAP: usize = 2;
+
+/// 占比：保留一位小数；非零但不足 0.1% 显示 `<0.1%`，不缩成 0.0%。
+fn share_percent(part: u64, total: u64) -> String {
+    let percent = part as f64 * 100.0 / total.max(1) as f64;
+    if percent > 0.0 && percent < 0.05 {
+        "<0.1%".to_owned()
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
+/// 上下文占用明细：分块列表 + 按窗口刻度的分块色条与边界标注。
+///
+/// 列表每块以 `▌` 色标起头，颜色与色条上对应那段一致；色条按上下文窗口定标，
+/// 因此空会话就是一整条暗色轨道，已用部分永远落在左侧。边界标注落在各分块
+/// 右界，只在不重叠处显示，并优先保住「已用总量」与窗口上限两条。
+fn context_lines(usage: &ContextUsageResult, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let total = usage.total_tokens;
+    let window = usage.context_window;
+    let mut lines = Vec::with_capacity(usage.sections.len() + 6);
+    lines.push(Line::from(vec![
+        Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
+        Span::styled(
+            crate::render::tokens_k(total),
+            Style::new()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" / {}", crate::render::tokens_k(window)),
+            Style::new().fg(theme.gray),
+        ),
+        Span::styled(
+            format!(" · {}", share_percent(total, window)),
+            Style::new().fg(theme.gray),
+        ),
+    ]));
+    lines.push(Line::from(String::new()));
+    for (index, section) in usage.sections.iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
+            Span::styled("▌ ", Style::new().fg(theme.chart(index))),
+            Span::styled(
+                format_section_name(&section.name, CONTEXT_NAME_COL),
+                Style::new().fg(theme.text_secondary),
+            ),
+            Span::styled(
+                format!(
+                    "{:>CONTEXT_VALUE_COL$}",
+                    crate::render::tokens_k(section.tokens)
+                ),
+                Style::new().fg(theme.text_primary),
+            ),
+            Span::styled(" ".repeat(CONTEXT_GAP), Style::new()),
+            Span::styled(
+                format!(
+                    "{:>CONTEXT_PERCENT_COL$}",
+                    share_percent(section.tokens, total)
+                ),
+                Style::new().fg(theme.gray),
+            ),
+        ]));
+    }
+    lines.push(Line::from(String::new()));
+    // 分块右界：累积 token 按 `max(已用, 窗口)` 折算成格位；累积单调所以格位不回头
+    let cells = width.saturating_sub(CONTEXT_INDENT).max(1);
+    let scale = window.max(total).max(1);
+    let cells_u64 = u64::try_from(cells).unwrap_or(u64::MAX);
+    let mut marks = Vec::with_capacity(usage.sections.len());
+    let mut cumulative = 0u64;
+    for section in &usage.sections {
+        cumulative = cumulative.saturating_add(section.tokens);
+        let cell = cumulative
+            .saturating_mul(cells_u64)
+            .saturating_add(scale / 2)
+            / scale;
+        marks.push((
+            cumulative,
+            usize::try_from(cell).unwrap_or(cells).min(cells),
+        ));
+    }
+    lines.push(context_bar_line(&marks, cells, theme));
+    lines.push(context_scale_line(&marks, total, window, cells, theme));
+    lines
+}
+
+/// 分块色条：各分块按格位铺 `━`（颜色与列表色标一致），窗口剩余部分铺暗色 `─`。
+fn context_bar_line(marks: &[(u64, usize)], cells: usize, theme: &Theme) -> Line<'static> {
+    let mut spans = Vec::with_capacity(marks.len() + 2);
+    spans.push(Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()));
+    let mut drawn = 0usize;
+    for (index, &(_, boundary)) in marks.iter().enumerate() {
+        if boundary > drawn {
+            spans.push(Span::styled(
+                "━".repeat(boundary - drawn),
+                Style::new().fg(theme.chart(index)),
+            ));
+            drawn = boundary;
+        }
+    }
+    if drawn < cells {
+        spans.push(Span::styled(
+            "─".repeat(cells - drawn),
+            Style::new().fg(theme.border),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// 分块边界标注：写出各分块右界的累积用量，窗口上限贴住色条末端。
+fn context_scale_line(
+    marks: &[(u64, usize)],
+    total: u64,
+    window: u64,
+    cells: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut taken = vec![false; cells];
+    let mut placed: Vec<(usize, String, Color)> = Vec::with_capacity(marks.len() + 1);
+    if total > 0
+        && let Some(&(_, boundary)) = marks.last()
+    {
+        push_label(
+            &mut taken,
+            &mut placed,
+            boundary,
+            crate::render::tokens_k(total),
+            theme.chart(marks.len() - 1),
+        );
+    }
+    let cap = crate::render::tokens_k(window);
+    push_label(
+        &mut taken,
+        &mut placed,
+        cells,
+        cap,
+        theme.gray_dim,
+    );
+    for (index, &(cumulative, boundary)) in marks.iter().enumerate() {
+        let text = crate::render::tokens_k(cumulative);
+        if placed.iter().any(|(_, existing, _)| *existing == text) {
+            continue;
+        }
+        push_label(&mut taken, &mut placed, boundary, text, theme.chart(index));
+    }
+    placed.sort_unstable_by_key(|(start, ..)| *start);
+    let mut spans = Vec::with_capacity(placed.len() * 2 + 2);
+    spans.push(Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()));
+    let mut cursor = 0usize;
+    for (start, text, color) in placed {
+        let width = str_width(&text);
+        if start > cursor {
+            spans.push(Span::styled(" ".repeat(start - cursor), Style::new()));
+        }
+        cursor = start + width;
+        spans.push(Span::styled(text, Style::new().fg(color)));
+    }
+    if cursor < cells {
+        spans.push(Span::styled(" ".repeat(cells - cursor), Style::new()));
+    }
+    Line::from(spans)
+}
+
+/// 分块显示名格式化：按终端显示宽度对齐；超过列宽时截断加省略号，不足时补空格。
+fn format_section_name(name: &str, target_width: usize) -> String {
+    let current_width = str_width(name);
+    if current_width <= target_width {
+        format!("{name}{}", " ".repeat(target_width - current_width))
+    } else {
+        ellipsize(name, target_width)
+    }
+}
+
+/// 落一个边界标注：以分块右界为锚点右对齐（使数值落位在该分块色条区间的末端）；
+/// 若数值为 0k 则以起点左对齐。空间不足或与已落位的标注相碰时直接放弃。
+fn push_label(
+    taken: &mut [bool],
+    placed: &mut Vec<(usize, String, Color)>,
+    target_boundary: usize,
+    text: String,
+    color: Color,
+) {
+    let width = str_width(&text);
+    let cells = taken.len();
+    if width == 0 || width > cells {
+        return;
+    }
+    let position = if target_boundary == 0 {
+        0
+    } else {
+        target_boundary.min(cells).saturating_sub(width)
+    };
+    let end = (position + width).min(cells);
+    let position = end.saturating_sub(width);
+    let clear = !taken[position..end].iter().any(|cell| *cell)
+        && (position == 0 || !taken[position - 1])
+        && (end == cells || !taken[end]);
+    if clear {
+        taken[position..end].fill(true);
+        placed.push((position, text, color));
+    }
+}
+
 /// 模态内容行（按类型分派）。
 fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<Line<'static>> {
     let theme = app.theme;
@@ -534,7 +757,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     };
                     let context = model
                         .context_window
-                        .map(|window| format!(" · Ctx {}", crate::render::short_number(window)));
+                        .map(|window| format!(" · Ctx {}", crate::render::tokens_k(window)));
                     let row_text = ellipsize(
                         &format!(
                             "{marker}{}{}",
@@ -838,49 +1061,24 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             lines
         }
         Modal::Context { usage } => {
-            let mut lines = Vec::new();
-            match usage {
-                Some(usage) => {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "{} / {}（{:.1}%）",
-                            crate::render::short_number(usage.total_tokens),
-                            crate::render::short_number(usage.context_window),
-                            usage.total_tokens as f64 * 100.0 / usage.context_window.max(1) as f64,
-                        ),
-                        Style::new()
-                            .fg(theme.text_primary)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                    lines.push(Line::from(String::new()));
-                    let total = usage.total_tokens.max(1) as f64;
-                    for section in &usage.sections {
-                        let pad = 14usize.saturating_sub(str_width(&section.name));
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("  {}{}", section.name, " ".repeat(pad)),
-                                Style::new().fg(theme.text_secondary),
-                            ),
-                            Span::styled(
-                                format!(
-                                    "{}（{:.1}%）",
-                                    crate::render::short_number(section.tokens),
-                                    section.tokens as f64 * 100.0 / total,
-                                ),
-                                Style::new().fg(theme.accent_model),
-                            ),
-                        ]));
-                    }
-                }
-                None => lines.push(Line::from(Span::styled(
-                    "正在计算上下文…",
-                    Style::new().fg(theme.accent_running),
-                ))),
-            }
-            lines.push(Line::from(Span::styled(
-                "Esc 关闭",
-                Style::new().fg(theme.gray_dim),
-            )));
+            let mut lines = match usage {
+                Some(usage) => context_lines(usage, width, theme),
+                None => vec![Line::from(vec![
+                    Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
+                    Span::styled(
+                        "正在计算上下文…",
+                        Style::new().fg(theme.accent_running),
+                    ),
+                ])],
+            };
+            lines.push(Line::from(String::new()));
+            lines.push(Line::from(vec![
+                Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
+                Span::styled(
+                    "Esc 关闭",
+                    Style::new().fg(theme.gray_dim),
+                ),
+            ]));
             lines
         }
         Modal::Help => help_lines(app, width, max_lines).0,
@@ -904,7 +1102,9 @@ mod tests {
         modal::{Modal, PickerState},
         theme::Theme,
     };
-    use moc_protocol::methods::ModelInfo;
+    use moc_protocol::methods::{ContextUsageResult, ContextUsageSection, ModelInfo};
+    use ratatui::style::Color;
+    use ratatui::text::Line;
     use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
@@ -933,10 +1133,167 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
 
-        assert_eq!(text, "❯ p/model · Ctx 500K");
+        assert_eq!(text, "❯ p/model · Ctx 500k");
         assert_eq!(row.spans[1].style.fg, Some(theme.text_secondary));
         assert_eq!(row.spans[2].style.fg, Some(theme.accent_user));
         assert_eq!(row.spans[3].style.fg, Some(theme.accent_model));
         assert!(!text.contains("上下文"));
+    }
+
+    /// 上下文窗：分块名用英文、数值统一为 k，色标与色条同色，色条按窗口定标。
+    #[test]
+    fn context_modal_colors_sections_and_scales_bar_to_window() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let theme = app.theme;
+        let modal = Modal::Context {
+            usage: Some(ContextUsageResult {
+                context_window: 500_000,
+                total_tokens: 250_000,
+                sections: vec![
+                    ContextUsageSection {
+                        name: "system".into(),
+                        tokens: 100_000,
+                    },
+                    ContextUsageSection {
+                        name: "tools".into(),
+                        tokens: 50_000,
+                    },
+                    ContextUsageSection {
+                        name: "messages".into(),
+                        tokens: 100_000,
+                    },
+                ],
+            }),
+        };
+
+        let lines = modal_lines(&app, &modal, 80, 24);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(texts[0], "  250k / 500k · 50.0%");
+        assert_eq!(texts[2], "  ▌ system             100k   40.0%");
+        assert_eq!(texts[3], "  ▌ tools               50k   20.0%");
+        assert_eq!(texts[4], "  ▌ messages           100k   40.0%");
+        for (index, row) in [&lines[2], &lines[3], &lines[4]].iter().enumerate() {
+            assert_eq!(
+                row.spans[1].style.fg,
+                Some(theme.chart(index)),
+                "第 {index} 块色标应与色条同色"
+            );
+        }
+
+        // 已用 250k 落在一半格位（39/78），剩余 39 格是空窗口
+        let segments: Vec<(usize, Option<Color>)> = lines[6]
+            .spans
+            .iter()
+            .skip(1)
+            .map(|span| (span.content.chars().count(), span.style.fg))
+            .collect();
+        assert_eq!(
+            segments,
+            vec![
+                (16, Some(theme.chart(0))),
+                (7, Some(theme.chart(1))),
+                (16, Some(theme.chart(2))),
+                (39, Some(theme.border)),
+            ]
+        );
+
+        // 刻度行：分块右界的累积用量 + 右端窗口上限，行宽与色条一致
+        let labels: Vec<(String, Option<Color>)> = lines[7]
+            .spans
+            .iter()
+            .filter(|span| !span.content.trim().is_empty())
+            .map(|span| (span.content.to_string(), span.style.fg))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("100k".to_owned(), Some(theme.chart(0))),
+                ("150k".to_owned(), Some(theme.chart(1))),
+                ("250k".to_owned(), Some(theme.chart(2))),
+                ("500k".to_owned(), Some(theme.gray_dim)),
+            ]
+        );
+        assert_eq!(line_width(&texts[7]), line_width(&texts[6]));
+    }
+
+    /// 上下文窗：空会话是一整条空窗口，分块与合计都显示 0k。
+    #[test]
+    fn context_modal_shows_empty_window_for_fresh_session() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let modal = Modal::Context {
+            usage: Some(ContextUsageResult {
+                context_window: 500_000,
+                total_tokens: 0,
+                sections: vec![
+                    ContextUsageSection {
+                        name: "system".into(),
+                        tokens: 0,
+                    },
+                    ContextUsageSection {
+                        name: "messages".into(),
+                        tokens: 0,
+                    },
+                ],
+            }),
+        };
+
+        let lines = modal_lines(&app, &modal, 60, 24);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(texts[0], "  0k / 500k · 0.0%");
+        assert_eq!(texts[2], "  ▌ system               0k    0.0%");
+        assert_eq!(texts[3], "  ▌ messages             0k    0.0%");
+        assert!(
+            texts[5].chars().all(|ch| ch == ' ' || ch == '─'),
+            "空会话的色条整条都是空窗口：{:?}",
+            texts[5]
+        );
+        assert!(texts[6].starts_with("  0k"), "{:?}", texts[6]);
+        assert!(texts[6].ends_with("500k"), "{:?}", texts[6]);
+    }
+
+    /// 上下文窗：分块名称过长或包含宽字符时保持列宽对齐，Esc 行具有缩进。
+    #[test]
+    fn context_modal_handles_wide_names_and_indents_footer() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let modal = Modal::Context {
+            usage: Some(ContextUsageResult {
+                context_window: 100_000,
+                total_tokens: 50_000,
+                sections: vec![
+                    ContextUsageSection {
+                        name: "very_long_custom_section_name_overflow".into(),
+                        tokens: 30_000,
+                    },
+                    ContextUsageSection {
+                        name: "中文分块名称".into(),
+                        tokens: 20_000,
+                    },
+                ],
+            }),
+        };
+
+        let lines = modal_lines(&app, &modal, 60, 24);
+        let texts: Vec<String> = lines.iter().map(line_text).collect();
+        // 验证各分块行总宽度一致，列对齐未被顶破
+        assert_eq!(line_width(&texts[2]), line_width(&texts[3]));
+        // 验证底部的 Esc 说明具备 2 格左缩进
+        let last_line = texts.last().expect("footer line");
+        assert!(last_line.starts_with("  Esc 关闭"), "{:?}", last_line);
+    }
+
+    /// 一行渲染后的文本。
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// 一行渲染后的显示宽度（格）。
+    fn line_width(text: &str) -> usize {
+        crate::render::wrap::str_width(text)
     }
 }

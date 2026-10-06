@@ -101,6 +101,16 @@ statusline = "{model} * {mode} -> {workdir}"
 可用占位符：`{model}` `{mode}` `{context}` `{context_percent}` `{workdir}`
 `{branch}` `{todo}` `{tokens_in}` `{tokens_out}` `{tok_s}` `{prompt_elapsed}` `{cost}`。
 
+### 上下文占用窗
+
+`/context` 或点击顶部信息条右端的上下文进度条打开。窗内按 `system`、
+`project`、`skills`、`tools`、`messages`
+逐块列出估算 token 与占已用上下文的比例，每块的色标与下方色条上对应那段同色。
+色条按模型上下文窗口定标：已用部分落在左侧，右侧 `─` 是剩余窗口，空会话整条
+都是空窗口；色条下方标注各分块右界的累积用量，空间不够时只保留挤得下的标注，
+「已用总量」与右端窗口上限优先。token 一律按 k 显示（`9030 → 9.03k`，非零但
+不足 10 token 记 `<0.01k`），全 TUI 同一套写法。
+
 ## 工具调用 diff
 
 edit / write 执行时由 core 生成结构化 diff（LCS 对齐、上下文 3 行、

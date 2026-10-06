@@ -957,24 +957,48 @@ impl AgentService for Core {
         let total_tokens = system_tokens
             .saturating_add(tool_tokens)
             .saturating_add(history_tokens);
-        let mut sections: Vec<_> = pieces
-            .into_iter()
-            .map(|piece| ContextUsageSection {
-                name: piece.title.into(),
-                tokens: crate::compact::estimate_tokens(&piece.text),
-            })
-            .collect();
-        let piece_tokens: u64 = sections.iter().map(|section| section.tokens).sum();
+        let mut project_tokens = 0u64;
+        let mut skills_tokens = 0u64;
+        for piece in &pieces {
+            match piece.title {
+                "project" => {
+                    project_tokens = project_tokens
+                        .saturating_add(crate::compact::estimate_tokens(&piece.text));
+                }
+                "skills" => {
+                    skills_tokens = skills_tokens
+                        .saturating_add(crate::compact::estimate_tokens(&piece.text));
+                }
+                _ => {}
+            }
+        }
+        let system_base_tokens = system_tokens
+            .saturating_sub(project_tokens)
+            .saturating_sub(skills_tokens);
+
+        let mut sections = Vec::with_capacity(5);
         sections.push(ContextUsageSection {
-            name: "格式开销".into(),
-            tokens: system_tokens.saturating_sub(piece_tokens),
+            name: "system".into(),
+            tokens: system_base_tokens,
         });
+        if project_tokens > 0 {
+            sections.push(ContextUsageSection {
+                name: "project".into(),
+                tokens: project_tokens,
+            });
+        }
+        if skills_tokens > 0 {
+            sections.push(ContextUsageSection {
+                name: "skills".into(),
+                tokens: skills_tokens,
+            });
+        }
         sections.push(ContextUsageSection {
-            name: "工具定义".into(),
+            name: "tools".into(),
             tokens: tool_tokens,
         });
         sections.push(ContextUsageSection {
-            name: "会话历史".into(),
+            name: "messages".into(),
             tokens: history_tokens,
         });
         Ok(ContextUsageResult {
