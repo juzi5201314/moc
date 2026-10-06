@@ -534,6 +534,12 @@ async fn ask_prompt(
             if let Some(description) = &option.description {
                 println!("     {description}");
             }
+            if let Some(preview) = &option.preview {
+                // CLI 不渲染 markdown：预览按原样缩进打印，保住 ASCII 示意图的对齐。
+                for row in preview.lines() {
+                    println!("     {row}");
+                }
+            }
         }
         print!(
             "输入编号{}或自定义内容：",

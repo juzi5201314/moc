@@ -428,6 +428,7 @@ async fn event_loop(
                             custom: String::new(),
                             custom_cursor: 0,
                             editing_custom: false,
+                            preview_scroll: 0,
                             reply: Some(reply),
                         });
                         app.focus = crate::app::Focus::Prompt;
@@ -1194,6 +1195,9 @@ fn open_session_picker(app: &mut App, connection: &EmbeddedConnection) {
     });
 }
 
+/// 提问预览每次翻页滚动的行数；渲染层会夹到实际内容高度。
+const ASK_PREVIEW_SCROLL_STEP: usize = 8;
+
 /// 模态键盘路由。
 ///
 /// `app.modal` 以 `as_mut` 借用；需要关闭模态或访问会话的分支通过
@@ -1278,6 +1282,7 @@ fn handle_modal_key(
             custom,
             custom_cursor,
             editing_custom,
+            preview_scroll,
             reply,
         } => {
             let Some(current) = params.questions.get(*question) else {
@@ -1334,15 +1339,31 @@ fn handle_modal_key(
             }
             match (code, modifiers) {
                 (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                    highlight[*question] = highlight[*question].saturating_sub(1);
+                    let next = highlight[*question].saturating_sub(1);
+                    if next != highlight[*question] {
+                        highlight[*question] = next;
+                        *preview_scroll = 0;
+                    }
                 }
                 (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    highlight[*question] = (highlight[*question] + 1).min(option_count);
+                    let next = (highlight[*question] + 1).min(option_count);
+                    if next != highlight[*question] {
+                        highlight[*question] = next;
+                        *preview_scroll = 0;
+                    }
+                }
+                // 聚焦项预览滚动：只改偏移，越界由渲染层夹到实际行数。
+                (KeyCode::PageUp, _) => {
+                    *preview_scroll = preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP);
+                }
+                (KeyCode::PageDown, _) => {
+                    *preview_scroll = preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP);
                 }
                 (KeyCode::Char('z'), KeyModifiers::NONE) => {
                     highlight[*question] = option_count;
                     *editing_custom = true;
                     *custom_cursor = custom.len();
+                    *preview_scroll = 0;
                 }
                 (KeyCode::Char(' '), KeyModifiers::NONE) => {
                     // 多选切换；自定义行上无效
@@ -1379,11 +1400,13 @@ fn handle_modal_key(
                     }
                 }
                 (KeyCode::Tab, KeyModifiers::NONE) => {
+                    *preview_scroll = 0;
                     close |= advance_ask(params, question, selected, custom, reply);
                 }
                 (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
                     if *question > 0 {
                         *question -= 1;
+                        *preview_scroll = 0;
                     }
                 }
                 (KeyCode::Esc, _) => {
@@ -2631,6 +2654,100 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.entries[0].message.text(), "弹窗关闭后继续执行");
         assert_eq!(loaded.entries[1].message.text(), "队列已恢复");
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 提问预览的滚轮键位：PgUp/PgDn 改预览偏移，切选项或切问题归零。
+    #[tokio::test]
+    async fn ask_preview_keys_scroll_and_reset_on_focus_change() {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let connection = connect_embedded(core.clone(), events).await.unwrap();
+        let mut app = app();
+        let question = || moc_protocol::methods::AskQuestion {
+            id: "layout".into(),
+            question: "选哪个布局？".into(),
+            header: None,
+            multi: false,
+            recommended: None,
+            options: (0..2)
+                .map(|index| moc_protocol::methods::AskOption {
+                    label: format!("选项{index}"),
+                    description: None,
+                    preview: Some("```\n+--+\n```".into()),
+                })
+                .collect(),
+        };
+        app.modal = Some(Modal::Ask {
+            params: moc_protocol::methods::AskParams {
+                session_id: "ses_1".into(),
+                prompt_id: "prompt_1".into(),
+                request_id: "ask_1".into(),
+                questions: vec![question(), question()],
+            },
+            question: 0,
+            highlight: vec![0, 0],
+            selected: vec![Vec::new(), Vec::new()],
+            custom: String::new(),
+            custom_cursor: 0,
+            editing_custom: false,
+            preview_scroll: 0,
+            reply: None,
+        });
+
+        let preview_scroll = |app: &App| match app.modal.as_ref() {
+            Some(Modal::Ask { preview_scroll, .. }) => *preview_scroll,
+            other => panic!(
+                "提问模态应保持打开：{}",
+                other.map_or_else(|| "无模态".to_owned(), Modal::title)
+            ),
+        };
+
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::PageDown);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::PageDown);
+        assert_eq!(preview_scroll(&app), 2 * ASK_PREVIEW_SCROLL_STEP);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::PageUp);
+        assert_eq!(preview_scroll(&app), ASK_PREVIEW_SCROLL_STEP);
+
+        // 切聚焦项 / 切问题：偏移归零，避免把上一项的滚动位置带到下一项。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        assert_eq!(preview_scroll(&app), 0);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::PageDown);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        assert_eq!(preview_scroll(&app), 0);
+        assert!(matches!(
+            app.modal.as_ref(),
+            Some(Modal::Ask { question: 1, .. })
+        ));
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::PageDown);
+        handle_modal_key(
+            &mut app,
+            &connection,
+            KeyModifiers::SHIFT,
+            KeyCode::BackTab,
+        );
+        assert_eq!(preview_scroll(&app), 0);
+        assert!(matches!(
+            app.modal.as_ref(),
+            Some(Modal::Ask { question: 0, .. })
+        ));
+
         connection.shutdown().await;
         core.shutdown().await;
     }

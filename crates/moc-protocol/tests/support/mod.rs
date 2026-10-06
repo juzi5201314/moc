@@ -862,6 +862,7 @@ impl AgentService for ScriptedService {
                         options: vec![AskOption {
                             label: "Rust".to_owned(),
                             description: Some("系统语言".to_owned()),
+                            preview: None,
                         }],
                     }],
                 };

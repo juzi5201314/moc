@@ -158,6 +158,8 @@ pub enum Modal {
         custom: String,
         custom_cursor: usize,
         editing_custom: bool,
+        /// 当前聚焦项预览的滚动行数（切换选项/问题时归零）。
+        preview_scroll: usize,
         reply: Option<tokio::sync::oneshot::Sender<Result<AskResult, RpcErrorOf>>>,
     },
     /// 模型选择（`session/set_model`）。
@@ -261,6 +263,24 @@ impl Modal {
             Modal::Help | Modal::Context { .. } => 0,
         }
     }
+
+    /// 当前提问是否有选项带预览（为真时卡片放宽，容纳并排的预览栏）。
+    pub fn has_option_preview(&self) -> bool {
+        match self {
+            Modal::Ask {
+                params, question, ..
+            } => params.questions.get(*question).is_some_and(|question| {
+                question.options.iter().any(|option| {
+                    option
+                        .preview
+                        .as_deref()
+                        .is_some_and(|text| !text.trim().is_empty())
+                })
+            }),
+            _ => false,
+        }
+    }
+
     /// 移动选中项（循环）。
     pub fn move_selection(&mut self, delta: i32) {
         let count = self.option_count();
@@ -332,9 +352,53 @@ pub fn filtered_sessions<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{PickerState, RewindState};
-    use moc_protocol::methods::TranscriptEntry;
+    use super::{Modal, PickerState, RewindState};
+    use moc_protocol::methods::{AskOption, AskParams, AskQuestion, TranscriptEntry};
     use moc_protocol::{Message, Role};
+
+    /// 预览判定：只认非空预览，且只作用于提问模态的当前问题。
+    #[test]
+    fn option_preview_detection_follows_current_question() {
+        let question = |id: &str, previews: [Option<&str>; 2]| AskQuestion {
+            id: id.into(),
+            question: "选哪个？".into(),
+            header: None,
+            multi: false,
+            recommended: None,
+            options: previews
+                .into_iter()
+                .enumerate()
+                .map(|(index, preview)| AskOption {
+                    label: format!("选项{index}"),
+                    description: None,
+                    preview: preview.map(str::to_owned),
+                })
+                .collect(),
+        };
+        let modal = |questions: Vec<AskQuestion>, question: usize| Modal::Ask {
+            params: AskParams {
+                session_id: "ses".into(),
+                prompt_id: "prompt".into(),
+                request_id: "ask".into(),
+                questions,
+            },
+            question,
+            highlight: vec![0; 2],
+            selected: vec![Vec::new(); 2],
+            custom: String::new(),
+            custom_cursor: 0,
+            editing_custom: false,
+            preview_scroll: 0,
+            reply: None,
+        };
+
+        let questions = vec![
+            question("first", [None, Some("   ")]),
+            question("second", [None, Some("```\n+--+\n```")]),
+        ];
+        assert!(!modal(questions.clone(), 0).has_option_preview());
+        assert!(modal(questions, 1).has_option_preview());
+    }
 
     #[test]
     fn picker_keeps_selected_item_inside_viewport() {

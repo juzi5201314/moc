@@ -47,6 +47,10 @@ pub struct AskOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// 聚焦该项时展示的预览内容（markdown，等宽框内渲染），用于
+    /// ASCII 示意图、代码片段等需要肉眼对比的候选；仅单选问题支持。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// 前端为问题返回的答案集合。
@@ -87,6 +91,7 @@ mod tests {
                 options: vec![AskOption {
                     label: "A".into(),
                     description: Some("首选".into()),
+                    preview: Some("```\n[ A ]\n```".into()),
                 }],
             }],
         };
@@ -97,9 +102,20 @@ mod tests {
                 "questions": [{
                     "id": "choice", "question": "选哪个？", "header": "方案",
                     "multi": false, "recommended": 1,
-                    "options": [{ "label": "A", "description": "首选" }]
+                    "options": [{
+                        "label": "A", "description": "首选", "preview": "```\n[ A ]\n```"
+                    }]
                 }]
             })
+        );
+        assert_eq!(
+            serde_json::to_value(AskOption {
+                label: "无预览".into(),
+                description: None,
+                preview: None,
+            })
+            .expect("选项可序列化"),
+            serde_json::json!({ "label": "无预览" })
         );
         let result = AskResult {
             answers: vec![AskAnswer {

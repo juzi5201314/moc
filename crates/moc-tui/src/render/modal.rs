@@ -1,7 +1,7 @@
 //! 浮层渲染：斜杠补全菜单与模态卡片。
 //!
 //! 浮层画在滚动区之后（覆盖其内容）；模态居中，宽度按内容取值（帮助为双列快捷键表，
-//! 普通模态上限 96 列），高度按内容收缩。全部使用主题槽位。
+//! 普通模态上限 96 列，带选项预览的提问放宽到 120 列），高度按内容收缩。全部使用主题槽位。
 
 use moc_protocol::Role;
 use moc_protocol::methods::ContextUsageResult;
@@ -192,6 +192,14 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
             .saturating_sub(4)
             .clamp(16, 58)
             .min(area.width.saturating_sub(2));
+        (width, usize::from(width.saturating_sub(4)).max(8))
+    } else if modal.has_option_preview() {
+        // 提问预览：并排布局需要更宽的卡片。
+        let width = if area.width < 70 {
+            area.width.saturating_sub(4).max(16)
+        } else {
+            area.width.min(ASK_PREVIEW_MODAL_WIDTH)
+        };
         (width, usize::from(width.saturating_sub(4)).max(8))
     } else {
         let width = if area.width < 70 {
@@ -590,6 +598,15 @@ fn push_label(
     }
 }
 
+/// 提问预览并排布局的最小内容宽度（列）；更窄的终端把预览落到选项下方整宽渲染。
+const ASK_PREVIEW_MIN_WIDTH: usize = 72;
+/// 并排布局左栏（选项列表）的最小宽度（列）。
+const ASK_PREVIEW_LEFT_MIN: usize = 16;
+/// 并排布局两栏之间的分隔；其显示宽度即两栏的间距。
+const ASK_PREVIEW_SEPARATOR: &str = " │ ";
+/// 带预览的提问卡片的最大宽度（列）：比普通模态更宽，容得下并排的预览栏。
+const ASK_PREVIEW_MODAL_WIDTH: u16 = 120;
+
 /// 模态内容行（按类型分派）。
 fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<Line<'static>> {
     let theme = app.theme;
@@ -649,6 +666,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             custom,
             custom_cursor,
             editing_custom,
+            preview_scroll,
             ..
         } => {
             let mut lines = Vec::new();
@@ -662,6 +680,9 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 return lines;
             };
             lines.push(Line::from(String::new()));
+
+            // 选项 + 自定义输入行；带预览时整体作为并排布局的左栏。
+            let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() + 1);
             for (index, option) in current.options.iter().enumerate() {
                 let chosen = selected[*question].contains(&option.label);
                 let marker = if index == highlight[*question] {
@@ -678,7 +699,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 } else {
                     Style::new().fg(theme.text_secondary)
                 };
-                lines.push(Line::from(Span::styled(
+                body.push(Line::from(Span::styled(
                     format!(" {marker} {check} {}", option.label),
                     style,
                 )));
@@ -704,13 +725,56 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             } else {
                 custom.clone()
             };
-            lines.push(Line::from(Span::styled(
+            body.push(Line::from(Span::styled(
                 format!(
                     " {} ✎ 自定义：{custom_display}",
                     if editing_here { "❯" } else { " " }
                 ),
                 custom_style,
             )));
+
+            // 预览只跟随聚焦项：自定义行/无预览项不进入预览布局。
+            let preview = current
+                .options
+                .get(highlight[*question])
+                .and_then(|option| option.preview.as_deref())
+                .filter(|text| !text.trim().is_empty());
+            // 顶部固定行 + 底部提示行之外的余量都留给预览。
+            let rows = max_lines.saturating_sub(lines.len() + 1).max(1);
+            match preview {
+                Some(source) if width >= ASK_PREVIEW_MIN_WIDTH => {
+                    // 并排布局：左栏选项列表、右栏聚焦项预览（同 Claude Code 的提问卡片）。
+                    let left_width = body
+                        .iter()
+                        .map(line_width)
+                        .max()
+                        .unwrap_or(0)
+                        .clamp(ASK_PREVIEW_LEFT_MIN, width / 2);
+                    let preview_width =
+                        width.saturating_sub(left_width + str_width(ASK_PREVIEW_SEPARATOR));
+                    let pane =
+                        ask_preview_lines(source, preview_width, rows, *preview_scroll, theme);
+                    lines.extend(join_columns(body, pane, left_width, theme));
+                }
+                Some(source) => {
+                    // 窄终端：预览整宽落到选项下方，同样围绕聚焦项。
+                    let preview_rows = rows.saturating_sub(body.len() + 2).max(1);
+                    lines.extend(body);
+                    lines.push(Line::from(String::new()));
+                    lines.push(Line::from(Span::styled(
+                        "预览",
+                        Style::new().fg(theme.gray_dim),
+                    )));
+                    lines.extend(ask_preview_lines(
+                        source,
+                        width,
+                        preview_rows,
+                        *preview_scroll,
+                        theme,
+                    ));
+                }
+                None => lines.extend(body),
+            }
             lines.push(Line::from(Span::styled(
                 format!(
                     "space 切换 · enter 选择{} · tab 下一问/Shift+Tab 上一问 · esc 取消",
@@ -1149,6 +1213,133 @@ fn ellipsize(text: &str, width: usize) -> String {
     crate::render::scrollback::truncate_to_width(text.to_owned(), width.max(1))
 }
 
+/// 一行的显示宽度（列，CJK 双宽）。
+fn line_width(line: &Line<'static>) -> usize {
+    line.spans
+        .iter()
+        .map(|span| str_width(span.content.as_ref()))
+        .sum()
+}
+
+/// 截断一行到 `width` 列，超出部分以 `…` 收尾。
+fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if line_width(&line) <= width {
+        return line;
+    }
+    let budget = width.saturating_sub(1);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
+    let mut used = 0usize;
+    for span in line.spans {
+        let mut kept = String::new();
+        let mut whole = true;
+        for ch in span.content.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + ch_width > budget {
+                whole = false;
+                break;
+            }
+            kept.push(ch);
+            used += ch_width;
+        }
+        if !kept.is_empty() {
+            spans.push(Span::styled(kept, span.style));
+        }
+        if !whole {
+            spans.push(Span::styled("…", span.style));
+            break;
+        }
+    }
+    Line::from(spans).style(line.style)
+}
+
+/// 补齐一行到 `width` 列，超出则截断：并排布局两栏互不越界的基础。
+fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
+    let used = line_width(&line);
+    if used > width {
+        return clip_line(line, width);
+    }
+    if used == width {
+        return line;
+    }
+    let mut spans = line.spans;
+    spans.push(Span::raw(" ".repeat(width - used)));
+    Line::from(spans).style(line.style)
+}
+
+/// 并排拼接左右两栏：左栏补齐到 `left_width` 列后接竖线分隔，再接右栏。
+fn join_columns(
+    left: Vec<Line<'static>>,
+    right: Vec<Line<'static>>,
+    left_width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut left = left.into_iter();
+    let mut right = right.into_iter();
+    let rows = left.len().max(right.len());
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(rows);
+    for _ in 0..rows {
+        let mut line = fit_line(
+            left.next().unwrap_or_else(|| Line::from(String::new())),
+            left_width,
+        );
+        line.spans.push(Span::styled(
+            ASK_PREVIEW_SEPARATOR,
+            Style::new().fg(theme.border),
+        ));
+        line.spans.extend(
+            right
+                .next()
+                .unwrap_or_else(|| Line::from(String::new()))
+                .spans,
+        );
+        out.push(line);
+    }
+    out
+}
+
+/// 预览窗内容：按窗宽渲染 markdown 并裁剪到窗口内，截取滚动窗口；
+/// 内容高于窗口时末行显示滚动位置与按键提示。
+fn ask_preview_lines(
+    source: &str,
+    width: usize,
+    rows: usize,
+    scroll: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let width = width.max(8);
+    let mut rendered: Vec<Line<'static>> =
+        crate::render::markdown::render_markdown(source, width, theme)
+            .into_iter()
+            .map(|line| clip_line(line, width))
+            .collect();
+    while rendered
+        .last()
+        .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+    {
+        rendered.pop();
+    }
+    let rows = rows.max(1);
+    let total = rendered.len();
+    if total <= rows {
+        return rendered;
+    }
+    let visible = rows - 1;
+    let offset = scroll.min(total.saturating_sub(visible));
+    let mut out: Vec<Line<'static>> = rendered.into_iter().skip(offset).take(visible).collect();
+    out.push(Line::from(Span::styled(
+        ellipsize(
+            &format!(
+                "… {}-{}/{total} 行 · PgUp/PgDn 滚动",
+                offset + 1,
+                offset + visible
+            ),
+            width,
+        ),
+        Style::new().fg(theme.gray_dim),
+    )));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::modal_lines;
@@ -1157,7 +1348,9 @@ mod tests {
         modal::{Modal, PickerState},
         theme::Theme,
     };
-    use moc_protocol::methods::{ContextUsageResult, ContextUsageSection, ModelInfo};
+    use moc_protocol::methods::{
+        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection, ModelInfo,
+    };
     use ratatui::style::Color;
     use ratatui::text::Line;
     use tokio::sync::mpsc::unbounded_channel;
@@ -1337,6 +1530,201 @@ mod tests {
         // 验证底部的 Esc 说明具备 2 格左缩进
         let last_line = texts.last().expect("footer line");
         assert!(last_line.starts_with("  Esc 关闭"), "{:?}", last_line);
+    }
+
+    /// 提问预览：宽内容宽度并排（左选项、右预览），窄内容宽度落到选项下方；
+    /// 预览内容跟随聚焦项。
+    #[test]
+    fn ask_preview_joins_columns_when_wide_and_stacks_when_narrow() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let modal = ask_modal(0, 0);
+
+        // 并排：聚焦项与其预览同行，分隔线左缘对齐。
+        let wide: Vec<String> = modal_lines(&app, &modal, 100, 24)
+            .iter()
+            .map(line_text)
+            .collect();
+        let row = wide
+            .iter()
+            .find(|text| text.contains("❯ ☐ 上中下"))
+            .expect("选项行");
+        assert!(row.contains("+--+"), "聚焦项预览应与选项同行：{row:?}");
+        let offsets: Vec<usize> = wide
+            .iter()
+            .filter_map(|text| text.split_once(" │ "))
+            .map(|(left, _)| crate::render::wrap::str_width(left))
+            .collect();
+        assert!(offsets.len() >= 3, "选项与预览应共行：{wide:?}");
+        assert!(
+            offsets.iter().all(|offset| *offset == offsets[0]),
+            "左栏宽度应逐行一致：{offsets:?}"
+        );
+        assert!(
+            wide.iter()
+                .all(|text| crate::render::wrap::str_width(text) <= 100),
+            "并排行不得超出内容宽度：{wide:?}"
+        );
+
+        // 窄内容宽度：预览整宽落到选项下方，带标题行。
+        let narrow: Vec<String> = modal_lines(&app, &modal, 60, 24)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(!narrow.iter().any(|text| text.contains(" │ ")));
+        let label = narrow
+            .iter()
+            .position(|text| text == "预览")
+            .expect("窄布局的预览标题");
+        assert!(
+            narrow[label..].iter().any(|text| text.contains("+--+")),
+            "预览应渲染在标题行之后：{narrow:?}"
+        );
+
+        // 聚焦到无预览的选项：不进入预览布局。
+        let plain: Vec<String> = modal_lines(&app, &ask_modal(1, 0), 100, 24)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(!plain.iter().any(|text| text.contains("+--+")));
+        assert!(!plain.iter().any(|text| text == "预览"));
+    }
+
+    /// 提问预览：内容高于窗口时按滚动偏移开窗，末行给出位置与按键，
+    /// 偏移越界夹到尾部。
+    #[test]
+    fn ask_preview_scrolls_and_reports_position() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let mut modal = ask_modal(0, 0);
+        let rows = 18;
+        let code = (1..=30)
+            .map(|line| format!("L{line:02}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Modal::Ask { params, .. } = &mut modal {
+            params.questions[0].options[0].preview = Some(format!("```\n{code}\n```"));
+        }
+
+        let texts = |modal: &Modal| -> Vec<String> {
+            modal_lines(&app, modal, 60, rows)
+                .iter()
+                .map(line_text)
+                .collect()
+        };
+        let head = texts(&modal);
+        assert!(head.iter().any(|text| text.contains("L01")), "{head:?}");
+        let status = head
+            .iter()
+            .position(|text| text.contains("PgUp/PgDn 滚动"))
+            .unwrap_or_else(|| panic!("超窗预览应给滚动提示：{head:?}"));
+        assert_eq!(status, head.len() - 2, "滚动提示应是预览窗末行：{head:?}");
+
+        if let Modal::Ask { preview_scroll, .. } = &mut modal {
+            *preview_scroll = 8;
+        }
+        let scrolled = texts(&modal);
+        assert!(
+            !scrolled.iter().any(|text| text.contains("L01")),
+            "滚过首行后不应再显示 L01：{scrolled:?}"
+        );
+        assert!(
+            scrolled.iter().any(|text| text.contains("L09")),
+            "{scrolled:?}"
+        );
+
+        if let Modal::Ask { preview_scroll, .. } = &mut modal {
+            *preview_scroll = usize::MAX;
+        }
+        let tail = texts(&modal);
+        assert!(tail.iter().any(|text| text.contains("L30")), "{tail:?}");
+        assert!(
+            tail.iter()
+                .all(|text| !text.contains("L00") && !text.contains("L31")),
+            "{tail:?}"
+        );
+    }
+
+    /// 卡片级渲染：带预览的提问在真实终端缓冲里并排出现，卡片高度容得下
+    /// 选项、预览与底部按键行（不会因换行把提示挤出边框）。
+    #[test]
+    fn ask_preview_draws_side_by_side_in_terminal_buffer() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.modal = Some(ask_modal(0, 0));
+        let (width, height) = (120u16, 30u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &app))
+            .expect("绘制成功");
+
+        let rows: Vec<String> = (0..height)
+            .map(|row| {
+                (0..width)
+                    .filter_map(|x| terminal.backend().buffer().cell((x, row)))
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        // TestBackend 给宽字符的尾部补空格格位：比较时先去掉所有空格。
+        let compact: Vec<String> = rows.iter().map(|text| text.replace(' ', "")).collect();
+        let option_row = compact
+            .iter()
+            .find(|text| text.contains("❯☐上中下"))
+            .unwrap_or_else(|| {
+                let shown: Vec<&String> =
+                    rows.iter().filter(|text| !text.trim().is_empty()).collect();
+                panic!("选项行应出现在卡片内：{shown:#?}")
+            });
+        assert!(
+            option_row.contains("+--+"),
+            "聚焦项预览应与选项同行：{option_row:?}"
+        );
+        assert!(
+            compact.iter().any(|text| text.contains("esc取消")),
+            "底部按键行应留在卡片内：{compact:#?}"
+        );
+    }
+
+    /// 单问、单选的提问模态；`highlight` 指向聚焦选项。
+    fn ask_modal(highlight: usize, preview_scroll: usize) -> Modal {
+        Modal::Ask {
+            params: AskParams {
+                session_id: "ses_1".into(),
+                prompt_id: "prompt_1".into(),
+                request_id: "ask_1".into(),
+                questions: vec![AskQuestion {
+                    id: "layout".into(),
+                    question: "选哪个布局？".into(),
+                    header: None,
+                    multi: false,
+                    recommended: None,
+                    options: vec![
+                        AskOption {
+                            label: "上中下".into(),
+                            description: None,
+                            preview: Some("```\n+--+\n|A |\n+--+\n```".into()),
+                        },
+                        AskOption {
+                            label: "左右".into(),
+                            description: None,
+                            preview: None,
+                        },
+                    ],
+                }],
+            },
+            question: 0,
+            highlight: vec![highlight],
+            selected: vec![Vec::new()],
+            custom: String::new(),
+            custom_cursor: 0,
+            editing_custom: false,
+            preview_scroll,
+            reply: None,
+        }
     }
 
     /// 一行渲染后的文本。
