@@ -2,8 +2,8 @@
 
 use moc_llm::{FinishReason, Message};
 use moc_protocol::methods::{
-    PlanStatus, SessionInfo, SessionLockInfo, SessionMode, TodoPhase, ToolExecution,
-    TranscriptEntry,
+    PlanStatus, SessionInfo, SessionLockInfo, SessionMode, SessionPermission, TodoPhase,
+    ToolExecution, TranscriptEntry,
 };
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,8 @@ pub enum Entry {
         cwd: String,
         model: String,
         mode: SessionMode,
+        #[serde(default)]
+        permission: SessionPermission,
         parent_session_id: Option<String>,
         title: String,
         created_at_ms: u64,
@@ -69,6 +71,13 @@ pub enum Entry {
         parent_id: Option<String>,
         at_ms: u64,
         mode: SessionMode,
+    },
+    /// 命令执行权限变化。
+    PermissionChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        permission: SessionPermission,
     },
     /// 模型变化。
     ModelChange {
@@ -144,6 +153,9 @@ pub enum EntryPayload {
     ModeChange {
         mode: SessionMode,
     },
+    PermissionChange {
+        permission: SessionPermission,
+    },
     ModelChange {
         model: String,
     },
@@ -191,6 +203,7 @@ impl Entry {
             cwd,
             model,
             mode,
+            permission: SessionPermission::Full,
             parent_session_id,
             title,
             created_at_ms,
@@ -239,6 +252,12 @@ impl Entry {
                 parent_id,
                 at_ms,
                 mode,
+            },
+            EntryPayload::PermissionChange { permission } => Self::PermissionChange {
+                id,
+                parent_id,
+                at_ms,
+                permission,
             },
             EntryPayload::ModelChange { model } => Self::ModelChange {
                 id,
@@ -304,6 +323,7 @@ impl Entry {
             | Self::Message { id, .. }
             | Self::Compaction { id, .. }
             | Self::ModeChange { id, .. }
+            | Self::PermissionChange { id, .. }
             | Self::ModelChange { id, .. }
             | Self::TitleChange { id, .. }
             | Self::Todos { id, .. }
@@ -320,6 +340,7 @@ impl Entry {
             | Self::Message { parent_id, .. }
             | Self::Compaction { parent_id, .. }
             | Self::ModeChange { parent_id, .. }
+            | Self::PermissionChange { parent_id, .. }
             | Self::ModelChange { parent_id, .. }
             | Self::TitleChange { parent_id, .. }
             | Self::Todos { parent_id, .. }
@@ -340,6 +361,9 @@ impl Entry {
                 parent_id: value, ..
             }
             | Self::ModeChange {
+                parent_id: value, ..
+            }
+            | Self::PermissionChange {
                 parent_id: value, ..
             }
             | Self::ModelChange {
@@ -372,6 +396,7 @@ impl Entry {
             | Self::Message { at_ms, .. }
             | Self::Compaction { at_ms, .. }
             | Self::ModeChange { at_ms, .. }
+            | Self::PermissionChange { at_ms, .. }
             | Self::ModelChange { at_ms, .. }
             | Self::TitleChange { at_ms, .. }
             | Self::Todos { at_ms, .. }
@@ -382,18 +407,39 @@ impl Entry {
         }
     }
 
-    pub fn header_fields(&self) -> Option<(&str, &str, &str, SessionMode, &str, u64, u64)> {
+    pub fn header_fields(
+        &self,
+    ) -> Option<(
+        &str,
+        &str,
+        &str,
+        SessionMode,
+        SessionPermission,
+        &str,
+        u64,
+        u64,
+    )> {
         match self {
             Self::Header {
                 session_id,
                 cwd,
                 model,
                 mode,
+                permission,
                 title,
                 created_at_ms,
                 at_ms,
                 ..
-            } => Some((session_id, cwd, model, *mode, title, *created_at_ms, *at_ms)),
+            } => Some((
+                session_id,
+                cwd,
+                model,
+                *mode,
+                *permission,
+                title,
+                *created_at_ms,
+                *at_ms,
+            )),
             _ => None,
         }
     }
@@ -422,6 +468,7 @@ impl Entry {
             cwd,
             model,
             mode,
+            permission,
             title,
             created_at_ms,
             at_ms,
@@ -434,6 +481,7 @@ impl Entry {
             id: session_id.clone(),
             title: title.clone(),
             model: model.clone(),
+            permission: *permission,
             mode: *mode,
             cwd: cwd.clone(),
             created_at_ms: *created_at_ms,

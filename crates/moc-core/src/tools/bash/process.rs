@@ -2,6 +2,7 @@
 
 use super::{BashArgs, ProcessGroup, ToolError};
 use futures_util::future::BoxFuture;
+use moc_protocol::SessionPermission;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::{
     ffi::OsString,
@@ -12,7 +13,6 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, process::Command};
 use tokio_util::sync::CancellationToken;
-
 pub(crate) struct ProcessExit {
     pub code: Option<i32>,
     pub timed_out: bool,
@@ -30,12 +30,19 @@ impl Process {
         cwd: PathBuf,
         timeout: u64,
         path: PathBuf,
+        permission: SessionPermission,
     ) -> Result<Self, ToolError> {
+        if cfg!(not(unix)) && permission == SessionPermission::Workspace {
+            return Err(ToolError::new(
+                "E_SANDBOX_UNAVAILABLE",
+                "workspace 权限仅支持 Unix bwrap 环境",
+            ));
+        }
         let duration = (timeout > 0).then_some(Duration::from_secs(timeout));
         if args.pty.unwrap_or(false) {
-            Self::pty(args, cwd, duration, path).await
+            Self::pty(args, cwd, duration, path, permission).await
         } else {
-            Self::pipe(args, cwd, duration, path)
+            Self::pipe(args, cwd, duration, path, permission)
         }
     }
 
@@ -44,8 +51,19 @@ impl Process {
         cwd: PathBuf,
         timeout: Option<Duration>,
         path: PathBuf,
+        permission: SessionPermission,
     ) -> Result<Self, ToolError> {
-        let mut command = Command::new(shell_program());
+        let mut command = match permission {
+            SessionPermission::Full => Command::new(shell_program()),
+            SessionPermission::Workspace => {
+                let mut command = Command::new("bwrap");
+                for argument in sandbox_arguments(&cwd) {
+                    command.arg(argument);
+                }
+                command.arg("--").arg(shell_program());
+                command
+            }
+        };
         for argument in shell_arguments(&args.command) {
             command.arg(argument);
         }
@@ -134,12 +152,20 @@ impl Process {
         cwd: PathBuf,
         timeout: Option<Duration>,
         path: PathBuf,
+        permission: SessionPermission,
     ) -> Result<Self, ToolError> {
+        if cfg!(not(unix)) && permission == SessionPermission::Workspace {
+            return Err(ToolError::new(
+                "E_SANDBOX_UNAVAILABLE",
+                "workspace 权限仅支持 Unix bwrap 环境",
+            ));
+        }
         let cancel = CancellationToken::new();
         let cancel_on_drop = cancel.clone().drop_guard();
         let (started, ready) = tokio::sync::oneshot::channel();
-        let worker =
-            tokio::task::spawn_blocking(move || run_pty(args, cwd, timeout, path, cancel, started));
+        let worker = tokio::task::spawn_blocking(move || {
+            run_pty(args, cwd, timeout, path, permission, cancel, started)
+        });
         let (pid, group) = match ready.await {
             Ok((pid, group)) => (pid, group),
             Err(_) => {
@@ -176,6 +202,33 @@ fn shell_program() -> OsString {
 #[cfg(windows)]
 fn shell_program() -> OsString {
     std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())
+}
+
+#[cfg(unix)]
+fn sandbox_arguments(cwd: &std::path::Path) -> Vec<OsString> {
+    vec![
+        "--die-with-parent".into(),
+        "--new-session".into(),
+        "--unshare-user".into(),
+        "--unshare-pid".into(),
+        "--unshare-ipc".into(),
+        "--unshare-uts".into(),
+        "--disable-userns".into(),
+        "--ro-bind".into(),
+        "/".into(),
+        "/".into(),
+        "--proc".into(),
+        "/proc".into(),
+        "--dev".into(),
+        "/dev".into(),
+        "--chdir".into(),
+        cwd.as_os_str().to_owned(),
+    ]
+}
+
+#[cfg(not(unix))]
+fn sandbox_arguments(_cwd: &std::path::Path) -> Vec<OsString> {
+    Vec::new()
 }
 
 #[cfg(unix)]
@@ -240,6 +293,7 @@ fn run_pty(
     cwd: PathBuf,
     timeout: Option<Duration>,
     path: PathBuf,
+    permission: SessionPermission,
     cancel: CancellationToken,
     started: tokio::sync::oneshot::Sender<(Option<u32>, ProcessGroup)>,
 ) -> std::io::Result<ProcessExit> {
@@ -251,7 +305,18 @@ fn run_pty(
             pixel_height: 0,
         })
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut builder = CommandBuilder::new(shell_program());
+    let program = match permission {
+        SessionPermission::Full => shell_program(),
+        SessionPermission::Workspace => "bwrap".into(),
+    };
+    let mut builder = CommandBuilder::new(program);
+    if permission == SessionPermission::Workspace {
+        for argument in sandbox_arguments(&cwd) {
+            builder.arg(argument);
+        }
+        builder.arg("--");
+        builder.arg(shell_program());
+    }
     for argument in pty_shell_arguments(&args.command) {
         builder.arg(argument);
     }
@@ -333,6 +398,91 @@ fn run_pty(
         code: Some(if status.success() { code } else { code.max(1) }),
         timed_out,
     })
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::fs;
+
+    fn bash_args(command: &str) -> BashArgs {
+        BashArgs {
+            command: command.to_owned(),
+            cwd: None,
+            env: None,
+            timeout: Some(5),
+            pty: Some(false),
+            stdin: None,
+            asynchronous: false,
+        }
+    }
+
+    #[test]
+    fn workspace_arguments_are_read_only_and_namespace_isolated() {
+        let cwd = std::path::Path::new("/tmp/workspace");
+        let arguments = sandbox_arguments(cwd);
+        let values: Vec<_> = arguments
+            .iter()
+            .map(|argument| argument.to_string_lossy())
+            .collect();
+        assert!(values.iter().any(|value| value == "--ro-bind"));
+        assert!(values.iter().any(|value| value == "--unshare-user"));
+        assert!(values.iter().any(|value| value == "--unshare-pid"));
+        assert!(values.iter().any(|value| value == "--unshare-ipc"));
+        assert!(values.iter().any(|value| value == "--unshare-uts"));
+        assert!(values.iter().any(|value| value == "--disable-userns"));
+        assert!(values.iter().any(|value| value == "--chdir"));
+        assert!(!values.iter().any(|value| value == "--unshare-net"));
+        assert!(!values.iter().any(|value| value == "--bind"));
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_cannot_delete_host_marker() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let marker = directory.path().join("marker");
+        fs::write(&marker, "keep").expect("写入 marker");
+        let log = directory.path().join("workspace.log");
+        let process = Process::spawn(
+            bash_args("rm -rf . >/dev/null 2>&1; test -f marker"),
+            directory.path().to_owned(),
+            5,
+            log,
+            SessionPermission::Workspace,
+        )
+        .await
+        .expect("启动 workspace shell");
+        let result = process.completion.await.expect("等待 workspace shell");
+        assert_eq!(result.code, Some(0));
+        assert!(marker.exists(), "宿主 marker 必须保持存在");
+
+        let process = Process::spawn(
+            bash_args("rm -f marker"),
+            directory.path().to_owned(),
+            5,
+            directory.path().join("workspace-delete.log"),
+            SessionPermission::Workspace,
+        )
+        .await
+        .expect("启动 workspace 删除命令");
+        let result = process.completion.await.expect("等待 workspace 删除命令");
+        assert_ne!(result.code, Some(0));
+        assert!(marker.exists(), "只读沙盒不应删除宿主 marker");
+        let process = Process::spawn(
+            bash_args("printf x > marker2"),
+            directory.path().to_owned(),
+            5,
+            directory.path().join("full.log"),
+            SessionPermission::Full,
+        )
+        .await
+        .expect("启动 full shell");
+        let result = process.completion.await.expect("等待 full shell");
+        assert_eq!(result.code, Some(0));
+        assert_eq!(
+            fs::read_to_string(directory.path().join("marker2")).expect("读取 marker2"),
+            "x"
+        );
+    }
 }
 
 #[cfg(all(test, windows))]

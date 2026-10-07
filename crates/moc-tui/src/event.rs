@@ -16,8 +16,9 @@ use moc_protocol::{
     OpenVikingWriteParams, PromptParams, ResourceComplete, ResourceCompleteParams, Role,
     SessionCompact, SessionCompactParams, SessionContext, SessionInfo, SessionList,
     SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams,
-    SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUpdate,
+    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionRewind,
+    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
     UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -811,7 +812,12 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 && position.1 < area.y.saturating_add(area.height)
             {
                 app.focus = Focus::Prompt;
-                if let Some(cursor) = crate::render::prompt_cursor_from_point(&app.prompt.text, area, position.0, position.1) {
+                if let Some(cursor) = crate::render::prompt_cursor_from_point(
+                    &app.prompt.text,
+                    area,
+                    position.0,
+                    position.1,
+                ) {
                     app.prompt.cursor = cursor;
                 }
             }
@@ -961,8 +967,7 @@ fn handle_key(
                 if app.take_ctrl_c_pending(CtrlCPending::Quit) {
                     app.should_quit = true;
                 } else {
-                    app.ctrl_c_pending =
-                        Some((CtrlCPending::Quit, std::time::Instant::now()));
+                    app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
                     app.cancel_requested = true;
                     app.set_notice("Stopping... Press Ctrl+C again to exit");
                     cancel_prompt(&connection.client, app);
@@ -980,8 +985,7 @@ fn handle_key(
             } else if app.take_ctrl_c_pending(CtrlCPending::Quit) {
                 app.should_quit = true;
             } else {
-                app.ctrl_c_pending =
-                    Some((CtrlCPending::Quit, std::time::Instant::now()));
+                app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
                 app.set_notice("Press Ctrl+C again to exit");
             }
         }
@@ -1059,15 +1063,15 @@ fn handle_key(
             app.prompt_changed();
         }
         (KeyCode::Left, KeyModifiers::CONTROL)
-            | (KeyCode::Left, KeyModifiers::ALT)
-            | (KeyCode::Char('b'), KeyModifiers::ALT)
+        | (KeyCode::Left, KeyModifiers::ALT)
+        | (KeyCode::Char('b'), KeyModifiers::ALT)
             if app.focus == crate::app::Focus::Prompt =>
         {
             app.prompt.move_word_back();
         }
         (KeyCode::Right, KeyModifiers::CONTROL)
-            | (KeyCode::Right, KeyModifiers::ALT)
-            | (KeyCode::Char('f'), KeyModifiers::ALT)
+        | (KeyCode::Right, KeyModifiers::ALT)
+        | (KeyCode::Char('f'), KeyModifiers::ALT)
             if app.focus == crate::app::Focus::Prompt =>
         {
             app.prompt.move_word_forward();
@@ -1311,7 +1315,9 @@ fn handle_modal_key(
                     (KeyCode::Backspace, _) => {
                         if *custom_cursor > 0 && !custom.is_empty() {
                             let mut prev_char_len = 1;
-                            if let Some((idx, ch)) = custom[..*custom_cursor].char_indices().next_back() {
+                            if let Some((idx, ch)) =
+                                custom[..*custom_cursor].char_indices().next_back()
+                            {
                                 prev_char_len = ch.len_utf8();
                                 custom.remove(idx);
                             }
@@ -1918,6 +1924,7 @@ fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, upda
         SessionUpdate::PromptFinished { .. }
             | SessionUpdate::ModeChanged { .. }
             | SessionUpdate::ModelChanged { .. }
+            | SessionUpdate::PermissionChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
     );
     apply_update(app, update);
@@ -2038,6 +2045,11 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ModelChanged { model } => {
             if let Some(session) = app.session.as_mut() {
                 session.model = model;
+            }
+        }
+        SessionUpdate::PermissionChanged { permission } => {
+            if let Some(session) = app.session.as_mut() {
+                session.permission = permission;
             }
         }
         SessionUpdate::TodoChanged { phases } => app.update_todos(phases),
@@ -2263,6 +2275,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             }
         }
         "/mode" => cycle_mode(app, connection),
+        "/permission" => set_permission(app, connection, rest),
         "/ask" => ask_once(app, connection, rest),
         "/model" => app.open_model_picker(),
         "/resume" => open_session_picker(app, connection),
@@ -2321,6 +2334,38 @@ fn set_mode(app: &mut App, connection: &EmbeddedConnection, mode: SessionMode) {
             Ok(_) => {}
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换模式失败：{error}")));
+            }
+        }
+    });
+}
+
+fn set_permission(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
+    let permission = match rest.trim() {
+        "full" => SessionPermission::Full,
+        "workspace" => SessionPermission::Workspace,
+        _ => {
+            app.set_notice("用法：/permission <full|workspace>");
+            return;
+        }
+    };
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let client = connection.client.clone();
+    let session_id = session.id.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<SessionSetPermission>(SessionSetPermissionParams {
+                session_id,
+                permission,
+            })
+            .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("切换权限失败：{error}")));
             }
         }
     });
@@ -2736,12 +2781,7 @@ mod tests {
             Some(Modal::Ask { question: 1, .. })
         ));
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::PageDown);
-        handle_modal_key(
-            &mut app,
-            &connection,
-            KeyModifiers::SHIFT,
-            KeyCode::BackTab,
-        );
+        handle_modal_key(&mut app, &connection, KeyModifiers::SHIFT, KeyCode::BackTab);
         assert_eq!(preview_scroll(&app), 0);
         assert!(matches!(
             app.modal.as_ref(),
@@ -2968,11 +3008,7 @@ mod tests {
         };
 
         // 鼠标悬停到第 3 个候选（row = 13）
-        handle_mouse_with_connection(
-            &mut app,
-            &connection,
-            mouse(MouseEventKind::Moved, 10, 13),
-        );
+        handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 10, 13));
         assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(2));
 
         // 鼠标滚轮在菜单区域向上滚动
@@ -3339,26 +3375,46 @@ mod tests {
         assert_eq!(app.prompt_text(), "hello moc");
 
         // 第一次 Ctrl+C：提示 "clear input"，不应清空
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.prompt_text(), "hello moc");
         assert_eq!(app.notice.as_deref(), Some("clear input"));
         assert!(!app.should_quit);
         assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         // 3 秒内第二次 Ctrl+C：清空输入框
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.prompt_text(), "");
         assert!(!app.should_quit);
         assert!(!app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         // 此时输入框变空，再次按 Ctrl+C：应提示退出
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
         assert!(!app.should_quit);
         assert!(app.has_ctrl_c_pending(CtrlCPending::Quit));
 
         // 3 秒内第四次 Ctrl+C：退出
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert!(app.should_quit);
 
         connection.shutdown().await;
@@ -3371,7 +3427,12 @@ mod tests {
         app.prompt.insert_text("some text");
 
         // 非空输入框：第一次按 Ctrl+C
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.notice.as_deref(), Some("clear input"));
 
         // 模拟超过 3 秒
@@ -3380,7 +3441,12 @@ mod tests {
         }
 
         // 再次按 Ctrl+C：超时，不应清空，应重新触发第一次提示
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.prompt_text(), "some text");
         assert_eq!(app.notice.as_deref(), Some("clear input"));
         assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
@@ -3389,7 +3455,12 @@ mod tests {
         app.prompt.clear();
         app.ctrl_c_pending = None;
 
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
         assert!(!app.should_quit);
 
@@ -3399,7 +3470,12 @@ mod tests {
         }
 
         // 再次按 Ctrl+C：超时，不应退出
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert!(!app.should_quit);
         assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
 
@@ -3413,7 +3489,12 @@ mod tests {
         app.prompt.insert_text("hello");
 
         // 第一次 Ctrl+C
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         // 按其他键（例如向右光标键）
@@ -3421,7 +3502,12 @@ mod tests {
         assert!(!app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         // 再次按 Ctrl+C：应当重新作为第一次按，提示而不是清空
-        handle_key(&mut app, &connection, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
         assert_eq!(app.prompt_text(), "hello");
         assert_eq!(app.notice.as_deref(), Some("clear input"));
 

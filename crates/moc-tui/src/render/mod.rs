@@ -417,7 +417,12 @@ fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     )
 }
 
-pub(crate) fn prompt_cursor_from_point(text: &str, area: Rect, col: u16, row: u16) -> Option<usize> {
+pub(crate) fn prompt_cursor_from_point(
+    text: &str,
+    area: Rect,
+    col: u16,
+    row: u16,
+) -> Option<usize> {
     if area.width < 6 || area.height < 3 {
         return None;
     }
@@ -483,10 +488,16 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let model = app.model_display();
     let mode = app.display_mode().map_or("idle", crate::app::mode_label);
+    let permission = app
+        .session
+        .as_ref()
+        .map_or("full", |session| session.permission.as_str());
     let right = [
         (model, theme.gray),
         (" | ", theme.border),
         (mode, theme.accent_model),
+        (" | ", theme.border),
+        (permission, theme.accent_model),
     ];
     let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
     if right_width + 4 > inner {
@@ -533,8 +544,10 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         buffer.set_string(x, y, left_separator, Style::new().fg(theme.border));
     }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
+    let right_start = area.x + area.width - 2 - right_cells;
+    let mode_start = right_start + cell_width(model) + cell_width(" | ");
     let mode_cells = cell_width(mode);
-    let mut x = area.x + area.width - 2 - right_cells;
+    let mut x = right_start;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
     for (text, color) in right {
         buffer.set_string(x, y, text, Style::new().fg(color));
@@ -543,7 +556,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     buffer.set_string(x, y, " ", Style::new());
     // 模式名单独留命中区：鼠标点击它就地图例弹出模式菜单，图例本身不变。
     app.mode_area = Rect {
-        x: area.x + area.width - 2 - mode_cells,
+        x: mode_start,
         y,
         width: mode_cells,
         height: 1,
@@ -1092,6 +1105,7 @@ mod tests {
             id: "ses_test".into(),
             title: "测试会话".into(),
             model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
             mode: moc_protocol::SessionMode::Plan,
             cwd: "/tmp".into(),
             created_at_ms: 0,

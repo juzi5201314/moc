@@ -27,7 +27,7 @@ use crate::session::state::SessionState;
 use crate::session::store::SessionPaths;
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use moc_protocol::{RequestContext, SessionMode};
+use moc_protocol::{RequestContext, SessionMode, SessionPermission};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -156,6 +156,7 @@ pub struct ToolCtx {
     pub(crate) core: Arc<crate::service::CoreInner>,
     pub catalog: Arc<catalog::ToolCatalog>,
     pub mode: SessionMode,
+    pub permission: SessionPermission,
     pub nested: bool,
     pub(crate) runtime: Arc<crate::service::SessionRuntime>,
     pub cancel: CancellationToken,

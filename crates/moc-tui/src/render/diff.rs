@@ -80,8 +80,12 @@ fn render_file(
         let hunk_lines = &hunk.lines;
         let mut intra_ranges: Vec<Option<std::ops::Range<usize>>> = vec![None; hunk_lines.len()];
         for i in 0..hunk_lines.len().saturating_sub(1) {
-            if hunk_lines[i].kind == DiffLineKind::Delete && hunk_lines[i + 1].kind == DiffLineKind::Insert {
-                if let Some((del_range, ins_range)) = find_intra_line_diff(&hunk_lines[i].text, &hunk_lines[i + 1].text) {
+            if hunk_lines[i].kind == DiffLineKind::Delete
+                && hunk_lines[i + 1].kind == DiffLineKind::Insert
+            {
+                if let Some((del_range, ins_range)) =
+                    find_intra_line_diff(&hunk_lines[i].text, &hunk_lines[i + 1].text)
+                {
                     intra_ranges[i] = Some(del_range);
                     intra_ranges[i + 1] = Some(ins_range);
                 }
@@ -132,9 +136,8 @@ fn render_file(
                     let span_len = span.text.len();
                     let span_range = byte_offset..byte_offset + span_len;
                     byte_offset += span_len;
-                    let is_changed = changed_range.is_some_and(|r| {
-                        span_range.start < r.end && span_range.end > r.start
-                    });
+                    let is_changed = changed_range
+                        .is_some_and(|r| span_range.start < r.end && span_range.end > r.start);
                     let mut style = Style::new()
                         .fg(span.fg.map(highlight::rgb_to_color).unwrap_or(fallback_fg))
                         .bg(bg);
@@ -144,15 +147,12 @@ fn render_file(
                     spans.push(Span::styled(span.text.clone(), style));
                 }
             }
-            let content_width_used: usize = highlighted
-                .lines
-                .first()
-                .map_or(0, |spans| {
-                    spans
-                        .iter()
-                        .map(|span| super::wrap::str_width(&span.text))
-                        .sum()
-                });
+            let content_width_used: usize = highlighted.lines.first().map_or(0, |spans| {
+                spans
+                    .iter()
+                    .map(|span| super::wrap::str_width(&span.text))
+                    .sum()
+            });
             if content_width_used < content_width && line.kind != DiffLineKind::Equal {
                 spans.push(Span::styled(
                     " ".repeat(content_width - content_width_used),
@@ -171,7 +171,10 @@ fn render_file(
     }
 }
 
-fn find_intra_line_diff(del: &str, ins: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+fn find_intra_line_diff(
+    del: &str,
+    ins: &str,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
     if del == ins || del.is_empty() || ins.is_empty() {
         return None;
     }
@@ -187,7 +190,10 @@ fn find_intra_line_diff(del: &str, ins: &str) -> Option<(std::ops::Range<usize>,
 
     let mut suffix_del = del_b.len();
     let mut suffix_ins = ins_b.len();
-    while suffix_del > prefix && suffix_ins > prefix && del_b[suffix_del - 1] == ins_b[suffix_ins - 1] {
+    while suffix_del > prefix
+        && suffix_ins > prefix
+        && del_b[suffix_del - 1] == ins_b[suffix_ins - 1]
+    {
         suffix_del -= 1;
         suffix_ins -= 1;
     }
@@ -198,7 +204,8 @@ fn find_intra_line_diff(del: &str, ins: &str) -> Option<(std::ops::Range<usize>,
         suffix_ins += 1;
     }
 
-    if prefix <= suffix_del && prefix <= suffix_ins && (prefix < suffix_del || prefix < suffix_ins) {
+    if prefix <= suffix_del && prefix <= suffix_ins && (prefix < suffix_del || prefix < suffix_ins)
+    {
         Some((prefix..suffix_del, prefix..suffix_ins))
     } else {
         None

@@ -37,7 +37,7 @@ use crate::methods::{
     OpenVikingWrite, Ping, PingResult, PromptParams, ResourceComplete, SessionCancel,
     SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
     SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
-    SessionSetModel, SessionUnload, SessionUnlock,
+    SessionSetModel, SessionSetPermission, SessionUnload, SessionUnlock,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -591,6 +591,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .await?;
                 value_from(result)
             }
+            <SessionSetPermission as Method>::NAME => {
+                let params = params_from_value::<SessionSetPermission>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_set_permission(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
             <SessionSetModel as Method>::NAME => {
                 let params = params_from_value::<SessionSetModel>(params)?;
                 let result = self
@@ -754,6 +763,6 @@ mod tests {
         assert_eq!(options.max_frame_bytes, DEFAULT_MAX_FRAME_BYTES);
         assert_eq!(options.max_in_flight, 64);
         assert_eq!(options.outbound_capacity, 256);
-        assert_eq!(PROTOCOL_VERSION, "1.1");
+        assert_eq!(PROTOCOL_VERSION, "1.2");
     }
 }

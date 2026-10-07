@@ -13,9 +13,9 @@ use moc_protocol::methods::{
     PromptResult, ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionMode,
-    SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate,
+    SessionNewParams, SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult,
+    SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -81,9 +81,21 @@ pub(crate) struct CoreInner {
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
+    pub bwrap_available: bool,
 }
 
 impl CoreInner {
+    pub(crate) fn workspace_sandbox_available(&self) -> bool {
+        self.bwrap_available
+    }
+
+    pub(crate) fn effective_permission(&self, permission: SessionPermission) -> SessionPermission {
+        if permission == SessionPermission::Workspace && self.bwrap_available {
+            SessionPermission::Workspace
+        } else {
+            SessionPermission::Full
+        }
+    }
     pub(crate) fn config(&self) -> Arc<ResolvedConfig> {
         Arc::clone(&self.config.read())
     }
@@ -231,6 +243,33 @@ impl CoreInner {
     }
 }
 
+fn probe_bwrap() -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("bwrap")
+            .args([
+                "--die-with-parent",
+                "--new-session",
+                "--unshare-user",
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--unshare-uts",
+                "--disable-userns",
+                "--ro-bind",
+                "/",
+                "/",
+                "--",
+                "true",
+            ])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 /// 通过协议 [`AgentService`] 暴露的完整代理运行时。
 #[derive(Clone)]
 pub struct Core {
@@ -271,6 +310,7 @@ impl Core {
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
                 prompts: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
+                bwrap_available: probe_bwrap(),
             }),
         }))
     }
@@ -635,7 +675,7 @@ impl AgentService for Core {
                 "available_models": selectors,
             }))
         })?;
-        let info = self
+        let mut info = self
             .inner
             .sessions
             .create(
@@ -647,6 +687,7 @@ impl AgentService for Core {
             )
             .await
             .map_err(to_rpc)?;
+        info.permission = self.inner.effective_permission(info.permission);
         if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) && config.workspace.watch {
             let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
                 .await
@@ -661,9 +702,11 @@ impl AgentService for Core {
         _ctx: RequestContext,
         _params: SessionListParams,
     ) -> Result<SessionListResult, RpcError> {
-        Ok(SessionListResult {
-            sessions: self.inner.sessions.list().await.map_err(to_rpc)?,
-        })
+        let mut sessions = self.inner.sessions.list().await.map_err(to_rpc)?;
+        for session in &mut sessions {
+            session.permission = self.inner.effective_permission(session.permission);
+        }
+        Ok(SessionListResult { sessions })
     }
 
     async fn session_load(
@@ -671,11 +714,14 @@ impl AgentService for Core {
         _ctx: RequestContext,
         params: SessionLoadParams,
     ) -> Result<SessionLoadResult, RpcError> {
-        self.inner
+        let mut result = self
+            .inner
             .sessions
             .load(&params.session_id, params.max_entries)
             .await
-            .map_err(to_rpc)
+            .map_err(to_rpc)?;
+        result.session.permission = self.inner.effective_permission(result.session.permission);
+        Ok(result)
     }
     async fn session_rewind(
         &self,
@@ -703,6 +749,7 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         loaded.session.lock = None;
+        loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
         Ok(loaded)
     }
 
@@ -750,6 +797,7 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         drop(file_lock);
         info.lock = None;
+        info.permission = self.inner.effective_permission(info.permission);
         ctx.updates()
             .emit(
                 session_id,
@@ -807,6 +855,50 @@ impl AgentService for Core {
         Ok(Empty {})
     }
 
+    async fn session_set_permission(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetPermissionParams,
+    ) -> Result<SessionInfo, RpcError> {
+        if params.permission == SessionPermission::Workspace
+            && !self.inner.workspace_sandbox_available()
+        {
+            return Err(invalid_params("当前环境不可用 bwrap，只有 full 权限可用"));
+        }
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+        let file_lock = self
+            .inner
+            .sessions
+            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .await
+            .map_err(to_rpc)?;
+        let mut info = self
+            .inner
+            .sessions
+            .set_permission(&params.session_id, params.permission)
+            .await
+            .map_err(to_rpc)?;
+        drop(file_lock);
+        info.lock = None;
+        info.permission = self.inner.effective_permission(info.permission);
+        ctx.updates()
+            .emit(
+                params.session_id,
+                SessionUpdate::PermissionChanged {
+                    permission: info.permission,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+        Ok(info)
+    }
+
     async fn session_set_mode(
         &self,
         ctx: RequestContext,
@@ -833,6 +925,7 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         drop(file_lock);
         info.lock = None;
+        info.permission = self.inner.effective_permission(info.permission);
         let runtime = self.inner.runtime(&params.session_id).await;
         if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) {
             let cwd = PathBuf::from(&info.cwd);
@@ -891,6 +984,7 @@ impl AgentService for Core {
         };
         drop(file_lock);
         info.lock = None;
+        info.permission = self.inner.effective_permission(info.permission);
         ctx.updates()
             .emit(
                 params.session_id,

@@ -74,10 +74,32 @@ pub enum SessionMode {
     Plan,
     Ptc,
 }
+/// 会话命令执行权限。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPermission {
+    #[default]
+    Full,
+    Workspace,
+}
+
+impl SessionPermission {
+    /// 返回供命令行与状态栏展示的稳定名称。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Workspace => "workspace",
+        }
+    }
+}
 
 /// `session/set_mode`：切换会话工作模式。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionSetMode;
+
+/// `session/set_permission`：切换会话命令执行权限。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSetPermission;
 
 /// `session/set_model`：按选择器切换会话模型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -150,6 +172,9 @@ pub struct SessionInfo {
     pub title: String,
     /// 当前模型 ID。
     pub model: String,
+    /// 当前命令执行权限。
+    #[serde(default)]
+    pub permission: SessionPermission,
     /// 当前工作模式。
     #[serde(default)]
     pub mode: SessionMode,
@@ -328,6 +353,14 @@ pub struct SessionSetModeParams {
     pub mode: SessionMode,
 }
 
+/// `session/set_permission` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetPermissionParams {
+    pub session_id: String,
+    pub permission: SessionPermission,
+}
+
 /// `session/set_model` 的参数：按选择器切换会话模型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -428,6 +461,14 @@ impl Method for SessionSetMode {
 
 impl ClientRequest for SessionSetMode {}
 
+impl Method for SessionSetPermission {
+    const NAME: &'static str = "session/set_permission";
+    type Params = SessionSetPermissionParams;
+    type Result = SessionInfo;
+}
+
+impl ClientRequest for SessionSetPermission {}
+
 impl Method for SessionSetModel {
     const NAME: &'static str = "session/set_model";
     type Params = SessionSetModelParams;
@@ -509,6 +550,7 @@ mod tests {
             id: "ses_1".into(),
             title: "t".into(),
             model: "m".into(),
+            permission: SessionPermission::Full,
             cwd: "/tmp".into(),
             created_at_ms: 1,
             mode: SessionMode::Plan,
@@ -518,9 +560,19 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&info).expect("可序列化"),
             serde_json::json!({
-                "id": "ses_1", "title": "t", "model": "m", "mode": "plan", "cwd": "/tmp",
-                "created_at_ms": 1, "updated_at_ms": 2
+                "id": "ses_1", "title": "t", "model": "m", "permission": "full",
+                "mode": "plan", "cwd": "/tmp", "created_at_ms": 1, "updated_at_ms": 2
             })
+        );
+        let old: SessionInfo = serde_json::from_value(serde_json::json!({
+            "id": "ses_1", "title": "t", "model": "m", "mode": "normal", "cwd": "/tmp",
+            "created_at_ms": 1, "updated_at_ms": 2
+        }))
+        .expect("旧字段可回读");
+        assert_eq!(old.permission, SessionPermission::Full);
+        assert_eq!(
+            serde_json::to_value(SessionPermission::Workspace).unwrap(),
+            "workspace"
         );
     }
 }

@@ -23,10 +23,11 @@ use moc_protocol::methods::{
     OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams, PromptResult,
     ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionMode, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
-    SessionSetModelParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, default_options,
+    SessionLoadResult, SessionLockInfo, SessionMode, SessionNewParams, SessionPermission,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk,
+    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
+    TranscriptEntry, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -148,6 +149,7 @@ impl ScriptedService {
                         id: id.clone(),
                         title: format!("会话 {index}"),
                         model: "deepseek-flash".to_owned(),
+                        permission: SessionPermission::Full,
                         mode: SessionMode::Normal,
                         cwd: "/home/soeur/project/moc".to_owned(),
                         created_at_ms: 10,
@@ -609,6 +611,7 @@ impl AgentService for ScriptedService {
                 .clone()
                 .or_else(|| state.default_model.clone())
                 .unwrap_or_else(|| "deepseek-flash".to_owned()),
+            permission: SessionPermission::Full,
             cwd: params.cwd.clone().unwrap_or_else(|| state.cwd.clone()),
             created_at_ms: 1_000,
             updated_at_ms: 1_000,
@@ -782,6 +785,14 @@ impl AgentService for ScriptedService {
         &self,
         _ctx: RequestContext,
         _params: SessionSetModeParams,
+    ) -> Result<SessionInfo, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
+    async fn session_set_permission(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionSetPermissionParams,
     ) -> Result<SessionInfo, RpcError> {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
@@ -960,6 +971,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::TitleChanged { .. } => "title_changed",
         SessionUpdate::LockChanged { .. } => "lock_changed",
         SessionUpdate::ModeChanged { .. } => "mode_changed",
+        SessionUpdate::PermissionChanged { .. } => "permission_changed",
         SessionUpdate::ModelChanged { .. } => "model_changed",
         SessionUpdate::TodoChanged { .. } => "todo_changed",
         SessionUpdate::PlanSubmitted { .. } => "plan_submitted",

@@ -442,6 +442,8 @@ async fn read_session_info(
         title: Option<String>,
         model: Option<String>,
         mode: Option<moc_protocol::methods::SessionMode>,
+        #[serde(default)]
+        permission: Option<moc_protocol::methods::SessionPermission>,
     }
     loop {
         line.clear();
@@ -466,6 +468,11 @@ async fn read_session_info(
             "mode_change" => {
                 if let Some(mode) = metadata.mode {
                     info.mode = mode;
+                }
+            }
+            "permission_change" => {
+                if let Some(permission) = metadata.permission {
+                    info.permission = permission;
                 }
             }
             _ => {}

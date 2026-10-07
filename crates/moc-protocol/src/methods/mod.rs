@@ -74,10 +74,11 @@ pub use session::{
     CompactResult, ContextUsageResult, ContextUsageSection, SessionCompact, SessionCompactParams,
     SessionContext, SessionContextParams, SessionDelete, SessionDeleteParams, SessionInfo,
     SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionRename,
-    SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams,
-    SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUnlock,
-    SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
+    SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams,
+    SessionPermission, SessionRename, SessionRenameParams, SessionRewind, SessionRewindParams,
+    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
+    SessionSetPermission, SessionSetPermissionParams, SessionUnload, SessionUnloadParams,
+    SessionUnlock, SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -117,6 +118,10 @@ mod tests {
             (<SessionDelete as Method>::NAME, "session/delete"),
             (<SessionUnlock as Method>::NAME, "session/unlock"),
             (<SessionSetMode as Method>::NAME, "session/set_mode"),
+            (
+                <SessionSetPermission as Method>::NAME,
+                "session/set_permission",
+            ),
             (<SessionSetModel as Method>::NAME, "session/set_model"),
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionCompact as Method>::NAME, "session/compact"),
@@ -160,6 +165,7 @@ mod tests {
         client::<SessionPrompt>();
         client::<SessionRewind>();
         server_request::<SessionRequestPermission>();
+        client::<SessionSetPermission>();
         client::<SessionSetMode>();
         client::<SessionSetModel>();
         client::<SessionPlanApprove>();

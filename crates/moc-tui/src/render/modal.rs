@@ -18,7 +18,11 @@ use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
 
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
-pub fn draw_completion_menu(frame: &mut Frame, completion: &mut CompletionState, prompt_area: Rect) {
+pub fn draw_completion_menu(
+    frame: &mut Frame,
+    completion: &mut CompletionState,
+    prompt_area: Rect,
+) {
     let total = completion.candidates.len();
     let max_visible = 20usize.min(usize::from(prompt_area.y.saturating_sub(3)));
     let visible = total.min(max_visible);
@@ -526,13 +530,7 @@ fn context_scale_line(
         );
     }
     let cap = crate::render::tokens_k(window);
-    push_label(
-        &mut taken,
-        &mut placed,
-        cells,
-        cap,
-        theme.gray_dim,
-    );
+    push_label(&mut taken, &mut placed, cells, cap, theme.gray_dim);
     for (index, &(cumulative, boundary)) in marks.iter().enumerate() {
         let text = crate::render::tokens_k(cumulative);
         if placed.iter().any(|(_, existing, _)| *existing == text) {
@@ -1184,19 +1182,13 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 Some(usage) => context_lines(usage, width, theme),
                 None => vec![Line::from(vec![
                     Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
-                    Span::styled(
-                        "正在计算上下文…",
-                        Style::new().fg(theme.accent_running),
-                    ),
+                    Span::styled("正在计算上下文…", Style::new().fg(theme.accent_running)),
                 ])],
             };
             lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![
                 Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
-                Span::styled(
-                    "Esc 关闭",
-                    Style::new().fg(theme.gray_dim),
-                ),
+                Span::styled("Esc 关闭", Style::new().fg(theme.gray_dim)),
             ]));
             lines
         }

@@ -237,6 +237,9 @@ impl Renderer {
             SessionUpdate::ModelChanged { model } => {
                 let _ = writeln!(out, "\n[模型：{model}]");
             }
+            SessionUpdate::PermissionChanged { permission } => {
+                let _ = writeln!(out, "\n[权限：{}]", permission.as_str());
+            }
             SessionUpdate::TitleChanged { title } => {
                 let _ = writeln!(out, "\n[会话标题：{title}]");
             }

@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use moc_llm::{FinishReason, Message, Role};
 use moc_protocol::methods::{
-    SessionInfo, SessionLoadResult, SessionMode, SessionRenameParams, ToolExecution,
+    SessionInfo, SessionLoadResult, SessionMode, SessionPermission, SessionRenameParams,
+    ToolExecution,
 };
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -417,6 +418,21 @@ impl SessionTable {
         session.lock = lock::read(record.paths.lock_file(session_id));
         Ok(session)
     }
+
+    /// 追加会话命令执行权限变化。
+    pub async fn set_permission(
+        &self,
+        session_id: &str,
+        permission: SessionPermission,
+    ) -> Result<SessionInfo, CoreError> {
+        let record = self.get(session_id).await?;
+        self.reject_foreign_lock(session_id, &record.paths)?;
+        self.append(session_id, EntryPayload::PermissionChange { permission })
+            .await?;
+        let mut session = record.state.lock().await.session_info();
+        session.lock = lock::read(record.paths.lock_file(session_id));
+        Ok(session)
+    }
     /// 追加会话模型变化并清除旧模型专属的回放上下文。
     pub async fn set_model(
         &self,
@@ -632,6 +648,53 @@ mod tests {
         );
         table.delete(&info.id).await.expect("删除");
         assert!(table.load(&info.id, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn permission_changes_persist_and_reload() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .await
+            .expect("创建会话");
+        assert_eq!(info.permission, moc_protocol::SessionPermission::Full);
+        table
+            .append_message(&info.id, Message::user_text("落盘"), None, None)
+            .await
+            .expect("追加消息");
+        let changed = table
+            .set_permission(&info.id, moc_protocol::SessionPermission::Workspace)
+            .await
+            .expect("切换权限");
+        assert_eq!(
+            changed.permission,
+            moc_protocol::SessionPermission::Workspace
+        );
+        assert_eq!(
+            table.list().await.expect("列出会话")[0].permission,
+            moc_protocol::SessionPermission::Workspace
+        );
+        table.unload(&info.id).await.expect("卸载");
+        let loaded = table.load(&info.id, None).await.expect("重载");
+        assert_eq!(
+            loaded.session.permission,
+            moc_protocol::SessionPermission::Workspace
+        );
+        table
+            .set_permission(&info.id, moc_protocol::SessionPermission::Full)
+            .await
+            .expect("切回权限");
+        table.unload(&info.id).await.expect("再次卸载");
+        assert_eq!(
+            table
+                .load(&info.id, None)
+                .await
+                .expect("再次重载")
+                .session
+                .permission,
+            moc_protocol::SessionPermission::Full
+        );
     }
 
     #[tokio::test]

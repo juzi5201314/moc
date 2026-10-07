@@ -306,12 +306,11 @@ fn thinking_block(
                 Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
                 Span::styled("▏ ".to_owned(), Style::new().fg(theme.accent_thinking)),
             ];
-            spans.extend(line.spans.into_iter().map(|span| {
-                Span::styled(
-                    span.content.into_owned(),
-                    span.style.fg(theme.gray),
-                )
-            }));
+            spans.extend(
+                line.spans
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.into_owned(), span.style.fg(theme.gray))),
+            );
             lines.push(Line::from(spans));
         }
     }
@@ -344,7 +343,6 @@ fn note_block(text: &str, error: bool, width: usize, theme: &Theme) -> Vec<Line<
     lines.push(Line::from(String::new()));
     lines
 }
-
 
 /// 正文统一左缩进（助手回复、工具内容共用同一列）。
 fn indent_prose(line: Line<'static>) -> Line<'static> {

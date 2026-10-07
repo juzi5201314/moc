@@ -53,7 +53,6 @@ pub enum CtrlCPending {
 /// Ctrl+C 二次确认有效窗口（3 秒内）。
 pub const CTRL_C_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
-
 /// 应用状态。
 pub struct App {
     pub theme: &'static Theme,

@@ -36,7 +36,8 @@ use crate::methods::{
     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
+    SessionUpdateParams,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -171,6 +172,12 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionSetModeParams,
     ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
 
+    /// 切换会话命令执行权限；被他人持锁时回 `SessionLocked`。
+    fn session_set_permission(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetPermissionParams,
+    ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
     /// 切换会话模型（按选择器）；被他人持锁时回 `SessionLocked`。
     fn session_set_model(
         &self,

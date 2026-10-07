@@ -104,7 +104,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/mode`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。Ctrl+C 取消当前提示；TUI 输入框为空时双击 `Esc` 可通过消息回退选择器创建保留原会话的分支并重建上下文。`--print` 不输出流式通知，只打印最后一条 assistant 正文。
+交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 的管道与 PTY 都在只读根文件系统中运行，`edit` / `write` 仍由 core 写入工作区。权限选择写入会话 transcript，恢复会话后继续生效；bwrap 不可用时 workspace 请求明确失败，不会回退执行为 full。
 
 ## 嵌入接口
 
@@ -117,8 +117,8 @@ cargo run -p moc-cli -- --resume SESSION_ID
 ## 行为与安全边界
 
 - 默认授权模式是 `yolo`；上述示例显式使用 `prompt`。deny 规则始终生效，未声明确认能力的前端不能默许需确认的工具。
-- ask/plan 不注册 edit/write，但 bash 不是操作系统沙箱。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
-- hashline 编辑只能引用 read 实际展示的完整行。未服务、漂移或过期范围拒绝执行，并附当前锚点；重启后必须重新建立许可。
+- `/permission workspace` 是 bash 的操作系统级只读沙盒，不隔离网络、不清理继承环境，也不提供可写构建目录；bwrap 在启动后失效时命令直接报错，禁止静默回退到宿主 shell。`edit` / `write` 不受该 bash 沙盒限制。
+- ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。

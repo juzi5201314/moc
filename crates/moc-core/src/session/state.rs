@@ -1,7 +1,9 @@
 //! 可重建的会话内存状态；只有完整 JSONL entry 才改变状态。
 
 use moc_llm::{Role, Usage};
-use moc_protocol::methods::{PlanInfo, SessionInfo, SessionMode, TodoPhase, TranscriptEntry};
+use moc_protocol::methods::{
+    PlanInfo, SessionInfo, SessionMode, SessionPermission, TodoPhase, TranscriptEntry,
+};
 
 use crate::error::CoreError;
 
@@ -23,6 +25,7 @@ pub struct SessionState {
     pub entries: Vec<Entry>,
     pub transcript: Vec<TranscriptEntry>,
     pub mode: SessionMode,
+    pub permission: SessionPermission,
     pub model: String,
     pub todos: Vec<TodoPhase>,
     pub plans: Vec<PlanInfo>,
@@ -58,6 +61,7 @@ impl SessionState {
             version,
             parent_session_id,
             mode,
+            permission,
             model,
             ..
         } = first
@@ -77,6 +81,7 @@ impl SessionState {
             entries: Vec::with_capacity(entries.len()),
             transcript: Vec::new(),
             mode: *mode,
+            permission: *permission,
             model: model.clone(),
             todos: Vec::new(),
             plans: Vec::new(),
@@ -163,6 +168,10 @@ impl SessionState {
             Entry::ModeChange { mode, .. } => {
                 self.mode = *mode;
                 self.session.mode = *mode;
+            }
+            Entry::PermissionChange { permission, .. } => {
+                self.permission = *permission;
+                self.session.permission = *permission;
             }
             Entry::ModelChange { model, .. } => {
                 self.model.clone_from(model);

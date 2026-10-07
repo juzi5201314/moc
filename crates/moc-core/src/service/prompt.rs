@@ -185,6 +185,7 @@ async fn run_prompt_locked(
     // 这一个值，且不落地为会话状态。`session/set_mode` 走 `try_prompt_lock`，
     // 提示在飞时无法调进来改写它。
     let mode = params.mode.unwrap_or(state.mode);
+    let permission = inner.effective_permission(state.permission);
     let cwd = std::path::PathBuf::from(&state.session.cwd);
     drop(state);
 
@@ -731,6 +732,7 @@ async fn run_prompt_locked(
             core: Arc::clone(&inner),
             catalog: Arc::clone(&catalog),
             mode,
+            permission,
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
             runtime: Arc::clone(&runtime),

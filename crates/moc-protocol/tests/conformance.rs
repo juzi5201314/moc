@@ -194,7 +194,7 @@ async fn protocol_version_mismatch_reports_server_version() {
         RpcErrorCode::UnsupportedProtocolVersion.code()
     );
     assert_eq!(raw["error"]["data"]["server_version"], PROTOCOL_VERSION);
-    assert_eq!(raw["error"]["data"]["server_version"], "1.1");
+    assert_eq!(raw["error"]["data"]["server_version"], "1.2");
 
     // 版本不兼容不占用握手状态：改正后仍能握手
     peer.send(&request(

@@ -166,6 +166,10 @@ pub enum SessionUpdate {
         /// 新的锁投影；`None` 表示锁已释放。
         lock: Option<SessionLockInfo>,
     },
+    /// 会话命令执行权限变化。
+    PermissionChanged {
+        permission: super::session::SessionPermission,
+    },
     /// 会话工作模式变化。
     ModeChanged { mode: SessionMode },
     /// 会话模型变化（`session/set_model` 之后由 core 推送）。

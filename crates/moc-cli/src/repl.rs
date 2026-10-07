@@ -8,9 +8,10 @@ use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, PermissionRequestParams,
     PermissionResult, PlanAction, PlanStatus, SessionCancel, SessionCancelParams, SessionCompact,
     SessionCompactParams, SessionInfo, SessionList, SessionListParams, SessionLoad,
-    SessionLoadParams, SessionMode, SessionNew, SessionNewParams, SessionPlanApprove,
-    SessionPlanApproveParams, SessionPrompt, SessionRequestAsk, SessionRequestPermission,
-    SessionSetMode, SessionSetModeParams, SessionUpdateMethod,
+    SessionLoadParams, SessionMode, SessionNew, SessionNewParams, SessionPermission,
+    SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRequestAsk,
+    SessionRequestPermission, SessionSetMode, SessionSetModeParams, SessionSetPermission,
+    SessionSetPermissionParams, SessionUpdateMethod,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -268,8 +269,12 @@ async fn run_repl(
     }
 
     println!(
-        "会话 {} · {} · {:?} · {}",
-        session.id, session.model, mode, session.cwd
+        "会话 {} · {} · {:?} · {} · permission={}",
+        session.id,
+        session.model,
+        mode,
+        session.cwd,
+        session.permission.as_str()
     );
     loop {
         print!("\n> ");
@@ -351,6 +356,20 @@ async fn run_command(
                 })
                 .await?;
             *mode = next;
+        }
+        "permission" => {
+            let permission = match argument {
+                "full" => SessionPermission::Full,
+                "workspace" => SessionPermission::Workspace,
+                _ => bail!("用法：/permission <full|workspace>"),
+            };
+            *session = client
+                .call::<SessionSetPermission>(SessionSetPermissionParams {
+                    session_id: session.id.clone(),
+                    permission,
+                })
+                .await?;
+            println!("权限已切换为 {}", session.permission.as_str());
         }
         "plan" => {
             if argument.is_empty() {
@@ -613,15 +632,20 @@ fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
 fn print_sessions(sessions: &[SessionInfo]) {
     for session in sessions {
         println!(
-            "{}\t{:?}\t{}\t{}\t{}",
-            session.id, session.mode, session.model, session.title, session.cwd
+            "{}\t{:?}\t{}\t{}\t{}\t{}",
+            session.id,
+            session.mode,
+            session.model,
+            session.permission.as_str(),
+            session.title,
+            session.cwd
         );
     }
 }
 
 fn print_help() {
     println!(
-        "/mode <normal|plan|ptc>     切换工作模式\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|plan|ptc>     切换工作模式\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
     );
     println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
 }

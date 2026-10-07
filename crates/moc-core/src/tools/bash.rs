@@ -95,7 +95,8 @@ impl Tool for BashTool {
             } else {
                 None
             };
-            let process = Process::spawn(args, cwd, timeout, output_path.clone()).await?;
+            let process =
+                Process::spawn(args, cwd, timeout, output_path.clone(), ctx.permission).await?;
             if asynchronous {
                 ctx.jobs.start(
                     ctx.clone(),

@@ -28,7 +28,7 @@
 //! | `config/get` | 前端→core | core | 已初始化 | `-32014` |
 //! | `session/new` / `list` / `load` / `unload` | 前端→core | core | 已初始化 | `-32602` / `-32010` / `-32014` |
 //! | `session/rename` / `delete` / `unlock` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
-//! | `session/set_mode` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
+//! | `session/set_mode` / `session/set_permission` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
@@ -146,7 +146,8 @@
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-//!     SessionUnloadParams, SessionUnlockParams, SessionUpdate, PromptResult,
+//!     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+//!     PromptResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
@@ -174,6 +175,14 @@
 //!             server: ServerInfo { name: "moc-core".into(), version: "0.1.0".into() },
 //!             capabilities: ServerCapabilities { permission_requests: true, ask_requests: true, session_locking: true },
 //!         })
+//!     }
+//!
+//!     async fn session_set_permission(
+//!         &self,
+//!         _ctx: RequestContext,
+//!         _params: SessionSetPermissionParams,
+//!     ) -> Result<SessionInfo, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!
 //!     async fn session_prompt(
@@ -342,7 +351,7 @@ pub use moc_llm::{
 ///
 /// `initialize` 只比较第一个 `.` 之前的 major 段，不一致回
 /// [`RpcErrorCode::UnsupportedProtocolVersion`] 并在 `data.server_version` 给出服务端版本。
-pub const PROTOCOL_VERSION: &str = "1.1";
+pub const PROTOCOL_VERSION: &str = "1.2";
 
 /// 取版本号的 major 段（第一个 `.` 之前）；没有 `.` 时整串就是 major。
 pub(crate) fn major_version(version: &str) -> &str {

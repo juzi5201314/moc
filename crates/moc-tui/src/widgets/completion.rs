@@ -39,6 +39,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "切换会话模式：标准／计划／PTC",
     },
     SlashCommand {
+        name: "/permission",
+        description: "切换 full / workspace 命令权限",
+    },
+    SlashCommand {
         name: "/ask",
         description: "本条消息按问答模式处理（只读）",
     },
@@ -198,7 +202,12 @@ impl CompletionState {
             return None;
         }
         if column == self.area.x
-            || column == self.area.x.saturating_add(self.area.width).saturating_sub(1)
+            || column
+                == self
+                    .area
+                    .x
+                    .saturating_add(self.area.width)
+                    .saturating_sub(1)
         {
             return None;
         }
@@ -264,7 +273,11 @@ mod tests {
         assert_eq!(state.entry_at(15, 5), None, "上边框忽略");
         assert_eq!(state.entry_at(15, 6), Some(0), "第 1 条候选命中");
         assert_eq!(state.entry_at(15, 7), Some(1), "第 2 条候选命中");
-        assert_eq!(state.entry_at(15, 8), None, "超出候选行（说明文字/下边框）忽略");
+        assert_eq!(
+            state.entry_at(15, 8),
+            None,
+            "超出候选行（说明文字/下边框）忽略"
+        );
         assert_eq!(state.entry_at(5, 6), None, "区域外忽略");
     }
 }
