@@ -134,6 +134,8 @@ impl Tool for EditTool {
                     Ok(ToolOutcome {
                         content: output.content.into(),
                         is_error: false,
+                        structured_content: None,
+                        error_code: None,
                         images: Vec::new(),
                         control: ToolControl::Continue,
                         status: None,
@@ -155,9 +157,17 @@ impl Tool for EditTool {
                             content.push_str(&format!("\n当前内容的新锚点：\n{text}"));
                         }
                     }
+                    let error_code = content
+                        .split_once(']')
+                        .and_then(|(prefix, _)| prefix.strip_prefix('['))
+                        .filter(|code| code.starts_with("E_"))
+                        .unwrap_or("E_TOOL")
+                        .to_owned();
                     Ok(ToolOutcome {
                         content: content.into(),
                         is_error: true,
+                        structured_content: None,
+                        error_code: Some(error_code),
                         images: Vec::new(),
                         control: ToolControl::Continue,
                         status: None,

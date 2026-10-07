@@ -194,6 +194,9 @@ pub struct PtcConfig {
     pub memory_limit_bytes: usize,
     pub max_output_bytes: usize,
     pub max_concurrent_calls: usize,
+    pub max_result_bytes: usize,
+    pub max_pending_calls: usize,
+    pub max_state_bytes: usize,
 }
 
 impl Default for PtcConfig {
@@ -204,8 +207,48 @@ impl Default for PtcConfig {
             memory_limit_bytes: 128 * 1024 * 1024,
             max_output_bytes: 4 * 1024 * 1024,
             max_concurrent_calls: 16,
+            max_result_bytes: 16 * 1024 * 1024,
+            max_pending_calls: 256,
+            max_state_bytes: 16 * 1024 * 1024,
         }
     }
+}
+
+pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreError> {
+    let fail = |field: &str, reason: &str| {
+        crate::error::CoreError::Config(format!("tools.ptc.{field}: {reason}"))
+    };
+    if config.default_timeout_secs == 0 || config.default_timeout_secs > config.max_timeout_secs {
+        return Err(fail(
+            "default_timeout_secs",
+            "必须大于 0 且不超过 max_timeout_secs",
+        ));
+    }
+    if config.max_timeout_secs == 0 {
+        return Err(fail("max_timeout_secs", "必须大于 0"));
+    }
+    if config.max_concurrent_calls == 0 {
+        return Err(fail("max_concurrent_calls", "必须大于 0"));
+    }
+    if config.max_pending_calls < config.max_concurrent_calls || config.max_pending_calls > 65536 {
+        return Err(fail(
+            "max_pending_calls",
+            "必须不小于并发上限且不超过 65536",
+        ));
+    }
+    if !(8 * 1024 * 1024..=u32::MAX as usize).contains(&config.memory_limit_bytes) {
+        return Err(fail("memory_limit_bytes", "必须在 8 MiB..=u32::MAX 范围内"));
+    }
+    for (name, value) in [
+        ("max_output_bytes", config.max_output_bytes),
+        ("max_result_bytes", config.max_result_bytes),
+        ("max_state_bytes", config.max_state_bytes),
+    ] {
+        if value == 0 || value > config.memory_limit_bytes {
+            return Err(fail(name, "必须大于 0 且不超过 memory_limit_bytes"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]

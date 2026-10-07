@@ -1,0 +1,308 @@
+//! 请求按提交顺序进入有界队列；非并行操作作为屏障，取消后排空事务。
+use super::{
+    result::{script_result, status},
+    runtime::Guest,
+    state::error,
+    wire::*,
+};
+use crate::{
+    config::{ApprovalMode, ToolApproval},
+    session::entries::EntryPayload,
+    tools::{Tier, ToolControl, ToolCtx, ToolOutcome},
+};
+use futures_util::{
+    future::BoxFuture,
+    stream::{FuturesUnordered, StreamExt},
+};
+use moc_protocol::{SessionUpdate, ToolStatus, methods::session::TranscriptChildCall};
+use serde_json::Value;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    time::Instant,
+};
+
+type Work<'a> = BoxFuture<'a, (u32, Result<Value, ScriptError>, Option<ToolOutcome>)>;
+
+fn parallel(ctx: &ToolCtx, operation: &Operation) -> bool {
+    match operation {
+        Operation::Store { .. } | Operation::Remove { .. } => false,
+        Operation::Tool { name, .. } => ctx.catalog.get(name).is_some_and(|tool| {
+            let policy = ctx.config.tool_approval.lookup(name);
+            tool.parallel_safe()
+                && policy != Some(ToolApproval::Prompt)
+                && !(policy.is_none()
+                    && ctx.config.tools.approval_mode == ApprovalMode::Prompt
+                    && tool.tier() != Tier::Read)
+        }),
+        _ => true,
+    }
+}
+
+async fn perform(
+    ctx: &ToolCtx,
+    request: HostRequest,
+    cancelled: Option<&str>,
+) -> (u32, Result<Value, ScriptError>, Option<ToolOutcome>) {
+    let id = request.id;
+    if let Operation::Tool { name, arguments } = request.operation {
+        let call_id = format!("{}:{id}", ctx.tool_call_id);
+        let call = moc_llm::ToolCall {
+            id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.to_string(),
+        };
+        let started = Instant::now();
+        let update = ctx.request.updates();
+        let start_result = update
+            .emit(
+                ctx.session_id.clone(),
+                SessionUpdate::PtcChildStarted {
+                    prompt_id: ctx.prompt_id.clone(),
+                    parent_tool_call_id: ctx.tool_call_id.clone(),
+                    tool_call_id: call_id.clone(),
+                    name: name.clone(),
+                },
+            )
+            .await;
+        let mut outcome = if let Some(code) = cancelled {
+            let mut outcome = ToolOutcome::failure(code, "代码执行已终止，该调用已取消");
+            outcome.status = Some(ToolStatus::Cancelled);
+            outcome
+        } else if let Err(err) = start_result {
+            ToolOutcome::failure("E_UPDATE", err.to_string())
+        } else {
+            crate::service::prompt::tools::execute_nested_tool(&ctx.core, ctx, &call)
+                .await
+                .unwrap_or_else(|err| ToolOutcome::failure("E_TOOL", err.to_string()))
+        };
+        let content = match crate::tools::output::prepare_outcome(
+            &outcome,
+            &ctx.config.tools.output,
+            &ctx.artifact_store(),
+        )
+        .await
+        {
+            Ok(content) => content,
+            Err(err) => {
+                outcome.is_error = true;
+                outcome.error_code = Some("E_ARTIFACT".into());
+                format!("[E_ARTIFACT] {err}")
+            }
+        };
+        let duration_ms = Some(started.elapsed().as_millis() as u64);
+        let status = status(&outcome);
+        let audit = ctx
+            .sessions
+            .append(
+                &ctx.session_id,
+                EntryPayload::ChildTool {
+                    call: TranscriptChildCall {
+                        id: call_id.clone(),
+                        parent_tool_call_id: ctx.tool_call_id.clone(),
+                        name,
+                        arguments: call.arguments,
+                        result: content.clone(),
+                        status,
+                        duration_ms,
+                    },
+                },
+            )
+            .await;
+        let sent = update
+            .emit(
+                ctx.session_id.clone(),
+                SessionUpdate::PtcChildFinished {
+                    prompt_id: ctx.prompt_id.clone(),
+                    parent_tool_call_id: ctx.tool_call_id.clone(),
+                    tool_call_id: call_id.clone(),
+                    status,
+                    result: moc_llm::ToolResult {
+                        tool_call_id: call_id,
+                        content,
+                        is_error: outcome.is_error,
+                        images: outcome.images.clone(),
+                    },
+                    duration_ms,
+                    diff: outcome.diff.clone(),
+                },
+            )
+            .await;
+        let result = match (audit, sent) {
+            (Err(err), _) => Err(error("E_STATE_WRITE", err)),
+            (_, Err(err)) => Err(error("E_UPDATE", err)),
+            _ => script_result(ctx, &outcome).await.and_then(|result| {
+                serde_json::to_value(result).map_err(|err| error("E_SERIALIZE", err))
+            }),
+        };
+        (id, result, Some(outcome))
+    } else {
+        let result = if cancelled.is_some() {
+            Err(error("E_CANCELLED", "代码执行已终止"))
+        } else {
+            let ask = ctx.core.client_supports_ask(ctx.request.connection_id());
+            match request.operation {
+                Operation::Servers => Ok(ctx.catalog.servers(ctx.mode, ask, &ctx.config)),
+                Operation::Search {
+                    query,
+                    server,
+                    offset,
+                    limit,
+                } => ctx
+                    .catalog
+                    .search(
+                        ctx.mode,
+                        ask,
+                        &ctx.config,
+                        query.as_deref().unwrap_or(""),
+                        server.as_deref(),
+                        offset.unwrap_or(0),
+                        limit.unwrap_or(20),
+                    )
+                    .map_err(|err| error(err.code, err.message)),
+                Operation::Describe { name } => ctx
+                    .catalog
+                    .describe(ctx.mode, ask, &ctx.config, &name)
+                    .map_err(|err| error(err.code, err.message)),
+                operation => super::state::execute(ctx, operation).await,
+            }
+        };
+        let result = result.and_then(|value| {
+            if serde_json::to_vec(&value).expect("JSON 可序列化").len()
+                > ctx.config.tools.ptc.max_result_bytes
+            {
+                Err(error("E_RESULT_LIMIT", "结果超过代码读取上限"))
+            } else {
+                Ok(value)
+            }
+        });
+        (id, result, None)
+    }
+}
+
+pub(super) async fn run(
+    ctx: &ToolCtx,
+    mut guest: Guest,
+    input: Vec<u8>,
+    deadline: tokio::time::Instant,
+) -> ToolOutcome {
+    let mut child = ctx.clone();
+    child.cancel = ctx.cancel.child_token();
+    let config = &ctx.config.tools.ptc;
+    let mut queue = VecDeque::<HostRequest>::new();
+    let mut active = FuturesUnordered::<Work<'_>>::new();
+    // 存活 ID 稀疏，数量始终受 max_pending_calls 限制；完成交付后立即删除。
+    let mut pending = BTreeMap::<u32, usize>::new();
+    let mut pending_bytes = 0usize;
+    let mut next_id = 0u64;
+    let mut input = input;
+    let mut first = true;
+    let mut images = Vec::new();
+    let mut outcome;
+    'drive: loop {
+        let step = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "脚本已取消"); break; }
+            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "脚本执行超时"); break; }
+            step = guest.step(&input, first, if first { config.max_output_bytes } else { config.max_result_bytes }) => match step {
+                Ok(step) => step,
+                Err(err) => { outcome = err.into_outcome(); break; }
+            }
+        };
+        first = false;
+        for request in step.requests {
+            if u64::from(request.id) != next_id {
+                outcome = ToolOutcome::failure("E_PTC_PROTOCOL", "请求 ID 必须递增且不重复");
+                break 'drive;
+            }
+            next_id += 1;
+            let size = serde_json::to_vec(&request).expect("请求可序列化").len();
+            if pending.len() >= config.max_pending_calls
+                || size > config.max_output_bytes.saturating_sub(pending_bytes)
+            {
+                active.push(Box::pin(async move {
+                    (
+                        request.id,
+                        Err(error("E_QUEUE_LIMIT", "待处理请求超过数量或字节上限")),
+                        None,
+                    )
+                }));
+            } else {
+                pending.insert(request.id, size);
+                pending_bytes += size;
+                queue.push_back(request);
+            }
+        }
+        debug_assert!(pending.len() <= config.max_pending_calls);
+        match step.state {
+            GuestState::Done { value } => {
+                outcome = if !pending.is_empty() || !active.is_empty() {
+                    ToolOutcome::failure("E_UNAWAITED_CALLS", "脚本返回前必须等待所有宿主调用")
+                } else {
+                    ToolOutcome::success(value.to_string())
+                };
+                break;
+            }
+            GuestState::Failed { error } => {
+                outcome = ToolOutcome::failure(&error.code, error.message);
+                break;
+            }
+            GuestState::Pending => {}
+        }
+        while active.len() < config.max_concurrent_calls {
+            let Some(front) = queue.front() else {
+                break;
+            };
+            let safe = parallel(&child, &front.operation);
+            if !safe && !active.is_empty() {
+                break;
+            }
+            let request = queue.pop_front().expect("队首存在");
+            active.push(Box::pin(perform(&child, request, None)));
+            if !safe {
+                break;
+            }
+        }
+        if active.is_empty() {
+            outcome = ToolOutcome::failure("E_PTC_PENDING", "脚本没有可完成的事件");
+            break;
+        }
+        let completed = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "脚本已取消"); break; }
+            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "脚本执行超时"); break; }
+            completed = active.next() => completed.expect("活动队列非空"),
+        };
+        let (id, result, tool) = completed;
+        if let Some(size) = pending.remove(&id) {
+            pending_bytes -= size;
+        }
+        if let Some(mut tool) = tool {
+            images.append(&mut tool.images);
+            if tool.control == ToolControl::EndTurn {
+                outcome = tool;
+                break;
+            }
+        }
+        input = serde_json::to_vec(&[HostCompletion { id, result }]).expect("完成项可序列化");
+    }
+    let code = if outcome.error_code.as_deref() == Some("E_TURN_ENDED") {
+        "E_TURN_ENDED"
+    } else if outcome.error_code.as_deref() == Some("E_TIMEOUT") {
+        "E_TIMEOUT"
+    } else {
+        "E_CANCELLED"
+    };
+    while let Some(request) = queue.pop_front() {
+        let (_, _, tool) = perform(&child, request, Some(code)).await;
+        if let Some(mut tool) = tool {
+            images.append(&mut tool.images);
+        }
+    }
+    while let Some((_, _, tool)) = active.next().await {
+        if let Some(mut tool) = tool {
+            images.append(&mut tool.images);
+        }
+    }
+    outcome.images.extend(images);
+    outcome
+}

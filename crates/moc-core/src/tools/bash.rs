@@ -130,6 +130,14 @@ impl Tool for BashTool {
                     suffix: render_exit(result.code.unwrap_or(-1), result.timed_out, timeout),
                 },
                 is_error: result.timed_out || result.code != Some(0),
+                structured_content: None,
+                error_code: if result.timed_out {
+                    Some("E_TIMEOUT".into())
+                } else if result.code != Some(0) {
+                    Some("E_BASH_EXIT".into())
+                } else {
+                    None
+                },
                 images: Vec::new(),
                 control: super::ToolControl::Continue,
                 status: None,

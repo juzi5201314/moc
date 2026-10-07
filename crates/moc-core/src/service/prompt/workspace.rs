@@ -53,7 +53,10 @@ pub(super) async fn check_workspace(
         .as_ref()
         .map(|before| crate::workspace::watch::diff(before, &after))
         .unwrap_or_default();
-    let violation = mode != moc_protocol::methods::SessionMode::Normal;
+    let violation = matches!(
+        mode,
+        moc_protocol::methods::SessionMode::Ask | moc_protocol::methods::SessionMode::Plan
+    );
     if !violation && let Some(before_tools) = before_tools {
         let tool_changes = crate::workspace::watch::diff(before_tools, &after);
         changes.retain(|change| !tool_changes.iter().any(|owned| owned.path == change.path));

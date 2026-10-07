@@ -9,6 +9,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PtcStateChange {
+    Put {
+        key: String,
+        value: serde_json::Value,
+    },
+    Delete {
+        key: String,
+    },
+}
+
 /// 一个会话 JSONL 文件的一行记录。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -97,6 +109,13 @@ pub enum Entry {
         at_ms: u64,
         call: moc_protocol::methods::session::TranscriptChildCall,
     },
+    PtcState {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        parent_tool_call_id: String,
+        change: PtcStateChange,
+    },
     /// `/clear` 后模型上下文重建边界。
     ResetBoundary {
         id: String,
@@ -143,6 +162,10 @@ pub enum EntryPayload {
     },
     ChildTool {
         call: moc_protocol::methods::session::TranscriptChildCall,
+    },
+    PtcState {
+        parent_tool_call_id: String,
+        change: PtcStateChange,
     },
     ResetBoundary,
 }
@@ -257,6 +280,16 @@ impl Entry {
                 at_ms,
                 call,
             },
+            EntryPayload::PtcState {
+                parent_tool_call_id,
+                change,
+            } => Self::PtcState {
+                id,
+                parent_id,
+                at_ms,
+                parent_tool_call_id,
+                change,
+            },
             EntryPayload::ResetBoundary => Self::ResetBoundary {
                 id,
                 parent_id,
@@ -276,6 +309,7 @@ impl Entry {
             | Self::Todos { id, .. }
             | Self::Plan { id, .. }
             | Self::ChildTool { id, .. }
+            | Self::PtcState { id, .. }
             | Self::ResetBoundary { id, .. } => id,
         }
     }
@@ -291,6 +325,7 @@ impl Entry {
             | Self::Todos { parent_id, .. }
             | Self::Plan { parent_id, .. }
             | Self::ChildTool { parent_id, .. }
+            | Self::PtcState { parent_id, .. }
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
@@ -322,6 +357,9 @@ impl Entry {
             | Self::ChildTool {
                 parent_id: value, ..
             }
+            | Self::PtcState {
+                parent_id: value, ..
+            }
             | Self::ResetBoundary {
                 parent_id: value, ..
             } => *value = Some(parent_id),
@@ -339,6 +377,7 @@ impl Entry {
             | Self::Todos { at_ms, .. }
             | Self::Plan { at_ms, .. }
             | Self::ChildTool { at_ms, .. }
+            | Self::PtcState { at_ms, .. }
             | Self::ResetBoundary { at_ms, .. } => *at_ms,
         }
     }

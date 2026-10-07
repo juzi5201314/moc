@@ -207,8 +207,7 @@ async fn run_prompt_locked(
         .map_err(protocol_to_rpc)?;
 
     let cancel = ctx.cancel();
-    // MCP 工具在每次提示开始时快照一次并整体替换进注册表；list_changed 等变更
-    // 在下次提示生效，保证请求内工具定义顺序与内容稳定。
+    // 一次提示固定发现与执行目录，服务器刷新留到下一次提示生效。
     let mcp = inner
         .project_mcp(std::path::Path::new(&state_snapshot.session.cwd))
         .await
@@ -223,17 +222,11 @@ async fn run_prompt_locked(
             .push(format!("MCP `{}`：{}", notice.server, notice.message));
     }
     let mcp_snapshot = mcp.snapshot().await;
-    inner.tools.set_dynamic(
-        mcp_snapshot
+    let catalog = Arc::new(
+        inner
             .tools
-            .iter()
-            .map(|info| {
-                Arc::new(crate::tools::mcp::McpTool::new(
-                    Arc::clone(&mcp),
-                    info.clone(),
-                )) as Arc<dyn crate::tools::Tool>
-            })
-            .collect(),
+            .catalog(&mcp_snapshot, Arc::clone(&mcp))
+            .map_err(|error| to_rpc(crate::CoreError::Tool(error.to_string())))?,
     );
     let skills = inner
         .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
@@ -248,7 +241,12 @@ async fn run_prompt_locked(
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
     let mut stream_overflows = 0usize;
-    let system = build(&project_config, &model, mode, &cwd, &skills);
+    let summary = catalog.summary(
+        mode,
+        inner.client_supports_ask(ctx.connection_id()),
+        &project_config,
+    );
+    let system = build(&project_config, &model, mode, &cwd, &skills, &summary);
 
     'turns: for turn in 0..project_config.limits.max_turns_per_prompt {
         if cancel.is_cancelled() {
@@ -731,9 +729,9 @@ async fn run_prompt_locked(
             cancel: cancel.clone(),
             sessions: Arc::clone(&inner.sessions),
             core: Arc::clone(&inner),
-            ptc_slots: Arc::new(tokio::sync::Semaphore::new(
-                project_config.tools.ptc.max_concurrent_calls,
-            )),
+            catalog: Arc::clone(&catalog),
+            mode,
+            nested: false,
             jobs: Arc::clone(&runtime.jobs),
             runtime: Arc::clone(&runtime),
             openviking,

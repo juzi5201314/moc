@@ -26,8 +26,9 @@ pub fn build(
     mode: SessionMode,
     cwd: &Path,
     skills: &crate::skills::SkillIndex,
+    mcp_summary: &str,
 ) -> Message {
-    compose(&pieces(config, model, mode, cwd, skills))
+    compose(&pieces(config, model, mode, cwd, skills, mcp_summary))
 }
 
 pub fn compose(pieces: &[PromptPiece]) -> Message {
@@ -50,6 +51,7 @@ pub fn pieces(
     mode: SessionMode,
     cwd: &Path,
     skills: &crate::skills::SkillIndex,
+    mcp_summary: &str,
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     let intro = if config.system_prompt.override_text.trim().is_empty() {
@@ -63,8 +65,14 @@ pub fn pieces(
     });
     sections.push(PromptPiece {
         title: "system",
-        text: tool_policy(mode),
+        text: tool_policy(mode, config.tools.ptc.max_concurrent_calls),
     });
+    if !mcp_summary.is_empty() {
+        sections.push(PromptPiece {
+            title: "tools",
+            text: mcp_summary.to_owned(),
+        });
+    }
     if !config.system_prompt.append.trim().is_empty() {
         sections.push(PromptPiece {
             title: "system",
@@ -117,15 +125,16 @@ pub fn pieces(
     sections
 }
 
-fn tool_policy(mode: SessionMode) -> String {
+fn tool_policy(mode: SessionMode, concurrency: usize) -> String {
     let mut policy = TOOL_POLICY.to_owned();
     if mode == SessionMode::Ask {
-        policy.push_str("\n当前是问答模式：只允许读取与检索（read/grep/find/bash/todo/ask/job），严禁修改文件或系统状态；回答用户的问题即可。");
+        policy.push_str("\n当前是问答模式：允许读取与检索，禁止修改工作区；run_code 子工具继承本次提示权限。state/todo 只写会话数据。");
     } else if mode == SessionMode::Plan {
-        policy.push_str("\n当前是计划模式：只允许读取与检索（read/grep/find/bash/todo/ask/job），严禁通过任何方式修改文件或系统状态；探索完成后调用 submit_plan 提交计划。");
+        policy.push_str("\n当前是计划模式：允许读取与检索，禁止修改工作区；探索完成后调用 submit_plan 提交计划并结束本轮，run_code 子工具继承本次提示权限。state/todo/计划存储只写会话数据。");
     } else if mode == SessionMode::Ptc {
         policy.push_str("\n当前是 PTC 模式：通过 run_code 编写 JavaScript 并调用列出的工具；仅 run_code 可直接调用，子工具仍受其各自授权、启用状态与取消控制。");
     }
+    policy.push_str(&format!("\n所有模式支持 run_code；PTC 仅此原生入口，其他模式内置工具可直接使用。MCP 仅在代码内经 catalog 发现后调用，不提供 MCP 原生入口。先 await catalog.search({{query:\"\"}}) 获取分页摘要，再 await catalog.describe(name) 获取原始 schema，最后 await tools[name](args)。发现不授予权限，子工具逐项授权。\nrun_code 的工具结果始终为 {{content,summary,structuredContent,isError,status,artifact}}，优先读取 structuredContent；text-only 的 JSON 可显式 JSON.parse(r.content)。失败 reject Error，含可序列化 code/message/result，可用 try/catch 或 Promise.allSettled。内置例子：const r = await tools.read({{path:\"README.md\"}}); return r.content;\n独立只读任务可 Promise.all，实际并发上限 {concurrency}；写操作和审批是屏障，返回前必须等待所有调用。只返回最终需要的信息，中间结果不进入模型历史。state.store(key,json)、state.load(key)、state.remove(key)、state.keys() 保存会话 JSON；缺失返回 undefined，写入立即提交，后续失败不撤销；普通 JS 全局变量不会跨次保留。WASM 无文件/网络/进程/定时器 API，必须通过宿主工具。"));
     policy
 }
 
@@ -136,15 +145,14 @@ pub fn reminder_message(text: String) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use super::*;
     use crate::CoreConfig;
+    use std::fs;
 
     fn resolved(cwd: &Path, home: &Path) -> ResolvedConfig {
         let raw = "[models.roles]\ndefault='p/model'\nsmol='p/model'\nslow='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n";
-        fs::create_dir_all(home).unwrap();
-        fs::write(home.join("config.toml"), raw).unwrap();
+        fs::create_dir_all(home).expect("创建 home");
+        fs::write(home.join("config.toml"), raw).expect("写入配置");
         let core = CoreConfig {
             home: home.to_owned(),
             cwd: cwd.to_owned(),
@@ -153,37 +161,37 @@ mod tests {
             client: moc_llm::Client::new(),
         };
         ResolvedConfig::load(&core)
-            .unwrap()
+            .expect("加载配置")
             .for_project(cwd)
-            .unwrap()
+            .expect("解析项目配置")
     }
 
     #[test]
-    fn stable_prompt_has_rules_mode_and_model_without_volatile_time() {
+    fn stable_prompt_has_rules_mode_model_and_code_contract() {
         let directory = tempfile::tempdir().expect("临时目录");
         let cwd = directory.path().join("repo");
         let home = directory.path().join("home");
-        fs::create_dir_all(&cwd).unwrap();
-        fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").unwrap();
+        fs::create_dir_all(&cwd).expect("创建 repo");
+        fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").expect("写规则");
         let config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").unwrap();
+        let model = config.resolve_role("default").expect("解析模型");
         let skills = crate::skills::SkillIndex::empty();
-        let normal = build(&config, &model, SessionMode::Normal, &cwd, &skills);
-        let ask = build(&config, &model, SessionMode::Ask, &cwd, &skills);
-        let normal = match &normal.content[0] {
-            moc_llm::ContentPart::Text(text) => text,
-            _ => panic!("系统提示为文本"),
-        };
-        let ask = match &ask.content[0] {
-            moc_llm::ContentPart::Text(text) => text,
-            _ => panic!("系统提示为文本"),
-        };
-        assert!(normal.starts_with(DEFAULT_INTRO));
-        assert!(normal.contains("Follow local rule."));
-        assert!(normal.contains("model: p/model"));
-        assert!(!normal.contains("当前时间"));
-        assert!(ask.contains("当前是问答模式"));
-        assert!(!ask.contains("当前是计划模式"));
+        let message = build(
+            &config,
+            &model,
+            SessionMode::Normal,
+            &cwd,
+            &skills,
+            "<mcp-servers>\ngithub connected 1\n</mcp-servers>",
+        );
+        let text = message.text();
+        assert!(text.starts_with(DEFAULT_INTRO));
+        assert!(text.contains("Follow local rule."));
+        assert!(text.contains("model: p/model"));
+        assert!(text.contains("<mcp-servers>"));
+        assert!(text.contains("structuredContent"));
+        assert!(text.contains("state.store"));
+        assert!(!text.contains("当前时间"));
     }
 
     #[test]
@@ -191,22 +199,18 @@ mod tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let cwd = directory.path().join("repo");
         let home = directory.path().join("home");
-        fs::create_dir_all(cwd.join(".agents/skills/demo")).unwrap();
+        fs::create_dir_all(cwd.join(".agents/skills/demo")).expect("创建 skill");
         fs::write(
             cwd.join(".agents/skills/demo/SKILL.md"),
             "---\nname: demo\ndescription: 演示 skill\n---\n正文",
         )
-        .unwrap();
+        .expect("写 skill");
         let config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").unwrap();
+        let model = config.resolve_role("default").expect("解析模型");
         let skills =
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
-        let message = build(&config, &model, SessionMode::Normal, &cwd, &skills);
-        let text = match &message.content[0] {
-            moc_llm::ContentPart::Text(text) => text,
-            _ => panic!("系统提示为文本"),
-        };
-        assert!(text.contains("<skills>"));
-        assert!(text.contains("- demo: 演示 skill"));
+        let message = build(&config, &model, SessionMode::Normal, &cwd, &skills, "");
+        assert!(message.text().contains("<skills>"));
+        assert!(message.text().contains("- demo: 演示 skill"));
     }
 }

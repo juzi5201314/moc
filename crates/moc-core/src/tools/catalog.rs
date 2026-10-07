@@ -1,0 +1,206 @@
+//! 每次提示固定的工具目录：同一快照用于发现和子工具执行。
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use moc_mcp::{McpManager, McpSnapshot, ServerStatus};
+use moc_protocol::SessionMode;
+use serde_json::{Value, json};
+
+use super::{Tier, Tool, ToolError, ToolRegistry};
+use crate::{
+    config::{ResolvedConfig, ToolApproval},
+    service::mode,
+};
+
+pub struct ToolCatalog {
+    tools: Vec<Arc<dyn Tool>>,
+    servers: BTreeMap<String, ServerStatus>,
+}
+
+impl ToolCatalog {
+    pub fn new(
+        registry: &ToolRegistry,
+        snapshot: &McpSnapshot,
+        manager: Arc<McpManager>,
+    ) -> Result<Self, ToolError> {
+        let mut tools: Vec<Arc<dyn Tool>> = registry.all().iter().cloned().collect();
+        tools.extend(snapshot.tools.iter().map(|info| {
+            Arc::new(super::mcp::McpTool::new(
+                Arc::clone(&manager),
+                Arc::clone(info),
+            )) as Arc<dyn Tool>
+        }));
+        tools.sort_unstable_by(|a, b| a.name().cmp(b.name()));
+        for pair in tools.windows(2) {
+            if pair[0].name() == pair[1].name() {
+                return Err(ToolError::new(
+                    "E_TOOL_DUPLICATE",
+                    format!("重复的工具名 `{}`", pair[0].name()),
+                ));
+            }
+        }
+        Ok(Self {
+            tools,
+            servers: snapshot.statuses.clone(),
+        })
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools
+            .binary_search_by(|tool| tool.name().cmp(name))
+            .ok()
+            .map(|index| Arc::clone(&self.tools[index]))
+    }
+
+    pub fn visible<'a>(
+        &'a self,
+        mode: SessionMode,
+        ask_supported: bool,
+        config: &'a ResolvedConfig,
+    ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
+        let mode = if mode == SessionMode::Ptc {
+            SessionMode::Normal
+        } else {
+            mode
+        };
+        self.tools.iter().filter(move |tool| {
+            tool.name() != "run_code"
+                && mode::mode_allows(mode, tool.name(), tool.tier())
+                && mode::tool_enabled(tool.name(), ask_supported, config)
+                && config.tool_approval.lookup(tool.name()) != Some(ToolApproval::Deny)
+        })
+    }
+
+    pub fn servers(
+        &self,
+        mode: SessionMode,
+        ask_supported: bool,
+        config: &ResolvedConfig,
+    ) -> Value {
+        let mut counts = BTreeMap::<&str, usize>::new();
+        for tool in self.visible(mode, ask_supported, config) {
+            if let Some(server) = server_of(tool.name()) {
+                *counts.entry(server).or_default() += 1;
+            }
+        }
+        Value::Array(self.servers.iter().map(|(name, status)| json!({
+            "name": name, "status": status_name(status), "toolCount": counts.get(name.as_str()).copied().unwrap_or(0)
+        })).collect())
+    }
+
+    pub fn summary(
+        &self,
+        mode: SessionMode,
+        ask_supported: bool,
+        config: &ResolvedConfig,
+    ) -> String {
+        if self.servers.is_empty() {
+            return String::new();
+        }
+        let Value::Array(servers) = self.servers(mode, ask_supported, config) else {
+            unreachable!()
+        };
+        let mut lines = vec!["<mcp-servers>".to_owned()];
+        for server in servers.iter().take(32) {
+            lines.push(format!(
+                "{} {} {}",
+                server["name"].as_str().unwrap_or_default(),
+                server["status"].as_str().unwrap_or_default(),
+                server["toolCount"]
+            ));
+        }
+        if servers.len() > 32 {
+            lines.push(format!(
+                "其余 {} 台请通过 catalog.servers() 查看",
+                servers.len() - 32
+            ));
+        }
+        lines.push("</mcp-servers>".into());
+        lines.join("\n")
+    }
+
+    pub fn search(
+        &self,
+        mode: SessionMode,
+        ask_supported: bool,
+        config: &ResolvedConfig,
+        query: &str,
+        server: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Value, ToolError> {
+        if !(1..=100).contains(&limit) {
+            return Err(ToolError::new("E_ARGUMENT", "limit 必须在 1..100"));
+        }
+        if let Some(name) = server
+            && !self.servers.contains_key(name)
+        {
+            return Err(ToolError::new("E_ARGUMENT", "未知 MCP server"));
+        }
+        let query = query.trim().to_lowercase();
+        let terms: Vec<_> = query.split_whitespace().collect();
+        let mut found = Vec::new();
+        for tool in self.visible(mode, ask_supported, config) {
+            let name = tool.name();
+            let origin = server_of(name);
+            if server.is_some() && server != origin {
+                continue;
+            }
+            let haystack = format!(
+                "{name} {} {}",
+                tool.description(),
+                origin.unwrap_or_default()
+            )
+            .to_lowercase();
+            if terms.iter().all(|term| haystack.contains(term)) {
+                found.push(tool);
+            }
+        }
+        if !query.is_empty() {
+            found.sort_by_key(|tool| (tool.name() != query, tool.name()));
+        }
+        let total = found.len();
+        let items: Vec<_> = found.into_iter().skip(offset).take(limit).map(|tool| {
+            let description: String = tool.description().chars().take(256).collect();
+            json!({"name":tool.name(), "description":description, "server":server_of(tool.name()), "readOnly":tool.tier()==Tier::Read})
+        }).collect();
+        let next = offset.saturating_add(items.len());
+        Ok(json!({"items":items,"total":total,"nextOffset":(next < total).then_some(next)}))
+    }
+
+    pub fn describe(
+        &self,
+        mode: SessionMode,
+        ask_supported: bool,
+        config: &ResolvedConfig,
+        name: &str,
+    ) -> Result<Value, ToolError> {
+        let tool = self
+            .visible(mode, ask_supported, config)
+            .find(|tool| tool.name() == name)
+            .ok_or_else(|| {
+                ToolError::new(
+                    "E_TOOL_NOT_FOUND",
+                    format!("工具 `{name}` 不存在或当前模式不可见"),
+                )
+            })?;
+        Ok(
+            json!({"name":name,"description":tool.description(),"server":server_of(name),"inputSchema":tool.def().parameters,"outputSchema":tool.output_schema(),"readOnly":tool.tier()==Tier::Read}),
+        )
+    }
+}
+
+fn server_of(name: &str) -> Option<&str> {
+    name.strip_prefix("mcp__")?
+        .split_once("__")
+        .map(|(server, _)| server)
+}
+fn status_name(status: &ServerStatus) -> &'static str {
+    match status {
+        ServerStatus::Connecting => "connecting",
+        ServerStatus::Connected { .. } => "connected",
+        ServerStatus::Reconnecting { .. } => "reconnecting",
+        ServerStatus::Failed { .. } => "failed",
+        ServerStatus::Disabled => "disabled",
+    }
+}

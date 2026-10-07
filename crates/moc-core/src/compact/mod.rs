@@ -208,12 +208,20 @@ pub(crate) async fn compact(
     }
     let model = config.resolve_model(&state.model)?;
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
+    let summary = inner
+        .mcp_summary(
+            &config,
+            state.mode,
+            inner.client_supports_ask(ctx.connection_id()),
+        )
+        .await?;
     let system = crate::system_prompt::build(
         &config,
         &model,
         state.mode,
         std::path::Path::new(&state.session.cwd),
         &skills,
+        &summary,
     );
     let tools = inner.tools.definitions(
         state.mode,

@@ -69,6 +69,7 @@ pub(crate) struct CoreInner {
     pub client: Client,
     pub sessions: Arc<SessionTable>,
     pub tools: ToolRegistry,
+    pub ptc: tokio::sync::OnceCell<Arc<crate::tools::ptc::runtime::PtcRuntime>>,
     pub capabilities: RwLock<HashMap<u64, ClientCapabilities>>,
     pub runtimes: Mutex<HashMap<String, Arc<SessionRuntime>>>,
     pub project_configs: RwLock<HashMap<PathBuf, Arc<ResolvedConfig>>>,
@@ -169,7 +170,7 @@ impl CoreInner {
             .is_some_and(|caps| caps.ask_requests)
     }
 
-    /// 取得（或惰性创建）该项目的 MCP 管理器；创建即开始连接，不阻塞调用方。
+    /// 取得（或惰性创建）该项目的 MCP 管理器；仅提示执行显式启动连接。
     pub(crate) async fn project_mcp(
         &self,
         cwd: &Path,
@@ -187,12 +188,26 @@ impl CoreInner {
             }
         };
         let manager = moc_mcp::McpManager::new(servers, self.shutdown.child_token());
-        manager.start().await;
         self.mcp_managers
             .lock()
             .await
             .insert(key, Arc::clone(&manager));
         Ok(manager)
+    }
+
+    pub(crate) async fn mcp_summary(
+        &self,
+        config: &ResolvedConfig,
+        mode: moc_protocol::SessionMode,
+        ask: bool,
+    ) -> Result<String, CoreError> {
+        let manager = self.project_mcp(&config.cwd).await?;
+        let snapshot = manager.snapshot().await;
+        let catalog = self
+            .tools
+            .catalog(&snapshot, manager)
+            .map_err(|err| CoreError::Tool(err.to_string()))?;
+        Ok(catalog.summary(mode, ask, config))
     }
 
     /// 取得（或惰性扫描）该项目的 skill 索引。
@@ -246,6 +261,7 @@ impl Core {
                 client: config.client,
                 sessions,
                 tools: ToolRegistry::new(),
+                ptc: tokio::sync::OnceCell::new(),
                 capabilities: RwLock::new(HashMap::new()),
                 runtimes: Mutex::new(HashMap::new()),
                 project_configs: RwLock::new(HashMap::new()),
@@ -942,7 +958,17 @@ impl AgentService for Core {
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let model = config.resolve_model(&state.model).map_err(to_rpc)?;
         let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
-        let pieces = crate::system_prompt::pieces(&config, &model, state.mode, &cwd, &skills);
+        let summary = self
+            .inner
+            .mcp_summary(
+                &config,
+                state.mode,
+                self.inner.client_supports_ask(ctx.connection_id()),
+            )
+            .await
+            .map_err(to_rpc)?;
+        let pieces =
+            crate::system_prompt::pieces(&config, &model, state.mode, &cwd, &skills, &summary);
         let system = crate::system_prompt::compose(&pieces);
         let messages =
             crate::compact::replay::model_messages(&state, Some(system.clone()), Some(&model));
@@ -953,28 +979,34 @@ impl AgentService for Core {
         );
         let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
         let history_tokens = crate::compact::messages_tokens(&messages[1..]);
-        let tool_tokens = crate::compact::tools_tokens(&tools);
+        let directory_tokens = pieces
+            .iter()
+            .filter(|piece| piece.title == "tools")
+            .map(|piece| crate::compact::estimate_tokens(&piece.text))
+            .sum::<u64>();
+        let tool_tokens = crate::compact::tools_tokens(&tools).saturating_add(directory_tokens);
         let total_tokens = system_tokens
-            .saturating_add(tool_tokens)
+            .saturating_add(crate::compact::tools_tokens(&tools))
             .saturating_add(history_tokens);
         let mut project_tokens = 0u64;
         let mut skills_tokens = 0u64;
         for piece in &pieces {
             match piece.title {
                 "project" => {
-                    project_tokens = project_tokens
-                        .saturating_add(crate::compact::estimate_tokens(&piece.text));
+                    project_tokens =
+                        project_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
                 }
                 "skills" => {
-                    skills_tokens = skills_tokens
-                        .saturating_add(crate::compact::estimate_tokens(&piece.text));
+                    skills_tokens =
+                        skills_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
                 }
                 _ => {}
             }
         }
         let system_base_tokens = system_tokens
             .saturating_sub(project_tokens)
-            .saturating_sub(skills_tokens);
+            .saturating_sub(skills_tokens)
+            .saturating_sub(directory_tokens);
 
         let mut sections = Vec::with_capacity(5);
         sections.push(ContextUsageSection {
@@ -1106,5 +1138,5 @@ pub(crate) async fn snapshot_workspace(
 }
 
 mod management;
-mod mode;
+pub(crate) mod mode;
 pub(crate) mod prompt;

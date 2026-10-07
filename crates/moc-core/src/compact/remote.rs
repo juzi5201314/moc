@@ -33,12 +33,20 @@ pub(crate) async fn compact(
     }
     let mut full_messages = Vec::with_capacity(messages.len() + 1);
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
+    let summary = inner
+        .mcp_summary(
+            config,
+            state.mode,
+            inner.client_supports_ask(ctx.connection_id()),
+        )
+        .await?;
     full_messages.push(crate::system_prompt::build(
         config,
         model,
         state.mode,
         std::path::Path::new(&state.session.cwd),
         &skills,
+        &summary,
     ));
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {

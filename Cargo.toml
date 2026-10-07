@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-openviking", "crates/moc-protocol", "crates/moc-tui"]
 default-members = ["crates/moc-cli", "crates/moc-tui"]
+exclude = ["tools/ptc-guest"]
 
 [workspace.dependencies]
 tokio = { version = "1.53.1", features = ["full"] }

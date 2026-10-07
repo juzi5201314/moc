@@ -27,6 +27,8 @@ impl ImageData {
 pub struct ToolOutput {
     /// 全部文本块按序以换行连接，占位文本混排其中。
     pub text: String,
+    /// 服务端返回的原始结构化结果，保持 JSON 类型与形状。
+    pub structured_content: Option<serde_json::Value>,
     /// 图片块（PNG/JPEG/WebP/GIF）。
     pub images: Vec<ImageData>,
     /// 服务端声明的执行失败（`isError: true`）；内容仍返回给模型以便自纠。
@@ -87,13 +89,9 @@ pub fn map_call_result(result: &CallToolResult) -> ToolOutput {
             _ => {}
         }
     }
-    if let Some(structured) = &result.structured_content {
-        let json =
-            serde_json::to_string_pretty(structured).unwrap_or_else(|_| structured.to_string());
-        lines.push(format!("[结构化结果]\n```json\n{json}\n```"));
-    }
     ToolOutput {
         text: lines.join("\n"),
+        structured_content: result.structured_content.clone(),
         images,
         is_error: result.is_error == Some(true),
     }
@@ -129,15 +127,14 @@ mod tests {
     }
 
     #[test]
-    fn appends_structured_content_and_marks_errors() {
+    fn preserves_structured_content_and_marks_errors() {
         let mut result = CallToolResult::success(vec![ContentBlock::text("失败原因")]);
         result.structured_content = Some(json!({"count": 3}));
         result.is_error = Some(true);
         let output = map_call_result(&result);
         assert!(output.is_error);
-        assert!(output.text.starts_with("失败原因"));
-        assert!(output.text.contains("```json"));
-        assert!(output.text.contains("\"count\": 3"));
+        assert_eq!(output.text, "失败原因");
+        assert_eq!(output.structured_content, Some(json!({"count": 3})));
     }
 
     #[test]

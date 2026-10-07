@@ -187,9 +187,10 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     match mode {
         SessionMode::Normal => &[
             "read", "grep", "find", "todo", "job", "bash", "edit", "write", "ask", "skill",
+            "run_code",
         ],
         SessionMode::Ask => &[
-            "read", "grep", "find", "todo", "job", "bash", "ask", "skill",
+            "read", "grep", "find", "todo", "job", "bash", "ask", "skill", "run_code",
         ],
         SessionMode::Plan => &[
             "read",
@@ -201,6 +202,7 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "ask",
             "skill",
             "submit_plan",
+            "run_code",
         ],
         SessionMode::Ptc => &["run_code"],
     }
@@ -221,5 +223,19 @@ pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> b
         SessionMode::Normal => true,
         SessionMode::Ask | SessionMode::Plan => tier == crate::tools::Tier::Read,
         SessionMode::Ptc => false,
+    }
+}
+
+pub fn tool_enabled(
+    name: &str,
+    ask_supported: bool,
+    config: &crate::config::ResolvedConfig,
+) -> bool {
+    match name {
+        "ask" => ask_supported,
+        "todo" => config.tools.todo.enabled,
+        "job" => config.tools.job.enabled,
+        "skill" => config.skills.enabled,
+        _ => true,
     }
 }

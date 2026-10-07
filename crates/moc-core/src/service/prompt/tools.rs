@@ -34,16 +34,19 @@ pub(super) async fn execute_tool_batch(
     let prompt_id = tool_ctx.prompt_id.as_str();
     let cwd = &tool_ctx.cwd;
     let update = tool_ctx.request.updates();
-    let tool_batch_before =
-        if mode == moc_protocol::methods::SessionMode::Normal && config.workspace.watch {
-            Some(
-                snapshot_workspace(cwd.clone(), config.workspace.max_scan_entries)
-                    .await
-                    .map_err(to_rpc)?,
-            )
-        } else {
-            None
-        };
+    let tool_batch_before = if matches!(
+        mode,
+        moc_protocol::methods::SessionMode::Normal | moc_protocol::methods::SessionMode::Ptc
+    ) && config.workspace.watch
+    {
+        Some(
+            snapshot_workspace(cwd.clone(), config.workspace.max_scan_entries)
+                .await
+                .map_err(to_rpc)?,
+        )
+    } else {
+        None
+    };
     let mut results: Vec<Option<(Result<ToolOutcome, CoreError>, u64)>> =
         std::iter::repeat_with(|| None).take(calls.len()).collect();
     let mut started = vec![false; calls.len()];
@@ -51,6 +54,16 @@ pub(super) async fn execute_tool_batch(
     let mut stop_reason = None;
 
     'calls: for (index, call) in calls.iter().enumerate() {
+        if call.name.starts_with("mcp__") {
+            results[index] = Some((
+                Ok(ToolOutcome::failure(
+                    "E_MODE",
+                    "MCP 工具请通过 run_code 调用",
+                )),
+                0,
+            ));
+            continue;
+        }
         let Some(tool) = inner.tools.get(&call.name) else {
             let error = CoreError::Tool(format!("E_TOOL_NOT_FOUND: 未注册工具 `{}`", call.name));
             results[index] = Some((Err(error), 0));
@@ -165,8 +178,8 @@ pub(super) async fn execute_tool_batch(
             }
             Err(error) => ToolOutcome::failure("E_TOOL", error.to_string()),
         };
-        let content = match crate::tools::output::prepare(
-            outcome.content,
+        let content = match crate::tools::output::prepare_outcome(
+            &outcome,
             &config.tools.output,
             &tool_ctx.artifact_store(),
         )
@@ -175,6 +188,7 @@ pub(super) async fn execute_tool_batch(
             Ok(content) => content,
             Err(error) => {
                 outcome.is_error = true;
+                outcome.error_code = Some("E_ARTIFACT".into());
                 format!("[E_ARTIFACT] 工具已执行，但输出交付失败：{error}")
             }
         };
@@ -271,7 +285,18 @@ async fn execute_tool(
     let arguments = call.arguments.as_str();
     let config = &ctx.config;
     let request = &ctx.request;
-    let Some(tool) = inner.tools.get(name) else {
+    if !ctx.nested && name.starts_with("mcp__") {
+        return Ok(ToolOutcome::failure(
+            "E_MODE",
+            "MCP 工具请通过 run_code 调用",
+        ));
+    }
+    let selected = if ctx.nested {
+        ctx.catalog.get(name)
+    } else {
+        inner.tools.get(name)
+    };
+    let Some(tool) = selected else {
         return Ok(ToolOutcome::failure(
             "E_TOOL_NOT_FOUND",
             format!("未注册工具 `{name}`"),
@@ -280,11 +305,11 @@ async fn execute_tool(
     if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
         return Ok(ToolOutcome::failure("E_MODE", "当前模式不允许调用该工具"));
     }
-    if (name == "todo" && !config.tools.todo.enabled)
-        || (name == "job" && !config.tools.job.enabled)
-        || (name == "skill" && !config.skills.enabled)
-        || (name == "ask" && !inner.client_supports_ask(request.connection_id()))
-    {
+    if !crate::service::mode::tool_enabled(
+        name,
+        inner.client_supports_ask(request.connection_id()),
+        config,
+    ) {
         return Ok(ToolOutcome::failure("E_TOOL_DISABLED", "该工具未启用"));
     }
     let args: Value = match serde_json::from_str(arguments) {
@@ -304,6 +329,8 @@ async fn execute_tool(
             return Ok(ToolOutcome {
                 content: "[E_PERMISSION_DENIED] 用户拒绝执行该工具".into(),
                 is_error: true,
+                structured_content: None,
+                error_code: Some("E_PERMISSION_DENIED".into()),
                 images: Vec::new(),
                 control: ToolControl::Continue,
                 status: Some(ToolStatus::Denied),
@@ -339,20 +366,26 @@ async fn execute_tool(
     }
 }
 
-/// 执行 PTC 子工具：沿用 Normal 的授权、启用、取消与 MCP 路径，但不写入模型消息。
+/// 执行继承提示权限的 PTC 子工具，不写入模型消息。
 pub(crate) async fn execute_nested_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
     call: &moc_llm::ToolCall,
 ) -> Result<ToolOutcome, CoreError> {
-    execute_tool(
-        inner,
-        ctx,
-        &ctx.runtime,
-        moc_protocol::methods::SessionMode::Normal,
-        call,
-    )
-    .await
+    if call.name == "run_code" {
+        return Ok(ToolOutcome::failure(
+            "E_PTC_RECURSION",
+            "不允许嵌套 run_code",
+        ));
+    }
+    let mut nested = ctx.clone();
+    nested.nested = true;
+    let mode = if ctx.mode == moc_protocol::SessionMode::Ptc {
+        moc_protocol::SessionMode::Normal
+    } else {
+        ctx.mode
+    };
+    execute_tool(inner, &nested, &ctx.runtime, mode, call).await
 }
 
 enum Authorization {

@@ -133,6 +133,8 @@ impl Tool for WriteTool {
                 )
                 .into(),
                 is_error: false,
+                structured_content: None,
+                error_code: None,
                 images: Vec::new(),
                 control: super::ToolControl::Continue,
                 status: None,

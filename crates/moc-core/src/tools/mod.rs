@@ -2,6 +2,7 @@
 
 pub mod ask;
 pub mod bash;
+pub mod catalog;
 pub mod edit;
 pub mod find;
 pub mod grep;
@@ -51,6 +52,8 @@ pub enum ToolControl {
 pub struct ToolOutcome {
     pub content: ToolOutput,
     pub is_error: bool,
+    pub structured_content: Option<Value>,
+    pub error_code: Option<String>,
     /// 结果携带的图片；仅 MCP 桥接工具会填充。
     pub images: Vec<moc_llm::ImageSource>,
     pub control: ToolControl,
@@ -65,6 +68,8 @@ impl ToolOutcome {
         Self {
             content: content.into(),
             is_error: false,
+            structured_content: None,
+            error_code: None,
             images: Vec::new(),
             control: ToolControl::Continue,
             status: None,
@@ -76,6 +81,8 @@ impl ToolOutcome {
         Self {
             content: format!("[{code}] {}", message.as_ref()).into(),
             is_error: true,
+            structured_content: None,
+            error_code: Some(code.to_owned()),
             images: Vec::new(),
             control: ToolControl::Continue,
             status: None,
@@ -87,6 +94,8 @@ impl ToolOutcome {
         Self {
             content: content.into(),
             is_error: false,
+            structured_content: None,
+            error_code: None,
             images: Vec::new(),
             control: ToolControl::EndTurn,
             status: None,
@@ -122,6 +131,8 @@ impl ToolError {
         ToolOutcome {
             content: self.to_string().into(),
             is_error: true,
+            structured_content: None,
+            error_code: Some(self.code.to_owned()),
             images: Vec::new(),
             control: ToolControl::Continue,
             status: (self.code == "E_CANCELLED").then_some(moc_protocol::ToolStatus::Cancelled),
@@ -143,7 +154,9 @@ pub struct ToolCtx {
     pub request: RequestContext,
     pub sessions: Arc<SessionTable>,
     pub(crate) core: Arc<crate::service::CoreInner>,
-    pub(crate) ptc_slots: Arc<tokio::sync::Semaphore>,
+    pub catalog: Arc<catalog::ToolCatalog>,
+    pub mode: SessionMode,
+    pub nested: bool,
     pub(crate) runtime: Arc<crate::service::SessionRuntime>,
     pub cancel: CancellationToken,
     pub jobs: Arc<job::JobManager>,
@@ -186,6 +199,9 @@ pub trait Tool: Send + Sync {
     fn tier(&self) -> Tier;
     fn parallel_safe(&self) -> bool;
     fn def(&self) -> ToolDef;
+    fn output_schema(&self) -> Option<&Value> {
+        None
+    }
     fn run<'a>(
         &'a self,
         ctx: &'a ToolCtx,
@@ -196,8 +212,6 @@ pub trait Tool: Send + Sync {
 #[derive(Default)]
 pub struct ToolRegistry {
     builtins: Vec<Arc<dyn Tool>>,
-    /// 动态工具（MCP 桥接）；每次提示请求前由 core 按最新快照整体替换。
-    dynamic: parking_lot::RwLock<Vec<Arc<dyn Tool>>>,
 }
 
 impl ToolRegistry {
@@ -217,7 +231,6 @@ impl ToolRegistry {
                 Arc::new(crate::tools::ptc::RunCodeTool),
                 Arc::new(crate::skills::tool::SkillTool),
             ],
-            dynamic: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
@@ -226,18 +239,6 @@ impl ToolRegistry {
             .iter()
             .find(|tool| tool.name() == name)
             .cloned()
-            .or_else(|| {
-                self.dynamic
-                    .read()
-                    .iter()
-                    .find(|tool| tool.name() == name)
-                    .cloned()
-            })
-    }
-
-    /// 替换动态工具集；传入前须按名字排序以保证请求内顺序稳定。
-    pub fn set_dynamic(&self, tools: Vec<Arc<dyn Tool>>) {
-        *self.dynamic.write() = tools;
     }
 
     pub fn definitions(
@@ -246,62 +247,30 @@ impl ToolRegistry {
         ask_supported: bool,
         config: &ResolvedConfig,
     ) -> Vec<ToolDef> {
-        let mut definitions: Vec<ToolDef> = self
-            .builtins
+        self.builtins
             .iter()
             .filter(|tool| {
-                let name = tool.name();
-                (match mode {
-                    SessionMode::Normal => name != "submit_plan",
-                    SessionMode::Ask => matches!(
-                        name,
-                        "read" | "grep" | "find" | "bash" | "todo" | "job" | "ask" | "skill"
-                    ),
-                    SessionMode::Plan => matches!(
-                        name,
-                        "read"
-                            | "grep"
-                            | "find"
-                            | "bash"
-                            | "todo"
-                            | "job"
-                            | "ask"
-                            | "skill"
-                            | "submit_plan"
-                    ),
-                    SessionMode::Ptc => name == "run_code",
-                }) && (name != "ask" || ask_supported)
-                    && (name != "todo" || config.tools.todo.enabled)
-                    && (name != "job" || config.tools.job.enabled)
-                    && (name != "skill" || config.skills.enabled)
+                crate::service::mode::mode_allows(mode, tool.name(), tool.tier())
+                    && crate::service::mode::tool_enabled(tool.name(), ask_supported, config)
             })
             .map(|tool| {
                 let mut definition = tool.def();
                 definition.description = Some(tool.description().to_owned());
                 definition
             })
-            .collect();
-        // 动态（MCP）工具：Normal 全量放行；Ask/Plan 只保留只读工具。
-        let dynamic = self.dynamic.read();
-        definitions.extend(
-            dynamic
-                .iter()
-                .filter(|tool| match mode {
-                    SessionMode::Normal => true,
-                    SessionMode::Ask | SessionMode::Plan => tool.tier() == Tier::Read,
-                    SessionMode::Ptc => false,
-                })
-                .map(|tool| {
-                    let mut definition = tool.def();
-                    definition.description = Some(tool.description().to_owned());
-                    definition
-                }),
-        );
-        definitions
+            .collect()
     }
 
     pub fn all(&self) -> &[Arc<dyn Tool>] {
         &self.builtins
+    }
+
+    pub fn catalog(
+        &self,
+        snapshot: &moc_mcp::McpSnapshot,
+        manager: Arc<moc_mcp::McpManager>,
+    ) -> Result<catalog::ToolCatalog, ToolError> {
+        catalog::ToolCatalog::new(self, snapshot, manager)
     }
 }
 
@@ -335,104 +304,4 @@ pub fn resolve_tool_path(cwd: &std::path::Path, value: &str) -> Result<PathBuf, 
         .file_name()
         .ok_or_else(|| ToolError::new("E_ACCESS", "无效文件名"))?;
     Ok(parent.join(filename))
-}
-
-#[cfg(test)]
-mod dynamic_registry_tests {
-    use super::*;
-    use moc_protocol::methods::SessionMode;
-    use std::sync::Arc;
-
-    struct FakeTool {
-        name: String,
-        read_only: bool,
-    }
-
-    impl Tool for FakeTool {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn description(&self) -> &str {
-            "动态工具"
-        }
-        fn tier(&self) -> Tier {
-            if self.read_only {
-                Tier::Read
-            } else {
-                Tier::Exec
-            }
-        }
-        fn parallel_safe(&self) -> bool {
-            self.read_only
-        }
-        fn def(&self) -> ToolDef {
-            ToolDef::new(self.name.clone(), serde_json::json!({"type": "object"}))
-        }
-        fn run<'a>(
-            &'a self,
-            _ctx: &'a ToolCtx,
-            _args: Value,
-        ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
-            unreachable!("registry 测试不执行动态工具")
-        }
-    }
-
-    fn config() -> crate::config::ResolvedConfig {
-        // 仅供 definitions() 计数测试使用的最小配置。
-        let home = tempfile::tempdir().unwrap();
-        let cwd = tempfile::tempdir().unwrap();
-        let raw = "[models.roles]\ndefault='p/model'\nsmol='p/model'\nslow='p/model'\nplan='p/model'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n";
-        std::fs::write(home.path().join("config.toml"), raw).unwrap();
-        let core = crate::CoreConfig {
-            home: home.path().to_owned(),
-            cwd: cwd.path().to_owned(),
-            overlays: Vec::new(),
-            session_dir: None,
-            client: moc_llm::Client::new(),
-        };
-        crate::ResolvedConfig::load(&core)
-            .unwrap()
-            .for_project(cwd.path())
-            .unwrap()
-    }
-
-    #[test]
-    fn dynamic_tools_are_resolvable_and_mode_filtered() {
-        let registry = ToolRegistry::new();
-        registry.set_dynamic(vec![
-            Arc::new(FakeTool {
-                name: "mcp__github__edit_file".into(),
-                read_only: false,
-            }),
-            Arc::new(FakeTool {
-                name: "mcp__github__list_issues".into(),
-                read_only: true,
-            }),
-        ]);
-
-        assert!(registry.get("mcp__github__list_issues").is_some());
-        assert!(registry.get("mcp__github__edit_file").is_some());
-        assert!(registry.get("read").is_some());
-
-        let normal = registry.definitions(SessionMode::Normal, true, &config());
-        assert_eq!(normal.len(), 13, "11 内置（无 submit_plan）+ 2 动态");
-        let ptc = registry.definitions(SessionMode::Ptc, true, &config());
-        assert_eq!(ptc.len(), 1);
-        assert_eq!(ptc[0].name, "run_code");
-
-        let ask = registry.definitions(SessionMode::Ask, true, &config());
-        assert_eq!(ask.len(), 9, "Ask 模式只放行只读动态工具");
-        assert!(ask.iter().any(|d| d.name == "mcp__github__list_issues"));
-        assert!(!ask.iter().any(|d| d.name == "mcp__github__edit_file"));
-
-        // 内置工具不受动态替换影响。
-        registry.set_dynamic(Vec::new());
-        assert!(registry.get("mcp__github__list_issues").is_none());
-        assert_eq!(
-            registry
-                .definitions(SessionMode::Normal, true, &config())
-                .len(),
-            11
-        );
-    }
 }

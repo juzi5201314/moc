@@ -6,6 +6,15 @@ use moc_protocol::methods::{PlanInfo, SessionInfo, SessionMode, TodoPhase, Trans
 use crate::error::CoreError;
 
 use super::entries::Entry;
+use super::entries::PtcStateChange;
+use std::{collections::BTreeMap, sync::Arc};
+
+pub(crate) fn ptc_value_bytes(key: &str, value: &serde_json::Value) -> usize {
+    key.len()
+        + serde_json::to_vec(value)
+            .expect("JSON Value 可序列化")
+            .len()
+}
 
 /// 一个会话的 transcript 与当前投影。
 #[derive(Debug, Clone)]
@@ -18,6 +27,8 @@ pub struct SessionState {
     pub todos: Vec<TodoPhase>,
     pub plans: Vec<PlanInfo>,
     pub child_calls: Vec<moc_protocol::methods::session::TranscriptChildCall>,
+    pub ptc_state: BTreeMap<String, Arc<serde_json::Value>>,
+    pub ptc_state_bytes: usize,
     pub summary: Option<(String, String)>,
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
@@ -70,6 +81,8 @@ impl SessionState {
             todos: Vec::new(),
             plans: Vec::new(),
             child_calls: Vec::new(),
+            ptc_state: BTreeMap::new(),
+            ptc_state_bytes: 0,
             parent_session_id: parent_session_id.clone(),
             prompt_sequence: 0,
             job_sequence: 0,
@@ -139,6 +152,8 @@ impl SessionState {
                 }
             }
             Entry::ResetBoundary { .. } => {
+                self.ptc_state.clear();
+                self.ptc_state_bytes = 0;
                 self.summary = None;
                 self.native_input = None;
                 self.first_kept_id = None;
@@ -195,6 +210,19 @@ impl SessionState {
                 }
             }
             Entry::ChildTool { call, .. } => self.child_calls.push(call.clone()),
+            Entry::PtcState { change, .. } => match change {
+                PtcStateChange::Put { key, value } => {
+                    if let Some(old) = self.ptc_state.insert(key.clone(), Arc::new(value.clone())) {
+                        self.ptc_state_bytes -= ptc_value_bytes(key, &old);
+                    }
+                    self.ptc_state_bytes += ptc_value_bytes(key, value);
+                }
+                PtcStateChange::Delete { key } => {
+                    if let Some(old) = self.ptc_state.remove(key) {
+                        self.ptc_state_bytes -= ptc_value_bytes(key, &old);
+                    }
+                }
+            },
         }
         self.last_entry_id = entry.id().to_owned();
         self.entries.push(entry);
@@ -270,6 +298,54 @@ mod tests {
         assert_eq!(state.plans[0].status, PlanStatus::Approved);
         assert_eq!(state.session.updated_at_ms, 14);
         assert_eq!(state.prompt_sequence, 1);
+    }
+
+    #[test]
+    fn replay_restores_ptc_state_and_reset_clears_projection() {
+        let header = Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp/project".into(),
+            "p/model".into(),
+            SessionMode::Normal,
+            None,
+            "标题".into(),
+            10,
+        );
+        let message = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("run"),
+                tool: None,
+                finish_reason: None,
+            },
+            header.id().to_owned(),
+            11,
+        );
+        let put = Entry::from_payload(
+            EntryPayload::PtcState {
+                parent_tool_call_id: "call".into(),
+                change: PtcStateChange::Put {
+                    key: "x".into(),
+                    value: serde_json::json!({"n":1}),
+                },
+            },
+            message.id().to_owned(),
+            12,
+        );
+        let delete = Entry::from_payload(
+            EntryPayload::PtcState {
+                parent_tool_call_id: "call".into(),
+                change: PtcStateChange::Delete {
+                    key: "missing".into(),
+                },
+            },
+            put.id().to_owned(),
+            13,
+        );
+        let reset = Entry::from_payload(EntryPayload::ResetBoundary, delete.id().to_owned(), 14);
+        let state = SessionState::from_entries(vec![header, message, put, delete, reset])
+            .expect("状态日志可回放");
+        assert!(state.ptc_state.is_empty());
+        assert_eq!(state.ptc_state_bytes, 0);
     }
 
     #[test]

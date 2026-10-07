@@ -227,18 +227,20 @@ impl SessionTable {
                 target + 1
             };
             if message.role == Role::Assistant {
-                let call_ids: Vec<&str> =
+                let mut call_ids: Vec<&str> =
                     message.tool_calls().map(|call| call.id.as_str()).collect();
-                while end < state.entries.len() {
-                    let Entry::Message { message: next, .. } = &state.entries[end] else {
-                        break;
-                    };
-                    if next.role != Role::Tool
-                        || !next
-                            .tool_results()
-                            .all(|result| call_ids.contains(&result.tool_call_id.as_str()))
-                    {
-                        break;
+                while !call_ids.is_empty() && end < state.entries.len() {
+                    if let Entry::Message { message: next, .. } = &state.entries[end] {
+                        if next.role != Role::Tool
+                            || !next
+                                .tool_results()
+                                .all(|result| call_ids.contains(&result.tool_call_id.as_str()))
+                        {
+                            break;
+                        }
+                        for result in next.tool_results() {
+                            call_ids.retain(|id| *id != result.tool_call_id);
+                        }
                     }
                     end += 1;
                 }

@@ -44,6 +44,8 @@ pub struct McpToolInfo {
     pub description: Option<String>,
     /// MCP `inputSchema`，直接作为 `ToolDef::parameters` 透传。
     pub input_schema: Value,
+    /// 服务端声明的输出 schema，供代码模式按需发现。
+    pub output_schema: Option<Value>,
     /// `annotations.readOnlyHint`；缺失按可写处理。
     pub read_only: bool,
 }
@@ -411,6 +413,10 @@ fn convert_tools(
                 title: tool.title.clone(),
                 description: tool.description.as_ref().map(|d| d.to_string()),
                 input_schema: Value::Object(tool.input_schema.as_ref().clone()),
+                output_schema: tool
+                    .output_schema
+                    .as_ref()
+                    .map(|schema| Value::Object(schema.as_ref().clone())),
                 read_only: tool
                     .annotations
                     .as_ref()
@@ -993,6 +999,7 @@ mod tests {
             title: None,
             description: None,
             input_schema: json!({"type": "object"}),
+            output_schema: None,
             read_only: false,
         };
         let result = manager

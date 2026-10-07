@@ -60,6 +60,9 @@ impl Tool for McpTool {
             strict: None,
         }
     }
+    fn output_schema(&self) -> Option<&Value> {
+        self.info.output_schema.as_ref()
+    }
 
     fn run<'a>(
         &'a self,
@@ -79,6 +82,10 @@ impl Tool for McpTool {
                 Err(error) => return Ok(ToolOutcome::failure("E_MCP", error.to_string())),
             };
             let mut outcome = ToolOutcome::success(output.text);
+            outcome.structured_content = output.structured_content;
+            if output.is_error {
+                outcome.error_code = Some("E_MCP_TOOL".into());
+            }
             outcome.is_error = output.is_error;
             outcome.images = output
                 .images

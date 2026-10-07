@@ -43,6 +43,35 @@ impl From<&str> for ToolOutput {
     }
 }
 
+/// 将原始结构化数据仅在模型展示出口格式化；工具执行与 JS 仍读取原值。
+pub(crate) async fn prepare_outcome(
+    outcome: &crate::tools::ToolOutcome,
+    config: &OutputConfig,
+    artifacts: &ArtifactStore,
+) -> Result<String, OutputError> {
+    let Some(structured) = &outcome.structured_content else {
+        return prepare(outcome.content.clone(), config, artifacts).await;
+    };
+    let json = serde_json::to_string_pretty(structured).expect("JSON Value 可序列化");
+    let mut text = match &outcome.content {
+        ToolOutput::Text(text) => text.clone(),
+        ToolOutput::File { path, suffix } => {
+            let uri = artifacts.uri_for_path(path)?;
+            let mut text = preview_file(path, config, &uri).await?;
+            text.push_str(suffix);
+            text
+        }
+        ToolOutput::Excerpt { text, .. } => text.clone(),
+    };
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str("[结构化结果]\n```json\n");
+    text.push_str(&json);
+    text.push_str("\n```");
+    prepare(ToolOutput::Text(text), config, artifacts).await
+}
+
 /// 在持久化和发送给模型之前调用；不改变工具错误、图片、diff 或提示控制。
 pub(crate) async fn prepare(
     output: ToolOutput,
