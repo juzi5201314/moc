@@ -2,10 +2,9 @@
 
 use super::workspace::{WorkspaceScope, check_workspace};
 use crate::{
-    config::{ApprovalMode, ToolApproval},
     error::CoreError,
     service::{CoreInner, SessionRuntime, protocol_to_rpc, snapshot_workspace, to_rpc},
-    tools::{Tier, ToolControl, ToolCtx, ToolOutcome, ToolOutput},
+    tools::{ToolControl, ToolCtx, ToolOutcome, ToolOutput},
 };
 use futures_util::{
     FutureExt,
@@ -69,12 +68,7 @@ pub(super) async fn execute_tool_batch(
             results[index] = Some((Err(error), 0));
             continue;
         };
-        let approval = config.tool_approval.lookup(&call.name);
-        let asks_permission = approval == Some(ToolApproval::Prompt)
-            || (approval.is_none()
-                && config.tools.approval_mode == ApprovalMode::Prompt
-                && tool.tier() != Tier::Read);
-        let parallel = tool.parallel_safe() && !asks_permission;
+        let parallel = tool.parallel_safe();
 
         if !parallel {
             while let Some((done, result, elapsed)) = pending.next().await {
@@ -99,7 +93,7 @@ pub(super) async fn execute_tool_batch(
         let start = Instant::now();
         if parallel {
             pending.push(Box::pin(async move {
-                let result = execute_tool(inner, tool_ctx, runtime, mode, call).await;
+                let result = execute_tool(inner, tool_ctx, mode, call).await;
                 (
                     index,
                     result,
@@ -112,7 +106,7 @@ pub(super) async fn execute_tool_batch(
                 results[done] = Some((result, elapsed));
             }
         } else {
-            let result = execute_tool(inner, tool_ctx, runtime, mode, call).await;
+            let result = execute_tool(inner, tool_ctx, mode, call).await;
             let elapsed = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
             if matches!(result, Err(CoreError::Protocol(_))) {
                 stop_reason = Some(RpcError::of(RpcErrorCode::InternalError));
@@ -277,7 +271,6 @@ pub(super) async fn execute_tool_batch(
 async fn execute_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
-    runtime: &SessionRuntime,
     mode: moc_protocol::methods::SessionMode,
     call: &moc_llm::ToolCall,
 ) -> Result<ToolOutcome, CoreError> {
@@ -324,10 +317,17 @@ async fn execute_tool(
             ));
         }
     };
-    match authorize(inner, ctx, runtime, &call.id, &tool, &args).await? {
+    if name == "bash"
+        && let Some(command) = args.get("command").and_then(Value::as_str)
+        && let Err(error) =
+            crate::tools::bash::reject_denied(&config.tools.bash.deny_patterns, command)
+    {
+        return Ok(error.into_outcome());
+    }
+    let execution_permission = match authorize(ctx, &call.id, name, &args).await? {
         Authorization::Denied => {
             return Ok(ToolOutcome {
-                content: "[E_PERMISSION_DENIED] 用户拒绝执行该工具".into(),
+                content: "[E_PERMISSION_DENIED] 用户拒绝执行该命令".into(),
                 is_error: true,
                 structured_content: None,
                 error_code: Some("E_PERMISSION_DENIED".into()),
@@ -337,12 +337,13 @@ async fn execute_tool(
                 diff: None,
             });
         }
-        Authorization::Allowed => {}
-    }
+        Authorization::Allowed(permission) => permission,
+    };
     if ctx.cancel.is_cancelled() {
         return Ok(cancelled_outcome());
     }
     let mut execution_ctx = ctx.clone();
+    execution_ctx.permission = execution_permission;
     execution_ctx.tool_call_id = call.id.clone();
     let execution = AssertUnwindSafe(tool.run(&execution_ctx, args)).catch_unwind();
     let result = if tool.parallel_safe() || name == "ask" {
@@ -385,49 +386,37 @@ pub(crate) async fn execute_nested_tool(
     } else {
         ctx.mode
     };
-    execute_tool(inner, &nested, &ctx.runtime, mode, call).await
+    execute_tool(inner, &nested, mode, call).await
 }
 
 enum Authorization {
-    Allowed,
+    Allowed(moc_protocol::SessionPermission),
     Denied,
 }
 
 async fn authorize(
-    inner: &CoreInner,
     ctx: &ToolCtx,
-    runtime: &SessionRuntime,
     tool_call_id: &str,
-    tool: &Arc<dyn crate::tools::Tool>,
+    tool_name: &str,
     arguments: &Value,
 ) -> Result<Authorization, CoreError> {
-    let config = &ctx.config;
+    if tool_name != "bash" || ctx.permission != moc_protocol::SessionPermission::Workspace {
+        return Ok(Authorization::Allowed(ctx.permission));
+    }
+    let Some(command) = arguments.get("command").and_then(Value::as_str) else {
+        return Ok(Authorization::Allowed(ctx.permission));
+    };
+    let requested_cwd = arguments.get("cwd").and_then(Value::as_str);
+    let cwd = crate::tools::bash::resolve_cwd(&ctx.cwd, requested_cwd)
+        .map_err(|error| CoreError::Tool(error.to_string()))?;
+    if crate::tools::bash::allowed_in_sandbox(&ctx.config.tools.bash, command, &cwd, &ctx.cwd)
+        .map_err(|error| CoreError::Tool(error.to_string()))?
+    {
+        return Ok(Authorization::Allowed(ctx.permission));
+    }
     let request = &ctx.request;
-    let session_id = ctx.session_id.as_str();
-    let prompt_id = ctx.prompt_id.as_str();
-    let tool_name = tool.name();
-    let policy = config.tool_approval.lookup(tool_name);
-    if policy == Some(ToolApproval::Deny) {
-        return Ok(Authorization::Denied);
-    }
-    if policy == Some(ToolApproval::Allow) {
-        return Ok(Authorization::Allowed);
-    }
-    if let Some(allowed) = runtime.permissions.read().get(tool_name).copied() {
-        return Ok(if allowed {
-            Authorization::Allowed
-        } else {
-            Authorization::Denied
-        });
-    }
-    let needs_prompt = policy == Some(ToolApproval::Prompt)
-        || (policy.is_none()
-            && config.tools.approval_mode == ApprovalMode::Prompt
-            && tool.tier() != Tier::Read);
-    if !needs_prompt {
-        return Ok(Authorization::Allowed);
-    }
-    if !inner
+    if !ctx
+        .core
         .capabilities
         .read()
         .get(&request.connection_id())
@@ -439,117 +428,50 @@ async fn authorize(
     request
         .updates()
         .emit(
-            session_id.to_owned(),
+            ctx.session_id.clone(),
             SessionUpdate::PermissionRequested {
-                prompt_id: prompt_id.to_owned(),
+                prompt_id: ctx.prompt_id.clone(),
                 request_id: request_id.clone(),
                 tool_call_id: tool_call_id.to_owned(),
             },
         )
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
-    let command = arguments
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let diff = match tool_name {
-        "edit" => crate::tools::edit::preview_edit_diff(ctx, arguments),
-        "write" => {
-            let path = arguments.get("path").and_then(Value::as_str);
-            let content = arguments.get("content").and_then(Value::as_str);
-            match (path, content) {
-                (Some(path), Some(content)) => {
-                    crate::tools::write::preview_write_diff(
-                        &ctx.cwd,
-                        path,
-                        content,
-                        ctx.config.tools.output.max_file_bytes,
-                    )
-                    .await
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    };
     let answer = request
         .ask_permission(moc_protocol::methods::PermissionRequestParams {
-            session_id: session_id.to_owned(),
-            prompt_id: prompt_id.to_owned(),
+            session_id: ctx.session_id.clone(),
+            prompt_id: ctx.prompt_id.clone(),
             request_id: request_id.clone(),
             tool_call_id: tool_call_id.to_owned(),
-            tool_name: tool_name.to_owned(),
-            title: if command.is_empty() {
-                format!("允许工具 {tool_name}")
-            } else {
-                format!(
-                    "允许执行命令：{}",
-                    command.lines().next().unwrap_or(command)
-                )
-            },
-            body: (!command.is_empty()).then(|| command.to_owned()),
-            diff,
-            options: [
-                (
-                    "allow_once",
-                    "允许一次",
-                    moc_protocol::PermissionOptionKind::AllowOnce,
-                ),
-                (
-                    "allow_always",
-                    "本会话允许",
-                    moc_protocol::PermissionOptionKind::AllowAlways,
-                ),
-                (
-                    "reject_once",
-                    "拒绝一次",
-                    moc_protocol::PermissionOptionKind::RejectOnce,
-                ),
-                (
-                    "reject_always",
-                    "本会话拒绝",
-                    moc_protocol::PermissionOptionKind::RejectAlways,
-                ),
-            ]
-            .into_iter()
-            .map(|(id, label, kind)| moc_protocol::PermissionOption {
-                id: id.into(),
-                label: label.into(),
-                kind,
-            })
-            .collect(),
+            tool_name: "bash".into(),
+            title: format!(
+                "允许在沙盒外执行命令：{}",
+                command.lines().next().unwrap_or(command)
+            ),
+            body: Some(command.to_owned()),
+            diff: None,
+            options: moc_protocol::methods::default_options(),
         })
         .await;
     let selected = answer.ok().map(|answer| answer.option_id);
     request
         .updates()
         .emit(
-            session_id.to_owned(),
+            ctx.session_id.clone(),
             SessionUpdate::PermissionResolved {
-                prompt_id: prompt_id.to_owned(),
+                prompt_id: ctx.prompt_id.clone(),
                 request_id,
                 option_id: selected.clone(),
             },
         )
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
-    match selected.as_deref() {
-        Some("allow_once") => Ok(Authorization::Allowed),
-        Some("allow_always") => {
-            runtime
-                .permissions
-                .write()
-                .insert(tool_name.to_owned(), true);
-            Ok(Authorization::Allowed)
-        }
-        Some("reject_always") => {
-            runtime
-                .permissions
-                .write()
-                .insert(tool_name.to_owned(), false);
-            Ok(Authorization::Denied)
-        }
-        _ => Ok(Authorization::Denied),
+    if selected.as_deref() == Some("allow_once") {
+        Ok(Authorization::Allowed(
+            moc_protocol::SessionPermission::Full,
+        ))
+    } else {
+        Ok(Authorization::Denied)
     }
 }
 

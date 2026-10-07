@@ -735,7 +735,6 @@ async fn run_prompt_locked(
             permission,
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
-            runtime: Arc::clone(&runtime),
             openviking,
             openviking_peer,
             mcp: Arc::clone(&mcp),

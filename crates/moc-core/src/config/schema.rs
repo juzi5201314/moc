@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 
 use super::model::ModelCatalog;
@@ -71,90 +70,9 @@ impl Default for SkillsConfig {
     }
 }
 
-/// 工具授权策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    /// 自动允许（deny 规则仍然优先）。
-    #[default]
-    Yolo,
-    /// 对写入或执行类工具询问用户。
-    Prompt,
-}
-
-/// 单项工具的授权覆盖规则。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolApproval {
-    Allow,
-    Deny,
-    Prompt,
-}
-
-/// `[tools.approval]` 的预编译匹配器。
-///
-/// 精确键 O(log n) 命中；含通配符的键在配置加载期编译为 [`GlobSet`]，
-/// 运行期按「模式更长 = 更具体」排序取首个命中。`mcp__github__*` 这类
-/// 前缀规则由此生效，MCP 工具无需逐个登记。
-#[derive(Debug, Clone, Default)]
-pub struct ApprovalMatcher {
-    exact: BTreeMap<String, ToolApproval>,
-    /// (模式长度, 匹配器, 策略)，按模式长度降序。
-    globs: Vec<(usize, GlobSet, ToolApproval)>,
-}
-
-impl ApprovalMatcher {
-    pub fn build(approval: &BTreeMap<String, ToolApproval>) -> Self {
-        let mut exact = BTreeMap::new();
-        let mut globs = Vec::new();
-        for (key, policy) in approval {
-            let is_pattern =
-                key.contains('*') || key.contains('?') || key.contains('[') || key.contains('{');
-            if !is_pattern {
-                exact.insert(key.clone(), *policy);
-                continue;
-            }
-            match GlobBuilder::new(key).literal_separator(false).build() {
-                Ok(glob) => {
-                    let mut builder = GlobSetBuilder::new();
-                    builder.add(glob);
-                    match builder.build() {
-                        Ok(set) => globs.push((key.len(), set, *policy)),
-                        Err(error) => {
-                            tracing::warn!("审批规则 `{key}` 编译失败，已忽略：{error}")
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!("审批规则 `{key}` 不是合法 glob，已忽略：{error}")
-                }
-            }
-        }
-        globs.sort_by_key(|(pattern_len, _, _)| std::cmp::Reverse(*pattern_len));
-        Self { exact, globs }
-    }
-
-    /// 解析工具名对应的策略：精确优先，glob 按具体度取首个命中。
-    pub fn lookup(&self, name: &str) -> Option<ToolApproval> {
-        if let Some(policy) = self.exact.get(name) {
-            return Some(*policy);
-        }
-        self.globs
-            .iter()
-            .find(|(_, set, _)| set.is_match(name))
-            .map(|(_, _, policy)| *policy)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.exact.is_empty() && self.globs.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsConfig {
-    pub approval_mode: ApprovalMode,
-    pub approval: BTreeMap<String, ToolApproval>,
     pub output: OutputConfig,
     pub bash: BashConfig,
     pub read: ReadConfig,
@@ -165,25 +83,6 @@ pub struct ToolsConfig {
     pub todo: FeatureConfig,
     pub job: JobConfig,
     pub ptc: PtcConfig,
-}
-
-impl Default for ToolsConfig {
-    fn default() -> Self {
-        Self {
-            approval_mode: ApprovalMode::Yolo,
-            approval: BTreeMap::new(),
-            output: OutputConfig::default(),
-            bash: BashConfig::default(),
-            read: ReadConfig::default(),
-            edit: EditConfig::default(),
-            write: WriteConfig::default(),
-            grep: GrepConfig::default(),
-            find: FindConfig::default(),
-            todo: FeatureConfig::default(),
-            job: JobConfig::default(),
-            ptc: PtcConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -258,6 +157,8 @@ pub struct BashConfig {
     pub max_timeout_secs: u64,
     pub auto_background_ms: u64,
     pub deny_patterns: Vec<String>,
+    /// 允许直接留在 workspace 沙盒执行的完整命令正则。
+    pub allow_patterns: Vec<String>,
 }
 
 impl Default for BashConfig {
@@ -275,6 +176,7 @@ impl Default for BashConfig {
                 r"(?i)\b(remove-item|clear-disk|initialize-disk|remove-partition)\b".into(),
                 r">\s*/etc/passwd".into(),
             ],
+            allow_patterns: Vec::new(),
         }
     }
 }

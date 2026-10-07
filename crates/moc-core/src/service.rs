@@ -36,7 +36,6 @@ pub(crate) struct SessionRuntime {
     pub jobs: Arc<JobManager>,
     pub workspace: Mutex<Option<WorkspaceSnapshot>>,
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
-    pub permissions: RwLock<HashMap<String, bool>>,
     /// 本会话已加载的 skill 名；`skill` 工具据此去重。
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
     pub steering: Mutex<management::Steering>,
@@ -51,7 +50,6 @@ impl SessionRuntime {
             reminders: tokio::sync::Mutex::new(
                 crate::system_prompt::reminder::ReminderState::default(),
             ),
-            permissions: RwLock::new(HashMap::new()),
             loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
             steering: Mutex::new(management::Steering::default()),
         }
@@ -90,11 +88,7 @@ impl CoreInner {
     }
 
     pub(crate) fn effective_permission(&self, permission: SessionPermission) -> SessionPermission {
-        if permission == SessionPermission::Workspace && self.bwrap_available {
-            SessionPermission::Workspace
-        } else {
-            SessionPermission::Full
-        }
+        permission
     }
     pub(crate) fn config(&self) -> Arc<ResolvedConfig> {
         Arc::clone(&self.config.read())

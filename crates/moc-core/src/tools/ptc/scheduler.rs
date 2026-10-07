@@ -6,9 +6,8 @@ use super::{
     wire::*,
 };
 use crate::{
-    config::{ApprovalMode, ToolApproval},
     session::entries::EntryPayload,
-    tools::{Tier, ToolControl, ToolCtx, ToolOutcome},
+    tools::{ToolControl, ToolCtx, ToolOutcome},
 };
 use futures_util::{
     future::BoxFuture,
@@ -27,12 +26,8 @@ fn parallel(ctx: &ToolCtx, operation: &Operation) -> bool {
     match operation {
         Operation::Store { .. } | Operation::Remove { .. } => false,
         Operation::Tool { name, .. } => ctx.catalog.get(name).is_some_and(|tool| {
-            let policy = ctx.config.tool_approval.lookup(name);
-            tool.parallel_safe()
-                && policy != Some(ToolApproval::Prompt)
-                && !(policy.is_none()
-                    && ctx.config.tools.approval_mode == ApprovalMode::Prompt
-                    && tool.tier() != Tier::Read)
+            !(name == "bash" && ctx.permission == moc_protocol::SessionPermission::Workspace)
+                && tool.parallel_safe()
         }),
         _ => true,
     }

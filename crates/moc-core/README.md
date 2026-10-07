@@ -35,8 +35,8 @@ max_output_tokens = 32000
 max_request_bytes = 52428800
 input = ["text"]
 
-[tools]
-approval_mode = "prompt"
+[tools.bash]
+allow_patterns = ["^mkdir\\s+-p\\s+[^/]+$", "^git\\s+(add|commit)\\b.*$"]
 
 ```
 
@@ -104,7 +104,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 的管道与 PTY 都在只读根文件系统中运行，`edit` / `write` 仍由 core 写入工作区。权限选择写入会话 transcript，恢复会话后继续生效；bwrap 不可用时 workspace 请求明确失败，不会回退执行为 full。
+交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读。白名单命令直接在 workspace 沙盒运行；未命中的 bash 命令会请求用户授权，用户允许后该命令以 full 权限执行一次，确保批准的工作区外写入不会再次被沙盒拦截。
 
 ## 嵌入接口
 
@@ -116,8 +116,8 @@ cargo run -p moc-cli -- --resume SESSION_ID
 
 ## 行为与安全边界
 
-- 默认授权模式是 `yolo`；上述示例显式使用 `prompt`。deny 规则始终生效，未声明确认能力的前端不能默许需确认的工具。
-- `/permission workspace` 是 bash 的操作系统级只读沙盒，不隔离网络、不清理继承环境，也不提供可写构建目录；bwrap 在启动后失效时命令直接报错，禁止静默回退到宿主 shell。`edit` / `write` 不受该 bash 沙盒限制。
+- `full` 是 yolo：bash 不做授权询问，但危险命令拒绝规则始终生效。
+- `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 仍由 core 直接写入工作区。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。

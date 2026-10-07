@@ -5,41 +5,8 @@ use moc_llm::ToolDef;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, resolve_tool_path, schema};
-use crate::hashline::apply::{EditError, EditRequest, apply_edit, preview_edit};
+use crate::hashline::apply::{EditError, EditRequest, apply_edit};
 use crate::resources::ResourceRouter;
-use moc_protocol::ToolDiff;
-
-/// 授权预览：按工具参数计算 edit 将产生的 diff，不落盘、不更新锚点状态。
-/// 参数不合法或范围未服务时返回 `None`，真实错误由执行阶段给出。
-pub(crate) fn preview_edit_diff(ctx: &ToolCtx, arguments: &serde_json::Value) -> Option<ToolDiff> {
-    let mut request: EditRequest = serde_json::from_value(arguments.clone()).ok()?;
-    reject_resource_path(&request.path).ok()?;
-    let source_path = resolve_tool_path(&ctx.cwd, &request.path).ok()?;
-    request.path = source_path.to_string_lossy().into_owned();
-    let target_path = request
-        .move_lines
-        .as_ref()
-        .map(|movement| {
-            reject_resource_path(&movement.target_path)?;
-            resolve_tool_path(&ctx.cwd, &movement.target_path)
-        })
-        .transpose()
-        .ok()?;
-    let source_served = ctx.anchors.served(&source_path).unwrap_or_default();
-    let target_served = target_path
-        .as_ref()
-        .and_then(|path| ctx.anchors.served(path));
-    preview_edit(
-        &ctx.cwd,
-        &request,
-        &source_served,
-        target_served.as_ref(),
-        &ctx.anchors,
-        ctx.config.tools.edit.max_edits,
-        ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
-    )
-    .ok()
-}
 
 fn reject_resource_path(path: &str) -> Result<(), ToolError> {
     ResourceRouter::write(path).map_err(|error| ToolError::new(error.code, error.message))

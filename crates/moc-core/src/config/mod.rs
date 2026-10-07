@@ -21,11 +21,10 @@ mod schema;
 
 pub use model::{ModelCapabilities, ThinkingLevel};
 pub use schema::{
-    ApprovalMatcher, ApprovalMode, BashConfig, CompactionConfig, CompactionMethod,
-    CompactionThreshold, ContextFilesConfig, EditConfig, FeatureConfig, FindConfig, GrepConfig,
-    JobConfig, JobOverflow, LimitsConfig, OutputConfig, ReadConfig, RemoteCompactionConfig,
-    RetentionConfig, ShakeConfig, SkillsConfig, SourcesConfig, SystemPromptConfig, ToolApproval,
-    ToolsConfig, WorkspaceConfig, WriteConfig,
+    BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
+    EditConfig, FeatureConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig,
+    OutputConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig,
+    SourcesConfig, SystemPromptConfig, ToolsConfig, WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -43,7 +42,6 @@ pub struct ResolvedConfig {
     pub roles: ModelRoles,
     pub sources: SourcesConfig,
     pub tools: ToolsConfig,
-    pub tool_approval: ApprovalMatcher,
     pub compaction: CompactionConfig,
     pub limits: LimitsConfig,
     pub system_prompt: SystemPromptConfig,
@@ -159,7 +157,6 @@ impl ResolvedConfig {
             cwd,
             roles: document.models.roles,
             sources: document.sources,
-            tool_approval: ApprovalMatcher::build(&document.tools.approval),
             tools: document.tools,
             compaction: document.compaction,
             limits: document.limits,
@@ -405,34 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn approval_matcher_prefers_exact_then_most_specific_glob() {
-        use super::schema::ApprovalMatcher;
-        use std::collections::BTreeMap;
-
-        let rules: BTreeMap<String, ToolApproval> = [
-            ("mcp__github__*".to_owned(), ToolApproval::Prompt),
-            ("mcp__github__list_*".to_owned(), ToolApproval::Allow),
-            ("bash".to_owned(), ToolApproval::Deny),
-        ]
-        .into_iter()
-        .collect();
-        let matcher = ApprovalMatcher::build(&rules);
-        assert_eq!(matcher.lookup("bash"), Some(ToolApproval::Deny));
-        // 更长的模式更具体，覆盖短前缀。
-        assert_eq!(
-            matcher.lookup("mcp__github__list_issues"),
-            Some(ToolApproval::Allow)
-        );
-        assert_eq!(
-            matcher.lookup("mcp__github__create_issue"),
-            Some(ToolApproval::Prompt)
-        );
-        assert_eq!(matcher.lookup("unrelated"), None);
-        assert!(!matcher.is_empty());
-        assert!(ApprovalMatcher::build(&BTreeMap::new()).is_empty());
-    }
-
-    #[test]
     fn merges_global_project_and_cli_tables_in_precedence_order() {
         let dir = tempfile::tempdir().expect("临时目录");
         let home = dir.path().join("home");
@@ -443,7 +412,7 @@ mod tests {
         fs::write(
             home.join("config.toml"),
             format!(
-                "{}\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n",
+                "{}\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n[tools.bash]\nallow_patterns=['^python3\\s+build\\.py$']\n",
                 provider_config("literal")
             ),
         )
@@ -464,9 +433,10 @@ mod tests {
             .for_project(&project)
             .expect("项目配置可合并");
 
-        assert_eq!(config.tools.read.default_limit, 700);
-        assert_eq!(config.tools.read.max_bytes, 8192);
-        assert_eq!(config.tools.read.line_max_bytes, 12345);
+        assert_eq!(
+            config.tools.bash.allow_patterns,
+            vec![r"^python3\s+build\.py$".to_owned()]
+        );
         assert_eq!(
             config
                 .resolve_role("default")

@@ -12,6 +12,8 @@ use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
+mod policy;
+pub(crate) use policy::allowed_in_sandbox;
 mod group;
 pub(crate) use group::ProcessGroup;
 mod process;
@@ -73,7 +75,6 @@ impl Tool for BashTool {
             if args.command.trim().is_empty() {
                 return Err(ToolError::new("E_BAD_PAYLOAD", "command 不能为空"));
             }
-            reject_denied(&ctx.config.tools.bash.deny_patterns, &args.command)?;
             let cwd = resolve_cwd(&ctx.cwd, args.cwd.as_deref())?;
             let timeout = args
                 .timeout
@@ -95,8 +96,15 @@ impl Tool for BashTool {
             } else {
                 None
             };
-            let process =
-                Process::spawn(args, cwd, timeout, output_path.clone(), ctx.permission).await?;
+            let process = Process::spawn(
+                args,
+                cwd,
+                ctx.cwd.clone(),
+                timeout,
+                output_path.clone(),
+                ctx.permission,
+            )
+            .await?;
             if asynchronous {
                 ctx.jobs.start(
                     ctx.clone(),
@@ -199,7 +207,7 @@ async fn wait_foreground(
     }
 }
 
-fn reject_denied(patterns: &[String], command: &str) -> Result<(), ToolError> {
+pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), ToolError> {
     for pattern in patterns {
         let matcher = grep_regex::RegexMatcher::new(pattern)
             .map_err(|error| ToolError::new("E_CONFIG", format!("危险命令规则无效：{error}")))?;
@@ -210,7 +218,7 @@ fn reject_denied(patterns: &[String], command: &str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBuf, ToolError> {
+pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBuf, ToolError> {
     let cwd = requested
         .map(Path::new)
         .map(|path| {

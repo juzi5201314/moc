@@ -158,7 +158,6 @@ pub struct ToolCtx {
     pub mode: SessionMode,
     pub permission: SessionPermission,
     pub nested: bool,
-    pub(crate) runtime: Arc<crate::service::SessionRuntime>,
     pub cancel: CancellationToken,
     pub jobs: Arc<job::JobManager>,
     /// 当前 workspace 的惰性 OpenViking client；未配置时为 None。

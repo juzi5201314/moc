@@ -77,12 +77,8 @@ pub struct PermissionOption {
 pub enum PermissionOptionKind {
     /// 允许这一次。
     AllowOnce,
-    /// 本会话内一直允许。
-    AllowAlways,
     /// 拒绝这一次。
     RejectOnce,
-    /// 本会话内一直拒绝。
-    RejectAlways,
 }
 
 /// `session/request_permission` 的结果。

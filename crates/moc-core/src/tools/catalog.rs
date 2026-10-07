@@ -7,10 +7,7 @@ use moc_protocol::SessionMode;
 use serde_json::{Value, json};
 
 use super::{Tier, Tool, ToolError, ToolRegistry};
-use crate::{
-    config::{ResolvedConfig, ToolApproval},
-    service::mode,
-};
+use crate::{config::ResolvedConfig, service::mode};
 
 pub struct ToolCatalog {
     tools: Vec<Arc<dyn Tool>>,
@@ -67,7 +64,6 @@ impl ToolCatalog {
             tool.name() != "run_code"
                 && mode::mode_allows(mode, tool.name(), tool.tier())
                 && mode::tool_enabled(tool.name(), ask_supported, config)
-                && config.tool_approval.lookup(tool.name()) != Some(ToolApproval::Deny)
         })
     }
 

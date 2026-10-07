@@ -28,6 +28,7 @@ impl Process {
     pub(super) async fn spawn(
         args: BashArgs,
         cwd: PathBuf,
+        workspace: PathBuf,
         timeout: u64,
         path: PathBuf,
         permission: SessionPermission,
@@ -40,15 +41,16 @@ impl Process {
         }
         let duration = (timeout > 0).then_some(Duration::from_secs(timeout));
         if args.pty.unwrap_or(false) {
-            Self::pty(args, cwd, duration, path, permission).await
+            Self::pty(args, cwd, workspace, duration, path, permission).await
         } else {
-            Self::pipe(args, cwd, duration, path, permission)
+            Self::pipe(args, cwd, workspace, duration, path, permission)
         }
     }
 
     fn pipe(
         args: BashArgs,
         cwd: PathBuf,
+        workspace: PathBuf,
         timeout: Option<Duration>,
         path: PathBuf,
         permission: SessionPermission,
@@ -57,7 +59,7 @@ impl Process {
             SessionPermission::Full => Command::new(shell_program()),
             SessionPermission::Workspace => {
                 let mut command = Command::new("bwrap");
-                for argument in sandbox_arguments(&cwd) {
+                for argument in sandbox_arguments(&cwd, &workspace) {
                     command.arg(argument);
                 }
                 command.arg("--").arg(shell_program());
@@ -150,6 +152,7 @@ impl Process {
     async fn pty(
         args: BashArgs,
         cwd: PathBuf,
+        workspace: PathBuf,
         timeout: Option<Duration>,
         path: PathBuf,
         permission: SessionPermission,
@@ -164,7 +167,9 @@ impl Process {
         let cancel_on_drop = cancel.clone().drop_guard();
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
-            run_pty(args, cwd, timeout, path, permission, cancel, started)
+            run_pty(
+                args, cwd, workspace, timeout, path, permission, cancel, started,
+            )
         });
         let (pid, group) = match ready.await {
             Ok((pid, group)) => (pid, group),
@@ -205,7 +210,7 @@ fn shell_program() -> OsString {
 }
 
 #[cfg(unix)]
-fn sandbox_arguments(cwd: &std::path::Path) -> Vec<OsString> {
+fn sandbox_arguments(cwd: &std::path::Path, workspace: &std::path::Path) -> Vec<OsString> {
     vec![
         "--die-with-parent".into(),
         "--new-session".into(),
@@ -217,6 +222,9 @@ fn sandbox_arguments(cwd: &std::path::Path) -> Vec<OsString> {
         "--ro-bind".into(),
         "/".into(),
         "/".into(),
+        "--bind".into(),
+        workspace.as_os_str().to_owned(),
+        workspace.as_os_str().to_owned(),
         "--proc".into(),
         "/proc".into(),
         "--dev".into(),
@@ -227,7 +235,7 @@ fn sandbox_arguments(cwd: &std::path::Path) -> Vec<OsString> {
 }
 
 #[cfg(not(unix))]
-fn sandbox_arguments(_cwd: &std::path::Path) -> Vec<OsString> {
+fn sandbox_arguments(_cwd: &std::path::Path, _workspace: &std::path::Path) -> Vec<OsString> {
     Vec::new()
 }
 
@@ -291,6 +299,7 @@ fn pty_input(_command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> 
 fn run_pty(
     args: BashArgs,
     cwd: PathBuf,
+    workspace: PathBuf,
     timeout: Option<Duration>,
     path: PathBuf,
     permission: SessionPermission,
@@ -311,7 +320,7 @@ fn run_pty(
     };
     let mut builder = CommandBuilder::new(program);
     if permission == SessionPermission::Workspace {
-        for argument in sandbox_arguments(&cwd) {
+        for argument in sandbox_arguments(&cwd, &workspace) {
             builder.arg(argument);
         }
         builder.arg("--");
@@ -418,14 +427,16 @@ mod unix_tests {
     }
 
     #[test]
-    fn workspace_arguments_are_read_only_and_namespace_isolated() {
-        let cwd = std::path::Path::new("/tmp/workspace");
-        let arguments = sandbox_arguments(cwd);
+    fn workspace_arguments_allow_workspace_bind_and_isolate_namespaces() {
+        let cwd = std::path::Path::new("/tmp/workspace/src");
+        let workspace = std::path::Path::new("/tmp/workspace");
+        let arguments = sandbox_arguments(cwd, workspace);
         let values: Vec<_> = arguments
             .iter()
             .map(|argument| argument.to_string_lossy())
             .collect();
         assert!(values.iter().any(|value| value == "--ro-bind"));
+        assert!(values.iter().any(|value| value == "--bind"));
         assert!(values.iter().any(|value| value == "--unshare-user"));
         assert!(values.iter().any(|value| value == "--unshare-pid"));
         assert!(values.iter().any(|value| value == "--unshare-ipc"));
@@ -433,55 +444,45 @@ mod unix_tests {
         assert!(values.iter().any(|value| value == "--disable-userns"));
         assert!(values.iter().any(|value| value == "--chdir"));
         assert!(!values.iter().any(|value| value == "--unshare-net"));
-        assert!(!values.iter().any(|value| value == "--bind"));
     }
 
     #[tokio::test]
-    async fn workspace_shell_cannot_delete_host_marker() {
+    async fn workspace_shell_writes_workspace_but_not_external_paths() {
         let directory = tempfile::tempdir().expect("临时目录");
         let marker = directory.path().join("marker");
         fs::write(&marker, "keep").expect("写入 marker");
-        let log = directory.path().join("workspace.log");
         let process = Process::spawn(
-            bash_args("rm -rf . >/dev/null 2>&1; test -f marker"),
+            bash_args("printf x > workspace-marker"),
+            directory.path().to_owned(),
             directory.path().to_owned(),
             5,
-            log,
+            directory.path().join("workspace.log"),
             SessionPermission::Workspace,
         )
         .await
         .expect("启动 workspace shell");
         let result = process.completion.await.expect("等待 workspace shell");
         assert_eq!(result.code, Some(0));
-        assert!(marker.exists(), "宿主 marker 必须保持存在");
+        assert_eq!(
+            fs::read_to_string(directory.path().join("workspace-marker"))
+                .expect("读取 workspace marker"),
+            "x"
+        );
 
+        let external = directory.path().join("..").join("moc-external-marker");
         let process = Process::spawn(
-            bash_args("rm -f marker"),
+            bash_args(&format!("printf x > {}", external.display())),
+            directory.path().to_owned(),
             directory.path().to_owned(),
             5,
-            directory.path().join("workspace-delete.log"),
+            directory.path().join("external.log"),
             SessionPermission::Workspace,
         )
         .await
-        .expect("启动 workspace 删除命令");
-        let result = process.completion.await.expect("等待 workspace 删除命令");
+        .expect("启动 external shell");
+        let result = process.completion.await.expect("等待 external shell");
         assert_ne!(result.code, Some(0));
-        assert!(marker.exists(), "只读沙盒不应删除宿主 marker");
-        let process = Process::spawn(
-            bash_args("printf x > marker2"),
-            directory.path().to_owned(),
-            5,
-            directory.path().join("full.log"),
-            SessionPermission::Full,
-        )
-        .await
-        .expect("启动 full shell");
-        let result = process.completion.await.expect("等待 full shell");
-        assert_eq!(result.code, Some(0));
-        assert_eq!(
-            fs::read_to_string(directory.path().join("marker2")).expect("读取 marker2"),
-            "x"
-        );
+        assert!(!external.exists(), "沙盒不应写入工作区外");
     }
 }
 

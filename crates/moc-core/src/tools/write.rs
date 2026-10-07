@@ -217,28 +217,6 @@ fn build_write_diff(path: &Path, old: Option<&[u8]>, content: &str) -> Option<To
     })
 }
 
-/// 授权预览：按工具参数计算 write 将产生的 diff，不落盘。
-/// 参数缺失、路径无效或内容超限时返回 `None`，真实错误由执行阶段给出。
-pub(crate) async fn preview_write_diff(
-    cwd: &Path,
-    path_value: &str,
-    content: &str,
-    max_file_bytes: u64,
-) -> Option<ToolDiff> {
-    let absolute = resolve_tool_path(cwd, path_value).ok()?;
-    if content.len() as u64 > max_file_bytes {
-        return None;
-    }
-    let old = match tokio::fs::read(&absolute).await {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => return None,
-    };
-    let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
-    let normalized = normalize_line_endings(content, ending);
-    build_write_diff(&absolute, old.as_deref(), &normalized)
-}
-
 fn normalize_line_endings(content: &str, ending: &[u8]) -> String {
     let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
     if ending == b"\n" {

@@ -12,8 +12,6 @@ plan = "inherit"
 project_config = true
 
 [tools]
-approval_mode = "yolo"
-
 [tools.ptc]
 default_timeout_secs = 300
 max_timeout_secs = 1800
@@ -25,8 +23,6 @@ max_pending_calls = 256
 max_state_bytes = 16777216
 
 
-[tools.approval]
-
 [tools.output]
 head_bytes = 20480
 tail_bytes = 20480
@@ -36,6 +32,7 @@ max_file_bytes = 104857600
 default_timeout_secs = 120
 max_timeout_secs = 3600
 auto_background_ms = 0
+allow_patterns = []
 deny_patterns = [
     "(?i)rm\\s+-rf\\s+/(\\s|$)",
     ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\};:",

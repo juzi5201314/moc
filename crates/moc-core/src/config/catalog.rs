@@ -177,7 +177,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 | "extra_body"
                 | "effort_map"
                 | "toggle_extra"
-                | "approval"
                 | "pricing"
                 | "endpoint"
         )
@@ -245,7 +244,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             ("off", "不缓存"),
         ],
         "overflow" => &[("error", "直接报错"), ("wait", "等待空位")],
-        "approval_mode" => &[("yolo", "自动允许"), ("prompt", "执行前询问")],
         "peer_scope" => &[("actor", "仅当前工作区"), ("all", "全部工作区")],
         "max_output_tokens_field" => &[
             ("max_tokens", "max_tokens"),
@@ -395,10 +393,13 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "价格（每百万 token）",
                 "JSON：input/output 必填，cache_read/cache_write 可选，单位美元。",
             ),
-            "approval_mode" => ("工具审批", "自动允许，或在写入文件、执行命令前询问。"),
-            "approval" => (
-                "单个工具的审批",
-                "JSON：工具名对应 allow / deny / prompt，名称可用 * 通配。",
+            "allow_patterns" => (
+                "沙盒白名单命令",
+                "逐行填写完整命令正则；命中后直接在 workspace 沙盒执行，否则向用户询问并在获准后以 full 执行。",
+            ),
+            "deny_patterns" => (
+                "禁止执行的命令",
+                "逐行填写正则表达式，匹配到的命令始终拒绝执行。",
             ),
             "head_bytes" => (
                 "超长输出保留开头",
@@ -413,10 +414,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "auto_background_ms" => (
                 "自动转后台（毫秒）",
                 "命令运行超过这个时间就转到后台；0 表示关闭。",
-            ),
-            "deny_patterns" => (
-                "禁止执行的命令",
-                "逐行填写正则表达式，匹配到的命令会被拒绝执行。",
             ),
             "default_limit" => ("默认读取行数", "读取文件未指定行数时返回的行数。"),
             "max_bytes" => ("读取内容上限", "一次读取最多返回给模型的字节数。"),
