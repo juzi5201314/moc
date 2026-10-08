@@ -27,7 +27,8 @@ impl Tool for SkillTool {
         Tier::Read
     }
     fn parallel_safe(&self) -> bool {
-        true
+        // 加载结果会写入会话内去重集合；串行化避免重复加载的竞态。
+        false
     }
     fn def(&self) -> ToolDef {
         ToolDef::new(

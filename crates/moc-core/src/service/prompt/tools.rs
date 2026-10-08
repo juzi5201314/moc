@@ -29,6 +29,8 @@ pub(super) async fn execute_tool_batch(
     calls: &[moc_llm::ToolCall],
 ) -> Result<bool, RpcError> {
     let config = &tool_ctx.config;
+    let parallel_limit = config.tools.max_concurrent_calls;
+    debug_assert!(parallel_limit > 0);
     let session_id = tool_ctx.session_id.as_str();
     let prompt_id = tool_ctx.prompt_id.as_str();
     let cwd = &tool_ctx.cwd;
@@ -100,7 +102,7 @@ pub(super) async fn execute_tool_batch(
                     start.elapsed().as_millis().min(u64::MAX as u128) as u64,
                 )
             }));
-            if pending.len() == 8
+            if pending.len() == parallel_limit
                 && let Some((done, result, elapsed)) = pending.next().await
             {
                 results[done] = Some((result, elapsed));

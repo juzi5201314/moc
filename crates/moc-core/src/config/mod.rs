@@ -146,6 +146,7 @@ impl ResolvedConfig {
         let providers = resolve_catalog(&document.providers)?;
         validate_roles(&document.models.roles, &providers)?;
         validate_compaction(&document.compaction)?;
+        schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
         schema::validate_ptc(&document.tools.ptc)?;
         if document.tools.job.max_running == 0 {
@@ -567,5 +568,21 @@ max_output_tokens = 128000
                 ThinkingLevel::Max,
             ]
         );
+    }
+
+    #[test]
+    fn validates_standard_tool_concurrency_limit() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "{}\n[tools]\nmax_concurrent_calls = 0\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写配置");
+        assert!(ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err());
     }
 }

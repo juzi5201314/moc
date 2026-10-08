@@ -73,6 +73,8 @@ impl Default for SkillsConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsConfig {
+    /// 标准模式一次模型工具批次中允许同时执行的只读工具数量。
+    pub max_concurrent_calls: usize,
     pub output: OutputConfig,
     pub bash: BashConfig,
     pub read: ReadConfig,
@@ -83,6 +85,15 @@ pub struct ToolsConfig {
     pub todo: FeatureConfig,
     pub job: JobConfig,
     pub ptc: PtcConfig,
+}
+
+pub(super) fn validate_tools(config: &ToolsConfig) -> Result<(), crate::error::CoreError> {
+    if config.max_concurrent_calls == 0 {
+        return Err(crate::error::CoreError::Config(
+            "tools.max_concurrent_calls: 必须大于 0".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]

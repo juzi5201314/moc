@@ -87,7 +87,7 @@ fn rank(key: &str) -> usize {
         "api_key" => 1,
         "api" => 2,
         "cache" => 3,
-        "max_concurrency" => 4,
+        "max_concurrent_calls" => 4,
         "timeout_secs" => 5,
         // 重试
         "max_attempts" => 0,
@@ -434,6 +434,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "context_before" => ("匹配前附带行数", "每处匹配上方附带的行数。"),
             "context_after" => ("匹配后附带行数", "每处匹配下方附带的行数。"),
             "timeout_ms" => ("搜索超时（毫秒）", "一次搜索允许运行的最长时间。"),
+            "max_concurrent_calls" => (
+                "工具并发上限",
+                "标准模式一次工具批次中同时执行的只读工具数量。",
+            ),
             "max_candidate_files" => ("扫描文件上限", "搜索时最多检查多少个文件。"),
             "limit" => ("结果数量", "未指定时返回的结果条数。"),
             "max_running" => ("后台任务上限", "可同时运行的后台任务数量。"),

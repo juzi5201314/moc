@@ -65,7 +65,11 @@ pub fn pieces(
     });
     sections.push(PromptPiece {
         title: "system",
-        text: tool_policy(mode, config.tools.ptc.max_concurrent_calls),
+        text: tool_policy(
+            mode,
+            config.tools.max_concurrent_calls,
+            config.tools.ptc.max_concurrent_calls,
+        ),
     });
     if !mcp_summary.is_empty() {
         sections.push(PromptPiece {
@@ -125,7 +129,7 @@ pub fn pieces(
     sections
 }
 
-fn tool_policy(mode: SessionMode, concurrency: usize) -> String {
+fn tool_policy(mode: SessionMode, standard_concurrency: usize, ptc_concurrency: usize) -> String {
     let mut policy = TOOL_POLICY.to_owned();
     if mode == SessionMode::Ask {
         policy.push_str("\n当前是问答模式：允许读取与检索，禁止修改工作区；run_code 子工具继承本次提示权限。state/todo 只写会话数据。");
@@ -134,7 +138,7 @@ fn tool_policy(mode: SessionMode, concurrency: usize) -> String {
     } else if mode == SessionMode::Ptc {
         policy.push_str("\n当前是 PTC 模式：通过 run_code 编写 JavaScript 并调用列出的工具；仅 run_code 可直接调用，子工具仍受各自启用状态、当前模式与 bash 沙盒策略控制。");
     }
-    policy.push_str(&format!("\n所有模式支持 run_code；PTC 仅此原生入口，其他模式内置工具可直接使用。MCP 仅在代码内经 catalog 发现后调用，不提供 MCP 原生入口。先 await catalog.search({{query:\"\"}}) 获取分页摘要，再 await catalog.describe(name) 获取原始 schema，最后 await tools[name](args)。发现不授予权限，子工具按当前模式与 bash 沙盒策略执行。\nrun_code 的工具结果始终为 {{content,summary,structuredContent,isError,status,artifact}}，优先读取 structuredContent；text-only 的 JSON 可显式 JSON.parse(r.content)。失败 reject Error，含可序列化 code/message/result，可用 try/catch 或 Promise.allSettled。内置例子：const r = await tools.read({{path:\"README.md\"}}); return r.content;\n独立只读任务可 Promise.all，实际并发上限 {concurrency}；写操作和 bash 审批是屏障，返回前必须等待所有调用。只返回最终需要的信息，中间结果不进入模型历史。state.store(key,json)、state.load(key)、state.remove(key)、state.keys() 保存会话 JSON；缺失返回 undefined，写入立即提交，后续失败不撤销；普通 JS 全局变量不会跨次保留。WASM 无文件/网络/进程/定时器 API，必须通过宿主工具。"));
+    policy.push_str(&format!("\n所有模式支持 run_code；PTC 仅此原生入口，其他模式内置工具可直接使用。MCP 仅在代码内经 catalog 发现后调用，不提供 MCP 原生入口。先 await catalog.search({{query:\"\"}}) 获取分页摘要，再 await catalog.describe(name) 获取原始 schema，最后 await tools[name](args)。发现不授予权限，子工具按当前模式与 bash 沙盒策略执行。\nrun_code 的工具结果始终为 {{content,summary,structuredContent,isError,status,artifact}}，优先读取 structuredContent；text-only 的 JSON 可显式 JSON.parse(r.content)。失败 reject Error，含可序列化 code/message/result，可用 try/catch 或 Promise.allSettled。内置例子：const r = await tools.read({{path:\"README.md\"}}); return r.content;\n独立只读任务可 Promise.all；标准工具批次实际并发上限 {standard_concurrency}，run_code 子工具实际并发上限 {ptc_concurrency}。写操作、bash 审批和会话状态更新是屏障，返回前必须等待所有调用。只返回最终需要的信息，中间结果不进入模型历史。state.store(key,json)、state.load(key)、state.remove(key)、state.keys() 保存会话 JSON；缺失返回 undefined，写入立即提交，后续失败不撤销；普通 JS 全局变量不会跨次保留。WASM 无文件/网络/进程/定时器 API，必须通过宿主工具。"));
     policy
 }
 
@@ -191,7 +195,8 @@ mod tests {
         assert!(text.contains("<mcp-servers>"));
         assert!(text.contains("structuredContent"));
         assert!(text.contains("state.store"));
-        assert!(!text.contains("当前时间"));
+        assert!(text.contains("标准工具批次实际并发上限 16"));
+        assert!(text.contains("run_code 子工具实际并发上限 16"));
     }
 
     #[test]
