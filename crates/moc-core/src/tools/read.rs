@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "读取本地文本文件或目录。edit 之前必须先 read；文件行会返回三字符 hashline 锚点。"
+        "读取本地文本文件或目录；修改前必须先 read 以获得最新内容和 hashline 锚点。需要搜索内容用 grep，按文件名或路径查找用 find，不要用 bash、cat 等命令替代本工具。"
     }
     fn tier(&self) -> Tier {
         Tier::Read

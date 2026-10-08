@@ -39,7 +39,7 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &'static str {
-        "执行 shell 命令；默认前台，async=true 时返回 job_id。需要交互终端时设置 pty=true。危险命令即使 yolo 也会被拒绝。"
+        "执行构建、测试、格式化、版本控制和其他确需 shell 的命令；不要用它读取、搜索或编辑工作区文件：读取用 read，搜索用 grep/find，修改用 edit/write，也不要用 cat、grep、rg、find、sed、awk 或 python -c 等命令替代这些工具。默认前台，async=true 时返回 job_id；需要交互终端时设置 pty=true。危险命令即使 yolo 也会被拒绝。"
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -52,7 +52,7 @@ impl Tool for BashTool {
             "bash",
             schema(
                 serde_json::json!({
-                    "command":{"type":"string","description":"stderr 合并到 stdout 的 shell 命令"},
+                    "command":{"type":"string","description":"需要 shell 执行的命令；不要在此调用 cat、grep、rg、find、sed、awk 或解释器读取、搜索、修改工作区文件"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
                     "timeout":{"type":"integer","minimum":0,"maximum":3600},

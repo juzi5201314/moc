@@ -38,7 +38,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "用 Rust 正则并行搜索本地文件；遵循 .gitignore/.ignore，搜索结果不能作为 edit 锚点，修改前先 read。"
+        "用 Rust 正则并行搜索本地文件；搜索代码内容必须使用本工具，不要用 bash 调用 grep、rg、cat、awk 或 sed 替代。遵循 .gitignore/.ignore；搜索结果不能作为 edit 锚点，修改前先 read。"
     }
     fn tier(&self) -> Tier {
         Tier::Read

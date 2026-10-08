@@ -19,7 +19,7 @@ impl Tool for EditTool {
         "edit"
     }
     fn description(&self) -> &'static str {
-        "使用 read 返回的三字符锚点精准修改文件。每项 edits 为 [from_anchor, to_anchor, replacement]；同锚点且非空 replacement 表示在锚点行之后插入，空 replacement 删除。move 在同一调用中把原始快照锚点行跨文件搬运。"
+        "使用 read 返回的三字符锚点精准修改已有文件；已有文件的局部修改必须使用本工具，不要用 bash 的 sed、perl、python、重定向或其他命令替代。每项 edits 为 [from_anchor, to_anchor, replacement]；同锚点且非空 replacement 表示在锚点行之后插入，空 replacement 删除。move 在同一调用中把原始快照锚点行跨文件搬运。"
     }
     fn tier(&self) -> Tier {
         Tier::Write

@@ -26,7 +26,7 @@ impl Tool for WriteTool {
         "write"
     }
     fn description(&self) -> &'static str {
-        "新建或整体覆盖文件。若文件行含有最近 read 得到的 hashline 锚点，请用 edit 而不是 write。"
+        "新建文件或按完整内容整体覆盖文件；已有文件的局部修改必须先 read，再用 edit，不要用 bash 的重定向、tee、sed、perl、python 或其他命令替代。若文件行含有最近 read 得到的 hashline 锚点，请用 edit 而不是 write。"
     }
     fn tier(&self) -> Tier {
         Tier::Write

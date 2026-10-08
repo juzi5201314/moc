@@ -42,7 +42,7 @@ impl Tool for FindTool {
         "find"
     }
     fn description(&self) -> &'static str {
-        "按 glob 并行查找本地路径；遵循 .gitignore/.ignore，最多返回 200 个结果。"
+        "按 glob 并行查找本地路径；查找文件名或路径必须使用本工具，不要用 bash 调用 find、ls 或其他命令替代。遵循 .gitignore/.ignore，最多返回 200 个结果。"
     }
     fn tier(&self) -> Tier {
         Tier::Read
