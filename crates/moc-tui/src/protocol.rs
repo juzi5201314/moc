@@ -17,7 +17,7 @@ use moc_protocol::{
         SessionUpdateParams,
     },
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
 
 /// UI 事件队列承载的消息。
@@ -62,10 +62,19 @@ pub enum AppEvent {
     ContextUsage(ContextUsageResult),
     /// 会话列表就绪。
     Sessions(Vec<moc_protocol::SessionInfo>),
+    /// 历史展示页；`prepend=true` 时插入当前转写之前。
+    HistoryPageLoaded {
+        prepend: bool,
+        result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
+    },
     /// 会话回退选择器的数据加载结果。
     RewindLoaded(anyhow::Result<moc_protocol::SessionLoadResult>),
-    /// 会话加载完成。
-    Loaded(moc_protocol::SessionInfo, Vec<crate::transcript::Entry>),
+    Loaded(
+        moc_protocol::SessionInfo,
+        Vec<crate::transcript::Entry>,
+        bool,
+        Option<String>,
+    ),
     /// 会话回退完成；保留选中的消息以便用户消息恢复到输入框。
     Rewound {
         selected: moc_protocol::methods::TranscriptEntry,
@@ -97,6 +106,8 @@ pub enum ClipboardPayload {
 /// 一条内嵌连接。
 pub struct EmbeddedConnection {
     pub client: ClientHandle,
+    /// 流式更新使用有界队列；队列满时阻塞协议读循环，向 core 传播背压。
+    pub updates: Receiver<SessionUpdateParams>,
     server_connection: ServerConnection,
 }
 
@@ -114,6 +125,7 @@ pub async fn connect_embedded(
     core: Arc<Core>,
     events: UnboundedSender<AppEvent>,
 ) -> anyhow::Result<EmbeddedConnection> {
+    let (update_tx, update_rx) = channel(256);
     let (core_side, frontend_side) = moc_protocol::transport::duplex(64 * 1024);
     let server = Server::with_options((*core).clone(), ServerOptions::default());
     let server_connection = server.spawn(core_side);
@@ -130,13 +142,12 @@ pub async fn connect_embedded(
 
     // 通知处理器在协议读循环内被顺序 await（保证事件有序），必须保持轻量：
     // 入队即返回，重活全部留给主循环。
-    let update_events = events.clone();
+    let update_events: Sender<SessionUpdateParams> = update_tx;
     let builder = builder.on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
         let events = update_events.clone();
         async move {
-            tracing::debug!(update = ?params.update, "收到会话更新");
-            if let Err(error) = events.send(AppEvent::Update(params)) {
-                tracing::debug!(%error, "UI 队列已关闭，丢弃通知");
+            if let Err(error) = events.send(params).await {
+                tracing::debug!(%error, "更新队列已关闭，丢弃通知");
             }
         }
     });
@@ -193,6 +204,7 @@ pub async fn connect_embedded(
     );
     Ok(EmbeddedConnection {
         client,
+        updates: update_rx,
         server_connection,
     })
 }

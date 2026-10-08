@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use moc_llm::{FinishReason, Message, Role};
+use moc_llm::{ContentPart, FinishReason, Message, ReasoningBlock, Role, ToolCall, ToolResult};
 use moc_protocol::methods::{
-    SessionInfo, SessionLoadResult, SessionMode, SessionPermission, SessionRenameParams,
-    ToolExecution,
+    SessionInfo, SessionLoadPageResult, SessionLoadResult, SessionMode, SessionPermission,
+    SessionRenameParams, ToolExecution, TranscriptChildCall, TranscriptEntry,
 };
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -181,8 +181,8 @@ impl SessionTable {
         let state = record.state.lock().await;
         let count = state.transcript.len();
         let start = max_entries
-            .map(|limit| count.saturating_sub(limit as usize))
-            .unwrap_or(0);
+            .and_then(|limit| usize::try_from(limit).ok())
+            .map_or(0, |limit| count.saturating_sub(limit));
         let entries = state.transcript[start..].to_vec();
         let mut session = state.session_info();
         session.lock = lock::read(record.paths.lock_file(session_id));
@@ -193,6 +193,93 @@ impl SessionTable {
             todos: state.todos.clone(),
             plans: state.plans.clone(),
             child_calls: state.child_calls.clone(),
+        })
+    }
+
+    /// 读取有界的展示页；不会复制超出单条预算的正文、思考或工具结果。
+    pub async fn load_page(
+        &self,
+        session_id: &str,
+        before_entry_id: Option<&str>,
+        max_entries: u32,
+        max_message_bytes: Option<u32>,
+    ) -> Result<SessionLoadPageResult, CoreError> {
+        const MAX_PAGE_ENTRIES: usize = 128;
+        const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+        const DEFAULT_MESSAGE_BYTES: usize = 64 * 1024;
+        const DEFAULT_MESSAGE_BYTES_U32: u32 = 64 * 1024;
+        const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+
+        let record = self.get(session_id).await?;
+        let state = record.state.lock().await;
+        let end = match before_entry_id {
+            Some(id) => state
+                .transcript
+                .iter()
+                .rposition(|entry| entry.id == id)
+                .ok_or_else(|| CoreError::Session(format!("transcript 消息不存在：{id}")))?,
+            None => state.transcript.len(),
+        };
+        let limit = usize::try_from(max_entries)
+            .unwrap_or(MAX_PAGE_ENTRIES)
+            .clamp(1, MAX_PAGE_ENTRIES);
+        let start = end.saturating_sub(limit);
+        let budget = usize::try_from(max_message_bytes.unwrap_or(DEFAULT_MESSAGE_BYTES_U32))
+            .unwrap_or(DEFAULT_MESSAGE_BYTES)
+            .clamp(1024, MAX_MESSAGE_BYTES);
+        let mut entries = Vec::with_capacity(end - start);
+        let mut content_truncated = false;
+        let mut page_bytes = 0usize;
+        for entry in &state.transcript[start..end] {
+            let remaining = MAX_PAGE_BYTES.saturating_sub(page_bytes);
+            if remaining == 0 {
+                break;
+            }
+            let entry_budget = budget.min(remaining);
+            let (message, truncated) = project_message(&entry.message, entry_budget);
+            content_truncated |= truncated;
+            page_bytes = page_bytes
+                .saturating_add(message_bytes(&message))
+                .saturating_add(entry.id.len())
+                .saturating_add(64);
+            entries.push(TranscriptEntry {
+                id: entry.id.clone(),
+                at_ms: entry.at_ms,
+                message,
+                tool: entry.tool.clone(),
+            });
+        }
+        let ids: std::collections::HashSet<&str> = entries
+            .iter()
+            .flat_map(|entry| entry.message.tool_calls().map(|call| call.id.as_str()))
+            .collect();
+        let child_budget = budget.min(8 * 1024);
+        let child_calls = state
+            .child_calls
+            .iter()
+            .filter(|call| ids.contains(call.parent_tool_call_id.as_str()))
+            .take(64)
+            .map(|call| TranscriptChildCall {
+                id: truncate_text(&call.id, child_budget).0,
+                parent_tool_call_id: truncate_text(&call.parent_tool_call_id, child_budget).0,
+                name: truncate_text(&call.name, child_budget).0,
+                arguments: truncate_text(&call.arguments, child_budget).0,
+                result: truncate_text(&call.result, child_budget).0,
+                status: call.status,
+                duration_ms: call.duration_ms,
+            })
+            .collect();
+        let has_more = start > 0 || entries.len() < end.saturating_sub(start);
+        let mut session = state.session_info();
+        session.lock = lock::read(record.paths.lock_file(session_id));
+        Ok(SessionLoadPageResult {
+            session,
+            entries,
+            has_more,
+            todos: state.todos.clone(),
+            plans: state.plans.clone(),
+            child_calls,
+            content_truncated,
         })
     }
     /// 创建一个回退分支，并从目标消息重建该分支的上下文。
@@ -541,6 +628,112 @@ impl SessionTable {
     }
 }
 
+fn message_bytes(message: &Message) -> usize {
+    message
+        .content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text(text) => text.len(),
+            ContentPart::Image { .. } => 32,
+            ContentPart::Reasoning(ReasoningBlock::Text { text, .. }) => text.len(),
+            ContentPart::Reasoning(ReasoningBlock::Redacted { data }) => data.len(),
+            ContentPart::Reasoning(ReasoningBlock::Item(_)) => 64,
+            ContentPart::ToolCall(call) => call.id.len() + call.name.len() + call.arguments.len(),
+            ContentPart::ToolResult(result) => result.tool_call_id.len() + result.content.len(),
+        })
+        .sum::<usize>()
+        .saturating_add(32)
+}
+
+fn project_message(message: &Message, budget: usize) -> (Message, bool) {
+    let mut remaining = budget;
+    let mut truncated = false;
+    let mut content = Vec::with_capacity(message.content.len());
+    for part in &message.content {
+        let projected = match part {
+            ContentPart::Text(text) => {
+                let (text, was_truncated) = truncate_text(text, remaining);
+                truncated |= was_truncated;
+                remaining = remaining.saturating_sub(text.len());
+                ContentPart::Text(text)
+            }
+            ContentPart::Image { .. } => {
+                truncated = true;
+                ContentPart::Text("[图片内容已省略]".into())
+            }
+            ContentPart::Reasoning(ReasoningBlock::Text { text, .. }) => {
+                let (text, was_truncated) = truncate_text(text, remaining);
+                truncated |= was_truncated;
+                remaining = remaining.saturating_sub(text.len());
+                ContentPart::Reasoning(ReasoningBlock::text(text))
+            }
+            ContentPart::Reasoning(ReasoningBlock::Redacted { data }) => {
+                let (data, was_truncated) = truncate_text(data, remaining);
+                truncated |= was_truncated;
+                remaining = remaining.saturating_sub(data.len());
+                ContentPart::Reasoning(ReasoningBlock::Redacted { data })
+            }
+            ContentPart::Reasoning(ReasoningBlock::Item(_)) => {
+                truncated = true;
+                ContentPart::Reasoning(ReasoningBlock::text("（思维内容已省略）"))
+            }
+            ContentPart::ToolCall(call) => {
+                let (arguments, was_truncated) = truncate_text(&call.arguments, remaining);
+                truncated |= was_truncated;
+                remaining = remaining.saturating_sub(arguments.len());
+                ContentPart::ToolCall(ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments,
+                })
+            }
+            ContentPart::ToolResult(result) => {
+                let (content, was_truncated) = truncate_text(&result.content, remaining);
+                truncated |= was_truncated || !result.images.is_empty();
+                remaining = remaining.saturating_sub(content.len());
+                ContentPart::ToolResult(ToolResult {
+                    tool_call_id: result.tool_call_id.clone(),
+                    content,
+                    is_error: result.is_error,
+                    images: Vec::new(),
+                })
+            }
+        };
+        content.push(projected);
+    }
+    (
+        Message {
+            role: message.role,
+            content,
+        },
+        truncated,
+    )
+}
+
+fn truncate_text(text: &str, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text.to_owned(), false);
+    }
+    const MARKER: &str = "…[内容已截断]…";
+    if limit <= MARKER.len() {
+        return (MARKER.chars().take(limit).collect(), true);
+    }
+    let available = limit - MARKER.len();
+    let mut head = available / 2;
+    while head > 0 && !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = available - head;
+    while tail > 0 && !text.is_char_boundary(text.len() - tail) {
+        tail -= 1;
+    }
+    let mut output = String::with_capacity(limit);
+    output.push_str(&text[..head]);
+    output.push_str(MARKER);
+    output.push_str(&text[text.len() - tail..]);
+    (output, true)
+}
+
 fn sanitize_title(title: &str) -> String {
     title
         .lines()
@@ -845,5 +1038,36 @@ mod tests {
             .expect("回退到助手工具调用");
         assert_eq!(rewound_again.entries.len(), 3);
         assert_eq!(rewound_again.entries[0].id, first_user.id());
+    }
+    #[tokio::test]
+    async fn load_page_projects_large_messages_and_keeps_cursor_order() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .await
+            .expect("创建会话");
+        table
+            .append_message(&info.id, Message::user_text("第一条"), None, None)
+            .await
+            .expect("追加第一条");
+        table
+            .append_message(
+                &info.id,
+                Message::user_text("x".repeat(200_000)),
+                None,
+                None,
+            )
+            .await
+            .expect("追加大消息");
+        let page = table
+            .load_page(&info.id, None, 8, Some(1024))
+            .await
+            .expect("读取分页");
+        assert_eq!(page.entries.len(), 2);
+        assert!(page.content_truncated);
+        assert!(page.entries[1].message.text().len() <= 1024);
+        assert_eq!(page.entries[0].message.text(), "第一条");
+        assert!(!page.has_more);
     }
 }

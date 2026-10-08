@@ -40,12 +40,13 @@ impl ScrollbackView {
         Self::default()
     }
 
-    /// 同步失效块；非视口块的文本行会在绘制后释放，只保留高度索引。
     pub fn sync(&mut self, app: &App, width: u16) -> usize {
+        const EAGER_BLOCKS: usize = 64;
         if self.width != width {
             self.width = width;
             self.cache.clear();
         }
+        let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
         for (index, entry) in app.blocks.iter().enumerate() {
             let key = (entry.generation, entry.folded, app.view_gen);
             if self
@@ -55,13 +56,18 @@ impl ScrollbackView {
             {
                 continue;
             }
-            let lines = render_entry(entry, app, width, index == 0);
-            let height = lines.len();
+            let (lines, height, rendered) = if index >= eager_start {
+                let lines = render_entry(entry, app, width, index == 0);
+                let height = lines.len();
+                (lines, height, true)
+            } else {
+                (Vec::new(), estimate_entry_height(entry, width), false)
+            };
             let cached = CachedEntry {
                 key,
                 height,
                 lines,
-                rendered: true,
+                rendered,
             };
             if index < self.cache.len() {
                 self.cache[index] = cached;
@@ -145,6 +151,26 @@ impl ScrollbackView {
                 return;
             }
         }
+    }
+}
+
+fn estimate_entry_height(entry: &Entry, width: u16) -> usize {
+    let width = usize::from(width).max(8);
+    let rows = |text: &str| {
+        text.lines()
+            .map(|line| (str_width(line).saturating_add(width - 1) / width).max(1))
+            .sum::<usize>()
+            .max(1)
+    };
+    match &entry.block {
+        Block::User { text } | Block::Assistant { text } | Block::Note { text, .. } => {
+            rows(text).saturating_add(2)
+        }
+        Block::Thinking { .. } => 2,
+        Block::Tool(tool) => 3usize
+            .saturating_add(rows(&tool.arguments))
+            .saturating_add(tool.result.as_deref().map_or(0, rows)),
+        Block::Todo { phases } => phases.len().saturating_add(2),
     }
 }
 

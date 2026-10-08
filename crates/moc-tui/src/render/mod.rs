@@ -130,9 +130,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         .set_style(frame_area, Style::new().bg(theme.bg_base));
 
     let total = view.sync(app, scroll_area.width);
-    let viewport = scroll_area.height as usize;
-    // 滚动语义：offset = 距底部行数；0 表示跟随尾部
+    let viewport = usize::from(scroll_area.height);
     let max_offset = total.saturating_sub(viewport);
+    app.scroll_max_offset = max_offset;
     if app.scroll_offset > max_offset {
         app.scroll_offset = max_offset;
     }

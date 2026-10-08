@@ -31,7 +31,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         .await
                     {
                         Ok(session) => {
-                            let _ = events.send(AppEvent::Loaded(session, Vec::new()));
+                            let _ = events.send(AppEvent::Loaded(session, Vec::new(), false, None));
                         }
                         Err(error) => {
                             let _ = events.send(AppEvent::Notice(format!(

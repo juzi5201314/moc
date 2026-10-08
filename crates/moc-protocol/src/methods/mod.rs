@@ -73,12 +73,13 @@ pub use resources::{
 pub use session::{
     CompactResult, ContextUsageResult, ContextUsageSection, SessionCompact, SessionCompactParams,
     SessionContext, SessionContextParams, SessionDelete, SessionDeleteParams, SessionInfo,
-    SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionMode, SessionNew, SessionNewParams,
-    SessionPermission, SessionRename, SessionRenameParams, SessionRewind, SessionRewindParams,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
-    SessionSetPermission, SessionSetPermissionParams, SessionUnload, SessionUnloadParams,
-    SessionUnlock, SessionUnlockParams, ToolExecution, ToolStatus, TranscriptEntry,
+    SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadPage,
+    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
+    SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionPermission, SessionRename,
+    SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams,
+    SessionSetModel, SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams,
+    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, ToolExecution,
+    ToolStatus, TranscriptChildCall, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -111,6 +112,7 @@ mod tests {
             (<ConfigGet as Method>::NAME, "config/get"),
             (<SessionNew as Method>::NAME, "session/new"),
             (<SessionList as Method>::NAME, "session/list"),
+            (<SessionLoadPage as Method>::NAME, "session/load_page"),
             (<SessionLoad as Method>::NAME, "session/load"),
             (<SessionRewind as Method>::NAME, "session/rewind"),
             (<SessionUnload as Method>::NAME, "session/unload"),

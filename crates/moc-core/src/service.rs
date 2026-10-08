@@ -12,10 +12,11 @@ use moc_protocol::methods::{
     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
     PromptResult, ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionMode,
-    SessionNewParams, SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult,
-    SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPermission,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -717,6 +718,26 @@ impl AgentService for Core {
         result.session.permission = self.inner.effective_permission(result.session.permission);
         Ok(result)
     }
+
+    async fn session_load_page(
+        &self,
+        _ctx: RequestContext,
+        params: SessionLoadPageParams,
+    ) -> Result<SessionLoadPageResult, RpcError> {
+        let mut result = self
+            .inner
+            .sessions
+            .load_page(
+                &params.session_id,
+                params.before_entry_id.as_deref(),
+                params.max_entries,
+                params.max_message_bytes,
+            )
+            .await
+            .map_err(to_rpc)?;
+        result.session.permission = self.inner.effective_permission(result.session.permission);
+        Ok(result)
+    }
     async fn session_rewind(
         &self,
         ctx: RequestContext,
@@ -1058,15 +1079,21 @@ impl AgentService for Core {
         let pieces =
             crate::system_prompt::pieces(&config, &model, state.mode, &cwd, &skills, &summary);
         let system = crate::system_prompt::compose(&pieces);
-        let messages =
-            crate::compact::replay::model_messages(&state, Some(system.clone()), Some(&model));
+        let synthetic = crate::compact::replay::synthetic_messages(&state, Some(system.clone()));
+        let synthetic_tokens = crate::compact::messages_tokens(&synthetic[1..]);
+        let visible_start = crate::compact::replay::visible_history_start(&state);
+        let history_tokens = synthetic_tokens.saturating_add(
+            state.transcript_token_counts[visible_start..]
+                .iter()
+                .copied()
+                .sum::<u64>(),
+        );
         let tools = self.inner.tools.definitions(
             state.mode,
             self.inner.client_supports_ask(ctx.connection_id()),
             &config,
         );
         let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
-        let history_tokens = crate::compact::messages_tokens(&messages[1..]);
         let directory_tokens = pieces
             .iter()
             .filter(|piece| piece.title == "tools")

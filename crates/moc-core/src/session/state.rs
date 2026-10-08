@@ -24,6 +24,8 @@ pub struct SessionState {
     pub session: SessionInfo,
     pub entries: Vec<Entry>,
     pub transcript: Vec<TranscriptEntry>,
+    /// 与 transcript 一一对应的 token 估算，避免上下文面板重复扫描正文。
+    pub transcript_token_counts: Vec<u64>,
     pub mode: SessionMode,
     pub permission: SessionPermission,
     pub model: String,
@@ -80,6 +82,7 @@ impl SessionState {
             session,
             entries: Vec::with_capacity(entries.len()),
             transcript: Vec::new(),
+            transcript_token_counts: Vec::new(),
             mode: *mode,
             permission: *permission,
             model: model.clone(),
@@ -123,6 +126,8 @@ impl SessionState {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
                 }
                 if let Some(projected) = entry.transcript_entry() {
+                    self.transcript_token_counts
+                        .push(crate::compact::message_tokens(&projected.message));
                     self.transcript.push(projected);
                 }
             }

@@ -64,6 +64,16 @@ pub struct App {
     pub models: Vec<ModelInfo>,
     /// 转写条目（用户消息、回复、工具调用、todo……）。
     pub blocks: Vec<Entry>,
+    /// 是否仍有未加载的更早 transcript。
+    pub history_has_more: bool,
+    /// 下一页应使用的游标（当前最早条目的 ID）。
+    pub history_before_entry_id: Option<String>,
+    /// 避免滚动期间重复发送历史请求。
+    pub history_loading: bool,
+    /// 滚动到历史边缘后由事件循环发起异步分页。
+    pub history_load_requested: bool,
+    /// 最近一次渲染计算出的可滚动总偏移。
+    pub scroll_max_offset: usize,
     /// Todo 清单（`TodoChanged` 最新快照）。
     pub todos: Vec<TodoPhase>,
     /// 思考内容全局可见（ctrl+t 切换）。
@@ -188,6 +198,11 @@ impl App {
             session: None,
             models: Vec::new(),
             blocks: Vec::new(),
+            history_has_more: false,
+            history_before_entry_id: None,
+            history_loading: false,
+            history_load_requested: false,
+            scroll_max_offset: 0,
             todos: Vec::new(),
             show_thinking: true,
             tools_collapsed: false,
@@ -605,7 +620,43 @@ impl App {
             }
         }
         self.scroll_offset = 0;
+        self.history_has_more = false;
+        self.history_before_entry_id = None;
+        self.history_loading = false;
+        self.history_load_requested = false;
+        self.scroll_max_offset = 0;
         self.view_gen += 1;
+    }
+
+    pub fn set_history_cursor(&mut self, has_more: bool, before_entry_id: Option<String>) {
+        self.history_has_more = has_more;
+        self.history_before_entry_id = before_entry_id;
+        self.history_loading = false;
+    }
+
+    pub fn begin_history_load(&mut self) -> bool {
+        if self.history_loading || !self.history_has_more {
+            return false;
+        }
+        self.history_loading = true;
+        true
+    }
+
+    pub fn prepend_history(&mut self, mut blocks: Vec<Entry>) {
+        if blocks.is_empty() {
+            self.history_loading = false;
+            return;
+        }
+        blocks.append(&mut self.blocks);
+        self.blocks = blocks;
+        self.tool_indices.clear();
+        for (index, entry) in self.blocks.iter().enumerate() {
+            if let Block::Tool(tool) = &entry.block {
+                self.tool_indices.insert(tool.id.clone(), index);
+            }
+        }
+        self.view_gen = self.view_gen.wrapping_add(1);
+        self.history_loading = false;
     }
 
     /// 在增量流末尾追加文本：已存在同类流式块则续写，否则由调用方先新建。
@@ -614,19 +665,51 @@ impl App {
         pick: impl Fn(&mut Block) -> Option<&mut String>,
         delta: &str,
     ) {
-        // `pick` 借用 blocks：先定位（借用结束），再取目标下标续写
-        let target_index = self
-            .blocks
-            .iter_mut()
-            .rev()
-            .position(|entry| pick(&mut entry.block).is_some())
-            .map(|offset_from_end| self.blocks.len() - 1 - offset_from_end);
-        let Some(target_index) = target_index else {
+        let Some(entry) = self.blocks.last_mut() else {
             return;
         };
-        let entry = &mut self.blocks[target_index];
-        if let Some(text) = pick(&mut entry.block) {
+        let Some(text) = pick(&mut entry.block) else {
+            return;
+        };
+        text.reserve(delta.len());
+        text.push_str(delta);
+        entry.touch();
+    }
+
+    /// 追加受预算约束的流式文本；用于思考内容，避免单个块吞噬整个会话内存。
+    pub fn append_streaming_limited(
+        &mut self,
+        pick: impl Fn(&mut Block) -> Option<&mut String>,
+        delta: &str,
+        max_bytes: usize,
+        marker: &str,
+    ) {
+        let Some(entry) = self.blocks.last_mut() else {
+            return;
+        };
+        let Some(text) = pick(&mut entry.block) else {
+            return;
+        };
+        if text.len() >= max_bytes {
+            return;
+        }
+        let remaining = max_bytes - text.len();
+        if delta.len() <= remaining {
+            text.reserve(delta.len());
             text.push_str(delta);
+        } else {
+            let mut marker_bytes = marker.len().min(remaining);
+            while marker_bytes > 0 && !marker.is_char_boundary(marker_bytes) {
+                marker_bytes -= 1;
+            }
+            let prefix_limit = remaining - marker_bytes;
+            let mut prefix = prefix_limit.min(delta.len());
+            while prefix > 0 && !delta.is_char_boundary(prefix) {
+                prefix -= 1;
+            }
+            text.reserve(prefix + marker_bytes);
+            text.push_str(&delta[..prefix]);
+            text.push_str(&marker[..marker_bytes]);
         }
         entry.touch();
     }
@@ -765,6 +848,36 @@ impl App {
     pub fn display_mode(&self) -> Option<SessionMode> {
         self.transient_mode
             .or_else(|| self.session.as_ref().map(|session| session.mode))
+    }
+}
+
+#[cfg(test)]
+mod streaming_budget_tests {
+    use super::*;
+
+    #[test]
+    fn thinking_stream_is_bounded_without_splitting_utf8() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.push_block(Block::Thinking {
+            text: String::new(),
+            reasoning_tokens: None,
+            duration_ms: None,
+        });
+        app.append_streaming_limited(
+            |block| match block {
+                Block::Thinking { text, .. } => Some(text),
+                _ => None,
+            },
+            &"思考".repeat(100),
+            32,
+            "…",
+        );
+        let Block::Thinking { text, .. } = &app.blocks[0].block else {
+            panic!("期望思考块");
+        };
+        assert!(text.len() <= 32);
+        assert!(text.is_char_boundary(text.len()));
     }
 }
 

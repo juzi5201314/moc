@@ -6,12 +6,8 @@ use moc_protocol::methods::PlanStatus;
 use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
-/// 只让有效 checkpoint 或 reset 决定可见历史起点。
-pub fn model_messages(
-    state: &SessionState,
-    system: Option<Message>,
-    model: Option<&crate::ResolvedModel>,
-) -> Vec<Message> {
+/// 构造 system、checkpoint、活动计划和 todo 等合成前缀，不复制 transcript。
+pub(crate) fn synthetic_messages(state: &SessionState, system: Option<Message>) -> Vec<Message> {
     let mut messages = Vec::new();
     if let Some(system) = system {
         messages.push(system);
@@ -57,6 +53,17 @@ pub fn model_messages(
             )));
         }
     }
+    messages
+}
+
+/// 从追加式日志重建模型消息；transcript 消息只在真正请求模型时复制。
+pub fn model_messages(
+    state: &SessionState,
+    system: Option<Message>,
+    model: Option<&crate::ResolvedModel>,
+) -> Vec<Message> {
+    let mut messages = synthetic_messages(state, system);
+    let start = visible_history_start(state);
     messages.extend(
         state.transcript[start..]
             .iter()

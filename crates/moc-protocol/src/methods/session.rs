@@ -29,6 +29,11 @@ pub struct SessionList;
 /// `session/load`：读取会话 transcript。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionLoad;
+
+/// `session/load_page`：按 transcript 游标读取一段可展示历史。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionLoadPage;
+
 /// `session/rewind`：把会话历史回退到指定消息。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionRewind;
@@ -232,6 +237,38 @@ pub struct SessionLoadParams {
     pub max_entries: Option<u32>,
 }
 
+/// `session/load_page` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLoadPageParams {
+    pub session_id: String,
+    /// 只返回该条目之前的历史；省略时返回最新一页。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_entry_id: Option<String>,
+    /// 返回条目数；core 会限制到安全范围。
+    pub max_entries: u32,
+    /// 单条消息展示投影的字节预算；不影响 transcript 原文。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_message_bytes: Option<u32>,
+}
+
+/// `session/load_page` 的结果。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionLoadPageResult {
+    pub session: SessionInfo,
+    pub entries: Vec<TranscriptEntry>,
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub todos: Vec<TodoPhase>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<PlanInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub child_calls: Vec<TranscriptChildCall>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub content_truncated: bool,
+}
+
 /// `session/load` 的结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -413,6 +450,13 @@ impl Method for SessionLoad {
 }
 
 impl ClientRequest for SessionLoad {}
+impl Method for SessionLoadPage {
+    const NAME: &'static str = "session/load_page";
+    type Params = SessionLoadPageParams;
+    type Result = SessionLoadPageResult;
+}
+
+impl ClientRequest for SessionLoadPage {}
 impl Method for SessionRewind {
     const NAME: &'static str = "session/rewind";
     type Params = SessionRewindParams;

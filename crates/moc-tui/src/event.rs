@@ -15,11 +15,11 @@ use moc_protocol::{
     OpenVikingListParams, OpenVikingRead, OpenVikingReadParams, OpenVikingWrite,
     OpenVikingWriteParams, PromptParams, ResourceComplete, ResourceCompleteParams, Role,
     SessionCompact, SessionCompactParams, SessionContext, SessionInfo, SessionList,
-    SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams,
-    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionRewind,
-    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
-    UpstreamField,
+    SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
+    SessionLoadResult, SessionMode, SessionNew, SessionNewParams, SessionPermission,
+    SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
+    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
+    SessionSetPermission, SessionSetPermissionParams, SessionUpdate, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -55,7 +55,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     let mut guard = TerminalGuard::enter()?;
 
     let (events, mut event_rx) = unbounded_channel::<AppEvent>();
-    let connection = connect_embedded(Arc::clone(&core), events.clone())
+    let mut connection = connect_embedded(Arc::clone(&core), events.clone())
         .await
         .context("连接后台服务失败")?;
 
@@ -81,7 +81,14 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     }
 
     let mut input = InputThread::spawn();
-    let result = event_loop(&mut guard, &mut app, &mut input, &mut event_rx, &connection).await;
+    let result = event_loop(
+        &mut guard,
+        &mut app,
+        &mut input,
+        &mut event_rx,
+        &mut connection,
+    )
+    .await;
 
     connection.shutdown().await;
     guard.restore();
@@ -90,13 +97,21 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
 
 /// TUI 独占 stdout / stderr，日志只能落文件；初始化失败时静默（日志非关键路径）。
 fn init_logging() {
+    const MAX_LOG_BYTES: u64 = 8 * 1024 * 1024;
     let home = std::env::var("MOC_HOME")
         .or_else(|_| std::env::var("HOME").map(|home| format!("{home}/.moc")))
         .unwrap_or_else(|_| "/tmp".into());
+    let path = std::path::Path::new(&home).join("tui.log");
+    if std::fs::metadata(&path)
+        .ok()
+        .is_some_and(|metadata| metadata.len() >= MAX_LOG_BYTES)
+    {
+        let _ = std::fs::remove_file(&path);
+    }
     let Ok(file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(format!("{home}/tui.log"))
+        .open(path)
     else {
         return;
     };
@@ -116,7 +131,14 @@ fn init_logging() {
 
 /// 拉取模型目录并建立/恢复初始会话；失败给出可见错误但继续运行（用户可退出）。
 async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
-    let outcome: anyhow::Result<Option<SessionInfo>> = async {
+    let outcome: anyhow::Result<
+        Option<(
+            SessionInfo,
+            Vec<crate::transcript::Entry>,
+            bool,
+            Option<String>,
+        )>,
+    > = async {
         let config = client.call::<ConfigGet>(ConfigGetParams {}).await?;
         app.models = config.models;
         app.startup_cwd = opts.cwd.clone().unwrap_or(config.cwd);
@@ -124,16 +146,17 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
             app.set_notice("首次启动：请添加供应商并选择至少一个模型");
             return Ok(None);
         }
-        let info = match &opts.resume {
+        let loaded = match &opts.resume {
             None => {
-                client
+                let info = client
                     .call::<SessionNew>(SessionNewParams {
                         cwd: opts.cwd.clone(),
                         model: opts.model.clone(),
                         title: None,
                         mode: opts.mode,
                     })
-                    .await?
+                    .await?;
+                (info, Vec::new(), false, None)
             }
             Some(session_id) => {
                 let session_id = match session_id {
@@ -148,22 +171,30 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                             .context("当前目录没有可恢复的会话")?
                     }
                 };
-                client
-                    .call::<SessionLoad>(SessionLoadParams {
+                let loaded = client
+                    .call::<SessionLoadPage>(SessionLoadPageParams {
                         session_id,
-                        max_entries: None,
+                        before_entry_id: None,
+                        max_entries: 64,
+                        max_message_bytes: Some(64 * 1024),
                     })
-                    .await?
-                    .session
+                    .await?;
+                let before_entry_id = loaded.entries.first().map(|entry| entry.id.clone());
+                let blocks = crate::transcript_restore::blocks_from_entries_with_children(
+                    &loaded.entries,
+                    &loaded.child_calls,
+                );
+                (loaded.session, blocks, loaded.has_more, before_entry_id)
             }
         };
-        Ok(Some(info))
+        Ok(Some(loaded))
     }
     .await;
     match outcome {
-        Ok(Some(info)) => {
+        Ok(Some((info, blocks, has_more, before_entry_id))) => {
             refresh_git_branch(app, &info.cwd);
-            app.session = Some(info);
+            app.switch_session(info, blocks);
+            app.set_history_cursor(has_more, before_entry_id);
             load_context(client, app).await;
         }
         Ok(None) => {}
@@ -297,7 +328,7 @@ async fn event_loop(
     app: &mut App,
     input: &mut InputThread,
     event_rx: &mut UnboundedReceiver<AppEvent>,
-    connection: &EmbeddedConnection,
+    connection: &mut EmbeddedConnection,
 ) -> anyhow::Result<()> {
     const FRAME_BUDGET: std::time::Duration = std::time::Duration::from_millis(16);
     const ACTIVITY_TICK: std::time::Duration = std::time::Duration::from_millis(120);
@@ -318,6 +349,9 @@ async fn event_loop(
             next_frame = tokio::time::Instant::now() + FRAME_BUDGET;
             dirty = false;
             draw_result?;
+            if app.history_load_requested {
+                request_history_page(app, connection);
+            }
         }
         // 空闲（无 dirty）时完全 park 在事件上；dirty 但未到预算点才等待
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
@@ -327,18 +361,9 @@ async fn event_loop(
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
         tokio::select! {
             biased;
-            // 到达预算点：回循环顶部绘制（期间到达的事件已合并为一帧）
             _ = tokio::time::sleep_until(next_frame), if need_frame_wait => {}
-            _ = tokio::time::sleep_until(
-                    notice_deadline.unwrap_or_else(tokio::time::Instant::now),
-                ), if notice_deadline.is_some() => {
-                dirty = true;
-            }
-            _ = tokio::time::sleep_until(
-                    warning_deadline.unwrap_or_else(tokio::time::Instant::now),
-                ), if warning_deadline.is_some() => {
-                dirty = true;
-            }
+            _ = tokio::time::sleep_until(notice_deadline.unwrap_or_else(tokio::time::Instant::now)), if notice_deadline.is_some() => dirty = true,
+            _ = tokio::time::sleep_until(warning_deadline.unwrap_or_else(tokio::time::Instant::now)), if warning_deadline.is_some() => dirty = true,
             _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
                 next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
                 dirty = true;
@@ -346,19 +371,22 @@ async fn event_loop(
             input_event = input.recv() => {
                 dirty = true;
                 match input_event {
-                    Some(InputEvent::Terminal(event)) => {
-                        handle_terminal_event(app, connection, event);
-                    }
-                    // 输入线程结束（终端读取错误）：退出
+                    Some(InputEvent::Terminal(event)) => handle_terminal_event(app, connection, event),
                     None => return Ok(()),
                 }
             }
-            app_event = async {
-                if let Some(event) = deferred_event.take() {
-                    Some(event)
-                } else {
-                    event_rx.recv().await
+            update = connection.updates.recv() => {
+                dirty = true;
+                if let Some(params) = update {
+                    apply_update_and_refresh(app, connection, params.update);
+                    for _ in 0..64 {
+                        let Some(next) = connection.updates.try_recv().ok() else { break };
+                        apply_update_and_refresh(app, connection, next.update);
+                    }
                 }
+            }
+            app_event = async {
+                if let Some(event) = deferred_event.take() { Some(event) } else { event_rx.recv().await }
             } => {
                 dirty = true;
                 match app_event {
@@ -371,12 +399,24 @@ async fn event_loop(
                         apply_rewound(app, connection, selected, result);
                     }
                     Some(AppEvent::Update(params)) => {
-                        if !app.session.as_ref().is_some_and(|session| session.id == params.session_id) { continue; }
+                        if !app
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.id == params.session_id)
+                        {
+                            continue;
+                        }
                         apply_update_and_refresh(app, connection, params.update);
                         while let Ok(next) = event_rx.try_recv() {
                             match next {
                                 AppEvent::Update(params) => {
-                                    if !app.session.as_ref().is_some_and(|session| session.id == params.session_id) { continue; }
+                                    if !app
+                                        .session
+                                        .as_ref()
+                                        .is_some_and(|session| session.id == params.session_id)
+                                    {
+                                        continue;
+                                    }
                                     apply_update_and_refresh(app, connection, params.update)
                                 }
                                 other => {
@@ -385,6 +425,9 @@ async fn event_loop(
                                 }
                             }
                         }
+                    }
+                    Some(AppEvent::HistoryPageLoaded { prepend, result }) => {
+                        apply_history_page(app, prepend, result);
                     }
                     Some(AppEvent::ClipboardPaste(payload)) => match payload {
                         Some(ClipboardPayload::Image { media_type, data }) => {
@@ -514,14 +557,18 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
-                    Some(AppEvent::Loaded(info, blocks)) => {
+                    Some(AppEvent::Loaded(info, blocks, has_more, before_entry_id)) => {
                         app.modal = None;
                         let cwd = info.cwd.clone();
                         app.switch_session(info, blocks);
+                        app.set_history_cursor(has_more, before_entry_id);
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
-                        if let Some(text)=app.startup_pending.take() { app.prompt.insert_str_raw(&text); crate::queue::submit(app,connection,false); }
-                        crate::queue::dispatch(app,connection);
+                        if let Some(text) = app.startup_pending.take() {
+                            app.prompt.insert_str_raw(&text);
+                            crate::queue::submit(app, connection, false);
+                        }
+                        crate::queue::dispatch(app, connection);
                     }
                     Some(AppEvent::ModelSwitched) => {
                         app.modal = None;
@@ -857,6 +904,60 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
 /// 滚动视口：`delta > 0` 向历史方向推进（更早的行），`delta < 0` 回到尾部。
 ///
 /// [`App::scroll_offset`] 的语义是「距尾部行数」，因此正向 delta 直接增大偏移。
+fn request_history_page(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let Some(before_entry_id) = app.history_before_entry_id.clone() else {
+        app.history_load_requested = false;
+        return;
+    };
+    if !app.begin_history_load() {
+        app.history_load_requested = false;
+        return;
+    }
+    app.history_load_requested = false;
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionLoadPage>(SessionLoadPageParams {
+                session_id,
+                before_entry_id: Some(before_entry_id),
+                max_entries: 64,
+                max_message_bytes: Some(64 * 1024),
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::HistoryPageLoaded {
+            prepend: true,
+            result,
+        });
+    });
+}
+
+fn apply_history_page(
+    app: &mut App,
+    prepend: bool,
+    result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
+) {
+    let Ok(page) = result else {
+        app.history_loading = false;
+        return;
+    };
+    let before_entry_id = page.entries.first().map(|entry| entry.id.clone());
+    let blocks = crate::transcript_restore::blocks_from_entries_with_children(
+        &page.entries,
+        &page.child_calls,
+    );
+    if prepend {
+        app.prepend_history(blocks);
+    } else {
+        app.switch_session(page.session, blocks);
+    }
+    app.set_history_cursor(page.has_more, before_entry_id);
+}
+
 fn scroll(app: &mut App, delta: i32) {
     if delta < 0 {
         app.scroll_offset = app
@@ -864,6 +965,9 @@ fn scroll(app: &mut App, delta: i32) {
             .saturating_sub(delta.unsigned_abs() as usize);
     } else {
         app.scroll_offset = app.scroll_offset.saturating_add(delta as usize);
+        if app.scroll_offset >= app.scroll_max_offset && app.history_has_more {
+            app.history_load_requested = true;
+        }
     }
 }
 
@@ -1172,11 +1276,21 @@ fn open_rewind(app: &mut App, connection: &EmbeddedConnection) {
     let events = app.events.clone();
     tokio::spawn(async move {
         let result = client
-            .call::<SessionLoad>(SessionLoadParams {
+            .call::<SessionLoadPage>(SessionLoadPageParams {
                 session_id,
-                max_entries: None,
+                before_entry_id: None,
+                max_entries: 128,
+                max_message_bytes: Some(64 * 1024),
             })
             .await
+            .map(|loaded| SessionLoadResult {
+                session: loaded.session,
+                entries: loaded.entries,
+                truncated: loaded.has_more,
+                todos: loaded.todos,
+                plans: loaded.plans,
+                child_calls: loaded.child_calls,
+            })
             .map_err(anyhow::Error::from);
         let _ = events.send(AppEvent::RewindLoaded(result));
     });
@@ -1751,17 +1865,21 @@ fn handle_modal_key(
                         match client
                             .call::<SessionLoad>(SessionLoadParams {
                                 session_id,
-                                max_entries: None,
+                                max_entries: Some(64),
                             })
                             .await
                         {
                             Ok(loaded) => {
+                                let before_entry_id =
+                                    loaded.entries.first().map(|entry| entry.id.clone());
                                 let _ = events.send(AppEvent::Loaded(
                                     loaded.session,
                                     crate::transcript_restore::blocks_from_entries_with_children(
                                         &loaded.entries,
                                         &loaded.child_calls,
                                     ),
+                                    loaded.truncated,
+                                    before_entry_id,
                                 ));
                             }
                             Err(error) => {
@@ -1969,16 +2087,14 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                         duration_ms: None,
                     });
                 }
-                app.append_streaming(
+                app.append_streaming_limited(
                     |block| match block {
-                        Block::Thinking {
-                            text,
-                            reasoning_tokens: _,
-                            duration_ms: _,
-                        } => Some(text),
+                        Block::Thinking { text, .. } => Some(text),
                         _ => None,
                     },
                     &delta,
+                    128 * 1024,
+                    "\n\n[思考内容过长，已停止在界面展开]\n",
                 );
             }
             moc_protocol::methods::AssistantDelta::ToolCallStarted {
@@ -2203,7 +2319,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                     .await
                 {
                     Ok(info) => {
-                        let _ = events.send(AppEvent::Loaded(info, Vec::new()));
+                        let _ = events.send(AppEvent::Loaded(info, Vec::new(), false, None));
                     }
                     Err(error) => {
                         let _ = events.send(AppEvent::Notice(format!("新建会话失败：{error}")));

@@ -60,7 +60,7 @@ pub fn messages_tokens(messages: &[Message]) -> u64 {
     messages.iter().map(message_tokens).sum()
 }
 
-fn message_tokens(message: &Message) -> u64 {
+pub(crate) fn message_tokens(message: &Message) -> u64 {
     8u64.saturating_add(message.content.iter().map(content_part_tokens).sum())
 }
 

@@ -33,11 +33,11 @@ use crate::methods::{
     OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
     OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams, SessionContextParams,
-    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
-    SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
-    SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
-    SessionUpdateParams,
+    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -122,6 +122,14 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionListParams,
     ) -> impl Future<Output = Result<SessionListResult, RpcError>> + Send;
 
+    /// 读取一页 transcript；分页结果必须保持单帧有界。
+    fn session_load_page(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionLoadPageParams,
+    ) -> impl Future<Output = Result<SessionLoadPageResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
     /// 读取 transcript；`max_entries` 截断必须由 core 真正执行（`truncated` 是契约）。
     fn session_load(
         &self,
