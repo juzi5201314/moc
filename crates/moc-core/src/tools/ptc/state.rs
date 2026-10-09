@@ -25,7 +25,7 @@ pub(super) async fn execute(ctx: &ToolCtx, operation: Operation) -> Result<Value
         _ => None,
     };
     if key.is_some_and(|key| key.is_empty() || key.len() > 128) {
-        return Err(error("E_STATE_KEY", "key 必须为 1..128 UTF-8 字节"));
+        return Err(error("E_STATE_KEY", "key must be 1..128 UTF-8 bytes"));
     }
     let (change, result) = {
         let state = ctx.state.lock().await;
@@ -44,7 +44,10 @@ pub(super) async fn execute(ctx: &ToolCtx, operation: Operation) -> Result<Value
                     .map_or(0, |old| ptc_value_bytes(&key, old));
                 let total = state.ptc_state_bytes - previous + ptc_value_bytes(&key, &value);
                 if total > ctx.config.tools.ptc.max_state_bytes && total > state.ptc_state_bytes {
-                    return Err(error("E_STATE_LIMIT", "当前命名状态总量超过上限"));
+                    return Err(error(
+                        "E_STATE_LIMIT",
+                        "named state exceeds the total limit",
+                    ));
                 }
                 (PtcStateChange::Put { key, value }, Value::Null)
             }
@@ -54,7 +57,7 @@ pub(super) async fn execute(ctx: &ToolCtx, operation: Operation) -> Result<Value
                 }
                 (PtcStateChange::Delete { key }, Value::Bool(true))
             }
-            _ => return Err(error("E_PTC_PROTOCOL", "不是状态操作")),
+            _ => return Err(error("E_PTC_PROTOCOL", "not a state operation")),
         }
     };
     ctx.sessions

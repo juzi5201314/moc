@@ -362,7 +362,10 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         } else {
             assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
             assert_eq!(loaded.session.mode, SessionMode::Normal);
-            assert_eq!(result.auto_prompt.as_deref(), Some("开始执行计划。"));
+            assert_eq!(
+                result.auto_prompt.as_deref(),
+                Some("Execute the approved plan.")
+            );
         }
     }
     h.close().await;
@@ -459,10 +462,10 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
                         .unwrap();
                     let content = support::content::content_text(&result["content"]);
                     let id = content
-                        .split("后台任务已启动：")
+                        .split("Background job ")
                         .nth(1)
                         .unwrap()
-                        .split('，')
+                        .split_whitespace()
                         .next()
                         .unwrap();
                     tool_stream(vec![
@@ -786,8 +789,8 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         .flat_map(|entry| entry.message.tool_results())
         .collect();
     assert_eq!(outputs.len(), 2);
-    assert_eq!(outputs[0].content, "[已被后续读取取代]");
-    assert_eq!(outputs[1].content, "[工具输出已修剪]");
+    assert_eq!(outputs[0].content, "[superseded by a later read]");
+    assert_eq!(outputs[1].content, "[tool output pruned]");
     h.prompt(&id, "验证回放").await;
     h.close().await;
 }
@@ -846,9 +849,9 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     assert_eq!(output("pty_kill"), "Killed");
     assert!(results.iter().all(|result| !result.is_error));
     let original_uri = output("pipe_start")
-        .split("日志：")
+        .split("log: ")
         .nth(1)
-        .expect("后台日志 URI");
+        .expect("job log URI");
     assert!(original_uri.starts_with("artifact://"));
     let (session_component, file_name) = original_uri
         .strip_prefix("artifact://")
@@ -902,7 +905,7 @@ async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() 
                         .find(|message| message["tool_call_id"] == "read_link")
                         .unwrap();
                     let output = support::content::content_text(&result["content"]);
-                    assert!(output.contains("内容未展示"));
+                    assert!(output.contains("content omitted"));
                     let anchor = output
                         .lines()
                         .find_map(|line| line.strip_suffix("│short"))

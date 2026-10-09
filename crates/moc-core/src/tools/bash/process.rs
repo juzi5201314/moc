@@ -36,7 +36,7 @@ impl Process {
         if cfg!(not(unix)) && permission == SessionPermission::Workspace {
             return Err(ToolError::new(
                 "E_SANDBOX_UNAVAILABLE",
-                "workspace 权限仅支持 Unix bwrap 环境",
+                "workspace permissions require a Unix bwrap environment",
             ));
         }
         let duration = (timeout > 0).then_some(Duration::from_secs(timeout));
@@ -92,9 +92,12 @@ impl Process {
         let pid = child.id();
         #[cfg(windows)]
         {
-            let handle = child
-                .raw_handle()
-                .ok_or_else(|| ToolError::new("E_BASH_SPAWN", "无法取得 Windows 子进程句柄"))?;
+            let handle = child.raw_handle().ok_or_else(|| {
+                ToolError::new(
+                    "E_BASH_SPAWN",
+                    "cannot obtain the Windows child-process handle",
+                )
+            })?;
             group.assign_and_resume_suspended_process(handle)?;
         }
         #[cfg(unix)]
@@ -160,7 +163,7 @@ impl Process {
         if cfg!(not(unix)) && permission == SessionPermission::Workspace {
             return Err(ToolError::new(
                 "E_SANDBOX_UNAVAILABLE",
-                "workspace 权限仅支持 Unix bwrap 环境",
+                "workspace permissions require a Unix bwrap environment",
             ));
         }
         let cancel = CancellationToken::new();
@@ -177,7 +180,7 @@ impl Process {
                 return match worker.await {
                     Ok(Err(error)) => Err(ToolError::new("E_PTY", error.to_string())),
                     Err(error) => Err(ToolError::new("E_PTY", error.to_string())),
-                    Ok(Ok(_)) => Err(ToolError::new("E_PTY", "PTY 未报告启动状态")),
+                    Ok(Ok(_)) => Err(ToolError::new("E_PTY", "PTY did not report startup status")),
                 };
             }
         };
@@ -275,7 +278,7 @@ fn pty_input(command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> {
     if command.contains('\0') {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Windows shell 命令不能包含 NUL 字节",
+            "Windows shell commands cannot contain NUL bytes",
         ));
     }
     let command = if command.trim().is_empty() {
@@ -357,7 +360,9 @@ fn run_pty(
     {
         let Some(handle) = portable_pty::Child::as_raw_handle(&*child) else {
             let _ = child.kill();
-            return Err(std::io::Error::other("无法取得 Windows PTY 子进程句柄"));
+            return Err(std::io::Error::other(
+                "cannot obtain the Windows PTY child-process handle",
+            ));
         };
         if let Err(error) = group.assign_running_process(handle) {
             let _ = child.kill();
@@ -400,7 +405,7 @@ fn run_pty(
     let _ = writer_thread.join();
     reader_thread
         .join()
-        .map_err(|_| std::io::Error::other("PTY 输出线程异常退出"))??;
+        .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
     let status = waited?;
     let code = status.exit_code().min(i32::MAX as u32) as i32;
     Ok(ProcessExit {

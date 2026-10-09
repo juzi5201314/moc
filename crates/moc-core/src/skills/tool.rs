@@ -21,13 +21,12 @@ impl Tool for SkillTool {
         "skill"
     }
     fn description(&self) -> &str {
-        "加载一个 skill 的完整说明。从系统提示 <skills> 清单中按名称选择；返回 SKILL.md 正文与随附文件清单，之后严格按其内容执行任务。"
+        "Load a skill's full instructions. Choose it from the `<skills>` catalog; the result contains SKILL.md and its resource list. Follow the loaded instructions exactly."
     }
     fn tier(&self) -> Tier {
         Tier::Read
     }
     fn parallel_safe(&self) -> bool {
-        // 加载结果会写入会话内去重集合；串行化避免重复加载的竞态。
         false
     }
     fn def(&self) -> ToolDef {
@@ -35,7 +34,7 @@ impl Tool for SkillTool {
             "skill",
             schema(
                 serde_json::json!({
-                    "name": {"type": "string", "description": "skill 名称（<skills> 清单中列出）"}
+                    "name": {"type": "string", "description": "Skill name from the <skills> catalog"}
                 }),
                 &["name"],
             ),
@@ -58,18 +57,18 @@ impl Tool for SkillTool {
                     .take(20)
                     .collect();
                 let hint = if available.is_empty() {
-                    "当前没有可用的 skill。".to_owned()
+                    "No model-invocable skills are available.".to_owned()
                 } else {
-                    format!("可用：{}", available.join(", "))
+                    format!("Available: {}", available.join(", "))
                 };
                 return Err(ToolError::new(
                     "E_NOT_FOUND",
-                    format!("未知 skill `{}`。{hint}", args.name),
+                    format!("Unknown skill `{}`. {hint}", args.name),
                 ));
             };
             if !ctx.loaded_skills.write().insert(args.name.clone()) {
                 return Ok(ToolOutcome::success(format!(
-                    "skill `{}` 已在本会话加载过，内容仍在上下文中，无需重复加载。",
+                    "Skill `{}` is already loaded in this session; its content is still in context.",
                     args.name
                 )));
             }
@@ -90,7 +89,7 @@ impl Tool for SkillTool {
                 .collect::<Vec<_>>();
             if !resources.is_empty() {
                 output.push_str(&format!(
-                    "\n\n本 skill 附带文件（使用 read 读取）：\n{}",
+                    "\n\nResources bundled with this skill (use read to inspect):\n{}",
                     resources.join("\n")
                 ));
             }
@@ -126,10 +125,10 @@ pub fn render_for_invocation(
     loaded: &mut LoadedSkills,
 ) -> Result<String, String> {
     let Some(skill) = skills.get(name) else {
-        return Err(format!("未知 skill `{name}`"));
+        return Err(format!("Unknown skill `{name}`"));
     };
     let text = std::fs::read_to_string(skill.skill_file())
-        .map_err(|error| format!("读取 skill 失败：{error}"))?;
+        .map_err(|error| format!("Failed to read skill: {error}"))?;
     let parsed = super::frontmatter::parse(&text).map_err(|error| error.to_string())?;
     loaded.insert(name.to_owned());
     let resources = list_resources(&skill.base_dir)
@@ -140,7 +139,7 @@ pub fn render_for_invocation(
         String::new()
     } else {
         format!(
-            "\n\n本 skill 附带文件（使用 read 读取）：\n{}",
+            "\n\nResources bundled with this skill (use read to inspect):\n{}",
             resources.join("\n")
         )
     };

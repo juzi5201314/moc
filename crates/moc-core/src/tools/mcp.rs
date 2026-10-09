@@ -36,7 +36,7 @@ impl Tool for McpTool {
         self.info
             .description
             .as_deref()
-            .unwrap_or("MCP server 提供的工具。")
+            .unwrap_or("MCP server-provided tool.")
     }
 
     fn tier(&self) -> Tier {
@@ -77,7 +77,7 @@ impl Tool for McpTool {
             {
                 Ok(output) => output,
                 Err(McpError::Cancelled) => {
-                    return Err(ToolError::new("E_CANCELLED", "调用被取消"));
+                    return Err(ToolError::new("E_CANCELLED", "call cancelled"));
                 }
                 Err(error) => return Ok(ToolOutcome::failure("E_MCP", error.to_string())),
             };

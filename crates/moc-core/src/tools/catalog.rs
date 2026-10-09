@@ -32,7 +32,7 @@ impl ToolCatalog {
             if pair[0].name() == pair[1].name() {
                 return Err(ToolError::new(
                     "E_TOOL_DUPLICATE",
-                    format!("重复的工具名 `{}`", pair[0].name()),
+                    format!("duplicate tool name `{}`", pair[0].name()),
                 ));
             }
         }
@@ -84,31 +84,18 @@ impl ToolCatalog {
         })).collect())
     }
 
-    pub fn summary(
-        &self,
-        mode: SessionMode,
-        ask_supported: bool,
-        config: &ResolvedConfig,
-    ) -> String {
+    pub fn summary(&self) -> String {
         if self.servers.is_empty() {
             return String::new();
         }
-        let Value::Array(servers) = self.servers(mode, ask_supported, config) else {
-            unreachable!()
-        };
         let mut lines = vec!["<mcp-servers>".to_owned()];
-        for server in servers.iter().take(32) {
-            lines.push(format!(
-                "{} {} {}",
-                server["name"].as_str().unwrap_or_default(),
-                server["status"].as_str().unwrap_or_default(),
-                server["toolCount"]
-            ));
+        for name in self.servers.keys().take(32) {
+            lines.push(name.clone());
         }
-        if servers.len() > 32 {
+        if self.servers.len() > 32 {
             lines.push(format!(
-                "其余 {} 台请通过 catalog.servers() 查看",
-                servers.len() - 32
+                "{} more servers; call catalog.servers() for live status",
+                self.servers.len() - 32
             ));
         }
         lines.push("</mcp-servers>".into());
@@ -126,12 +113,12 @@ impl ToolCatalog {
         limit: usize,
     ) -> Result<Value, ToolError> {
         if !(1..=100).contains(&limit) {
-            return Err(ToolError::new("E_ARGUMENT", "limit 必须在 1..100"));
+            return Err(ToolError::new("E_ARGUMENT", "limit must be in 1..100"));
         }
         if let Some(name) = server
             && !self.servers.contains_key(name)
         {
-            return Err(ToolError::new("E_ARGUMENT", "未知 MCP server"));
+            return Err(ToolError::new("E_ARGUMENT", "unknown MCP server"));
         }
         let query = query.trim().to_lowercase();
         let terms: Vec<_> = query.split_whitespace().collect();
@@ -177,7 +164,7 @@ impl ToolCatalog {
             .ok_or_else(|| {
                 ToolError::new(
                     "E_TOOL_NOT_FOUND",
-                    format!("工具 `{name}` 不存在或当前模式不可见"),
+                    format!("tool `{name}` does not exist or is not visible in the current mode"),
                 )
             })?;
         Ok(

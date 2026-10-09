@@ -23,7 +23,7 @@ pub fn render(index: &SkillIndex, config: &SkillsConfig, context_window: u64) ->
         return None;
     }
     let mut lines = vec![
-        "以下 skill 可用。执行与某个 skill 描述相关的任务前，先调用 skill 工具加载其完整说明并严格遵循，不要凭名称臆测其内容。".to_owned(),
+        "Available skills. Before a task covered by a skill, call the skill tool to load its full instructions and follow them; never infer behavior from the name.".to_owned(),
     ];
     let mut budget = config
         .catalog_budget_tokens(context_window)
@@ -51,7 +51,7 @@ pub fn render(index: &SkillIndex, config: &SkillsConfig, context_window: u64) ->
     }
     if degraded > 0 {
         lines.push(format!(
-            "（{degraded} 个 skill 的描述已精简；调用 skill 工具加载后可见完整说明）"
+            "({degraded} skill descriptions were shortened; load them with the skill tool for full details)"
         ));
     }
     Some(format!("<skills>\n{}\n</skills>", lines.join("\n")))
@@ -64,11 +64,11 @@ fn full_line(skill: &super::SkillMeta, config: &SkillsConfig) -> String {
         truncate_chars(&skill.description, config.description_max_chars)
     );
     if let Some(when_to_use) = &skill.when_to_use {
-        line.push_str("；何时使用: ");
+        line.push_str("; when to use: ");
         line.push_str(when_to_use);
     }
     if !skill.globs.is_empty() {
-        line.push_str(&format!("（适用: {}）", skill.globs.join(", ")));
+        line.push_str(&format!(" (applies to: {})", skill.globs.join(", ")));
     }
     line
 }
@@ -161,7 +161,7 @@ mod tests {
         assert!(rendered.contains("- hidden-name"));
         // 预算内者有完整描述，超预算者被降级并注明。
         assert!(rendered.contains("短描述"));
-        assert!(rendered.contains("描述已精简"));
+        assert!(rendered.contains("skill descriptions were shortened"));
     }
 
     #[test]
@@ -178,8 +178,8 @@ mod tests {
         skill.globs = vec!["*.rs".into()];
         skill.when_to_use = Some("写 Rust 时".into());
         let rendered = render(&index_of(vec![skill]), &config(8000), 0).unwrap();
-        assert!(rendered.contains("（适用: *.rs）"));
-        assert!(rendered.contains("何时使用: 写 Rust 时"));
+        assert!(rendered.contains("(applies to: *.rs)"));
+        assert!(rendered.contains("when to use: "));
     }
 
     #[test]

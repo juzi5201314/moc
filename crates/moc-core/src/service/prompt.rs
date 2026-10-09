@@ -5,7 +5,7 @@ use crate::{
     compact::replay::model_messages,
     service::{CoreInner, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
-    system_prompt::{build, reminder_message},
+    system_prompt::{build, merge_reminders, mode_reminder, reminder_message},
     tools::ToolCtx,
 };
 use moc_llm::{FinishReason, Message, Usage};
@@ -233,7 +233,6 @@ async fn run_prompt_locked(
         .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
         .map_err(to_rpc)?;
     let tools_available = inner.tools.definitions(
-        mode,
         inner.client_supports_ask(ctx.connection_id()),
         &project_config,
     );
@@ -242,12 +241,16 @@ async fn run_prompt_locked(
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
     let mut stream_overflows = 0usize;
-    let summary = catalog.summary(
-        mode,
-        inner.client_supports_ask(ctx.connection_id()),
+    let summary = catalog.summary();
+    let context_files = inner.project_context_files(&params.session_id, &cwd).await;
+    let system = build(
         &project_config,
+        &model,
+        &cwd,
+        &context_files,
+        &skills,
+        &summary,
     );
-    let system = build(&project_config, &model, mode, &cwd, &skills, &summary);
 
     'turns: for turn in 0..project_config.limits.max_turns_per_prompt {
         if cancel.is_cancelled() {
@@ -258,7 +261,7 @@ async fn run_prompt_locked(
             .await
             .map_err(to_rpc)?;
         let mut snapshot = record.state.lock().await.clone();
-        let mut reminder_messages = Vec::new();
+        let mut reminder_messages = vec![mode_reminder(mode)];
         if turn == 0 {
             if project_config.openviking.recall
                 && !project_config.openviking.url.trim().is_empty()
@@ -357,6 +360,7 @@ async fn run_prompt_locked(
                 reminder_message(format!("<system-reminder>{notice}</system-reminder>"))
             }));
         }
+        let reminder_messages = merge_reminders(reminder_messages);
         let mut messages = model_messages(&snapshot, Some(system.clone()), Some(&model));
         let context_tokens = compact::context_tokens_with_additional(
             &snapshot,
@@ -388,7 +392,7 @@ async fn run_prompt_locked(
                             session_id = %params.session_id,
                             tokens_after = report.result.tokens_after,
                             recovery_band = compact::recovery_band(&project_config, model.context_window),
-                            "压缩未创建足够上下文空间，停止自动继续以避免重复压缩"
+                            "Compaction did not create enough context space; stopping automatic continuation to avoid repeated compaction"
                         );
                     }
                     if !report.created_headroom || !project_config.compaction.auto_continue {
@@ -474,7 +478,9 @@ async fn run_prompt_locked(
                     {
                         Ok(report) if report.created_headroom => {}
                         Ok(_) => {
-                            let message = format!("{error}; 溢出恢复未创建足够上下文空间");
+                            let message = format!(
+                                "{error}; overflow recovery did not create enough context space"
+                            );
                             emit_fatal(&update, &params.session_id, &prompt_id, &message).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
                         }
@@ -483,7 +489,8 @@ async fn run_prompt_locked(
                                 final_reason = FinishReason::Cancelled;
                                 break 'turns;
                             }
-                            let message = format!("{error}; 溢出恢复失败：{compact_error}");
+                            let message =
+                                format!("{error}; overflow recovery failed: {compact_error}");
                             emit_fatal(&update, &params.session_id, &prompt_id, &message).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), message));
                         }
@@ -672,7 +679,7 @@ async fn run_prompt_locked(
                         &inner,
                         &params.session_id,
                         call.id.clone(),
-                        "提示被取消，该调用未执行。".into(),
+                        "Prompt cancelled; this call was not executed.".into(),
                         true,
                         ToolStatus::Cancelled,
                         0,
@@ -693,7 +700,7 @@ async fn run_prompt_locked(
                     .append_message(
                         &params.session_id,
                         Message::user_text(
-                            "[上一条输出被长度上限截断，请从中断处继续，不要重复已写内容]",
+                            "The previous output hit the length limit. Continue from the interruption without repeating completed text",
                         ),
                         None,
                         None,
@@ -931,10 +938,10 @@ async fn apply_skill_invocation(
     let content = crate::skills::tool::render_for_invocation(&skills, name, &mut loaded)
         .map_err(crate::service::invalid_params)?;
     let mut injected = format!(
-        "<system-reminder>以下内容由用户通过 /skill:{name} 显式调用注入，请立即遵循其内容。</system-reminder>\n{content}"
+        "<system-reminder>The following content was explicitly injected by the user via /skill:{name}; follow it now.</system-reminder>\n{content}"
     );
     if !arguments.is_empty() {
-        injected.push_str(&format!("\n\n用户附带的指令：{arguments}"));
+        injected.push_str(&format!("\n\nUser-provided instructions: {arguments}"));
     }
     Ok(Message::user_text(injected))
 }

@@ -68,7 +68,7 @@ impl JobManager {
                     ToolError::new(
                         "E_JOB_LIMIT",
                         format!(
-                            "后台进程已达 {} 个；请等待或结束已有 job 后再试",
+                            "{} background processes are already running; wait or finish an existing job",
                             config.max_running
                         ),
                     )
@@ -78,7 +78,7 @@ impl JobManager {
                 .slots
                 .acquire(config.max_running, cancel)
                 .await
-                .ok_or_else(|| ToolError::new("E_CANCELLED", "等待后台进程空位已取消")),
+                .ok_or_else(|| ToolError::new("E_CANCELLED", "waiting for a background-process slot was cancelled")),
         }
     }
 
@@ -95,7 +95,7 @@ impl JobManager {
             process.group.kill()?;
             return Err(ToolError::new(
                 "E_CANCELLED",
-                "会话正在关闭，不能启动后台任务",
+                "the session is closing; cannot start a background task",
             ));
         }
         let super::bash::Process {
@@ -163,7 +163,7 @@ impl JobManager {
             .await;
             let output = match output {
                 Ok(output) => output,
-                Err(error) => format!("[E_JOB_LOG] 无法读取日志：{error}"),
+                Err(error) => format!("[E_JOB_LOG] failed to read log: {error}"),
             };
             let log_uri = ctx
                 .artifact_store()
@@ -173,7 +173,7 @@ impl JobManager {
             {
                 let mut state = ctx.state.lock().await;
                 state.notices.push(format!(
-                    "后台任务 {id} 已结束（{exit_label}），输出预览：\n{output}\n完整输出：{log_uri}"
+                    "Background job {id} finished ({exit_label}); output preview:\n{output}\nFull output: {log_uri}"
                 ));
             }
             let update = SessionUpdate::JobFinished {
@@ -228,7 +228,7 @@ impl JobManager {
         let job = self
             .info(id)
             .await
-            .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("未知 job `{id}`")))?;
+            .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?;
         let text = read_tail(&job.path, lines)
             .await
             .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
@@ -243,7 +243,7 @@ impl JobManager {
             let mut jobs = self.jobs.lock();
             let job = jobs
                 .get_mut(id)
-                .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("未知 job `{id}`")))?;
+                .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?;
             if job.status == JobStatus::Running {
                 job.group
                     .as_ref()
@@ -277,7 +277,7 @@ impl JobManager {
             let status = self
                 .info(id)
                 .await
-                .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("未知 job `{id}`")))?
+                .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?
                 .status;
             if !matches!(status, JobStatus::Running | JobStatus::Killing) {
                 return Ok(status);
@@ -338,7 +338,7 @@ impl Tool for JobTool {
         "job"
     }
     fn description(&self) -> &'static str {
-        "管理后台 shell 作业：list、output、kill、wait。"
+        "Manage background shell jobs: list, output, kill, or wait."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -425,7 +425,7 @@ impl Tool for JobTool {
                 _ => {
                     return Err(ToolError::new(
                         "E_BAD_PAYLOAD",
-                        "job op 必须是 list/output/kill/wait",
+                        "job op must be list/output/kill/wait",
                     ));
                 }
             };
@@ -436,7 +436,7 @@ impl Tool for JobTool {
 
 fn require_id(id: Option<String>) -> Result<String, ToolError> {
     id.filter(|id| !id.is_empty())
-        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "该 job 操作需要 job_id"))
+        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "this job operation requires job_id"))
 }
 
 #[cfg(test)]

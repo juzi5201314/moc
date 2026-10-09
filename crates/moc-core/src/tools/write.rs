@@ -26,7 +26,7 @@ impl Tool for WriteTool {
         "write"
     }
     fn description(&self) -> &'static str {
-        "新建文件或按完整内容整体覆盖文件；已有文件的局部修改必须先 read，再用 edit，不要用 bash 的重定向、tee、sed、perl、python 或其他命令替代。若文件行含有最近 read 得到的 hashline 锚点，请用 edit 而不是 write。"
+        "Create a file or replace a complete file. For partial edits, read first and use edit; do not use bash redirection, tee, sed, perl, Python, or similar commands. If recent read output contains hashline anchors, use edit instead."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -60,7 +60,7 @@ impl Tool for WriteTool {
                 let Some(client) = &ctx.openviking else {
                     return Err(ToolError::new(
                         "E_OPENVIKING_DISABLED",
-                        "未配置 OpenViking URL",
+                        "OpenViking URL is not configured",
                     ));
                 };
                 let peer = ctx.openviking_peer.as_deref();
@@ -71,7 +71,7 @@ impl Tool for WriteTool {
                     .await
                     .map_err(|error| ToolError::new("E_OPENVIKING_WRITE", error.to_string()))?;
                 return Ok(ToolOutcome::success(format!(
-                    "已提交 OpenViking 写入 {}",
+                    "Submitted OpenViking write for {}",
                     uri.as_str()
                 )));
             }
@@ -83,13 +83,16 @@ impl Tool for WriteTool {
             };
             let parent = absolute
                 .parent()
-                .ok_or_else(|| ToolError::new("E_ACCESS", "无效文件路径"))?;
+                .ok_or_else(|| ToolError::new("E_ACCESS", "invalid file path"))?;
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
             if args.content.len() as u64 > ctx.config.tools.output.max_file_bytes {
-                return Err(ToolError::new("E_TOO_LARGE", "写入内容超过单文件字节上限"));
+                return Err(ToolError::new(
+                    "E_TOO_LARGE",
+                    "content exceeds the per-file byte limit",
+                ));
             }
             reject_served_hash_echo(
                 &path,
@@ -127,7 +130,7 @@ impl Tool for WriteTool {
             let lines = content.lines().count();
             Ok(ToolOutcome {
                 content: format!(
-                    "已写入 {}（{lines} 行，{} 字节）",
+                    "Wrote {} ({lines} lines, {} bytes)",
                     path.display(),
                     content.len()
                 )
@@ -173,7 +176,7 @@ fn reject_served_hash_echo(
     if echoes >= threshold && threshold > 0 {
         return Err(ToolError::new(
             "E_WRITE_HASH_ECHO",
-            format!("内容中有 {echoes} 行回显已服务锚点；使用 edit 修改这些行"),
+            format!("content echoes {echoes} served anchor lines; use edit to modify them"),
         ));
     }
     Ok(())

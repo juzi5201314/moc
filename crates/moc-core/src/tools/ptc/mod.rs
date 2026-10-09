@@ -19,7 +19,7 @@ impl Tool for RunCodeTool {
         "run_code"
     }
     fn description(&self) -> &str {
-        "在隔离的 QuickJS/WASM 中运行 JavaScript，通过 await tools.<name>(args) 调用工具。"
+        "Run JavaScript in an isolated QuickJS/WASM sandbox and call tools with await tools.<name>(args)."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -32,7 +32,7 @@ impl Tool for RunCodeTool {
             self.name(),
             schema(
                 serde_json::json!({
-                    "code": {"type": "string", "description": "要执行的 JavaScript"},
+                    "code": {"type": "string", "description": "JavaScript to execute"},
                     "timeout_secs": {"type": "integer", "minimum": 1}
                 }),
                 &["code"],
@@ -45,13 +45,15 @@ impl Tool for RunCodeTool {
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
-            let code = args
-                .get("code")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ToolError::new("E_ARGUMENT", "run_code 需要字符串参数 code"))?;
+            let code = args.get("code").and_then(Value::as_str).ok_or_else(|| {
+                ToolError::new("E_ARGUMENT", "run_code requires a string code argument")
+            })?;
             let limit = ctx.config.tools.ptc.max_output_bytes;
             if code.len() > limit {
-                return Err(ToolError::new("E_OUTPUT_LIMIT", "脚本代码超过配置上限"));
+                return Err(ToolError::new(
+                    "E_OUTPUT_LIMIT",
+                    "script code exceeds the configured limit",
+                ));
             }
             let timeout_secs = args
                 .get("timeout_secs")
@@ -72,8 +74,8 @@ impl Tool for RunCodeTool {
                 .await?;
             let guest = tokio::select! {
                 biased;
-                _ = ctx.cancel.cancelled() => return Err(ToolError::new("E_CANCELLED", "脚本已取消")),
-                _ = tokio::time::sleep_until(deadline) => return Err(ToolError::new("E_TIMEOUT", "脚本执行超时")),
+                _ = ctx.cancel.cancelled() => return Err(ToolError::new("E_CANCELLED", "script cancelled")),
+                _ = tokio::time::sleep_until(deadline) => return Err(ToolError::new("E_TIMEOUT", "script timed out")),
                 result = runtime.instantiate(ctx.config.tools.ptc.memory_limit_bytes) => result?,
             };
             let input = serde_json::to_vec(&StartRequest {

@@ -60,7 +60,8 @@ async fn perform(
             )
             .await;
         let mut outcome = if let Some(code) = cancelled {
-            let mut outcome = ToolOutcome::failure(code, "代码执行已终止，该调用已取消");
+            let mut outcome =
+                ToolOutcome::failure(code, "code execution terminated; this call was cancelled");
             outcome.status = Some(ToolStatus::Cancelled);
             outcome
         } else if let Err(err) = start_result {
@@ -132,7 +133,7 @@ async fn perform(
         (id, result, Some(outcome))
     } else {
         let result = if cancelled.is_some() {
-            Err(error("E_CANCELLED", "代码执行已终止"))
+            Err(error("E_CANCELLED", "code execution terminated"))
         } else {
             let ask = ctx.core.client_supports_ask(ctx.request.connection_id());
             match request.operation {
@@ -165,7 +166,10 @@ async fn perform(
             if serde_json::to_vec(&value).expect("JSON 可序列化").len()
                 > ctx.config.tools.ptc.max_result_bytes
             {
-                Err(error("E_RESULT_LIMIT", "结果超过代码读取上限"))
+                Err(error(
+                    "E_RESULT_LIMIT",
+                    "result exceeds the code-read limit",
+                ))
             } else {
                 Ok(value)
             }
@@ -196,8 +200,8 @@ pub(super) async fn run(
     'drive: loop {
         let step = tokio::select! {
             biased;
-            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "脚本已取消"); break; }
-            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "脚本执行超时"); break; }
+            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "script cancelled"); break; }
+            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "script timed out"); break; }
             step = guest.step(&input, first, if first { config.max_output_bytes } else { config.max_result_bytes }) => match step {
                 Ok(step) => step,
                 Err(err) => { outcome = err.into_outcome(); break; }
@@ -206,7 +210,10 @@ pub(super) async fn run(
         first = false;
         for request in step.requests {
             if u64::from(request.id) != next_id {
-                outcome = ToolOutcome::failure("E_PTC_PROTOCOL", "请求 ID 必须递增且不重复");
+                outcome = ToolOutcome::failure(
+                    "E_PTC_PROTOCOL",
+                    "request IDs must increase and be unique",
+                );
                 break 'drive;
             }
             next_id += 1;
@@ -217,7 +224,10 @@ pub(super) async fn run(
                 active.push(Box::pin(async move {
                     (
                         request.id,
-                        Err(error("E_QUEUE_LIMIT", "待处理请求超过数量或字节上限")),
+                        Err(error(
+                            "E_QUEUE_LIMIT",
+                            "pending requests exceed the count or byte limit",
+                        )),
                         None,
                     )
                 }));
@@ -231,7 +241,10 @@ pub(super) async fn run(
         match step.state {
             GuestState::Done { value } => {
                 outcome = if !pending.is_empty() || !active.is_empty() {
-                    ToolOutcome::failure("E_UNAWAITED_CALLS", "脚本返回前必须等待所有宿主调用")
+                    ToolOutcome::failure(
+                        "E_UNAWAITED_CALLS",
+                        "await all host calls before returning",
+                    )
                 } else {
                     ToolOutcome::success(value.to_string())
                 };
@@ -258,13 +271,13 @@ pub(super) async fn run(
             }
         }
         if active.is_empty() {
-            outcome = ToolOutcome::failure("E_PTC_PENDING", "脚本没有可完成的事件");
+            outcome = ToolOutcome::failure("E_PTC_PENDING", "the script has no completable event");
             break;
         }
         let completed = tokio::select! {
             biased;
-            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "脚本已取消"); break; }
-            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "脚本执行超时"); break; }
+            _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "script cancelled"); break; }
+            _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "script timed out"); break; }
             completed = active.next() => completed.expect("活动队列非空"),
         };
         let (id, result, tool) = completed;

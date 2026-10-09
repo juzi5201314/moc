@@ -1,4 +1,4 @@
-//! 易变的时间、job、工作区与只读违规提醒。
+//! Volatile time, job, workspace, and read-only reminders.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -23,12 +23,12 @@ impl ReminderState {
         let mut messages = Vec::new();
         let day = now_local.get(..10).unwrap_or(now_local);
         if self.last_day.as_deref() != Some(day) {
-            messages.push(format!("当前时间：{now_local}。"));
+            messages.push(format!("Current local time: {now_local}."));
             self.last_day = Some(day.to_owned());
         }
         for job in background_jobs {
             messages.push(format!(
-                "后台任务 {} 已结束（{}），输出尾部：\n{}\n完整输出：{}",
+                "Background job {} finished ({}). Output tail:\n{}\nFull output: {}",
                 job.id,
                 job.exit,
                 bounded_tail(&job.tail, 40),
@@ -43,10 +43,12 @@ impl ReminderState {
                 .join(", ");
             if violation {
                 messages.push(format!(
-                    "你在只读模式下修改了工作区：{paths}。立即停止修改并向用户说明原因。"
+                    "You modified the workspace in a read-only mode: {paths}. Stop modifying and explain why to the user."
                 ));
             } else {
-                messages.push(format!("工作区在本次提示之外发生了变更：{paths}。"));
+                messages.push(format!(
+                    "The workspace changed outside this prompt: {paths}."
+                ));
             }
         }
         (!messages.is_empty()).then(|| {
@@ -70,7 +72,7 @@ pub struct BackgroundJob {
 pub fn local_time() -> String {
     #[cfg(unix)]
     let output = Command::new("date")
-        .args(["+%Y-%m-%d %H:%M（本地时区 %:z）"])
+        .args(["+%Y-%m-%d %H:%M (%:z)"])
         .output();
     #[cfg(windows)]
     let output = Command::new("powershell.exe")
@@ -78,7 +80,7 @@ pub fn local_time() -> String {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-Date -Format 'yyyy-MM-dd HH:mm（本地时区 zzz）'",
+            "Get-Date -Format 'yyyy-MM-dd HH:mm (zzz)'",
         ])
         .output();
     output
@@ -86,7 +88,7 @@ pub fn local_time() -> String {
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .filter(|output| !output.is_empty())
-        .unwrap_or_else(|| "时间不可用".into())
+        .unwrap_or_else(|| "time unavailable".into())
 }
 
 /// 合并每种来源只需展示一次的最新工作区变更。
@@ -117,17 +119,17 @@ mod tests {
     fn renders_time_once_per_day_and_new_job_and_workspace_facts() {
         let mut state = ReminderState::default();
         let first = state
-            .render("2026-09-24 18:33（本地时区 +08:00）", &[], &[], false)
+            .render("2026-09-24 18:33 (+08:00)", &[], &[], false)
             .unwrap();
-        assert!(first.contains("当前时间"));
+        assert!(first.contains("Current local time"));
         assert!(
             state
-                .render("2026-09-24 18:45（本地时区 +08:00）", &[], &[], false)
+                .render("2026-09-24 18:45 (+08:00)", &[], &[], false)
                 .is_none()
         );
         let facts = state
             .render(
-                "2026-09-24 18:45（本地时区 +08:00）",
+                "2026-09-24 18:45 (+08:00)",
                 &[BackgroundJob {
                     id: "job_4".into(),
                     exit: "exit 0".into(),
@@ -144,15 +146,15 @@ mod tests {
                 true,
             )
             .unwrap();
-        assert!(!facts.contains("当前时间"));
-        assert!(facts.contains("后台任务 job_4"));
+        assert!(!facts.contains("Current local time"));
+        assert!(facts.contains("Background job job_4"));
         assert!(!facts.contains("\n8\n"));
-        assert!(facts.contains("只读模式"));
+        assert!(facts.contains("read-only mode"));
         assert!(
             state
-                .render("2026-09-25 00:01（本地时区 +08:00）", &[], &[], false)
+                .render("2026-09-25 00:01 (+08:00)", &[], &[], false)
                 .unwrap()
-                .contains("当前时间")
+                .contains("Current local time")
         );
     }
 }

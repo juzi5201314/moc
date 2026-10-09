@@ -20,18 +20,18 @@ pub struct FreshRange {
 /// 验证 edit range 的机器可读错误。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RangeError {
-    #[error("E_BAD_ANCHOR: 锚点必须是 3 位 base-62 字符串")]
+    #[error("E_BAD_ANCHOR: anchor must be a 3-character base-62 string")]
     BadAnchor,
-    #[error("E_STALE_ANCHOR: 锚点无法在当前 served 记录中定位")]
+    #[error("E_STALE_ANCHOR: anchor cannot be located in the current served record")]
     StaleAnchor,
-    #[error("E_STALE_RANGE: 文件在 read 后已发生外部修改，请用当前锚点重试")]
+    #[error("E_STALE_RANGE: file changed after read; retry with current anchors")]
     StaleRange,
-    #[error("E_UNSERVED_RANGE: {kind} 不在此前 read 给模型展示的范围内")]
+    #[error("E_UNSERVED_RANGE: {kind} was not shown to the model by the earlier read")]
     Unserved {
         kind: &'static str,
         fresh: Option<FreshRange>,
     },
-    #[error("E_RANGE_TOO_LARGE: 单次锚点范围最多为 100000 行")]
+    #[error("E_RANGE_TOO_LARGE: one anchored range may contain at most 100000 lines")]
     TooLarge,
     #[error("E_ANCHOR_SPACE_EXHAUSTED")]
     AnchorSpaceExhausted,
@@ -57,7 +57,7 @@ pub fn read_snapshot(path: &Path, max_file_bytes: u64) -> Result<FileSnapshot, s
     if metadata.len() > max_file_bytes {
         return Err(std::io::Error::new(
             ErrorKind::FileTooLarge,
-            "E_TOO_LARGE: 文件超过读取上限",
+            "E_TOO_LARGE: file exceeds the read limit",
         ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
@@ -139,19 +139,19 @@ pub fn verify_range(
     }
     if served.epoch != Some(snapshot.epoch) {
         return Err(RangeError::Unserved {
-            kind: "文件内容已变化；当前文件",
+            kind: "file content changed; current file",
             fresh: Some(fresh_all(snapshot)),
         });
     }
     let Some(from_position) = find_served(served, snapshot, from_hash) else {
         return Err(RangeError::Unserved {
-            kind: "起始锚点",
+            kind: "start anchor",
             fresh: fresh_for_anchor(snapshot, from_hash),
         });
     };
     let Some(to_position) = find_served(served, snapshot, to_hash) else {
         return Err(RangeError::Unserved {
-            kind: "结束锚点",
+            kind: "end anchor",
             fresh: fresh_for_anchor(snapshot, to_hash),
         });
     };
@@ -161,7 +161,7 @@ pub fn verify_range(
         (
             to_position,
             from_position,
-            Some("E_REVERSED_ANCHORS: 锚点次序相反，已自动交换".to_owned()),
+            Some("E_REVERSED_ANCHORS: anchors were reversed and have been swapped".to_owned()),
         )
     };
     if end.saturating_sub(start) >= 100_000 {
@@ -170,7 +170,7 @@ pub fn verify_range(
     for position in start..=end {
         if served.hashes.get(position).copied().flatten().is_none() {
             return Err(RangeError::Unserved {
-                kind: "范围内部未服务行",
+                kind: "unserved line inside range",
                 fresh: Some(render_range(snapshot, position, position)),
             });
         }

@@ -40,18 +40,17 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<Message>) 
             )));
         }
     }
-    if !state.todos.is_empty() {
-        let marker = "<active-todos>";
-        let already_in_transcript = state
-            .transcript
+    if !state.todos.is_empty()
+        && state
+            .entries
             .iter()
-            .skip(start)
-            .any(|entry| entry.message.text().contains(marker));
-        if !already_in_transcript && let Ok(todos) = serde_json::to_string(&state.todos) {
-            messages.push(Message::user_text(format!(
-                "{marker}\n{todos}\n</active-todos>"
-            )));
-        }
+            .any(|entry| matches!(entry, Entry::ResetBoundary { .. }))
+        && state.summary.is_none()
+        && let Ok(todos) = serde_json::to_string(&state.todos)
+    {
+        messages.push(Message::user_text(format!(
+            "<active-todos>\n{todos}\n</active-todos>"
+        )));
     }
     messages
 }
@@ -206,16 +205,22 @@ mod tests {
         );
         let mut state = SessionState::new(header).unwrap();
         state.todos = vec![TodoPhase {
-            phase: "执行".into(),
+            phase: "execute".into(),
             items: vec![TodoItem {
                 status: TodoStatus::InProgress,
-                task: "保留当前任务".into(),
+                task: "preserve the current task".into(),
                 reason: None,
             }],
         }];
+        state.apply_entry(Entry::from_payload(
+            EntryPayload::ResetBoundary,
+            state.last_entry_id.clone(),
+            2,
+        ));
         let messages = model_messages(&state, None, None);
         assert!(messages.iter().any(|message| {
-            message.text().contains("<active-todos>") && message.text().contains("保留当前任务")
+            message.text().contains("<active-todos>")
+                && message.text().contains("preserve the current task")
         }));
     }
 

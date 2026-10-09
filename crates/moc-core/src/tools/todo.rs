@@ -41,7 +41,7 @@ impl Tool for TodoTool {
         "todo"
     }
     fn description(&self) -> &'static str {
-        "管理当前会话多步任务。多步任务开始前先 init；每完成一项立刻 done。单次操作具有原子性。"
+        "Manage the current session's multi-step task list. Call init before starting a multi-step task, then call done immediately after each completed item. Each operation is atomic."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -83,13 +83,13 @@ impl Tool for TodoTool {
                     let phases = match (args.list, args.items) {
                         (Some(list), None) => list,
                         (None, Some(items)) => vec![PhaseInput {
-                            phase: args.phase.unwrap_or_else(|| "任务".into()),
+                            phase: args.phase.unwrap_or_else(|| "tasks".into()),
                             items: items.into_iter().map(ItemInput::Text).collect(),
                         }],
                         _ => {
                             return Err(ToolError::new(
                                 "E_BAD_PAYLOAD",
-                                "init 必须提供 list 或 items，不能同时提供",
+                                "init requires either list or items, not both",
                             ));
                         }
                     };
@@ -114,12 +114,15 @@ impl Tool for TodoTool {
                 "append" => {
                     let phase = args
                         .phase
-                        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "append 需要 phase"))?;
+                        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "append requires phase"))?;
                     let items = args
                         .items
-                        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "append 需要 items"))?;
+                        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "append requires items"))?;
                     if items.is_empty() {
-                        return Err(ToolError::new("E_BAD_PAYLOAD", "append 至少需要一个 item"));
+                        return Err(ToolError::new(
+                            "E_BAD_PAYLOAD",
+                            "append requires at least one item",
+                        ));
                     }
                     let index = next
                         .iter()
@@ -146,7 +149,7 @@ impl Tool for TodoTool {
                         if previous == next.len() {
                             return Err(ToolError::new(
                                 "E_TODO_NOT_FOUND",
-                                format!("未知阶段 `{phase}`"),
+                                format!("unknown phase `{phase}`"),
                             ));
                         }
                     } else if let Some(task) = args.task {
@@ -160,7 +163,7 @@ impl Tool for TodoTool {
                         if !removed {
                             return Err(ToolError::new(
                                 "E_TODO_NOT_FOUND",
-                                format!("未知任务 `{task}`"),
+                                format!("unknown task `{task}`"),
                             ));
                         }
                     } else {
@@ -173,7 +176,7 @@ impl Tool for TodoTool {
                     if task.is_none() && phase_name.is_none() {
                         return Err(ToolError::new(
                             "E_BAD_PAYLOAD",
-                            format!("{op} 需要 task 或 phase"),
+                            format!("{op} requires task or phase"),
                         ));
                     }
                     let mut found = false;
@@ -195,7 +198,7 @@ impl Tool for TodoTool {
                     if !found {
                         return Err(ToolError::new(
                             "E_TODO_NOT_FOUND",
-                            "没有匹配的 todo 阶段或任务",
+                            "no matching todo phase or task",
                         ));
                     }
                 }
@@ -205,18 +208,21 @@ impl Tool for TodoTool {
             let mut tasks = std::collections::HashSet::new();
             for phase in &next {
                 if phase.phase.trim().is_empty() || !phases.insert(&phase.phase) {
-                    errors.push(format!("阶段名称为空或重复：{}", phase.phase));
+                    errors.push(format!(
+                        "phase name is empty or duplicated: {}",
+                        phase.phase
+                    ));
                 }
                 for item in &phase.items {
                     if item.task.trim().is_empty() || !tasks.insert(&item.task) {
-                        errors.push(format!("任务内容为空或重复：{}", item.task));
+                        errors.push(format!("task is empty or duplicated: {}", item.task));
                     }
                 }
             }
             if !errors.is_empty() {
                 return Err(ToolError::new(
                     "E_BAD_PAYLOAD",
-                    format!("Errors: {}", errors.join("；")),
+                    format!("Errors: {}", errors.join("; ")),
                 ));
             }
             normalize(&mut next);
@@ -271,7 +277,7 @@ fn apply_op(item: &mut TodoItem, op: &str, reason: Option<&str>) -> Result<(), T
         _ => {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
-                format!("未知 todo op `{op}`"),
+                format!("unknown todo op `{op}`"),
             ));
         }
     }

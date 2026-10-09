@@ -59,14 +59,17 @@ pub(super) async fn execute_tool_batch(
             results[index] = Some((
                 Ok(ToolOutcome::failure(
                     "E_MODE",
-                    "MCP 工具请通过 run_code 调用",
+                    "Call MCP tools through run_code",
                 )),
                 0,
             ));
             continue;
         }
         let Some(tool) = inner.tools.get(&call.name) else {
-            let error = CoreError::Tool(format!("E_TOOL_NOT_FOUND: 未注册工具 `{}`", call.name));
+            let error = CoreError::Tool(format!(
+                "E_TOOL_NOT_FOUND: tool `{}` is not registered",
+                call.name
+            ));
             results[index] = Some((Err(error), 0));
             continue;
         };
@@ -153,9 +156,12 @@ pub(super) async fn execute_tool_batch(
         }
         let (result, duration_ms) = results[index].take().unwrap_or_else(|| {
             let (code, message) = if stop_reason.is_some() {
-                ("E_CANCELLED", "提示中止，该调用未执行。")
+                ("E_CANCELLED", "Prompt aborted; this call was not executed.")
             } else {
-                ("E_TURN_ENDED", "计划已提交，后续调用未执行。")
+                (
+                    "E_TURN_ENDED",
+                    "The plan was submitted; later calls were not executed.",
+                )
             };
             let mut outcome = ToolOutcome::failure(code, message);
             outcome.status = Some(ToolStatus::Cancelled);
@@ -185,7 +191,7 @@ pub(super) async fn execute_tool_batch(
             Err(error) => {
                 outcome.is_error = true;
                 outcome.error_code = Some("E_ARTIFACT".into());
-                format!("[E_ARTIFACT] 工具已执行，但输出交付失败：{error}")
+                format!("[E_ARTIFACT] Tool ran, but its output could not be delivered: {error}")
             }
         };
         let status = outcome.status.unwrap_or(if outcome.is_error {
@@ -283,7 +289,7 @@ async fn execute_tool(
     if !ctx.nested && name.starts_with("mcp__") {
         return Ok(ToolOutcome::failure(
             "E_MODE",
-            "MCP 工具请通过 run_code 调用",
+            "Call MCP tools through run_code",
         ));
     }
     let selected = if ctx.nested {
@@ -294,18 +300,24 @@ async fn execute_tool(
     let Some(tool) = selected else {
         return Ok(ToolOutcome::failure(
             "E_TOOL_NOT_FOUND",
-            format!("未注册工具 `{name}`"),
+            format!("tool `{name}` is not registered"),
         ));
     };
     if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
-        return Ok(ToolOutcome::failure("E_MODE", "当前模式不允许调用该工具"));
+        return Ok(ToolOutcome::failure(
+            "E_MODE",
+            "This tool is not allowed in the current mode",
+        ));
     }
     if !crate::service::mode::tool_enabled(
         name,
         inner.client_supports_ask(request.connection_id()),
         config,
     ) {
-        return Ok(ToolOutcome::failure("E_TOOL_DISABLED", "该工具未启用"));
+        return Ok(ToolOutcome::failure(
+            "E_TOOL_DISABLED",
+            "This tool is disabled",
+        ));
     }
     let args: Value = match serde_json::from_str(arguments) {
         Ok(args) => args,
@@ -313,8 +325,8 @@ async fn execute_tool(
             return Ok(ToolOutcome::failure(
                 "E_TOOL_ARGUMENTS",
                 format!(
-                    "工具参数不是合法 JSON：{}",
-                    arguments.chars().take(200).collect::<String>()
+                    "Tool arguments are not valid JSON: {}",
+                    arguments.chars().take(200).collect::<String>(),
                 ),
             ));
         }
@@ -329,7 +341,7 @@ async fn execute_tool(
     let execution_permission = match authorize(ctx, &call.id, name, &args).await? {
         Authorization::Denied => {
             return Ok(ToolOutcome {
-                content: "[E_PERMISSION_DENIED] 用户拒绝执行该命令".into(),
+                content: "[E_PERMISSION_DENIED] The user denied this command".into(),
                 is_error: true,
                 structured_content: None,
                 error_code: Some("E_PERMISSION_DENIED".into()),
@@ -364,7 +376,7 @@ async fn execute_tool(
         Ok(Err(error)) => Ok(error.into_outcome()),
         Err(_) => Ok(ToolOutcome::failure(
             "E_TOOL_PANIC",
-            format!("工具 {name} 执行发生 panic"),
+            format!("Tool {name} panicked during execution"),
         )),
     }
 }
@@ -378,7 +390,7 @@ pub(crate) async fn execute_nested_tool(
     if call.name == "run_code" {
         return Ok(ToolOutcome::failure(
             "E_PTC_RECURSION",
-            "不允许嵌套 run_code",
+            "Nested run_code calls are not allowed",
         ));
     }
     let mut nested = ctx.clone();
@@ -503,7 +515,10 @@ pub(super) async fn persist_tool_result(
 }
 
 fn cancelled_outcome() -> ToolOutcome {
-    let mut outcome = ToolOutcome::failure("E_CANCELLED", "提示被取消，该调用未执行或已终止。");
+    let mut outcome = ToolOutcome::failure(
+        "E_CANCELLED",
+        "Prompt cancelled; this call was not executed or was terminated.",
+    );
     outcome.status = Some(ToolStatus::Cancelled);
     outcome
 }

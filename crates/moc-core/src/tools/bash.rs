@@ -39,7 +39,7 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &'static str {
-        "执行构建、测试、格式化、版本控制和其他确需 shell 的命令；不要用它读取、搜索或编辑工作区文件：读取用 read，搜索用 grep/find，修改用 edit/write，也不要用 cat、grep、rg、find、sed、awk 或 python -c 等命令替代这些工具。默认前台，async=true 时返回 job_id；需要交互终端时设置 pty=true。危险命令即使 yolo 也会被拒绝。"
+        "Run builds, tests, formatters, version-control commands, and other commands that require a shell. Do not use it to read, search, or edit workspace files; use read, grep/find, and edit/write. Runs in the foreground by default; async=true returns a job_id, and pty=true enables an interactive terminal. Dangerous commands are rejected even with yolo."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -52,7 +52,7 @@ impl Tool for BashTool {
             "bash",
             schema(
                 serde_json::json!({
-                    "command":{"type":"string","description":"需要 shell 执行的命令；不要在此调用 cat、grep、rg、find、sed、awk 或解释器读取、搜索、修改工作区文件"},
+                    "command":{"type":"string","description":"Shell command to run; do not use cat, grep, rg, find, sed, awk, or interpreters here to read, search, or edit workspace files"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
                     "timeout":{"type":"integer","minimum":0,"maximum":3600},
@@ -73,7 +73,7 @@ impl Tool for BashTool {
             let args: BashArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             if args.command.trim().is_empty() {
-                return Err(ToolError::new("E_BAD_PAYLOAD", "command 不能为空"));
+                return Err(ToolError::new("E_BAD_PAYLOAD", "command must not be empty"));
             }
             let cwd = resolve_cwd(&ctx.cwd, args.cwd.as_deref())?;
             let timeout = args
@@ -83,7 +83,7 @@ impl Tool for BashTool {
             if args.asynchronous && !ctx.config.tools.job.enabled {
                 return Err(ToolError::new(
                     "E_TOOL_DISABLED",
-                    "job 工具关闭时不能创建后台任务",
+                    "job is disabled; cannot create a background task",
                 ));
             }
             let asynchronous = args.asynchronous;
@@ -119,7 +119,7 @@ impl Tool for BashTool {
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "后台任务已启动：{job_id}，日志：{uri}"
+                    "Background job {job_id} started; log: {uri}"
                 )));
             }
             let result =
@@ -130,7 +130,7 @@ impl Tool for BashTool {
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "命令运行超过自动转后台阈值，任务 {job_id} 继续执行，日志：{uri}"
+                    "Command exceeded the foreground threshold; job {job_id} continues in the background; log: {uri}"
                 )));
             };
             Ok(ToolOutcome {
@@ -192,7 +192,7 @@ async fn wait_foreground(
                     _ = ctx.cancel.cancelled() => {
                         process.group.kill()?;
                         let _ = process.completion.await;
-                        Err(ToolError::new("E_CANCELLED", "命令已取消"))
+                        Err(ToolError::new("E_CANCELLED", "command cancelled"))
                     }
                 }
             }
@@ -202,17 +202,24 @@ async fn wait_foreground(
             if let Err(error) = process.completion.await {
                 tracing::warn!(%error, "取消后回收命令失败");
             }
-            Err(ToolError::new("E_CANCELLED", "命令已取消"))
+            Err(ToolError::new("E_CANCELLED", "command cancelled"))
         }
     }
 }
 
 pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), ToolError> {
     for pattern in patterns {
-        let matcher = grep_regex::RegexMatcher::new(pattern)
-            .map_err(|error| ToolError::new("E_CONFIG", format!("危险命令规则无效：{error}")))?;
+        let matcher = grep_regex::RegexMatcher::new(pattern).map_err(|error| {
+            ToolError::new(
+                "E_CONFIG",
+                format!("dangerous-command rule is invalid: {error}"),
+            )
+        })?;
         if matcher.is_match(command.as_bytes()).unwrap_or(false) {
-            return Err(ToolError::new("E_BASH_DENIED", "命令匹配禁止执行规则"));
+            return Err(ToolError::new(
+                "E_BASH_DENIED",
+                "command matches a blocked execution rule",
+            ));
         }
     }
     Ok(())
@@ -232,7 +239,7 @@ pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBu
     let canonical = std::fs::canonicalize(&cwd)
         .map_err(|error| ToolError::new("E_BASH_CWD", error.to_string()))?;
     if !canonical.is_dir() {
-        return Err(ToolError::new("E_BASH_CWD", "cwd 不是目录"));
+        return Err(ToolError::new("E_BASH_CWD", "cwd is not a directory"));
     }
     Ok(canonical)
 }
@@ -271,7 +278,7 @@ async fn next_job_id(ctx: &ToolCtx) -> Result<String, ToolError> {
             state.job_sequence = state
                 .job_sequence
                 .checked_add(1)
-                .ok_or_else(|| ToolError::new("E_BASH_LOG", "任务编号空间已耗尽"))?;
+                .ok_or_else(|| ToolError::new("E_BASH_LOG", "job ID space is exhausted"))?;
             crate::ids::job_id(state.job_sequence)
         };
         match tokio::fs::OpenOptions::new()
@@ -289,7 +296,7 @@ async fn next_job_id(ctx: &ToolCtx) -> Result<String, ToolError> {
 
 fn render_exit(status: i32, timed_out: bool, timeout: u64) -> String {
     if timed_out {
-        format!("\n(超时 {timeout} 秒后被终止)")
+        format!("\n(killed after {timeout}s timeout)")
     } else if status != 0 {
         format!("\n(exit {status})")
     } else {

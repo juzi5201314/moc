@@ -104,7 +104,10 @@ impl ArtifactStore {
         }
         Err(ResourceError::new(
             "E_ARTIFACT_PATH",
-            format!("{} 不在当前会话 artifact sidecar 中", path.display()),
+            format!(
+                "{} is outside this session's artifact sidecar",
+                path.display()
+            ),
         ))
     }
 
@@ -112,25 +115,28 @@ impl ArtifactStore {
         let uri = InternalUri::parse(input)
             .map_err(|error| ResourceError::new("E_ARTIFACT_URI", error.message))?;
         if uri.scheme() != "artifact" {
-            return Err(ResourceError::new("E_ARTIFACT_URI", "scheme 不是 artifact"));
+            return Err(ResourceError::new(
+                "E_ARTIFACT_URI",
+                "scheme must be artifact",
+            ));
         }
         if uri.authority() != self.session_id {
             return Err(ResourceError::new(
                 "E_ARTIFACT_SCOPE",
-                "artifact 不属于当前会话",
+                "artifact belongs to a different session",
             ));
         }
         let [kind, name] = uri.two_segments("E_ARTIFACT_URI")?;
         if !matches!(kind, "jobs" | "artifacts") {
             return Err(ResourceError::new(
                 "E_ARTIFACT_URI",
-                "artifact namespace 无效",
+                "invalid artifact namespace",
             ));
         }
         if name.starts_with('.') {
             return Err(ResourceError::new(
                 "E_ARTIFACT_PATH",
-                "artifact 不允许隐藏文件",
+                "artifact hidden files are not allowed",
             ));
         }
         let root = if kind == "jobs" {
@@ -196,7 +202,7 @@ impl ArtifactStore {
             .map(|(_, uri)| ResourceCandidate {
                 label: uri.clone(),
                 uri,
-                description: "当前会话只读 artifact".into(),
+                description: "read-only artifact for the current session".into(),
                 kind: "file".into(),
                 append_space: true,
             })
@@ -235,10 +241,13 @@ impl ResourceRouter {
         if matches!(uri.scheme(), "artifact" | "skill" | "local" | "history") {
             return Err(ResourceError::new(
                 "E_URI_READ_ONLY",
-                "MOC internal URI 只读，不能作为写入目标",
+                "MOC internal URIs are read-only and cannot be write targets",
             ));
         }
-        Err(ResourceError::new("E_URI_SCHEME", "未实现的资源 scheme"))
+        Err(ResourceError::new(
+            "E_URI_SCHEME",
+            "unsupported resource scheme",
+        ))
     }
 
     pub fn complete(
@@ -286,7 +295,7 @@ impl ResourceRouter {
             "history" => resolve_history(context, &uri, input).map(Some),
             _ => Err(ResourceError::new(
                 "E_URI_SCHEME",
-                format!("未实现的资源 scheme `{}`", uri.scheme()),
+                format!("unsupported resource scheme `{}`", uri.scheme()),
             )),
         }
     }
@@ -294,11 +303,11 @@ impl ResourceRouter {
 
 fn scheme_candidates(_context: &ResourceContext<'_>) -> Vec<ResourceCandidate> {
     vec![
-        namespace("artifact://", "当前会话工具输出", "artifact"),
-        namespace("history://", "当前会话 transcript", "history"),
-        namespace("local://", "当前会话计划文件", "local"),
-        namespace("skill://", "已发现的 Agent Skill", "skill"),
-        namespace("viking://", "OpenViking 远端资源", "provider"),
+        namespace("artifact://", "current session tool output", "artifact"),
+        namespace("history://", "current session transcript", "history"),
+        namespace("local://", "current session plan files", "local"),
+        namespace("skill://", "discovered agent skill", "skill"),
+        namespace("viking://", "remote OpenViking resource", "provider"),
     ]
 }
 
@@ -320,7 +329,7 @@ fn normalized_scheme_candidates(
     }
     vec![namespace(
         &format!("{scheme}://"),
-        "标准资源 URI 前缀",
+        "standard resource URI prefix",
         "namespace",
     )]
 }
@@ -366,7 +375,7 @@ fn skill_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resource
                 values.push(ResourceCandidate {
                     uri: format!("{resource_prefix}{name}"),
                     label: name,
-                    description: "skill 附带资源".into(),
+                    description: "skill-bundled resource".into(),
                     kind: "file".into(),
                     append_space: true,
                 });
@@ -382,7 +391,7 @@ fn local_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resource
         let mut values = vec![ResourceCandidate {
             uri: root.clone(),
             label: "plans/".into(),
-            description: "当前会话计划目录".into(),
+            description: "current session plan directory".into(),
             kind: "namespace".into(),
             append_space: false,
         }];
@@ -396,7 +405,7 @@ fn local_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resource
                     ResourceCandidate {
                         uri: uri.clone(),
                         label: name,
-                        description: "当前会话只读计划".into(),
+                        description: "read-only plan for the current session".into(),
                         kind: "file".into(),
                         append_space: true,
                     }
@@ -415,7 +424,7 @@ fn history_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resour
         values.push(ResourceCandidate {
             uri: transcript,
             label: "transcript".into(),
-            description: "当前会话 JSONL transcript".into(),
+            description: "current session JSONL transcript".into(),
             kind: "file".into(),
             append_space: true,
         });
@@ -427,7 +436,7 @@ fn history_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resour
         values.push(ResourceCandidate {
             uri: index,
             label: "compaction index".into(),
-            description: "压缩前历史分段索引".into(),
+            description: "pre-compaction history segment index".into(),
             kind: "file".into(),
             append_space: true,
         });
@@ -443,14 +452,17 @@ fn resolve_skill(
     let skill = context
         .skills
         .get(uri.authority())
-        .ok_or_else(|| ResourceError::new("E_SKILL_NOT_FOUND", "未发现该 skill"))?;
+        .ok_or_else(|| ResourceError::new("E_SKILL_NOT_FOUND", "skill was not found"))?;
     let relative = if uri.path_segments().is_empty() {
         PathBuf::from("SKILL.md")
     } else {
         let mut path = PathBuf::new();
         for segment in uri.path_segments() {
             if segment.starts_with('.') || segment == ".." {
-                return Err(ResourceError::new("E_SKILL_PATH", "skill 路径包含非法段"));
+                return Err(ResourceError::new(
+                    "E_SKILL_PATH",
+                    "skill path contains an invalid segment",
+                ));
             }
             path.push(segment);
         }
@@ -478,12 +490,15 @@ fn resolve_local(
     if uri.authority() != context.session_id {
         return Err(ResourceError::new(
             "E_LOCAL_SCOPE",
-            "local 资源不属于当前会话",
+            "local resource belongs to a different session",
         ));
     }
     let [namespace, name] = uri.two_segments("E_LOCAL_URI")?;
     if namespace != "plans" || !name.ends_with(".md") {
-        return Err(ResourceError::new("E_LOCAL_URI", "local 只支持 plans/*.md"));
+        return Err(ResourceError::new(
+            "E_LOCAL_URI",
+            "local supports only plans/*.md",
+        ));
     }
     let path = checked_child(
         &context.paths.plans(),
@@ -507,7 +522,7 @@ fn resolve_history(
     if uri.authority() != context.session_id {
         return Err(ResourceError::new(
             "E_HISTORY_SCOPE",
-            "history 资源不属于当前会话",
+            "history resource belongs to a different session",
         ));
     }
     let segments = uri.path_segments();
@@ -529,7 +544,7 @@ fn resolve_history(
     } else {
         return Err(ResourceError::new(
             "E_HISTORY_URI",
-            "history 只支持 transcript 或 compaction 分段",
+            "history supports only transcript or compaction segments",
         ));
     };
     Ok(ResolvedResource {
@@ -555,7 +570,10 @@ fn checked_child(
             )
         })
     {
-        return Err(ResourceError::new(path_code, "资源路径越出允许目录"));
+        return Err(ResourceError::new(
+            path_code,
+            "resource path escapes the allowed directory",
+        ));
     }
     let root =
         fs::canonicalize(root).map_err(|error| ResourceError::new(path_code, error.to_string()))?;
@@ -563,10 +581,13 @@ fn checked_child(
     let canonical = fs::canonicalize(&path)
         .map_err(|error| ResourceError::new(not_found_code, error.to_string()))?;
     if !canonical.starts_with(&root) || canonical == root {
-        return Err(ResourceError::new(path_code, "资源路径越出允许目录"));
+        return Err(ResourceError::new(
+            path_code,
+            "resource path escapes the allowed directory",
+        ));
     }
     if !canonical.is_file() {
-        return Err(ResourceError::new(not_found_code, "资源不是文件"));
+        return Err(ResourceError::new(not_found_code, "resource is not a file"));
     }
     Ok(canonical)
 }

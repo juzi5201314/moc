@@ -53,7 +53,9 @@ pub(crate) async fn compact(
         .map(|entry| entry.message.clone())
         .collect();
     if history.is_empty() && state.summary.is_none() {
-        return Err(CoreError::ContextOverflow("没有可摘要的历史".into()));
+        return Err(CoreError::ContextOverflow(
+            "no history is available to summarize".into(),
+        ));
     }
     let keep_tokens = config.compaction.keep_recent_tokens as u64;
     let mut start = history.len();
@@ -144,7 +146,7 @@ pub(crate) async fn compact(
     let summary = response.message.text().trim().to_owned();
     if summary.is_empty() {
         return Err(CoreError::ContextOverflow(
-            "摘要模型返回空 checkpoint".into(),
+            "the summary model returned an empty checkpoint".into(),
         ));
     }
     let first_kept = state
@@ -241,7 +243,7 @@ fn summary_prompt(
     }
     if omitted_prompts > 0 {
         prompt.push_str(&format!(
-            "<older-history-omitted>已省略 {omitted_prompts} 个更早完整提示；必要时通过历史资源回读。</older-history-omitted>\n"
+            "<older-history-omitted>{omitted_prompts} earlier full prompts omitted; read the history resource when exact details are needed.</older-history-omitted>\n"
         ));
     }
     if let Some(instructions) = instructions {

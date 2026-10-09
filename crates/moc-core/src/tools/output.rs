@@ -9,9 +9,9 @@ use crate::resources::{ArtifactStore, ResourceError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OutputError {
-    #[error("输出文件 I/O 失败：{0}")]
+    #[error("output file I/O failed: {0}")]
     Io(#[from] std::io::Error),
-    #[error("artifact 归档失败：{0}")]
+    #[error("artifact archival failed: {0}")]
     Resource(#[from] ResourceError),
 }
 
@@ -66,7 +66,7 @@ pub(crate) async fn prepare_outcome(
     if !text.is_empty() {
         text.push('\n');
     }
-    text.push_str("[结构化结果]\n```json\n");
+    text.push_str("[structured result]\n```json\n");
     text.push_str(&json);
     text.push_str("\n```");
     prepare(ToolOutput::Text(text), config, artifacts).await
@@ -159,7 +159,7 @@ async fn preview_file(path: &Path, config: &OutputConfig, uri: &str) -> std::io:
 }
 
 fn render_preview(head: &str, tail: &str, omitted: impl std::fmt::Display, uri: &str) -> String {
-    format!("{head}\n[… {omitted} 字节已省略；完整输出：{uri}]\n{tail}")
+    format!("{head}\n[… {omitted} bytes omitted; full output: {uri}]\n{tail}")
 }
 
 #[cfg(test)]

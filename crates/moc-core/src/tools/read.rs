@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "读取本地文本文件或目录；修改前必须先 read 以获得最新内容和 hashline 锚点。需要搜索内容用 grep，按文件名或路径查找用 find，不要用 bash、cat 等命令替代本工具。"
+        "Read a local text file or directory. Read before editing to obtain current content and hashline anchors. Use grep for content and find for paths; do not use bash or cat as substitutes."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -41,8 +41,8 @@ impl Tool for ReadTool {
             schema(
                 serde_json::json!({
                     "path": {"type":"string"},
-                    "offset": {"type":"integer","minimum":1,"description":"1 基起始行"},
-                    "limit": {"type":"integer","minimum":1,"description":"读取行数"}
+                    "offset": {"type":"integer","minimum":1,"description":"1-based starting line"},
+                    "limit": {"type":"integer","minimum":1,"description":"Number of lines to read"}
                 }),
                 &["path"],
             ),
@@ -60,7 +60,7 @@ impl Tool for ReadTool {
                 let Some(client) = &ctx.openviking else {
                     return Err(ToolError::new(
                         "E_OPENVIKING_DISABLED",
-                        "未配置 OpenViking URL",
+                        "OpenViking URL is not configured",
                     ));
                 };
                 let peer = ctx.openviking_peer.as_deref();
@@ -74,7 +74,7 @@ impl Tool for ReadTool {
                 }
                 return Err(ToolError::new(
                     "E_OPENVIKING_READ",
-                    "读取 OpenViking 内容失败",
+                    "Failed to read OpenViking content",
                 ));
             }
             let (path, display, immutable) = match ResourceRouter::resolve_read(ctx, &args.path)
@@ -117,12 +117,12 @@ impl Tool for ReadTool {
             let mut notices = String::new();
             if snapshot.bytes.len() > 4 * 1024 * 1024 {
                 notices.push_str(
-                    "\n[文件超过 4 MiB 快照上限，未授权锚点编辑；请使用 bash 或 write。]",
+                    "\n[File exceeds the 4 MiB snapshot limit; anchored edits are unavailable; use bash or write.]",
                 );
             }
             if std::str::from_utf8(&snapshot.bytes).is_err() {
                 notices.push_str(
-                    "\n[警告：文件包含无效 UTF-8 字节，展示时已替换为 U+FFFD；编辑会重写为 UTF-8]",
+                    "\n[Warning: file contains invalid UTF-8; invalid bytes were replaced with U+FFFD for display; editing rewrites it as UTF-8]",
                 );
             }
             let total = snapshot.lines.len();
@@ -147,7 +147,7 @@ impl Tool for ReadTool {
                 let line = &snapshot.lines[position];
                 let rendered = if line.len() > max_line_bytes {
                     format!(
-                        "[第 {} 行 {} KB，超出上限，内容未展示；可用 bash 检查该行]",
+                        "[Line {} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
                         position + 1,
                         line.len().div_ceil(1024)
                     )
@@ -274,7 +274,7 @@ fn append_directory(path: &Path, depth: usize, output: &mut String) -> Result<()
     for (modified, name, size, directory, child) in entries.iter().take(12) {
         let age = modified.elapsed().unwrap_or_default().as_secs();
         output.push_str(&format!(
-            "\n{indent}{}{}  {size} B  {age} 秒前",
+            "\n{indent}{}{}  {size} B  {age}s ago",
             name.to_string_lossy(),
             if *directory { "/" } else { "" }
         ));
@@ -284,7 +284,7 @@ fn append_directory(path: &Path, depth: usize, output: &mut String) -> Result<()
     }
     if entries.len() > 12 {
         output.push_str(&format!(
-            "\n{indent}[… 另有 {} 项，读取子目录继续]",
+            "\n{indent}[… {} more; read the subdirectory to continue]",
             entries.len() - 12
         ));
     }
@@ -314,7 +314,7 @@ mod tests {
         let output = list_directory(dir.path(), dir.path()).unwrap();
         assert!(output.contains("13.txt"));
         assert!(!output.contains("00.txt"));
-        assert!(output.contains("另有 2 项"));
+        assert!(output.contains("2 more"));
     }
 
     #[cfg(unix)]

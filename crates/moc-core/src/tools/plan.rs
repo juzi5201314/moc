@@ -23,7 +23,7 @@ impl Tool for SubmitPlanTool {
         "submit_plan"
     }
     fn description(&self) -> &'static str {
-        "提交计划给用户审阅；提交后本次提示立即结束，不要继续执行计划。"
+        "Submit a plan for user review. After submission, end the current turn and do not continue executing the plan."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -51,11 +51,11 @@ impl Tool for SubmitPlanTool {
             if args.title.trim().is_empty() || args.markdown.trim().is_empty() {
                 return Err(ToolError::new(
                     "E_BAD_PAYLOAD",
-                    "计划 title 与 markdown 不能为空",
+                    "plan title and markdown must not be empty",
                 ));
             }
             if args.markdown.len() > 512 * 1024 {
-                return Err(ToolError::new("E_PLAN_TOO_LARGE", "计划内容超过 512 KiB"));
+                return Err(ToolError::new("E_PLAN_TOO_LARGE", "plan exceeds 512 KiB"));
             }
             let plan_id = crate::ids::plan_id();
             let title = args.title.trim().to_owned();
@@ -94,7 +94,7 @@ impl Tool for SubmitPlanTool {
                 .await
                 .map_err(|error| ToolError::new("E_UPDATE", error.to_string()))?;
             Ok(ToolOutcome::end_prompt(format!(
-                "计划已提交（{plan_id}）。等待用户批准，不要继续修改任何文件。"
+                "Plan {plan_id} submitted. Await user approval; do not modify any files further."
             )))
         })
     }

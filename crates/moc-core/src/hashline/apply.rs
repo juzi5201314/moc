@@ -90,7 +90,7 @@ pub fn plan_edit(
     if request.edits.is_empty() || request.edits.len() > max_edits {
         return Err(tool_error(
             "E_BAD_PAYLOAD",
-            "edits 必须至少包含一项且不得超过配置上限",
+            "edits must contain at least one item and must not exceed the configured limit",
         ));
     }
     let source_path = resolve_path(cwd, &request.path)?;
@@ -110,7 +110,10 @@ pub fn plan_edit(
             .iter()
             .any(|&(left, right)| start <= right && left <= end)
         {
-            return Err(tool_error("E_OVERLAP", "edit 区间重叠或重复使用同一锚点"));
+            return Err(tool_error(
+                "E_OVERLAP",
+                "edit ranges overlap or reuse the same anchor",
+            ));
         }
         ranges.push((start, end));
         if let Some(warning) = warning {
@@ -148,13 +151,13 @@ pub fn plan_edit(
         if target_path == source_path {
             return Err(tool_error(
                 "E_BAD_PAYLOAD",
-                "move 的 target_path 必須不同於 source path",
+                "move target_path must differ from source path",
             ));
         }
         let target_served_for_check = target_served.ok_or_else(|| {
             tool_error(
                 "E_UNSERVED_RANGE",
-                "目标文件尚未 read；先 read 目标文件再搬运",
+                "target file has not been read; read it before moving lines",
             )
         })?;
         let mut target_snapshot =
@@ -177,7 +180,10 @@ pub fn plan_edit(
             .iter()
             .any(|&(left, right)| start <= right && left <= end)
         {
-            return Err(tool_error("E_OVERLAP", "同一批 edit 与 move 源范围重叠"));
+            return Err(tool_error(
+                "E_OVERLAP",
+                "the edit batch overlaps the move source range",
+            ));
         }
         removed.extend(start..=end);
         let mut original_source = source_snapshot.lines.clone();
@@ -202,7 +208,7 @@ pub fn plan_edit(
     if source_lines.is_empty() && !source_snapshot.lines.is_empty() {
         return Err(tool_error(
             "E_EMPTY_RANGE",
-            "编辑结果会清空文件；使用 write 或显式重写完整文件",
+            "the edit would empty the file; use write or explicitly rewrite the complete file",
         ));
     }
     let no_changes = source_lines == source_snapshot.lines && target.is_none();
@@ -350,14 +356,14 @@ pub async fn apply_edit(
             return Err(tool_error(
                 "E_BATCH_ABORT",
                 &format!(
-                    "目标提交失败：{error}；源文件恢复失败：{rollback}；原内容保存在 {}",
+                    "target commit failed: {error}; source rollback failed: {rollback}; original content is saved at {}",
                     backup.display()
                 ),
             ));
         }
         return Err(tool_error(
             "E_BATCH_ABORT",
-            &format!("目标提交失败，源文件已恢复：{error}"),
+            &format!("target commit failed; source file was restored: {error}"),
         ));
     }
     if let Some(backup) = source_backup {
@@ -392,7 +398,7 @@ pub async fn apply_edit(
         ));
     }
     if !warnings.is_empty() {
-        output.push_str(&format!("\n警告：{}", warnings.join("；")));
+        output.push_str(&format!("\nWarning: {}", warnings.join("; ")));
     }
     Ok(EditOutput {
         content: output,
@@ -438,12 +444,12 @@ pub async fn undo(
     max_file_bytes: u64,
 ) -> Result<String, EditError> {
     let Some(previous) = anchors.peek_undo(path) else {
-        return Err(tool_error("E_NO_UNDO", "该文件没有可撤销的编辑"));
+        return Err(tool_error("E_NO_UNDO", "the file has no undoable edit"));
     };
     let stale = || {
         tool_error(
             "E_UNDO_STALE",
-            "文件在编辑后被外部修改；撤销未执行，当前内容和撤销记录均保留",
+            "the file changed externally after the edit; undo was not performed and current content and undo history were preserved",
         )
     };
     let before = tokio::fs::metadata(path).await?;
@@ -471,7 +477,7 @@ pub async fn undo(
     anchors.commit_undo(path, snapshot.epoch);
     anchors.invalidate(path);
     let lines = snapshot.lines.len();
-    Ok(format!("已撤销文件修改（{lines} 行）"))
+    Ok(format!("Reverted file changes ({lines} lines)"))
 }
 
 fn resolve_path(cwd: &Path, value: &str) -> Result<PathBuf, EditError> {
@@ -486,7 +492,7 @@ fn ensure_snapshot_current(
     if served.epoch != Some(snapshot.epoch) {
         return Err(tool_error(
             "E_UNSERVED_RANGE",
-            &format!("{} 在 read 后发生外部修改", path.display()),
+            &format!("{} changed externally after read", path.display()),
         ));
     }
     Ok(())

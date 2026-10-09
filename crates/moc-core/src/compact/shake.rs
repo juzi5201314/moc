@@ -22,7 +22,7 @@ pub(crate) async fn compact(
     let mut entries = state.entries.clone();
     if !prune(&mut entries, &config.compaction) {
         return Err(CoreError::ContextOverflow(
-            "本地修剪没有可回收的工具输出".into(),
+            "local pruning found no reclaimable tool output".into(),
         ));
     }
     inner.sessions.rewrite(&state.session.id, entries).await?;
@@ -108,9 +108,9 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
                 continue;
             }
             let replacement = if config.shake.supersede_reads && superseded {
-                Some("[已被后续读取取代]".to_owned())
+                Some("[superseded by a later read]".to_owned())
             } else if prompts_ago >= config.shake.hard_clear_prompts {
-                Some("[工具输出已修剪]".to_owned())
+                Some("[tool output pruned]".to_owned())
             } else if result.content.chars().count() > config.shake.soft_trim_chars {
                 Some(match artifact_path(&result.content) {
                     Some(path) => trim_text(
@@ -119,7 +119,7 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
                         config.shake.tail_chars,
                         path,
                     ),
-                    None => "[工具输出已修剪]".to_owned(),
+                    None => "[tool output pruned]".to_owned(),
                 })
             } else {
                 None
@@ -137,7 +137,7 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
 
 fn artifact_path(text: &str) -> Option<&str> {
     let path = text
-        .rsplit_once("完整输出：")
+        .rsplit_once("full output: ")
         .map(|(_, path)| path.split(['\n', ']']).next().unwrap_or(path).trim())?;
     (path.starts_with("artifact://") || path.starts_with('/')).then_some(path)
 }
@@ -160,7 +160,7 @@ fn trim_text(text: &str, head: usize, tail: usize, path: &str) -> String {
             .map_or(0, |(index, _)| index)
     };
     format!(
-        "{}\n[… {} 字符已修剪；完整输出：{path}]\n{}",
+        "{}\n[… {} chars pruned; full output: {path}]\n{}",
         &text[..head_end],
         count - head - tail,
         &text[tail_start..]
@@ -176,6 +176,6 @@ mod tests {
         let result = trim_text(&text, 5, 5, "/tmp/job.log");
         assert!(result.starts_with("前前前前前"));
         assert!(result.ends_with("尾尾尾尾尾"));
-        assert!(result.contains("50 字符已修剪；完整输出：/tmp/job.log"));
+        assert!(result.contains("50 chars pruned; full output: /tmp/job.log"));
     }
 }

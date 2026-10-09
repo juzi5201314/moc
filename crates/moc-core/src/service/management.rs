@@ -105,7 +105,6 @@ pub(super) async fn manage(
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();
             inner.openviking_clients.lock().await.clear();
-            inner.remote_unavailable.write().clear();
             Ok(ConfigReply::Settings(editor::inspect(
                 &inner.boot,
                 scope,

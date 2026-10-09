@@ -123,7 +123,7 @@ impl ToolError {
     }
 
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
-        self.hint = format!("\n提示：{}", hint.into());
+        self.hint = format!("\nHint: {}", hint.into());
         self
     }
 
@@ -241,18 +241,10 @@ impl ToolRegistry {
             .cloned()
     }
 
-    pub fn definitions(
-        &self,
-        mode: SessionMode,
-        ask_supported: bool,
-        config: &ResolvedConfig,
-    ) -> Vec<ToolDef> {
+    pub fn definitions(&self, ask_supported: bool, config: &ResolvedConfig) -> Vec<ToolDef> {
         self.builtins
             .iter()
-            .filter(|tool| {
-                crate::service::mode::mode_allows(mode, tool.name(), tool.tier())
-                    && crate::service::mode::tool_enabled(tool.name(), ask_supported, config)
-            })
+            .filter(|tool| crate::service::mode::tool_enabled(tool.name(), ask_supported, config))
             .map(|tool| {
                 let mut definition = tool.def();
                 definition.description = Some(tool.description().to_owned());
@@ -297,11 +289,15 @@ pub fn resolve_tool_path(cwd: &std::path::Path, value: &str) -> Result<PathBuf, 
     }
     let parent = joined
         .parent()
-        .ok_or_else(|| ToolError::new("E_ACCESS", "无效文件路径"))?;
-    let parent = std::fs::canonicalize(parent)
-        .map_err(|error| ToolError::new("E_ACCESS", format!("无法访问父目录：{error}")))?;
+        .ok_or_else(|| ToolError::new("E_ACCESS", "invalid file path"))?;
+    let parent = std::fs::canonicalize(parent).map_err(|error| {
+        ToolError::new(
+            "E_ACCESS",
+            format!("cannot access parent directory: {error}"),
+        )
+    })?;
     let filename = joined
         .file_name()
-        .ok_or_else(|| ToolError::new("E_ACCESS", "无效文件名"))?;
+        .ok_or_else(|| ToolError::new("E_ACCESS", "invalid filename"))?;
     Ok(parent.join(filename))
 }

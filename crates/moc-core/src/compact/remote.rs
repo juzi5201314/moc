@@ -29,33 +29,30 @@ pub(crate) async fn compact(
         || model.llm.protocol != Protocol::OpenAiResponses
         || inner.remote_unavailable.read().contains(&model.selector)
     {
-        return Err(CoreError::Tool("Responses 原生压缩不适用于当前模型".into()));
+        return Err(CoreError::Tool(
+            "Responses native compaction is not supported for this model".into(),
+        ));
     }
     let mut full_messages = Vec::with_capacity(messages.len() + 1);
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
-    let summary = inner
-        .mcp_summary(
-            config,
-            state.mode,
-            inner.client_supports_ask(ctx.connection_id()),
-        )
-        .await?;
+    let summary = inner.mcp_summary(config).await?;
+    let context_files = inner
+        .project_context_files(&state.session.id, std::path::Path::new(&state.session.cwd))
+        .await;
     full_messages.push(crate::system_prompt::build(
         config,
         model,
-        state.mode,
         std::path::Path::new(&state.session.cwd),
+        &context_files,
         &skills,
         &summary,
     ));
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {
         messages: full_messages,
-        tools: inner.tools.definitions(
-            state.mode,
-            inner.client_supports_ask(ctx.connection_id()),
-            config,
-        ),
+        tools: inner
+            .tools
+            .definitions(inner.client_supports_ask(ctx.connection_id()), config),
         native_input: None,
         ..ChatRequest::default()
     };
@@ -84,7 +81,9 @@ pub(crate) async fn compact(
         }
     };
     if response.items.is_empty() {
-        return Err(CoreError::Tool("Responses 压缩端点返回空 output".into()));
+        return Err(CoreError::Tool(
+            "the Responses compaction endpoint returned empty output".into(),
+        ));
     }
     let retained = config.compaction.remote.retained_message_tokens as u64;
     let (first_kept_id, retained_tokens) = retained_boundary(state, retained);
@@ -114,7 +113,7 @@ pub(crate) async fn compact(
     }
     if native_items.is_empty() {
         return Err(CoreError::Tool(
-            "压缩端点仅返回原始尾部，没有生成 checkpoint".into(),
+            "the compaction endpoint returned only the raw tail and no checkpoint".into(),
         ));
     }
     let native_value = Value::Array(native_items);
@@ -198,10 +197,10 @@ pub(crate) fn checkpoint_summary(state: &SessionState) -> String {
         }
     }
     let mut summary = String::from(
-        "已保存服务端原生压缩载荷，并保留最近对话尾部。\n文件操作（成功的 edit/write）：",
+        "Saved the server-native compaction payload and retained the recent conversation tail.\nSuccessful file operations (edit/write):",
     );
     if files.is_empty() {
-        summary.push('无');
+        summary.push_str("none");
     }
     for file in files {
         summary.push_str("\n- ");

@@ -40,7 +40,7 @@ impl Tool for AskTool {
         "ask"
     }
     fn description(&self) -> &'static str {
-        "向用户询问一个或多个决策问题；只在用户答案会实质影响实现时调用。选项可带 preview：前端聚焦该项时并排渲染 markdown 预览，用于对比 ASCII 示意图、代码片段、配置示例等候选形态（仅单选问题）。"
+        "Ask the user one or more decision questions. Use only when the answer materially affects the implementation. Options may include a preview: the frontend shows it beside the focused option for visual comparison of ASCII layouts, code, or configuration (single-select only)."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -63,9 +63,9 @@ impl Tool for AskTool {
                             "recommended":{"type":"integer","minimum":0},
                             "options":{"type":"array","minItems":2,"items":{
                                 "type":"object","properties":{
-                                    "label":{"type":"string","description":"选项显示文本，1-5 个词，简洁说明选择内容"},
-                                    "description":{"type":"string","description":"该项的含义或选中后的结果，用于说明取舍"},
-                                    "preview":{"type":"string","description":"聚焦该项时并排展示的 markdown 预览（等宽框渲染）：ASCII 界面示意图、代码片段、配置示例等需要肉眼对比的候选形态。多行文本按原样保留；依赖对齐的 ASCII 图请放进 ``` 代码块。仅单选问题（multi 为 false 或省略）支持。"}
+                                    "label":{"type":"string","description":"Display text, 1-5 words, briefly naming the choice"},
+                                    "description":{"type":"string","description":"Meaning or consequence of selecting this option"},
+                                    "preview":{"type":"string","description":"Markdown preview shown beside the focused option in a monospace frame: ASCII layout, code, or configuration to compare visually. Preserve multiline text; put alignment-sensitive ASCII art in a ``` code block. Supported only for single-select questions (multi=false or omitted)."}
                                 },"required":["label"],"additionalProperties":false
                             }}
                         },"required":["id","question","options"],"additionalProperties":false
@@ -97,11 +97,11 @@ impl Tool for AskTool {
                 .map_err(|error| {
                     ToolError::new(
                         "E_ASK_UNAVAILABLE",
-                        format!("前端无法处理 ask 请求：{error}"),
+                        format!("The frontend could not handle the ask request: {error}"),
                     )
                 })?;
             if result.answers.is_empty() {
-                return Ok(ToolOutcome::success("用户未作答。"));
+                return Ok(ToolOutcome::success("The user did not answer."));
             }
             let answers: Vec<String> = questions
                 .iter()
@@ -111,7 +111,7 @@ impl Tool for AskTool {
                         .iter()
                         .find(|answer| answer.id == question.id)
                     else {
-                        return "用户未作答。".into();
+                        return "The user did not answer.".into();
                     };
                     let selected = answer.selected.join(", ");
                     match (selected.is_empty(), answer.custom.as_deref()) {
@@ -120,7 +120,7 @@ impl Tool for AskTool {
                         }
                         (_, Some(custom)) if !custom.is_empty() => format!("{selected} ({custom})"),
                         (false, _) => selected,
-                        _ => "用户未作答。".into(),
+                        _ => "The user did not answer.".into(),
                     }
                 })
                 .collect();
@@ -154,7 +154,10 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
     let args: AskArgs = serde_json::from_value(args)
         .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
     if args.questions.is_empty() {
-        return Err(ToolError::new("E_BAD_PAYLOAD", "questions 不能为空"));
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "questions must not be empty",
+        ));
     }
     let mut questions = Vec::with_capacity(args.questions.len());
     for input in args.questions {
@@ -162,7 +165,7 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
         {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
-                "每个问题需要 id、question 和至少两个 options",
+                "each question requires id, question, and at least two options",
             ));
         }
         if input
@@ -172,7 +175,7 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
         {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
-                "Other (type your own) 是保留选项标签",
+                "Other (type your own) is a reserved option label",
             ));
         }
         let multi = input.multi.unwrap_or(false);
@@ -184,7 +187,7 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
         {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
-                "preview 仅支持单选问题（multi=false）：多选没有聚焦项可并排预览",
+                "preview supports single-select questions only (multi=false); multi-select has no focused option for side-by-side preview",
             ));
         }
         if input
@@ -193,7 +196,7 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
         {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
-                "recommended 必须指向现有 option",
+                "recommended must point to an existing option",
             ));
         }
         questions.push(AskQuestion {
@@ -263,7 +266,9 @@ mod tests {
 
         assert_eq!(error.code, "E_BAD_PAYLOAD");
         assert!(
-            error.message.contains("preview 仅支持单选问题"),
+            error
+                .message
+                .contains("preview supports single-select questions"),
             "{}",
             error.message
         );
@@ -278,7 +283,7 @@ mod tests {
         assert!(
             option["properties"]["preview"]["description"]
                 .as_str()
-                .is_some_and(|text| text.contains("仅单选问题")),
+                .is_some_and(|text| text.contains("Supported only for single-select questions")),
             "{option}"
         );
         assert!(AskTool.description().contains("preview"));

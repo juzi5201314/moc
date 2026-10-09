@@ -103,7 +103,7 @@ async fn connect_stdio(
     let (transport, stderr) = TokioChildProcess::builder(child)
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|error| McpError::Transport(format!("拉起 `{command}` 失败：{error}")))?;
+        .map_err(|error| McpError::Transport(format!("failed to start `{command}`: {error}")))?;
     if let Some(stderr) = stderr {
         let server = server.to_owned();
         tokio::spawn(async move {
@@ -118,7 +118,7 @@ async fn connect_stdio(
     handler
         .serve(transport)
         .await
-        .map_err(|error| McpError::Transport(format!("与 `{server}` 握手失败：{error}")))
+        .map_err(|error| McpError::Transport(format!("handshake with `{server}` failed: {error}")))
 }
 
 async fn connect_http(
@@ -131,12 +131,12 @@ async fn connect_http(
     for (name, value) in headers {
         let parsed_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
             McpError::Config(format!(
-                "server `{server}` 的请求头名 `{name}` 无效：{error}"
+                "server `{server}` header name `{name}` is invalid: {error}"
             ))
         })?;
         let parsed_value = http::HeaderValue::from_str(value).map_err(|error| {
             McpError::Config(format!(
-                "server `{server}` 的请求头 `{name}` 值无效：{error}"
+                "server `{server}` header `{name}` has an invalid value: {error}"
             ))
         })?;
         custom_headers.insert(parsed_name, parsed_value);
@@ -148,5 +148,5 @@ async fn connect_http(
     handler
         .serve(transport)
         .await
-        .map_err(|error| McpError::Transport(format!("与 `{server}` 握手失败：{error}")))
+        .map_err(|error| McpError::Transport(format!("handshake with `{server}` failed: {error}")))
 }

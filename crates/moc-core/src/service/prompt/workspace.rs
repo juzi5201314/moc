@@ -40,7 +40,7 @@ pub(super) async fn check_workspace(
         .map_err(to_rpc)?;
     if after.truncated {
         let notice = format!(
-            "工作区过大，检测仅覆盖部分路径（扫描上限 {}）；未扫描路径不会被判为删除。",
+            "Workspace is large; the scan covered only part of it (limit {}); unscanned paths are not treated as deleted.",
             config.workspace.max_scan_entries
         );
         let mut state = record.state.lock().await;
@@ -89,9 +89,9 @@ pub(super) async fn check_workspace(
         .collect::<Vec<_>>()
         .join(", ");
     record.state.lock().await.notices.push(if violation {
-        format!("你在只读模式下修改了工作区：{paths}。立即停止修改并向用户说明原因。")
+        format!("You modified the workspace in read-only mode: {paths}. Stop modifying it and explain why to the user.")
     } else {
-        format!("工作区在本次提示之外发生了变更：{paths}。")
+        format!("The workspace changed outside this prompt: {paths}.")
     });
     Ok(())
 }

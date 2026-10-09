@@ -189,7 +189,9 @@ fn deduplicate_and_bound(files: Vec<ContextFile>, budget: u64) -> Vec<ContextFil
             let included =
                 crate::compact::prefix_within_tokens(&file.content, remaining.saturating_sub(24));
             if !included.is_empty() {
-                file.content = format!("{included}\n[本文件因指令预算截断，请按需读取原文件]");
+                file.content = format!(
+                    "{included}\n[This file was truncated by the instruction budget; read the original if needed]"
+                );
                 result.push(file);
             }
             remaining = 0;
@@ -203,7 +205,7 @@ fn deduplicate_and_bound(files: Vec<ContextFile>, budget: u64) -> Vec<ContextFil
         && let Some(last) = result.last_mut()
     {
         last.content.push_str(&format!(
-            "\n[指令预算 {budget} token；{omitted} 个文件未完整注入]"
+            "\n[Instruction budget: {budget} tokens; {omitted} files were not fully injected]"
         ));
     }
     result

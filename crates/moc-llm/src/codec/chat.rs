@@ -287,7 +287,7 @@ fn encode_tool_result(
     let mut blocks = Vec::with_capacity(result.images.len() + 1);
     blocks.push(json!({
         "type": "text",
-        "text": format!("[工具 {} 返回的图片]", result.tool_call_id),
+        "text": format!("[image returned by tool {}]", result.tool_call_id),
     }));
     for source in &result.images {
         blocks.push(encode_image(source, None)?);
@@ -1760,7 +1760,7 @@ mod tests {
                 ]},
                 {"role": "tool", "tool_call_id": "call_1", "content": "截图如下"},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "[工具 call_1 返回的图片]"},
+                    {"type": "text", "text": "[image returned by tool call_1]"},
                     {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
                 ]},
             ])

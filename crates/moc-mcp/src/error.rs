@@ -6,22 +6,22 @@
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
     /// 配置非法（来源解析、传输字段缺失、server 名不合法等）。
-    #[error("MCP 配置错误：{0}")]
+    #[error("MCP configuration error: {0}")]
     Config(String),
     /// 传输层或连接层失败；等待重连成功后可重试一次。
-    #[error("MCP 连接错误：{0}")]
+    #[error("MCP connection error: {0}")]
     Transport(String),
     /// 调用超出时限；不重试。
-    #[error("MCP 调用超时（{0} 秒）")]
+    #[error("MCP call timed out after {0}s")]
     Timeout(u64),
     /// 服务端返回的 JSON-RPC 错误或 `isError` 结果；不重试。
     #[error("{0}")]
     Tool(String),
     /// 调用方取消；不重试。
-    #[error("MCP 调用被取消")]
+    #[error("MCP call cancelled")]
     Cancelled,
     /// 会话关闭后仍发起调用。
-    #[error("MCP 管理器已关闭")]
+    #[error("MCP manager is closed")]
     Shutdown,
 }
 

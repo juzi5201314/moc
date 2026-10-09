@@ -19,7 +19,7 @@ impl Tool for EditTool {
         "edit"
     }
     fn description(&self) -> &'static str {
-        "使用 read 返回的三字符锚点精准修改已有文件；已有文件的局部修改必须使用本工具，不要用 bash 的 sed、perl、python、重定向或其他命令替代。每项 edits 为 [from_anchor, to_anchor, replacement]；同锚点且非空 replacement 表示在锚点行之后插入，空 replacement 删除。move 在同一调用中把原始快照锚点行跨文件搬运。"
+        "Edit existing files using the three-character hashline anchors returned by read. Use this for local changes; do not use bash, sed, perl, Python, redirection, or similar commands. Each edit is [from_anchor, to_anchor, replacement]; a non-empty replacement with identical anchors inserts after that line, and an empty replacement deletes it. move transfers a range between files using the original snapshot anchors."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -95,7 +95,7 @@ impl Tool for EditTool {
                     if count >= ctx.config.tools.edit.noop_loop_threshold {
                         return Err(ToolError::new(
                             "E_NOOP_LOOP",
-                            "同一编辑连续未产生变化，请重新检查目标内容",
+                            "The same edit produced no change repeatedly; re-check the target content",
                         ));
                     }
                     Ok(ToolOutcome {
@@ -119,9 +119,11 @@ impl Tool for EditTool {
                                 .run(ctx, serde_json::json!({"path":path}))
                                 .await?;
                             let super::ToolOutput::Text(text) = fresh.content else {
-                                unreachable!("read 返回文本分页结果");
+                                unreachable!("read returned a paginated text result");
                             };
-                            content.push_str(&format!("\n当前内容的新锚点：\n{text}"));
+                            content.push_str(&format!(
+                                "\nFresh anchors for the current content:\n{text}"
+                            ));
                         }
                     }
                     let error_code = content

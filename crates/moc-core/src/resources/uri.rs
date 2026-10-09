@@ -28,14 +28,18 @@ pub struct InternalUri {
 impl InternalUri {
     pub fn parse(input: &str) -> Result<Self, UriError> {
         if input.is_empty() || input.chars().any(char::is_control) {
-            return Err(UriError::invalid("URI 为空或包含控制字符"));
+            return Err(UriError::invalid(
+                "URI is empty or contains control characters",
+            ));
         }
         if input.contains(['\\', '?', '#']) {
-            return Err(UriError::invalid("URI 不允许反斜杠、查询或 fragment"));
+            return Err(UriError::invalid(
+                "URI cannot contain backslashes, queries, or fragments",
+            ));
         }
         let (scheme, remainder) = input
             .split_once("://")
-            .ok_or_else(|| UriError::invalid("URI 必须使用 scheme://authority/path 形式"))?;
+            .ok_or_else(|| UriError::invalid("URI must use scheme://authority/path form"))?;
         if scheme.is_empty()
             || !scheme.bytes().enumerate().all(|(index, byte)| {
                 if index == 0 {
@@ -47,25 +51,27 @@ impl InternalUri {
                 }
             })
         {
-            return Err(UriError::invalid("scheme 必须是小写 ASCII 标识"));
+            return Err(UriError::invalid(
+                "scheme must be a lowercase ASCII identifier",
+            ));
         }
         let (authority, path) = remainder.split_once('/').unwrap_or((remainder, ""));
         if authority.is_empty() {
-            return Err(UriError::invalid("authority 不能为空"));
+            return Err(UriError::invalid("authority must not be empty"));
         }
         let authority = decode_component(authority)?;
         if authority.is_empty() || authority == "." || authority == ".." {
-            return Err(UriError::invalid("authority 无效"));
+            return Err(UriError::invalid("invalid authority"));
         }
         let mut segments = Vec::new();
         if !path.is_empty() {
             for raw_segment in path.split('/') {
                 if raw_segment.is_empty() {
-                    return Err(UriError::invalid("URI path 不允许空段"));
+                    return Err(UriError::invalid("URI paths cannot contain empty segments"));
                 }
                 let segment = decode_component(raw_segment)?;
                 if segment.is_empty() || segment == "." || segment == ".." {
-                    return Err(UriError::invalid("URI path 包含非法段"));
+                    return Err(UriError::invalid("URI path contains an invalid segment"));
                 }
                 segments.push(segment);
             }
@@ -98,7 +104,7 @@ impl InternalUri {
         let [first, second] = self.segments.as_slice() else {
             return Err(super::ResourceError::new(
                 code,
-                "URI path 必须恰好包含两个段",
+                "URI path must contain exactly two segments",
             ));
         };
         Ok([first, second])
@@ -117,23 +123,25 @@ fn decode_component(input: &str) -> Result<String, UriError> {
                 continue;
             }
             let Some(high) = chars.next() else {
-                return Err(UriError::invalid("percent escape 未闭合"));
+                return Err(UriError::invalid("percent escape is incomplete"));
             };
             let Some(low) = chars.next() else {
-                return Err(UriError::invalid("percent escape 未闭合"));
+                return Err(UriError::invalid("percent escape is incomplete"));
             };
             let Some(high) = hex(high) else {
-                return Err(UriError::invalid("percent escape 非法"));
+                return Err(UriError::invalid("invalid percent escape"));
             };
             let Some(low) = hex(low) else {
-                return Err(UriError::invalid("percent escape 非法"));
+                return Err(UriError::invalid("invalid percent escape"));
             };
             bytes.push((high << 4) | low);
         }
-        String::from_utf8(bytes).map_err(|_| UriError::invalid("percent escape 不是 UTF-8"))?
+        String::from_utf8(bytes).map_err(|_| UriError::invalid("percent escape is not UTF-8"))?
     };
     if decoded.chars().any(char::is_control) || decoded.contains(['\\', '/', '?', '#']) {
-        return Err(UriError::invalid("URI 解码后包含非法字符"));
+        return Err(UriError::invalid(
+            "URI contains invalid characters after decoding",
+        ));
     }
     Ok(decoded)
 }

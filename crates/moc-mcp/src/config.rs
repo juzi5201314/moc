@@ -33,7 +33,7 @@ pub fn validate_server_name(name: &str) -> Result<(), McpError> {
         Ok(())
     } else {
         Err(McpError::Config(format!(
-            "server 名 `{name}` 不合法：仅允许 1-64 位字母数字与 `-`/`_`，且不得包含 `__` 或以 `-` 开头结尾"
+            "server name `{name}` is invalid: use 1-64 ASCII letters/digits with `-`/`_`, excluding `__` and leading/trailing `-`"
         )))
     }
 }
@@ -90,12 +90,12 @@ impl ToolFilter {
             deny.add(glob(pattern)?);
         }
         Ok(Some(CompiledToolFilter {
-            allow: allow
-                .build()
-                .map_err(|error| McpError::Config(format!("tools.allow glob 编译失败：{error}")))?,
-            deny: deny
-                .build()
-                .map_err(|error| McpError::Config(format!("tools.deny glob 编译失败：{error}")))?,
+            allow: allow.build().map_err(|error| {
+                McpError::Config(format!("tools.allow glob compilation failed: {error}"))
+            })?,
+            deny: deny.build().map_err(|error| {
+                McpError::Config(format!("tools.deny glob compilation failed: {error}"))
+            })?,
             allow_empty: self.allow.is_empty(),
         }))
     }
@@ -106,7 +106,7 @@ fn glob(pattern: &str) -> Result<globset::Glob, McpError> {
     GlobBuilder::new(pattern)
         .literal_separator(false)
         .build()
-        .map_err(|error| McpError::Config(format!("glob `{pattern}` 无效：{error}")))
+        .map_err(|error| McpError::Config(format!("invalid glob `{pattern}`: {error}")))
 }
 
 /// 编译后的工具过滤器。
@@ -270,17 +270,17 @@ fn expand_all_env(spec: &mut RawServerSpec) {
 /// `servers`（VS Code 变体）或裸的名称→描述映射。
 pub fn parse_mcp_json(text: &str) -> Result<BTreeMap<String, RawServerSpec>, McpError> {
     let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|error| McpError::Config(format!("JSON 无效：{error}")))?;
+        .map_err(|error| McpError::Config(format!("invalid JSON: {error}")))?;
     let servers = match &value {
         serde_json::Value::Object(map) => map
             .get("mcpServers")
             .or_else(|| map.get("servers"))
             .cloned()
             .unwrap_or(value),
-        _ => return Err(McpError::Config("JSON 顶层必须是对象".into())),
+        _ => return Err(McpError::Config("JSON top level must be an object".into())),
     };
     serde_json::from_value(servers)
-        .map_err(|error| McpError::Config(format!("server 描述无效：{error}")))
+        .map_err(|error| McpError::Config(format!("invalid server description: {error}")))
 }
 
 /// 从 cwd 向上（含 git root 本身）收集项目级 `.mcp.json` / `mcp.json`，越近越靠前。
@@ -321,7 +321,7 @@ pub fn resolve_server(
     let transport = match (&spec.command, &spec.url, kind.as_deref()) {
         (Some(_), _, Some("http" | "sse" | "remote")) => {
             return Err(McpError::Config(format!(
-                "server `{name}` 同时声明了 command 与 http 类型的 type"
+                "server `{name}` declares both command and HTTP transport types"
             )));
         }
         (Some(command), _, _) => {
@@ -341,7 +341,7 @@ pub fn resolve_server(
         }
         (None, Some(_), Some("stdio" | "local")) => {
             return Err(McpError::Config(format!(
-                "server `{name}` 声明了 stdio 类型但没有 command"
+                "server `{name}` declares stdio transport without a command"
             )));
         }
         (None, Some(url), _) => {
@@ -355,7 +355,7 @@ pub fn resolve_server(
         }
         (None, None, _) => {
             return Err(McpError::Config(format!(
-                "server `{name}` 既没有 command（stdio）也没有 url（http）"
+                "server `{name}` declares neither a stdio command nor an HTTP URL"
             )));
         }
     };

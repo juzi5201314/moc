@@ -61,7 +61,10 @@ fn configured_allow(config: &BashConfig, command: &str) -> Result<bool, ToolErro
             }
             let expression = format!("^(?:{pattern})$");
             let matcher = grep_regex::RegexMatcher::new(&expression).map_err(|error| {
-                ToolError::new("E_CONFIG", format!("bash 白名单规则无效：{error}"))
+                ToolError::new(
+                    "E_CONFIG",
+                    format!("bash allowlist rule is invalid: {error}"),
+                )
             })?;
             Ok(matcher.is_match(command.as_bytes()).unwrap_or(false))
         })

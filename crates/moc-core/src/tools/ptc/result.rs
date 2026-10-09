@@ -90,7 +90,7 @@ pub(super) async fn script_result(
 }
 
 fn oversized(mut result: ScriptToolResult) -> ScriptError {
-    result.content = "工具已执行，结果超过代码读取上限".into();
+    result.content = "Tool ran, but its result exceeded the code-read limit".into();
     result.structured_content = None;
     result.is_error = true;
     result.status = "error".into();

@@ -42,7 +42,7 @@ impl Tool for FindTool {
         "find"
     }
     fn description(&self) -> &'static str {
-        "按 glob 并行查找本地路径；查找文件名或路径必须使用本工具，不要用 bash 调用 find、ls 或其他命令替代。遵循 .gitignore/.ignore，最多返回 200 个结果。"
+        "Find local paths in parallel with glob patterns. Use this for filenames and paths, not bash, find, or ls. Respects .gitignore/.ignore and returns at most 200 results."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -84,12 +84,12 @@ impl Tool for FindTool {
                     .ok_or_else(|| {
                         ToolError::new(
                             "E_URI_UNSUPPORTED",
-                            "资源 URI 不能作为 find 根，请使用 read 或 grep",
+                            "resource URI cannot be a find root; use read or grep",
                         )
                     })?;
                 return Err(ToolError::new(
                     "E_URI_UNSUPPORTED",
-                    "资源 URI 不能作为 find 根，请使用 read 或 grep",
+                    "resource URI cannot be a find root; use read or grep",
                 ));
             }
             let cancel = ctx.cancel.child_token();
@@ -122,7 +122,10 @@ struct Scan {
 impl Scan {
     fn run(&self) -> Result<String, ToolError> {
         if self.args.glob.is_empty() {
-            return Err(ToolError::new("E_BAD_GLOB", "glob 至少需要一个 pattern"));
+            return Err(ToolError::new(
+                "E_BAD_GLOB",
+                "glob requires at least one pattern",
+            ));
         }
         let mut patterns = globset::GlobSetBuilder::new();
         for pattern in &self.args.glob {
@@ -141,11 +144,14 @@ impl Scan {
             .map_err(|error| ToolError::new("E_BAD_GLOB", error.to_string()))?;
         let root = self.cwd.join(self.args.path.as_deref().unwrap_or("."));
         let root_is_file = std::fs::metadata(&root)
-            .map_err(|error| ToolError::new("E_ACCESS", format!("{}：{error}", root.display())))?
+            .map_err(|error| ToolError::new("E_ACCESS", format!("{}: {error}", root.display())))?
             .is_file();
         let limit = self.args.limit.unwrap_or(self.limit);
         if !(1..=200).contains(&limit) {
-            return Err(ToolError::new("E_BAD_PAYLOAD", "limit 必须在 1..=200 之间"));
+            return Err(ToolError::new(
+                "E_BAD_PAYLOAD",
+                "limit must be between 1 and 200",
+            ));
         }
         let gitignore = self.args.gitignore.unwrap_or(true);
         let mut walker = ignore::WalkBuilder::new(&root);
@@ -232,12 +238,16 @@ impl Scan {
         }
         if matches.load(Ordering::Relaxed) > limit {
             output.push(format!(
-                "[已达上限 {limit}，请缩小 glob{}]",
-                if limit < 200 { " 或提高 limit" } else { "" }
+                "[limit {limit} reached; narrow the glob{}]",
+                if limit < 200 {
+                    " or increase limit"
+                } else {
+                    ""
+                }
             ));
         }
         if incomplete.load(Ordering::Relaxed) {
-            output.push("[达到时间或扫描条目上限、被取消或存在不可读路径，结果可能不完整]".into());
+            output.push("[A time or scan-entry limit was reached, the scan was cancelled, or a path was unreadable; results may be incomplete]".into());
         }
         Ok(output.join("\n"))
     }
@@ -269,7 +279,7 @@ mod tests {
             100,
         )
         .unwrap();
-        assert!(output.starts_with("src/b.rs\n[已达上限 1"));
+        assert!(output.starts_with("src/b.rs\n[limit 1 reached"));
         let file = scan(
             root.path(),
             serde_json::json!({"path":"src/b.rs","glob":["*.rs"],"sort":"path"}),
@@ -283,7 +293,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("folder")).unwrap();
         let output = scan(root.path(), serde_json::json!({"glob":["*.rs"]}), 1).unwrap();
-        assert!(output.contains("结果可能不完整"));
+        assert!(output.contains("results may be incomplete"));
     }
     #[test]
     fn malformed_glob_is_a_tool_error() {

@@ -52,7 +52,7 @@ pub fn map_call_result(result: &CallToolResult) -> ToolOutput {
                     });
                 } else {
                     lines.push(format!(
-                        "[图片 {} {} 字节（base64），格式不受支持，已省略]",
+                        "[Unsupported image {} {} bytes (base64); omitted]",
                         image.mime_type,
                         image.data.len()
                     ));
@@ -60,17 +60,17 @@ pub fn map_call_result(result: &CallToolResult) -> ToolOutput {
             }
             ContentBlock::Audio(audio) => {
                 lines.push(format!(
-                    "[音频 {} {} 字节（base64），音频播放不受支持]",
+                    "[Audio {} {} bytes (base64); audio playback is unsupported]",
                     audio.mime_type,
                     audio.data.len()
                 ));
             }
             ContentBlock::ResourceLink(link) => {
-                lines.push(format!("[资源链接：{} ({})]", link.name, link.uri));
+                lines.push(format!("[Resource link: {} ({})]", link.name, link.uri));
             }
             ContentBlock::Resource(embedded) => match &embedded.resource {
                 ResourceContents::TextResourceContents { uri, text, .. } => {
-                    lines.push(format!("[内嵌资源 {uri}]\n{text}"));
+                    lines.push(format!("[Embedded resource {uri}]\n{text}"));
                 }
                 ResourceContents::BlobResourceContents {
                     uri,
@@ -78,8 +78,8 @@ pub fn map_call_result(result: &CallToolResult) -> ToolOutput {
                     blob,
                     ..
                 } => lines.push(format!(
-                    "[内嵌资源 {uri}（{}，{} 字节 blob），二进制内容已省略]",
-                    mime_type.as_deref().unwrap_or("未知类型"),
+                    "[Embedded resource {uri} ({}; {}-byte blob); binary content omitted]",
+                    mime_type.as_deref().unwrap_or("unknown type"),
                     blob.len()
                 )),
                 // rmcp 标注 non_exhaustive：未来新增的资源形态按未知占位处理。
@@ -114,7 +114,7 @@ mod tests {
         let output = map_call_result(&result);
         assert_eq!(
             output.text,
-            "第一行\n[图片 image/x-icon 4 字节（base64），格式不受支持，已省略]\n最后一行"
+            "第一行\n[Unsupported image image/x-icon 4 bytes (base64); omitted]\n最后一行"
         );
         assert_eq!(
             output.images,
@@ -150,8 +150,12 @@ mod tests {
             }),
         ]);
         let output = map_call_result(&result);
-        assert!(output.text.contains("音频 audio/wav"));
-        assert!(output.text.contains("资源链接：a.bin (file:///tmp/a.bin)"));
+        assert!(output.text.contains("Audio audio/wav"));
+        assert!(
+            output
+                .text
+                .contains("Resource link: a.bin (file:///tmp/a.bin)")
+        );
         assert!(output.text.contains("正文内容"));
         assert!(output.images.is_empty());
     }

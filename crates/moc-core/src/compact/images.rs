@@ -13,8 +13,10 @@ const DEFAULT_MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
 const TRIGGER_HEADROOM_BYTES: usize = 3 * 1024 * 1024;
 /// 单张图片的上下文 token 估算，沿用 Grok Build 的低分辨率图片估算值。
 pub const IMAGE_TOKEN_ESTIMATE: u64 = 765;
-const USER_IMAGE_PLACEHOLDER: &str = "[较早图片已移除以满足请求大小限制；若仍需要，请重新提供图片]";
-const TOOL_IMAGE_NOTE: &str = "[工具结果中的图片已移除以满足请求大小限制；不要根据记忆描述其内容]";
+const USER_IMAGE_PLACEHOLDER: &str =
+    "[Earlier image removed to meet the request size limit; provide it again if needed]";
+const TOOL_IMAGE_NOTE: &str =
+    "[Image in tool result removed to meet the request size limit; do not describe it from memory]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageBudgetOutcome {

@@ -208,26 +208,21 @@ pub(crate) async fn compact(
     }
     let model = config.resolve_model(&state.model)?;
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
-    let summary = inner
-        .mcp_summary(
-            &config,
-            state.mode,
-            inner.client_supports_ask(ctx.connection_id()),
-        )
-        .await?;
+    let summary = inner.mcp_summary(&config).await?;
+    let context_files = inner
+        .project_context_files(session_id, std::path::Path::new(&state.session.cwd))
+        .await;
     let system = crate::system_prompt::build(
         &config,
         &model,
-        state.mode,
         std::path::Path::new(&state.session.cwd),
+        &context_files,
         &skills,
         &summary,
     );
-    let tools = inner.tools.definitions(
-        state.mode,
-        inner.client_supports_ask(ctx.connection_id()),
-        &config,
-    );
+    let tools = inner
+        .tools
+        .definitions(inner.client_supports_ask(ctx.connection_id()), &config);
     let fixed_tokens = messages_tokens(std::slice::from_ref(&system))
         .saturating_add(tools_tokens(&tools))
         .saturating_add(context.additional_tokens);
@@ -401,17 +396,19 @@ async fn append_runtime_checkpoint(
         return Ok(());
     }
     if let Some(uri) = archive_uri {
-        summary.push_str("\n\n<compaction-history>压缩前的完整分段历史：");
+        summary.push_str("\n\n<compaction-history>Full pre-compaction history is archived at ");
         summary.push_str(&uri);
-        summary.push_str("；需要精确细节时先读取该索引。</compaction-history>");
+        summary.push_str("; read this index when exact details are needed.</compaction-history>");
     }
     let has_runtime_state = !state.todos.is_empty() || !jobs.is_empty();
     if has_runtime_state {
         summary.push_str("\n\n<compaction-runtime>\n");
         if !state.todos.is_empty() {
-            summary.push_str("结构化 todo 状态（以当前快照为准）：\n");
+            summary.push_str("Structured todo state (current snapshot):\n");
             summary.push_str(&serde_json::to_string(&state.todos).map_err(|error| {
-                CoreError::Session(format!("序列化 compaction todo 状态失败：{error}"))
+                CoreError::Session(format!(
+                    "failed to serialize compaction todo state: {error}"
+                ))
             })?);
             summary.push('\n');
         }
@@ -426,7 +423,7 @@ async fn append_runtime_checkpoint(
                 crate::tools::job::JobStatus::TimedOut => "timed_out",
             };
             summary.push_str(&format!(
-                "后台任务 {} [{}]：{}\n",
+                "Background job {} [{}]: {}\n",
                 job.id, status, job.command
             ));
         }

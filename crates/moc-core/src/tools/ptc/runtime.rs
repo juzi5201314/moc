@@ -40,17 +40,17 @@ impl PtcRuntime {
         let module = Module::new(&engine, GUEST).map_err(runtime_error)?;
         let mut imports = module.imports();
         let Some(import) = imports.next() else {
-            return Err(runtime_error("guest 缺少时钟 import"));
+            return Err(runtime_error("guest is missing the clock import"));
         };
         if import.module() != "env"
             || import.name() != "__rquickjs_host_now_us"
             || imports.next().is_some()
         {
-            return Err(runtime_error("guest import 不符合固定 ABI"));
+            return Err(runtime_error("guest import does not match the fixed ABI"));
         }
         let import_type = import.ty();
         let Some(ty) = import_type.func() else {
-            return Err(runtime_error("时钟 import 类型错误"));
+            return Err(runtime_error("clock import has the wrong type"));
         };
         if ty.params().len() != 0
             || !matches!(
@@ -58,7 +58,7 @@ impl PtcRuntime {
                 [wasmtime::ValType::F64]
             )
         {
-            return Err(runtime_error("时钟 import 签名错误"));
+            return Err(runtime_error("clock import has the wrong signature"));
         }
         drop(imports);
         drop(import);
@@ -103,11 +103,11 @@ impl PtcRuntime {
             .map_err(runtime_error)?
             != ABI_VERSION
         {
-            return Err(runtime_error("guest ABI 版本不匹配"));
+            return Err(runtime_error("guest ABI version mismatch"));
         }
         let memory = instance
             .get_memory(&mut store, "memory")
-            .ok_or_else(|| runtime_error("guest 缺少 memory"))?;
+            .ok_or_else(|| runtime_error("guest is missing memory"))?;
         let alloc = instance
             .get_typed_func(&mut store, "ptc_alloc")
             .map_err(runtime_error)?;
@@ -138,7 +138,8 @@ impl Guest {
         first: bool,
         max_output: usize,
     ) -> Result<GuestStep, ToolError> {
-        let len = u32::try_from(input.len()).map_err(|_| runtime_error("输入超出 ABI 范围"))?;
+        let len =
+            u32::try_from(input.len()).map_err(|_| runtime_error("input exceeds the ABI range"))?;
         let ptr = self
             .alloc
             .call_async(&mut self.store, len)
@@ -157,15 +158,20 @@ impl Guest {
             .await
             .map_err(runtime_error)?;
         let output_ptr = u32::try_from(packed & u64::from(u32::MAX))
-            .map_err(|_| runtime_error("输出指针超出 Wasm32 范围"))?;
-        let output_len =
-            u32::try_from(packed >> 32).map_err(|_| runtime_error("输出长度超出 Wasm32 范围"))?;
+            .map_err(|_| runtime_error("output pointer exceeds the Wasm32 range"))?;
+        let output_len = u32::try_from(packed >> 32)
+            .map_err(|_| runtime_error("output length exceeds the Wasm32 range"))?;
         let max = max_output
             .checked_add(4096)
-            .ok_or_else(|| runtime_error("输出预算溢出"))?;
-        if usize::try_from(output_len).map_err(|_| runtime_error("输出长度超出宿主范围"))? > max
+            .ok_or_else(|| runtime_error("output budget overflow"))?;
+        if usize::try_from(output_len)
+            .map_err(|_| runtime_error("output length exceeds the host range"))?
+            > max
         {
-            return Err(ToolError::new("E_OUTPUT_LIMIT", "guest 输出超过配置上限"));
+            return Err(ToolError::new(
+                "E_OUTPUT_LIMIT",
+                "guest output exceeds the configured limit",
+            ));
         }
         let mut bytes = vec![0; output_len as usize];
         self.memory

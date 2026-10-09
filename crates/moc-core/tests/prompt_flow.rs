@@ -312,7 +312,10 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
         .await
         .expect("approve into new session");
     assert_eq!(approved.mode, SessionMode::Normal);
-    assert_eq!(approved.auto_prompt.as_deref(), Some("开始执行计划。"));
+    assert_eq!(
+        approved.auto_prompt.as_deref(),
+        Some("Execute the approved plan.")
+    );
     assert_eq!(
         approved.plan_markdown.as_deref(),
         Some(plan.markdown.as_str())
@@ -354,9 +357,14 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
             .any(|tool| tool["function"]["name"] == "submit_plan")
     );
     assert!(
-        !plan_tools
+        plan_tools
             .iter()
-            .any(|tool| matches!(tool["function"]["name"].as_str(), Some("edit" | "write")))
+            .any(|tool| tool["function"]["name"] == "edit")
+    );
+    assert!(
+        plan_tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == "write")
     );
     let implementation_request: serde_json::Value =
         serde_json::from_slice(&requests[1].body).expect("implementation request JSON");
@@ -730,7 +738,10 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
     let reminder = next_request["messages"].as_array().unwrap().last().unwrap();
     assert_eq!(reminder["role"], "user");
     let text = content::content_text(&reminder["content"]);
-    assert!(text.contains("只读模式下修改了工作区"), "{text}");
+    assert!(
+        text.contains("modified the workspace in read-only mode"),
+        "{text}"
+    );
     assert!(text.contains("violation.txt"), "{text}");
 
     core.shutdown().await;
@@ -866,8 +877,15 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
         .expect("capture model requests");
     let first_request: serde_json::Value =
         serde_json::from_slice(&requests[0].body).expect("first request JSON");
-    let system = content::content_text(&first_request["messages"][0]["content"]);
-    assert!(system.contains("当前是问答模式"), "{system}");
+    let messages = first_request["messages"]
+        .as_array()
+        .expect("request messages");
+    assert!(
+        messages.iter().any(|message| {
+            content::content_text(&message["content"]).contains("Current mode: ask")
+        }),
+        "mode reminder missing from request messages"
+    );
 
     // 覆盖不落地：既没有 ModeChanged 通知，重载后会话模式仍是 Normal。
     assert!(

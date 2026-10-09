@@ -37,14 +37,19 @@ pub async fn approve_plan(
     if plan.status != PlanStatus::Submitted {
         return Err(RpcError::new(
             RpcErrorCode::InvalidParams.code(),
-            "计划已处理",
+            "The plan has already been processed",
         ));
     }
 
     if params.action == PlanAction::ExecuteCompacted {
-        compact::manual(inner, &ctx, &params.session_id, Some("保留计划与关键决策"))
-            .await
-            .map_err(to_rpc)?;
+        compact::manual(
+            inner,
+            &ctx,
+            &params.session_id,
+            Some("Preserve the plan and key decisions"),
+        )
+        .await
+        .map_err(to_rpc)?;
     }
 
     if params.action == PlanAction::Reject {
@@ -142,7 +147,7 @@ pub async fn approve_plan(
         return Ok(SessionPlanApproveResult {
             session_id: child.id,
             mode: SessionMode::Normal,
-            auto_prompt: Some("开始执行计划。".into()),
+            auto_prompt: Some("Execute the approved plan.".into()),
             plan_markdown: Some(plan.markdown),
         });
     }
@@ -163,6 +168,19 @@ pub async fn approve_plan(
         .map_err(to_rpc)?;
     inner
         .sessions
+        .append_message(
+            &params.session_id,
+            moc_llm::Message::user_text(format!(
+                "<active-plan id=\"{}\">\n{}\n</active-plan>",
+                plan.plan_id, plan.markdown
+            )),
+            None,
+            None,
+        )
+        .await
+        .map_err(to_rpc)?;
+    inner
+        .sessions
         .set_mode(&params.session_id, SessionMode::Normal)
         .await
         .map_err(to_rpc)?;
@@ -178,7 +196,7 @@ pub async fn approve_plan(
     Ok(SessionPlanApproveResult {
         session_id: params.session_id,
         mode: SessionMode::Normal,
-        auto_prompt: Some("开始执行计划。".into()),
+        auto_prompt: Some("Execute the approved plan.".into()),
         plan_markdown: None,
     })
 }

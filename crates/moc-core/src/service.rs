@@ -36,8 +36,8 @@ pub(crate) struct SessionRuntime {
     pub anchors: Arc<crate::hashline::AnchorStore>,
     pub jobs: Arc<JobManager>,
     pub workspace: Mutex<Option<WorkspaceSnapshot>>,
+    pub context_files: Mutex<Option<Arc<Vec<crate::system_prompt::context_files::ContextFile>>>>,
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
-    /// 本会话已加载的 skill 名；`skill` 工具据此去重。
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
     pub steering: Mutex<management::Steering>,
 }
@@ -48,6 +48,7 @@ impl SessionRuntime {
             anchors: Arc::new(crate::hashline::AnchorStore::new()),
             jobs: Arc::new(JobManager::with_slots(slots)),
             workspace: Mutex::new(None),
+            context_files: Mutex::new(None),
             reminders: tokio::sync::Mutex::new(
                 crate::system_prompt::reminder::ReminderState::default(),
             ),
@@ -202,19 +203,14 @@ impl CoreInner {
         Ok(manager)
     }
 
-    pub(crate) async fn mcp_summary(
-        &self,
-        config: &ResolvedConfig,
-        mode: moc_protocol::SessionMode,
-        ask: bool,
-    ) -> Result<String, CoreError> {
+    pub(crate) async fn mcp_summary(&self, config: &ResolvedConfig) -> Result<String, CoreError> {
         let manager = self.project_mcp(&config.cwd).await?;
         let snapshot = manager.snapshot().await;
         let catalog = self
             .tools
             .catalog(&snapshot, manager)
             .map_err(|err| CoreError::Tool(err.to_string()))?;
-        Ok(catalog.summary(mode, ask, config))
+        Ok(catalog.summary())
     }
 
     /// 取得（或惰性扫描）该项目的 skill 索引。
@@ -235,6 +231,29 @@ impl CoreInner {
         ));
         self.skill_indexes.write().insert(key, Arc::clone(&index));
         Ok(index)
+    }
+
+    pub(crate) async fn project_context_files(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+    ) -> Arc<Vec<crate::system_prompt::context_files::ContextFile>> {
+        let runtime = self.runtime(session_id).await;
+        if let Some(files) = runtime.context_files.lock().await.clone() {
+            return files;
+        }
+        let config = self.project_config(cwd).expect("project config is loaded");
+        let files = Arc::new(if config.context_files.enabled {
+            crate::system_prompt::context_files::load_context_files(
+                cwd,
+                &config.home,
+                &config.context_files,
+            )
+        } else {
+            Vec::new()
+        });
+        *runtime.context_files.lock().await = Some(Arc::clone(&files));
+        files
     }
 }
 
@@ -1067,17 +1086,13 @@ impl AgentService for Core {
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let model = config.resolve_model(&state.model).map_err(to_rpc)?;
         let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
-        let summary = self
+        let context_files = self
             .inner
-            .mcp_summary(
-                &config,
-                state.mode,
-                self.inner.client_supports_ask(ctx.connection_id()),
-            )
-            .await
-            .map_err(to_rpc)?;
+            .project_context_files(&params.session_id, &cwd)
+            .await;
+        let summary = self.inner.mcp_summary(&config).await.map_err(to_rpc)?;
         let pieces =
-            crate::system_prompt::pieces(&config, &model, state.mode, &cwd, &skills, &summary);
+            crate::system_prompt::pieces(&config, &model, &cwd, &context_files, &skills, &summary);
         let system = crate::system_prompt::compose(&pieces);
         let synthetic = crate::compact::replay::synthetic_messages(&state, Some(system.clone()));
         let synthetic_tokens = crate::compact::messages_tokens(&synthetic[1..]);
@@ -1088,11 +1103,10 @@ impl AgentService for Core {
                 .copied()
                 .sum::<u64>(),
         );
-        let tools = self.inner.tools.definitions(
-            state.mode,
-            self.inner.client_supports_ask(ctx.connection_id()),
-            &config,
-        );
+        let tools = self
+            .inner
+            .tools
+            .definitions(self.inner.client_supports_ask(ctx.connection_id()), &config);
         let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
         let directory_tokens = pieces
             .iter()

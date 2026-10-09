@@ -272,11 +272,11 @@ impl McpManager {
         let slot = self
             .slots
             .get(&info.server)
-            .ok_or_else(|| McpError::Tool(format!("未知 MCP server `{}`", info.server)))?;
+            .ok_or_else(|| McpError::Tool(format!("unknown MCP server `{}`", info.server)))?;
         let mut generation = slot.generation.subscribe();
         let peer = connected_peer(slot).ok_or_else(|| {
             McpError::Transport(format!(
-                "server `{}` 未连接（状态：{:?}）",
+                "server `{}` is not connected (status: {:?})",
                 info.server,
                 status_of(slot)
             ))
@@ -288,7 +288,7 @@ impl McpManager {
                 loop {
                     if shutdown_or_failed(slot, &self.shutdown) {
                         return Err(McpError::Transport(format!(
-                            "server `{}` 重连失败，调用中止",
+                            "server `{}` reconnect failed; call aborted",
                             info.server
                         )));
                     }
@@ -303,13 +303,13 @@ impl McpManager {
                         // 通道关闭说明 slot 已被放弃；立即失败。
                         Ok(Err(_)) => {
                             return Err(McpError::Transport(format!(
-                                "server `{}` 连接已放弃",
+                                "server `{}` connection abandoned",
                                 info.server
                             )));
                         }
                         Err(_) => {
                             return Err(McpError::Transport(format!(
-                                "server `{}` 未能在 {} 秒内重连",
+                                "server `{}` did not reconnect within {}s",
                                 info.server,
                                 RECONNECT_WAIT.as_secs()
                             )));
@@ -447,7 +447,7 @@ async fn call_once(
 ) -> Result<ToolOutput, McpError> {
     let Some(arguments) = args.as_object().cloned() else {
         return Err(McpError::Tool(format!(
-            "工具 `{}` 的参数必须是 JSON 对象",
+            "tool `{}` arguments must be a JSON object",
             info.qualified
         )));
     };
@@ -516,7 +516,7 @@ async fn supervise(
                 });
                 let _ = notices.send(McpNotice {
                     server: server.clone(),
-                    message: format!("已连接（{tool_count} 个工具）"),
+                    message: format!("Connected ({tool_count} tools)"),
                 });
 
                 let connection_lost;
@@ -553,7 +553,7 @@ async fn supervise(
                                     if replaced {
                                         let _ = notices.send(McpNotice {
                                             server: server.clone(),
-                                            message: format!("工具列表已更新（{count} 个工具）"),
+                                            message: format!("Tool list updated ({count} tools)"),
                                         });
                                     }
                                 }
@@ -591,11 +591,11 @@ async fn supervise(
                 }
                 slot.set_phase(Phase::Reconnecting {
                     attempts,
-                    error: "连接中断".into(),
+                    error: "connection interrupted".into(),
                 });
                 let _ = notices.send(McpNotice {
                     server: server.clone(),
-                    message: "连接中断，正在重连".into(),
+                    message: "Connection interrupted; reconnecting".into(),
                 });
             }
             Ok(Err(error)) => {
@@ -608,7 +608,10 @@ async fn supervise(
             Err(_) => {
                 slot.set_phase(Phase::Reconnecting {
                     attempts,
-                    error: format!("握手或列取工具超过 {} 秒", connect_timeout.as_secs()),
+                    error: format!(
+                        "handshake or tool listing exceeded {}s",
+                        connect_timeout.as_secs()
+                    ),
                 });
                 tracing::warn!(server = %server, "MCP 连接超时");
             }
@@ -617,14 +620,14 @@ async fn supervise(
         if attempts > MAX_ATTEMPTS {
             let error = match &*slot.phase.read() {
                 Phase::Reconnecting { error, .. } => error.clone(),
-                _ => "未知错误".into(),
+                _ => "unknown error".into(),
             };
             slot.set_phase(Phase::Failed {
                 error: error.clone(),
             });
             let _ = notices.send(McpNotice {
                 server: server.clone(),
-                message: format!("连接失败，已放弃重试：{error}"),
+                message: format!("Connection failed; retries abandoned: {error}"),
             });
             break 'supervise;
         }
@@ -906,8 +909,8 @@ mod tests {
         assert!(
             notices
                 .iter()
-                .any(|notice| notice.message.contains("工具列表已更新")),
-            "应有工具列表更新通知：{notices:?}"
+                .any(|notice| notice.message.contains("Tool list updated")),
+            "expected a tool-list update notice: {notices:?}"
         );
         manager.shutdown().await;
     }

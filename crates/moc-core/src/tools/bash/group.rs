@@ -57,7 +57,7 @@ impl ProcessGroup {
         let ProcessGroupInner::Windows(job) = self.0.as_ref() else {
             return Err(ToolError::new(
                 "E_BASH_SPAWN",
-                "Windows Job Object 未初始化",
+                "Windows Job Object is not initialized",
             ));
         };
         assign_windows_job(job, process_handle)
@@ -78,7 +78,7 @@ impl ProcessGroup {
             let _ = wait_windows_process(process_handle);
             return Err(ToolError::new(
                 "E_BASH_SPAWN",
-                format!("恢复 Windows 子进程失败：NTSTATUS {status:#x}"),
+                format!("failed to resume the Windows child process: NTSTATUS {status:#x}"),
             ));
         }
         Ok(())
@@ -118,7 +118,7 @@ fn create_group(pid: Option<u32>) -> Result<ProcessGroupInner, ToolError> {
 #[cfg(unix)]
 fn kill_unix(pid: u32) -> Result<(), ToolError> {
     let pid = libc::pid_t::try_from(pid)
-        .map_err(|_| ToolError::new("E_BASH_KILL", "子进程 PID 超出系统范围"))?;
+        .map_err(|_| ToolError::new("E_BASH_KILL", "child-process PID exceeds the system range"))?;
     // SAFETY: 每条命令独占进程组；负 PID 只指向该命令及其子孙进程。
     let result = unsafe { libc::kill(-pid, libc::SIGKILL) };
     if result != 0 {
@@ -145,7 +145,7 @@ fn create_windows_job() -> Result<std::os::windows::io::OwnedHandle, ToolError> 
         return Err(ToolError::new(
             "E_BASH_SPAWN",
             format!(
-                "创建 Windows Job Object 失败：{}",
+                "failed to create Windows Job Object: {}",
                 std::io::Error::last_os_error()
             ),
         ));
@@ -167,7 +167,7 @@ fn create_windows_job() -> Result<std::os::windows::io::OwnedHandle, ToolError> 
         return Err(ToolError::new(
             "E_BASH_SPAWN",
             format!(
-                "配置 Windows Job Object 失败：{}",
+                "failed to configure Windows Job Object: {}",
                 std::io::Error::last_os_error()
             ),
         ));
@@ -190,7 +190,7 @@ fn assign_windows_job(
         terminate_unassigned_process(process_handle);
         return Err(ToolError::new(
             "E_BASH_SPAWN",
-            format!("将子进程加入 Windows Job Object 失败：{error}"),
+            format!("failed to add the child process to the Windows Job Object: {error}"),
         ));
     }
     Ok(())
@@ -205,7 +205,7 @@ fn wait_windows_process(process_handle: std::os::windows::io::RawHandle) -> Resu
     if wait != 0 {
         return Err(ToolError::new(
             "E_BASH_SPAWN",
-            format!("等待 Windows 子进程退出失败：{wait}"),
+            format!("failed waiting for the Windows child process to exit: {wait}"),
         ));
     }
     Ok(())
@@ -239,7 +239,7 @@ fn kill_windows(job: &std::os::windows::io::OwnedHandle) -> Result<(), ToolError
         return Err(ToolError::new(
             "E_BASH_KILL",
             format!(
-                "终止 Windows Job Object 失败：{}",
+                "failed to terminate the Windows Job Object: {}",
                 std::io::Error::last_os_error()
             ),
         ));

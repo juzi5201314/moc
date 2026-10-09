@@ -38,7 +38,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "用 Rust 正则并行搜索本地文件；搜索代码内容必须使用本工具，不要用 bash 调用 grep、rg、cat、awk 或 sed 替代。遵循 .gitignore/.ignore；搜索结果不能作为 edit 锚点，修改前先 read。"
+        "Search local files with Rust regex in parallel. Use this for content, not bash, cat, rg, awk, or sed. Respects .gitignore/.ignore; results are not edit anchors, so read before editing."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -121,7 +121,7 @@ fn search_resource_text(
     config: &crate::config::GrepConfig,
 ) -> Result<String, ToolError> {
     if args.pattern.is_empty() {
-        return Err(ToolError::new("E_BAD_REGEX", "pattern 不能为空"));
+        return Err(ToolError::new("E_BAD_REGEX", "pattern must not be empty"));
     }
     let matcher = grep_regex::RegexMatcherBuilder::new()
         .case_insensitive(!args.case.unwrap_or(true))
@@ -189,7 +189,7 @@ impl Search {
         cancel: CancellationToken,
     ) -> Result<Self, ToolError> {
         if args.pattern.is_empty() {
-            return Err(ToolError::new("E_BAD_REGEX", "pattern 不能为空"));
+            return Err(ToolError::new("E_BAD_REGEX", "pattern must not be empty"));
         }
         let matcher = grep_regex::RegexMatcherBuilder::new()
             .case_insensitive(!args.case.unwrap_or(true))
@@ -355,10 +355,10 @@ impl Search {
             output.push_str("No matches found\n");
         }
         if limited {
-            output.push_str(&format!("[已显示 {shown_files} 个文件，{shown_matches} 条匹配；达到结果上限，用 skip={} 继续；单文件达到上限时请缩小 pattern]\n", skip + shown_files));
+            output.push_str(&format!("[{shown_files} files, {shown_matches} matches shown; result limit reached, continue with skip={}; narrow pattern when one file hits its limit]\n", skip + shown_files));
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
-            output.push_str("[扫描达到时间或候选文件上限、被取消或存在不可读文件，结果可能不完整；请缩小 path 或 glob]\n");
+            output.push_str("[Scan hit a time or candidate-file limit, was cancelled, or encountered unreadable files; results may be incomplete; narrow path or glob]\n");
         }
         Ok(output.trim_end_matches('\n').to_owned())
     }
@@ -524,6 +524,6 @@ mod tests {
             ..Default::default()
         };
         let output = run(root.path(), serde_json::json!({"pattern":"hit"}), config);
-        assert!(output.contains("结果可能不完整"));
+        assert!(output.contains("results may be incomplete"));
     }
 }

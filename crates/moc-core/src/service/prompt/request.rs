@@ -30,7 +30,8 @@ pub(in crate::service) async fn project_input(
                 });
             }
             InputPart::Image { .. } => content.push(ContentPart::Text(
-                "[用户提供了图片（当前模型不支持图片输入）]".into(),
+                "[The user provided an image, but the current model does not support image input]"
+                    .into(),
             )),
         }
     }
@@ -46,7 +47,7 @@ async fn normalize_image_source(
     match source {
         moc_llm::ImageSource::Url(url) if url.starts_with('@') => load_local_image(&url, cwd)
             .await?
-            .ok_or_else(|| crate::CoreError::Tool(format!("图片文件不存在：{}", &url[1..]))),
+            .ok_or_else(|| crate::CoreError::Tool(format!("image file not found: {}", &url[1..]))),
         source => Ok(source),
     }
 }
@@ -103,13 +104,13 @@ async fn load_local_image(
         Ok(bytes) => bytes,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Err(crate::CoreError::Tool(format!(
-                "图片文件不存在：{}",
+                "image file not found: {}",
                 path.display()
             )));
         }
         Err(error) => {
             return Err(crate::CoreError::Tool(format!(
-                "读取图片 {} 失败：{error}",
+                "failed to read image {}: {error}",
                 path.display()
             )));
         }
@@ -175,7 +176,7 @@ pub(crate) fn build_request(
             body_bytes = image_budget.body_bytes,
             body_bytes_after = image_budget.body_bytes_after,
             evicted = image_budget.evicted,
-            "请求图片已按字节预算淘汰"
+            "Request images evicted to meet the byte budget"
         );
     }
     let message_count = messages.len();
@@ -300,7 +301,7 @@ mod tests {
             .expect("图片投影成功");
         assert_eq!(
             unsupported.text(),
-            "[用户提供了图片（当前模型不支持图片输入）]"
+            "[The user provided an image, but the current model does not support image input]"
         );
         let supported = project_input(vec![image()], true, Path::new("/tmp"))
             .await
