@@ -137,7 +137,6 @@ fn rank(key: &str) -> usize {
         "protect_recent_tool_tokens" => 7,
         "remote" => 8,
         "shake" => 9,
-        // 搜索与读取
         "max_files" => 0,
         "max_matches_per_file" => 1,
         "max_matches_total" => 2,
@@ -147,6 +146,7 @@ fn rank(key: &str) -> usize {
         "timeout_ms" => 6,
         "max_file_bytes" => 7,
         "max_candidate_files" => 8,
+        "max_output_bytes" => 9,
         "head_bytes" => 0,
         "tail_bytes" => 1,
         // OpenViking
@@ -408,15 +408,13 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "tail_bytes" => ("超长输出保留结尾", "工具输出过长时保留结尾的字节数。"),
             "max_file_bytes" => ("单文件大小上限", "工具处理单个文件的最大字节数。"),
             "default_timeout_secs" => {
-                ("命令超时（秒）", "命令未指定时限时使用的秒数；0 表示不限。")
+                ("命令超时（秒）", "命令未指定时限时使用的秒数；必须大于 0。")
             }
             "max_timeout_secs" => ("命令超时上限（秒）", "单条命令允许设置的最大秒数。"),
-            "auto_background_ms" => (
-                "自动转后台（毫秒）",
-                "命令运行超过这个时间就转到后台；0 表示关闭。",
+            "max_output_bytes" => (
+                "命令输出上限",
+                "单条 bash 命令最多写入日志的字节数，超过后终止命令。",
             ),
-            "default_limit" => ("默认读取行数", "读取文件未指定行数时返回的行数。"),
-            "max_bytes" => ("读取内容上限", "一次读取最多返回给模型的字节数。"),
             "line_max_bytes" => ("单行长度上限", "超长行只显示提示，不能再直接编辑。"),
             "max_edits" => ("单次编辑条数", "一次编辑最多包含的修改处数。"),
             "noop_loop_threshold" => (

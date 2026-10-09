@@ -13,7 +13,7 @@ use serde_json::Value;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
 mod policy;
-pub(crate) use policy::allowed_in_sandbox;
+pub(crate) use policy::{allowed_in_sandbox, reject_unscoped_scan};
 mod group;
 pub(crate) use group::ProcessGroup;
 mod process;
@@ -55,7 +55,7 @@ impl Tool for BashTool {
                     "command":{"type":"string","description":"Shell command to run; do not use cat, grep, rg, find, sed, awk, or interpreters here to read, search, or edit workspace files"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
-                    "timeout":{"type":"integer","minimum":0,"maximum":3600},
+                    "timeout":{"type":"integer","minimum":1,"maximum":3600},
                     "pty":{"type":"boolean"},
                     "stdin":{"type":"string"},
                     "async":{"type":"boolean"}
@@ -76,6 +76,7 @@ impl Tool for BashTool {
                 return Err(ToolError::new("E_BAD_PAYLOAD", "command must not be empty"));
             }
             let cwd = resolve_cwd(&ctx.cwd, args.cwd.as_deref())?;
+            crate::tools::bash::reject_unscoped_scan(&args.command, &cwd, &ctx.cwd)?;
             let timeout = args
                 .timeout
                 .unwrap_or(ctx.config.tools.bash.default_timeout_secs)
@@ -101,6 +102,7 @@ impl Tool for BashTool {
                 cwd,
                 ctx.cwd.clone(),
                 timeout,
+                ctx.config.tools.bash.max_output_bytes,
                 output_path.clone(),
                 ctx.permission,
             )
@@ -167,6 +169,7 @@ pub(crate) async fn run_manual(
         cwd.clone(),
         cwd,
         timeout,
+        config.max_output_bytes,
         output_path.clone(),
         moc_protocol::SessionPermission::Full,
     )
@@ -192,11 +195,18 @@ pub(crate) async fn run_manual(
 fn exit_outcome(output_path: PathBuf, result: ProcessExit, timeout: u64) -> ToolOutcome {
     let mut outcome = ToolOutcome::success(ToolOutput::File {
         path: output_path,
-        suffix: render_exit(result.code.unwrap_or(-1), result.timed_out, timeout),
+        suffix: render_exit(
+            result.code.unwrap_or(-1),
+            result.timed_out,
+            result.output_truncated,
+            timeout,
+        ),
     });
-    outcome.is_error = result.timed_out || result.code != Some(0);
+    outcome.is_error = result.timed_out || result.output_truncated || result.code != Some(0);
     outcome.error_code = if result.timed_out {
         Some("E_TIMEOUT".into())
+    } else if result.output_truncated {
+        Some("E_OUTPUT_LIMIT".into())
     } else if result.code != Some(0) {
         Some("E_BASH_EXIT".into())
     } else {
@@ -346,9 +356,11 @@ async fn next_job_id(
     }
 }
 
-fn render_exit(status: i32, timed_out: bool, timeout: u64) -> String {
+fn render_exit(status: i32, timed_out: bool, output_truncated: bool, timeout: u64) -> String {
     if timed_out {
         format!("\n(killed after {timeout}s timeout)")
+    } else if output_truncated {
+        "\n(killed after output limit)".into()
     } else if status != 0 {
         format!("\n(exit {status})")
     } else {

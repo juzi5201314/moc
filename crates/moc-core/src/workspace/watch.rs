@@ -32,6 +32,12 @@ pub enum WorkspaceError {
 
 /// 优先取 `git status --porcelain -z`，非 Git 目录使用 ignore 规则快照。
 pub fn snapshot(cwd: &Path, max_entries: usize) -> Result<WorkspaceSnapshot, WorkspaceError> {
+    if crate::tools::is_slow_filesystem_path(cwd) || crate::tools::is_filesystem_mount(cwd) {
+        return Ok(WorkspaceSnapshot {
+            entries: BTreeMap::new(),
+            truncated: true,
+        });
+    }
     if let Some(root) = git_root(cwd) {
         return git_snapshot(cwd, &root, max_entries);
     }

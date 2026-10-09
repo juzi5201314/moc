@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ProcessExit {
     pub code: Option<i32>,
     pub timed_out: bool,
+    pub output_truncated: bool,
 }
 
 pub(crate) struct Process {
@@ -30,6 +31,7 @@ impl Process {
         cwd: PathBuf,
         workspace: PathBuf,
         timeout: u64,
+        max_output_bytes: u64,
         path: PathBuf,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
@@ -39,11 +41,34 @@ impl Process {
                 "workspace permissions require a Unix bwrap environment",
             ));
         }
-        let duration = (timeout > 0).then_some(Duration::from_secs(timeout));
+        if timeout == 0 || max_output_bytes == 0 {
+            return Err(ToolError::new(
+                "E_BASH_CONFIG",
+                "timeout and max_output_bytes must be greater than zero",
+            ));
+        }
+        let duration = Some(Duration::from_secs(timeout));
         if args.pty.unwrap_or(false) {
-            Self::pty(args, cwd, workspace, duration, path, permission).await
+            Self::pty(
+                args,
+                cwd,
+                workspace,
+                duration,
+                max_output_bytes,
+                path,
+                permission,
+            )
+            .await
         } else {
-            Self::pipe(args, cwd, workspace, duration, path, permission)
+            Self::pipe(
+                args,
+                cwd,
+                workspace,
+                duration,
+                max_output_bytes,
+                path,
+                permission,
+            )
         }
     }
 
@@ -52,6 +77,7 @@ impl Process {
         cwd: PathBuf,
         workspace: PathBuf,
         timeout: Option<Duration>,
+        max_output_bytes: u64,
         path: PathBuf,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
@@ -106,6 +132,7 @@ impl Process {
         let deadline = timeout.map(|duration| tokio::time::Instant::now() + duration);
         let input = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout 已配置为管道");
+        let output_group = completion_group.clone();
         let reader = tokio::spawn(async move {
             let write_input = async move {
                 if let (Some(mut input), Some(text)) = (input, args.stdin) {
@@ -118,9 +145,11 @@ impl Process {
                 }
                 Ok::<_, std::io::Error>(())
             };
-            let (output, input) =
-                tokio::join!(super::super::job::copy_output(stdout, path), write_input);
-            output.and(input)
+            let (output, input) = tokio::join!(
+                super::super::job::copy_output(stdout, path, max_output_bytes, output_group),
+                write_input
+            );
+            output.and_then(|truncated| input.map(|()| (truncated, ())))
         });
         let completion = Box::pin(async move {
             let (waited, timed_out) = tokio::select! {
@@ -134,7 +163,7 @@ impl Process {
                 }
             };
             drop(completion_group);
-            reader
+            let (output_truncated, _input) = reader
                 .await
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
@@ -143,6 +172,7 @@ impl Process {
             Ok(ProcessExit {
                 code: status.code(),
                 timed_out,
+                output_truncated,
             })
         });
         Ok(Self {
@@ -157,6 +187,7 @@ impl Process {
         cwd: PathBuf,
         workspace: PathBuf,
         timeout: Option<Duration>,
+        max_output_bytes: u64,
         path: PathBuf,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
@@ -171,7 +202,15 @@ impl Process {
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
             run_pty(
-                args, cwd, workspace, timeout, path, permission, cancel, started,
+                args,
+                cwd,
+                workspace,
+                timeout,
+                max_output_bytes,
+                path,
+                permission,
+                cancel,
+                started,
             )
         });
         let (pid, group) = match ready.await {
@@ -304,6 +343,7 @@ fn run_pty(
     cwd: PathBuf,
     workspace: PathBuf,
     timeout: Option<Duration>,
+    max_output_bytes: u64,
     path: PathBuf,
     permission: SessionPermission,
     cancel: CancellationToken,
@@ -374,19 +414,31 @@ fn run_pty(
     drop(pair.slave);
     let input = pty_input(&args.command, args.stdin)?;
     let writer_thread = std::thread::spawn(move || writer.write_all(&input));
-    let reader_thread = std::thread::spawn(move || -> std::io::Result<()> {
+    let began = std::time::Instant::now();
+    let _ = started.send((pid, group.clone()));
+    let output_group = group.clone();
+    let reader_thread = std::thread::spawn(move || -> std::io::Result<bool> {
         let mut buffer = [0u8; 16 * 1024];
+        let mut written = 0u64;
         loop {
             let count = reader.read(&mut buffer)?;
             if count == 0 {
-                break;
+                log.sync_all()?;
+                return Ok(false);
             }
-            log.write_all(&buffer[..count])?;
+            let remaining = max_output_bytes.saturating_sub(written);
+            let kept = remaining.min(count as u64) as usize;
+            if kept > 0 {
+                log.write_all(&buffer[..kept])?;
+                written += kept as u64;
+            }
+            if kept < count || written == max_output_bytes {
+                output_group.kill().map_err(std::io::Error::other)?;
+                log.sync_all()?;
+                return Ok(true);
+            }
         }
-        log.sync_all()
     });
-    let began = std::time::Instant::now();
-    let _ = started.send((pid, group.clone()));
     let mut timed_out = false;
     let waited = loop {
         match child.try_wait() {
@@ -401,9 +453,8 @@ fn run_pty(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    drop(group);
     let _ = writer_thread.join();
-    reader_thread
+    let output_truncated = reader_thread
         .join()
         .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
     let status = waited?;
@@ -411,6 +462,7 @@ fn run_pty(
     Ok(ProcessExit {
         code: Some(if status.success() { code } else { code.max(1) }),
         timed_out,
+        output_truncated,
     })
 }
 
@@ -461,6 +513,7 @@ mod unix_tests {
             directory.path().to_owned(),
             directory.path().to_owned(),
             5,
+            1024,
             directory.path().join("workspace.log"),
             SessionPermission::Workspace,
         )
@@ -480,6 +533,7 @@ mod unix_tests {
             directory.path().to_owned(),
             directory.path().to_owned(),
             5,
+            1024,
             directory.path().join("external.log"),
             SessionPermission::Workspace,
         )

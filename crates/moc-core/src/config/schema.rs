@@ -93,6 +93,14 @@ pub(super) fn validate_tools(config: &ToolsConfig) -> Result<(), crate::error::C
             "tools.max_concurrent_calls: 必须大于 0".into(),
         ));
     }
+    if config.bash.default_timeout_secs == 0
+        || config.bash.max_timeout_secs < config.bash.default_timeout_secs
+        || config.bash.max_output_bytes == 0
+    {
+        return Err(crate::error::CoreError::Config(
+            "tools.bash: timeout 必须大于 0，最大超时不得小于默认超时，输出上限必须大于 0".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -166,6 +174,7 @@ pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreE
 pub struct BashConfig {
     pub default_timeout_secs: u64,
     pub max_timeout_secs: u64,
+    pub max_output_bytes: u64,
     pub auto_background_ms: u64,
     pub deny_patterns: Vec<String>,
     /// 允许直接留在 workspace 沙盒执行的完整命令正则。
@@ -177,6 +186,7 @@ impl Default for BashConfig {
         Self {
             default_timeout_secs: 120,
             max_timeout_secs: 3600,
+            max_output_bytes: 16 * 1024 * 1024,
             auto_background_ms: 0,
             deny_patterns: vec![
                 r"(?i)rm\s+-rf\s+/(\s|$)".into(),

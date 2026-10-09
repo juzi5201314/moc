@@ -24,6 +24,7 @@ pub enum JobStatus {
     Killing,
     Killed,
     TimedOut,
+    OutputLimited,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +130,7 @@ impl JobManager {
                 } else {
                     match waited {
                         Ok(result) if result.timed_out => JobStatus::TimedOut,
+                        Ok(result) if result.output_truncated => JobStatus::OutputLimited,
                         Ok(result) => JobStatus::Finished(result.code),
                         Err(error) => {
                             tracing::warn!(job_id = %id, %error, "后台任务等待失败");
@@ -150,6 +152,7 @@ impl JobManager {
                 JobStatus::Finished(code) => (code, format!("exit {}", code.unwrap_or(-1))),
                 JobStatus::Killed => (None, "killed".into()),
                 JobStatus::TimedOut => (None, "timeout".into()),
+                JobStatus::OutputLimited => (None, "output_limit".into()),
                 JobStatus::Running | JobStatus::Killing => unreachable!("任务已回收"),
             };
             let output = super::output::prepare(
@@ -289,24 +292,38 @@ impl JobManager {
     }
 }
 
-pub async fn copy_output<R: AsyncRead + Unpin>(
+pub(crate) async fn copy_output<R: AsyncRead + Unpin>(
     mut reader: R,
     path: PathBuf,
-) -> std::io::Result<()> {
+    max_output_bytes: u64,
+    group: super::bash::ProcessGroup,
+) -> std::io::Result<bool> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
     let mut file = tokio::fs::File::create(path).await?;
     let mut buffer = vec![0u8; 16 * 1024];
+    let mut written = 0u64;
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
-            break;
+            file.flush().await?;
+            file.sync_all().await?;
+            return Ok(false);
         }
-        file.write_all(&buffer[..read]).await?;
+        let remaining = max_output_bytes.saturating_sub(written);
+        let kept = remaining.min(read as u64) as usize;
+        if kept > 0 {
+            file.write_all(&buffer[..kept]).await?;
+            written += kept as u64;
+        }
+        if kept < read || written == max_output_bytes {
+            group.kill().map_err(std::io::Error::other)?;
+            file.flush().await?;
+            file.sync_all().await?;
+            return Ok(true);
+        }
     }
-    file.flush().await?;
-    file.sync_all().await
 }
 
 async fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<String> {

@@ -6,6 +6,8 @@ pub mod catalog;
 pub mod edit;
 pub mod find;
 pub mod grep;
+mod scope;
+pub(crate) use scope::{is_filesystem_mount, is_slow_filesystem_path, resolve_scan_root};
 pub mod job;
 pub mod mcp;
 pub mod output;

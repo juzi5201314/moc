@@ -142,10 +142,8 @@ impl Scan {
         let patterns = patterns
             .build()
             .map_err(|error| ToolError::new("E_BAD_GLOB", error.to_string()))?;
-        let root = self.cwd.join(self.args.path.as_deref().unwrap_or("."));
-        let root_is_file = std::fs::metadata(&root)
-            .map_err(|error| ToolError::new("E_ACCESS", format!("{}: {error}", root.display())))?
-            .is_file();
+        let root = crate::tools::resolve_scan_root(&self.cwd, self.args.path.as_deref())?;
+        let root_is_file = root.is_file();
         let limit = self.args.limit.unwrap_or(self.limit);
         if !(1..=200).contains(&limit) {
             return Err(ToolError::new(
@@ -161,6 +159,7 @@ impl Scan {
             .git_global(gitignore)
             .git_exclude(gitignore)
             .ignore(gitignore)
+            .same_file_system(true)
             .threads(std::thread::available_parallelism().map_or(1, usize::from));
         // 堆顶为当前最差结果；最多 200 项，避免保存整棵目录树。
         let best = Mutex::new(BinaryHeap::with_capacity(limit));

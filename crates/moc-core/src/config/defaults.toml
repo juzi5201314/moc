@@ -31,6 +31,7 @@ max_file_bytes = 104857600
 [tools.bash]
 default_timeout_secs = 120
 max_timeout_secs = 3600
+max_output_bytes = 16777216
 auto_background_ms = 0
 allow_patterns = []
 deny_patterns = [

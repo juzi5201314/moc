@@ -107,7 +107,13 @@ fn search_resource_file(
     let metadata =
         std::fs::metadata(path).map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
     if metadata.len() > config.max_file_bytes {
-        return Ok("No matches found".into());
+        return Err(ToolError::new(
+            "E_TOO_LARGE",
+            format!(
+                "resource exceeds the {}-byte search limit",
+                config.max_file_bytes
+            ),
+        ));
     }
     let bytes =
         std::fs::read(path).map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
@@ -122,6 +128,15 @@ fn search_resource_text(
 ) -> Result<String, ToolError> {
     if args.pattern.is_empty() {
         return Err(ToolError::new("E_BAD_REGEX", "pattern must not be empty"));
+    }
+    if text.len() as u64 > config.max_file_bytes {
+        return Err(ToolError::new(
+            "E_TOO_LARGE",
+            format!(
+                "resource exceeds the {}-byte search limit",
+                config.max_file_bytes
+            ),
+        ));
     }
     let matcher = grep_regex::RegexMatcherBuilder::new()
         .case_insensitive(!args.case.unwrap_or(true))
@@ -205,9 +220,7 @@ impl Search {
         let include = include
             .build()
             .map_err(|error| ToolError::new("E_BAD_GLOB", error.to_string()))?;
-        let root = cwd.join(args.path.as_deref().unwrap_or("."));
-        std::fs::metadata(&root)
-            .map_err(|error| ToolError::new("E_ACCESS", format!("{}：{error}", root.display())))?;
+        let root = crate::tools::resolve_scan_root(&cwd, args.path.as_deref())?;
         let deadline = Instant::now() + Duration::from_millis(config.timeout_ms);
         Ok(Self {
             args,
@@ -234,6 +247,7 @@ impl Search {
             .git_global(gitignore)
             .git_exclude(gitignore)
             .ignore(gitignore)
+            .same_file_system(true)
             .threads(std::thread::available_parallelism().map_or(1, usize::from));
         let candidates = Mutex::new(Vec::new());
         let incomplete = AtomicBool::new(false);
@@ -279,6 +293,7 @@ impl Search {
         let mut shown_files = 0usize;
         let mut shown_matches = 0usize;
         let mut limited = false;
+        let mut skipped_large_files = 0usize;
         let skip = self.args.skip.unwrap_or(0);
         // 分块保留并行度，同时使低输出上限无需搜索整个候选集合。
         let width = rayon::current_num_threads().clamp(1, 32);
@@ -295,6 +310,11 @@ impl Search {
                         continue;
                     }
                 };
+                if result.skipped {
+                    skipped_large_files += 1;
+                    incomplete.store(true, Ordering::Relaxed);
+                    continue;
+                }
                 if result.matches == 0 {
                     continue;
                 }
@@ -355,17 +375,30 @@ impl Search {
             output.push_str("No matches found\n");
         }
         if limited {
-            output.push_str(&format!("[{shown_files} files, {shown_matches} matches shown; result limit reached, continue with skip={}; narrow pattern when one file hits its limit]\n", skip + shown_files));
+            output.push_str(&format!(
+                "[{shown_files} files, {shown_matches} matches shown; result limit reached, continue with skip={}; narrow pattern when one file hits its limit]\n",
+                skip + shown_files
+            ));
+        }
+        if skipped_large_files > 0 {
+            output.push_str(&format!(
+                "[{skipped_large_files} files exceeded the {}-byte limit and were not searched]\n",
+                self.config.max_file_bytes
+            ));
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
-            output.push_str("[Scan hit a time or candidate-file limit, was cancelled, or encountered unreadable files; results may be incomplete; narrow path or glob]\n");
+            output.push_str("[Scan hit a time or candidate-file limit, was cancelled, or encountered unreadable or oversized files; results may be incomplete; narrow path or glob]\n");
         }
         Ok(output.trim_end_matches('\n').to_owned())
     }
-
     fn search_file(&self, path: &Path) -> std::io::Result<Matches> {
         let mut sink = Matches::default();
-        if self.stopped() || std::fs::metadata(path)?.len() > self.config.max_file_bytes {
+        if self.stopped() {
+            return Ok(sink);
+        }
+        let metadata = std::fs::metadata(path)?;
+        if metadata.len() > self.config.max_file_bytes {
+            sink.skipped = true;
             return Ok(sink);
         }
         let file = std::fs::File::open(path)?;
@@ -399,6 +432,7 @@ struct Matches {
     rows: Vec<Row>,
     matches: usize,
     truncated: bool,
+    skipped: bool,
 }
 struct Row {
     number: u64,

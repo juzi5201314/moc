@@ -421,6 +421,7 @@ async fn append_runtime_checkpoint(
                 crate::tools::job::JobStatus::Killing => "killing",
                 crate::tools::job::JobStatus::Killed => "killed",
                 crate::tools::job::JobStatus::TimedOut => "timed_out",
+                crate::tools::job::JobStatus::OutputLimited => "output_limited",
             };
             summary.push_str(&format!(
                 "Background job {} [{}]: {}\n",
