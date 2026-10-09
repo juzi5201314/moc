@@ -87,7 +87,7 @@ pub use session::{
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
     AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
-    UpstreamField, UpstreamFieldMismatch,
+    ToolBatchCall, UpstreamField, UpstreamFieldMismatch,
 };
 
 /// 空结果：序列化为 `{}`。

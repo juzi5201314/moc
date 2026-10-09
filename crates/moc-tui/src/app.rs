@@ -175,6 +175,8 @@ pub struct App {
     pub interrupt_pending: std::collections::HashSet<String>,
     pub prompt_stash: Option<PromptState>,
 
+    /// 工具调用 ID 到批次 ID 的暂存映射，批次开始事件先于各个工具开始事件。
+    tool_batches: HashMap<String, String>,
     /// 工具调用 ID 到转写块下标的索引，工具参数增量走热路径。
     tool_indices: HashMap<String, usize>,
     /// 增量阶段累积的参数：`tool_call_id → JSON 片段拼接`（在工具块创建前到达）。
@@ -262,6 +264,7 @@ impl App {
             queue_offset: 0,
             interrupt_pending: std::collections::HashSet::new(),
             prompt_stash: None,
+            tool_batches: HashMap::new(),
             tool_indices: HashMap::new(),
             pending_args: HashMap::new(),
         }
@@ -383,7 +386,28 @@ impl App {
 
     /// 工具执行开始：把增量阶段累积的信息落地成转写块。
     pub fn start_tool_block(&mut self, tool_call_id: String, name: String) {
-        self.start_tool_block_with_parent(tool_call_id, name, None);
+        let batch_id = self.tool_batches.remove(&tool_call_id);
+        self.start_tool_block_with_parent(tool_call_id, name, None, batch_id);
+    }
+
+    /// 登记同一模型响应返回的工具批次。
+    pub fn register_tool_batch(
+        &mut self,
+        batch_id: String,
+        calls: impl IntoIterator<Item = String>,
+    ) {
+        for tool_call_id in calls {
+            self.tool_batches.insert(tool_call_id, batch_id.clone());
+        }
+    }
+    /// 普通工具批次中的调用开始。
+    pub fn start_batched_tool_block(
+        &mut self,
+        tool_call_id: String,
+        name: String,
+        batch_id: String,
+    ) {
+        self.start_tool_block_with_parent(tool_call_id, name, None, Some(batch_id));
     }
 
     /// PTC 子工具开始：保留父调用关系供滚动区缩进展示。
@@ -393,7 +417,7 @@ impl App {
         name: String,
         parent_id: String,
     ) {
-        self.start_tool_block_with_parent(tool_call_id, name, Some(parent_id));
+        self.start_tool_block_with_parent(tool_call_id, name, Some(parent_id), None);
     }
 
     fn start_tool_block_with_parent(
@@ -401,11 +425,13 @@ impl App {
         tool_call_id: String,
         name: String,
         parent_id: Option<String>,
+        batch_id: Option<String>,
     ) {
         let arguments = self.pending_args.remove(&tool_call_id).unwrap_or_default();
         let index = self.blocks.len();
         self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
             id: tool_call_id.clone(),
+            batch_id,
             parent_id,
             name,
             arguments,
@@ -433,6 +459,7 @@ impl App {
             let index = self.blocks.len();
             self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
                 id: tool_call_id.clone(),
+                batch_id: None,
                 parent_id: None,
                 name: result.tool_call_id.clone(),
                 arguments: String::new(),
@@ -601,6 +628,7 @@ impl App {
             },
         });
     }
+
     /// 打开消息回退选择器；数据由调用方异步加载。
     pub fn open_rewind(&mut self) {
         self.modal = Some(Modal::Rewind {
@@ -613,6 +641,7 @@ impl App {
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;
+        self.tool_batches.clear();
         self.tool_indices.clear();
         for (index, entry) in self.blocks.iter().enumerate() {
             if let Block::Tool(tool) = &entry.block {
@@ -649,7 +678,7 @@ impl App {
         }
         blocks.append(&mut self.blocks);
         self.blocks = blocks;
-        self.tool_indices.clear();
+        self.tool_batches.clear();
         for (index, entry) in self.blocks.iter().enumerate() {
             if let Block::Tool(tool) = &entry.block {
                 self.tool_indices.insert(tool.id.clone(), index);

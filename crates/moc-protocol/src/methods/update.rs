@@ -57,11 +57,29 @@ pub struct SessionUpdateParams {
     /// 本次更新。
     pub update: SessionUpdate,
 }
+/// 同一模型响应返回的一批工具调用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolBatchCall {
+    /// 调用 ID。
+    pub tool_call_id: String,
+    /// 工具名。
+    pub name: String,
+}
 
 /// 一条会话更新。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
+    /// 一批工具调用开始执行；前端可按工具名聚合展示。
+    ToolBatchStarted {
+        /// 提示 ID。
+        prompt_id: String,
+        /// 批次 ID。
+        batch_id: String,
+        /// 批次内的调用，保持模型返回顺序。
+        calls: Vec<ToolBatchCall>,
+    },
     /// 提示开始。
     PromptStarted {
         /// prompt ID。

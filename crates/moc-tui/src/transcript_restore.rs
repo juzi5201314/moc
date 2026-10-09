@@ -22,6 +22,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             if let Some(tool) = tool {
                 blocks.push(Entry::new(Block::Tool(ToolCallBlock {
                     id: tool.tool_call_id.clone(),
+                    batch_id: None,
                     parent_id: None,
                     name: "bash".into(),
                     arguments: serde_json::to_string(command).expect("Bash 参数可序列化"),
@@ -42,6 +43,8 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                 }
             }
             Role::Assistant => {
+                let batch_id =
+                    (message.tool_calls().count() > 1).then(|| format!("history-{}", record.id));
                 for part in &message.content {
                     match part {
                         ContentPart::Text(text) => {
@@ -59,6 +62,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                         ContentPart::ToolCall(call) => {
                             let block = ToolCallBlock {
                                 id: call.id.clone(),
+                                batch_id: batch_id.clone(),
                                 parent_id: None,
                                 name: call.name.clone(),
                                 arguments: call.arguments.clone(),
@@ -139,6 +143,7 @@ pub fn blocks_from_entries_with_children(
         }
         let block = ToolCallBlock {
             id: child.id.clone(),
+            batch_id: None,
             parent_id: Some(child.parent_tool_call_id.clone()),
             name: child.name.clone(),
             arguments: child.arguments.clone(),

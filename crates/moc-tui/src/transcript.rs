@@ -116,18 +116,23 @@ impl Entry {
 pub struct ToolCallBlock {
     /// 调用 ID（与协议的 `tool_call_id` 一致）。
     pub id: String,
+    /// 同一模型响应中的工具批次；历史记录按 assistant 条目恢复。
+    pub batch_id: Option<String>,
     /// 父工具调用 ID；PTC 子调用据此在滚动区缩进展示。
     pub parent_id: Option<String>,
+    /// 工具名。
     pub name: String,
-    /// 完整参数 JSON（增量拼接而成）。
+    /// 流式累积的 JSON 参数。
     pub arguments: String,
+    /// 终态；运行中为 `None`。
     pub status: Option<ToolStatus>,
-    /// 工具回灌给模型的结果原文（渲染时按需截断）。
+    /// 工具结果文本。
     pub result: Option<String>,
-    /// 文件变更 diff（edit / write 成功时 core 给出）。
+    /// 文件变更 diff。
     pub diff: Option<ToolDiff>,
+    /// 执行耗时。
     pub duration_ms: Option<u64>,
-    /// 是否还在执行（标题行动画）。
+    /// 是否仍在执行。
     pub running: bool,
 }
 

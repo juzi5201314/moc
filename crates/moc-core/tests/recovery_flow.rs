@@ -273,6 +273,18 @@ async fn tool_batch_preserves_order_and_disabled_tools_are_not_executed() {
     std::fs::write(h.root.path().join("work/two.txt"), "第二文件").unwrap();
     let id = h.session(SessionMode::Normal).await;
     h.prompt(&id, "并发读两个文件").await;
+    let batch = h
+        .updates
+        .lock()
+        .iter()
+        .find_map(|update| match update {
+            SessionUpdate::ToolBatchStarted { calls, .. } => Some(calls.clone()),
+            _ => None,
+        })
+        .expect("工具批次事件");
+    assert_eq!(batch.len(), 3);
+    assert_eq!(batch[0].name, "read");
+    assert_eq!(batch[2].name, "todo");
     let loaded = h.load(&id).await;
     let results: Vec<_> = loaded
         .entries

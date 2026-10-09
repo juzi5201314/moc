@@ -116,3 +116,5 @@ statusline = "{model} * {mode} -> {workdir}"
 edit / write 执行时由 core 生成结构化 diff（LCS 对齐、上下文 3 行、
 超限截断标记），经 `ToolFinished` 与权限请求携带到前端；权限弹窗内直接
 预览将要产生的变更。
+
+`edit` 保留单文件 `{path, edits}` 格式，也支持 `{files: [{path, edits}, ...]}`。后者按文件顺序串行应用，每个文件仍必须先由 `read` 提供当前 hashline 锚点；全部成功后回传合并 diff。

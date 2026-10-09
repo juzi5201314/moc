@@ -963,6 +963,7 @@ impl UpdateLog {
 /// 更新的 `type` 标签。
 pub fn update_tag(update: &SessionUpdate) -> &'static str {
     match update {
+        SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",
         SessionUpdate::BashStarted { .. } => "bash_started",

@@ -38,6 +38,7 @@ impl Renderer {
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         match params.update {
+            SessionUpdate::ToolBatchStarted { .. } => {}
             SessionUpdate::AssistantDelta { delta, .. } => match delta {
                 AssistantDelta::Text { delta } => {
                     let _ = write!(out, "{delta}");

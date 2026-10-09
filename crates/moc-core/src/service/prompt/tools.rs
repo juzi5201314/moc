@@ -35,6 +35,25 @@ pub(super) async fn execute_tool_batch(
     let prompt_id = tool_ctx.prompt_id.as_str();
     let cwd = &tool_ctx.cwd;
     let update = tool_ctx.request.updates();
+    if calls.len() > 1 {
+        update
+            .emit(
+                session_id.to_owned(),
+                SessionUpdate::ToolBatchStarted {
+                    prompt_id: prompt_id.to_owned(),
+                    batch_id: crate::ids::entry_id(),
+                    calls: calls
+                        .iter()
+                        .map(|call| moc_protocol::methods::ToolBatchCall {
+                            tool_call_id: call.id.clone(),
+                            name: call.name.clone(),
+                        })
+                        .collect(),
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
     let tool_batch_before = if matches!(
         mode,
         moc_protocol::methods::SessionMode::Normal | moc_protocol::methods::SessionMode::Ptc

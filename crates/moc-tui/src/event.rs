@@ -2061,6 +2061,11 @@ fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, upda
 fn apply_update(app: &mut App, update: SessionUpdate) {
     use crate::transcript::Block;
     match update {
+        SessionUpdate::ToolBatchStarted {
+            batch_id, calls, ..
+        } => {
+            app.register_tool_batch(batch_id, calls.into_iter().map(|call| call.tool_call_id));
+        }
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
             moc_protocol::methods::AssistantDelta::Text { delta } => {
                 app.finish_thinking();

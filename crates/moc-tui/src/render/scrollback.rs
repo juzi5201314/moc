@@ -48,7 +48,11 @@ impl ScrollbackView {
         }
         let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
         for (index, entry) in app.blocks.iter().enumerate() {
-            let key = (entry.generation, entry.folded, app.view_gen);
+            let key = (
+                entry_cache_generation(app, index),
+                entry.folded,
+                app.view_gen,
+            );
             if self
                 .cache
                 .get(index)
@@ -57,11 +61,15 @@ impl ScrollbackView {
                 continue;
             }
             let (lines, height, rendered) = if index >= eager_start {
-                let lines = render_entry(entry, app, width, index == 0);
+                let lines = render_entry(index, entry, app, width, index == 0);
                 let height = lines.len();
                 (lines, height, true)
             } else {
-                (Vec::new(), estimate_entry_height(entry, width), false)
+                (
+                    Vec::new(),
+                    estimate_entry_height_at(app, index, width),
+                    false,
+                )
             };
             let cached = CachedEntry {
                 key,
@@ -100,7 +108,7 @@ impl ScrollbackView {
         for (index, cached) in self.cache.iter_mut().enumerate() {
             let next = offset.saturating_add(cached.height);
             if !cached.rendered && offset < end && next > skip_rows {
-                let lines = render_entry(&app.blocks[index], app, self.width, index == 0);
+                let lines = render_entry(index, &app.blocks[index], app, self.width, index == 0);
                 cached.height = lines.len();
                 cached.lines = lines;
                 cached.rendered = true;
@@ -154,6 +162,66 @@ impl ScrollbackView {
     }
 }
 
+fn entry_cache_generation(app: &App, index: usize) -> u64 {
+    let Some(entry) = app.blocks.get(index) else {
+        return 0;
+    };
+    let Some((batch_id, name)) = tool_batch_key(entry) else {
+        return entry.generation;
+    };
+    app.blocks
+        .iter()
+        .filter(|candidate| is_same_batch_tool(candidate, batch_id, name))
+        .fold(entry.generation, |generation, candidate| {
+            generation.max(candidate.generation)
+        })
+}
+
+fn tool_batch_key(entry: &Entry) -> Option<(&str, &str)> {
+    match &entry.block {
+        Block::Tool(tool) if tool.parent_id.is_none() => {
+            Some((tool.batch_id.as_deref()?, tool.name.as_str()))
+        }
+        _ => None,
+    }
+}
+
+fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
+    let Some(entry) = app.blocks.get(index) else {
+        return 0;
+    };
+    let Some((batch_id, name)) = tool_batch_key(entry) else {
+        return estimate_entry_height(entry, width);
+    };
+    if batch_group_start(app, index, batch_id, name) != index {
+        return 0;
+    }
+    let count = app
+        .blocks
+        .iter()
+        .filter(|entry| is_same_batch_tool(entry, batch_id, name))
+        .count();
+    app.blocks
+        .iter()
+        .filter(|entry| is_same_batch_tool(entry, batch_id, name))
+        .map(|entry| estimate_entry_height(entry, width))
+        .sum::<usize>()
+        .saturating_sub(count.saturating_sub(1))
+}
+
+fn is_same_batch_tool(entry: &Entry, batch_id: &str, name: &str) -> bool {
+    tool_batch_key(entry).is_some_and(|(candidate_batch, candidate_name)| {
+        candidate_batch == batch_id && candidate_name == name
+    })
+}
+
+fn batch_group_start(app: &App, index: usize, batch_id: &str, name: &str) -> usize {
+    app.blocks[..=index]
+        .iter()
+        .position(|entry| is_same_batch_tool(entry, batch_id, name))
+        .expect("当前工具必须存在于批次中")
+}
+
 fn estimate_entry_height(entry: &Entry, width: u16) -> usize {
     let width = usize::from(width).max(8);
     let rows = |text: &str| {
@@ -176,8 +244,31 @@ fn estimate_entry_height(entry: &Entry, width: u16) -> usize {
 
 /// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
 /// 折叠状态由全局开关与块类型共同决定。
-fn render_entry(entry: &Entry, app: &App, width: u16, first: bool) -> Vec<Line<'static>> {
-    let width = usize::from(width);
+fn render_entry(
+    index: usize,
+    entry: &Entry,
+    app: &App,
+    width: u16,
+    first: bool,
+) -> Vec<Line<'static>> {
+    if let Some((batch_id, name)) = tool_batch_key(entry) {
+        if batch_group_start(app, index, batch_id, name) != index {
+            return Vec::new();
+        }
+        let tools: Vec<_> = app
+            .blocks
+            .iter()
+            .filter_map(|candidate| match &candidate.block {
+                Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => Some(tool),
+                _ => None,
+            })
+            .collect();
+        return render_tool_batch(app, &tools, usize::from(width), first);
+    }
+    render_entry_single(entry, app, usize::from(width), first)
+}
+
+fn render_entry_single(entry: &Entry, app: &App, width: usize, first: bool) -> Vec<Line<'static>> {
     let theme = app.theme;
     match &entry.block {
         Block::User { text } => user_message(text, entry.at_ms, first, width, theme),
@@ -191,6 +282,47 @@ fn render_entry(entry: &Entry, app: &App, width: u16, first: bool) -> Vec<Line<'
         Block::Todo { phases } => render_todo(phases, app, width),
         Block::Note { text, error } => note_block(text, *error, width, theme),
     }
+}
+/// 同一模型响应中的同名工具合并为一个树形批次。
+fn render_tool_batch(
+    app: &App,
+    tools: &[&ToolCallBlock],
+    _width: usize,
+    first: bool,
+) -> Vec<Line<'static>> {
+    let theme = app.theme;
+    let name = tools.first().map_or("tool", |tool| tool.name.as_str());
+    let completed = tools.iter().filter(|tool| !tool.running).count();
+    let mut lines = Vec::new();
+    if !first {
+        lines.push(Line::from(String::new()));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("• ", Style::new().fg(theme.gray_bright)),
+        Span::styled(name.to_owned(), Style::new().fg(theme.accent_tool)),
+        Span::styled(
+            format!(" ({})", tools.len()),
+            Style::new().fg(theme.gray_bright),
+        ),
+    ]));
+    for (offset, tool) in tools.iter().enumerate() {
+        let branch = if offset + 1 == tools.len() {
+            "└─"
+        } else {
+            "├─"
+        };
+        let args = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
+        lines.push(Line::from(vec![
+            Span::raw(format!("  {branch} ")),
+            Span::styled(tool_summary(tool, &args), Style::new().fg(theme.path)),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("  {completed}/{} 完成", tools.len()),
+        Style::new().fg(theme.gray_dim),
+    )));
+    lines.push(Line::from(String::new()));
+    lines
 }
 
 /// 用户消息：`>` 前缀、正文与右侧本地时间，不使用额外面板边框。
@@ -773,5 +905,29 @@ mod tests {
             .filter(|line| line.spans.iter().any(|span| span.content == clock))
             .count();
         assert_eq!(clock_rows, 1, "时间戳应恰好出现一次");
+    }
+    #[test]
+    fn groups_same_name_tools_from_one_batch() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_batched_tool_block("call_a".into(), "read".into(), "batch".into());
+        app.start_batched_tool_block("call_b".into(), "read".into(), "batch".into());
+        app.tool_entry_mut("call_a")
+            .expect("第一个工具块")
+            .push_args(r#"{"path":"a.rs"}"#);
+        app.tool_entry_mut("call_b")
+            .expect("第二个工具块")
+            .push_args(r#"{"path":"b.rs"}"#);
+
+        let lines = render_entry(0, &app.blocks[0], &app, 80, true);
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("read (2)"));
+        assert!(text.contains("a.rs"));
+        assert!(text.contains("b.rs"));
+        assert_eq!(render_entry(1, &app.blocks[1], &app, 80, false).len(), 0);
     }
 }
