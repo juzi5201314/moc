@@ -83,13 +83,16 @@ fn render_segment(
     let mut content = String::with_capacity(entries.len().saturating_mul(256));
     let mut count = 0;
     let first_id = entries
-        .first()
+        .iter()
+        .find(|entry| entry.in_context())
         .map(|entry| entry.id.clone())
         .unwrap_or_default();
     let mut last_id = first_id.clone();
     content.push_str("# Pre-compaction transcript\n\n");
     for entry in entries {
-        let mut message = entry.message.clone();
+        let Some(mut message) = entry.context_message() else {
+            continue;
+        };
         strip_images(&mut message);
         let serialized = serde_json::to_string_pretty(&message).unwrap_or_default();
         let tool = entry

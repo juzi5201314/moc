@@ -290,6 +290,12 @@ async fn run_repl(
         if line.trim().is_empty() {
             continue;
         }
+        if let Some(command) = moc_protocol::BashCommand::parse(line) {
+            if let Err(error) = send_bash(client, &session.id, command).await {
+                eprintln!("命令失败：{error:#}");
+            }
+            continue;
+        }
         if let Some(command) = line.strip_prefix('/') {
             match run_command(core, client, command, &mut session, &mut mode).await {
                 Ok(CommandResult::Continue) => continue,
@@ -490,6 +496,26 @@ async fn send_prompt(
             signal?;
             client.call::<SessionCancel>(SessionCancelParams { session_id: session_id.to_owned() }).await?;
             pending.await.map_err(Into::into)
+        }
+    }
+}
+
+async fn send_bash(
+    client: &ClientHandle,
+    session_id: &str,
+    command: moc_protocol::BashCommand,
+) -> anyhow::Result<()> {
+    let pending = client.call::<moc_protocol::SessionBash>(moc_protocol::BashParams {
+        session_id: session_id.to_owned(),
+        command,
+    });
+    tokio::pin!(pending);
+    tokio::select! {
+        result = &mut pending => result.map(|_| ()).map_err(Into::into),
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            client.call::<SessionCancel>(SessionCancelParams { session_id: session_id.to_owned() }).await?;
+            pending.await.map(|_| ()).map_err(Into::into)
         }
     }
 }

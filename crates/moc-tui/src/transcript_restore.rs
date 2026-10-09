@@ -18,6 +18,22 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
 
     for record in entries {
         let TranscriptEntry { message, tool, .. } = record;
+        if let Some(command) = &record.bash {
+            if let Some(tool) = tool {
+                blocks.push(Entry::new(Block::Tool(ToolCallBlock {
+                    id: tool.tool_call_id.clone(),
+                    parent_id: None,
+                    name: "bash".into(),
+                    arguments: serde_json::to_string(command).expect("Bash 参数可序列化"),
+                    status: Some(tool.status),
+                    result: Some(message.text()),
+                    diff: None,
+                    duration_ms: tool.duration_ms,
+                    running: false,
+                })));
+            }
+            continue;
+        }
         match message.role {
             Role::User => {
                 let text = collect_text(&message.content);
@@ -161,6 +177,7 @@ mod tests {
             at_ms: 0,
             message,
             tool,
+            bash: None,
         }
     }
 

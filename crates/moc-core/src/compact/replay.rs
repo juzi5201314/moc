@@ -32,6 +32,7 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<Message>) 
             .transcript
             .iter()
             .skip(start)
+            .filter(|entry| entry.in_context())
             .any(|entry| entry.message.text().contains(&marker));
         if !already_in_transcript {
             messages.push(Message::user_text(format!(
@@ -66,7 +67,8 @@ pub fn model_messages(
     messages.extend(
         state.transcript[start..]
             .iter()
-            .map(|entry| repair_tool_history(entry.message.clone(), model)),
+            .filter_map(|entry| entry.context_message())
+            .map(|message| repair_tool_history(message, model)),
     );
     messages
 }

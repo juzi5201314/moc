@@ -1249,7 +1249,7 @@ fn accept_completion(app: &mut App) -> bool {
     true
 }
 
-/// 提交输入：补全确认 > 斜杠命令 > 普通发送。
+/// 提交输入：补全确认 > 斜杠命令 > Bash 命令或普通发送。
 fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     if accept_completion(app) {
         return;
@@ -2030,7 +2030,10 @@ fn advance_ask(
 }
 
 fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, update: SessionUpdate) {
-    let prompt_started = matches!(&update, SessionUpdate::PromptStarted { .. });
+    let prompt_started = matches!(
+        &update,
+        SessionUpdate::PromptStarted { .. } | SessionUpdate::BashStarted { .. }
+    );
     if matches!(&update, SessionUpdate::PromptFinished { .. })
         && !app.terminal_focused
         && app.preferences.notify_complete
@@ -2044,7 +2047,7 @@ fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, upda
             | SessionUpdate::ModelChanged { .. }
             | SessionUpdate::PermissionChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
-    );
+    ) || matches!(&update, SessionUpdate::ToolFinished { prompt_id, .. } if prompt_id.starts_with("bash_"));
     apply_update(app, update);
     if prompt_started && app.cancel_requested {
         cancel_prompt(&connection.client, app);
@@ -2119,6 +2122,15 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             parent_tool_call_id,
             ..
         } => app.start_child_tool_block(tool_call_id, name, parent_tool_call_id),
+        SessionUpdate::BashStarted {
+            tool_call_id,
+            command,
+        } => {
+            app.start_tool_block(tool_call_id.clone(), "bash".into());
+            if let Some(entry) = app.tool_entry_mut(&tool_call_id) {
+                entry.push_args(&serde_json::to_string(&command).expect("Bash 参数可序列化"));
+            }
+        }
         SessionUpdate::PtcChildFinished {
             tool_call_id,
             status,
@@ -2209,7 +2221,6 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 refresh_git_branch(app, &session.cwd);
             }
         }
-        // 等待授权由工具块 ▸ 态与居中弹窗表达，不重复加 Note
         SessionUpdate::PermissionRequested { .. } => {}
         SessionUpdate::PermissionResolved { .. } => {}
         SessionUpdate::LockChanged { .. } => {}
@@ -2687,6 +2698,127 @@ mod tests {
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
         App::new(Theme::global(), events)
+    }
+
+    #[tokio::test]
+    async fn input_bang_commands_render_results_and_remain_out_of_agent_context_when_private() {
+        use crate::transcript::Block;
+        use moc_core::{Core, CoreConfig};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("config.toml"), "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:1/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n").unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, mut receiver) = unbounded_channel();
+        let mut connection = connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        let id = session.id.clone();
+        let mut app = App::new(Theme::global(), events);
+        app.session = Some(session);
+        app.tools_collapsed = false;
+        // 长粘贴经 chip 展开，再作为多行 Bash 脚本执行。
+        app.prompt.insert_str_raw("!");
+        app.prompt.insert_text("printf 'TUI_PUBLIC\\n'\nprintf 'TUI_SECOND\\n'\nprintf 'TUI_THIRD\\n'\nprintf 'TUI_FOURTH\\n'");
+        assert!(app.prompt.text.contains("[paste#"));
+        commit_prompt(&mut app, &connection);
+        // 命令在运行时再次提交 `!!` 必须排队，不能作为 steering 注入模型。
+        app.prompt
+            .insert_text("!!printf TUI_PRIVATE\nprintf done > tui-marker\n:\n:");
+        commit_prompt(&mut app, &connection);
+        assert_eq!(app.queues[&id].len(), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut completed = 0;
+            while completed < 2 {
+                let event = receiver.recv().await.unwrap();
+                if let AppEvent::PromptReturned { result, .. } = &event {
+                    result.as_ref().unwrap();
+                    completed += 1;
+                }
+                while let Ok(update) = connection.updates.try_recv() {
+                    apply_update(&mut app, update.update);
+                }
+                match event {
+                    event @ (AppEvent::PromptReturned { .. } | AppEvent::SteerReturned { .. }) => {
+                        crate::interaction::handle_event(&mut app, &connection, event)
+                    }
+                    _ => {}
+                }
+            }
+            while let Ok(update) = connection.updates.try_recv() {
+                apply_update(&mut app, update.update);
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!app.prompt_running);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("tui-marker")).unwrap(),
+            "done"
+        );
+        assert!(app.blocks.iter().any(|entry| matches!(&entry.block, Block::Tool(tool) if tool.result.as_deref().is_some_and(|result| result.contains("TUI_FOURTH")))));
+        assert!(app.blocks.iter().any(|entry| matches!(&entry.block, Block::Tool(tool) if tool.result.as_deref() == Some("TUI_PRIVATE"))));
+        assert!(
+            !app.blocks
+                .iter()
+                .any(|entry| matches!(entry.block, Block::User { .. } | Block::Assistant { .. }))
+        );
+        let loaded = connection
+            .client
+            .call::<SessionLoad>(SessionLoadParams {
+                session_id: id,
+                max_entries: None,
+            })
+            .await
+            .unwrap();
+        assert!(loaded.entries.iter().any(|entry| {
+            entry
+                .context_message()
+                .is_some_and(|message| message.text().contains("TUI_PUBLIC"))
+        }));
+        assert!(
+            !loaded
+                .entries
+                .iter()
+                .filter_map(|entry| entry.context_message())
+                .any(|message| message.text().contains("TUI_PRIVATE"))
+        );
+        app.blocks = crate::transcript_restore::blocks_from_entries(&loaded.entries);
+        app.view_gen += 1;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 34)).unwrap();
+        let mut view = render::ScrollbackView::new();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app, &mut view))
+            .unwrap();
+        let surface = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(surface.contains("! bash"));
+        assert!(surface.contains("!! bash"));
+        assert!(surface.contains("TUI_PUBLIC"));
+        assert!(surface.contains("TUI_PRIVATE"));
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     /// 上游改写折叠成告警文案：模型与推理强度各成一段、` ｜ ` 连接；再次不一致只替换。

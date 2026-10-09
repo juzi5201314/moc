@@ -447,6 +447,37 @@ impl Core {
             .workspace_identity(&self.inner.config().cwd)
             .map_err(to_rpc)
     }
+    /// 由 Core 持有长操作，前端断线后仍完成进程回收与会话提交。
+    async fn run_operation<T: Send + 'static>(
+        &self,
+        cancel: tokio_util::sync::CancellationToken,
+        running: impl Future<Output = Result<T, RpcError>> + Send + 'static,
+    ) -> Result<T, RpcError> {
+        let _cancel_on_drop = cancel.clone().drop_guard();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let inner = Arc::clone(&self.inner);
+        {
+            let mut prompts = self.inner.prompts.lock().await;
+            if self.inner.shutdown.is_cancelled() {
+                return Err(RpcError::of(RpcErrorCode::RequestCancelled));
+            }
+            while let Some(result) = prompts.try_join_next() {
+                if let Err(error) = result {
+                    tracing::error!(%error, "会话操作任务失败");
+                }
+            }
+            prompts.spawn(async move {
+                tokio::pin!(running);
+                let result = tokio::select! {
+                    biased;
+                    _ = inner.shutdown.cancelled() => { cancel.cancel(); running.await },
+                    result = &mut running => result,
+                };
+                let _ = sender.send(result);
+            });
+        }
+        receiver.await.map_err(protocol_to_rpc)?
+    }
 }
 
 impl AgentService for Core {
@@ -1169,37 +1200,27 @@ impl AgentService for Core {
         })
     }
 
+    async fn session_bash(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::BashParams,
+    ) -> Result<moc_protocol::BashResult, RpcError> {
+        self.run_operation(
+            ctx.cancel(),
+            bash::run(Arc::clone(&self.inner), ctx, params),
+        )
+        .await
+    }
     async fn session_prompt(
         &self,
         ctx: RequestContext,
         params: moc_protocol::methods::PromptParams,
     ) -> Result<PromptResult, RpcError> {
-        let cancel = ctx.cancel();
-        let _cancel_on_drop = cancel.clone().drop_guard();
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let inner = Arc::clone(&self.inner);
-        {
-            let mut prompts = self.inner.prompts.lock().await;
-            if self.inner.shutdown.is_cancelled() {
-                return Err(RpcError::of(RpcErrorCode::RequestCancelled));
-            }
-            while let Some(result) = prompts.try_join_next() {
-                if let Err(error) = result {
-                    tracing::error!(%error, "提示任务失败");
-                }
-            }
-            prompts.spawn(async move {
-                let running = prompt::run_prompt(Arc::clone(&inner), ctx, params);
-                tokio::pin!(running);
-                let result = tokio::select! {
-                    biased;
-                    _ = inner.shutdown.cancelled() => { cancel.cancel(); running.await },
-                    result = &mut running => result,
-                };
-                let _ = sender.send(result);
-            });
-        }
-        receiver.await.map_err(protocol_to_rpc)?
+        self.run_operation(
+            ctx.cancel(),
+            prompt::run_prompt(Arc::clone(&self.inner), ctx, params),
+        )
+        .await
     }
 }
 fn openviking_rpc(error: moc_openviking::OpenVikingError) -> RpcError {
@@ -1266,6 +1287,7 @@ pub(crate) async fn snapshot_workspace(
         .map_err(|error| CoreError::Session(error.to_string()))
 }
 
+mod bash;
 mod management;
 pub(crate) mod mode;
 pub(crate) mod prompt;

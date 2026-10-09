@@ -113,10 +113,10 @@ pub(crate) fn context_tokens_with_additional(
         return stored_estimate;
     }
     let added = state
-        .transcript
+        .transcript_token_counts
         .iter()
         .skip(state.usage_at)
-        .map(|entry| messages_tokens(std::slice::from_ref(&entry.message)))
+        .copied()
         .sum::<u64>();
     let provider_anchor = state
         .usage

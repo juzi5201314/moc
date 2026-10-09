@@ -95,7 +95,7 @@ pub(crate) async fn compact(
     let tail_request = ChatRequest {
         messages: state.transcript[tail_start..]
             .iter()
-            .map(|entry| entry.message.clone())
+            .filter_map(|entry| entry.context_message())
             .collect(),
         ..ChatRequest::default()
     };
@@ -144,7 +144,7 @@ pub(crate) fn retained_boundary(state: &SessionState, budget: u64) -> (Option<St
     let mut start = state.transcript.len();
     let mut tokens = 0u64;
     while start > visible {
-        let cost = messages_tokens(std::slice::from_ref(&state.transcript[start - 1].message));
+        let cost = state.transcript_token_counts[start - 1];
         if start < state.transcript.len() && tokens.saturating_add(cost) > budget {
             break;
         }
@@ -156,7 +156,7 @@ pub(crate) fn retained_boundary(state: &SessionState, budget: u64) -> (Option<St
     }
     let kept: Vec<_> = state.transcript[start..]
         .iter()
-        .map(|entry| entry.message.clone())
+        .filter_map(|entry| entry.context_message())
         .collect();
     (
         state.transcript.get(start).map(|entry| entry.id.clone()),

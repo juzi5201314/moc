@@ -88,7 +88,7 @@ impl Tool for BashTool {
             }
             let asynchronous = args.asynchronous;
             let command = args.command.clone();
-            let job_id = next_job_id(ctx).await?;
+            let job_id = next_job_id(&ctx.paths, &ctx.state).await?;
             let output_path = ctx.paths.jobs().join(format!("{job_id}.log"));
             // 显式后台任务在启动子进程之前预留名额，超限不会先执行命令。
             let permit = if asynchronous {
@@ -133,27 +133,76 @@ impl Tool for BashTool {
                     "Command exceeded the foreground threshold; job {job_id} continues in the background; log: {uri}"
                 )));
             };
-            Ok(ToolOutcome {
-                content: ToolOutput::File {
-                    path: output_path,
-                    suffix: render_exit(result.code.unwrap_or(-1), result.timed_out, timeout),
-                },
-                is_error: result.timed_out || result.code != Some(0),
-                structured_content: None,
-                error_code: if result.timed_out {
-                    Some("E_TIMEOUT".into())
-                } else if result.code != Some(0) {
-                    Some("E_BASH_EXIT".into())
-                } else {
-                    None
-                },
-                images: Vec::new(),
-                control: super::ToolControl::Continue,
-                status: None,
-                diff: None,
-            })
+            Ok(exit_outcome(output_path, result, timeout))
         })
     }
+}
+
+/// 用户输入即显式授权：不经过模型工具开关、模式限制或自动后台化。
+pub(crate) async fn run_manual(
+    command: String,
+    cwd: PathBuf,
+    paths: &crate::session::store::SessionPaths,
+    state: &tokio::sync::Mutex<crate::session::state::SessionState>,
+    config: &crate::config::BashConfig,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<ToolOutcome, ToolError> {
+    if cancel.is_cancelled() {
+        return Err(ToolError::new("E_CANCELLED", "命令已取消"));
+    }
+    let job_id = next_job_id(paths, state).await?;
+    let output_path = paths.jobs().join(format!("{job_id}.log"));
+    let timeout = config.default_timeout_secs.min(config.max_timeout_secs);
+    let args = BashArgs {
+        command,
+        cwd: None,
+        env: None,
+        timeout: Some(timeout),
+        pty: Some(false),
+        stdin: None,
+        asynchronous: false,
+    };
+    let mut process = Process::spawn(
+        args,
+        cwd.clone(),
+        cwd,
+        timeout,
+        output_path.clone(),
+        moc_protocol::SessionPermission::Full,
+    )
+    .await?;
+    tokio::select! {
+        biased;
+        result = &mut process.completion => Ok(exit_outcome(output_path, result?, timeout)),
+        _ = cancel.cancelled() => {
+            process.group.kill()?;
+            process.completion.await?;
+            let mut outcome = ToolOutcome::success(ToolOutput::File {
+                path: output_path,
+                suffix: "\n（命令已取消）".into(),
+            });
+            outcome.is_error = true;
+            outcome.status = Some(moc_protocol::ToolStatus::Cancelled);
+            outcome.error_code = Some("E_CANCELLED".into());
+            Ok(outcome)
+        }
+    }
+}
+
+fn exit_outcome(output_path: PathBuf, result: ProcessExit, timeout: u64) -> ToolOutcome {
+    let mut outcome = ToolOutcome::success(ToolOutput::File {
+        path: output_path,
+        suffix: render_exit(result.code.unwrap_or(-1), result.timed_out, timeout),
+    });
+    outcome.is_error = result.timed_out || result.code != Some(0);
+    outcome.error_code = if result.timed_out {
+        Some("E_TIMEOUT".into())
+    } else if result.code != Some(0) {
+        Some("E_BASH_EXIT".into())
+    } else {
+        None
+    };
+    outcome
 }
 
 async fn wait_foreground(
@@ -244,12 +293,15 @@ pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBu
     Ok(canonical)
 }
 
-async fn next_job_id(ctx: &ToolCtx) -> Result<String, ToolError> {
-    let jobs = ctx.paths.jobs();
+async fn next_job_id(
+    paths: &crate::session::store::SessionPaths,
+    state: &tokio::sync::Mutex<crate::session::state::SessionState>,
+) -> Result<String, ToolError> {
+    let jobs = paths.jobs();
     tokio::fs::create_dir_all(&jobs)
         .await
         .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
-    if ctx.state.lock().await.job_sequence == 0 {
+    if state.lock().await.job_sequence == 0 {
         let mut files = tokio::fs::read_dir(&jobs)
             .await
             .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
@@ -269,12 +321,12 @@ async fn next_job_id(ctx: &ToolCtx) -> Result<String, ToolError> {
                 sequence = sequence.max(number);
             }
         }
-        let mut state = ctx.state.lock().await;
+        let mut state = state.lock().await;
         state.job_sequence = state.job_sequence.max(sequence);
     }
     loop {
         let id = {
-            let mut state = ctx.state.lock().await;
+            let mut state = state.lock().await;
             state.job_sequence = state
                 .job_sequence
                 .checked_add(1)

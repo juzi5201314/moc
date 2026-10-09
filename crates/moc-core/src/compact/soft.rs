@@ -50,7 +50,7 @@ pub(crate) async fn compact(
         .transcript
         .iter()
         .skip(visible_start)
-        .map(|entry| entry.message.clone())
+        .filter_map(|entry| entry.context_message())
         .collect();
     if history.is_empty() && state.summary.is_none() {
         return Err(CoreError::ContextOverflow(
@@ -151,7 +151,10 @@ pub(crate) async fn compact(
     }
     let first_kept = state
         .transcript
-        .get(visible_start + start)
+        .iter()
+        .skip(visible_start)
+        .filter(|entry| entry.in_context())
+        .nth(start)
         .map(|entry| entry.id.clone());
     let tokens_after = fixed_tokens
         .saturating_add(estimate_tokens(&summary))

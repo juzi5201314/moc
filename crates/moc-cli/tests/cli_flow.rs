@@ -169,6 +169,45 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     );
 }
 
+#[tokio::test]
+async fn bang_commands_execute_locally_and_only_single_bang_enters_model_context() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text("命令结果已收到"), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let project = Project::new(&upstream.uri());
+    let output = project.run(&["--repl"], "!printf 'public-one\\npublic-two\\npublic-three\\npublic-four\\n'; printf public-error >&2; exit 6\n!!printf private-output; printf done > manual-marker\n解释刚才的命令结果\n/quit\n").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("public-four"),
+        "手动输出不能被普通工具的三行预览截掉"
+    );
+    assert!(stdout.contains("public-error"));
+    assert!(stdout.contains("exit 6"));
+    assert!(stdout.contains("private-output"));
+    assert!(stdout.contains("命令结果已收到"));
+    assert_eq!(
+        std::fs::read_to_string(project.cwd.join("manual-marker")).unwrap(),
+        "done"
+    );
+    let requests = upstream.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "两个手动命令均不触发 agent");
+    let body = String::from_utf8_lossy(&requests[0].body);
+    assert!(body.contains("public-error"));
+    assert!(body.contains("exit 6"));
+    assert!(!body.contains("private-output"));
+    assert!(!body.contains("manual-marker"));
+}
+
 async fn wait_file(path: &Path) {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !path.exists() {

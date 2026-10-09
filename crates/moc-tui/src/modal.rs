@@ -87,6 +87,9 @@ impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>) {
         self.prompts.clear();
         for entry in entries {
+            if entry.bash.is_some() {
+                continue;
+            }
             if entry.message.role == Role::User {
                 self.prompts.push(vec![entry]);
             } else if let Some(prompt) = self.prompts.last_mut() {
@@ -421,6 +424,7 @@ mod tests {
             at_ms: 0,
             message,
             tool: None,
+            bash: None,
         };
         let mut state = RewindState::default();
         state.set_entries(vec![

@@ -67,6 +67,25 @@ impl Renderer {
                 }
                 AssistantDelta::Reasoning { .. } | AssistantDelta::Usage { .. } => {}
             },
+            SessionUpdate::BashStarted {
+                tool_call_id,
+                command,
+            } => {
+                let marker = if command.exclude_from_context {
+                    "!!bash"
+                } else {
+                    "!bash"
+                };
+                let _ = writeln!(out, "\n[{marker}] $ {}", command.command);
+                state.calls.insert(
+                    tool_call_id,
+                    ToolCallView {
+                        name: marker.into(),
+                        arguments: String::new(),
+                        announced: true,
+                    },
+                );
+            }
             SessionUpdate::PtcChildStarted {
                 tool_call_id, name, ..
             } => {
@@ -136,12 +155,16 @@ impl Renderer {
                 if !call.announced {
                     announce_call(&mut out, &mut call);
                 }
-                let summary = result
-                    .content
-                    .lines()
-                    .take(3)
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let summary = if call.name.starts_with('!') {
+                    result.content
+                } else {
+                    result
+                        .content
+                        .lines()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
                 let _ = writeln!(
                     out,
                     "  {}: {} ({status:?}, {} ms)",

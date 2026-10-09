@@ -7,7 +7,8 @@ use crate::{
     widgets::prompt::PromptState,
 };
 use moc_protocol::{
-    ClientHandle, InputPart, PromptParams, SessionMode, SessionPrompt, SessionSteer, SteerParams,
+    BashCommand, BashParams, ClientHandle, InputPart, PromptParams, SessionBash, SessionMode,
+    SessionPrompt, SessionSteer, SteerParams,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -20,6 +21,10 @@ pub struct QueuedPrompt {
 
 pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if app.prompt.is_empty() {
+        return;
+    }
+    if app.prompt.is_bash_command() && !app.prompt.images.is_empty() {
+        app.set_notice("Bash 命令不支持图片，请移除图片后执行");
         return;
     }
     let draft = app.prompt.take_draft();
@@ -59,8 +64,10 @@ fn enqueue(
         draft,
         mode,
     };
+    // 手动命令始终独立执行，绝不经 steering 注入正在运行的 agent。
+    let manual = mode.is_none() && prompt.draft.is_bash_command();
     let busy = app.prompt_running || app.inflight_prompts.contains(&session);
-    if queued || !busy {
+    if queued || !busy || manual {
         app.queues.entry(session).or_default().push_back(prompt);
         dispatch(app, connection);
     } else if app.preferences.active_submit == ActiveSubmit::Interrupt {
@@ -109,18 +116,31 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
         return;
     };
     let parts = prompt.draft.build_input_parts();
-    app.push_user(crate::event::display_text_of(&parts));
+    let command = if prompt.mode.is_none()
+        && let [InputPart::Text { text }] = parts.as_slice()
+    {
+        BashCommand::parse(text)
+    } else {
+        None
+    };
+    if command.is_none() {
+        app.push_user(crate::event::display_text_of(&parts));
+    }
     app.inflight_prompts.insert(session.clone());
     app.prompt_running = true;
     // 本次提示实际生效的模式：覆盖值只在提示内展示，不改写会话状态。
     app.transient_mode = prompt.mode;
-    send_prompt(
-        &connection.client,
-        session,
-        parts,
-        prompt.mode,
-        app.events.clone(),
-    );
+    if let Some(command) = command {
+        send_bash(&connection.client, session, command, app.events.clone());
+    } else {
+        send_prompt(
+            &connection.client,
+            session,
+            parts,
+            prompt.mode,
+            app.events.clone(),
+        );
+    }
 }
 
 pub fn send_prompt(
@@ -137,6 +157,29 @@ pub fn send_prompt(
                 session_id: session_id.clone(),
                 input: parts,
                 mode,
+            })
+            .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::PromptReturned {
+            session: session_id,
+            result,
+        });
+    });
+}
+
+fn send_bash(
+    client: &ClientHandle,
+    session_id: String,
+    command: BashCommand,
+    events: UnboundedSender<AppEvent>,
+) {
+    let client = client.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionBash>(BashParams {
+                session_id: session_id.clone(),
+                command,
             })
             .await
             .map(|_| ())

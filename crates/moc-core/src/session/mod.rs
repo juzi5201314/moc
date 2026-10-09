@@ -247,6 +247,7 @@ impl SessionTable {
                 at_ms: entry.at_ms,
                 message,
                 tool: entry.tool.clone(),
+                bash: entry.bash.clone(),
             });
         }
         let ids: std::collections::HashSet<&str> = entries
@@ -304,12 +305,12 @@ impl SessionTable {
                     entry_id.as_str()
                 )));
             };
-            let Entry::Message { message, .. } = &state.entries[target] else {
+            let Entry::Message { message, bash, .. } = &state.entries[target] else {
                 return Err(CoreError::Session(
                     "INVALID_PARAMS: 回退目标不是 transcript 消息".into(),
                 ));
             };
-            let mut end = if message.role == Role::User {
+            let mut end = if message.role == Role::User && bash.is_none() {
                 target
             } else {
                 target + 1

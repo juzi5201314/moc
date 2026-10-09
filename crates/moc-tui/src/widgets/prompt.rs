@@ -58,6 +58,20 @@ impl PromptState {
             ..Default::default()
         }
     }
+
+    /// 检查展开后的首字符，不复制长粘贴正文，避免 `!!` 被送入 steering。
+    pub fn is_bash_command(&self) -> bool {
+        if self.text.starts_with('!') {
+            return true;
+        }
+        self.text
+            .strip_prefix("[paste#")
+            .and_then(|rest| rest.split_once(']'))
+            .and_then(|(id, _)| id.parse::<u32>().ok())
+            .and_then(|id| self.pastes.iter().find(|paste| paste.id == id))
+            .is_some_and(|paste| paste.content.starts_with('!'))
+    }
+
     /// 移出当前草稿而不复制图片，也不带走输入历史。
     pub fn take_draft(&mut self) -> Self {
         self.break_history_browse();

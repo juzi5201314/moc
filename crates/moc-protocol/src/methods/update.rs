@@ -78,6 +78,11 @@ pub enum SessionUpdate {
         /// 增量内容。
         delta: AssistantDelta,
     },
+    /// 用户手动执行的命令开始；后续仍以 `ToolFinished` 回填结果。
+    BashStarted {
+        tool_call_id: String,
+        command: super::bash::BashCommand,
+    },
     /// 一次工具调用开始执行。
     ToolStarted {
         /// prompt ID。

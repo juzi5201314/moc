@@ -51,6 +51,9 @@ pub enum Entry {
         tool: Option<ToolExecution>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         finish_reason: Option<FinishReason>,
+        /// 手动命令的来源及上下文可见性；普通对话没有此字段。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bash: Option<moc_protocol::BashCommand>,
     },
     /// 一次上下文压缩。
     Compaction {
@@ -141,6 +144,11 @@ pub enum EntryPayload {
         tool: Option<ToolExecution>,
         finish_reason: Option<FinishReason>,
     },
+    Bash {
+        command: moc_protocol::BashCommand,
+        output: String,
+        tool: ToolExecution,
+    },
     Compaction {
         method: String,
         summary: String,
@@ -226,6 +234,20 @@ impl Entry {
                 message,
                 tool,
                 finish_reason,
+                bash: None,
+            },
+            EntryPayload::Bash {
+                command,
+                output,
+                tool,
+            } => Self::Message {
+                id,
+                parent_id,
+                at_ms,
+                message: Message::user_text(output),
+                tool: Some(tool),
+                finish_reason: None,
+                bash: Some(command),
             },
             EntryPayload::Compaction {
                 method,
@@ -451,12 +473,14 @@ impl Entry {
                 at_ms,
                 message,
                 tool,
+                bash,
                 ..
             } => Some(TranscriptEntry {
                 id: id.clone(),
                 at_ms: *at_ms,
                 message: message.clone(),
                 tool: tool.clone(),
+                bash: bash.clone(),
             }),
             _ => None,
         }

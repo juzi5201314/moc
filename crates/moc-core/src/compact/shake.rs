@@ -84,7 +84,12 @@ fn prune(entries: &mut [Entry], config: &crate::config::CompactionConfig) -> boo
     let mut protected_tokens = 0u64;
     let mut changed = false;
     for entry in entries.iter_mut().rev() {
-        let Entry::Message { message, .. } = entry else {
+        let Entry::Message {
+            message,
+            bash: None,
+            ..
+        } = entry
+        else {
             continue;
         };
         if message.role == Role::User {

@@ -317,6 +317,26 @@ pub struct TranscriptEntry {
     /// 该消息对应的工具执行状态；`None` 表示与工具无关。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<ToolExecution>,
+    /// 用户手动执行的命令；与 agent 工具调用区分，并控制模型可见性。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bash: Option<super::bash::BashCommand>,
+}
+
+impl TranscriptEntry {
+    pub fn in_context(&self) -> bool {
+        !self
+            .bash
+            .as_ref()
+            .is_some_and(|bash| bash.exclude_from_context)
+    }
+
+    /// 模型视图：`!!` 不产生消息，`!` 带上命令来源，其余消息保持原样。
+    pub fn context_message(&self) -> Option<crate::Message> {
+        self.in_context().then(|| match &self.bash {
+            Some(bash) => bash.context_message(&self.message),
+            None => self.message.clone(),
+        })
+    }
 }
 
 /// 一次工具执行的终态。

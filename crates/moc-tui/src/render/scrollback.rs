@@ -440,11 +440,16 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
         (_, None) => ("◆", theme.accent_tool),
     };
     let summary = tool_summary(tool, &args);
+    let name = match args.get("exclude_from_context").and_then(Value::as_bool) {
+        Some(true) => "!! bash · 不进入上下文",
+        Some(false) => "! bash",
+        None => &tool.name,
+    };
     lines.push(Line::from(vec![
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled(format!("{bullet} "), Style::new().fg(bullet_color)),
         Span::styled(
-            tool.name.clone(),
+            name.to_owned(),
             Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!(" {summary}"), Style::new().fg(theme.text_secondary)),

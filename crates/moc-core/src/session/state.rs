@@ -121,13 +121,19 @@ impl SessionState {
         self.session.updated_at_ms = self.session.updated_at_ms.max(entry.at_ms());
         match &entry {
             Entry::Header { .. } => {}
-            Entry::Message { message, .. } => {
-                if message.role == Role::User {
+            Entry::Message { message, bash, .. } => {
+                if message.role == Role::User && bash.is_none() {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
                 }
                 if let Some(projected) = entry.transcript_entry() {
-                    self.transcript_token_counts
-                        .push(crate::compact::message_tokens(&projected.message));
+                    let tokens = if !projected.in_context() {
+                        0
+                    } else if let Some(bash) = &projected.bash {
+                        crate::compact::message_tokens(&bash.context_message(&projected.message))
+                    } else {
+                        crate::compact::message_tokens(&projected.message)
+                    };
+                    self.transcript_token_counts.push(tokens);
                     self.transcript.push(projected);
                 }
             }

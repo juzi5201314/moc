@@ -13,6 +13,7 @@
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
 //! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
+//! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`permission::SessionRequestPermission`] / [`ask::SessionRequestAsk`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
@@ -22,6 +23,7 @@
 //! 之外的未知名字，一律 [`crate::RpcErrorCode::MethodNotFound`]。
 
 pub mod ask;
+pub mod bash;
 pub mod config;
 pub mod diff;
 pub mod initialize;
@@ -38,6 +40,7 @@ pub mod update;
 use serde::{Deserialize, Serialize};
 
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
+pub use bash::{BashCommand, BashParams, BashResult, SessionBash};
 pub use config::{AgentInfo, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelPricing};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff, build_hunks};
 pub use initialize::{

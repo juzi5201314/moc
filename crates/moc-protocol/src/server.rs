@@ -34,7 +34,7 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     ClientInfo, ConfigGet, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead,
-    OpenVikingWrite, Ping, PingResult, PromptParams, ResourceComplete, SessionCancel,
+    OpenVikingWrite, Ping, PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel,
     SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
     SessionSetMode, SessionSetModel, SessionSetPermission, SessionUnload, SessionUnlock,
@@ -324,7 +324,8 @@ impl<S: AgentService> ServerDispatch<S> {
         let method = request.method.as_ref();
         let is_prompt = method == <SessionPrompt as Method>::NAME;
         let is_compact = method == <SessionCompact as Method>::NAME;
-        if !is_prompt && !is_compact {
+        let is_bash = method == <SessionBash as Method>::NAME;
+        if !is_prompt && !is_compact && !is_bash {
             return PromptClaim::NotPrompt;
         }
         let Some(session_id) = request
@@ -339,7 +340,7 @@ impl<S: AgentService> ServerDispatch<S> {
         if prompts.contains_key(session_id) {
             return PromptClaim::Busy;
         }
-        if is_prompt {
+        if is_prompt || is_bash {
             prompts.insert(session_id.to_owned(), cancel.clone());
             PromptClaim::Claimed(session_id.to_owned())
         } else {
@@ -645,6 +646,22 @@ impl<S: AgentService> ServerDispatch<S> {
                     .session_context(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
+            }
+            <SessionBash as Method>::NAME => {
+                let _guard = match claim {
+                    PromptClaim::Claimed(session_id) => Some(PromptGuard {
+                        prompts: Arc::clone(&self.prompts),
+                        session_id,
+                    }),
+                    _ => None,
+                };
+                let params = params_from_value::<SessionBash>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_bash(self.context(client, cancel), params)
+                        .await?,
+                )
             }
             <SessionPrompt as Method>::NAME => {
                 // 占位已在读循环里完成（保证「先提示后 cancel」的顺序），

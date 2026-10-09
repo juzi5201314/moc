@@ -214,6 +214,15 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionContextParams,
     ) -> impl Future<Output = Result<ContextUsageResult, RpcError>> + Send;
 
+    /// 手动执行命令，不调用模型；与提示共享会话繁忙和取消边界。
+    fn session_bash(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::BashParams,
+    ) -> impl Future<Output = Result<crate::BashResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     /// 跑一次提示 agent 工作：挂到本次提示结束才返回，过程增量走 `session/update` 通知。
     ///
     /// 提示结束时必须自行 emit `prompt_finished`，且其 `message` / `finish_reason` /

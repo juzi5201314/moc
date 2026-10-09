@@ -279,6 +279,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
                 status: ToolStatus::Completed,
                 duration_ms: Some(12),
             }),
+            bash: None,
         })
         .collect()
 }
@@ -482,6 +483,7 @@ impl ScriptedService {
                     at_ms: 400,
                     message: result.message.clone(),
                     tool: None,
+                    bash: None,
                 });
             }
         });
@@ -963,6 +965,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
     match update {
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",
+        SessionUpdate::BashStarted { .. } => "bash_started",
         SessionUpdate::ToolStarted { .. } => "tool_started",
         SessionUpdate::ToolFinished { .. } => "tool_finished",
         SessionUpdate::PermissionRequested { .. } => "permission_requested",
