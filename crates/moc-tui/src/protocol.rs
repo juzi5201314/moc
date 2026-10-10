@@ -58,9 +58,10 @@ pub enum AppEvent {
     MemoryRead(moc_protocol::methods::OpenVikingReadResult),
     /// OpenViking 正文保存完成。
     MemorySaved(String),
+    /// 当前会话的模型调用用量。
+    Usage(moc_protocol::SessionUsageResult),
     /// 上下文估算完成。
     ContextUsage(ContextUsageResult),
-    /// 会话列表就绪。
     Sessions(Vec<moc_protocol::SessionInfo>),
     /// 历史展示页；`prepend=true` 时插入当前转写之前。
     HistoryPageLoaded {

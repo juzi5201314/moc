@@ -103,7 +103,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读。白名单命令直接在 workspace 沙盒运行；未命中的 bash 命令会请求用户询问，用户允许后该命令以 full 执行一次，确保批准的工作区外写入不会再次被沙盒拦截。
+交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/usage`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读，不隔离网络。`edit` / `write` 仍由 core 直接写入工作区。
 
 ## 嵌入接口
 

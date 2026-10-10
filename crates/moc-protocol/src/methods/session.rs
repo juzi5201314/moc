@@ -79,6 +79,7 @@ pub enum SessionMode {
     Plan,
     Ptc,
 }
+
 /// 会话命令执行权限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +118,52 @@ pub struct SessionCompact;
 /// `session/context`：估算当前会话上下文，并按组成部分返回 token 明细。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionContext;
+/// `session/usage`：读取当前会话累计的模型调用用量。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionUsage;
+
+/// `session/usage` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUsageParams {
+    /// 目标会话。
+    pub session_id: String,
+}
+
+/// 一个模型在当前会话中的累计用量。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelUsageSummary {
+    /// 模型选择器。
+    pub model: String,
+    /// 模型请求次数。
+    pub calls: u64,
+    /// 输入 token 总数，包含缓存命中与缓存写入部分。
+    pub input_tokens: u64,
+    /// 输出 token 总数。
+    pub output_tokens: u64,
+    /// 缓存命中的输入 token；上游不提供时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    /// 缓存写入的输入 token；上游不提供时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    /// 思考 token；上游不提供时为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    /// 每次模型请求从开始到结束的耗时之和，单位为毫秒。
+    pub active_ms: u64,
+}
+
+/// 当前会话的模型用量与全部模型总和。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionUsageResult {
+    /// 按模型选择器排序的明细。
+    pub models: Vec<ModelUsageSummary>,
+    /// 全部模型的总和；`model` 固定为 `total`。
+    pub total: ModelUsageSummary,
+}
 
 /// `session/context` 的参数。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,6 +563,13 @@ impl Method for SessionUnlock {
 }
 
 impl ClientRequest for SessionUnlock {}
+impl Method for SessionUsage {
+    const NAME: &'static str = "session/usage";
+    type Params = SessionUsageParams;
+    type Result = SessionUsageResult;
+}
+
+impl ClientRequest for SessionUsage {}
 
 impl Method for SessionSetMode {
     const NAME: &'static str = "session/set_mode";

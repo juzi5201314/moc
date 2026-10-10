@@ -8,15 +8,16 @@ use moc_llm::Client;
 use moc_protocol::methods::{
     AgentInfo, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
     ContextUsageResult, ContextUsageSection, Empty, InitializeParams, InitializeResult, ModelInfo,
-    OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
-    OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
-    PromptResult, ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
-    SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
-    SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPermission,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate,
+    ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
+    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
+    OpenVikingWriteResult, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
+    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
+    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
+    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
+    SessionUsageResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -478,6 +479,28 @@ impl Core {
         }
         receiver.await.map_err(protocol_to_rpc)?
     }
+}
+
+/// 把一次已完成的模型请求写入会话统计；统计 entry 不进入模型 transcript。
+pub(crate) async fn record_model_usage(
+    inner: &CoreInner,
+    session_id: &str,
+    model: &str,
+    usage: moc_llm::Usage,
+    active_ms: u64,
+) -> Result<(), CoreError> {
+    inner
+        .sessions
+        .append(
+            session_id,
+            crate::session::entries::EntryPayload::Usage {
+                model: model.to_owned(),
+                usage,
+                active_ms,
+            },
+        )
+        .await
+        .map(|_| ())
 }
 
 impl AgentService for Core {
@@ -1197,6 +1220,49 @@ impl AgentService for Core {
             context_window: model.context_window,
             total_tokens,
             sections,
+        })
+    }
+    async fn session_usage(
+        &self,
+        _ctx: RequestContext,
+        params: SessionUsageParams,
+    ) -> Result<SessionUsageResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let state = record.state.lock().await;
+        let mut models = Vec::with_capacity(state.model_usage.len());
+        let mut total = crate::session::state::ModelUsage::default();
+        for (model, summary) in &state.model_usage {
+            total.calls = total.calls.saturating_add(summary.calls);
+            crate::session::state::add_usage(&mut total.usage, summary.usage);
+            total.active_ms = total.active_ms.saturating_add(summary.active_ms);
+            models.push(ModelUsageSummary {
+                model: model.clone(),
+                calls: summary.calls,
+                input_tokens: summary.usage.input_tokens,
+                output_tokens: summary.usage.output_tokens,
+                cached_input_tokens: summary.usage.cached_input_tokens,
+                cache_creation_input_tokens: summary.usage.cache_creation_input_tokens,
+                reasoning_tokens: summary.usage.reasoning_tokens,
+                active_ms: summary.active_ms,
+            });
+        }
+        Ok(SessionUsageResult {
+            models,
+            total: ModelUsageSummary {
+                model: "total".into(),
+                calls: total.calls,
+                input_tokens: total.usage.input_tokens,
+                output_tokens: total.usage.output_tokens,
+                cached_input_tokens: total.usage.cached_input_tokens,
+                cache_creation_input_tokens: total.usage.cache_creation_input_tokens,
+                reasoning_tokens: total.usage.reasoning_tokens,
+                active_ms: total.active_ms,
+            },
         })
     }
 

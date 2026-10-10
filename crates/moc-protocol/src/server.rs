@@ -38,6 +38,7 @@ use crate::methods::{
     SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
     SessionSetMode, SessionSetModel, SessionSetPermission, SessionUnload, SessionUnlock,
+    SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -644,6 +645,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_context(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionUsage as Method>::NAME => {
+                let params = params_from_value::<SessionUsage>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_usage(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

@@ -14,7 +14,7 @@ use moc_protocol::{
     methods::{PromptResult, SessionUpdate, ToolStatus},
 };
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 pub(crate) mod request;
 mod stream;
@@ -417,7 +417,7 @@ async fn run_prompt_locked(
             &params.session_id,
         );
         let mut overflow_attempts = 0;
-        let (mut stream, request_permit) = loop {
+        let (mut stream, request_permit, request_started) = loop {
             let mut llm_config = model.llm.clone();
             if project_config.compaction.enabled
                 && project_config.compaction.auto
@@ -438,16 +438,26 @@ async fn run_prompt_locked(
                 }
                 Err(error) => return Err(to_rpc(error)),
             };
+            let request_started = Instant::now();
             let streamed = tokio::select! {
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
                 result = inner.client.stream(&llm_config, &request) => result,
             };
             // 错误恢复可能再次请求同一 Provider，必须先归还失败请求的许可。
             if streamed.is_err() {
+                crate::service::record_model_usage(
+                    &inner,
+                    &params.session_id,
+                    &model.selector,
+                    Usage::default(),
+                    request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                )
+                .await
+                .map_err(to_rpc)?;
                 permit.take();
             }
             match streamed {
-                Ok(stream) => break (stream, permit),
+                Ok(stream) => break (stream, permit, request_started),
                 Err(error)
                     if llm_config.server_compaction_threshold.is_some()
                         && error.api_error().is_some_and(|api| api.status == Some(400))
@@ -598,6 +608,16 @@ async fn run_prompt_locked(
                 .await
                 .map_err(protocol_to_rpc)?;
         }
+        let active_ms = request_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        crate::service::record_model_usage(
+            &inner,
+            &params.session_id,
+            &model.selector,
+            response.usage,
+            active_ms,
+        )
+        .await
+        .map_err(to_rpc)?;
         usage.input_tokens = usage
             .input_tokens
             .saturating_add(response.usage.input_tokens);

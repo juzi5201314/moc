@@ -18,6 +18,35 @@ pub(crate) fn ptc_value_bytes(key: &str, value: &serde_json::Value) -> usize {
             .len()
 }
 
+pub(crate) fn add_usage(total: &mut Usage, usage: Usage) {
+    total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+    total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+    total.total_tokens = Some(total.input_tokens.saturating_add(total.output_tokens));
+    total.cached_input_tokens = add_optional(total.cached_input_tokens, usage.cached_input_tokens);
+    total.cache_creation_input_tokens = add_optional(
+        total.cache_creation_input_tokens,
+        usage.cache_creation_input_tokens,
+    );
+    total.reasoning_tokens = add_optional(total.reasoning_tokens, usage.reasoning_tokens);
+}
+
+fn add_optional(current: Option<u64>, added: Option<u64>) -> Option<u64> {
+    match (current, added) {
+        (Some(current), Some(added)) => Some(current.saturating_add(added)),
+        (Some(current), None) => Some(current),
+        (None, Some(added)) => Some(added),
+        (None, None) => None,
+    }
+}
+
+/// 当前会话中每个模型的调用累计；属于运行态，随会话生命周期保留。
+#[derive(Debug, Clone, Default)]
+pub struct ModelUsage {
+    pub calls: u64,
+    pub usage: Usage,
+    pub active_ms: u64,
+}
+
 /// 一个会话的 transcript 与当前投影。
 #[derive(Debug, Clone)]
 pub struct SessionState {
@@ -42,7 +71,7 @@ pub struct SessionState {
     pub job_sequence: u64,
     pub notices: Vec<String>,
     pub usage: Usage,
-    /// 最近一次响应对应的 transcript 长度；后续消息单独估算。
+    pub model_usage: BTreeMap<String, ModelUsage>,
     pub usage_at: usize,
     pub server_compaction_disabled: bool,
     pub last_entry_id: String,
@@ -95,6 +124,7 @@ impl SessionState {
             prompt_sequence: 0,
             job_sequence: 0,
             usage: Usage::default(),
+            model_usage: BTreeMap::new(),
             usage_at: 0,
             server_compaction_disabled: false,
             summary: None,
@@ -243,6 +273,17 @@ impl SessionState {
                     }
                 }
             },
+            Entry::Usage {
+                model,
+                usage,
+                active_ms,
+                ..
+            } => {
+                let model_usage = self.model_usage.entry(model.clone()).or_default();
+                model_usage.calls = model_usage.calls.saturating_add(1);
+                add_usage(&mut model_usage.usage, *usage);
+                model_usage.active_ms = model_usage.active_ms.saturating_add(*active_ms);
+            }
         }
         self.last_entry_id = entry.id().to_owned();
         self.entries.push(entry);
@@ -366,6 +407,57 @@ mod tests {
             .expect("状态日志可回放");
         assert!(state.ptc_state.is_empty());
         assert_eq!(state.ptc_state_bytes, 0);
+    }
+
+    #[test]
+    fn replay_accumulates_model_usage() {
+        let header = Entry::header(
+            "ses_usage123456".into(),
+            "/tmp/project".into(),
+            "p/model".into(),
+            SessionMode::Normal,
+            None,
+            "标题".into(),
+            10,
+        );
+        let first = Entry::from_payload(
+            EntryPayload::Usage {
+                model: "p/model".into(),
+                usage: Usage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    cached_input_tokens: Some(40),
+                    reasoning_tokens: Some(8),
+                    ..Usage::default()
+                },
+                active_ms: 500,
+            },
+            header.id().to_owned(),
+            11,
+        );
+        let second = Entry::from_payload(
+            EntryPayload::Usage {
+                model: "p/model".into(),
+                usage: Usage {
+                    input_tokens: 60,
+                    output_tokens: 10,
+                    cached_input_tokens: Some(20),
+                    reasoning_tokens: Some(4),
+                    ..Usage::default()
+                },
+                active_ms: 250,
+            },
+            first.id().to_owned(),
+            12,
+        );
+        let state = SessionState::from_entries(vec![header, first, second]).expect("用量日志有效");
+        let summary = state.model_usage.get("p/model").expect("模型统计存在");
+        assert_eq!(summary.calls, 2);
+        assert_eq!(summary.usage.input_tokens, 160);
+        assert_eq!(summary.usage.output_tokens, 30);
+        assert_eq!(summary.usage.cached_input_tokens, Some(60));
+        assert_eq!(summary.usage.reasoning_tokens, Some(12));
+        assert_eq!(summary.active_ms, 750);
     }
 
     #[test]

@@ -128,6 +128,15 @@ pub enum Entry {
         parent_tool_call_id: String,
         change: PtcStateChange,
     },
+    /// 一次模型请求的累计用量与激活耗时。
+    Usage {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        model: String,
+        usage: moc_llm::Usage,
+        active_ms: u64,
+    },
     /// `/clear` 后模型上下文重建边界。
     ResetBoundary {
         id: String,
@@ -186,6 +195,11 @@ pub enum EntryPayload {
     PtcState {
         parent_tool_call_id: String,
         change: PtcStateChange,
+    },
+    Usage {
+        model: String,
+        usage: moc_llm::Usage,
+        active_ms: u64,
     },
     ResetBoundary,
 }
@@ -331,6 +345,18 @@ impl Entry {
                 parent_tool_call_id,
                 change,
             },
+            EntryPayload::Usage {
+                model,
+                usage,
+                active_ms,
+            } => Self::Usage {
+                id,
+                parent_id,
+                at_ms,
+                model,
+                usage,
+                active_ms,
+            },
             EntryPayload::ResetBoundary => Self::ResetBoundary {
                 id,
                 parent_id,
@@ -338,7 +364,6 @@ impl Entry {
             },
         }
     }
-
     pub fn id(&self) -> &str {
         match self {
             Self::Header { id, .. }
@@ -352,6 +377,7 @@ impl Entry {
             | Self::Plan { id, .. }
             | Self::ChildTool { id, .. }
             | Self::PtcState { id, .. }
+            | Self::Usage { id, .. }
             | Self::ResetBoundary { id, .. } => id,
         }
     }
@@ -369,6 +395,7 @@ impl Entry {
             | Self::Plan { parent_id, .. }
             | Self::ChildTool { parent_id, .. }
             | Self::PtcState { parent_id, .. }
+            | Self::Usage { parent_id, .. }
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
@@ -406,6 +433,9 @@ impl Entry {
             | Self::PtcState {
                 parent_id: value, ..
             }
+            | Self::Usage {
+                parent_id: value, ..
+            }
             | Self::ResetBoundary {
                 parent_id: value, ..
             } => *value = Some(parent_id),
@@ -425,6 +455,7 @@ impl Entry {
             | Self::Plan { at_ms, .. }
             | Self::ChildTool { at_ms, .. }
             | Self::PtcState { at_ms, .. }
+            | Self::Usage { at_ms, .. }
             | Self::ResetBoundary { at_ms, .. } => *at_ms,
         }
     }

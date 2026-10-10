@@ -1,5 +1,7 @@
 //! 用轻量模型生成可更新的历史 checkpoint。
 
+use std::time::Instant;
+
 use moc_llm::{ChatRequest, Message, ToolDef};
 use moc_protocol::RequestContext;
 
@@ -137,12 +139,20 @@ pub(crate) async fn compact(
         request.options.cache = None;
     }
     let cancel = ctx.cancel();
-    let _permit = inner.provider_permit(&role_model, &cancel).await?;
+    let request_started = Instant::now();
     let response = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),
         result = inner.client.complete(&role_model.llm, &request) => result?,
     };
+    crate::service::record_model_usage(
+        inner,
+        &state.session.id,
+        &role_model.selector,
+        response.usage,
+        request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    )
+    .await?;
     let summary = response.message.text().trim().to_owned();
     if summary.is_empty() {
         return Err(CoreError::ContextOverflow(

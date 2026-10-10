@@ -74,15 +74,16 @@ pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
 };
 pub use session::{
-    CompactResult, ContextUsageResult, ContextUsageSection, SessionCompact, SessionCompactParams,
-    SessionContext, SessionContextParams, SessionDelete, SessionDeleteParams, SessionInfo,
-    SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadPage,
+    CompactResult, ContextUsageResult, ContextUsageSection, ModelUsageSummary, SessionCompact,
+    SessionCompactParams, SessionContext, SessionContextParams, SessionDelete, SessionDeleteParams,
+    SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadPage,
     SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
     SessionLockInfo, SessionMode, SessionNew, SessionNewParams, SessionPermission, SessionRename,
     SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams,
     SessionSetModel, SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams,
-    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, ToolExecution,
-    ToolStatus, TranscriptChildCall, TranscriptEntry,
+    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
+    SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
+    TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -131,8 +132,8 @@ mod tests {
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionCompact as Method>::NAME, "session/compact"),
             (<SessionContext as Method>::NAME, "session/context"),
+            (<SessionUsage as Method>::NAME, "session/usage"),
             (<SessionPrompt as Method>::NAME, "session/prompt"),
-            (<SessionCancel as Method>::NAME, "session/cancel"),
             (<OpenVikingList as Method>::NAME, "openviking/list"),
             (<OpenVikingRead as Method>::NAME, "openviking/read"),
             (<OpenVikingWrite as Method>::NAME, "openviking/write"),

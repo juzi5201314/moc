@@ -1,5 +1,7 @@
 //! Responses 原生压缩、尾部去重与载荷持久化。
 
+use std::time::Instant;
+
 use moc_llm::{ChatRequest, Protocol};
 use moc_protocol::RequestContext;
 use serde_json::Value;
@@ -60,6 +62,7 @@ pub(crate) async fn compact(
     items.extend(moc_llm::encode_responses_input_items(&model.llm, &request)?);
     let cancel = ctx.cancel();
     let _permit = inner.provider_permit(model, &cancel).await?;
+    let request_started = Instant::now();
     let compacted = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),
@@ -80,6 +83,14 @@ pub(crate) async fn compact(
             return Err(error.into());
         }
     };
+    crate::service::record_model_usage(
+        inner,
+        &state.session.id,
+        &model.selector,
+        response.usage,
+        request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+    )
+    .await?;
     if response.items.is_empty() {
         return Err(CoreError::Tool(
             "the Responses compaction endpoint returned empty output".into(),

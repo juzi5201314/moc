@@ -19,7 +19,8 @@ use moc_protocol::{
     SessionLoadResult, SessionMode, SessionNew, SessionNewParams, SessionPermission,
     SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
     SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
-    SessionSetPermission, SessionSetPermissionParams, SessionUpdate, UpstreamField,
+    SessionSetPermission, SessionSetPermissionParams, SessionUpdate, SessionUsage,
+    SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -511,6 +512,9 @@ async fn event_loop(
                                 }
                             });
                         }
+                    }
+                    Some(AppEvent::Usage(result)) => {
+                        app.push_note(format_usage(&result), false);
                     }
                     Some(AppEvent::ContextUsage(usage)) => {
                         app.context_usage = Some(usage.clone());
@@ -2292,6 +2296,52 @@ fn spawn_clipboard_paste(events: UnboundedSender<AppEvent>) {
     });
 }
 
+fn format_usage(result: &moc_protocol::SessionUsageResult) -> String {
+    result
+        .models
+        .iter()
+        .chain(std::iter::once(&result.total))
+        .map(|summary| {
+            let cache = summary.cached_input_tokens.unwrap_or(0);
+            let cache_rate = if summary.input_tokens == 0 {
+                0.0
+            } else {
+                cache as f64 * 100.0 / summary.input_tokens as f64
+            };
+            format!(
+                "{}：{} 次，输入 {}，输出 {}，缓存 {:.1}%，思考 {}，激活 {}，TPS {:.2}",
+                summary.model,
+                summary.calls,
+                summary.input_tokens,
+                summary.output_tokens,
+                cache_rate,
+                summary
+                    .reasoning_tokens
+                    .map_or_else(|| "未知".into(), |value| value.to_string()),
+                format_duration(summary.active_ms),
+                tokens_per_second(summary.output_tokens, summary.active_ms),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tokens_per_second(output_tokens: u64, active_ms: u64) -> f64 {
+    if active_ms == 0 {
+        0.0
+    } else {
+        output_tokens as f64 * 1000.0 / active_ms as f64
+    }
+}
+
+fn format_duration(active_ms: u64) -> String {
+    if active_ms < 1_000 {
+        format!("{active_ms} ms")
+    } else {
+        format!("{:.2} s", active_ms as f64 / 1000.0)
+    }
+}
+
 /// 用户展示文本：图片 chip 显示为占位说明。
 pub(crate) fn display_text_of(parts: &[InputPart]) -> String {
     parts
@@ -2378,8 +2428,28 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 }
             });
         }
+        "/usage" => {
+            let Some(session_id) = session_id else {
+                app.set_notice("当前没有活动会话");
+                return;
+            };
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                match client
+                    .call::<SessionUsage>(SessionUsageParams { session_id })
+                    .await
+                {
+                    Ok(result) => {
+                        let _ = events.send(AppEvent::Usage(result));
+                    }
+                    Err(error) => {
+                        let _ = events.send(AppEvent::Notice(format!("读取用量失败：{error}")));
+                    }
+                }
+            });
+        }
         "/help" => app.modal = Some(Modal::Help),
-        "/context" => open_context(app, connection),
         "/compact" => {
             if let Some(session_id) = session_id {
                 let client = connection.client.clone();

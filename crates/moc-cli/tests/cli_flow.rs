@@ -149,7 +149,7 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     let output = project
         .run(
             &[],
-            "/mode invalid\n/plan 设计接口\n/approve new\n/mode ask\n/ask\n/compact\n/sessions\n/quit\n",
+            "/mode invalid\n/plan 设计接口\n/approve new\n/mode ask\n/ask\n/compact\n/usage\n/sessions\n/quit\n",
         )
         .await;
     assert!(
@@ -161,8 +161,8 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     assert!(stdout.contains("# 可审阅计划"));
     assert!(stdout.contains("执行完成"));
     assert!(stdout.contains("上下文压缩"));
+    assert!(stdout.contains("模型 p/gpt-test:off：调用"), "{stdout}");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("模式必须是"), "{stderr}");
     assert!(
         stderr.contains("用法：/ask <问题>"),
         "问答命令必须被识别并校验参数：{stderr}"

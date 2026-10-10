@@ -11,7 +11,7 @@ use moc_protocol::methods::{
     SessionLoadParams, SessionMode, SessionNew, SessionNewParams, SessionPermission,
     SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRequestAsk,
     SessionRequestPermission, SessionSetMode, SessionSetModeParams, SessionSetPermission,
-    SessionSetPermissionParams, SessionUpdateMethod,
+    SessionSetPermissionParams, SessionUpdateMethod, SessionUsage, SessionUsageParams,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -415,7 +415,14 @@ async fn run_command(
                 result.method, result.tokens_before, result.tokens_after
             );
         }
-        "undo" => println!("{}", core.undo(&session.id).await?),
+        "usage" => {
+            let result = client
+                .call::<SessionUsage>(SessionUsageParams {
+                    session_id: session.id.clone(),
+                })
+                .await?;
+            print_usage(&result);
+        }
         "model" => {
             if argument.is_empty() {
                 bail!("用法：/model <selector>");
@@ -669,9 +676,51 @@ fn print_sessions(sessions: &[SessionInfo]) {
     }
 }
 
+fn print_usage(result: &moc_protocol::SessionUsageResult) {
+    for summary in result.models.iter().chain(std::iter::once(&result.total)) {
+        let cache = summary.cached_input_tokens.unwrap_or(0);
+        let cache_rate = if summary.input_tokens == 0 {
+            0.0
+        } else {
+            cache as f64 * 100.0 / summary.input_tokens as f64
+        };
+        let reasoning = summary
+            .reasoning_tokens
+            .map_or_else(|| "未知".to_owned(), |tokens| tokens.to_string());
+        println!(
+            "模型 {}：调用 {} 次，输入 {}，输出 {}，缓存命中 {} ({cache_rate:.1}%)，缓存写入 {}，思考 {}，激活时间 {}，TPS {:.2}",
+            summary.model,
+            summary.calls,
+            summary.input_tokens,
+            summary.output_tokens,
+            cache,
+            summary.cache_creation_input_tokens.unwrap_or(0),
+            reasoning,
+            format_duration(summary.active_ms),
+            tokens_per_second(summary.output_tokens, summary.active_ms),
+        );
+    }
+}
+
+fn tokens_per_second(output_tokens: u64, active_ms: u64) -> f64 {
+    if active_ms == 0 {
+        0.0
+    } else {
+        output_tokens as f64 * 1000.0 / active_ms as f64
+    }
+}
+
+fn format_duration(active_ms: u64) -> String {
+    if active_ms < 1_000 {
+        format!("{active_ms} ms")
+    } else {
+        format!("{:.2} s", active_ms as f64 / 1000.0)
+    }
+}
+
 fn print_help() {
     println!(
-        "/mode <normal|plan|ptc>     切换工作模式\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|plan|ptc>     切换工作模式\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
     );
     println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
 }

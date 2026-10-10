@@ -59,6 +59,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "查看上下文占用明细",
     },
     SlashCommand {
+        name: "/usage",
+        description: "查看当前会话模型用量",
+    },
+    SlashCommand {
         name: "/quit",
         description: "退出 moc",
     },

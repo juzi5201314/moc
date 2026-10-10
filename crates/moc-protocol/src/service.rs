@@ -37,7 +37,8 @@ use crate::methods::{
     SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
     SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
     SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
+    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
+    SessionUsageResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -213,6 +214,14 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionContextParams,
     ) -> impl Future<Output = Result<ContextUsageResult, RpcError>> + Send;
+    /// 返回当前会话各模型的累计调用、token、缓存、思考与激活时间。
+    fn session_usage(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionUsageParams,
+    ) -> impl Future<Output = Result<SessionUsageResult, RpcError>> + Send {
+        async { Err(crate::RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
 
     /// 手动执行命令，不调用模型；与提示共享会话繁忙和取消边界。
     fn session_bash(
