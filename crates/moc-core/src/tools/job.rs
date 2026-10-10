@@ -1,7 +1,7 @@
 //! 会话所有的后台进程、日志、等待与进程树取消。
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use moc_protocol::SessionUpdate;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::Notify;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
@@ -27,14 +27,33 @@ pub enum JobStatus {
     OutputLimited,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobLifecycle {
+    Monitored,
+    Persistent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobOrigin {
+    Explicit,
+    AutoBackground,
+}
+
 #[derive(Debug, Clone)]
 pub struct JobInfo {
     pub id: String,
     pub command: String,
     pub path: PathBuf,
     pub status: JobStatus,
+    pub lifecycle: JobLifecycle,
+    pub origin: JobOrigin,
+    pub started_at: std::time::Instant,
+    pub hard_deadline_secs: Option<u64>,
+    pub warning_count: u32,
+    pub log_truncated: bool,
     pid: Option<u32>,
     group: Option<super::bash::ProcessGroup>,
+    log: super::job_log::JobLog,
 }
 
 #[derive(Default)]
@@ -89,8 +108,12 @@ impl JobManager {
         id: String,
         command: String,
         log_path: PathBuf,
+        log: super::job_log::JobLog,
         process: super::bash::Process,
         permit: crate::concurrency::Permit,
+        lifecycle: JobLifecycle,
+        origin: JobOrigin,
+        hard_deadline: Option<Duration>,
     ) -> Result<(), ToolError> {
         if self.shutting_down.load(Ordering::Acquire) {
             process.group.kill()?;
@@ -102,6 +125,7 @@ impl JobManager {
         let super::bash::Process {
             pid,
             group,
+            started_at,
             completion,
         } = process;
         self.jobs.lock().insert(
@@ -111,88 +135,140 @@ impl JobManager {
                 command: command.clone(),
                 path: log_path.clone(),
                 status: JobStatus::Running,
+                lifecycle,
+                origin,
+                started_at,
+                hard_deadline_secs: hard_deadline.map(|value| value.as_secs()),
+                warning_count: 0,
+                log_truncated: false,
                 pid,
                 group: Some(group),
+                log: log.clone(),
             },
         );
         let manager = Arc::clone(self);
         let worker = tokio::spawn(async move {
-            let permit = permit;
-            let waited = completion.await;
+            let waited = if lifecycle == JobLifecycle::Monitored {
+                manager.wait_with_warnings(&ctx, &id, completion).await
+            } else {
+                completion.await
+            };
             drop(permit);
-            let status = {
-                let mut jobs = manager.jobs.lock();
-                let status = if jobs
-                    .get(&id)
-                    .is_some_and(|job| job.status == JobStatus::Killing)
-                {
-                    JobStatus::Killed
-                } else {
-                    match waited {
-                        Ok(result) if result.timed_out => JobStatus::TimedOut,
-                        Ok(result) if result.output_truncated => JobStatus::OutputLimited,
-                        Ok(result) => JobStatus::Finished(result.code),
-                        Err(error) => {
-                            tracing::warn!(job_id = %id, %error, "后台任务等待失败");
-                            JobStatus::Finished(None)
-                        }
-                    }
-                };
-                if let Some(job) = jobs.get_mut(&id) {
-                    job.status = status;
-                    job.group.take();
-                }
-                status
-            };
-            manager.changed.notify_waiters();
-            if manager.shutting_down.load(Ordering::Acquire) {
-                return;
-            }
-            let (exit_code, exit_label) = match status {
-                JobStatus::Finished(code) => (code, format!("exit {}", code.unwrap_or(-1))),
-                JobStatus::Killed => (None, "killed".into()),
-                JobStatus::TimedOut => (None, "timeout".into()),
-                JobStatus::OutputLimited => (None, "output_limit".into()),
-                JobStatus::Running | JobStatus::Killing => unreachable!("任务已回收"),
-            };
-            let output = super::output::prepare(
-                ToolOutput::File {
-                    path: log_path.clone(),
-                    suffix: String::new(),
-                },
-                &ctx.config.tools.output,
-                &ctx.artifact_store(),
-            )
-            .await;
-            let output = match output {
-                Ok(output) => output,
-                Err(error) => format!("[E_JOB_LOG] failed to read log: {error}"),
-            };
-            let log_uri = ctx
-                .artifact_store()
-                .uri_for_path(&log_path)
-                .map_err(|error| format!("[{}] {}", error.code, error.message))
-                .expect("后台日志必须位于当前会话 jobs sidecar");
-            {
-                let mut state = ctx.state.lock().await;
-                state.notices.push(format!(
-                    "Background job {id} finished ({exit_label}); output preview:\n{output}\nFull output: {log_uri}"
-                ));
-            }
-            let update = SessionUpdate::JobFinished {
-                job_id: id.clone(),
-                command,
-                exit_code,
-                log_path: log_uri,
-            };
-            if let Err(error) = ctx.request.updates().emit(ctx.session_id, update).await {
-                tracing::warn!(job_id = %id, %error, "发送后台任务完成通知失败");
-            }
+            manager
+                .finish_job(ctx, id, command, log_path, log, lifecycle, origin, waited)
+                .await;
         });
         let mut workers = self.workers.lock();
         workers.retain(|worker| !worker.is_finished());
         workers.push(worker);
         Ok(())
+    }
+
+    async fn wait_with_warnings(
+        &self,
+        ctx: &ToolCtx,
+        id: &str,
+        mut completion: futures_util::future::BoxFuture<
+            'static,
+            Result<super::bash::ProcessExit, ToolError>,
+        >,
+    ) -> Result<super::bash::ProcessExit, ToolError> {
+        let interval = Duration::from_secs(ctx.config.tools.bash.slow_warning_interval_secs);
+        let mut next_warning = Box::pin(tokio::time::sleep(interval));
+        loop {
+            tokio::select! {
+                result = &mut completion => return result,
+                _ = &mut next_warning => {
+                    let warning_data = {
+                        let mut jobs = self.jobs.lock();
+                        jobs.get_mut(id).map(|job| {
+                            job.warning_count = job.warning_count.saturating_add(1);
+                            (job.started_at.elapsed().as_secs(), job.warning_count)
+                        })
+                    };
+                    let Some((elapsed, warning_count)) = warning_data else { return completion.await; };
+                    let notice = format!(
+                        "Background job {id} has run for {elapsed}s (monitored, warning {warning_count}); it may be stuck or hitting a slow filesystem. Check output or kill it; do not repeat wait without diagnosis."
+                    );
+                    ctx.state.lock().await.notices.push(notice);
+                    next_warning.as_mut().reset(tokio::time::Instant::now() + interval);
+                }
+            }
+        }
+    }
+
+    async fn finish_job(
+        &self,
+        ctx: ToolCtx,
+        id: String,
+        command: String,
+        log_path: PathBuf,
+        log: super::job_log::JobLog,
+        lifecycle: JobLifecycle,
+        _origin: JobOrigin,
+        waited: Result<super::bash::ProcessExit, ToolError>,
+    ) {
+        let status = {
+            let mut jobs = self.jobs.lock();
+            let status = if jobs
+                .get(&id)
+                .is_some_and(|job| job.status == JobStatus::Killing)
+            {
+                JobStatus::Killed
+            } else {
+                match waited {
+                    Ok(result) if result.timed_out => JobStatus::TimedOut,
+                    Ok(result) if result.output_truncated => JobStatus::OutputLimited,
+                    Ok(result) => JobStatus::Finished(result.code),
+                    Err(error) => {
+                        tracing::warn!(job_id = %id, %error, "后台任务等待失败");
+                        JobStatus::Finished(None)
+                    }
+                }
+            };
+            if let Some(job) = jobs.get_mut(&id) {
+                job.status = status;
+                job.log_truncated = log.log_truncated();
+                job.group.take();
+            }
+            status
+        };
+        self.changed.notify_waiters();
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let (exit_code, exit_label) = match status {
+            JobStatus::Finished(code) => (code, format!("exit {}", code.unwrap_or(-1))),
+            JobStatus::Killed => (None, "killed".into()),
+            JobStatus::TimedOut => (None, "timeout".into()),
+            JobStatus::OutputLimited => (None, "output_limit".into()),
+            JobStatus::Running | JobStatus::Killing => unreachable!("任务已回收"),
+        };
+        let output = {
+            let (text, truncated) = log.read_tail(200).unwrap_or_else(|error| {
+                (format!("[E_JOB_LOG] failed to read log: {error}"), false)
+            });
+            if truncated {
+                format!("[log_truncated=true]\n{text}")
+            } else {
+                text
+            }
+        };
+        let log_uri = ctx
+            .artifact_store()
+            .uri_for_path(&log_path)
+            .map_err(|error| format!("[{}] {}", error.code, error.message))
+            .expect("后台日志必须位于当前会话 jobs sidecar");
+        ctx.state.lock().await.notices.push(format!("Background {lifecycle:?} job {id} finished ({exit_label}); output preview:\n{output}\nFull output: {log_uri}"));
+        let update = SessionUpdate::JobFinished {
+            job_id: id.clone(),
+            command,
+            exit_code,
+            log_path: log_uri,
+        };
+        if let Err(error) = ctx.request.updates().emit(ctx.session_id, update).await {
+            tracing::warn!(job_id = %id, %error, "发送后台任务完成通知失败");
+        }
     }
     pub async fn kill_all(&self) {
         self.shutting_down.store(true, Ordering::Release);
@@ -232,9 +308,13 @@ impl JobManager {
             .info(id)
             .await
             .ok_or_else(|| ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`")))?;
-        let text = read_tail(&job.path, lines)
-            .await
+        let (mut text, truncated) = job
+            .log
+            .read_tail(lines)
             .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
+        if truncated {
+            text.insert_str(0, "[log_truncated=true; oldest output was overwritten]\n");
+        }
         Ok(ToolOutput::Excerpt {
             text,
             path: job.path,
@@ -294,49 +374,22 @@ impl JobManager {
 
 pub(crate) async fn copy_output<R: AsyncRead + Unpin>(
     mut reader: R,
-    path: PathBuf,
-    max_output_bytes: u64,
+    log: super::job_log::JobLog,
     group: super::bash::ProcessGroup,
 ) -> std::io::Result<bool> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut file = tokio::fs::File::create(path).await?;
     let mut buffer = vec![0u8; 16 * 1024];
-    let mut written = 0u64;
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
-            file.flush().await?;
-            file.sync_all().await?;
+            log.finish()?;
             return Ok(false);
         }
-        let remaining = max_output_bytes.saturating_sub(written);
-        let kept = remaining.min(read as u64) as usize;
-        if kept > 0 {
-            file.write_all(&buffer[..kept]).await?;
-            written += kept as u64;
-        }
-        if kept < read || written == max_output_bytes {
+        if log.append(&buffer[..read])? {
             group.kill().map_err(std::io::Error::other)?;
-            file.flush().await?;
-            file.sync_all().await?;
+            log.finish()?;
             return Ok(true);
         }
     }
-}
-
-async fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<String> {
-    let mut file = tokio::fs::File::open(path).await?;
-    let length = file.metadata().await?.len();
-    let start = length.saturating_sub(1024 * 1024);
-    use tokio::io::AsyncSeekExt;
-    file.seek(std::io::SeekFrom::Start(start)).await?;
-    let mut bytes = Vec::with_capacity((length - start) as usize);
-    file.read_to_end(&mut bytes).await?;
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    Ok(lines[lines.len().saturating_sub(max_lines)..].join("\n"))
 }
 
 #[derive(Deserialize)]
@@ -371,7 +424,7 @@ impl Tool for JobTool {
                     "op":{"type":"string","enum":["list","output","kill","wait"]},
                     "job_id":{"type":"string"},
                     "tail_lines":{"type":"integer","minimum":1,"maximum":2000},
-                    "timeout_secs":{"type":"integer","minimum":1,"maximum":600}
+                    "timeout_secs":{"type":"integer","minimum":1,"maximum":60}
                 }),
                 &["op"],
             ),
@@ -393,16 +446,13 @@ impl Tool for JobTool {
                     } else {
                         jobs.iter()
                             .map(|job| {
-                                let uri = ctx
-                                    .artifact_store()
-                                    .uri_for_path(&job.path)
+                                let uri = ctx.artifact_store().uri_for_path(&job.path)
                                     .expect("job 日志必须位于当前会话 sidecar");
                                 format!(
-                                    "{}\t{:?}\t{}\t{}",
-                                    job.id,
-                                    job.status,
-                                    job.command.lines().next().unwrap_or(""),
-                                    uri
+                                    "{}\tlifecycle={:?}\torigin={:?}\tstatus={:?}\telapsed_secs={}\twarnings={}\tlog_truncated={}\t{}",
+                                    job.id, job.lifecycle, job.origin, job.status,
+                                    job.started_at.elapsed().as_secs(), job.warning_count,
+                                    job.log_truncated, uri
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -422,22 +472,45 @@ impl Tool for JobTool {
                 }
                 "wait" => {
                     let id = require_id(args.job_id)?;
+                    let job = ctx.jobs.info(&id).await.ok_or_else(|| {
+                        ToolError::new("E_JOB_NOT_FOUND", format!("unknown job `{id}`"))
+                    })?;
                     let status = ctx
                         .jobs
                         .wait(
                             &id,
-                            Duration::from_secs(args.timeout_secs.unwrap_or(60).clamp(1, 600)),
+                            Duration::from_secs(args.timeout_secs.unwrap_or(60).min(60)),
                         )
                         .await?;
                     let mut output = ctx
                         .jobs
                         .output(&id, args.tail_lines.unwrap_or(200).clamp(1, 2000))
                         .await?;
-                    let ToolOutput::Excerpt { text, .. } = &mut output else {
-                        unreachable!("后台日志返回选定尾部片段");
+                    let elapsed_secs = job.started_at.elapsed().as_secs();
+                    let slow = job.lifecycle == JobLifecycle::Monitored
+                        && elapsed_secs >= ctx.config.tools.bash.slow_warning_interval_secs;
+                    let message = if status == JobStatus::Running {
+                        if job.lifecycle == JobLifecycle::Persistent {
+                            "persistent job will not auto-complete; use output or kill"
+                        } else {
+                            "monitored job is still running; inspect output or kill it instead of repeating wait without diagnosis"
+                        }
+                    } else {
+                        "job finished"
                     };
-                    text.insert_str(0, &format!("{status:?}\n"));
-                    output
+                    let structured = serde_json::json!({
+                        "status": format!("{status:?}"), "lifecycle": format!("{:?}", job.lifecycle),
+                        "origin": format!("{:?}", job.origin), "elapsed_secs": elapsed_secs,
+                        "warning_count": job.warning_count, "slow": slow,
+                        "hard_deadline_secs": job.hard_deadline_secs, "log_truncated": job.log_truncated,
+                        "message": message,
+                    });
+                    if let ToolOutput::Excerpt { text, .. } = &mut output {
+                        text.insert_str(0, &format!("{status:?}\n{message}\n"));
+                    }
+                    let mut outcome = ToolOutcome::success(output);
+                    outcome.structured_content = Some(structured);
+                    return Ok(outcome);
                 }
                 _ => {
                     return Err(ToolError::new(
@@ -460,19 +533,22 @@ fn require_id(id: Option<String>) -> Result<String, ToolError> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn read_tail_returns_last_lines_within_bound() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("job.log");
-        tokio::fs::write(
-            &path,
-            (0..2500)
-                .map(|line| format!("line {line}\n"))
-                .collect::<String>(),
+    #[test]
+    fn read_tail_returns_last_lines_within_bound() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("job.log");
+        let log = super::super::job_log::JobLog::create(
+            path,
+            super::super::job_log::JobLogMode::Persistent,
+            1024 * 1024,
         )
-        .await
-        .unwrap();
-        let output = read_tail(&path, 2000).await.unwrap();
+        .expect("创建日志");
+        let content = (0..2500)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        log.append(content.as_bytes()).expect("写入日志");
+        let (output, truncated) = log.read_tail(2000).expect("读取日志");
+        assert!(!truncated);
         assert!(output.starts_with("line 500"));
         assert!(output.ends_with("line 2499"));
     }

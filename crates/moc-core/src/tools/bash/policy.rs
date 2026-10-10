@@ -9,46 +9,6 @@ use grep_matcher::Matcher;
 
 use crate::{config::BashConfig, tools::ToolError};
 
-pub(crate) fn reject_unscoped_scan(
-    command: &str,
-    cwd: &Path,
-    workspace: &Path,
-) -> Result<(), ToolError> {
-    let Some(segments) = split_segments(command) else {
-        return Ok(());
-    };
-    for segment in segments {
-        let Ok(words) = shell_words::split(&segment) else {
-            continue;
-        };
-        let Some((name, args)) = command_words(&words) else {
-            continue;
-        };
-        if !matches!(name, "find" | "grep" | "rg") {
-            continue;
-        }
-        if !cwd.starts_with(workspace)
-            || crate::tools::is_slow_filesystem_path(cwd)
-            || crate::tools::is_filesystem_mount(cwd)
-            || args.iter().any(|arg| {
-                let looks_like_path = arg == "."
-                    || arg == ".."
-                    || arg.starts_with('/')
-                    || arg.starts_with("./")
-                    || arg.starts_with("../")
-                    || arg.starts_with("~/");
-                looks_like_path && !path_within(arg, cwd, workspace)
-            })
-        {
-            return Err(ToolError::new(
-                "E_SCAN_SCOPE",
-                "recursive scans are restricted to the current workspace and local filesystem",
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// 返回命令是否可在 workspace 沙盒中直接执行。
 pub(crate) fn allowed_in_sandbox(
     config: &BashConfig,

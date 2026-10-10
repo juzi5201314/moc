@@ -137,6 +137,12 @@ fn rank(key: &str) -> usize {
         "protect_recent_tool_tokens" => 7,
         "remote" => 8,
         "shake" => 9,
+        "foreground_after_secs" => 0,
+        "monitored_timeout_secs" => 1,
+        "slow_warning_interval_secs" => 2,
+        "max_timeout_secs" => 3,
+        "max_output_bytes" => 4,
+        "persistent_log_bytes" => 5,
         "max_files" => 0,
         "max_matches_per_file" => 1,
         "max_matches_total" => 2,
@@ -146,7 +152,7 @@ fn rank(key: &str) -> usize {
         "timeout_ms" => 6,
         "max_file_bytes" => 7,
         "max_candidate_files" => 8,
-        "max_output_bytes" => 9,
+        "cross_filesystems" => 9,
         "head_bytes" => 0,
         "tail_bytes" => 1,
         // OpenViking
@@ -407,13 +413,33 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "tail_bytes" => ("超长输出保留结尾", "工具输出过长时保留结尾的字节数。"),
             "max_file_bytes" => ("单文件大小上限", "工具处理单个文件的最大字节数。"),
-            "default_timeout_secs" => {
-                ("命令超时（秒）", "命令未指定时限时使用的秒数；必须大于 0。")
-            }
-            "max_timeout_secs" => ("命令超时上限（秒）", "单条命令允许设置的最大秒数。"),
+            "foreground_after_secs" => (
+                "前台等待秒数",
+                "前台 monitored 命令超过该时间后自动转为后台。",
+            ),
+            "monitored_timeout_secs" => (
+                "有限任务超时（秒）",
+                "monitored 命令的默认硬超时，必须不超过 max_timeout_secs。",
+            ),
+            "slow_warning_interval_secs" => (
+                "慢任务告警间隔（秒）",
+                "monitored 任务每达到一个间隔就在下一轮提示中告警。",
+            ),
+            "max_timeout_secs" => (
+                "命令超时上限（秒）",
+                "单条 monitored 命令允许设置的最大秒数。",
+            ),
             "max_output_bytes" => (
-                "命令输出上限",
-                "单条 bash 命令最多写入日志的字节数，超过后终止命令。",
+                "有限任务输出上限",
+                "monitored 命令最多写入日志的字节数，超过后终止命令。",
+            ),
+            "persistent_log_bytes" => (
+                "长期任务日志容量",
+                "persistent 任务保留的环形日志字节数，写满后覆盖最旧内容但不终止进程。",
+            ),
+            "cross_filesystems" => (
+                "跨文件系统扫描",
+                "grep/find 是否递归进入扫描根下的挂载点；默认关闭。",
             ),
             "line_max_bytes" => ("单行长度上限", "超长行只显示提示，不能再直接编辑。"),
             "max_edits" => ("单次编辑条数", "一次编辑最多包含的修改处数。"),

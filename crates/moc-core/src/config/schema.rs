@@ -93,12 +93,15 @@ pub(super) fn validate_tools(config: &ToolsConfig) -> Result<(), crate::error::C
             "tools.max_concurrent_calls: 必须大于 0".into(),
         ));
     }
-    if config.bash.default_timeout_secs == 0
-        || config.bash.max_timeout_secs < config.bash.default_timeout_secs
+    if config.bash.monitored_timeout_secs == 0
+        || config.bash.slow_warning_interval_secs == 0
+        || config.bash.max_timeout_secs == 0
         || config.bash.max_output_bytes == 0
+        || config.bash.persistent_log_bytes == 0
+        || config.bash.monitored_timeout_secs > config.bash.max_timeout_secs
     {
         return Err(crate::error::CoreError::Config(
-            "tools.bash: timeout 必须大于 0，最大超时不得小于默认超时，输出上限必须大于 0".into(),
+            "tools.bash: monitored_timeout_secs、slow_warning_interval_secs、max_timeout_secs、max_output_bytes、persistent_log_bytes 必须大于 0，且 monitored_timeout_secs 不得超过 max_timeout_secs".into(),
         ));
     }
     Ok(())
@@ -172,10 +175,12 @@ pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreE
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BashConfig {
-    pub default_timeout_secs: u64,
+    pub foreground_after_secs: u64,
+    pub monitored_timeout_secs: u64,
+    pub slow_warning_interval_secs: u64,
     pub max_timeout_secs: u64,
     pub max_output_bytes: u64,
-    pub auto_background_ms: u64,
+    pub persistent_log_bytes: u64,
     pub deny_patterns: Vec<String>,
     /// 允许直接留在 workspace 沙盒执行的完整命令正则。
     pub allow_patterns: Vec<String>,
@@ -184,10 +189,12 @@ pub struct BashConfig {
 impl Default for BashConfig {
     fn default() -> Self {
         Self {
-            default_timeout_secs: 120,
+            foreground_after_secs: 60,
+            monitored_timeout_secs: 1800,
+            slow_warning_interval_secs: 180,
             max_timeout_secs: 3600,
             max_output_bytes: 16 * 1024 * 1024,
-            auto_background_ms: 0,
+            persistent_log_bytes: 16 * 1024 * 1024,
             deny_patterns: vec![
                 r"(?i)rm\s+-rf\s+/(\s|$)".into(),
                 r":\(\)\s*\{\s*:\|\s*:\s*&\s*\};:".into(),
@@ -592,5 +599,21 @@ impl Default for RetentionConfig {
             artifacts_days: 30,
             logs_days: 14,
         }
+    }
+}
+
+#[cfg(test)]
+mod bash_config_tests {
+    use super::*;
+
+    #[test]
+    fn bash_defaults_match_lifecycle_contract() {
+        let config = BashConfig::default();
+        assert_eq!(config.foreground_after_secs, 60);
+        assert_eq!(config.monitored_timeout_secs, 1800);
+        assert_eq!(config.slow_warning_interval_secs, 180);
+        assert_eq!(config.max_timeout_secs, 3600);
+        assert_eq!(config.max_output_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.persistent_log_bytes, 16 * 1024 * 1024);
     }
 }

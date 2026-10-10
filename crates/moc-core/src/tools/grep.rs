@@ -29,6 +29,8 @@ struct GrepArgs {
     context_before: Option<usize>,
     context_after: Option<usize>,
     skip: Option<usize>,
+    #[serde(default)]
+    cross_filesystems: bool,
 }
 
 pub struct GrepTool;
@@ -38,7 +40,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "Search local files with Rust regex in parallel. Use this for content, not bash, cat, rg, awk, or sed. Respects .gitignore/.ignore; results are not edit anchors, so read before editing."
+        "Search local files with Rust regex in parallel. Absolute paths are allowed; by default scanning does not cross mounts below the root, and cross_filesystems=true expands it. Timeout is cooperative, not a hard kill. Use this for content, not bash, cat, rg, awk, or sed."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -52,14 +54,15 @@ impl Tool for GrepTool {
             schema(
                 serde_json::json!({
                     "pattern":{"type":"string"},
-                    "path":{"type":"string"},
+                    "path":{"type":"string","description":"Absolute or cwd-relative scan root"},
                     "glob":{"type":"array","items":{"type":"string"}},
                     "case":{"type":"boolean"},
                     "gitignore":{"type":"boolean"},
                     "hidden":{"type":"boolean"},
                     "context_before":{"type":"integer","minimum":0},
                     "context_after":{"type":"integer","minimum":0},
-                    "skip":{"type":"integer","minimum":0}
+                    "skip":{"type":"integer","minimum":0},
+                    "cross_filesystems":{"type":"boolean","description":"Cross filesystem mounts below the scan root; default false"}
                 }),
                 &["pattern"],
             ),
@@ -247,7 +250,7 @@ impl Search {
             .git_global(gitignore)
             .git_exclude(gitignore)
             .ignore(gitignore)
-            .same_file_system(true)
+            .same_file_system(!self.args.cross_filesystems)
             .threads(std::thread::available_parallelism().map_or(1, usize::from));
         let candidates = Mutex::new(Vec::new());
         let incomplete = AtomicBool::new(false);
@@ -371,7 +374,7 @@ impl Search {
                 break;
             }
         }
-        if output.is_empty() {
+        if output.is_empty() && !incomplete.load(Ordering::Relaxed) && !self.stopped() {
             output.push_str("No matches found\n");
         }
         if limited {
@@ -387,7 +390,7 @@ impl Search {
             ));
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
-            output.push_str("[Scan hit a time or candidate-file limit, was cancelled, or encountered unreadable or oversized files; results may be incomplete; narrow path or glob]\n");
+            output.push_str("[Scan was incomplete because the cooperative timeout, candidate-file limit, cancellation, unreadable path, or oversized-file limit was reached; results may be incomplete and are not a no-match proof. Narrow path or glob, or set cross_filesystems=true to include mounted paths below the root]\n");
         }
         Ok(output.trim_end_matches('\n').to_owned())
     }
@@ -559,5 +562,34 @@ mod tests {
         };
         let output = run(root.path(), serde_json::json!({"pattern":"hit"}), config);
         assert!(output.contains("results may be incomplete"));
+    }
+}
+
+#[cfg(test)]
+mod absolute_scan_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_root_is_resolved_and_cooperative_timeout_is_reported() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        std::fs::write(directory.path().join("hit.txt"), "hit\n").expect("写入测试文件");
+        let config = crate::config::GrepConfig {
+            timeout_ms: 0,
+            ..Default::default()
+        };
+        let args: GrepArgs =
+            serde_json::from_value(serde_json::json!({"pattern":"hit", "path":directory.path()}))
+                .expect("解析参数");
+        let output = Search::new(
+            args,
+            directory.path().to_owned(),
+            config,
+            CancellationToken::new(),
+        )
+        .expect("解析绝对扫描根")
+        .run()
+        .expect("执行扫描");
+        assert!(output.contains("incomplete"));
+        assert!(!output.contains("No matches found"));
     }
 }

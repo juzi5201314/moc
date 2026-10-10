@@ -33,6 +33,8 @@ struct FindArgs {
     limit: Option<usize>,
     #[serde(default)]
     sort: Sort,
+    #[serde(default)]
+    cross_filesystems: bool,
 }
 
 pub struct FindTool;
@@ -42,7 +44,7 @@ impl Tool for FindTool {
         "find"
     }
     fn description(&self) -> &'static str {
-        "Find local paths in parallel with glob patterns. Use this for filenames and paths, not bash, find, or ls. Respects .gitignore/.ignore and returns at most 200 results."
+        "Find local paths in parallel with glob patterns. Absolute paths are allowed; by default scanning does not cross mounts below the root, and cross_filesystems=true expands it. Timeout is cooperative, not a hard kill. Use this for filenames and paths, not bash, find, or ls."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -56,11 +58,12 @@ impl Tool for FindTool {
             schema(
                 serde_json::json!({
                     "glob":{"type":"array","minItems":1,"items":{"type":"string"}},
-                    "path":{"type":"string"},
+                    "path":{"type":"string","description":"Absolute or cwd-relative scan root"},
                     "hidden":{"type":"boolean"},
                     "gitignore":{"type":"boolean"},
                     "limit":{"type":"integer","minimum":1,"maximum":200},
-                    "sort":{"type":"string","enum":["mtime","path"]}
+                    "sort":{"type":"string","enum":["mtime","path"]},
+                    "cross_filesystems":{"type":"boolean","description":"Cross filesystem mounts below the scan root; default false"}
                 }),
                 &["glob"],
             ),
@@ -159,7 +162,7 @@ impl Scan {
             .git_global(gitignore)
             .git_exclude(gitignore)
             .ignore(gitignore)
-            .same_file_system(true)
+            .same_file_system(!self.args.cross_filesystems)
             .threads(std::thread::available_parallelism().map_or(1, usize::from));
         // 堆顶为当前最差结果；最多 200 项，避免保存整棵目录树。
         let best = Mutex::new(BinaryHeap::with_capacity(limit));
@@ -227,6 +230,9 @@ impl Scan {
                 ignore::WalkState::Continue
             })
         });
+        if visited.load(Ordering::Relaxed) >= self.max_entries {
+            incomplete.store(true, Ordering::Relaxed);
+        }
         let paths = best.into_inner().into_sorted_vec();
         let mut output: Vec<String> = paths
             .iter()
@@ -246,7 +252,7 @@ impl Scan {
             ));
         }
         if incomplete.load(Ordering::Relaxed) {
-            output.push("[A time or scan-entry limit was reached, the scan was cancelled, or a path was unreadable; results may be incomplete]".into());
+            output.push("[Scan was incomplete because the cooperative timeout, scan-entry limit, cancellation, or unreadable path was reached; results may be incomplete and are not a no-match proof. Narrow path or glob, or set cross_filesystems=true to include mounted paths below the root]".into());
         }
         Ok(output.join("\n"))
     }
@@ -303,5 +309,30 @@ mod tests {
                 .code,
             "E_BAD_GLOB"
         );
+    }
+}
+
+#[cfg(test)]
+mod absolute_scan_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_root_is_allowed() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        std::fs::write(directory.path().join("hit.rs"), "").expect("写入测试文件");
+        let output = Scan {
+            args: serde_json::from_value(
+                serde_json::json!({"path":directory.path(),"glob":["*.rs"],"sort":"path"}),
+            )
+            .expect("解析扫描参数"),
+            cwd: directory.path().to_owned(),
+            cancel: CancellationToken::new(),
+            limit: 200,
+            max_entries: 100,
+            deadline: Instant::now() + Duration::from_secs(5),
+        }
+        .run()
+        .expect("执行绝对路径扫描");
+        assert!(output.contains("hit.rs"));
     }
 }

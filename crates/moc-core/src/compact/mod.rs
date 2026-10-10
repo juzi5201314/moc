@@ -423,9 +423,13 @@ async fn append_runtime_checkpoint(
                 crate::tools::job::JobStatus::TimedOut => "timed_out",
                 crate::tools::job::JobStatus::OutputLimited => "output_limited",
             };
+            let lifecycle = match job.lifecycle {
+                crate::tools::job::JobLifecycle::Monitored => "monitored",
+                crate::tools::job::JobLifecycle::Persistent => "persistent",
+            };
             summary.push_str(&format!(
-                "Background job {} [{}]: {}\n",
-                job.id, status, job.command
+                "Background job {} [{} lifecycle={} origin={:?} warnings={}]: {}\n",
+                job.id, status, lifecycle, job.origin, job.warning_count, job.command
             ));
         }
         summary.push_str("</compaction-runtime>");

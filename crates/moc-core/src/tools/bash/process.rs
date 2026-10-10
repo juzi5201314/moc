@@ -1,6 +1,6 @@
-//! 管道与 PTY 共用的完成句柄；后台化只转移所有权，不重置超时。
+//! 管道与 PTY 共用的完成句柄；后台化只转移所有权，不重置 monitored 超时。
 
-use super::{BashArgs, ProcessGroup, ToolError};
+use super::{BashArgs, JobLog, ProcessGroup, ToolError};
 use futures_util::future::BoxFuture;
 use moc_protocol::SessionPermission;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -22,6 +22,7 @@ pub(crate) struct ProcessExit {
 pub(crate) struct Process {
     pub pid: Option<u32>,
     pub group: ProcessGroup,
+    pub started_at: std::time::Instant,
     pub completion: BoxFuture<'static, Result<ProcessExit, ToolError>>,
 }
 
@@ -30,9 +31,8 @@ impl Process {
         args: BashArgs,
         cwd: PathBuf,
         workspace: PathBuf,
-        timeout: u64,
-        max_output_bytes: u64,
-        path: PathBuf,
+        timeout: Option<Duration>,
+        log: JobLog,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
         if cfg!(not(unix)) && permission == SessionPermission::Workspace {
@@ -41,34 +41,19 @@ impl Process {
                 "workspace permissions require a Unix bwrap environment",
             ));
         }
-        if timeout == 0 || max_output_bytes == 0 {
+        if timeout.is_some()
+            && log.mode() == super::JobLogMode::Monitored
+            && log.path().as_os_str().is_empty()
+        {
             return Err(ToolError::new(
                 "E_BASH_CONFIG",
-                "timeout and max_output_bytes must be greater than zero",
+                "monitored jobs require a log",
             ));
         }
-        let duration = Some(Duration::from_secs(timeout));
         if args.pty.unwrap_or(false) {
-            Self::pty(
-                args,
-                cwd,
-                workspace,
-                duration,
-                max_output_bytes,
-                path,
-                permission,
-            )
-            .await
+            Self::pty(args, cwd, workspace, timeout, log, permission).await
         } else {
-            Self::pipe(
-                args,
-                cwd,
-                workspace,
-                duration,
-                max_output_bytes,
-                path,
-                permission,
-            )
+            Self::pipe(args, cwd, workspace, timeout, log, permission)
         }
     }
 
@@ -77,8 +62,7 @@ impl Process {
         cwd: PathBuf,
         workspace: PathBuf,
         timeout: Option<Duration>,
-        max_output_bytes: u64,
-        path: PathBuf,
+        log: JobLog,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
         let mut command = match permission {
@@ -133,6 +117,7 @@ impl Process {
         let input = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout 已配置为管道");
         let output_group = completion_group.clone();
+        let reader_log = log.clone();
         let reader = tokio::spawn(async move {
             let write_input = async move {
                 if let (Some(mut input), Some(text)) = (input, args.stdin) {
@@ -146,7 +131,7 @@ impl Process {
                 Ok::<_, std::io::Error>(())
             };
             let (output, input) = tokio::join!(
-                super::super::job::copy_output(stdout, path, max_output_bytes, output_group),
+                super::super::job::copy_output(stdout, reader_log, output_group),
                 write_input
             );
             output.and_then(|truncated| input.map(|()| (truncated, ())))
@@ -169,6 +154,8 @@ impl Process {
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
             let status =
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
+            log.finish()
+                .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
             Ok(ProcessExit {
                 code: status.code(),
                 timed_out,
@@ -178,6 +165,7 @@ impl Process {
         Ok(Self {
             pid,
             group,
+            started_at: std::time::Instant::now(),
             completion,
         })
     }
@@ -187,8 +175,7 @@ impl Process {
         cwd: PathBuf,
         workspace: PathBuf,
         timeout: Option<Duration>,
-        max_output_bytes: u64,
-        path: PathBuf,
+        log: JobLog,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
         if cfg!(not(unix)) && permission == SessionPermission::Workspace {
@@ -202,15 +189,7 @@ impl Process {
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
             run_pty(
-                args,
-                cwd,
-                workspace,
-                timeout,
-                max_output_bytes,
-                path,
-                permission,
-                cancel,
-                started,
+                args, cwd, workspace, timeout, log, permission, cancel, started,
             )
         });
         let (pid, group) = match ready.await {
@@ -236,6 +215,7 @@ impl Process {
         Ok(Self {
             pid,
             group,
+            started_at: std::time::Instant::now(),
             completion,
         })
     }
@@ -343,8 +323,7 @@ fn run_pty(
     cwd: PathBuf,
     workspace: PathBuf,
     timeout: Option<Duration>,
-    max_output_bytes: u64,
-    path: PathBuf,
+    log: JobLog,
     permission: SessionPermission,
     cancel: CancellationToken,
     started: tokio::sync::oneshot::Sender<(Option<u32>, ProcessGroup)>,
@@ -384,10 +363,6 @@ fn run_pty(
         .master
         .take_writer()
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut log = std::fs::File::create(path)?;
     #[cfg(windows)]
     let group =
         ProcessGroup::new_windows().map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -419,22 +394,15 @@ fn run_pty(
     let output_group = group.clone();
     let reader_thread = std::thread::spawn(move || -> std::io::Result<bool> {
         let mut buffer = [0u8; 16 * 1024];
-        let mut written = 0u64;
         loop {
             let count = reader.read(&mut buffer)?;
             if count == 0 {
-                log.sync_all()?;
+                log.finish()?;
                 return Ok(false);
             }
-            let remaining = max_output_bytes.saturating_sub(written);
-            let kept = remaining.min(count as u64) as usize;
-            if kept > 0 {
-                log.write_all(&buffer[..kept])?;
-                written += kept as u64;
-            }
-            if kept < count || written == max_output_bytes {
+            if log.append(&buffer[..count])? {
                 output_group.kill().map_err(std::io::Error::other)?;
-                log.sync_all()?;
+                log.finish()?;
                 return Ok(true);
             }
         }
@@ -477,10 +445,14 @@ mod unix_tests {
             cwd: None,
             env: None,
             timeout: Some(5),
+            lifecycle: Some(crate::tools::bash::BashLifecycle::Monitored),
             pty: Some(false),
             stdin: None,
             asynchronous: false,
         }
+    }
+    async fn test_log(path: PathBuf) -> JobLog {
+        JobLog::create(path, super::super::JobLogMode::Monitored, 1024).expect("创建测试日志")
     }
 
     #[test]
@@ -508,13 +480,14 @@ mod unix_tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let marker = directory.path().join("marker");
         fs::write(&marker, "keep").expect("写入 marker");
+        let path = directory.path().join("workspace.log");
+        let log = test_log(path).await;
         let process = Process::spawn(
             bash_args("printf x > workspace-marker"),
             directory.path().to_owned(),
             directory.path().to_owned(),
-            5,
-            1024,
-            directory.path().join("workspace.log"),
+            Some(Duration::from_secs(5)),
+            log,
             SessionPermission::Workspace,
         )
         .await
@@ -528,13 +501,14 @@ mod unix_tests {
         );
 
         let external = directory.path().join("..").join("moc-external-marker");
+        let path = directory.path().join("external.log");
+        let log = test_log(path).await;
         let process = Process::spawn(
             bash_args(&format!("printf x > {}", external.display())),
             directory.path().to_owned(),
             directory.path().to_owned(),
-            5,
-            1024,
-            directory.path().join("external.log"),
+            Some(Duration::from_secs(5)),
+            log,
             SessionPermission::Workspace,
         )
         .await

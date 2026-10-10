@@ -13,11 +13,25 @@ use serde_json::Value;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
 mod policy;
-pub(crate) use policy::{allowed_in_sandbox, reject_unscoped_scan};
+pub(crate) use policy::allowed_in_sandbox;
 mod group;
+pub(crate) use super::job_log::{JobLog, JobLogMode};
 pub(crate) use group::ProcessGroup;
 mod process;
 pub(crate) use process::{Process, ProcessExit};
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BashLifecycle {
+    Monitored,
+    Persistent,
+}
+
+impl Default for BashLifecycle {
+    fn default() -> Self {
+        Self::Monitored
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,10 +40,46 @@ struct BashArgs {
     cwd: Option<String>,
     env: Option<BTreeMap<String, String>>,
     timeout: Option<u64>,
+    lifecycle: Option<BashLifecycle>,
     pty: Option<bool>,
     stdin: Option<String>,
     #[serde(default, rename = "async")]
     asynchronous: bool,
+}
+
+fn resolve_timeout(
+    args: &BashArgs,
+    lifecycle: BashLifecycle,
+    config: &crate::config::BashConfig,
+) -> Result<Option<Duration>, ToolError> {
+    if lifecycle == BashLifecycle::Persistent && !args.asynchronous {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "persistent lifecycle requires async=true",
+        ));
+    }
+    if lifecycle == BashLifecycle::Persistent && args.timeout.is_some() {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "persistent lifecycle forbids timeout",
+        ));
+    }
+    if let Some(timeout) = args.timeout {
+        if !(1..=3600).contains(&timeout) {
+            return Err(ToolError::new(
+                "E_BAD_PAYLOAD",
+                "timeout must be between 1 and 3600 seconds",
+            ));
+        }
+    }
+    Ok(match lifecycle {
+        BashLifecycle::Monitored => Some(Duration::from_secs(
+            args.timeout
+                .unwrap_or(config.monitored_timeout_secs)
+                .min(config.max_timeout_secs),
+        )),
+        BashLifecycle::Persistent => None,
+    })
 }
 
 pub struct BashTool;
@@ -39,7 +89,7 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &'static str {
-        "Run builds, tests, formatters, version-control commands, and other commands that require a shell. Do not use it to read, search, or edit workspace files; use read, grep/find, and edit/write. Runs in the foreground by default; async=true returns a job_id, and pty=true enables an interactive terminal. Dangerous commands are rejected even with yolo."
+        "Run a shell command. Default lifecycle is monitored; use async=true,lifecycle=persistent for intentionally long-lived services. Persistent jobs never auto-complete. Use grep/find for file search."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -52,10 +102,11 @@ impl Tool for BashTool {
             "bash",
             schema(
                 serde_json::json!({
-                    "command":{"type":"string","description":"Shell command to run; do not use cat, grep, rg, find, sed, awk, or interpreters here to read, search, or edit workspace files"},
+                    "command":{"type":"string","description":"Shell command; use grep/find for file search"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
                     "timeout":{"type":"integer","minimum":1,"maximum":3600},
+                    "lifecycle":{"type":"string","enum":["monitored","persistent"]},
                     "pty":{"type":"boolean"},
                     "stdin":{"type":"string"},
                     "async":{"type":"boolean"}
@@ -75,12 +126,9 @@ impl Tool for BashTool {
             if args.command.trim().is_empty() {
                 return Err(ToolError::new("E_BAD_PAYLOAD", "command must not be empty"));
             }
+            let lifecycle = args.lifecycle.unwrap_or_default();
+            let timeout = resolve_timeout(&args, lifecycle, &ctx.config.tools.bash)?;
             let cwd = resolve_cwd(&ctx.cwd, args.cwd.as_deref())?;
-            crate::tools::bash::reject_unscoped_scan(&args.command, &cwd, &ctx.cwd)?;
-            let timeout = args
-                .timeout
-                .unwrap_or(ctx.config.tools.bash.default_timeout_secs)
-                .min(ctx.config.tools.bash.max_timeout_secs);
             if args.asynchronous && !ctx.config.tools.job.enabled {
                 return Err(ToolError::new(
                     "E_TOOL_DISABLED",
@@ -91,7 +139,16 @@ impl Tool for BashTool {
             let command = args.command.clone();
             let job_id = next_job_id(&ctx.paths, &ctx.state).await?;
             let output_path = ctx.paths.jobs().join(format!("{job_id}.log"));
-            // 显式后台任务在启动子进程之前预留名额，超限不会先执行命令。
+            let log_mode = match lifecycle {
+                BashLifecycle::Monitored => JobLogMode::Monitored,
+                BashLifecycle::Persistent => JobLogMode::Persistent,
+            };
+            let log_capacity = match lifecycle {
+                BashLifecycle::Monitored => ctx.config.tools.bash.max_output_bytes,
+                BashLifecycle::Persistent => ctx.config.tools.bash.persistent_log_bytes,
+            };
+            let log = JobLog::create(output_path.clone(), log_mode, log_capacity)
+                .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
             let permit = if asynchronous {
                 Some(ctx.jobs.reserve(&ctx.config.tools.job, &ctx.cancel).await?)
             } else {
@@ -102,8 +159,7 @@ impl Tool for BashTool {
                 cwd,
                 ctx.cwd.clone(),
                 timeout,
-                ctx.config.tools.bash.max_output_bytes,
-                output_path.clone(),
+                log.clone(),
                 ctx.permission,
             )
             .await?;
@@ -113,29 +169,48 @@ impl Tool for BashTool {
                     job_id.clone(),
                     command,
                     output_path.clone(),
+                    log,
                     process,
                     permit.expect("后台任务已预留名额"),
+                    match lifecycle {
+                        BashLifecycle::Monitored => super::job::JobLifecycle::Monitored,
+                        BashLifecycle::Persistent => super::job::JobLifecycle::Persistent,
+                    },
+                    super::job::JobOrigin::Explicit,
+                    timeout,
                 )?;
                 let uri = ctx
                     .artifact_store()
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "Background job {job_id} started; log: {uri}"
+                    "Background {lifecycle:?} job {job_id} started; log: {uri}"
                 )));
             }
-            let result =
-                wait_foreground(ctx, process, job_id.clone(), command, output_path.clone()).await?;
+            let result = wait_foreground(
+                ctx,
+                process,
+                job_id,
+                command,
+                output_path.clone(),
+                log,
+                timeout,
+            )
+            .await?;
             let Some(result) = result else {
                 let uri = ctx
                     .artifact_store()
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "Command exceeded the foreground threshold; job {job_id} continues in the background; log: {uri}"
+                    "Command exceeded the foreground threshold; monitored job continues in the background; inspect output or kill it; log: {uri}"
                 )));
             };
-            Ok(exit_outcome(output_path, result, timeout))
+            Ok(exit_outcome(
+                output_path,
+                result,
+                timeout.map_or(0, |value| value.as_secs()),
+            ))
         })
     }
 }
@@ -154,12 +229,19 @@ pub(crate) async fn run_manual(
     }
     let job_id = next_job_id(paths, state).await?;
     let output_path = paths.jobs().join(format!("{job_id}.log"));
-    let timeout = config.default_timeout_secs.min(config.max_timeout_secs);
+    let timeout = Duration::from_secs(config.monitored_timeout_secs.min(config.max_timeout_secs));
+    let log = JobLog::create(
+        output_path.clone(),
+        JobLogMode::Monitored,
+        config.max_output_bytes,
+    )
+    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
     let args = BashArgs {
         command,
         cwd: None,
         env: None,
-        timeout: Some(timeout),
+        timeout: Some(timeout.as_secs()),
+        lifecycle: Some(BashLifecycle::Monitored),
         pty: Some(false),
         stdin: None,
         asynchronous: false,
@@ -168,15 +250,14 @@ pub(crate) async fn run_manual(
         args,
         cwd.clone(),
         cwd,
-        timeout,
-        config.max_output_bytes,
-        output_path.clone(),
+        Some(timeout),
+        log,
         moc_protocol::SessionPermission::Full,
     )
     .await?;
     tokio::select! {
         biased;
-        result = &mut process.completion => Ok(exit_outcome(output_path, result?, timeout)),
+        result = &mut process.completion => Ok(exit_outcome(output_path, result?, timeout.as_secs())),
         _ = cancel.cancelled() => {
             process.group.kill()?;
             process.completion.await?;
@@ -221,8 +302,9 @@ async fn wait_foreground(
     job_id: String,
     command: String,
     output_path: PathBuf,
+    log: JobLog,
+    timeout: Option<Duration>,
 ) -> Result<Option<ProcessExit>, ToolError> {
-    let auto = ctx.config.tools.bash.auto_background_ms;
     enum Selection {
         Finished(Result<ProcessExit, ToolError>),
         Background,
@@ -232,20 +314,26 @@ async fn wait_foreground(
         biased;
         result = &mut process.completion => Selection::Finished(result),
         _ = ctx.cancel.cancelled() => Selection::Cancelled,
-        _ = async {
-            if auto > 0 && ctx.config.tools.job.enabled { tokio::time::sleep(Duration::from_millis(auto)).await; }
-            else { std::future::pending::<()>().await; }
-        } => Selection::Background,
+        _ = tokio::time::sleep(Duration::from_secs(ctx.config.tools.bash.foreground_after_secs)) => Selection::Background,
     };
     match selection {
         Selection::Finished(result) => result.map(Some),
         Selection::Background => {
             if let Some(permit) = ctx.jobs.slots.try_acquire(ctx.config.tools.job.max_running) {
-                ctx.jobs
-                    .start(ctx.clone(), job_id, command, output_path, process, permit)?;
+                ctx.jobs.start(
+                    ctx.clone(),
+                    job_id,
+                    command,
+                    output_path,
+                    log,
+                    process,
+                    permit,
+                    super::job::JobLifecycle::Monitored,
+                    super::job::JobOrigin::AutoBackground,
+                    timeout,
+                )?;
                 Ok(None)
             } else {
-                // 自动后台化已开始执行；名额用尽时继续前台等待，不额外创建后台任务。
                 tokio::select! {
                     result = &mut process.completion => result.map(Some),
                     _ = ctx.cancel.cancelled() => {
@@ -394,5 +482,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(resolve_cwd(dir.path(), None).unwrap(), dir.path());
         assert!(resolve_cwd(dir.path(), Some("missing")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn lifecycle_defaults_to_monitored_and_parses_persistent() {
+        let args: BashArgs = serde_json::from_value(serde_json::json!({"command":"echo ok"}))
+            .expect("解析默认生命周期");
+        assert_eq!(args.lifecycle.unwrap_or_default(), BashLifecycle::Monitored);
+        let args: BashArgs = serde_json::from_value(
+            serde_json::json!({"command":"echo ok","lifecycle":"persistent","async":true}),
+        )
+        .expect("解析 persistent 参数");
+        assert_eq!(args.lifecycle, Some(BashLifecycle::Persistent));
+        assert!(args.asynchronous);
     }
 }
