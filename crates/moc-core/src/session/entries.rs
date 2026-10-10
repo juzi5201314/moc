@@ -137,6 +137,13 @@ pub enum Entry {
         usage: moc_llm::Usage,
         active_ms: u64,
     },
+    /// CLM 模式当前实时上下文的版本快照；不进入普通 transcript。
+    ClmContext {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        content: String,
+    },
     /// `/clear` 后模型上下文重建边界。
     ResetBoundary {
         id: String,
@@ -200,6 +207,9 @@ pub enum EntryPayload {
         model: String,
         usage: moc_llm::Usage,
         active_ms: u64,
+    },
+    ClmContext {
+        content: String,
     },
     ResetBoundary,
 }
@@ -357,6 +367,12 @@ impl Entry {
                 usage,
                 active_ms,
             },
+            EntryPayload::ClmContext { content } => Self::ClmContext {
+                id,
+                parent_id,
+                at_ms,
+                content,
+            },
             EntryPayload::ResetBoundary => Self::ResetBoundary {
                 id,
                 parent_id,
@@ -378,6 +394,7 @@ impl Entry {
             | Self::ChildTool { id, .. }
             | Self::PtcState { id, .. }
             | Self::Usage { id, .. }
+            | Self::ClmContext { id, .. }
             | Self::ResetBoundary { id, .. } => id,
         }
     }
@@ -396,6 +413,7 @@ impl Entry {
             | Self::ChildTool { parent_id, .. }
             | Self::PtcState { parent_id, .. }
             | Self::Usage { parent_id, .. }
+            | Self::ClmContext { parent_id, .. }
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
@@ -436,6 +454,9 @@ impl Entry {
             | Self::Usage {
                 parent_id: value, ..
             }
+            | Self::ClmContext {
+                parent_id: value, ..
+            }
             | Self::ResetBoundary {
                 parent_id: value, ..
             } => *value = Some(parent_id),
@@ -456,6 +477,7 @@ impl Entry {
             | Self::ChildTool { at_ms, .. }
             | Self::PtcState { at_ms, .. }
             | Self::Usage { at_ms, .. }
+            | Self::ClmContext { at_ms, .. }
             | Self::ResetBoundary { at_ms, .. } => *at_ms,
         }
     }

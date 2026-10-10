@@ -8,6 +8,7 @@ pub mod find;
 pub mod grep;
 mod scope;
 pub(crate) use scope::resolve_scan_root;
+pub(crate) mod clm;
 pub mod job;
 pub(crate) mod job_log;
 pub mod mcp;
@@ -228,9 +229,9 @@ impl ToolRegistry {
                 Arc::new(job::JobTool),
                 Arc::new(bash::BashTool),
                 Arc::new(edit::EditTool),
-                Arc::new(write::WriteTool),
                 Arc::new(ask::AskTool),
                 Arc::new(plan::SubmitPlanTool),
+                Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::RunCodeTool),
                 Arc::new(crate::skills::tool::SkillTool),
             ],
@@ -244,10 +245,18 @@ impl ToolRegistry {
             .cloned()
     }
 
-    pub fn definitions(&self, ask_supported: bool, config: &ResolvedConfig) -> Vec<ToolDef> {
+    pub fn definitions(
+        &self,
+        mode: SessionMode,
+        ask_supported: bool,
+        config: &ResolvedConfig,
+    ) -> Vec<ToolDef> {
         self.builtins
             .iter()
-            .filter(|tool| crate::service::mode::tool_enabled(tool.name(), ask_supported, config))
+            .filter(|tool| {
+                crate::service::mode::mode_allows(mode, tool.name(), tool.tier())
+                    && crate::service::mode::tool_enabled(tool.name(), ask_supported, config)
+            })
             .map(|tool| {
                 let mut definition = tool.def();
                 definition.description = Some(tool.description().to_owned());

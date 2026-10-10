@@ -638,10 +638,13 @@ impl App {
 
     /// 用加载的会话替换当前会话与转写。
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
+        let clm_active = info.mode == SessionMode::ClmExperimental;
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;
-        self.tool_batches.clear();
+        if clm_active {
+            self.set_notice("CLM 实验模式已启用：模型将维护实时上下文");
+        }
         self.tool_indices.clear();
         for (index, entry) in self.blocks.iter().enumerate() {
             if let Block::Tool(tool) = &entry.block {
@@ -910,20 +913,24 @@ mod streaming_budget_tests {
     }
 }
 
-/// 会话模式的展示名：与模型同处图例，沿用界面原有的英文标识。
+/// 会话模式的展示名；CLM 以括号标识，保持实验状态始终可见。
 pub fn mode_label(mode: SessionMode) -> &'static str {
     match mode {
         SessionMode::Normal => "normal",
         SessionMode::Ask => "ask",
         SessionMode::Plan => "plan",
         SessionMode::Ptc => "ptc",
+        SessionMode::ClmExperimental => "(clm)",
     }
 }
 
 /// 会话模式顺序：就地菜单条目与键盘循环共用同一份顺序。
-///
-/// 不含 `Ask`：问答是单条消息的临时意图，由 `/ask` 按提示注入，不是可持久选择的模式。
-pub const MODES: [SessionMode; 3] = [SessionMode::Normal, SessionMode::Plan, SessionMode::Ptc];
+pub const MODES: [SessionMode; 4] = [
+    SessionMode::Normal,
+    SessionMode::Plan,
+    SessionMode::Ptc,
+    SessionMode::ClmExperimental,
+];
 
 /// 点击图例模式名后就地弹出的菜单。
 pub struct ModeMenu {
@@ -965,6 +972,7 @@ mod tests {
         assert_eq!(mode_label(SessionMode::Ask), "ask");
         assert_eq!(mode_label(SessionMode::Plan), "plan");
         assert_eq!(mode_label(SessionMode::Ptc), "ptc");
+        assert_eq!(mode_label(SessionMode::ClmExperimental), "(clm)");
     }
 
     /// 菜单命中只认边框之间的一行一条目；边框与菜单外都不算条目。
@@ -972,12 +980,13 @@ mod tests {
     fn mode_menu_hit_testing_skips_borders() {
         let menu = ModeMenu {
             selected: 1,
-            area: Rect::new(10, 5, 24, 5),
+            area: Rect::new(10, 5, 24, 6),
         };
         assert_eq!(menu.entry_at(11, 5), None, "上边框不是条目");
         assert_eq!(menu.entry_at(11, 6), Some(0));
         assert_eq!(menu.entry_at(11, 8), Some(2));
-        assert_eq!(menu.entry_at(11, 9), None, "下边框不是条目");
+        assert_eq!(menu.entry_at(11, 9), Some(3));
+        assert_eq!(menu.entry_at(11, 10), None, "下边框不是条目");
         assert_eq!(menu.entry_at(9, 6), None, "左缘之外不命中");
         assert_eq!(menu.entry_at(34, 6), None, "右缘之外不命中");
         assert_eq!(menu.entry_at(11, 4), None, "菜单上方不命中");

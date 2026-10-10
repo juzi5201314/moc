@@ -220,9 +220,11 @@ pub(crate) async fn compact(
         &skills,
         &summary,
     );
-    let tools = inner
-        .tools
-        .definitions(inner.client_supports_ask(ctx.connection_id()), &config);
+    let tools = inner.tools.definitions(
+        state.mode,
+        inner.client_supports_ask(ctx.connection_id()),
+        &config,
+    );
     let fixed_tokens = messages_tokens(std::slice::from_ref(&system))
         .saturating_add(tools_tokens(&tools))
         .saturating_add(context.additional_tokens);

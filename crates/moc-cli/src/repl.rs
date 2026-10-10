@@ -362,6 +362,19 @@ async fn run_command(
                 })
                 .await?;
             *mode = next;
+            if next == SessionMode::ClmExperimental {
+                println!("CLM 实验模式已启用；本会话首次请求后不可退出 CLM");
+            }
+        }
+        "clm-experimental" => {
+            *session = client
+                .call::<SessionSetMode>(SessionSetModeParams {
+                    session_id: session.id.clone(),
+                    mode: SessionMode::ClmExperimental,
+                })
+                .await?;
+            *mode = SessionMode::ClmExperimental;
+            println!("CLM 实验模式已启用；本会话首次请求后不可退出 CLM");
         }
         "permission" => {
             let permission = match argument {
@@ -658,7 +671,10 @@ fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
         "normal" => Ok(SessionMode::Normal),
         "plan" => Ok(SessionMode::Plan),
         "ptc" => Ok(SessionMode::Ptc),
-        _ => bail!("模式必须是 normal、plan 或 ptc；单条消息的问答请用 /ask <问题>"),
+        "clm" | "clm-experimental" => Ok(SessionMode::ClmExperimental),
+        _ => bail!(
+            "模式必须是 normal、plan、ptc 或 clm-experimental；单条消息的问答请用 /ask <问题>"
+        ),
     }
 }
 
@@ -720,7 +736,7 @@ fn format_duration(active_ms: u64) -> String {
 
 fn print_help() {
     println!(
-        "/mode <normal|plan|ptc>     切换工作模式\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|plan|ptc|clm-experimental>  切换工作模式\n/clm-experimental          启用 CLM 实验模式；首次请求后本会话固定为 CLM\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
     );
     println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
 }

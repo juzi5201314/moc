@@ -71,13 +71,11 @@ pub enum SessionMode {
     #[default]
     Normal,
     /// 只读问答模式。
-    ///
-    /// 不作为可持久选择的会话模式暴露给前端：它由 `session/prompt` 的
-    /// [`PromptParams::mode`](super::PromptParams::mode) 按提示注入（`/ask`），
-    /// 或者由旧版本会话的历史记录重放得到。
     Ask,
     Plan,
     Ptc,
+    /// 模型自主维护实时上下文的实验模式。
+    ClmExperimental,
 }
 
 /// 会话命令执行权限。

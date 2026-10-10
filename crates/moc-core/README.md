@@ -88,6 +88,10 @@ PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`
 
 上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按 `system`、`project`、`skills`、`tools`、`messages` 等固定分块展示占用分解；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
 
+### CLM 实验模式
+
+使用 `--mode clm-experimental` 或 `/clm-experimental` 启用。模型可通过 `clm_context` 工具读取、替换或追加实时工作上下文；不可变 JSONL transcript 作为完整审计源保留。TUI 状态栏显示 `(clm)`，会话第一次请求后模式锁定，不能切换回其它模式。
+
 ### 会话保留与工作区记忆
 
 `session.retention` 默认启用：30 天后归档会话，保护全局最新 20 个、每个工作区最新 10 个以及已加载／锁定会话；未引用产物保留 30 天，后台日志保留 14 天。在 `/config` 的会话页按 `G` 预览，再明确确认执行。会话归档为 gzip，仍能列出和恢复；历史、压缩归档及恢复备份引用的产物不会被删除。压缩前的历史会写入 `history://<session>/compaction/INDEX.md` 分段索引，模型可通过 `read` 回读被摘要省略的精确细节。保留策略与上下文压缩互不替代。

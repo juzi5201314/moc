@@ -11,7 +11,7 @@ pub struct CliArgs {
     /// 覆盖会话模型 selector。
     #[arg(long)]
     pub model: Option<String>,
-    /// 新会话的工作模式（问答模式按提示生效，请用 REPL 的 /ask）。
+    /// 新会话的工作模式。
     #[arg(long, value_enum, default_value_t = ModeArg::Normal)]
     pub mode: ModeArg,
     /// 会话工作目录。
@@ -51,6 +51,7 @@ pub enum ModeArg {
     Normal,
     Plan,
     Ptc,
+    ClmExperimental,
 }
 
 impl From<ModeArg> for SessionMode {
@@ -59,6 +60,7 @@ impl From<ModeArg> for SessionMode {
             ModeArg::Normal => Self::Normal,
             ModeArg::Plan => Self::Plan,
             ModeArg::Ptc => Self::Ptc,
+            ModeArg::ClmExperimental => Self::ClmExperimental,
         }
     }
 }

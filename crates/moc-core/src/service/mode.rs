@@ -203,8 +203,18 @@ pub async fn approve_plan(
 
 pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     match mode {
-        SessionMode::Normal => &[
-            "read", "grep", "find", "todo", "job", "bash", "edit", "write", "ask", "skill",
+        SessionMode::Normal | SessionMode::ClmExperimental => &[
+            "read",
+            "grep",
+            "find",
+            "todo",
+            "job",
+            "bash",
+            "edit",
+            "write",
+            "ask",
+            "skill",
+            "clm_context",
             "run_code",
         ],
         SessionMode::Ask => &[
@@ -238,7 +248,7 @@ pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> b
         return false;
     }
     match mode {
-        SessionMode::Normal => true,
+        SessionMode::Normal | SessionMode::ClmExperimental => true,
         SessionMode::Ask | SessionMode::Plan => tier == crate::tools::Tier::Read,
         SessionMode::Ptc => false,
     }

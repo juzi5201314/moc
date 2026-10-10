@@ -176,18 +176,42 @@ async fn run_prompt_locked(
                 .map_err(protocol_to_rpc)?;
         }
     }
-
     let runtime = inner.runtime(&params.session_id).await;
     let state = record.state.lock().await;
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
-    // `/ask` 等临时意图通过 `PromptParams::mode` 覆盖本条用户消息的模式：
-    // 一次 `session/prompt` 内部的全部 turn（多次模型请求 + 各组工具调用）共用
-    // 这一个值，且不落地为会话状态。`session/set_mode` 走 `try_prompt_lock`，
-    // 提示在飞时无法调进来改写它。
-    let mode = params.mode.unwrap_or(state.mode);
+    // CLM 是会话级模式；临时 `/ask` 不能覆盖已经启用的 CLM。
+    let mode = if state_snapshot.mode == moc_protocol::methods::SessionMode::ClmExperimental {
+        moc_protocol::methods::SessionMode::ClmExperimental
+    } else {
+        params.mode.unwrap_or(state.mode)
+    };
+    let clm_active = mode == moc_protocol::methods::SessionMode::ClmExperimental;
     let permission = inner.effective_permission(state.permission);
     let cwd = std::path::PathBuf::from(&state.session.cwd);
     drop(state);
+    if clm_active {
+        let current = record.state.lock().await.clone();
+        if current.clm_context.is_none() {
+            let initial = model_messages(&current, None, Some(&model));
+            crate::tools::clm::ensure_context(
+                &inner.sessions,
+                &params.session_id,
+                &current,
+                &initial,
+            )
+            .await
+            .map_err(to_rpc)?;
+        } else {
+            crate::tools::clm::append_message(
+                &inner.sessions,
+                &record.state,
+                &params.session_id,
+                &user_message,
+            )
+            .await
+            .map_err(to_rpc)?;
+        }
+    }
 
     if project_config.workspace.watch && runtime.workspace.lock().await.is_none() {
         let baseline = snapshot_workspace(cwd.clone(), project_config.workspace.max_scan_entries)
@@ -233,6 +257,7 @@ async fn run_prompt_locked(
         .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
         .map_err(to_rpc)?;
     let tools_available = inner.tools.definitions(
+        mode,
         inner.client_supports_ask(ctx.connection_id()),
         &project_config,
     );
@@ -369,7 +394,8 @@ async fn run_prompt_locked(
             compact::messages_tokens(&reminder_messages),
         );
         messages.extend(reminder_messages.iter().cloned());
-        if project_config.compaction.enabled
+        if mode != moc_protocol::methods::SessionMode::ClmExperimental
+            && project_config.compaction.enabled
             && project_config.compaction.auto
             && (turn == 0 || project_config.compaction.mid_prompt)
             && context_tokens > compact::threshold(&project_config, model.context_window)
@@ -641,6 +667,16 @@ async fn run_prompt_locked(
             )
             .await
             .map_err(to_rpc)?;
+        if mode == moc_protocol::methods::SessionMode::ClmExperimental {
+            crate::tools::clm::append_message(
+                &inner.sessions,
+                &record.state,
+                &params.session_id,
+                &response.message,
+            )
+            .await
+            .map_err(to_rpc)?;
+        }
         {
             let mut state = record.state.lock().await;
             state.usage = response.usage;

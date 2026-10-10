@@ -2178,6 +2178,11 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             if let Some(session) = app.session.as_mut() {
                 session.mode = mode;
             }
+            if mode == SessionMode::ClmExperimental {
+                app.set_notice(
+                    "CLM 实验模式已启用：模型将维护实时上下文；本会话使用后不可退出 CLM",
+                );
+            }
         }
         SessionUpdate::ModelChanged { model } => {
             if let Some(session) = app.session.as_mut() {
@@ -2477,6 +2482,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             }
         }
         "/mode" => cycle_mode(app, connection),
+        "/clm-experimental" => set_mode(app, connection, SessionMode::ClmExperimental),
         "/permission" => set_permission(app, connection, rest),
         "/ask" => ask_once(app, connection, rest),
         "/model" => app.open_model_picker(),

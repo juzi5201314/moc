@@ -62,7 +62,17 @@ pub fn model_messages(
     system: Option<Message>,
     model: Option<&crate::ResolvedModel>,
 ) -> Vec<Message> {
-    let mut messages = synthetic_messages(state, system);
+    let mut messages = Vec::with_capacity(2);
+    if let Some(system) = system {
+        messages.push(system);
+    }
+    if state.mode == moc_protocol::methods::SessionMode::ClmExperimental
+        && let Some(context) = &state.clm_context
+    {
+        messages.push(crate::clm::message(context));
+        return messages;
+    }
+    messages.extend(synthetic_messages(state, None));
     let start = visible_history_start(state);
     messages.extend(
         state.transcript[start..]
@@ -290,5 +300,42 @@ mod tests {
             );
             assert!(state.native_input.is_none());
         }
+    }
+
+    #[test]
+    fn clm_projection_replaces_model_view_but_preserves_transcript() {
+        let header = Entry::header(
+            "ses_clm12345678".into(),
+            "/tmp".into(),
+            "p/model".into(),
+            SessionMode::ClmExperimental,
+            None,
+            "clm".into(),
+            1,
+        );
+        let user = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("原始用户请求"),
+                tool: None,
+                finish_reason: None,
+            },
+            header.id().into(),
+            2,
+        );
+        let context = Entry::from_payload(
+            EntryPayload::ClmContext {
+                content: "整理后的实时上下文".into(),
+            },
+            user.id().into(),
+            3,
+        );
+        let state = SessionState::from_entries(vec![header, user, context]).unwrap();
+        let messages = model_messages(&state, Some(Message::system("system")), None);
+
+        assert_eq!(state.transcript.len(), 1);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].text(), "system");
+        assert!(messages[1].text().contains("整理后的实时上下文"));
+        assert!(!messages[1].text().contains("原始用户请求"));
     }
 }

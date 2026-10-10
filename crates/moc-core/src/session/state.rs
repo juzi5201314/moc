@@ -74,6 +74,8 @@ pub struct SessionState {
     pub model_usage: BTreeMap<String, ModelUsage>,
     pub usage_at: usize,
     pub server_compaction_disabled: bool,
+    /// CLM 实验模式的当前工作上下文；原始 transcript 始终保留。
+    pub clm_context: Option<String>,
     pub last_entry_id: String,
 }
 
@@ -130,6 +132,7 @@ impl SessionState {
             summary: None,
             first_kept_id: None,
             native_input: None,
+            clm_context: None,
             notices: Vec::new(),
             last_entry_id: first.id().to_owned(),
         };
@@ -203,12 +206,20 @@ impl SessionState {
                 self.summary = None;
                 self.native_input = None;
                 self.first_kept_id = None;
+                self.clm_context = None;
                 self.usage = Usage::default();
                 self.usage_at = 0;
             }
+            Entry::ClmContext { content, .. } => {
+                self.clm_context = Some(content.clone());
+            }
             Entry::ModeChange { mode, .. } => {
+                let mode_changed = self.mode != *mode;
                 self.mode = *mode;
                 self.session.mode = *mode;
+                if mode_changed || *mode != SessionMode::ClmExperimental {
+                    self.clm_context = None;
+                }
             }
             Entry::PermissionChange { permission, .. } => {
                 self.permission = *permission;

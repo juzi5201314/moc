@@ -137,16 +137,21 @@ pub fn mode_reminder(mode: SessionMode) -> Message {
     let text = match mode {
         SessionMode::Normal => {
             "Current mode: normal. Workspace changes are allowed; follow the tool policies above."
+                .to_owned()
         }
         SessionMode::Ask => {
             "Current mode: ask. The workspace is read-only. Read and search are allowed; do not modify files. run_code inherits this restriction."
+                .to_owned()
         }
         SessionMode::Plan => {
             "Current mode: plan. The workspace is read-only while exploring. When the plan is complete, call submit_plan and end the turn. run_code inherits this restriction."
+                .to_owned()
         }
         SessionMode::Ptc => {
             "Current mode: ptc. Call tools through run_code only; direct native calls other than run_code are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
+                .to_owned()
         }
+        SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION.to_owned(),
     };
     reminder_message(format!("<system-reminder>{text}</system-reminder>"))
 }

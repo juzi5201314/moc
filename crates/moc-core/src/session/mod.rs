@@ -500,6 +500,17 @@ impl SessionTable {
     ) -> Result<SessionInfo, CoreError> {
         let record = self.get(session_id).await?;
         self.reject_foreign_lock(session_id, &record.paths)?;
+        let state = record.state.lock().await;
+        let clm_locked = state
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, Entry::ClmContext { .. }));
+        if clm_locked && mode != SessionMode::ClmExperimental {
+            return Err(CoreError::Session(
+                "CLM 实验模式已在本会话中使用，不能切换到其它模式".into(),
+            ));
+        }
+        drop(state);
         self.append(session_id, EntryPayload::ModeChange { mode })
             .await?;
         let mut session = record.state.lock().await.session_info();

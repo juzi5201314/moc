@@ -36,7 +36,11 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/mode",
-        description: "切换会话模式：标准／计划／PTC",
+        description: "切换会话模式：标准／计划／PTC／CLM实验",
+    },
+    SlashCommand {
+        name: "/clm-experimental",
+        description: "切换 CLM 实验模式；启用后本会话固定使用 CLM",
     },
     SlashCommand {
         name: "/permission",

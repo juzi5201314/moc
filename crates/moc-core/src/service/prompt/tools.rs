@@ -241,6 +241,20 @@ pub(super) async fn execute_tool_batch(
             )
             .await
             .map_err(to_rpc)?;
+        if mode == moc_protocol::methods::SessionMode::ClmExperimental {
+            let message = Message {
+                role: Role::Tool,
+                content: vec![ContentPart::ToolResult(tool_result.clone())],
+            };
+            crate::tools::clm::append_message(
+                &inner.sessions,
+                &tool_ctx.state,
+                session_id,
+                &message,
+            )
+            .await
+            .map_err(to_rpc)?;
+        }
         if config.openviking.capture
             && let Some(client) = tool_ctx.openviking.as_ref()
             && let Some(peer) = tool_ctx.openviking_peer.as_deref()

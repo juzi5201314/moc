@@ -55,7 +55,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 `Ctrl+Enter`、`Ctrl+M` 这类组合键需要终端支持区分；不支持时 `Ctrl+M` 等同于 `Enter`，切换会话模式请用 `Alt+M`（键位可在设置页重绑）。
 
-模式菜单与 `/mode` 只在标准、计划、PTC 之间切换。问答是单条消息的临时意图：`/ask <问题>` 让**这一次提示**（含其全部轮——过程中的多次模型请求与各组工具调用）按只读模式处理，不改变会话模式，提示结束后自动恢复。
+模式菜单与 `/mode` 现在支持标准、计划、PTC 和 `(clm)` 实验模式。`/clm-experimental` 可直接启用 CLM；也可用 `--mode clm-experimental` 创建新会话。CLM 模式会在 TUI 图例显示 `(clm)`，并在首次请求后锁定本会话模式，不能再切换回其它模式；原始会话日志仍完整保留，模型维护的是独立实时上下文视图。
 
 ### 快捷键
 
@@ -78,7 +78,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Esc` | 运行中停止当前提示；空闲时清除选区或输入，空输入框双击打开消息回退，或关闭模态 |
 | `Ctrl+C` | Cancel while running; press again to exit |
 
-斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/ask` `/compact` `/usage` `/config` `/quit`；`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
+斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/clm-experimental` `/ask` `/compact` `/usage` `/config` `/quit`；`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
 
 ### 剪贴板
 

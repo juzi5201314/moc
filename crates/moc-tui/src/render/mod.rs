@@ -1141,8 +1141,8 @@ mod tests {
         assert_eq!(menu.area.right(), legend.right(), "右缘对齐模式图例");
         assert_eq!(menu.area.bottom(), legend.y, "整体贴在图例上方");
         assert_eq!(menu.entry_at(menu.area.x + 4, menu.area.y + 1), Some(0));
-        // 高亮行就是当前模式那一行（图例行上方第 3 行）。
-        let plan_y = legend.y - 3;
+        // 当前模式行位于图例上方第 4 行；CLM 作为第四个可持久模式加入菜单。
+        let plan_y = legend.y - 4;
         assert!(
             row_text(
                 &terminal,
@@ -1151,7 +1151,7 @@ mod tests {
                     y: plan_y,
                     width: 12,
                     height: 1,
-                }
+                },
             )
             .starts_with("❯ plan"),
             "当前模式行同时是菜单高亮行"

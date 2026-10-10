@@ -52,9 +52,11 @@ pub(crate) async fn compact(
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {
         messages: full_messages,
-        tools: inner
-            .tools
-            .definitions(inner.client_supports_ask(ctx.connection_id()), config),
+        tools: inner.tools.definitions(
+            state.mode,
+            inner.client_supports_ask(ctx.connection_id()),
+            config,
+        ),
         native_input: None,
         ..ChatRequest::default()
     };

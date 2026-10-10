@@ -1157,10 +1157,11 @@ impl AgentService for Core {
                 .copied()
                 .sum::<u64>(),
         );
-        let tools = self
-            .inner
-            .tools
-            .definitions(self.inner.client_supports_ask(ctx.connection_id()), &config);
+        let tools = self.inner.tools.definitions(
+            state.mode,
+            self.inner.client_supports_ask(ctx.connection_id()),
+            &config,
+        );
         let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
         let directory_tokens = pieces
             .iter()
