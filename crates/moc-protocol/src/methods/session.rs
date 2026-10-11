@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 use crate::method::{ClientRequest, Method};
 
 /// `session/new`：新建会话。
+///
+/// 以计划模式创建时会立即应用 `models.roles.plan` 模型（该角色配置为 `none` 时沿用
+/// 指定模型），退出计划模式再恢复创建时指定的模型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionNew;
 
@@ -98,6 +101,10 @@ impl SessionPermission {
 }
 
 /// `session/set_mode`：切换会话工作模式。
+///
+/// 进入计划模式会把会话模型切到 `models.roles.plan` 指定的模型（该角色配置为
+/// `none` 时沿用当前模型），退出计划模式恢复进入前的模型；模型切换通过
+/// [`crate::methods::SessionUpdate::ModelChanged`] 推送。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionSetMode;
 

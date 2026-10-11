@@ -19,7 +19,7 @@ pub mod editor;
 pub mod model;
 mod schema;
 
-pub use model::{ModelCapabilities, ThinkingLevel};
+pub use model::{ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FeatureConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig,
@@ -103,11 +103,16 @@ impl ResolvedConfig {
             "plan" => self.roles.plan.as_str(),
             other => other,
         };
-        let selector = if selector == "inherit" {
+        let selector = if selector == ROLE_INHERIT {
             self.roles.default.as_str()
         } else {
             selector
         };
+        if selector == ROLE_NONE {
+            return Err(CoreError::Config(
+                "none 只用于计划模型，表示进入计划模式时不切换模型".into(),
+            ));
+        }
         if selector.is_empty() {
             return Err(CoreError::Config(
                 "尚未配置主模型，请打开 /config 添加供应商并选择至少一个模型".into(),
@@ -116,7 +121,18 @@ impl ResolvedConfig {
         resolve_one(&self.providers, selector, None)
     }
 
+    /// 进入计划模式时应用的模型；`plan = "none"` 表示沿用会话当前模型。
+    pub fn resolve_plan_mode_model(&self) -> Result<Option<ResolvedModel>, CoreError> {
+        if self.roles.plan == ROLE_NONE {
+            return Ok(None);
+        }
+        self.resolve_model("plan").map(Some)
+    }
+
     /// 返回模型角色对应的已解析模型。
+    ///
+    /// 计划模型可以配置为 `none`（进入计划模式不切换模型），此时返回配置错误；
+    /// 需要区分这种情况时改用 [`Self::resolve_plan_mode_model`]。
     pub fn resolve_role(&self, role: &str) -> Result<ResolvedModel, CoreError> {
         self.resolve_model(role)
     }
@@ -582,5 +598,38 @@ max_output_tokens = 128000
         )
         .expect("写配置");
         assert!(ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err());
+    }
+
+    #[test]
+    fn plan_role_accepts_none_and_other_roles_reject_it() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        let provider = "[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
+        fs::write(
+            home.join("config.toml"),
+            format!("[models.roles]\ndefault='p/m'\nplan='none'\n{provider}"),
+        )
+        .expect("写配置");
+        let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
+            .expect("计划模型可以是 none");
+        assert!(
+            config
+                .resolve_plan_mode_model()
+                .expect("解析计划模型")
+                .is_none()
+        );
+        assert!(config.resolve_model("plan").is_err());
+        for roles in ["default='none'", "default='p/m'\nexplore='none'"] {
+            fs::write(
+                home.join("config.toml"),
+                format!("[models.roles]\n{roles}\n{provider}"),
+            )
+            .expect("写配置");
+            assert!(
+                ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err(),
+                "{roles} 不能是 none"
+            );
+        }
     }
 }

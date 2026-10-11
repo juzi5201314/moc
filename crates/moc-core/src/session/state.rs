@@ -58,6 +58,9 @@ pub struct SessionState {
     pub mode: SessionMode,
     pub permission: SessionPermission,
     pub model: String,
+    /// 计划模式临时覆盖前的会话模型；退出计划模式时恢复。随 transcript 重放，
+    /// 会话恢复后依然有效；只在当前处于计划模式时有意义。
+    plan_base_model: Option<String>,
     pub todos: Vec<TodoPhase>,
     pub plans: Vec<PlanInfo>,
     pub child_calls: Vec<moc_protocol::methods::session::TranscriptChildCall>,
@@ -117,6 +120,8 @@ impl SessionState {
             mode: *mode,
             permission: *permission,
             model: model.clone(),
+            // 以计划模式创建（含直接创建与会话恢复）时，header 记录的就是会话自身模型。
+            plan_base_model: (*mode == SessionMode::Plan).then(|| model.clone()),
             todos: Vec::new(),
             plans: Vec::new(),
             child_calls: Vec::new(),
@@ -215,6 +220,10 @@ impl SessionState {
             }
             Entry::ModeChange { mode, .. } => {
                 let mode_changed = self.mode != *mode;
+                if mode_changed && *mode == SessionMode::Plan {
+                    // 计划模式只临时覆盖模型：记住进入前的会话模型，退出时恢复。
+                    self.plan_base_model = Some(self.model.clone());
+                }
                 self.mode = *mode;
                 self.session.mode = *mode;
                 if mode_changed || *mode != SessionMode::ClmExperimental {
@@ -303,6 +312,16 @@ impl SessionState {
     /// 最新持久化视图的 session 元信息。
     pub fn session_info(&self) -> SessionInfo {
         self.session.clone()
+    }
+
+    /// 退出计划模式时要恢复的会话模型。
+    ///
+    /// 计划模式期间该值由进入时的覆盖记录（或计划模式下的 header）填充；不在
+    /// 计划模式时退回当前模型，供统一的恢复路径使用。
+    pub fn exit_plan_model(&self) -> &str {
+        self.plan_base_model
+            .as_deref()
+            .unwrap_or(self.model.as_str())
     }
 }
 

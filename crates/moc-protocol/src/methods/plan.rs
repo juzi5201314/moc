@@ -6,6 +6,9 @@ use super::session::SessionMode;
 use crate::method::{ClientRequest, Method};
 
 /// `session/plan_approve`：批准或拒绝已提交计划。
+///
+/// 批准后原地执行会退出计划模式并恢复进入计划模式前的会话模型；新会话执行则把
+/// 该模型作为执行会话的初始模型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionPlanApprove;
 

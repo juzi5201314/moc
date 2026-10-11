@@ -39,6 +39,8 @@ allow_patterns = ["^mkdir\\s+-p\\s+[^/]+$", "^git\\s+(add|commit)\\b.*$"]
 
 ```
 
+`[models.roles]` 的 `explore` 与 `plan` 默认 `inherit`（沿用主模型）。切换到计划模式时，会话模型会切到 `plan` 指定的模型；`plan = "none"` 表示不切换、沿用当前会话模型。退出计划模式（批准计划或手动切出）会恢复进入前的会话模型，模型与模式变化都记入 transcript，会话卸载重载后依然有效。
+
 `base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
 
 `[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*-reasoner"` 会匹配 `provider/example-reasoner`；以上名称仅演示配置结构，不代表内置模型。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
@@ -121,6 +123,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - `full` 是 yolo：bash 不做授权询问，但危险命令拒绝规则始终生效。
 - `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 仍由 core 直接写入工作区。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
+- 计划模式按 `models.roles.plan` 切换模型：进入时应用计划模型（`plan = "none"` 时沿用当前模型），退出时恢复进入前的模型；`session/new` 直接以计划模式创建会话同样生效。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。

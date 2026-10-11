@@ -55,7 +55,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 `Ctrl+Enter`、`Ctrl+M` 这类组合键需要终端支持区分；不支持时 `Ctrl+M` 等同于 `Enter`，切换会话模式请用 `Alt+M`（键位可在设置页重绑）。
 
-模式菜单与 `/mode` 现在支持标准、计划、PTC 和 `(clm)` 实验模式。`/clm-experimental` 可直接启用 CLM；也可用 `--mode clm-experimental` 创建新会话。CLM 模式会在 TUI 图例显示 `(clm)`，并在首次请求后锁定本会话模式，不能再切换回其它模式；原始会话日志仍完整保留，模型维护的是独立实时上下文视图。
+模式菜单与 `/mode` 现在支持标准、计划、PTC 和 `(clm)` 实验模式。切换到计划模式会把会话模型切到 `[models.roles].plan` 指定的模型（设为 `none` 则沿用当前会话模型），退出计划模式（批准计划或手动切出）恢复进入前的模型。`/clm-experimental` 可直接启用 CLM；也可用 `--mode clm-experimental` 创建新会话。CLM 模式会在 TUI 图例显示 `(clm)`，并在首次请求后锁定本会话模式，不能再切换回其它模式；原始会话日志仍完整保留，模型维护的是独立实时上下文视图。
 
 ### 快捷键
 

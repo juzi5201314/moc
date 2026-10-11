@@ -755,6 +755,22 @@ impl AgentService for Core {
             )
             .await
             .map_err(to_rpc)?;
+        // 以计划模式创建会话：header 记录会话自身模型，随后立即覆盖为计划模型，
+        // 退出计划模式时再恢复。
+        if params.mode == SessionMode::Plan
+            && let Some(plan_model) = config
+                .resolve_plan_mode_model()
+                .map_err(to_rpc)?
+                .map(|model| model.selector)
+                .filter(|plan_model| *plan_model != model.selector)
+        {
+            info = self
+                .inner
+                .sessions
+                .set_model(&info.id, plan_model)
+                .await
+                .map_err(to_rpc)?;
+        }
         info.permission = self.inner.effective_permission(info.permission);
         if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) && config.workspace.watch {
             let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
@@ -1005,33 +1021,49 @@ impl AgentService for Core {
             .acquire_lock(&params.session_id, &ctx.client().frontend)
             .await
             .map_err(to_rpc)?;
+        let (cwd, from) = {
+            let state = record.state.lock().await;
+            (PathBuf::from(state.session.cwd.clone()), state.mode)
+        };
+        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
+        // 进入计划模式需要先解析计划模型：解析失败不能留下已切模式、未切模型的半状态。
+        let plan_model = if params.mode == SessionMode::Plan && from != SessionMode::Plan {
+            config
+                .resolve_plan_mode_model()
+                .map_err(to_rpc)?
+                .map(|model| model.selector)
+        } else {
+            None
+        };
         let mut info = self
             .inner
             .sessions
             .set_mode(&params.session_id, params.mode)
             .await
             .map_err(to_rpc)?;
+        let switched = mode::sync_plan_model(
+            &self.inner,
+            &params.session_id,
+            from,
+            params.mode,
+            plan_model,
+        )
+        .await
+        .map_err(to_rpc)?;
         drop(file_lock);
+        if switched.is_some() {
+            info = record.state.lock().await.session_info();
+        }
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
         let runtime = self.inner.runtime(&params.session_id).await;
-        if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) {
-            let cwd = PathBuf::from(&info.cwd);
-            let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
-            if config.workspace.watch {
-                let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
-                    .await
-                    .map_err(to_rpc)?;
-                *runtime.workspace.lock().await = Some(snapshot);
-            }
+        if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) && config.workspace.watch {
+            let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
+                .await
+                .map_err(to_rpc)?;
+            *runtime.workspace.lock().await = Some(snapshot);
         }
-        ctx.updates()
-            .emit(
-                params.session_id,
-                SessionUpdate::ModeChanged { mode: info.mode },
-            )
-            .await
-            .map_err(protocol_to_rpc)?;
+        mode::emit_mode_change(&ctx, &params.session_id, info.mode, switched).await?;
         Ok(info)
     }
 

@@ -46,6 +46,11 @@ pub(super) struct ModelCatalog {
     pub roles: ModelRoles,
 }
 
+/// 角色选择器：沿用主模型。
+pub const ROLE_INHERIT: &str = "inherit";
+/// 计划模型选择器：进入计划模式时不切换模型，沿用会话当前模型。
+pub const ROLE_NONE: &str = "none";
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRoles {
@@ -666,13 +671,19 @@ pub(super) fn validate_roles(
     {
         return Ok(());
     }
-    for (role, selector) in [
-        ("主模型", roles.default.as_str()),
-        ("探索子代理模型", roles.explore.as_str()),
-        ("计划模型", roles.plan.as_str()),
+    for (role, selector, allows_none) in [
+        ("主模型", roles.default.as_str(), false),
+        ("探索子代理模型", roles.explore.as_str(), false),
+        ("计划模型", roles.plan.as_str(), true),
     ] {
-        let selector = if selector == "inherit" && role != "主模型" {
-            &roles.default
+        if selector == ROLE_NONE {
+            if allows_none {
+                continue;
+            }
+            return Err(CoreError::Config(format!("{role}不能设置为 none")));
+        }
+        let selector = if selector == ROLE_INHERIT && role != "主模型" {
+            roles.default.as_str()
         } else {
             selector
         };

@@ -2,6 +2,10 @@
 
 #[path = "support/content.rs"]
 mod content;
+mod support;
+
+use support::Harness;
+
 fn text_stream(text: &str) -> String {
     format!(
         "data: {}\n\ndata: [DONE]\n\n",
@@ -34,10 +38,11 @@ use std::sync::Arc;
 use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
-    ClientCapabilities, ClientInfo, InputPart, PromptParams, SessionCompact, SessionCompactParams,
-    SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams, SessionPrompt,
-    SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate,
-    SessionUpdateMethod, UpstreamField,
+    ClientCapabilities, ClientInfo, InputPart, PlanAction, PlanStatus, PromptParams,
+    SessionCompact, SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew,
+    SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
+    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
+    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -1215,4 +1220,301 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     drop(client);
     drop(connection);
     drop(server);
+}
+
+/// 进入计划模式切到 `plan` 角色模型，退出（含会话恢复后）恢复进入前的会话模型。
+#[tokio::test]
+async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let model = body["model"].as_str().expect("请求带模型");
+            ResponseTemplate::new(200).set_body_raw(
+                text_stream(match model {
+                    "glm" => "glm response",
+                    "ds" => "ds response",
+                    other => panic!("unexpected model {other}"),
+                }),
+                "text/event-stream",
+            )
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/ds:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.ds]\ncontext_window=100000\nmax_output_tokens=4096\n",
+    )
+    .await;
+
+    let session = harness
+        .client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("create session");
+    assert_eq!(session.model, "test/glm:off");
+    harness.prompt(&session.id, "first").await;
+
+    let planned = harness
+        .client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: session.id.clone(),
+            mode: SessionMode::Plan,
+        })
+        .await
+        .expect("enter plan mode");
+    assert_eq!(planned.mode, SessionMode::Plan);
+    assert_eq!(planned.model, "test/ds:off", "进入计划模式要切到计划模型");
+    harness.prompt(&session.id, "plan").await;
+
+    // 卸载再恢复：计划模式与计划模型都从 transcript 复原。
+    harness
+        .client
+        .call::<SessionUnload>(SessionUnloadParams {
+            session_id: session.id.clone(),
+        })
+        .await
+        .expect("unload session");
+    let resumed = harness.load(&session.id).await;
+    assert_eq!(resumed.session.mode, SessionMode::Plan);
+    assert_eq!(resumed.session.model, "test/ds:off");
+
+    let normal = harness
+        .client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: session.id.clone(),
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("leave plan mode");
+    assert_eq!(
+        normal.model, "test/glm:off",
+        "退出计划模式要恢复进入前的模型"
+    );
+    harness.prompt(&session.id, "implement").await;
+
+    // 以计划模式直接创建：立即使用计划模型，退出后回到创建时指定的模型。
+    let created = harness
+        .client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Plan,
+        })
+        .await
+        .expect("create plan session");
+    assert_eq!(created.model, "test/ds:off");
+    let exited = harness
+        .client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: created.id.clone(),
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("leave plan mode");
+    assert_eq!(exited.model, "test/glm:off");
+
+    let updates = harness.updates.lock().clone();
+    for model in ["test/ds:off", "test/glm:off"] {
+        assert!(
+            updates.contains(&SessionUpdate::ModelChanged {
+                model: model.into()
+            }),
+            "缺少 {model} 的模型变化通知：{updates:?}"
+        );
+    }
+    let models: Vec<String> = upstream
+        .received_requests()
+        .await
+        .expect("capture requests")
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .expect("请求体 JSON")["model"]
+                .as_str()
+                .expect("请求模型")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(models, ["glm", "ds", "glm"]);
+    harness.close().await;
+}
+
+/// `plan = "none"`：进入与退出计划模式都不切换模型，也不推送模型变化。
+#[tokio::test]
+async fn plan_role_none_keeps_the_session_model_across_mode_changes() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(text_stream("plain response"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/gpt-test:off",
+        "none",
+        "",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "first").await;
+    let planned = harness
+        .client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: session.clone(),
+            mode: SessionMode::Plan,
+        })
+        .await
+        .expect("enter plan mode");
+    assert_eq!(planned.model, "test/gpt-test:off");
+    harness.prompt(&session, "plan").await;
+    let normal = harness
+        .client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: session,
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("leave plan mode");
+    assert_eq!(normal.model, "test/gpt-test:off");
+    assert!(
+        !harness
+            .updates
+            .lock()
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ModelChanged { .. })),
+        "none 不应产生模型变化通知"
+    );
+    let models: Vec<String> = upstream
+        .received_requests()
+        .await
+        .expect("capture requests")
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .expect("请求体 JSON")["model"]
+                .as_str()
+                .expect("请求模型")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(models, ["gpt-test", "gpt-test"]);
+    harness.close().await;
+}
+
+/// 批准计划（原地执行）退出计划模式：恢复进入前的会话模型并推送给前端。
+#[tokio::test]
+async fn plan_approval_restores_the_session_model() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::json;
+
+    let plan_arguments = json!({
+        "title": "Build a small feature",
+        "markdown": "# Approved plan\n\n1. Inspect the workspace.\n2. Implement the change.",
+    });
+    let responses = [
+        support::tool_stream(vec![("call_plan", "submit_plan", plan_arguments)]),
+        text_stream("Implementation started."),
+    ];
+    let response_index = Arc::new(AtomicUsize::new(0));
+    let response_counter = Arc::clone(&response_index);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = response_counter.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_raw(responses[index].clone(), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/ds:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.ds]\ncontext_window=100000\nmax_output_tokens=4096\n",
+    )
+    .await;
+
+    let session = harness
+        .client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Plan,
+        })
+        .await
+        .expect("create plan session");
+    assert_eq!(session.model, "test/ds:off");
+    harness.prompt(&session.id, "Design the change").await;
+
+    let loaded = harness.load(&session.id).await;
+    let plan = loaded
+        .plans
+        .iter()
+        .find(|plan| plan.status == PlanStatus::Submitted)
+        .expect("提交的计划");
+    let approved = harness
+        .client
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: session.id.clone(),
+            plan_id: plan.plan_id.clone(),
+            action: PlanAction::Execute,
+        })
+        .await
+        .expect("approve plan in place");
+    assert_eq!(approved.mode, SessionMode::Normal);
+    assert_eq!(
+        approved.auto_prompt.as_deref(),
+        Some("Execute the approved plan.")
+    );
+    let reloaded = harness.load(&session.id).await;
+    assert_eq!(reloaded.session.mode, SessionMode::Normal);
+    assert_eq!(reloaded.session.model, "test/glm:off");
+    assert!(
+        harness
+            .updates
+            .lock()
+            .contains(&SessionUpdate::ModelChanged {
+                model: "test/glm:off".into()
+            }),
+        "批准计划要推送恢复后的模型"
+    );
+    harness
+        .prompt(&session.id, "Execute the approved plan.")
+        .await;
+    let models: Vec<String> = upstream
+        .received_requests()
+        .await
+        .expect("capture requests")
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .expect("请求体 JSON")["model"]
+                .as_str()
+                .expect("请求模型")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(models, ["ds", "glm"]);
+    harness.close().await;
 }

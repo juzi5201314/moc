@@ -18,13 +18,21 @@ pub struct Harness {
 
 impl Harness {
     pub async fn new(url: &str, api: &str, extra: &str) -> Self {
+        Self::with_roles(url, api, "test/gpt-test:off", "test/gpt-test:off", extra).await
+    }
+
+    /// 指定主模型与计划模型角色的测试内核。
+    ///
+    /// `plan` 传 `none` 表示进入计划模式不切换模型；`extra` 追加在配置末尾，只能
+    /// 新增表，不能重复定义已有的表。
+    pub async fn with_roles(url: &str, api: &str, default: &str, plan: &str, extra: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cwd = root.path().join("work");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::write(home.join("config.toml"), format!(
-            "[models.roles]\ndefault='test/gpt-test:off'\nexplore='test/gpt-test:off'\nplan='test/gpt-test:off'\n\\
+            "[models.roles]\ndefault='{default}'\nexplore='{default}'\nplan='{plan}'\n\
              [providers.test]\napi='{api}'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n\
              [providers.test.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n\
              [workspace]\nwatch=false\n[context_files]\nenabled=false\n{extra}\n"

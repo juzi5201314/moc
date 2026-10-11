@@ -195,7 +195,7 @@ pub enum SessionUpdate {
     },
     /// 会话工作模式变化。
     ModeChanged { mode: SessionMode },
-    /// 会话模型变化（`session/set_model` 之后由 core 推送）。
+    /// 会话模型变化（`session/set_model`，或计划模式切换引起的模型覆盖与恢复）。
     ModelChanged { model: String },
     /// Todo 清单变化。
     TodoChanged { phases: Vec<TodoPhase> },

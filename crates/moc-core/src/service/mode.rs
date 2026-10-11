@@ -11,6 +11,61 @@ use crate::compact;
 use crate::error::CoreError;
 use crate::session::entries::EntryPayload;
 
+/// 计划模式切换时的会话模型同步：进入计划模式应用 `plan` 角色模型，退出时恢复
+/// 进入前的会话模型。
+///
+/// `plan_model` 是进入计划模式时预先解析好的目标模型选择器；`plan = "none"` 表示
+/// 不切换，此时传 `None`。返回切换后的选择器；模型未变化时为 `None`，调用方据此
+/// 决定是否推送 [`SessionUpdate::ModelChanged`]。
+pub async fn sync_plan_model(
+    inner: &CoreInner,
+    session_id: &str,
+    from: SessionMode,
+    to: SessionMode,
+    plan_model: Option<String>,
+) -> Result<Option<String>, CoreError> {
+    if from == to {
+        return Ok(None);
+    }
+    let record = inner.sessions.get(session_id).await?;
+    let target = {
+        let state = record.state.lock().await;
+        let target = if to == SessionMode::Plan {
+            plan_model
+        } else if from == SessionMode::Plan {
+            Some(state.exit_plan_model().to_owned())
+        } else {
+            None
+        };
+        target.filter(|target| *target != state.model)
+    };
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    inner.sessions.set_model(session_id, target.clone()).await?;
+    Ok(Some(target))
+}
+
+/// 推送模式变化；模型随模式切换时按「先模式后模型」的顺序补推模型变化。
+pub async fn emit_mode_change(
+    ctx: &RequestContext,
+    session_id: &str,
+    mode: SessionMode,
+    model: Option<String>,
+) -> Result<(), RpcError> {
+    ctx.updates()
+        .emit(session_id.to_owned(), SessionUpdate::ModeChanged { mode })
+        .await
+        .map_err(protocol_to_rpc)?;
+    if let Some(model) = model {
+        ctx.updates()
+            .emit(session_id.to_owned(), SessionUpdate::ModelChanged { model })
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
+    Ok(())
+}
+
 pub async fn approve_plan(
     inner: &CoreInner,
     ctx: RequestContext,
@@ -72,15 +127,7 @@ pub async fn approve_plan(
             .set_mode(&params.session_id, SessionMode::Plan)
             .await
             .map_err(to_rpc)?;
-        ctx.updates()
-            .emit(
-                params.session_id.clone(),
-                SessionUpdate::ModeChanged {
-                    mode: SessionMode::Plan,
-                },
-            )
-            .await
-            .map_err(protocol_to_rpc)?;
+        emit_mode_change(&ctx, &params.session_id, SessionMode::Plan, None).await?;
         return Ok(SessionPlanApproveResult {
             session_id: params.session_id,
             mode: SessionMode::Plan,
@@ -93,7 +140,10 @@ pub async fn approve_plan(
         let config = inner
             .project_config(std::path::Path::new(&state.session.cwd))
             .map_err(to_rpc)?;
-        let model = config.resolve_model(&state.model).map_err(to_rpc)?;
+        // 执行会话用进入计划模式前的会话模型，而不是计划模型。
+        let model = config
+            .resolve_model(state.exit_plan_model())
+            .map_err(to_rpc)?;
         let child = inner
             .sessions
             .create(
@@ -184,15 +234,16 @@ pub async fn approve_plan(
         .set_mode(&params.session_id, SessionMode::Normal)
         .await
         .map_err(to_rpc)?;
-    ctx.updates()
-        .emit(
-            params.session_id.clone(),
-            SessionUpdate::ModeChanged {
-                mode: SessionMode::Normal,
-            },
-        )
-        .await
-        .map_err(protocol_to_rpc)?;
+    let model = sync_plan_model(
+        inner,
+        &params.session_id,
+        SessionMode::Plan,
+        SessionMode::Normal,
+        None,
+    )
+    .await
+    .map_err(to_rpc)?;
+    emit_mode_change(&ctx, &params.session_id, SessionMode::Normal, model).await?;
     Ok(SessionPlanApproveResult {
         session_id: params.session_id,
         mode: SessionMode::Normal,

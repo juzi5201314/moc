@@ -911,8 +911,12 @@ impl SettingsPanel {
             return field.kind.clone();
         }
         let mut choices = Vec::new();
-        if field.path.last().is_some_and(|name| name != "default") {
+        let role = field.path.last().map_or("", String::as_str);
+        if role != "default" {
             choices.push(moc_protocol::ChoiceOption::new("inherit", "沿用主模型"));
+        }
+        if role == "plan" {
+            choices.push(moc_protocol::ChoiceOption::new("none", "沿用当前会话模型"));
         }
         if let Some(providers) = self.effective.get("providers").and_then(Value::as_object) {
             for (provider, value) in providers {

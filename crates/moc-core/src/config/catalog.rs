@@ -3,6 +3,8 @@
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
 use serde_json::{Value, json};
 
+use super::model::{ROLE_INHERIT, ROLE_NONE};
+
 pub fn provider_template() -> Value {
     json!({"api":"openai_chat", "base_url":"", "api_key":"", "headers":{}, "extra_body":{},
         "timeout_secs":null, "connect_timeout_secs":20.0, "max_concurrency":0, "cache":"auto",
@@ -273,10 +275,13 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 .map(|(value, label)| ChoiceOption::new(value, label))
                 .collect(),
         )
-    } else if path.as_slice() == ["models", "roles", "explore"]
-        || path.as_slice() == ["models", "roles", "plan"]
-    {
-        FieldKind::Choice(vec![ChoiceOption::new("inherit", "沿用主模型")])
+    } else if path.as_slice() == ["models", "roles", "explore"] {
+        FieldKind::Choice(vec![ChoiceOption::new(ROLE_INHERIT, "沿用主模型")])
+    } else if path.as_slice() == ["models", "roles", "plan"] {
+        FieldKind::Choice(vec![
+            ChoiceOption::new(ROLE_INHERIT, "沿用主模型"),
+            ChoiceOption::new(ROLE_NONE, "沿用当前会话模型"),
+        ])
     } else if matches!(key, "api_key") {
         FieldKind::Secret
     } else if object_editor {
@@ -319,7 +324,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "探索子代理模型",
             "供未来探索子代理使用；当前尚未接入子代理调度。",
         ),
-        "models.roles.plan" => ("计划模型", "制定计划时使用的模型。"),
+        "models.roles.plan" => (
+            "计划模型",
+            "制定计划时使用的模型；none 表示进入计划模式时不切换模型，沿用当前会话模型。",
+        ),
         "context_files.user" => ("用户指令", "加载用户目录下的 AGENTS.md。"),
         "context_files.project" => ("项目指令", "加载工作区中的 AGENTS.md 及其引用的文件。"),
         "context_files.enabled" => ("启用指令文件", "关闭后不再加载任何指令文件。"),
