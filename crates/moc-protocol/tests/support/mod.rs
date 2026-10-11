@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use moc_protocol::methods::{
-    AgentInfo, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
+    AgentProfile, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
     ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult, InputPart,
     ModelInfo, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
     OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
@@ -79,7 +79,7 @@ pub struct State {
     /// 默认模型。
     pub default_model: Option<String>,
     /// 可用 agent。
-    pub agents: Vec<AgentInfo>,
+    pub agents: Vec<AgentProfile>,
     /// 默认 agent。
     pub default_agent: Option<String>,
     /// core 的工作目录。
@@ -151,6 +151,7 @@ impl ScriptedService {
                         model: "deepseek-flash".to_owned(),
                         permission: SessionPermission::Full,
                         mode: SessionMode::Normal,
+                        parent_session_id: None,
                         cwd: "/home/soeur/project/moc".to_owned(),
                         created_at_ms: 10,
                         updated_at_ms,
@@ -184,7 +185,7 @@ impl ScriptedService {
                         },
                     ],
                     default_model: Some("deepseek-flash".to_owned()),
-                    agents: vec![AgentInfo {
+                    agents: vec![AgentProfile {
                         id: "build".to_owned(),
                         display_name: "Build".to_owned(),
                         description: Some("默认 agent".to_owned()),
@@ -614,6 +615,7 @@ impl AgentService for ScriptedService {
                 .or_else(|| state.default_model.clone())
                 .unwrap_or_else(|| "deepseek-flash".to_owned()),
             permission: SessionPermission::Full,
+            parent_session_id: None,
             cwd: params.cwd.clone().unwrap_or_else(|| state.cwd.clone()),
             created_at_ms: 1_000,
             updated_at_ms: 1_000,
@@ -963,6 +965,8 @@ impl UpdateLog {
 /// 更新的 `type` 标签。
 pub fn update_tag(update: &SessionUpdate) -> &'static str {
     match update {
+        SessionUpdate::AgentStarted { .. } => "agent_started",
+        SessionUpdate::AgentStatusChanged { .. } => "agent_status_changed",
         SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",

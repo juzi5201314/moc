@@ -26,6 +26,8 @@ cargo build
 
 首次启动不会预置供应商、模型或密钥。TUI 自动打开 `/config`：添加供应商、填写 API 地址与认证，按 `F` 获取模型，勾选需要的模型后添加；也可以手动添加模型。改动即刻生效，无需手动保存。主模型必须明确配置，其他模型角色默认沿用主模型。
 
+子代理使用独立持久子会话和上下文。模型可用 `spawn_agent` 创建直接子代理，工具与 REPL 支持 `list/send/steer/stop/wait` 控制；`inherit` 继承父会话当前模型，`default`、`explore`、`plan` 解析对应角色。子代理不复制父 transcript，和父会话共享工作目录、工具与权限，且不能继续创建子代理。TUI 按 `Ctrl+N` 或 `/agents` 管理子代理，宽屏显示实时状态侧栏。
+
 全局内核配置位于 `$MOC_HOME/config.toml`（默认 `~/.moc/config.toml`），项目覆盖位于工作目录的 `.moc/config.toml`。TUI 偏好独立保存在 `$MOC_HOME/tui.toml`，不会发送给模型。字段、配置来源、缓存、保留及压缩策略见 [内核配置说明](crates/moc-core/README.md)。
 
 ## TUI
@@ -72,13 +74,14 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Ctrl+V` | 粘贴剪贴板图片或文本（图片优先） |
 | `Ctrl+P` | 模型选择菜单 |
 | `Ctrl+R` | 会话恢复菜单 |
+| `Ctrl+N` | 子代理管理；宽屏显示当前会话子代理侧栏 |
 | `Ctrl+G` | 打开配置 |
 | `Alt+↑` | 编辑队首消息 |
 | `y` | 复制拖选内容（OSC52 + 本地剪贴板） |
 | `Esc` | 运行中停止当前提示；空闲时清除选区或输入，空输入框双击打开消息回退，或关闭模态 |
 | `Ctrl+C` | Cancel while running; press again to exit |
 
-斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/clm-experimental` `/ask` `/compact` `/usage` `/config` `/quit`；`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
+斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/clm-experimental` `/ask` `/agents` `/agent` `/steer-agent` `/stop-agent` `/compact` `/usage` `/config` `/quit`；`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
 
 ### 剪贴板
 

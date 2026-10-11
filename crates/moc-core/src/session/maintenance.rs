@@ -302,7 +302,7 @@ mod tests {
         entries::{Entry, EntryPayload},
         store::{SessionFile, SessionStore},
     };
-    use moc_protocol::SessionMode;
+    use moc_protocol::{SessionMode, SessionPermission};
 
     #[tokio::test]
     async fn preview_preserves_files_and_archive_can_resume_without_losing_references() {
@@ -314,6 +314,7 @@ mod tests {
             root.path().to_string_lossy().into_owned(),
             "p/model:off".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "归档测试".into(),
             1,

@@ -260,6 +260,7 @@ async fn run_prompt_locked(
         mode,
         inner.client_supports_ask(ctx.connection_id()),
         &project_config,
+        !ctx.is_subagent(),
     );
     let mut last_message = Message::default();
     let mut final_reason = FinishReason::Stop;
@@ -796,6 +797,7 @@ async fn run_prompt_locked(
             catalog: Arc::clone(&catalog),
             mode,
             permission,
+            allow_agents: !ctx.is_subagent(),
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
             openviking,

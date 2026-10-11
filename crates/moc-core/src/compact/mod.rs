@@ -224,6 +224,7 @@ pub(crate) async fn compact(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),
         &config,
+        true,
     );
     let fixed_tokens = messages_tokens(std::slice::from_ref(&system))
         .saturating_add(tools_tokens(&tools))
@@ -444,7 +445,7 @@ mod tests {
     use super::*;
     use crate::session::entries::{Entry, EntryPayload};
     use crate::session::state::SessionState;
-    use moc_protocol::methods::SessionMode;
+    use moc_protocol::methods::{SessionMode, SessionPermission};
 
     const MODEL_BASE: &str = "[models.roles]\ndefault='p/m'\nexplore='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
 
@@ -549,6 +550,7 @@ mod tests {
             "/tmp".into(),
             "gpt-x".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "t".into(),
             1,

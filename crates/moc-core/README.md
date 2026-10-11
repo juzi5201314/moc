@@ -69,11 +69,17 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 ### 请求、进程与输出预算
 
 - `providers.<id>.max_concurrency`：同一供应商跨会话共享并发限额，`0` 表示不限；取消等待不会占用名额。模型生成和压缩请求使用同一限额。
-- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 缓存系统前缀及近期历史，OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 预留给尚未实现的探索子代理。
+- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 缓存系统前缀及近期历史，OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
 - 模型的 `max_request_bytes` 控制单次 JSON 请求体，留空为 50 MiB。达到高水位后，core 只在请求副本中按旧到新淘汰图片，压缩和会话原始历史不被改写；图片 token 按固定视觉估算，不按 Base64 字节计量。
 - `tools.max_concurrent_calls`：标准模型工具批次中只读工具的同时执行上限；写入工具、bash、询问、计划、todo、skill 与 `run_code` 仍作为顺序屏障。默认 16。
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
 - `tools.output`：所有工具（包括 MCP）共用首尾输出预算（各 20 KiB）和读写文件容量上限（100 MiB），超出预算的完整文本自动归档；工具本身的分页、搜索和专项限制仍在各自分组。
+
+### 子代理
+
+模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`send_agent`、`steer_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可递归创建其它子代理。
+
+子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续 `send_agent`。TUI 按 `Ctrl+N` 或 `/agents` 打开当前会话的子代理列表，宽屏显示状态侧栏；`/agent [inherit|default|explore|plan] <task>` 创建任务，`/steer-agent <id> <message>` 与 `/stop-agent <id>` 快捷控制。REPL 提供 `/agents`、`/agent`、`/steer-agent`、`/stop-agent`。
 ### 代码编排（PTC）
 
 `run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在随宿主内嵌的固定 QuickJS/WASM guest 中，工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。

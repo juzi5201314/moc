@@ -38,6 +38,14 @@ impl Renderer {
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
         match params.update {
+            SessionUpdate::AgentStarted { agent } => {
+                let _ = writeln!(out, "\n[子代理已创建：{} · {}]", agent.title, agent.id);
+            }
+            SessionUpdate::AgentStatusChanged {
+                agent_id, status, ..
+            } => {
+                let _ = writeln!(out, "\n[子代理 {agent_id}：{status:?}]");
+            }
             SessionUpdate::ToolBatchStarted { .. } => {}
             SessionUpdate::AssistantDelta { delta, .. } => match delta {
                 AssistantDelta::Text { delta } => {

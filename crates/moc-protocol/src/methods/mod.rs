@@ -22,6 +22,7 @@
 //! `session/request_permission` / `session/request_ask`，或服务端收到 `session/prompt`
 //! 之外的未知名字，一律 [`crate::RpcErrorCode::MethodNotFound`]。
 
+pub mod agent;
 pub mod ask;
 pub mod bash;
 pub mod config;
@@ -39,9 +40,17 @@ pub mod update;
 
 use serde::{Deserialize, Serialize};
 
+pub use agent::{
+    AgentInfo, AgentList, AgentListParams, AgentListResult, AgentSend, AgentSendParams,
+    AgentSendResult, AgentSpawn, AgentSpawnParams, AgentSpawnResult, AgentStatus, AgentSteer,
+    AgentSteerParams, AgentStop, AgentStopParams, AgentStopResult, AgentWait, AgentWaitParams,
+    AgentWaitResult,
+};
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
 pub use bash::{BashCommand, BashParams, BashResult, SessionBash};
-pub use config::{AgentInfo, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelPricing};
+pub use config::{
+    AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelPricing,
+};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff, build_hunks};
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
@@ -139,6 +148,12 @@ mod tests {
             (<OpenVikingWrite as Method>::NAME, "openviking/write"),
             (<OpenVikingDelete as Method>::NAME, "openviking/delete"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
+            (<AgentSpawn as Method>::NAME, "agent/spawn"),
+            (<AgentList as Method>::NAME, "agent/list"),
+            (<AgentSend as Method>::NAME, "agent/send"),
+            (<AgentSteer as Method>::NAME, "agent/steer"),
+            (<AgentStop as Method>::NAME, "agent/stop"),
+            (<AgentWait as Method>::NAME, "agent/wait"),
         ];
         for (actual, expected) in client_methods {
             assert_eq!(actual, expected);
@@ -175,6 +190,12 @@ mod tests {
         client::<SessionSetMode>();
         client::<SessionSetModel>();
         client::<SessionPlanApprove>();
+        client::<AgentSpawn>();
+        client::<AgentList>();
+        client::<AgentSend>();
+        client::<AgentSteer>();
+        client::<AgentStop>();
+        client::<AgentWait>();
         client::<SessionCompact>();
         server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();

@@ -235,6 +235,9 @@ pub struct SessionInfo {
     /// 当前工作模式。
     #[serde(default)]
     pub mode: SessionMode,
+    /// 父会话 ID；根会话为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     /// 工作目录。
     pub cwd: String,
     /// 创建时间的 UNIX 毫秒时间戳。
@@ -674,6 +677,7 @@ mod tests {
             title: "t".into(),
             model: "m".into(),
             permission: SessionPermission::Full,
+            parent_session_id: None,
             cwd: "/tmp".into(),
             created_at_ms: 1,
             mode: SessionMode::Plan,

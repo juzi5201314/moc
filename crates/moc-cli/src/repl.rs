@@ -443,6 +443,69 @@ async fn run_command(
             session.model = core.set_model(&session.id, argument).await?;
             println!("模型已切换为 {}", session.model);
         }
+        "agents" => {
+            let result = client
+                .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
+                    parent_session_id: session.id.clone(),
+                })
+                .await?;
+            for agent in result.agents {
+                println!(
+                    "{}\t{:?}\t{}\t{}",
+                    agent.id,
+                    agent.status,
+                    agent.model,
+                    agent.last_message.unwrap_or_default()
+                );
+            }
+        }
+        "agent" => {
+            let mut parts = argument.splitn(2, ' ');
+            let model = parts.next().unwrap_or("inherit");
+            let task = parts.next().unwrap_or_default().trim();
+            if task.is_empty() {
+                bail!("用法：/agent [inherit|default|explore|plan] <任务>");
+            }
+            let result = client
+                .call::<moc_protocol::methods::AgentSpawn>(
+                    moc_protocol::methods::AgentSpawnParams {
+                        parent_session_id: session.id.clone(),
+                        task: task.into(),
+                        title: None,
+                        model: (model != "inherit").then(|| model.into()),
+                    },
+                )
+                .await?;
+            println!("子代理已创建：{}", result.agent.id);
+        }
+        "steer-agent" => {
+            let (agent_id, message) = argument
+                .split_once(' ')
+                .ok_or_else(|| anyhow::anyhow!("用法：/steer-agent <id> <消息>"))?;
+            let result = client
+                .call::<moc_protocol::methods::AgentSteer>(
+                    moc_protocol::methods::AgentSteerParams {
+                        parent_session_id: session.id.clone(),
+                        agent_id: agent_id.into(),
+                        message: message.trim().into(),
+                    },
+                )
+                .await?;
+            println!("steer 已接受：{}", result.accepted);
+        }
+        "stop-agent" => {
+            if argument.is_empty() {
+                bail!("用法：/stop-agent <id>");
+            }
+            let result = client
+                .call::<moc_protocol::methods::AgentStop>(moc_protocol::methods::AgentStopParams {
+                    parent_session_id: session.id.clone(),
+                    agent_id: argument.into(),
+                    reason: None,
+                })
+                .await?;
+            println!("停止请求已处理：{}", result.stopped);
+        }
         "" => {}
         _ => eprintln!("未知命令 `/{name}`；输入 /help 查看命令。"),
     }
@@ -736,7 +799,7 @@ fn format_duration(active_ms: u64) -> String {
 
 fn print_help() {
     println!(
-        "/mode <normal|plan|ptc|clm-experimental>  切换工作模式\n/clm-experimental          启用 CLM 实验模式；首次请求后本会话固定为 CLM\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|plan|ptc|clm-experimental>  切换工作模式\n/clm-experimental          启用 CLM 实验模式；首次请求后本会话固定为 CLM\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/agents                  列出当前会话的直接子代理\n/agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）\n/steer-agent <id> <消息>  补充运行中子代理\n/stop-agent <id>          停止运行中的子代理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
     );
     println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
 }

@@ -35,7 +35,7 @@ pub struct ConfigGetResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
     /// 可用 agent。
-    pub agents: Vec<AgentInfo>,
+    pub agents: Vec<AgentProfile>,
     /// 默认 agent ID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
@@ -88,7 +88,7 @@ pub struct ModelPricing {
 /// 一个可用 agent。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AgentInfo {
+pub struct AgentProfile {
     /// agent ID。
     pub id: String,
     /// 展示名。
@@ -121,7 +121,7 @@ mod tests {
                 }),
             }],
             default_model: Some("deepseek-flash".into()),
-            agents: vec![AgentInfo {
+            agents: vec![AgentProfile {
                 id: "build".into(),
                 display_name: "Build".into(),
                 description: None,

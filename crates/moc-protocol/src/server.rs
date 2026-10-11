@@ -33,12 +33,12 @@ use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
 use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
-    ClientInfo, ConfigGet, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead,
-    OpenVikingWrite, Ping, PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel,
-    SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
-    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
-    SessionSetMode, SessionSetModel, SessionSetPermission, SessionUnload, SessionUnlock,
-    SessionUsage,
+    AgentList, AgentSend, AgentSpawn, AgentSteer, AgentStop, AgentWait, ClientInfo, ConfigGet,
+    Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite, Ping,
+    PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel, SessionCancelResult,
+    SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad, SessionLoadPage,
+    SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
+    SessionSetModel, SessionSetPermission, SessionUnload, SessionUnlock, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -690,6 +690,60 @@ impl<S: AgentService> ServerDispatch<S> {
             <SessionCancel as Method>::NAME => {
                 let params = params_from_value::<SessionCancel>(params)?;
                 value_from(self.cancel_prompt(&params.session_id))
+            }
+            <AgentSpawn as Method>::NAME => {
+                let params = params_from_value::<AgentSpawn>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .agent_spawn(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <AgentList as Method>::NAME => {
+                let params = params_from_value::<AgentList>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .agent_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <AgentSend as Method>::NAME => {
+                let params = params_from_value::<AgentSend>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .agent_send(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <AgentSteer as Method>::NAME => {
+                let params = params_from_value::<AgentSteer>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .agent_steer(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <AgentStop as Method>::NAME => {
+                let params = params_from_value::<AgentStop>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .agent_stop(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <AgentWait as Method>::NAME => {
+                let params = params_from_value::<AgentWait>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .agent_wait(self.context(client, cancel), params)
+                        .await?,
+                )
             }
             _ => Err(RpcError::of(RpcErrorCode::MethodNotFound)),
         }

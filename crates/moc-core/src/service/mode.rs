@@ -150,6 +150,7 @@ pub async fn approve_plan(
                 &state.session.cwd,
                 &model.selector,
                 SessionMode::Normal,
+                state.permission,
                 Some(&plan.title),
                 Some(params.session_id.clone()),
             )
@@ -264,6 +265,12 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "edit",
             "write",
             "ask",
+            "spawn_agent",
+            "list_agents",
+            "send_agent",
+            "steer_agent",
+            "stop_agent",
+            "wait_agent",
             "skill",
             "clm_context",
             "run_code",
@@ -316,5 +323,31 @@ pub fn tool_enabled(
         "job" => config.tools.job.enabled,
         "skill" => config.skills.enabled,
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod agent_mode_tests {
+    use super::allowed_tools;
+    use moc_protocol::SessionMode;
+
+    #[test]
+    fn child_agent_controls_only_exist_in_normal_modes() {
+        let agents = [
+            "spawn_agent",
+            "list_agents",
+            "send_agent",
+            "steer_agent",
+            "stop_agent",
+            "wait_agent",
+        ];
+        for mode in [SessionMode::Normal, SessionMode::ClmExperimental] {
+            let allowed = allowed_tools(mode);
+            assert!(agents.iter().all(|tool| allowed.contains(tool)));
+        }
+        for mode in [SessionMode::Ask, SessionMode::Plan, SessionMode::Ptc] {
+            let allowed = allowed_tools(mode);
+            assert!(agents.iter().all(|tool| !allowed.contains(tool)));
+        }
     }
 }

@@ -56,6 +56,7 @@ pub(crate) async fn compact(
             state.mode,
             inner.client_supports_ask(ctx.connection_id()),
             config,
+            true,
         ),
         native_input: None,
         ..ChatRequest::default()
@@ -239,7 +240,7 @@ fn item_matches(actual: &Value, expected: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::SessionMode;
+    use moc_protocol::methods::{SessionMode, SessionPermission};
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload};
@@ -252,6 +253,7 @@ mod tests {
             "/tmp".into(),
             "gpt-x".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "t".into(),
             1,

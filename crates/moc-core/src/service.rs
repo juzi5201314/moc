@@ -6,18 +6,20 @@ use std::sync::Arc;
 
 use moc_llm::Client;
 use moc_protocol::methods::{
-    AgentInfo, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
-    ContextUsageResult, ContextUsageSection, Empty, InitializeParams, InitializeResult, ModelInfo,
-    ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
-    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
-    OpenVikingWriteResult, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
-    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
-    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
-    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
-    SessionUsageResult,
+    AgentListParams, AgentListResult, AgentProfile, AgentSendParams, AgentSendResult,
+    AgentSpawnParams, AgentSpawnResult, AgentSteerParams, AgentStopParams, AgentStopResult,
+    AgentWaitParams, AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams,
+    ConfigGetResult, ContextUsageResult, ContextUsageSection, Empty, InitializeParams,
+    InitializeResult, ModelInfo, ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult,
+    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
+    OpenVikingWriteParams, OpenVikingWriteResult, PromptResult, ResourceCompleteParams,
+    ResourceCompleteResult, ServerCapabilities, ServerInfo, SessionCompactParams,
+    SessionContextParams, SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult,
+    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
+    SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
+    SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdate, SessionUsageParams, SessionUsageResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -80,6 +82,9 @@ pub(crate) struct CoreInner {
     pub openviking_clients: Mutex<HashMap<PathBuf, Option<Arc<moc_openviking::OpenVikingClient>>>>,
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
+    /// 当前进程中的子代理运行状态；持久 transcript 仍是历史真相源。
+    pub agents: Mutex<crate::agents::AgentRegistry>,
+    pub agent_tasks: Mutex<tokio::task::JoinSet<()>>,
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
     pub bwrap_available: bool,
@@ -323,6 +328,8 @@ impl Core {
                 openviking_clients: Mutex::new(HashMap::new()),
                 skill_indexes: RwLock::new(HashMap::new()),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
+                agents: Mutex::new(crate::agents::AgentRegistry::default()),
+                agent_tasks: Mutex::new(tokio::task::JoinSet::new()),
                 prompts: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
                 bwrap_available: probe_bwrap(),
@@ -333,6 +340,12 @@ impl Core {
     /// 等待提示取消收尾，终止后台进程组与 MCP 连接并释放临时状态。
     pub async fn shutdown(&self) {
         self.inner.shutdown.cancel();
+        let mut agents = std::mem::take(&mut *self.inner.agent_tasks.lock().await);
+        while let Some(result) = agents.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(%error, "子代理收尾任务失败");
+            }
+        }
         let mut prompts = std::mem::take(&mut *self.inner.prompts.lock().await);
         while let Some(result) = prompts.join_next().await {
             if let Err(error) = result {
@@ -545,6 +558,94 @@ impl AgentService for Core {
         management::steer(&self.inner, params).await.map_err(to_rpc)
     }
 
+    async fn agent_spawn(
+        &self,
+        ctx: RequestContext,
+        params: AgentSpawnParams,
+    ) -> Result<AgentSpawnResult, RpcError> {
+        crate::agents::spawn(
+            Arc::clone(&self.inner),
+            ctx,
+            params.parent_session_id,
+            params.task,
+            params.title,
+            params.model,
+        )
+        .await
+        .map_err(to_rpc)
+    }
+
+    async fn agent_list(
+        &self,
+        _ctx: RequestContext,
+        params: AgentListParams,
+    ) -> Result<AgentListResult, RpcError> {
+        crate::agents::list(&self.inner, params.parent_session_id)
+            .await
+            .map_err(to_rpc)
+    }
+
+    async fn agent_send(
+        &self,
+        ctx: RequestContext,
+        params: AgentSendParams,
+    ) -> Result<AgentSendResult, RpcError> {
+        crate::agents::send(
+            Arc::clone(&self.inner),
+            ctx,
+            params.parent_session_id,
+            params.agent_id,
+            params.message,
+        )
+        .await
+        .map_err(to_rpc)
+    }
+
+    async fn agent_steer(
+        &self,
+        _ctx: RequestContext,
+        params: AgentSteerParams,
+    ) -> Result<moc_protocol::SteerResult, RpcError> {
+        crate::agents::steer(
+            &self.inner,
+            params.parent_session_id,
+            params.agent_id,
+            params.message,
+        )
+        .await
+        .map_err(to_rpc)
+    }
+
+    async fn agent_stop(
+        &self,
+        _ctx: RequestContext,
+        params: AgentStopParams,
+    ) -> Result<AgentStopResult, RpcError> {
+        crate::agents::stop(
+            &self.inner,
+            params.parent_session_id,
+            params.agent_id,
+            params.reason,
+        )
+        .await
+        .map_err(to_rpc)
+    }
+
+    async fn agent_wait(
+        &self,
+        _ctx: RequestContext,
+        params: AgentWaitParams,
+    ) -> Result<AgentWaitResult, RpcError> {
+        crate::agents::wait(
+            &self.inner,
+            params.parent_session_id,
+            params.agent_id,
+            params.timeout_ms,
+        )
+        .await
+        .map_err(to_rpc)
+    }
+
     async fn config_get(
         &self,
         _ctx: RequestContext,
@@ -579,7 +680,7 @@ impl AgentService for Core {
             } else {
                 Some(config.resolve_role("default").map_err(to_rpc)?.selector)
             },
-            agents: vec![AgentInfo {
+            agents: vec![AgentProfile {
                 id: "moc".into(),
                 display_name: "moc".into(),
                 description: Some("通用编码代理".into()),
@@ -750,6 +851,7 @@ impl AgentService for Core {
                 &cwd,
                 &model.selector,
                 params.mode,
+                SessionPermission::Full,
                 params.title.as_deref(),
                 None,
             )
@@ -1193,6 +1295,7 @@ impl AgentService for Core {
             state.mode,
             self.inner.client_supports_ask(ctx.connection_id()),
             &config,
+            true,
         );
         let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
         let directory_tokens = pieces

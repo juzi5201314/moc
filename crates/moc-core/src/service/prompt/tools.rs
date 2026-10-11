@@ -336,6 +336,22 @@ async fn execute_tool(
             format!("tool `{name}` is not registered"),
         ));
     };
+    if !ctx.allow_agents
+        && matches!(
+            name,
+            "spawn_agent"
+                | "list_agents"
+                | "send_agent"
+                | "steer_agent"
+                | "stop_agent"
+                | "wait_agent"
+        )
+    {
+        return Ok(ToolOutcome::failure(
+            "E_MODE",
+            "子代理不能递归创建或控制其它子代理",
+        ));
+    }
     if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
         return Ok(ToolOutcome::failure(
             "E_MODE",

@@ -147,7 +147,7 @@ fn repair_tool_history(mut message: Message, model: Option<&crate::ResolvedModel
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::SessionMode;
+    use moc_protocol::methods::{SessionMode, SessionPermission};
 
     use super::*;
     use crate::session::entries::EntryPayload;
@@ -160,6 +160,7 @@ mod tests {
             "/tmp".into(),
             "p/m".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "title".into(),
             1,
@@ -211,6 +212,7 @@ mod tests {
             "/tmp".into(),
             "p/m".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "title".into(),
             1,
@@ -248,6 +250,7 @@ mod tests {
                 "/tmp".into(),
                 "p/old".into(),
                 SessionMode::Normal,
+                SessionPermission::Full,
                 None,
                 "title".into(),
                 1,
@@ -309,6 +312,7 @@ mod tests {
             "/tmp".into(),
             "p/model".into(),
             SessionMode::ClmExperimental,
+            SessionPermission::Full,
             None,
             "clm".into(),
             1,

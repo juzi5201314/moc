@@ -88,6 +88,7 @@ impl SessionTable {
         cwd: impl AsRef<Path>,
         model: &str,
         mode: SessionMode,
+        permission: SessionPermission,
         title: Option<&str>,
         parent_session_id: Option<String>,
     ) -> Result<SessionInfo, CoreError> {
@@ -103,6 +104,7 @@ impl SessionTable {
             cwd.to_string_lossy().into_owned(),
             model.to_owned(),
             mode,
+            permission,
             parent_session_id,
             title,
             created_at_ms,
@@ -344,6 +346,7 @@ impl SessionTable {
                 &source_info.cwd,
                 &source_info.model,
                 source_info.mode,
+                source_info.permission,
                 Some(&child_title),
                 Some(source_info.id.clone()),
             )
@@ -771,7 +774,14 @@ mod tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
-            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
             .await
             .expect("创建会话");
         // 未产生任何 entry 前：磁盘上既无 transcript 也无 sidecar，列表不收录。
@@ -806,6 +816,7 @@ mod tests {
                 "/tmp/project",
                 "p/model:high",
                 SessionMode::Ask,
+                SessionPermission::Full,
                 Some("  标题  "),
                 None,
             )
@@ -860,7 +871,14 @@ mod tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
-            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
             .await
             .expect("创建会话");
         assert_eq!(info.permission, moc_protocol::SessionPermission::Full);
@@ -907,7 +925,14 @@ mod tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
-            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
             .await
             .expect("创建会话");
         table
@@ -932,7 +957,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let first = SessionTable::new(directory.path(), true);
         let info = first
-            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
             .await
             .unwrap();
         first
@@ -992,7 +1024,14 @@ mod tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
-            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
             .await
             .expect("创建会话");
         let first_user = table
@@ -1056,7 +1095,14 @@ mod tests {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let info = table
-            .create("/tmp/project", "p/model", SessionMode::Normal, None, None)
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
             .await
             .expect("创建会话");
         table

@@ -520,10 +520,8 @@ mod lifecycle_tests {
         assert!(resolve(serde_json::json!({"command":"echo ok","timeout":0})).is_err());
         assert!(resolve(serde_json::json!({"command":"echo ok","timeout":3601})).is_err());
         assert_eq!(
-            resolve(
-                serde_json::json!({"command":"echo ok","async":true,"lifecycle":"persistent"})
-            )
-            .unwrap(),
+            resolve(serde_json::json!({"command":"echo ok","async":true,"lifecycle":"persistent"}))
+                .unwrap(),
             None
         );
         assert!(

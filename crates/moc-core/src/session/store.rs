@@ -553,7 +553,7 @@ pub fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use moc_protocol::methods::SessionMode;
+    use moc_protocol::methods::{SessionMode, SessionPermission};
 
     use super::*;
 
@@ -580,6 +580,7 @@ mod tests {
             "/tmp/project".into(),
             "p/old".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "旧标题".into(),
             1_728_000_000_123,

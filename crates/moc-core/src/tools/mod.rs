@@ -1,5 +1,6 @@
 //! 统一工具执行接口、上下文、结果及按模式筛选的注册表。
 
+pub mod agent;
 pub mod ask;
 pub mod bash;
 pub mod catalog;
@@ -161,6 +162,7 @@ pub struct ToolCtx {
     pub catalog: Arc<catalog::ToolCatalog>,
     pub mode: SessionMode,
     pub permission: SessionPermission,
+    pub allow_agents: bool,
     pub nested: bool,
     pub cancel: CancellationToken,
     pub jobs: Arc<job::JobManager>,
@@ -231,6 +233,12 @@ impl ToolRegistry {
                 Arc::new(bash::BashTool),
                 Arc::new(edit::EditTool),
                 Arc::new(ask::AskTool),
+                Arc::new(agent::SpawnAgentTool),
+                Arc::new(agent::ListAgentsTool),
+                Arc::new(agent::SendAgentTool),
+                Arc::new(agent::SteerAgentTool),
+                Arc::new(agent::StopAgentTool),
+                Arc::new(agent::WaitAgentTool),
                 Arc::new(plan::SubmitPlanTool),
                 Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::RunCodeTool),
@@ -251,9 +259,11 @@ impl ToolRegistry {
         mode: SessionMode,
         ask_supported: bool,
         config: &ResolvedConfig,
+        allow_agents: bool,
     ) -> Vec<ToolDef> {
         self.builtins
             .iter()
+            .filter(|tool| allow_agents || !Self::is_agent_tool(tool.name()))
             .filter(|tool| {
                 crate::service::mode::mode_allows(mode, tool.name(), tool.tier())
                     && crate::service::mode::tool_enabled(tool.name(), ask_supported, config)
@@ -264,6 +274,18 @@ impl ToolRegistry {
                 definition
             })
             .collect()
+    }
+
+    fn is_agent_tool(name: &str) -> bool {
+        matches!(
+            name,
+            "spawn_agent"
+                | "list_agents"
+                | "send_agent"
+                | "steer_agent"
+                | "stop_agent"
+                | "wait_agent"
+        )
     }
 
     pub fn all(&self) -> &[Arc<dyn Tool>] {

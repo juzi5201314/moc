@@ -192,11 +192,15 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
     }
     .await;
     match outcome {
-        Ok(Some((info, blocks, has_more, before_entry_id))) => {
+        Ok(Some((info, blocks, _has_more, _before_entry_id))) => {
             refresh_git_branch(app, &info.cwd);
             app.switch_session(info, blocks);
-            app.set_history_cursor(has_more, before_entry_id);
             load_context(client, app).await;
+            load_subagents_for_parent(
+                app,
+                client,
+                app.session.as_ref().map(|session| session.id.clone()),
+            );
         }
         Ok(None) => {}
         Err(error) => app.set_notice(format!("会话启动失败：{error}")),
@@ -237,6 +241,142 @@ fn refresh_context(app: &App, connection: &EmbeddedConnection, notify_failure: b
     });
 }
 
+fn load_subagents(app: &App, connection: &EmbeddedConnection) {
+    let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
+                parent_session_id,
+            })
+            .await
+            .map(|result| result.agents)
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::SubagentsLoaded(result));
+    });
+}
+
+fn open_subagents(app: &mut App, connection: &EmbeddedConnection) {
+    app.modal = Some(Modal::Subagents {
+        agents: app
+            .subagents
+            .values()
+            .map(|view| view.info.clone())
+            .collect(),
+        picker: crate::modal::PickerState::default(),
+    });
+    load_subagents(app, connection);
+}
+
+fn send_agent_operation(
+    app: &App,
+    connection: &EmbeddedConnection,
+    agent_id: String,
+    message: String,
+    steer: bool,
+) {
+    let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = if steer {
+            client
+                .call::<moc_protocol::methods::AgentSteer>(
+                    moc_protocol::methods::AgentSteerParams {
+                        parent_session_id,
+                        agent_id: agent_id.clone(),
+                        message,
+                    },
+                )
+                .await
+                .map(|result| crate::subagent::AgentOperationNotice {
+                    agent_id,
+                    message: format!("steer 已接受：{}", result.accepted),
+                })
+        } else {
+            client
+                .call::<moc_protocol::methods::AgentSend>(moc_protocol::methods::AgentSendParams {
+                    parent_session_id,
+                    agent_id: agent_id.clone(),
+                    message,
+                })
+                .await
+                .map(|result| crate::subagent::AgentOperationNotice {
+                    agent_id,
+                    message: format!("消息已提交：{}", result.accepted),
+                })
+        }
+        .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::SubagentOperation(result));
+    });
+}
+
+fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, agent_id: String) {
+    let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<moc_protocol::methods::AgentStop>(moc_protocol::methods::AgentStopParams {
+                parent_session_id,
+                agent_id: agent_id.clone(),
+                reason: None,
+            })
+            .await
+            .map(|result| crate::subagent::AgentOperationNotice {
+                agent_id,
+                message: format!("停止请求已处理：{}", result.stopped),
+            })
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::SubagentOperation(result));
+    });
+}
+fn load_subagents_for_parent(
+    app: &mut App,
+    client: &ClientHandle,
+    parent_session_id: Option<String>,
+) {
+    let Some(parent_session_id) = parent_session_id else {
+        app.subagents.clear();
+        return;
+    };
+    let client = client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
+                parent_session_id,
+            })
+            .await
+            .map(|result| result.agents)
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::SubagentsLoaded(result));
+    });
+}
+
+fn load_subagent_history(app: &App, connection: &EmbeddedConnection, agent_id: String) {
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionLoadPage>(SessionLoadPageParams {
+                session_id: agent_id.clone(),
+                before_entry_id: None,
+                max_entries: 128,
+                max_message_bytes: Some(64 * 1024),
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::SubagentHistoryLoaded { agent_id, result });
+    });
+}
 fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     if app.session.is_none() {
         app.set_notice("当前没有活动会话");
@@ -298,6 +438,11 @@ fn apply_rewound(
     app.usage_samples.clear();
     app.set_notice("会话已回退");
     refresh_context(app, connection, false);
+    load_subagents_for_parent(
+        app,
+        &connection.client,
+        app.session.as_ref().map(|session| session.id.clone()),
+    );
 }
 
 fn restore_user_message(
@@ -379,10 +524,10 @@ async fn event_loop(
             update = connection.updates.recv() => {
                 dirty = true;
                 if let Some(params) = update {
-                    apply_update_and_refresh(app, connection, params.update);
+                    apply_update_and_refresh(app, connection, params.session_id, params.update);
                     for _ in 0..64 {
                         let Some(next) = connection.updates.try_recv().ok() else { break };
-                        apply_update_and_refresh(app, connection, next.update);
+                        apply_update_and_refresh(app, connection, next.session_id, next.update);
                     }
                 }
             }
@@ -400,25 +545,11 @@ async fn event_loop(
                         apply_rewound(app, connection, selected, result);
                     }
                     Some(AppEvent::Update(params)) => {
-                        if !app
-                            .session
-                            .as_ref()
-                            .is_some_and(|session| session.id == params.session_id)
-                        {
-                            continue;
-                        }
-                        apply_update_and_refresh(app, connection, params.update);
+                        apply_update_and_refresh(app, connection, params.session_id, params.update);
                         while let Ok(next) = event_rx.try_recv() {
                             match next {
                                 AppEvent::Update(params) => {
-                                    if !app
-                                        .session
-                                        .as_ref()
-                                        .is_some_and(|session| session.id == params.session_id)
-                                    {
-                                        continue;
-                                    }
-                                    apply_update_and_refresh(app, connection, params.update)
+                                    apply_update_and_refresh(app, connection, params.session_id, params.update)
                                 }
                                 other => {
                                     deferred_event = Some(other);
@@ -528,6 +659,38 @@ async fn event_loop(
                             picker: crate::modal::PickerState::default(),
                         });
                     }
+                    Some(AppEvent::SubagentsLoaded(result)) => match result {
+                        Ok(agents) => {
+                            app.subagents = agents
+                                .into_iter()
+                                .map(|info| {
+                                    let id = info.id.clone();
+                                    (id, crate::subagent::SubagentView::new(info))
+                                })
+                                .collect();
+                            app.subagent_generation = app.subagent_generation.wrapping_add(1);
+                            if let Some(Modal::Subagents { agents: current, .. }) = app.modal.as_mut() {
+                                *current = app.subagents.values().map(|view| view.info.clone()).collect();
+                            }
+                            for agent_id in app.subagents.keys().cloned().collect::<Vec<_>>() {
+                                load_subagent_history(app, connection, agent_id);
+                            }
+                        }
+                        Err(error) => app.set_notice(format!("读取子代理列表失败：{error}")),
+                    },
+                    Some(AppEvent::SubagentHistoryLoaded { agent_id, result }) => match result {
+                        Ok(page) => {
+                            if let Some(view) = app.subagents.get_mut(&agent_id) {
+                                view.restore(crate::transcript_restore::blocks_from_entries_with_children(&page.entries, &page.child_calls));
+                                app.subagent_generation = app.subagent_generation.wrapping_add(1);
+                            }
+                        }
+                        Err(error) => app.set_notice(format!("加载子代理历史失败：{error}")),
+                    },
+                    Some(AppEvent::SubagentOperation(result)) => match result {
+                        Ok(notice) => app.set_notice(notice.message),
+                        Err(error) => app.set_notice(format!("子代理操作失败：{error}")),
+                    },
                     Some(AppEvent::PickerError(error)) => {
                         if let Some(modal) = app.modal.as_mut() {
                             modal.set_error(error);
@@ -564,10 +727,12 @@ async fn event_loop(
                     Some(AppEvent::Loaded(info, blocks, has_more, before_entry_id)) => {
                         app.modal = None;
                         let cwd = info.cwd.clone();
+                        let id = info.id.clone();
                         app.switch_session(info, blocks);
                         app.set_history_cursor(has_more, before_entry_id);
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
+                        load_subagents_for_parent(app, &connection.client, Some(id));
                         if let Some(text) = app.startup_pending.take() {
                             app.prompt.insert_str_raw(&text);
                             crate::queue::submit(app, connection, false);
@@ -576,12 +741,11 @@ async fn event_loop(
                     }
                     Some(AppEvent::ModelSwitched) => {
                         app.modal = None;
-                        crate::queue::dispatch(app,connection);
+                        crate::queue::dispatch(app, connection);
                     }
                     Some(AppEvent::GitBranch(branch)) => {
                         app.git_branch = Some(branch);
                     }
-                    // 协议桥退出：退出 TUI
                     None => return Ok(()),
                 }
             }
@@ -589,7 +753,7 @@ async fn event_loop(
     }
 }
 
-/// 终端事件分派（键盘 / 鼠标 / 粘贴 / resize）。
+/// 终端事件分派（键盘、鼠标、粘贴与窗口变化）。
 fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: Event) {
     if app.settings.is_some() && app.modal.is_none() {
         match event {
@@ -613,20 +777,18 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
             }
         }
         Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
-        // 终端在没有文本可粘时会送一个空括号粘贴；剪贴板里通常是图片，转为读取系统剪贴板。
         Event::Paste(text) if text.is_empty() => spawn_clipboard_paste(app.events.clone()),
         Event::Paste(text) => {
             app.prompt.insert_text(&text);
             app.prompt_changed();
             request_resource_completion(app, connection);
         }
-        Event::Resize(_, _) => {} // 下一次 draw 自动按新尺寸重算
+        Event::Resize(_, _) => {}
         Event::FocusGained => app.terminal_focused = true,
         Event::FocusLost => app.terminal_focused = false,
         _ => {}
     }
 }
-
 fn current_token_range(prompt: &crate::widgets::prompt::PromptState) -> Range<usize> {
     let line_start = prompt.text[..prompt.cursor]
         .rfind('\n')
@@ -706,7 +868,19 @@ fn handle_mouse_with_connection(
     }
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         let position = (mouse.column, mouse.row);
-        // 模式图例：就地在图例上方弹出模式菜单（菜单打开与否由它自己处理）。
+        if let Some((agent_id, _)) = app
+            .subagent_hits
+            .iter()
+            .find(|(_, area)| area.contains(position.into()))
+        {
+            app.subagent_selected = Some(agent_id.clone());
+            app.modal = Some(Modal::SubagentDetail {
+                agent_id: agent_id.clone(),
+                editor: crate::widgets::prompt::PromptState::default(),
+                scroll_offset: 0,
+            });
+            return;
+        }
         if app.modal.is_none() && app.mode_area.contains(position.into()) {
             app.open_mode_menu();
             return;
@@ -1009,6 +1183,10 @@ fn handle_key(
     match translated {
         Some("config") => {
             crate::settings::open(app, connection);
+            return;
+        }
+        Some("agents") => {
+            open_subagents(app, connection);
             return;
         }
         Some("mode") => {
@@ -1976,6 +2154,165 @@ fn handle_modal_key(
                 close = true;
             }
         }
+        Modal::Subagents { agents, picker } => {
+            let filtered: Vec<_> = agents
+                .iter()
+                .filter(|agent| {
+                    let query = picker.query.to_lowercase();
+                    agent.title.to_lowercase().contains(&query) || agent.id.contains(&query)
+                })
+                .collect();
+            match (code, modifiers) {
+                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                (KeyCode::Backspace, _) => {
+                    picker.query.pop();
+                    picker.selected = 0;
+                }
+                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    if !ch.is_control() =>
+                {
+                    picker.query.push(ch);
+                    picker.selected = 0;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if let Some(agent) = filtered.get(picker.selected) {
+                        app.subagent_selected = Some(agent.id.clone());
+                        app.modal = Some(Modal::SubagentDetail {
+                            agent_id: agent.id.clone(),
+                            editor: crate::widgets::prompt::PromptState::default(),
+                            scroll_offset: 0,
+                        });
+                    }
+                }
+                (KeyCode::Char('x'), KeyModifiers::NONE) => {
+                    if let Some(agent) = filtered.get(picker.selected) {
+                        let agent_id = agent.id.clone();
+                        let client = connection.client.clone();
+                        let parent_session_id = session_id.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let result = match parent_session_id {
+                                Some(parent_session_id) => client
+                                    .call::<moc_protocol::methods::AgentStop>(
+                                        moc_protocol::methods::AgentStopParams {
+                                            parent_session_id,
+                                            agent_id: agent_id.clone(),
+                                            reason: None,
+                                        },
+                                    )
+                                    .await
+                                    .map(|result| crate::subagent::AgentOperationNotice {
+                                        agent_id,
+                                        message: format!("停止请求已处理：{}", result.stopped),
+                                    })
+                                    .map_err(anyhow::Error::from),
+                                None => Err(anyhow::anyhow!("当前没有活动会话")),
+                            };
+                            let _ = events.send(AppEvent::SubagentOperation(result));
+                        });
+                    }
+                }
+                (KeyCode::Esc, _) => close = true,
+                _ => {}
+            }
+        }
+        Modal::SubagentDetail {
+            agent_id,
+            editor,
+            scroll_offset,
+        } => match (code, modifiers) {
+            (KeyCode::Esc, _) => {
+                app.modal = Some(Modal::Subagents {
+                    agents: app
+                        .subagents
+                        .values()
+                        .map(|view| view.info.clone())
+                        .collect(),
+                    picker: crate::modal::PickerState::default(),
+                });
+            }
+            (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT) => editor.insert_char('\n'),
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                let message = editor.text.trim().to_owned();
+                if !message.is_empty() {
+                    let running = app.subagents.get(agent_id).is_some_and(|view| view.running);
+                    let parent_session_id = session_id.clone();
+                    let target_agent_id = agent_id.clone();
+                    let client = connection.client.clone();
+                    let events = events.clone();
+                    tokio::spawn(async move {
+                        let result = match parent_session_id {
+                            Some(parent_session_id) if running => client
+                                .call::<moc_protocol::methods::AgentSteer>(
+                                    moc_protocol::methods::AgentSteerParams {
+                                        parent_session_id,
+                                        agent_id: target_agent_id.clone(),
+                                        message,
+                                    },
+                                )
+                                .await
+                                .map(|result| crate::subagent::AgentOperationNotice {
+                                    agent_id: target_agent_id,
+                                    message: format!("steer 已接受：{}", result.accepted),
+                                })
+                                .map_err(anyhow::Error::from),
+                            Some(parent_session_id) => client
+                                .call::<moc_protocol::methods::AgentSend>(
+                                    moc_protocol::methods::AgentSendParams {
+                                        parent_session_id,
+                                        agent_id: target_agent_id.clone(),
+                                        message,
+                                    },
+                                )
+                                .await
+                                .map(|result| crate::subagent::AgentOperationNotice {
+                                    agent_id: target_agent_id,
+                                    message: format!("消息已提交：{}", result.accepted),
+                                })
+                                .map_err(anyhow::Error::from),
+                            None => Err(anyhow::anyhow!("当前没有活动会话")),
+                        };
+                        let _ = events.send(AppEvent::SubagentOperation(result));
+                    });
+                    editor.clear();
+                }
+            }
+            (KeyCode::Char('x'), KeyModifiers::NONE)
+            | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                let target_agent_id = agent_id.clone();
+                let parent_session_id = session_id.clone();
+                let client = connection.client.clone();
+                let events = events.clone();
+                tokio::spawn(async move {
+                    let result = match parent_session_id {
+                        Some(parent_session_id) => client
+                            .call::<moc_protocol::methods::AgentStop>(
+                                moc_protocol::methods::AgentStopParams {
+                                    parent_session_id,
+                                    agent_id: target_agent_id.clone(),
+                                    reason: None,
+                                },
+                            )
+                            .await
+                            .map(|result| crate::subagent::AgentOperationNotice {
+                                agent_id: target_agent_id,
+                                message: format!("停止请求已处理：{}", result.stopped),
+                            })
+                            .map_err(anyhow::Error::from),
+                        None => Err(anyhow::anyhow!("当前没有活动会话")),
+                    };
+                    let _ = events.send(AppEvent::SubagentOperation(result));
+                });
+            }
+            (KeyCode::Backspace, _) => editor.backspace(),
+            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) if !ch.is_control() => {
+                editor.insert_char(ch)
+            }
+            (KeyCode::Up, _) => *scroll_offset = scroll_offset.saturating_add(1),
+            (KeyCode::Down, _) => *scroll_offset = scroll_offset.saturating_sub(1),
+            _ => {}
+        },
     }
     if return_memory_list {
         if let Some(Modal::MemoryEditor {
@@ -2033,17 +2370,51 @@ fn advance_ask(
     }
 }
 
-fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, update: SessionUpdate) {
+fn apply_update_and_refresh(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    session_id: String,
+    update: SessionUpdate,
+) {
+    if app
+        .session
+        .as_ref()
+        .is_some_and(|session| session.id != session_id)
+        && let Some(view) = app.subagents.get_mut(&session_id)
+    {
+        if let SessionUpdate::AgentStatusChanged {
+            status,
+            last_message,
+            ..
+        } = &update
+        {
+            view.set_status(*status, last_message.clone());
+        } else {
+            view.apply(update);
+        }
+        app.subagent_generation = app.subagent_generation.wrapping_add(1);
+        return;
+    }
+    if let SessionUpdate::AgentStarted { agent } = &update {
+        app.subagents
+            .entry(agent.id.clone())
+            .or_insert_with(|| crate::subagent::SubagentView::new(agent.clone()));
+        app.subagent_generation = app.subagent_generation.wrapping_add(1);
+    }
+    if let SessionUpdate::AgentStatusChanged {
+        agent_id,
+        status,
+        last_message,
+    } = &update
+        && let Some(view) = app.subagents.get_mut(agent_id)
+    {
+        view.set_status(*status, last_message.clone());
+        app.subagent_generation = app.subagent_generation.wrapping_add(1);
+    }
     let prompt_started = matches!(
         &update,
         SessionUpdate::PromptStarted { .. } | SessionUpdate::BashStarted { .. }
     );
-    if matches!(&update, SessionUpdate::PromptFinished { .. })
-        && !app.terminal_focused
-        && app.preferences.notify_complete
-    {
-        crate::config::notify("当前提示已完成");
-    }
     let refresh = matches!(
         &update,
         SessionUpdate::PromptFinished { .. }
@@ -2065,6 +2436,7 @@ fn apply_update_and_refresh(app: &mut App, connection: &EmbeddedConnection, upda
 fn apply_update(app: &mut App, update: SessionUpdate) {
     use crate::transcript::Block;
     match update {
+        SessionUpdate::AgentStarted { .. } | SessionUpdate::AgentStatusChanged { .. } => {}
         SessionUpdate::ToolBatchStarted {
             batch_id, calls, ..
         } => {
@@ -2364,6 +2736,62 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     match name {
+        "/agents" => open_subagents(app, connection),
+        "/agent" => {
+            let mut parts = rest.trim().splitn(2, ' ');
+            let model = parts.next().unwrap_or("inherit");
+            let task = parts.next().unwrap_or_default().trim();
+            if task.is_empty() {
+                app.set_notice("用法：/agent [inherit|default|explore|plan] <task>");
+                return;
+            }
+            let Some(parent_session_id) = session_id.clone() else {
+                app.set_notice("当前没有活动会话");
+                return;
+            };
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            let task = task.to_owned();
+            let model = (model != "inherit").then(|| model.to_owned());
+            tokio::spawn(async move {
+                let result = client
+                    .call::<moc_protocol::methods::AgentSpawn>(
+                        moc_protocol::methods::AgentSpawnParams {
+                            parent_session_id,
+                            task,
+                            title: None,
+                            model,
+                        },
+                    )
+                    .await
+                    .map(|result| crate::subagent::AgentOperationNotice {
+                        agent_id: result.agent.id,
+                        message: "子代理已创建".into(),
+                    })
+                    .map_err(anyhow::Error::from);
+                let _ = events.send(AppEvent::SubagentOperation(result));
+            });
+        }
+        "/steer-agent" | "/stop-agent" => {
+            let mut parts = rest.trim().splitn(2, ' ');
+            let Some(agent_id) = parts.next().filter(|value| !value.is_empty()) else {
+                app.set_notice("用法：/steer-agent <id> <message> 或 /stop-agent <id>");
+                return;
+            };
+            if name == "/stop-agent" {
+                stop_agent_operation(app, connection, agent_id.to_owned());
+            } else if let Some(message) = parts.next().filter(|value| !value.trim().is_empty()) {
+                send_agent_operation(
+                    app,
+                    connection,
+                    agent_id.to_owned(),
+                    message.to_owned(),
+                    true,
+                );
+            } else {
+                app.set_notice("用法：/steer-agent <id> <message>");
+            }
+        }
         "/config" => crate::settings::open(app, connection),
         "/new" => {
             let client = connection.client.clone();

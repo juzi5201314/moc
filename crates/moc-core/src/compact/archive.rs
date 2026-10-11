@@ -126,7 +126,7 @@ fn render_segment(
 mod tests {
     use super::*;
     use moc_llm::Message;
-    use moc_protocol::methods::SessionMode;
+    use moc_protocol::methods::{SessionMode, SessionPermission};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -141,6 +141,7 @@ mod tests {
             "/tmp".into(),
             "p/m".into(),
             SessionMode::Normal,
+            SessionPermission::Full,
             None,
             "default".into(),
             1,

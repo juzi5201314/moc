@@ -253,7 +253,7 @@ fn summary_transcript(
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::{PlanStatus, SessionMode};
+    use moc_protocol::methods::{PlanStatus, SessionMode, SessionPermission};
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload};
@@ -265,6 +265,7 @@ mod tests {
             "/tmp".into(),
             "p/m".into(),
             SessionMode::Plan,
+            SessionPermission::Full,
             None,
             "plan".into(),
             1,

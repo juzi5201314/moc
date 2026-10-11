@@ -17,6 +17,7 @@ pub mod protocol;
 pub mod queue;
 pub mod render;
 pub mod settings;
+pub mod subagent;
 pub mod terminal;
 pub mod theme;
 pub mod transcript;

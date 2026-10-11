@@ -28,17 +28,19 @@ use crate::error::{ProtocolError, RpcCallError, RpcError};
 use crate::message::Notification;
 use crate::method::Method;
 use crate::methods::{
-    CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty, InitializeParams,
-    InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
-    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
-    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams, PromptResult,
-    ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams, SessionContextParams,
-    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
-    SessionUsageResult,
+    AgentListParams, AgentListResult, AgentSendParams, AgentSendResult, AgentSpawnParams,
+    AgentSpawnResult, AgentSteerParams, AgentStopParams, AgentStopResult, AgentWaitParams,
+    AgentWaitResult, CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty,
+    InitializeParams, InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult,
+    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
+    OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
+    PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
+    SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
+    SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdateMethod, SessionUpdateParams, SessionUsageParams, SessionUsageResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -74,6 +76,53 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: crate::SteerParams,
     ) -> impl Future<Output = Result<crate::SteerResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+    fn agent_spawn(
+        &self,
+        _ctx: RequestContext,
+        _params: AgentSpawnParams,
+    ) -> impl Future<Output = Result<AgentSpawnResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn agent_list(
+        &self,
+        _ctx: RequestContext,
+        _params: AgentListParams,
+    ) -> impl Future<Output = Result<AgentListResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn agent_send(
+        &self,
+        _ctx: RequestContext,
+        _params: AgentSendParams,
+    ) -> impl Future<Output = Result<AgentSendResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn agent_steer(
+        &self,
+        _ctx: RequestContext,
+        _params: AgentSteerParams,
+    ) -> impl Future<Output = Result<crate::SteerResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn agent_stop(
+        &self,
+        _ctx: RequestContext,
+        _params: AgentStopParams,
+    ) -> impl Future<Output = Result<AgentStopResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn agent_wait(
+        &self,
+        _ctx: RequestContext,
+        _params: AgentWaitParams,
+    ) -> impl Future<Output = Result<AgentWaitResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
@@ -253,6 +302,7 @@ pub struct RequestContext {
     updates: UpdateSink,
     requester: Requester,
     cancel: CancellationToken,
+    subagent: bool,
 }
 
 impl RequestContext {
@@ -274,7 +324,43 @@ impl RequestContext {
                 cancel: cancel.clone(),
             },
             cancel,
+            subagent: false,
         }
+    }
+
+    /// 复用连接流量但替换取消令牌；仅 core 内部用于脱离父请求的子代理。
+    pub fn as_subagent(&self, cancel: CancellationToken) -> Self {
+        Self {
+            connection_id: self.connection_id,
+            client: self.client.clone(),
+            updates: self.updates.clone(),
+            requester: Requester {
+                traffic: Arc::clone(&self.requester.traffic),
+                cancel: cancel.clone(),
+            },
+            cancel,
+            subagent: true,
+        }
+    }
+
+    /// 复用连接与前端信息，但替换当前操作取消令牌。
+    pub fn with_cancel(&self, cancel: CancellationToken) -> Self {
+        Self {
+            connection_id: self.connection_id,
+            client: self.client.clone(),
+            updates: self.updates.clone(),
+            requester: Requester {
+                traffic: Arc::clone(&self.requester.traffic),
+                cancel: cancel.clone(),
+            },
+            cancel,
+            subagent: self.subagent,
+        }
+    }
+
+    /// 是否为内部子代理上下文。
+    pub fn is_subagent(&self) -> bool {
+        self.subagent
     }
 
     /// 连接号；用于日志关联（前端侧恒为 `0`）。

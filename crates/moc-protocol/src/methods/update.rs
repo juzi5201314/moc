@@ -71,6 +71,15 @@ pub struct ToolBatchCall {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
+    /// 父会话中的子代理卡片已创建。
+    AgentStarted { agent: super::agent::AgentInfo },
+    /// 子代理运行状态或最新输出变化。
+    AgentStatusChanged {
+        agent_id: String,
+        status: super::agent::AgentStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_message: Option<String>,
+    },
     /// 一批工具调用开始执行；前端可按工具名聚合展示。
     ToolBatchStarted {
         /// 提示 ID。
@@ -373,6 +382,17 @@ mod tests {
 
     #[test]
     fn every_variant_shape() {
+        let agent_info = crate::methods::AgentInfo {
+            id: "ses_child".into(),
+            parent_id: "ses_parent".into(),
+            title: "child".into(),
+            model: "p/model".into(),
+            cwd: "/tmp".into(),
+            status: crate::methods::AgentStatus::Queued,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            last_message: None,
+        };
         let cases = [
             (
                 SessionUpdate::prompt_started("prompt_1", "deepseek-flash", 1_724_000_000_000),
@@ -428,6 +448,7 @@ mod tests {
                         tool_call_id: "call_9".into(),
                         content: "用户拒绝".into(),
                         is_error: true,
+
                         images: Vec::new(),
                     },
                     duration_ms: None,
@@ -587,6 +608,20 @@ mod tests {
                     { "field": "model", "requested": "glm-5.3", "reported": "glm-5.3-air" },
                     { "field": "effort", "requested": "max", "reported": "high" },
                 ] }),
+            ),
+            (
+                SessionUpdate::AgentStarted {
+                    agent: agent_info.clone(),
+                },
+                json!({"type":"agent_started","agent":serde_json::to_value(&agent_info).unwrap()}),
+            ),
+            (
+                SessionUpdate::AgentStatusChanged {
+                    agent_id: "ses_child".into(),
+                    status: crate::methods::AgentStatus::Running,
+                    last_message: None,
+                },
+                json!({"type":"agent_status_changed","agent_id":"ses_child","status":"running"}),
             ),
             (
                 SessionUpdate::Error {

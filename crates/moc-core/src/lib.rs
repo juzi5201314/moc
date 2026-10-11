@@ -3,6 +3,7 @@
 //! [`moc_protocol`] 是稳定的前端 JSON-RPC 边界；[`moc_llm`] 管理上游协议兼容，
 //! 本 crate 负责会话状态、工具与上下文生命周期。
 
+pub(crate) mod agents;
 pub mod clm;
 pub mod compact;
 mod concurrency;

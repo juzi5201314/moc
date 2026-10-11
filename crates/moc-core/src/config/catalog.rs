@@ -103,13 +103,10 @@ fn rank(key: &str) -> usize {
         "reasoning" => 3,
         "thinking_levels" => 4,
         "input" => 5,
-        "remote_compaction" => 6,
-        "pricing" => 7,
         // 模型角色：主模型 → 探索子代理 → 计划
         "default" => 0,
         "explore" => 1,
         "plan" => 2,
-        // 指令文件与来源开关
         "user" => 1,
         "project" => 2,
         "max_tokens" => 3,
@@ -322,7 +319,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "models.roles.default" => ("主模型", "日常对话使用的模型，格式为 供应商/模型。"),
         "models.roles.explore" => (
             "探索子代理模型",
-            "供未来探索子代理使用；当前尚未接入子代理调度。",
+            "供 agent/spawn 的 explore 角色使用；省略模型时子代理继承父会话当前模型。",
         ),
         "models.roles.plan" => (
             "计划模型",

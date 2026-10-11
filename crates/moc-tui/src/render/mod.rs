@@ -9,6 +9,7 @@ pub mod highlight;
 pub mod markdown;
 pub mod modal;
 pub mod scrollback;
+pub mod subagent;
 pub mod wrap;
 
 use ratatui::Frame;
@@ -111,7 +112,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         status_area,
     ] = Layout::vertical([
         Constraint::Length(header_rows),
-        // 信息条与转写区之间留白；没有信息条时转写区自己顶格。
         Constraint::Length(u16::from(header_rows > 0)),
         Constraint::Min(3),
         Constraint::Length(1),
@@ -121,7 +121,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     .areas(frame_area);
     let scroll_area = inset(scroll_area, MARGIN_X);
     let prompt_area = inset(prompt_area, MARGIN_X);
+    let sidebar_enabled = frame_area.width >= 100 && !app.subagents.is_empty();
+    let (scroll_area, sidebar_area) = if sidebar_enabled {
+        let [main, sidebar] =
+            Layout::horizontal([Constraint::Min(60), Constraint::Length(30)]).areas(scroll_area);
+        (main, sidebar)
+    } else {
+        (scroll_area, Rect::default())
+    };
     app.scrollback_area = scroll_area;
+    app.subagent_area = sidebar_area;
     app.prompt_area = prompt_area;
 
     // 整帧铺底色（备用屏模式下终端自身背景与主题保持一致）
@@ -160,6 +169,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     draw_prompt(frame, app, prompt_area);
     if status_rows > 0 {
         draw_statusline(frame, app, inset(status_area, MARGIN_X));
+    }
+    if sidebar_enabled {
+        subagent::draw_sidebar(frame, app, sidebar_area);
     }
 
     crate::queue::draw(frame, app);
@@ -1107,6 +1119,7 @@ mod tests {
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
             mode: moc_protocol::SessionMode::Plan,
+            parent_session_id: None,
             cwd: "/tmp".into(),
             created_at_ms: 0,
             updated_at_ms: 0,

@@ -96,6 +96,12 @@ pub enum AppEvent {
     PickerError(String),
     /// git 分支就绪（statusline 异步刷新）。
     GitBranch(String),
+    SubagentsLoaded(anyhow::Result<Vec<moc_protocol::methods::AgentInfo>>),
+    SubagentHistoryLoaded {
+        agent_id: String,
+        result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
+    },
+    SubagentOperation(anyhow::Result<crate::subagent::AgentOperationNotice>),
 }
 
 /// 剪贴板粘贴载荷：图片以 base64 承载，文本内联。
