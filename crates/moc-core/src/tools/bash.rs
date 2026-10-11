@@ -501,4 +501,39 @@ mod lifecycle_tests {
         assert_eq!(args.lifecycle, Some(BashLifecycle::Persistent));
         assert!(args.asynchronous);
     }
+
+    #[test]
+    fn resolve_timeout_bounds_monitored_and_rejects_invalid_combinations() {
+        let config = crate::config::BashConfig::default();
+        let resolve = |value: serde_json::Value| {
+            let args: BashArgs = serde_json::from_value(value).expect("解析参数");
+            resolve_timeout(&args, args.lifecycle.unwrap_or_default(), &config)
+        };
+        assert_eq!(
+            resolve(serde_json::json!({"command":"echo ok"})).unwrap(),
+            Some(Duration::from_secs(config.monitored_timeout_secs))
+        );
+        assert_eq!(
+            resolve(serde_json::json!({"command":"echo ok","timeout":1})).unwrap(),
+            Some(Duration::from_secs(1))
+        );
+        assert!(resolve(serde_json::json!({"command":"echo ok","timeout":0})).is_err());
+        assert!(resolve(serde_json::json!({"command":"echo ok","timeout":3601})).is_err());
+        assert_eq!(
+            resolve(
+                serde_json::json!({"command":"echo ok","async":true,"lifecycle":"persistent"})
+            )
+            .unwrap(),
+            None
+        );
+        assert!(
+            resolve(
+                serde_json::json!({"command":"echo ok","timeout":60,"async":true,"lifecycle":"persistent"})
+            )
+            .is_err()
+        );
+        assert!(
+            resolve(serde_json::json!({"command":"echo ok","lifecycle":"persistent"})).is_err()
+        );
+    }
 }

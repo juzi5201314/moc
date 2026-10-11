@@ -474,9 +474,9 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
                         .unwrap();
                     let content = support::content::content_text(&result["content"]);
                     let id = content
-                        .split("Background job ")
-                        .nth(1)
-                        .unwrap()
+                        .split_once(" job ")
+                        .expect("后台任务启动消息")
+                        .1
                         .split_whitespace()
                         .next()
                         .unwrap();
@@ -821,7 +821,7 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
                 ("pipe_wait", "job", json!({"op":"wait","job_id":"job_1","timeout_secs":5})),
                 ("pty_wait", "job", json!({"op":"wait","job_id":"job_2","timeout_secs":5})),
             ]),
-            2 => tool_stream(vec![("pty_again", "bash", json!({"command":"exec sleep 60","async":true,"pty":true,"timeout":0}))]),
+            2 => tool_stream(vec![("pty_again", "bash", json!({"command":"exec sleep 60","async":true,"pty":true,"lifecycle":"persistent"}))]),
             3 => tool_stream(vec![("pty_kill", "job", json!({"op":"kill","job_id":"job_3"}))]),
             5 => tool_stream(vec![("after_resume", "bash", json!({"command":"printf resumed"}))]),
             _ => text_stream("已回收"),
@@ -855,7 +855,7 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
             .content
             .as_str()
     };
-    assert!(output("pipe_wait").contains("TimedOut\npipe-ready"));
+    assert!(output("pipe_wait").contains("TimedOut\njob finished\npipe-ready"));
     assert!(output("pty_wait").contains("TimedOut"));
     assert!(output("pty_wait").contains("pty-ready"));
     assert_eq!(output("pty_kill"), "Killed");
