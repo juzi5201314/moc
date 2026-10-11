@@ -37,7 +37,7 @@ fn first_configuration_requires_a_primary_and_inherits_other_roles() {
         &view.revision,
     )
     .unwrap();
-    for role in ["default", "smol", "slow", "plan"] {
+    for role in ["default", "explore", "plan"] {
         assert_eq!(resolved.resolve_role(role).unwrap().selector, "p/demo:high");
     }
     assert_eq!(moc_core::compact::threshold(&resolved, 200000), 170000);

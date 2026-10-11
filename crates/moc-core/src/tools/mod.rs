@@ -227,6 +227,7 @@ impl ToolRegistry {
                 Arc::new(find::FindTool),
                 Arc::new(todo::TodoTool),
                 Arc::new(job::JobTool),
+                Arc::new(write::WriteTool),
                 Arc::new(bash::BashTool),
                 Arc::new(edit::EditTool),
                 Arc::new(ask::AskTool),

@@ -50,8 +50,7 @@ pub(super) struct ModelCatalog {
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRoles {
     pub default: String,
-    pub smol: String,
-    pub slow: String,
+    pub explore: String,
     pub plan: String,
 }
 
@@ -59,8 +58,7 @@ impl Default for ModelRoles {
     fn default() -> Self {
         Self {
             default: String::new(),
-            smol: "inherit".into(),
-            slow: "inherit".into(),
+            explore: "inherit".into(),
             plan: "inherit".into(),
         }
     }
@@ -670,8 +668,7 @@ pub(super) fn validate_roles(
     }
     for (role, selector) in [
         ("主模型", roles.default.as_str()),
-        ("轻量模型", roles.smol.as_str()),
-        ("深度模型", roles.slow.as_str()),
+        ("探索子代理模型", roles.explore.as_str()),
         ("计划模型", roles.plan.as_str()),
     ] {
         let selector = if selector == "inherit" && role != "主模型" {

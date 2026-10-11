@@ -181,7 +181,7 @@ mod tests {
     use std::fs;
 
     fn resolved(cwd: &Path, home: &Path) -> ResolvedConfig {
-        let raw = "[models.roles]\ndefault='p/model'\nsmol='p/model'\nslow='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n";
+        let raw = "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n";
         fs::create_dir_all(home).expect("create home");
         fs::write(home.join("config.toml"), raw).expect("write config");
         let core = CoreConfig {

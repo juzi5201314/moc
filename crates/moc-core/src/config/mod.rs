@@ -99,8 +99,7 @@ impl ResolvedConfig {
     pub fn resolve_model(&self, selector: &str) -> Result<ResolvedModel, CoreError> {
         let selector = match selector {
             "default" => self.roles.default.as_str(),
-            "smol" => self.roles.smol.as_str(),
-            "slow" => self.roles.slow.as_str(),
+            "explore" => self.roles.explore.as_str(),
             "plan" => self.roles.plan.as_str(),
             other => other,
         };
@@ -398,7 +397,7 @@ mod tests {
 
     fn provider_config(api_key: &str) -> String {
         format!(
-            "[models.roles]\ndefault='p/model:high'\nsmol='p/model:low'\nslow='p/model:max'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\napi_key='{api_key}'\n[providers.p.models.model]\nreasoning=true\ninput=['text','image']\n"
+            "[models.roles]\ndefault='p/model:high'\nexplore='p/model:low'\nplan='p/model:max'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\napi_key='{api_key}'\n[providers.p.models.model]\nreasoning=true\ninput=['text','image']\n"
         )
     }
 
@@ -447,8 +446,8 @@ mod tests {
         );
         assert_eq!(
             config
-                .resolve_role("slow")
-                .expect("slow 模型")
+                .resolve_role("plan")
+                .expect("plan 模型")
                 .thinking_level,
             ThinkingLevel::Max
         );
@@ -504,8 +503,7 @@ mod tests {
             r#"
 [models.roles]
 default = "p/ag/gpt-5.6-sol:high"
-smol = "p/ag/gpt-5.6-sol:high"
-slow = "p/ag/gpt-5.6-sol:max"
+explore = "p/ag/gpt-5.6-sol:high"
 plan = "p/ag/gpt-5.6-sol:max"
 
 [defaults.models."*gpt-5.6-sol"]
@@ -550,7 +548,7 @@ max_output_tokens = 128000
         fs::create_dir_all(&home).expect("创建 home");
         fs::write(
             home.join("config.toml"),
-            "[models.roles]\ndefault='p/m:max'\nsmol='p/m:low'\nslow='p/m:high'\nplan='p/m:max'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\nreasoning=true\n",
+            "[models.roles]\ndefault='p/m:max'\nexplore='p/m:low'\nplan='p/m:max'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\nreasoning=true\n",
         )
         .expect("写配置");
         let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))

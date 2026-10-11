@@ -446,7 +446,7 @@ mod tests {
     use crate::session::state::SessionState;
     use moc_protocol::methods::SessionMode;
 
-    const MODEL_BASE: &str = "[models.roles]\ndefault='p/m'\nsmol='p/m'\nslow='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
+    const MODEL_BASE: &str = "[models.roles]\ndefault='p/m'\nexplore='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
 
     #[test]
     fn token_estimator_and_threshold_modes() {

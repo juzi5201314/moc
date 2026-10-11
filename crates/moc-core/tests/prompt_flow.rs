@@ -2,19 +2,206 @@
 
 #[path = "support/content.rs"]
 mod content;
+fn text_stream(text: &str) -> String {
+    format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        serde_json::json!({
+            "id": "response",
+            "model": "gpt-test",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": text},
+                "finish_reason": "stop"
+            }]
+        })
+    )
+}
+
+fn complete(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "summary",
+        "model": "gpt-test",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop"
+        }]
+    })
+}
 use parking_lot::Mutex;
 use std::sync::Arc;
 
 use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
-    ClientCapabilities, ClientInfo, InputPart, PromptParams, SessionLoad, SessionLoadParams,
-    SessionMode, SessionNew, SessionNewParams, SessionPrompt, SessionUpdate, SessionUpdateMethod,
-    UpstreamField,
+    ClientCapabilities, ClientInfo, InputPart, PromptParams, SessionCompact, SessionCompactParams,
+    SessionLoad, SessionLoadParams, SessionMode, SessionNew, SessionNewParams, SessionPrompt,
+    SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate,
+    SessionUpdateMethod, UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+#[tokio::test]
+async fn hot_switch_persists_across_prompts_compaction_and_resume() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let model = body["model"].as_str().expect("请求带模型");
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(
+                    text_stream(match model {
+                        "glm" => "glm response",
+                        "ds" => "ds response",
+                        other => panic!("unexpected model {other}"),
+                    }),
+                    "text/event-stream",
+                )
+            } else {
+                assert_eq!(model, "ds", "热切换后的压缩必须使用当前会话模型");
+                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            }
+        })
+        .expect(4)
+        .mount(&upstream)
+        .await;
+
+    let root = tempfile::tempdir().expect("temporary root");
+    let home = root.path().join("home");
+    let cwd = root.path().join("workspace");
+    let sessions = root.path().join("sessions");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&cwd).expect("create workspace");
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[models.roles]\ndefault='test/glm:off'\nexplore='test/glm:off'\nplan='test/glm:off'\n\
+             [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
+             [providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+             [providers.test.models.ds]\ncontext_window=100000\nmax_output_tokens=4096\n\
+             [session]\ndir={:?}\n[workspace]\nwatch=false\n\
+             [context_files]\nenabled=false\n[compaction]\nmethod_order=['soft']\n",
+            upstream.uri(),
+            sessions.to_string_lossy(),
+        ),
+    )
+    .expect("write config");
+
+    let core = Core::new(CoreConfig {
+        home,
+        cwd,
+        overlays: Vec::new(),
+        session_dir: None,
+        client: Client::new(),
+    })
+    .expect("construct core");
+    let (core_side, frontend_side) = transport::duplex(64 * 1024);
+    let server = Server::new((*core).clone());
+    let connection = server.spawn(core_side);
+    let (client, _) = ClientBuilder::new(ClientInfo {
+        name: "model-switch-test".into(),
+        version: "0.1.0".into(),
+        frontend: "test".into(),
+    })
+    .connect(frontend_side)
+    .await
+    .expect("connect client");
+
+    let session = client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("create session");
+    assert_eq!(session.model, "test/glm:off");
+    client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "first".into(),
+            }],
+            mode: None,
+        })
+        .await
+        .expect("prompt with default model");
+
+    let switched = client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.id.clone(),
+            selector: "test/ds:off".into(),
+        })
+        .await
+        .expect("switch session model");
+    assert_eq!(switched.model, "test/ds:off");
+    client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "second".into(),
+            }],
+            mode: None,
+        })
+        .await
+        .expect("prompt with switched model");
+    client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: session.id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("compact with switched model");
+
+    client
+        .call::<SessionUnload>(SessionUnloadParams {
+            session_id: session.id.clone(),
+        })
+        .await
+        .expect("unload session");
+    let resumed = client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id: session.id.clone(),
+            max_entries: None,
+        })
+        .await
+        .expect("resume session");
+    assert_eq!(resumed.session.model, "test/ds:off");
+    client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "third".into(),
+            }],
+            mode: None,
+        })
+        .await
+        .expect("prompt after resume");
+
+    let requests = upstream
+        .received_requests()
+        .await
+        .expect("capture requests");
+    let models: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .expect("request body JSON")["model"]
+                .as_str()
+                .expect("request model")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(models, ["glm", "ds", "ds", "ds"]);
+
+    server.shutdown();
+    connection.wait().await;
+    core.shutdown().await;
+}
 
 #[tokio::test]
 async fn plain_text_turn_persists_authoritative_message_over_rpc() {
@@ -42,7 +229,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
+            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -215,7 +402,7 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
+            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -357,12 +544,12 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
             .any(|tool| tool["function"]["name"] == "submit_plan")
     );
     assert!(
-        plan_tools
+        !plan_tools
             .iter()
             .any(|tool| tool["function"]["name"] == "edit")
     );
     assert!(
-        plan_tools
+        !plan_tools
             .iter()
             .any(|tool| tool["function"]["name"] == "write")
     );
@@ -461,7 +648,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
+            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -631,7 +818,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
+            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -798,7 +985,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:off'\nsmol='test/model:off'\nslow='test/model:off'\nplan='test/model:off'\n\
+            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
              [session]\ndir={:?}\n\
@@ -935,7 +1122,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
     std::fs::write(
         home.join("config.toml"),
         format!(
-            "[models.roles]\ndefault='test/model:high'\nsmol='test/model:high'\nslow='test/model:high'\nplan='test/model:high'\n\
+            "[models.roles]\ndefault='test/model:high'\nexplore='test/model:high'\nplan='test/model:high'\n\
              [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
              [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\nreasoning=true\n\
              [session]\ndir={:?}\n\

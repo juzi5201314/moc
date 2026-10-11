@@ -1,8 +1,8 @@
-//! 用轻量模型生成可更新的历史 checkpoint。
+//! 用当前会话模型生成可更新的历史 checkpoint。
 
 use std::time::Instant;
 
-use moc_llm::{ChatRequest, Message, ToolDef};
+use moc_llm::{Message, ToolDef};
 use moc_protocol::RequestContext;
 
 use super::replay::visible_history_start;
@@ -81,24 +81,11 @@ pub(crate) async fn compact(
             .unwrap_or(history.len());
     }
     let retained = messages_tokens(&history[start..]);
-    let role_model = if config.roles.smol == "inherit" {
-        config.resolve_model(&state.model)?
-    } else {
-        config.resolve_role("smol")?
-    };
-    let same_model = role_model.selector == state.model;
-    let mut summary_history = history[..start].to_vec();
-    if !same_model {
-        for message in &mut summary_history {
-            super::images::strip_images(message);
-        }
-    }
+    let role_model = config.resolve_model(&state.model)?;
+    let summary_history = history[..start].to_vec();
     let prompt = summary_prompt(state, instructions, 0);
-    let fixed_summary_tokens = if same_model {
-        messages_tokens(std::slice::from_ref(system)).saturating_add(super::tools_tokens(tools))
-    } else {
-        estimate_tokens(SUMMARY_SYSTEM)
-    };
+    let fixed_summary_tokens =
+        messages_tokens(std::slice::from_ref(system)).saturating_add(super::tools_tokens(tools));
     let prompt_tokens = estimate_tokens(&prompt);
     let input_budget = role_model
         .context_window
@@ -107,37 +94,18 @@ pub(crate) async fn compact(
         .saturating_sub(prompt_tokens);
     let (selected_history, omitted_prompts) = fit_summary_history(&summary_history, input_budget);
     let prompt = summary_prompt(state, instructions, omitted_prompts);
-    let messages = if same_model {
-        let mut messages = Vec::with_capacity(selected_history.len() + 2);
-        messages.push(system.clone());
-        messages.extend(selected_history);
-        messages.push(Message::user_text(prompt));
-        messages
-    } else {
-        vec![
-            Message::system(SUMMARY_SYSTEM),
-            Message::user_text(render_summary_transcript(prompt, &selected_history)),
-        ]
-    };
-    let mut request = if same_model {
-        crate::service::prompt::request::build_request(
-            &role_model,
-            config,
-            messages,
-            tools.to_vec(),
-            None,
-            &state.session.id,
-        )
-    } else {
-        ChatRequest {
-            messages,
-            max_output_tokens: Some(role_model.max_output_tokens),
-            ..ChatRequest::default()
-        }
-    };
-    if !same_model {
-        request.options.cache = None;
-    }
+    let mut messages = Vec::with_capacity(selected_history.len() + 2);
+    messages.push(system.clone());
+    messages.extend(selected_history);
+    messages.push(Message::user_text(prompt));
+    let request = crate::service::prompt::request::build_request(
+        &role_model,
+        config,
+        messages,
+        tools.to_vec(),
+        None,
+        &state.session.id,
+    );
     let cancel = ctx.cancel();
     let request_started = Instant::now();
     let response = tokio::select! {
@@ -267,15 +235,6 @@ fn summary_prompt(
     prompt
 }
 
-fn render_summary_transcript(prompt: String, history: &[Message]) -> String {
-    let mut transcript = prompt;
-    for message in history {
-        transcript.push_str(&serde_json::to_string(message).expect("Message 可序列化"));
-        transcript.push_str("\n\n");
-    }
-    transcript
-}
-
 #[cfg(test)]
 fn summary_transcript(
     state: &SessionState,
@@ -283,7 +242,12 @@ fn summary_transcript(
     start: usize,
     instructions: Option<&str>,
 ) -> String {
-    render_summary_transcript(summary_prompt(state, instructions, 0), &history[..start])
+    let mut transcript = summary_prompt(state, instructions, 0);
+    for message in &history[..start] {
+        transcript.push_str(&serde_json::to_string(message).expect("Message 可序列化"));
+        transcript.push_str("\n\n");
+    }
+    transcript
 }
 
 #[cfg(test)]

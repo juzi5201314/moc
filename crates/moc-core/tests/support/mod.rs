@@ -24,7 +24,7 @@ impl Harness {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::write(home.join("config.toml"), format!(
-            "[models.roles]\ndefault='test/gpt-test:off'\nsmol='test/gpt-test:off'\nslow='test/gpt-test:off'\nplan='test/gpt-test:off'\n\
+            "[models.roles]\ndefault='test/gpt-test:off'\nexplore='test/gpt-test:off'\nplan='test/gpt-test:off'\n\\
              [providers.test]\napi='{api}'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n\
              [providers.test.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n\
              [workspace]\nwatch=false\n[context_files]\nenabled=false\n{extra}\n"

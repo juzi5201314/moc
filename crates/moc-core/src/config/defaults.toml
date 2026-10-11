@@ -2,8 +2,7 @@
 
 [models.roles]
 default = ""
-smol = "inherit"
-slow = "inherit"
+explore = "inherit"
 plan = "inherit"
 
 [providers]

@@ -21,7 +21,8 @@ impl Project {
         let cwd = root.path().join("work");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::write(home.join("config.toml"), format!("[models.roles]\ndefault='p/gpt-test:off'\nsmol='p/gpt-test:off'\nslow='p/gpt-test:off'\nplan='p/gpt-test:off'\n[providers.p]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n[providers.p.models.gpt-test]\ncontext_window=1000000\n[context_files]\nenabled=false\n[workspace]\nwatch=false\n[compaction]\nmethod_order=['soft']\n")).unwrap();
+        std::fs::write(home.join("config.toml"), format!("[models.roles]\ndefault='p/gpt-test:off'\nexplore='p/gpt-test:off'\nplan='p/gpt-test:off'\n[providers.p]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n[providers.p.models.gpt-test]\ncontext_window=1000000\n[context_files]\nenabled=false\n[workspace]\nwatch=false\n[compaction]\nmethod_order=['soft']\n"))
+            .unwrap();
         Self { root, home, cwd }
     }
     fn command(&self) -> tokio::process::Command {
@@ -137,7 +138,7 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         if body["stream"] != true { return ResponseTemplate::new(200).set_body_json(json!({"id":"s","choices":[{"index":0,"message":{"role":"assistant","content":"保留已批准计划"},"finish_reason":"stop"}]})); }
         let response = if seen.fetch_add(1, Ordering::SeqCst) == 0 {
-            assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "edit"));
+            assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "submit_plan"));
             call("plan", "submit_plan", json!({"title":"实施方案","markdown":"# 可审阅计划\n保留公开接口。"}))
         } else {
             assert!(body.to_string().contains("active-plan"));

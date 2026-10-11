@@ -103,11 +103,10 @@ fn rank(key: &str) -> usize {
         "input" => 5,
         "remote_compaction" => 6,
         "pricing" => 7,
-        // 模型角色：主模型 → 轻量 → 深度 → 计划
+        // 模型角色：主模型 → 探索子代理 → 计划
         "default" => 0,
-        "smol" => 1,
-        "slow" => 2,
-        "plan" => 3,
+        "explore" => 1,
+        "plan" => 2,
         // 指令文件与来源开关
         "user" => 1,
         "project" => 2,
@@ -274,8 +273,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 .map(|(value, label)| ChoiceOption::new(value, label))
                 .collect(),
         )
-    } else if path.as_slice() == ["models", "roles", "smol"]
-        || path.as_slice() == ["models", "roles", "slow"]
+    } else if path.as_slice() == ["models", "roles", "explore"]
         || path.as_slice() == ["models", "roles", "plan"]
     {
         FieldKind::Choice(vec![ChoiceOption::new("inherit", "沿用主模型")])
@@ -317,8 +315,10 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
 fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
     match path {
         "models.roles.default" => ("主模型", "日常对话使用的模型，格式为 供应商/模型。"),
-        "models.roles.smol" => ("轻量模型", "摘要等简单任务使用的模型。"),
-        "models.roles.slow" => ("深度模型", "需要深入分析时使用的模型。"),
+        "models.roles.explore" => (
+            "探索子代理模型",
+            "供未来探索子代理使用；当前尚未接入子代理调度。",
+        ),
         "models.roles.plan" => ("计划模型", "制定计划时使用的模型。"),
         "context_files.user" => ("用户指令", "加载用户目录下的 AGENTS.md。"),
         "context_files.project" => ("项目指令", "加载工作区中的 AGENTS.md 及其引用的文件。"),
