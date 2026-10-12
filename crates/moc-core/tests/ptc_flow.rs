@@ -23,14 +23,16 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &Request| {
-            let response = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
-                support::tool_stream(vec![(
-                    "call_run",
-                    "run_code",
+            let response = match counter.fetch_add(1, Ordering::SeqCst) {
+                0 => support::tool_stream(vec![(
+                    "call_run", "run_code",
                     json!({"code":"return {sum: [1,2,3].reduce((a,b)=>a+b,0)};"}),
-                )])
-            } else {
-                support::text_stream("guest sum=6")
+                )]),
+                2 => support::tool_stream(vec![(
+                    "budget_run", "run_code",
+                    json!({"code":"await tools.write({path:'first.txt', content:'已提交'}); await tools.write({path:'second.txt', content:'不应执行'});"}),
+                )]),
+                _ => support::text_stream("guest sum=6"),
             };
             ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
         })
@@ -40,7 +42,7 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[tools.ptc]\ndefault_timeout_secs=30\nmax_timeout_secs=30\n",
+        "[tools.ptc]\ndefault_timeout_secs=30\nmax_timeout_secs=30\n[limits]\nmax_tool_calls_per_prompt=2\n",
     )
     .await;
     let session = harness
@@ -54,5 +56,14 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
     assert!(loaded.entries.iter().any(|entry| {
         matches!(entry, moc_protocol::methods::TranscriptEntry { message, .. } if message.text().contains("sum"))
     }));
+    // 同一真实 guest 验证嵌套调用共享预算，以及硬停止后已经提交的写入仍然保留。
+    let stopped = harness.prompt(&session, "执行嵌套工具预算场景").await;
+    assert_eq!(stopped.finish_reason, moc_llm::FinishReason::ResourceLimit);
+    assert_eq!(
+        std::fs::read_to_string(harness.root.path().join("work/first.txt")).unwrap(),
+        "已提交"
+    );
+    assert!(!harness.root.path().join("work/second.txt").exists());
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     harness.close().await;
 }

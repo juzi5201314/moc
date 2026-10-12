@@ -39,7 +39,7 @@ allow_patterns = ["^mkdir\\s+-p\\s+[^/]+$", "^git\\s+(add|commit)\\b.*$"]
 
 ```
 
-`[models.roles]` 的 `explore` 与 `plan` 默认 `inherit`（沿用主模型）。切换到计划模式时，会话模型会切到 `plan` 指定的模型；`plan = "none"` 表示不切换、沿用当前会话模型。退出计划模式（批准计划或手动切出）会恢复进入前的会话模型，模型与模式变化都记入 transcript，会话卸载重载后依然有效。
+`[models.roles]` 的 `explore` 与 `plan` 默认 `inherit`（沿用主模型）。切换到计划模式时，会话模型应用 `plan` 指定的模型；`plan = "none"` 表示不切换。手动切出计划模式恢复进入前的模型；批准计划执行则使用 `session/plan_approve.execution_model` 指定的模型，字段缺省时使用审批发生时的当前会话模型。模式与模型变化均记入 transcript，卸载重载后保持一致。
 
 `base_url` 会自动补齐 `/v1`；末尾加 `#` 可跳过该处理。`api` 也支持 `openai_responses` 和 `anthropic_messages`。启用推理后，未配置 `thinking_levels` 时默认可选 `low`、`medium`、`high`、`xhigh`、`max`；Anthropic 使用 adaptive thinking 与 `output_config.effort`，不会发送旧式 `budget_tokens`。
 
@@ -129,11 +129,37 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - `full` 是 yolo：bash 不做授权询问，但危险命令拒绝规则始终生效。
 - `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 仍由 core 直接写入工作区。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
-- 计划模式按 `models.roles.plan` 切换模型：进入时应用计划模型（`plan = "none"` 时沿用当前模型），退出时恢复进入前的模型；`session/new` 直接以计划模式创建会话同样生效。
+- 计划模式进入时应用 `models.roles.plan`（`none` 时沿用当前模型），手动退出时恢复进入前的模型；审批退出改用选定执行模型。`session/new` 直接以计划模式创建会话同样应用计划角色模型。
+- `write_plan` 只保存会话计划文件和 Submitted entry；`exit_plan({})` 触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，父会话仍保持计划模式，子会话以选定模型开始 Normal 执行。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。
 - 压缩依次尝试 remote、shake、soft；原生载荷只用于兼容模型，换模型或载荷失效时恢复日志视图。`auto_continue=false` 会在提示内压缩完成后停止继续请求模型。
+
+### 循环保护
+
+开箱即用，不需要单独配置。`[limits].loop_detection=true` 同时启用流内和跨轮检测：
+
+- 思考／正文：4096 个 Unicode 字符的滚动窗口检测精确周期；有界段落指纹检测中英文高度相似内容，低信息增量规则仅用于思考。代码围栏、常见代码行、数字和单字符填充不作为正文循环证据。
+- 工具参数：识别多个 JSON 顶层值重复拼接；合法 JSON 的重复数组元素和字符串内容不按循环停止，仍受参数字节上限约束。
+- 工具轮次：保留最近 32 个批次指纹，比较规范化参数、完整未截断结果和读取目标版本；检测长度 1～4 的短周期。无变化周期连续出现 5 次时纠偏一次，之后再次形成周期直接结束。提交变更和未完成的正常等待打断周期证据；已结束任务的反复等待不豁免。
+
+命中保护会释放模型响应连接、取消提示所属子代理、嵌套操作与后台进程组，停止后续模型请求；不会终止其他提示或手动创建的后台任务。已提交的写入保留；正在提交的写入按事务出口完整结束。尚未提交的正文、思考、签名、加密 reasoning 和工具调用不会进入回放；TUI 移除对应生成预览。CLI `--print` 返回非零退出码。协议结束原因是 `loop_detected` 或 `resource_limit`，不是 `length`／用户取消，不能触发自动续写、压缩恢复或重试。
+
+硬限制始终启用，关闭 `loop_detection` 只关闭重复识别。以下默认值可在 `[limits]` 或配置界面高级选项中调整，所有硬上限必须为正数：
+
+| 字段 | 默认值 | 范围 |
+|---|---:|---|
+| `max_response_bytes` | 8 MiB | 单次生成内容；未完成 SSE 帧上限为 2 倍，响应体含协议开销上限为 16 倍 |
+| `max_response_duration_secs` | 900 | 单次连接、重试与生成硬时限；心跳不重置 |
+| `max_prompt_bytes` | 64 MiB | 模型响应体、压缩输出、模型可见工具结果累计字节 |
+| `max_prompt_output_tokens` | 512000 | 供应商报告的累计输出 token |
+| `max_tool_calls_per_prompt` | 1024 | 工具调用次数，包含 PTC 子工具与提示所属子代理 |
+| `max_prompt_duration_secs` | 3600 | 整个提示的墙钟时限，包括等待与压缩 |
+| `max_turns_per_prompt` | 128 | 提示轮数硬上限 |
+
+单个工具参数另有 1 MiB 上限，单次响应至多 256 个内容块。子代理累计资源计入活动父提示，父提示硬停止会取消所属子代理。无法读取加密 reasoning、供应商不报告用量或合法重复无法高置信分类时，依靠字节、次数和时限确保运行有界；检测并不保证零误报、零漏报。关闭客户端连接是否立即停止供应商计算，取决于供应商取消语义。
+
 
 ## 验证
 

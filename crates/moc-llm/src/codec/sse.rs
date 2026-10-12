@@ -36,6 +36,10 @@ impl SseDecoder {
         }
     }
 
+    pub(crate) fn pending_bytes(&self) -> usize {
+        self.buf.len() - self.pos
+    }
+
     /// 追加一段字节；分片位置任意。
     pub fn push(&mut self, chunk: &[u8]) {
         if self.pos > 0 {

@@ -95,6 +95,11 @@ pub async fn approve_plan(
             "The plan has already been processed",
         ));
     }
+    let config = inner
+        .project_config(std::path::Path::new(&state.session.cwd))
+        .map_err(to_rpc)?;
+    let requested_model = params.execution_model.as_deref().unwrap_or(&state.model);
+    let execution_model = config.resolve_model(requested_model).map_err(to_rpc)?;
 
     if params.action == PlanAction::ExecuteCompacted {
         compact::manual(
@@ -102,6 +107,7 @@ pub async fn approve_plan(
             &ctx,
             &params.session_id,
             Some("Preserve the plan and key decisions"),
+            Some(&execution_model.selector),
         )
         .await
         .map_err(to_rpc)?;
@@ -137,18 +143,11 @@ pub async fn approve_plan(
     }
 
     if params.action == PlanAction::ExecuteNewSession {
-        let config = inner
-            .project_config(std::path::Path::new(&state.session.cwd))
-            .map_err(to_rpc)?;
-        // 执行会话用进入计划模式前的会话模型，而不是计划模型。
-        let model = config
-            .resolve_model(state.exit_plan_model())
-            .map_err(to_rpc)?;
         let child = inner
             .sessions
             .create(
                 &state.session.cwd,
-                &model.selector,
+                &execution_model.selector,
                 SessionMode::Normal,
                 state.permission,
                 Some(&plan.title),
@@ -167,7 +166,8 @@ pub async fn approve_plan(
             .map_err(to_rpc)?;
         tokio::fs::write(&child_path, &plan.markdown)
             .await
-            .map_err(protocol_to_rpc)?;
+            .map_err(CoreError::Io)
+            .map_err(to_rpc)?;
         inner
             .sessions
             .append(
@@ -192,6 +192,20 @@ pub async fn approve_plan(
                 )),
                 None,
                 None,
+            )
+            .await
+            .map_err(to_rpc)?;
+        inner
+            .sessions
+            .append(
+                &params.session_id,
+                EntryPayload::Plan {
+                    plan_id: plan.plan_id.clone(),
+                    title: plan.title.clone(),
+                    path: plan.path.clone(),
+                    markdown: plan.markdown.clone(),
+                    status: PlanStatus::Approved,
+                },
             )
             .await
             .map_err(to_rpc)?;
@@ -235,15 +249,16 @@ pub async fn approve_plan(
         .set_mode(&params.session_id, SessionMode::Normal)
         .await
         .map_err(to_rpc)?;
-    let model = sync_plan_model(
-        inner,
-        &params.session_id,
-        SessionMode::Plan,
-        SessionMode::Normal,
-        None,
-    )
-    .await
-    .map_err(to_rpc)?;
+    let current_model = record.state.lock().await.model.clone();
+    let model =
+        (current_model != execution_model.selector).then(|| execution_model.selector.clone());
+    if model.is_some() {
+        inner
+            .sessions
+            .set_model(&params.session_id, execution_model.selector.clone())
+            .await
+            .map_err(to_rpc)?;
+    }
     emit_mode_change(&ctx, &params.session_id, SessionMode::Normal, model).await?;
     Ok(SessionPlanApproveResult {
         session_id: params.session_id,
@@ -287,7 +302,8 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "bash",
             "ask",
             "skill",
-            "submit_plan",
+            "write_plan",
+            "exit_plan",
             "run_code",
         ],
         SessionMode::Ptc => &["run_code"],

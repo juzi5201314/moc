@@ -969,6 +969,8 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::AgentStatusChanged { .. } => "agent_status_changed",
         SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",
+        SessionUpdate::GenerationStarted { .. } => "generation_started",
+        SessionUpdate::GuardNotice { .. } => "guard_notice",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",
         SessionUpdate::BashStarted { .. } => "bash_started",
         SessionUpdate::ToolStarted { .. } => "tool_started",

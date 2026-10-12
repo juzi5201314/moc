@@ -333,11 +333,14 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                     .set_body_json(complete("计划和关键决策：保留接口。"));
             }
             ResponseTemplate::new(200).set_body_raw(
-                tool_stream(vec![(
-                    "plan",
-                    "submit_plan",
-                    json!({"title":"实施计划","markdown":"# 保留接口\n1. 完成实现"}),
-                )]),
+                tool_stream(vec![
+                    (
+                        "plan",
+                        "write_plan",
+                        json!({"title":"实施计划","markdown":"# 保留接口\n1. 完成实现"}),
+                    ),
+                    ("exit", "exit_plan", json!({})),
+                ]),
                 "text/event-stream",
             )
         })
@@ -363,6 +366,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                 session_id: id.clone(),
                 plan_id: plan.plan_id,
                 action,
+                execution_model: None,
             })
             .await
             .unwrap();
@@ -380,6 +384,45 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
             );
         }
     }
+    upstream.reset().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("请求 JSON");
+            if body["stream"] != true {
+                ResponseTemplate::new(200).set_body_json(complete(""))
+            } else {
+                ResponseTemplate::new(200).set_body_raw(
+                    tool_stream(vec![
+                        (
+                            "save",
+                            "write_plan",
+                            json!({"title":"失败后重试", "markdown":"# 保留计划"}),
+                        ),
+                        ("exit", "exit_plan", json!({})),
+                    ]),
+                    "text/event-stream",
+                )
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let id = h.session(SessionMode::Plan).await;
+    h.prompt(&id, "保存计划").await;
+    let before = h.load(&id).await;
+    let error = h
+        .client
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: id.clone(),
+            plan_id: before.plans[0].plan_id.clone(),
+            action: PlanAction::ExecuteCompacted,
+            execution_model: None,
+        })
+        .await;
+    assert!(error.is_err(), "空摘要不能批准计划");
+    let after = h.load(&id).await;
+    assert_eq!(after.plans[0].status, PlanStatus::Submitted);
+    assert_eq!(after.session.mode, before.session.mode);
+    assert_eq!(after.session.model, before.session.model);
     h.close().await;
 }
 

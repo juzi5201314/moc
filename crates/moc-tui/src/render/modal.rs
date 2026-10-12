@@ -168,7 +168,8 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
 }
 
 /// 居中模态卡片。
-pub fn draw_modal(frame: &mut Frame, app: &App) {
+pub fn draw_modal(frame: &mut Frame, app: &mut App) {
+    app.plan_model_area = Rect::default();
     let Some(modal) = &app.modal else {
         return;
     };
@@ -214,7 +215,7 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
         (width, usize::from(width.saturating_sub(4)).max(8))
     };
     let lines = modal_lines(app, modal, content_width, max_content);
-    let content_height = lines.len().max(1) as u16;
+    let content_height = u16::try_from(lines.len().max(1)).unwrap_or(u16::MAX);
     // 2 行给上下边框，1 行留作底部内边距：内容顶格，下沿不贴边框也不空一大片。
     let height = content_height
         .saturating_add(3)
@@ -242,6 +243,22 @@ pub fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         modal_area,
     );
+    if let Modal::Plan { state } = modal {
+        let prefix_width =
+            u16::try_from(str_width("执行模型：")).expect("固定标签宽度可表示为 u16");
+        let available = u16::try_from(content_width)
+            .expect("正文宽度受终端 u16 宽度约束")
+            .saturating_sub(prefix_width);
+        let model_width = u16::try_from(str_width(&state.execution_model))
+            .unwrap_or(u16::MAX)
+            .min(available);
+        app.plan_model_area = Rect::new(
+            modal_area.x + 1 + prefix_width,
+            modal_area.y + 1,
+            model_width,
+            1,
+        );
+    }
 }
 
 /// 快捷键帮助：键位列与描述列之间的间距（格）。
@@ -289,6 +306,7 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             (keys, *description)
         })
         .collect();
+    rows.insert(0, ("/confirm-plan".into(), "重新审阅待确认的计划"));
     // 双列按行序对半切开，两列各自收窄；退回单列时两列并作一列取并集。
     let unified = measure_column(&rows);
     let split = rows.len().div_ceil(2);
@@ -786,6 +804,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             models,
             current,
             picker,
+            ..
         } => {
             let filtered = crate::modal::filtered_models(models, &picker.query);
             let visible = max_lines.saturating_sub(5).max(1);
@@ -1121,60 +1140,77 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             )));
             lines
         }
-        Modal::Plan {
-            markdown,
-            selected,
-            scroll_offset,
-            ..
-        } => {
-            let all_lines = crate::render::markdown::render_markdown(markdown, width, theme);
-            let total = all_lines.len();
-            let action_rows = 3;
-            let content_rows = max_lines.saturating_sub(action_rows).max(1);
-            let offset = (*scroll_offset).min(total.saturating_sub(content_rows));
-            let mut lines: Vec<Line<'static>> = all_lines
-                .into_iter()
-                .skip(offset)
-                .take(content_rows)
-                .collect();
-            if total > content_rows {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "  ↑↓/PgUp/PgDn 滚动查看 ({}..{}/{}) · Tab 切换按钮",
-                        offset + 1,
-                        (offset + content_rows).min(total),
-                        total
+        Modal::Plan { state } => {
+            let prefix = "执行模型：";
+            let mut lines = vec![Line::from(vec![
+                Span::styled(prefix, Style::new().fg(theme.text_secondary)),
+                Span::styled(
+                    ellipsize(
+                        &state.execution_model,
+                        width.saturating_sub(str_width(prefix)),
                     ),
-                    Style::new().fg(theme.gray_dim),
+                    Style::new()
+                        .fg(theme.accent_model)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            ])];
+            lines.extend(
+                crate::render::wrap::wrap_text(&state.path, width)
+                    .into_iter()
+                    .map(|text| Line::from(Span::styled(text, Style::new().fg(theme.gray)))),
+            );
+            let labels = [
+                "执行（当前会话）",
+                "压缩当前会话后执行",
+                "在新会话执行",
+                "继续计划",
+            ];
+            let feedback = usize::from(state.error.is_some() || state.submitting);
+            let content_rows = max_lines.saturating_sub(lines.len() + labels.len() + 1 + feedback);
+            let all_lines = crate::render::markdown::render_markdown(&state.markdown, width, theme);
+            let total = all_lines.len();
+            let offset = state.scroll_offset.min(total.saturating_sub(content_rows));
+            lines.extend(all_lines.into_iter().skip(offset).take(content_rows));
+            lines.push(Line::from(Span::styled(
+                ellipsize(
+                    "↑↓/PgUp/PgDn 滚动 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型",
+                    width,
+                ),
+                Style::new().fg(theme.gray_dim),
+            )));
+            for (index, label) in labels.iter().enumerate() {
+                let style = if state.submitting {
+                    Style::new().fg(theme.gray_dim)
+                } else if state.selected == index {
+                    Style::new()
+                        .fg(theme.accent_success)
+                        .bg(theme.bg_visual)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme.text_secondary)
+                };
+                lines.push(Line::from(Span::styled(
+                    ellipsize(
+                        &format!(
+                            "{} {label}",
+                            if state.selected == index { "❯" } else { " " }
+                        ),
+                        width,
+                    ),
+                    style,
                 )));
-            } else {
-                lines.push(Line::from(String::new()));
             }
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  [ 执行计划 ]",
-                    if *selected == 0 {
-                        Style::new()
-                            .fg(theme.accent_success)
-                            .bg(theme.bg_visual)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::new().fg(theme.text_secondary)
-                    },
-                ),
-                Span::styled("    ", Style::new()),
-                Span::styled(
-                    "[ 拒绝 ]",
-                    if *selected == 1 {
-                        Style::new()
-                            .fg(theme.accent_error)
-                            .bg(theme.bg_visual)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::new().fg(theme.text_secondary)
-                    },
-                ),
-            ]));
+            if let Some(error) = &state.error {
+                lines.push(Line::from(Span::styled(
+                    ellipsize(&format!("错误：{error}"), width),
+                    Style::new().fg(theme.accent_error),
+                )));
+            } else if state.submitting {
+                lines.push(Line::from(Span::styled(
+                    "正在提交…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            }
             lines
         }
         Modal::Context { usage } => {
@@ -1463,6 +1499,7 @@ mod tests {
             }],
             current: "p/model".into(),
             picker: PickerState::default(),
+            target: crate::modal::ModelTarget::Session,
         };
 
         let lines = modal_lines(&app, &modal, 80, 20);
@@ -1750,7 +1787,7 @@ mod tests {
         let (width, height) = (120u16, 30u16);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
         terminal
-            .draw(|frame| super::draw_modal(frame, &app))
+            .draw(|frame| super::draw_modal(frame, &mut app))
             .expect("绘制成功");
 
         let rows: Vec<String> = (0..height)

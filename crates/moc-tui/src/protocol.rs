@@ -38,6 +38,14 @@ pub enum AppEvent {
         prompt: crate::queue::QueuedPrompt,
         result: anyhow::Result<bool>,
     },
+    PlanApproval(anyhow::Result<moc_protocol::methods::SessionPlanApproveResult>),
+    /// 从权威会话状态重新载入待审计划。
+    PlanReview(anyhow::Result<moc_protocol::methods::PlanInfo>),
+    /// 新执行会话加载完成后，前端才能发起执行提示。
+    PlanExecutionLoaded {
+        result: anyhow::Result<moc_protocol::SessionLoadResult>,
+        auto_prompt: Option<String>,
+    },
     /// `session/update` 通知。
     Update(SessionUpdateParams),
     /// 授权请求；主循环收到后弹出模态，回选经 `reply` 送回协议层。

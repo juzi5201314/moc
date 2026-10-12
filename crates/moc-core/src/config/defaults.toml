@@ -143,6 +143,13 @@ logs_days = 14
 [limits]
 max_turns_per_prompt = 128
 max_length_continues = 2
+loop_detection = true
+max_response_bytes = 8388608
+max_response_duration_secs = 900
+max_prompt_bytes = 67108864
+max_prompt_output_tokens = 512000
+max_tool_calls_per_prompt = 1024
+max_prompt_duration_secs = 3600
 
 [mcp]
 enabled = true

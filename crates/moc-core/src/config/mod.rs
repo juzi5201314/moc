@@ -164,6 +164,7 @@ impl ResolvedConfig {
         schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
         schema::validate_ptc(&document.tools.ptc)?;
+        schema::validate_limits(&document.limits)?;
         if document.tools.job.max_running == 0 {
             return Err(CoreError::Config("后台进程上限必须大于 0".into()));
         }

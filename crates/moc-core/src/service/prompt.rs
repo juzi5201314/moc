@@ -16,11 +16,13 @@ use moc_protocol::{
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
+pub(crate) mod guard;
 pub(crate) mod request;
 mod stream;
 pub(crate) mod tools;
 mod workspace;
 
+use guard::{CycleAction, PromptGuard, ToolCycles};
 use request::{build_request, project_input, upstream_mismatches};
 use stream::forward_event;
 use tools::{execute_tool_batch, persist_tool_result, repair_pending_calls};
@@ -67,7 +69,86 @@ pub async fn run_prompt(
         .lock()
         .await
         .accepting = true;
-    let result = run_prompt_locked(Arc::clone(&inner), &ctx, params, Arc::clone(&record)).await;
+    let runtime = inner.runtime(&session_id).await;
+    let cwd = record.state.lock().await.session.cwd.clone();
+    let config = inner
+        .project_config(std::path::Path::new(&cwd))
+        .map_err(to_rpc)?;
+    let parent_id = record.state.lock().await.session.parent_session_id.clone();
+    let parent_guard = match parent_id {
+        Some(parent_id) => inner.runtime(&parent_id).await.guard.lock().clone(),
+        None => None,
+    };
+    let guard = PromptGuard::new(&config.limits, ctx.cancel().child_token(), parent_guard);
+    *runtime.guard.lock() = Some(Arc::clone(&guard));
+    let scoped_ctx = ctx.with_cancel(guard.cancel.clone());
+    let timer_guard = Arc::clone(&guard);
+    let duration_secs = config.limits.max_prompt_duration_secs;
+    let timer = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
+        timer_guard.stop(moc_llm::GuardViolation::Resource(format!(
+            "本次提示超过 {duration_secs} 秒时限"
+        )));
+    });
+    let result =
+        run_prompt_locked(Arc::clone(&inner), &scoped_ctx, params, Arc::clone(&record)).await;
+    timer.abort();
+    let result = if let Some(violation) = guard.violation() {
+        async {
+            let prompt_id = match &result {
+                Ok(result) => result.prompt_id.clone(),
+                Err(_) => crate::ids::prompt_id(record.state.lock().await.prompt_sequence),
+            };
+            let reason = violation.finish_reason();
+            let message = Message::assistant_text(format!(
+                "已终止本次提示：{violation}。已提交的工具操作保留；没有自动重试。"
+            ));
+            inner
+                .sessions
+                .append_message(&session_id, message.clone(), None, Some(reason.clone()))
+                .await
+                .map_err(to_rpc)?;
+            update
+                .emit(
+                    session_id.clone(),
+                    SessionUpdate::GuardNotice {
+                        prompt_id: prompt_id.clone(),
+                        message: message.text(),
+                        terminal: true,
+                    },
+                )
+                .await
+                .map_err(protocol_to_rpc)?;
+            let usage = result
+                .as_ref()
+                .map_or(Usage::default(), |result| result.usage);
+            Ok(PromptResult {
+                session_id: session_id.clone(),
+                prompt_id,
+                message,
+                finish_reason: reason,
+                usage,
+            })
+        }
+        .await
+    } else {
+        result
+    };
+    *runtime.guard.lock() = None;
+    if let Ok(result) = &result {
+        update
+            .emit(
+                session_id.clone(),
+                SessionUpdate::PromptFinished {
+                    prompt_id: result.prompt_id.clone(),
+                    message: result.message.clone(),
+                    finish_reason: result.finish_reason.clone(),
+                    usage: result.usage,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
     inner
         .runtime(&session_id)
         .await
@@ -177,6 +258,12 @@ async fn run_prompt_locked(
         }
     }
     let runtime = inner.runtime(&params.session_id).await;
+    let guard = runtime
+        .guard
+        .lock()
+        .clone()
+        .expect("运行中的提示持有共享预算");
+    let mut tool_cycles = ToolCycles::default();
     let state = record.state.lock().await;
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
     // CLM 是会话级模式；临时 `/ask` 不能覆盖已经启用的 CLM。
@@ -267,6 +354,7 @@ async fn run_prompt_locked(
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
     let mut stream_overflows = 0usize;
+    let mut cycle_redirect = None;
     let summary = catalog.summary();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
     let system = build(
@@ -288,6 +376,9 @@ async fn run_prompt_locked(
             .map_err(to_rpc)?;
         let mut snapshot = record.state.lock().await.clone();
         let mut reminder_messages = vec![mode_reminder(mode)];
+        if let Some(detail) = cycle_redirect.take() {
+            reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}。不要再次执行相同的无进展动作；改用能获得新证据的操作，或总结现有结果并结束。再次形成无进展循环将终止本次提示。</system-interrupt>")));
+        }
         if turn == 0 {
             if project_config.openviking.recall
                 && !project_config.openviking.url.trim().is_empty()
@@ -410,6 +501,7 @@ async fn run_prompt_locked(
                 compact::ContextBudget {
                     additional_tokens: compact::messages_tokens(&reminder_messages),
                 },
+                None,
             )
             .await
             {
@@ -465,6 +557,7 @@ async fn run_prompt_locked(
                 }
                 Err(error) => return Err(to_rpc(error)),
             };
+            request.options.stream_guard.max_wire_bytes = Some(guard.remaining_bytes());
             let request_started = Instant::now();
             let streamed = tokio::select! {
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
@@ -485,6 +578,11 @@ async fn run_prompt_locked(
             }
             match streamed {
                 Ok(stream) => break (stream, permit, request_started),
+                Err(moc_llm::LlmError::Guard(violation)) => {
+                    guard.stop(violation);
+                    final_reason = guard.reason();
+                    break 'turns;
+                }
                 Err(error)
                     if llm_config.server_compaction_threshold.is_some()
                         && error.api_error().is_some_and(|api| api.status == Some(400))
@@ -510,6 +608,7 @@ async fn run_prompt_locked(
                         compact::ContextBudget {
                             additional_tokens: compact::messages_tokens(&reminder_messages),
                         },
+                        None,
                     )
                     .await
                     {
@@ -558,16 +657,35 @@ async fn run_prompt_locked(
                 }
             }
         };
+        update
+            .emit(
+                params.session_id.clone(),
+                SessionUpdate::GenerationStarted {
+                    prompt_id: prompt_id.clone(),
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
         let mut call_ids = HashMap::<usize, String>::new();
         let mut interrupted = false;
         let mut connection_error = None;
+        let mut received_bytes = 0;
         let response = loop {
             tokio::select! {
+                biased;
                 _ = cancel.cancelled() => {
                     interrupted = true;
-                    break Some(stream.interrupt());
+                    break Some(if guard.violation().is_some() { stream.discard(guard.reason()) } else { stream.interrupt() });
                 }
                 event = stream.next_event() => {
+                    let current_bytes = stream.received_bytes();
+                    if let Some(Ok(moc_llm::StreamEvent::Usage(usage))) = &event { guard.check_tokens(usage.output_tokens); }
+                    guard.bytes(current_bytes.saturating_sub(received_bytes));
+                    received_bytes = current_bytes;
+                    if guard.violation().is_some() {
+                        interrupted = true;
+                        break Some(stream.discard(guard.reason()));
+                    }
                     match event {
                         Some(Ok(event)) => {
                             if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event, &mut call_ids).await {
@@ -575,6 +693,11 @@ async fn run_prompt_locked(
                                 connection_error = Some(protocol_to_rpc(error));
                                 break Some(stream.interrupt());
                             }
+                        }
+                        Some(Err(moc_llm::LlmError::Guard(violation))) => {
+                            guard.stop(violation);
+                            interrupted = true;
+                            break Some(stream.discard(guard.reason()));
                         }
                         Some(Err(error)) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength)
                             && project_config.compaction.enabled && stream_overflows < 2 => {
@@ -609,6 +732,7 @@ async fn run_prompt_locked(
                 compact::ContextBudget {
                     additional_tokens: compact::messages_tokens(&reminder_messages),
                 },
+                None,
             )
             .await
             .map_err(to_rpc)?;
@@ -658,6 +782,10 @@ async fn run_prompt_locked(
             response.finish_reason.clone()
         };
         last_message = response.message.clone();
+        if guard.violation().is_some() {
+            final_reason = guard.reason();
+            break 'turns;
+        }
         inner
             .sessions
             .append_message(
@@ -792,6 +920,7 @@ async fn run_prompt_locked(
             anchors: Arc::clone(&runtime.anchors),
             request: ctx.clone(),
             cancel: cancel.clone(),
+            guard: Arc::clone(&guard),
             sessions: Arc::clone(&inner.sessions),
             core: Arc::clone(&inner),
             catalog: Arc::clone(&catalog),
@@ -807,10 +936,32 @@ async fn run_prompt_locked(
             tool_call_id: String::new(),
             loaded_skills: Arc::clone(&runtime.loaded_skills),
         };
-        let control_end =
-            execute_tool_batch(&inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
-        if control_end {
-            final_reason = FinishReason::Stop;
+        let batch = execute_tool_batch(&inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
+        let control_end = batch.control_end;
+        if !control_end && !cancel.is_cancelled() && project_config.limits.loop_detection {
+            match tool_cycles.record(&batch.observations) {
+                CycleAction::Continue => {}
+                CycleAction::Redirect(detail) => {
+                    update
+                        .emit(
+                            params.session_id.clone(),
+                            SessionUpdate::GuardNotice {
+                                prompt_id: prompt_id.clone(),
+                                message: format!(
+                                    "检测到无进展工具循环，已给予一次纠偏机会：{detail}"
+                                ),
+                                terminal: false,
+                            },
+                        )
+                        .await
+                        .map_err(protocol_to_rpc)?;
+                    cycle_redirect = Some(detail);
+                }
+                CycleAction::Stop(detail) => guard.stop(moc_llm::GuardViolation::Loop {
+                    channel: "工具",
+                    detail,
+                }),
+            }
         }
         if control_end || cancel.is_cancelled() {
             final_reason = if control_end {
@@ -825,6 +976,10 @@ async fn run_prompt_locked(
             break;
         }
         if turn + 1 == project_config.limits.max_turns_per_prompt {
+            guard.stop(moc_llm::GuardViolation::Resource(format!(
+                "本次提示达到 {} 轮上限",
+                project_config.limits.max_turns_per_prompt
+            )));
             final_reason = FinishReason::Other("max_turns".into());
         }
     }
@@ -849,18 +1004,6 @@ async fn run_prompt_locked(
         },
     )
     .await?;
-    update
-        .emit(
-            params.session_id.clone(),
-            SessionUpdate::PromptFinished {
-                prompt_id: prompt_id.clone(),
-                message: last_message.clone(),
-                finish_reason: final_reason.clone(),
-                usage,
-            },
-        )
-        .await
-        .map_err(protocol_to_rpc)?;
     Ok(PromptResult {
         session_id: params.session_id,
         prompt_id,

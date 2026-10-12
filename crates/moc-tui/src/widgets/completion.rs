@@ -70,6 +70,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "/quit",
         description: "退出 moc",
     },
+    SlashCommand {
+        name: "/confirm-plan",
+        description: "计划模式下重新审阅已写入的待审计划",
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

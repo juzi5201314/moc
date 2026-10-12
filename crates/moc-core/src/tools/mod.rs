@@ -165,6 +165,7 @@ pub struct ToolCtx {
     pub allow_agents: bool,
     pub nested: bool,
     pub cancel: CancellationToken,
+    pub(crate) guard: Arc<crate::service::prompt::guard::PromptGuard>,
     pub jobs: Arc<job::JobManager>,
     /// 当前 workspace 的惰性 OpenViking client；未配置时为 None。
     pub openviking: Option<Arc<moc_openviking::OpenVikingClient>>,
@@ -239,7 +240,8 @@ impl ToolRegistry {
                 Arc::new(agent::SteerAgentTool),
                 Arc::new(agent::StopAgentTool),
                 Arc::new(agent::WaitAgentTool),
-                Arc::new(plan::SubmitPlanTool),
+                Arc::new(plan::WritePlanTool),
+                Arc::new(plan::ExitPlanTool),
                 Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::RunCodeTool),
                 Arc::new(crate::skills::tool::SkillTool),

@@ -20,6 +20,11 @@ use serde_json::Value;
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
 type PendingTool<'a> = BoxFuture<'a, (usize, Result<ToolOutcome, CoreError>, u64)>;
 
+pub(super) struct ToolBatchResult {
+    pub control_end: bool,
+    pub observations: Vec<(u128, bool, bool)>,
+}
+
 pub(super) async fn execute_tool_batch(
     inner: &CoreInner,
     tool_ctx: &ToolCtx,
@@ -27,7 +32,7 @@ pub(super) async fn execute_tool_batch(
     record: &Arc<crate::session::SessionRecord>,
     mode: moc_protocol::methods::SessionMode,
     calls: &[moc_llm::ToolCall],
-) -> Result<bool, RpcError> {
+) -> Result<ToolBatchResult, RpcError> {
     let config = &tool_ctx.config;
     let parallel_limit = config.tools.max_concurrent_calls;
     debug_assert!(parallel_limit > 0);
@@ -35,6 +40,8 @@ pub(super) async fn execute_tool_batch(
     let prompt_id = tool_ctx.prompt_id.as_str();
     let cwd = &tool_ctx.cwd;
     let update = tool_ctx.request.updates();
+    let mut observations = Vec::with_capacity(calls.len());
+    let progress_before = tool_ctx.guard.progress();
     if calls.len() > 1 {
         update
             .emit(
@@ -199,6 +206,13 @@ pub(super) async fn execute_tool_batch(
             }
             Err(error) => ToolOutcome::failure("E_TOOL", error.to_string()),
         };
+        if config.limits.loop_detection {
+            observations.push(
+                super::guard::observe_tool(tool_ctx, call, &outcome)
+                    .await
+                    .map_err(|error| to_rpc(error.into()))?,
+            );
+        }
         let content = match crate::tools::output::prepare_outcome(
             &outcome,
             &config.tools.output,
@@ -213,6 +227,7 @@ pub(super) async fn execute_tool_batch(
                 format!("[E_ARTIFACT] Tool ran, but its output could not be delivered: {error}")
             }
         };
+        tool_ctx.guard.bytes(content.len());
         let status = outcome.status.unwrap_or(if outcome.is_error {
             ToolStatus::Error
         } else {
@@ -307,7 +322,24 @@ pub(super) async fn execute_tool_batch(
     if let Some(error) = stop_reason {
         return Err(error);
     }
-    Ok(end_prompt)
+    if tool_ctx.guard.progress() != progress_before {
+        for (_, changed, _) in &mut observations {
+            *changed = true;
+        }
+    }
+    // 只读批次可忽略返回顺序；带写入屏障的批次必须保留执行顺序。
+    if calls.iter().all(|call| {
+        inner
+            .tools
+            .get(&call.name)
+            .is_some_and(|tool| tool.parallel_safe())
+    }) {
+        observations.sort_unstable_by_key(|(fingerprint, _, _)| *fingerprint);
+    }
+    Ok(ToolBatchResult {
+        control_end: end_prompt,
+        observations,
+    })
 }
 async fn execute_tool(
     inner: &CoreInner,
@@ -315,6 +347,9 @@ async fn execute_tool(
     mode: moc_protocol::methods::SessionMode,
     call: &moc_llm::ToolCall,
 ) -> Result<ToolOutcome, CoreError> {
+    if !ctx.guard.tool_call() || ctx.cancel.is_cancelled() {
+        return Ok(cancelled_outcome());
+    }
     let name = call.name.as_str();
     let arguments = call.arguments.as_str();
     let config = &ctx.config;
@@ -420,7 +455,12 @@ async fn execute_tool(
         execution.await
     };
     match result {
-        Ok(Ok(outcome)) => Ok(outcome),
+        Ok(Ok(outcome)) => {
+            if outcome.diff.is_some() {
+                ctx.guard.record_change();
+            }
+            Ok(outcome)
+        }
         Ok(Err(error)) if error.code == "E_UPDATE" => Err(CoreError::Protocol(error.to_string())),
         Ok(Err(error)) => Ok(error.into_outcome()),
         Err(_) => Ok(ToolOutcome::failure(

@@ -33,6 +33,9 @@ pub enum LlmError {
     /// 流式响应异常（SSE 帧结构错误、流中断等）。
     #[error("流式响应异常: {0}")]
     Stream(String),
+    /// 本地保护停止；不得作为传输失败重试。
+    #[error(transparent)]
+    Guard(#[from] crate::GuardViolation),
     /// 重试次数耗尽。
     #[error("重试 {attempts} 次后仍失败: {last}")]
     RetriesExhausted {
@@ -62,7 +65,8 @@ impl LlmError {
             LlmError::RetriesExhausted { .. }
             | LlmError::Encode(_)
             | LlmError::Decode { .. }
-            | LlmError::Stream(_) => false,
+            | LlmError::Stream(_)
+            | LlmError::Guard(_) => false,
         }
     }
 

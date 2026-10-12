@@ -1,4 +1,4 @@
-//! 持久化提交的计划并结束当前提示。
+//! 持久化计划并结束当前计划轮次。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -16,30 +16,39 @@ struct PlanArgs {
     markdown: String,
 }
 
-pub struct SubmitPlanTool;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExitPlanArgs {}
 
-impl Tool for SubmitPlanTool {
+pub struct WritePlanTool;
+
+impl Tool for WritePlanTool {
     fn name(&self) -> &'static str {
-        "submit_plan"
+        "write_plan"
     }
+
     fn description(&self) -> &'static str {
-        "Submit a plan for user review. After submission, end the current turn and do not continue executing the plan."
+        "Save the completed plan for review. Do not modify workspace files in plan mode."
     }
+
     fn tier(&self) -> Tier {
         Tier::Read
     }
+
     fn parallel_safe(&self) -> bool {
         false
     }
+
     fn def(&self) -> ToolDef {
         ToolDef::new(
-            "submit_plan",
+            "write_plan",
             schema(
                 serde_json::json!({"title":{"type":"string"},"markdown":{"type":"string"}}),
                 &["title", "markdown"],
             ),
         )
     }
+
     fn run<'a>(
         &'a self,
         ctx: &'a ToolCtx,
@@ -72,41 +81,79 @@ impl Tool for SubmitPlanTool {
                     &ctx.session_id,
                     EntryPayload::Plan {
                         plan_id: plan_id.clone(),
-                        title: title.clone(),
+                        title,
                         path: path_text.clone(),
-                        markdown: args.markdown.clone(),
+                        markdown: args.markdown,
                         status: PlanStatus::Submitted,
                     },
                 )
                 .await
                 .map_err(|error| ToolError::new("E_PLAN_WRITE", error.to_string()))?;
-            ctx.request
-                .updates()
-                .emit(
-                    ctx.session_id.clone(),
-                    SessionUpdate::PlanSubmitted {
-                        plan_id: plan_id.clone(),
-                        title,
-                        path: path_text,
-                        markdown: args.markdown,
-                    },
-                )
-                .await
-                .map_err(|error| ToolError::new("E_UPDATE", error.to_string()))?;
-            Ok(ToolOutcome::end_prompt(format!(
-                "Plan {plan_id} submitted. Await user approval; do not modify any files further."
+            Ok(ToolOutcome::success(format!(
+                "Plan {plan_id} saved at {path_text}. Call exit_plan with {{}} to end this plan round and request review."
             )))
         })
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub struct ExitPlanTool;
 
-    #[test]
-    fn plan_schema_contains_title_and_markdown() {
-        let schema = SubmitPlanTool.def().parameters;
-        assert_eq!(schema["required"], serde_json::json!(["title", "markdown"]));
+impl Tool for ExitPlanTool {
+    fn name(&self) -> &'static str {
+        "exit_plan"
+    }
+
+    fn description(&self) -> &'static str {
+        "End the current plan round and request review of the last saved plan."
+    }
+
+    fn tier(&self) -> Tier {
+        Tier::Read
+    }
+
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+
+    fn def(&self) -> ToolDef {
+        ToolDef::new("exit_plan", schema(serde_json::json!({}), &[]))
+    }
+
+    fn run<'a>(
+        &'a self,
+        ctx: &'a ToolCtx,
+        args: Value,
+    ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
+        Box::pin(async move {
+            let _: ExitPlanArgs = serde_json::from_value(args)
+                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            let plan = ctx
+                .state
+                .lock()
+                .await
+                .plans
+                .iter()
+                .rev()
+                .find(|plan| plan.status == PlanStatus::Submitted)
+                .cloned()
+                .ok_or_else(|| ToolError::new("E_PLAN_NOT_FOUND", "no saved plan is available"))?;
+            ctx.request
+                .updates()
+                .emit(
+                    ctx.session_id.clone(),
+                    SessionUpdate::PlanSubmitted {
+                        plan_id: plan.plan_id.clone(),
+                        title: plan.title.clone(),
+                        path: plan.path.clone(),
+                        markdown: plan.markdown.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| ToolError::new("E_UPDATE", error.to_string()))?;
+            Ok(ToolOutcome::end_prompt(format!(
+                "Plan {} is ready for review at {}. Do not continue this plan round.",
+                plan.plan_id, plan.path
+            )))
+        })
     }
 }

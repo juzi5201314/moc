@@ -148,10 +148,28 @@ impl JobManager {
         );
         let manager = Arc::clone(self);
         let worker = tokio::spawn(async move {
-            let waited = if lifecycle == JobLifecycle::Monitored {
-                manager.wait_with_warnings(&ctx, &id, completion).await
-            } else {
-                completion.await
+            let waited = {
+                let waiting = async {
+                    if lifecycle == JobLifecycle::Monitored {
+                        manager.wait_with_warnings(&ctx, &id, completion).await
+                    } else {
+                        completion.await
+                    }
+                };
+                tokio::pin!(waiting);
+                tokio::select! {
+                    result = &mut waiting => result,
+                    _ = ctx.guard.stopped.cancelled() => {
+                        let killed = {
+                            let mut jobs = manager.jobs.lock();
+                            let job = jobs.get_mut(&id).expect("后台 worker 持有已注册任务");
+                            job.status = JobStatus::Killing;
+                            job.group.as_ref().expect("运行中的任务持有进程组").kill()
+                        };
+                        let result = waiting.await;
+                        killed.and(result)
+                    }
+                }
             };
             drop(permit);
             manager

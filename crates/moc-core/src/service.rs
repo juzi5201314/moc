@@ -43,6 +43,7 @@ pub(crate) struct SessionRuntime {
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
     pub steering: Mutex<management::Steering>,
+    pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
 }
 
 impl SessionRuntime {
@@ -57,6 +58,7 @@ impl SessionRuntime {
             ),
             loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
             steering: Mutex::new(management::Steering::default()),
+            guard: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -502,6 +504,9 @@ pub(crate) async fn record_model_usage(
     usage: moc_llm::Usage,
     active_ms: u64,
 ) -> Result<(), CoreError> {
+    if let Some(guard) = inner.runtime(session_id).await.guard.lock().clone() {
+        guard.tokens(usage.output_tokens);
+    }
     inner
         .sessions
         .append(
@@ -1251,6 +1256,7 @@ impl AgentService for Core {
             &ctx,
             &params.session_id,
             params.instructions.as_deref(),
+            None,
         )
         .await
         .map_err(to_rpc)?;

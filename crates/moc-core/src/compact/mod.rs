@@ -177,6 +177,7 @@ pub(crate) async fn manual(
     ctx: &RequestContext,
     session_id: &str,
     instructions: Option<&str>,
+    model_selector: Option<&str>,
 ) -> Result<CompactResult, CoreError> {
     compact(
         inner,
@@ -185,6 +186,7 @@ pub(crate) async fn manual(
         CompactReason::Manual,
         instructions,
         ContextBudget::default(),
+        model_selector,
     )
     .await
     .map(|report| report.result)
@@ -197,6 +199,7 @@ pub(crate) async fn compact(
     reason: CompactReason,
     instructions: Option<&str>,
     context: ContextBudget,
+    model_selector: Option<&str>,
 ) -> Result<CompactReport, CoreError> {
     let record = inner.sessions.get(session_id).await?;
     let mut state = record.state.lock().await.clone();
@@ -206,7 +209,7 @@ pub(crate) async fn compact(
             "NotSupported: compaction is disabled".into(),
         ));
     }
-    let model = config.resolve_model(&state.model)?;
+    let model = config.resolve_model(model_selector.unwrap_or(&state.model))?;
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
     let summary = inner.mcp_summary(&config).await?;
     let context_files = inner
@@ -250,6 +253,7 @@ pub(crate) async fn compact(
             ctx,
             state: &state,
             config: &config,
+            model: &model,
             system: &system,
             tools: &tools,
             instructions,
@@ -287,6 +291,7 @@ pub(crate) async fn compact(
                     ctx,
                     state: &state,
                     config: &config,
+                    model: &model,
                     system: &system,
                     tools: &tools,
                     instructions,
@@ -309,6 +314,7 @@ pub(crate) async fn compact(
                 current_messages = replay::model_messages(&state, None, Some(&model));
             }
             Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => return Err(error),
+            Err(error @ CoreError::Llm(moc_llm::LlmError::Guard(_))) => return Err(error),
             Err(error) => {
                 tracing::warn!(session_id, method = ?method, %error, "上下文压缩方法失败，尝试下一方法");
                 failures.push(format!("{method:?}: {error}"));

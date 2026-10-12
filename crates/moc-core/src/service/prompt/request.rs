@@ -152,7 +152,7 @@ fn image_media_type(path: &str) -> Option<&'static str> {
 
 pub(crate) fn build_request(
     model: &crate::ResolvedModel,
-    _config: &crate::ResolvedConfig,
+    config: &crate::ResolvedConfig,
     messages: Vec<Message>,
     tools: Vec<moc_llm::ToolDef>,
     native_input: Option<Vec<Value>>,
@@ -201,6 +201,7 @@ pub(crate) fn build_request(
         options: RequestOptions {
             echo_reasoning,
             cache: cache_options(model, message_count, session_id),
+            stream_guard: config.limits.stream_guard(),
             ..RequestOptions::default()
         },
     }

@@ -257,6 +257,9 @@ async fn run_repl(
         match send_prompt(client, &session.id, prompt, None).await {
             Ok(result) if args.print => {
                 println!("{}", result.message.text());
+                if result.finish_reason.is_guard_stop() {
+                    bail!("提示已由保护机制终止（{}）", result.finish_reason);
+                }
                 return Ok(());
             }
             Err(error) if args.print => return Err(error),
@@ -542,6 +545,7 @@ async fn approve_plan(
             session_id: session.id.clone(),
             plan_id: plan.plan_id.clone(),
             action,
+            execution_model: None,
         })
         .await?;
     let next = client

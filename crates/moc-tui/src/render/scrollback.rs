@@ -719,7 +719,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
-        "job" | "submit_plan" => String::new(),
+        "job" | "write_plan" | "exit_plan" => String::new(),
         _ => {
             // 未知工具：参数截断展示
             let text = tool.arguments.replace('\n', " ");

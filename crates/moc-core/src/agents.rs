@@ -118,7 +118,10 @@ pub(crate) async fn spawn(
         )
         .await?;
     let info = info_from_session(&session, AgentStatus::Queued);
-    let cancel = inner.shutdown.child_token();
+    let cancel = match inner.runtime(&parent_session_id).await.guard.lock().clone() {
+        Some(guard) => guard.cancel.child_token(),
+        None => inner.shutdown.child_token(),
+    };
     let runtime = AgentRuntime {
         info: info.clone(),
         cancel: cancel.clone(),
@@ -220,7 +223,9 @@ async fn finish(
 ) {
     let (status, message, finish_reason) = match result {
         Ok(result) => {
-            let status = if cancel.is_cancelled() || result.finish_reason == FinishReason::Cancelled
+            let status = if cancel.is_cancelled()
+                || result.finish_reason == FinishReason::Cancelled
+                || result.finish_reason.is_guard_stop()
             {
                 AgentStatus::Stopped
             } else {
@@ -339,7 +344,10 @@ pub(crate) async fn send(
     let sessions = inner.sessions.list().await?;
     let session = find_parent(&sessions, &agent_id, &parent_id)?;
     let info = info_from_session(session, AgentStatus::Queued);
-    let cancel = inner.shutdown.child_token();
+    let cancel = match inner.runtime(&parent_id).await.guard.lock().clone() {
+        Some(guard) => guard.cancel.child_token(),
+        None => inner.shutdown.child_token(),
+    };
     {
         let mut registry = inner.agents.lock().await;
         if let Some(runtime) = registry.items.get(&agent_id)

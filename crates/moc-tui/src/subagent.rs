@@ -14,6 +14,7 @@ pub struct SubagentView {
     pub pending_args: HashMap<String, String>,
     pub scroll_offset: usize,
     pub running: bool,
+    generation_start: Option<usize>,
 }
 
 impl SubagentView {
@@ -29,6 +30,7 @@ impl SubagentView {
             tool_indices: HashMap::new(),
             pending_args: HashMap::new(),
             scroll_offset: 0,
+            generation_start: None,
         }
     }
 
@@ -41,9 +43,28 @@ impl SubagentView {
         match update {
             SessionUpdate::PromptStarted { .. } => self.running = true,
             SessionUpdate::AssistantDelta { delta, .. } => self.apply_delta(delta),
+            SessionUpdate::GenerationStarted { .. } => {
+                self.generation_start = Some(self.blocks.len())
+            }
+            SessionUpdate::GuardNotice {
+                message, terminal, ..
+            } => {
+                if terminal {
+                    if let Some(start) = self.generation_start.take() {
+                        self.blocks.truncate(start);
+                    }
+                    self.pending_args.clear();
+                    self.rebuild_tool_indices();
+                }
+                self.blocks.push(Entry::new(Block::Note {
+                    text: message,
+                    error: terminal,
+                }));
+            }
             SessionUpdate::ToolStarted {
                 tool_call_id, name, ..
             } => {
+                self.generation_start = None;
                 let arguments = self.pending_args.remove(&tool_call_id).unwrap_or_default();
                 let index = self.blocks.len();
                 self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
@@ -76,6 +97,7 @@ impl SubagentView {
             }
             SessionUpdate::PromptFinished { message, .. } => {
                 self.running = false;
+                self.generation_start = None;
                 let text = message.text();
                 if !text.is_empty() {
                     self.info.last_message = Some(text);
@@ -104,10 +126,13 @@ impl SubagentView {
         match delta {
             AssistantDelta::Text { delta } => {
                 if !delta.is_empty()
-                    && !matches!(
-                        self.blocks.last().map(|entry| &entry.block),
-                        Some(Block::Assistant { .. })
-                    )
+                    && (self
+                        .generation_start
+                        .is_some_and(|start| self.blocks.len() == start)
+                        || !matches!(
+                            self.blocks.last().map(|entry| &entry.block),
+                            Some(Block::Assistant { .. })
+                        ))
                 {
                     self.blocks.push(Entry::new(Block::Assistant {
                         text: String::new(),
@@ -123,10 +148,13 @@ impl SubagentView {
             }
             AssistantDelta::Reasoning { delta } => {
                 if !delta.is_empty()
-                    && !matches!(
-                        self.blocks.last().map(|entry| &entry.block),
-                        Some(Block::Thinking { .. })
-                    )
+                    && (self
+                        .generation_start
+                        .is_some_and(|start| self.blocks.len() == start)
+                        || !matches!(
+                            self.blocks.last().map(|entry| &entry.block),
+                            Some(Block::Thinking { .. })
+                        ))
                 {
                     self.blocks.push(Entry::new(Block::Thinking {
                         text: String::new(),

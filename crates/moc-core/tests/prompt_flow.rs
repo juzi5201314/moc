@@ -344,7 +344,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
 }
 
 #[tokio::test]
-async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() {
+async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use moc_protocol::methods::{
@@ -368,7 +368,12 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
                     "index": 0,
                     "id": "call_plan",
                     "type": "function",
-                    "function": {"name": "submit_plan", "arguments": plan_arguments},
+                    "function": {"name": "write_plan", "arguments": plan_arguments},
+                }, {
+                    "index": 1,
+                    "id": "call_exit",
+                    "type": "function",
+                    "function": {"name": "exit_plan", "arguments": "{}"},
                 }],
             },
             "finish_reason": null,
@@ -474,13 +479,35 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
         submitted
             .message
             .tool_calls()
-            .any(|call| call.name == "submit_plan")
+            .any(|call| call.name == "write_plan")
     );
-    assert!(updates.lock().iter().any(|update| matches!(
-        update,
-        SessionUpdate::PlanSubmitted { title, .. } if title == "Build a small feature"
-    )));
-
+    let notifications = updates.lock();
+    let exit_started = notifications
+        .iter()
+        .position(|update| {
+            matches!(update,
+                SessionUpdate::ToolStarted { name, .. } if name == "exit_plan"
+            )
+        })
+        .expect("退出计划工具开始");
+    let reviewed = notifications
+        .iter()
+        .position(|update| matches!(update, SessionUpdate::PlanSubmitted { .. }))
+        .expect("计划审阅通知");
+    assert!(reviewed > exit_started, "写入工具不得提前触发审阅");
+    drop(notifications);
+    assert!(
+        submitted
+            .message
+            .tool_calls()
+            .any(|call| call.name == "exit_plan")
+    );
+    assert!(
+        updates
+            .lock()
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::PlanSubmitted { .. }))
+    );
     let parent = client
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id.clone(),
@@ -494,12 +521,24 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
         .find(|plan| plan.status == PlanStatus::Submitted)
         .expect("submitted plan projection");
     assert!(plan.path.starts_with("local://"));
+    let paths = moc_core::session::store::SessionStore::new(&sessions).paths_for(
+        std::path::Path::new(&parent.session.cwd),
+        &session.id,
+        parent.session.created_at_ms,
+    );
+    assert_eq!(
+        std::fs::read_to_string(paths.plans().join(format!("{}.md", plan.plan_id)))
+            .expect("实体计划文件"),
+        plan.markdown
+    );
+    assert_eq!(parent.session.mode, SessionMode::Plan);
     assert!(!plan.path.contains("/sessions/"));
     let approved = client
         .call::<SessionPlanApprove>(SessionPlanApproveParams {
             session_id: session.id,
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
+            execution_model: None,
         })
         .await
         .expect("approve into new session");
@@ -546,7 +585,7 @@ async fn plan_submission_and_new_session_approval_preserve_one_plan_injection() 
     assert!(
         plan_tools
             .iter()
-            .any(|tool| tool["function"]["name"] == "submit_plan")
+            .any(|tool| tool["function"]["name"] == "write_plan")
     );
     assert!(
         !plan_tools
@@ -1418,9 +1457,9 @@ async fn plan_role_none_keeps_the_session_model_across_mode_changes() {
     harness.close().await;
 }
 
-/// 批准计划（原地执行）退出计划模式：恢复进入前的会话模型并推送给前端。
+/// 未选择执行模型时使用审批时的会话模型，不恢复进入计划前的模型。
 #[tokio::test]
-async fn plan_approval_restores_the_session_model() {
+async fn plan_approval_defaults_to_current_session_model() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use serde_json::json;
@@ -1430,7 +1469,10 @@ async fn plan_approval_restores_the_session_model() {
         "markdown": "# Approved plan\n\n1. Inspect the workspace.\n2. Implement the change.",
     });
     let responses = [
-        support::tool_stream(vec![("call_plan", "submit_plan", plan_arguments)]),
+        support::tool_stream(vec![
+            ("call_plan", "write_plan", plan_arguments),
+            ("call_exit", "exit_plan", json!({})),
+        ]),
         text_stream("Implementation started."),
     ];
     let response_index = Arc::new(AtomicUsize::new(0));
@@ -1479,6 +1521,7 @@ async fn plan_approval_restores_the_session_model() {
             session_id: session.id.clone(),
             plan_id: plan.plan_id.clone(),
             action: PlanAction::Execute,
+            execution_model: None,
         })
         .await
         .expect("approve plan in place");
@@ -1489,16 +1532,7 @@ async fn plan_approval_restores_the_session_model() {
     );
     let reloaded = harness.load(&session.id).await;
     assert_eq!(reloaded.session.mode, SessionMode::Normal);
-    assert_eq!(reloaded.session.model, "test/glm:off");
-    assert!(
-        harness
-            .updates
-            .lock()
-            .contains(&SessionUpdate::ModelChanged {
-                model: "test/glm:off".into()
-            }),
-        "批准计划要推送恢复后的模型"
-    );
+    assert_eq!(reloaded.session.model, "test/ds:off");
     harness
         .prompt(&session.id, "Execute the approved plan.")
         .await;
@@ -1515,6 +1549,251 @@ async fn plan_approval_restores_the_session_model() {
                 .to_owned()
         })
         .collect();
-    assert_eq!(models, ["ds", "glm"]);
+    assert_eq!(models, ["ds", "ds"]);
     harness.close().await;
+}
+
+#[tokio::test]
+async fn plan_approval_uses_selected_execution_model_for_compaction_and_execution() {
+    use serde_json::json;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
+            if body["stream"] != true {
+                assert_eq!(body["model"], "executor", "压缩必须使用执行模型");
+                ResponseTemplate::new(200).set_body_json(complete("保留计划和接口决策"))
+            } else if body.to_string().contains("<active-plan") {
+                assert_eq!(body["model"], "executor");
+                ResponseTemplate::new(200)
+                    .set_body_raw(text_stream("执行完成"), "text/event-stream")
+            } else {
+                assert_eq!(body["model"], "planner");
+                ResponseTemplate::new(200).set_body_raw(
+                    support::tool_stream(vec![
+                        (
+                            "save",
+                            "write_plan",
+                            json!({"title":"执行方案", "markdown":"# 方案\n保留接口"}),
+                        ),
+                        ("exit", "exit_plan", json!({})),
+                    ]),
+                    "text/event-stream",
+                )
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/gpt-test:off",
+        "test/planner:off",
+        "[providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n\
+         [compaction]\nmethod_order=['soft']\nauto=false\n",
+    )
+    .await;
+    for action in [PlanAction::Execute, PlanAction::ExecuteCompacted] {
+        let id = h.session(SessionMode::Plan).await;
+        h.prompt(&id, "设计方案").await;
+        let plan = h.load(&id).await.plans.pop().expect("已写计划");
+        let invalid = h
+            .client
+            .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                session_id: id.clone(),
+                plan_id: plan.plan_id.clone(),
+                action,
+                execution_model: Some("test/missing:off".into()),
+            })
+            .await;
+        assert!(invalid.is_err());
+        let unchanged = h.load(&id).await;
+        assert_eq!(unchanged.plans[0].status, PlanStatus::Submitted);
+        assert_eq!(unchanged.session.mode, SessionMode::Plan);
+        assert_eq!(unchanged.session.model, "test/planner:off");
+        h.updates.lock().clear();
+        let approved = h
+            .client
+            .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                session_id: id.clone(),
+                plan_id: plan.plan_id,
+                action,
+                execution_model: Some("test/executor:off".into()),
+            })
+            .await
+            .expect("指定执行模型审批");
+        let loaded = h.load(&id).await;
+        assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
+        assert_eq!(loaded.session.mode, SessionMode::Normal);
+        assert_eq!(loaded.session.model, "test/executor:off");
+        let changes: Vec<_> = h
+            .updates
+            .lock()
+            .iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ModeChanged { mode } => Some(format!("mode:{mode:?}")),
+                SessionUpdate::ModelChanged { model } => Some(format!("model:{model}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changes, ["mode:Normal", "model:test/executor:off"]);
+        h.client
+            .call::<SessionUnload>(SessionUnloadParams {
+                session_id: id.clone(),
+            })
+            .await
+            .expect("卸载会话");
+        assert_eq!(h.load(&id).await.session.model, "test/executor:off");
+        assert_eq!(
+            h.prompt(&id, approved.auto_prompt.as_deref().expect("自动执行提示"))
+                .await
+                .message
+                .text(),
+            "执行完成"
+        );
+    }
+    let requests = upstream.received_requests().await.expect("请求记录");
+    let summaries = requests
+        .iter()
+        .filter(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body).expect("请求 JSON")["stream"]
+                != true
+        })
+        .count();
+    assert_eq!(summaries, 1);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn plan_new_session_uses_selected_execution_model() {
+    use serde_json::json;
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
+            let response = if body["model"] == "executor" {
+                assert!(body.to_string().contains("<active-plan"));
+                text_stream("子会话执行")
+            } else {
+                support::tool_stream(vec![
+                    (
+                        "save",
+                        "write_plan",
+                        json!({"title":"子会话方案", "markdown":"# 方案\n实现接口"}),
+                    ),
+                    ("exit", "exit_plan", json!({})),
+                ])
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/gpt-test:off",
+        "test/planner:off",
+        "[providers.test.models.planner]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n",
+    )
+    .await;
+    let id = h.session(SessionMode::Plan).await;
+    h.prompt(&id, "设计子会话方案").await;
+    let plan = h.load(&id).await.plans.pop().expect("待审计划");
+    let approved = h
+        .client
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: id.clone(),
+            plan_id: plan.plan_id.clone(),
+            action: PlanAction::ExecuteNewSession,
+            execution_model: Some("test/executor:off".into()),
+        })
+        .await
+        .expect("新会话审批");
+    assert_ne!(approved.session_id, id);
+    let child = h.load(&approved.session_id).await;
+    assert_eq!(child.session.mode, SessionMode::Normal);
+    assert_eq!(child.session.model, "test/executor:off");
+    assert_eq!(child.plans[0].status, PlanStatus::Approved);
+    assert_eq!(
+        child.plans[0].path,
+        format!("local://{}/plans/{}.md", child.session.id, plan.plan_id)
+    );
+    assert!(child.entries[0].message.text().contains("<active-plan"));
+    let parent = h.load(&id).await;
+    assert_eq!(parent.session.mode, SessionMode::Plan);
+    assert_eq!(parent.session.model, "test/planner:off");
+    assert_eq!(
+        h.prompt(
+            &approved.session_id,
+            approved.auto_prompt.as_deref().expect("执行提示")
+        )
+        .await
+        .message
+        .text(),
+        "子会话执行"
+    );
+    assert_eq!(parent.plans[0].status, PlanStatus::Approved);
+    assert_eq!(h.load(&id).await.entries, parent.entries);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let upstream = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let tool = match seen.fetch_add(1, Ordering::SeqCst) {
+                0 => ("missing", "exit_plan", json!({})),
+                1 => (
+                    "invalid_write",
+                    "write_plan",
+                    json!({"title":"方案", "markdown":"# 方案", "extra":true}),
+                ),
+                2 => (
+                    "save",
+                    "write_plan",
+                    json!({"title":"方案", "markdown":"# 方案"}),
+                ),
+                3 => ("invalid_exit", "exit_plan", json!({"extra":true})),
+                4 => ("exit", "exit_plan", json!({})),
+                _ => panic!("成功退出计划后不得继续调用上游"),
+            };
+            ResponseTemplate::new(200)
+                .set_body_raw(support::tool_stream(vec![tool]), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let id = h.session(SessionMode::Plan).await;
+    h.prompt(&id, "保存和审阅计划").await;
+    let loaded = h.load(&id).await;
+    assert_eq!(loaded.session.mode, SessionMode::Plan);
+    assert_eq!(loaded.plans.len(), 1);
+    assert_eq!(loaded.plans[0].status, PlanStatus::Submitted);
+    let errors: Vec<_> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| &entry.message.content)
+        .filter_map(|part| match part {
+            moc_llm::ContentPart::ToolResult(result) if result.is_error => {
+                Some((&*result.tool_call_id, &*result.content))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 3);
+    assert_eq!(errors[0].0, "missing");
+    assert!(errors[0].1.contains("E_PLAN_NOT_FOUND"));
+    assert_eq!(errors[1].0, "invalid_write");
+    assert!(errors[1].1.contains("E_BAD_PAYLOAD"));
+    assert_eq!(errors[2].0, "invalid_exit");
+    assert!(errors[2].1.contains("E_BAD_PAYLOAD"));
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
+    h.close().await;
 }

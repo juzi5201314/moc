@@ -30,6 +30,8 @@ cargo build
 
 全局内核配置位于 `$MOC_HOME/config.toml`（默认 `~/.moc/config.toml`），项目覆盖位于工作目录的 `.moc/config.toml`。TUI 偏好独立保存在 `$MOC_HOME/tui.toml`，不会发送给模型。字段、配置来源、缓存、保留及压缩策略见 [内核配置说明](crates/moc-core/README.md)。
 
+循环保护默认开启：MOC 在内容累加前检测思考、正文和工具参数的高置信重复；跨轮工具动作与完整结果形成无进展周期时，先注入一次纠偏提示，纠偏无效直接终止本次提示。响应字节、累计输出 token、工具次数和墙钟时限提供独立硬限制，续写、压缩和嵌套调用不会重置预算。保护终止不自动重试，已提交修改保留，失败生成不回灌历史。配置与默认值见[循环保护](crates/moc-core/README.md#循环保护)。
+
 ## TUI
 
 布局自上而下：顶部信息条（品牌 · git 分支 · 工作目录 ｜ 上下文进度条 · 费用）→
@@ -57,7 +59,9 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 `Ctrl+Enter`、`Ctrl+M` 这类组合键需要终端支持区分；不支持时 `Ctrl+M` 等同于 `Enter`，切换会话模式请用 `Alt+M`（键位可在设置页重绑）。
 
-模式菜单与 `/mode` 现在支持标准、计划、PTC 和 `(clm)` 实验模式。切换到计划模式会把会话模型切到 `[models.roles].plan` 指定的模型（设为 `none` 则沿用当前会话模型），退出计划模式（批准计划或手动切出）恢复进入前的模型。`/clm-experimental` 可直接启用 CLM；也可用 `--mode clm-experimental` 创建新会话。CLM 模式会在 TUI 图例显示 `(clm)`，并在首次请求后锁定本会话模式，不能再切换回其它模式；原始会话日志仍完整保留，模型维护的是独立实时上下文视图。
+模式菜单与 `/mode` 支持标准、计划、PTC 和 `(clm)` 实验模式。进入计划模式会应用 `[models.roles].plan` 指定的模型（设为 `none` 则沿用当前模型）；手动切出时恢复进入前的模型，批准执行则使用审阅窗口选中的执行模型。`/clm-experimental` 可直接启用 CLM；也可用 `--mode clm-experimental` 创建新会话。CLM 模式会在 TUI 图例显示 `(clm)`，并在首次请求后锁定本会话模式，不能再切换回其它模式；原始会话日志仍完整保留，模型维护的是独立实时上下文视图。
+
+计划流程先由模型调用 `write_plan` 保存到 `local://{session_id}/plans/{plan_id}.md`，再调用 `exit_plan` 结束本轮并打开审阅。审阅支持当前会话执行、压缩当前会话后执行、在新会话执行和继续计划；执行模型默认取打开审阅时的完整会话模型 selector，点击模型 ID 或按 `Ctrl+P` 可复用搜索框选择任意已配置模型，不提前切换会话模型。压缩与执行均使用最终选定的模型。选择“继续计划”或按 `Esc` 只关闭窗口，保持待审计划和计划模式，不自动对话；随后可用 `/confirm-plan` 重新加载同一份待审计划。新会话执行会先切换到已载入的子会话，再发送执行提示。
 
 ### 快捷键
 
@@ -81,7 +85,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Esc` | 运行中停止当前提示；空闲时清除选区或输入，空输入框双击打开消息回退，或关闭模态 |
 | `Ctrl+C` | Cancel while running; press again to exit |
 
-斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/clm-experimental` `/ask` `/agents` `/agent` `/steer-agent` `/stop-agent` `/compact` `/usage` `/config` `/quit`；`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
+斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/agent` `/steer-agent` `/stop-agent` `/compact` `/usage` `/config` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
 
 ### 剪贴板
 

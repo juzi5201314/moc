@@ -105,6 +105,8 @@ pub enum SessionUpdate {
         /// 增量内容。
         delta: AssistantDelta,
     },
+    /// 新一轮模型生成开始；前端据此限定失败预览的清除边界。
+    GenerationStarted { prompt_id: String },
     /// 用户手动执行的命令开始；后续仍以 `ToolFinished` 回填结果。
     BashStarted {
         tool_call_id: String,
@@ -187,6 +189,12 @@ pub enum SessionUpdate {
         finish_reason: FinishReason,
         /// token 用量。
         usage: Usage,
+    },
+    /// 本地循环纠偏或硬预算终止；终止时丢弃尚未提交的生成预览。
+    GuardNotice {
+        prompt_id: String,
+        message: String,
+        terminal: bool,
     },
     /// 标题变化（core 自动命名或 `session/rename` 之后）。
     TitleChanged {

@@ -13,14 +13,13 @@ use moc_core::Core;
 use moc_protocol::{
     ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, OpenVikingList,
     OpenVikingListParams, OpenVikingRead, OpenVikingReadParams, OpenVikingWrite,
-    OpenVikingWriteParams, PromptParams, ResourceComplete, ResourceCompleteParams, Role,
-    SessionCompact, SessionCompactParams, SessionContext, SessionInfo, SessionList,
-    SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
-    SessionLoadResult, SessionMode, SessionNew, SessionNewParams, SessionPermission,
-    SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
-    SessionSetPermission, SessionSetPermissionParams, SessionUpdate, SessionUsage,
-    SessionUsageParams, UpstreamField,
+    OpenVikingWriteParams, ResourceComplete, ResourceCompleteParams, Role, SessionCompact,
+    SessionCompactParams, SessionContext, SessionInfo, SessionList, SessionListParams, SessionLoad,
+    SessionLoadPage, SessionLoadPageParams, SessionLoadParams, SessionLoadResult, SessionMode,
+    SessionNew, SessionNewParams, SessionPermission, SessionPlanApprove, SessionPlanApproveParams,
+    SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
+    SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -427,7 +426,6 @@ fn apply_rewound(
         ),
     );
     app.todos = loaded.todos;
-    app.pending_plan = None;
     app.prompt.clear();
     if restore_user {
         restore_user_message(&mut app.prompt, &selected_message);
@@ -537,9 +535,11 @@ async fn event_loop(
                 dirty = true;
                 match app_event {
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
-                        | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..})) => {
+                        | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..}
+                        | AppEvent::PlanApproval(_) | AppEvent::PlanExecutionLoaded { .. })) => {
                         crate::interaction::handle_event(app, connection, event);
                     }
+                    Some(AppEvent::PlanReview(result)) => apply_plan_review(app, result),
                     Some(AppEvent::RewindLoaded(result)) => apply_rewind_loaded(app, result),
                     Some(AppEvent::Rewound { selected, result }) => {
                         apply_rewound(app, connection, selected, result);
@@ -847,6 +847,21 @@ fn handle_mouse_with_connection(
     mouse: crossterm::event::MouseEvent,
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    if app.modal.is_some() {
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && app
+                .plan_model_area
+                .contains((mouse.column, mouse.row).into())
+        {
+            app.open_plan_model_picker();
+        } else if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            handle_mouse(app, mouse);
+        }
+        return;
+    }
     if handle_mode_menu_mouse(app, connection, &mouse) {
         return;
     }
@@ -1008,8 +1023,8 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     let position = (mouse.column, mouse.row);
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            if let Some(Modal::Plan { scroll_offset, .. }) = app.modal.as_mut() {
-                *scroll_offset = scroll_offset.saturating_sub(3);
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.scroll_offset = state.scroll_offset.saturating_sub(3);
                 return;
             }
             if let Some(Modal::Permission { scroll_offset, .. }) = app.modal.as_mut() {
@@ -1019,8 +1034,8 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             scroll(app, 3);
         }
         MouseEventKind::ScrollDown => {
-            if let Some(Modal::Plan { scroll_offset, .. }) = app.modal.as_mut() {
-                *scroll_offset = scroll_offset.saturating_add(3);
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.scroll_offset = state.scroll_offset.saturating_add(3);
                 return;
             }
             if let Some(Modal::Permission { scroll_offset, .. }) = app.modal.as_mut() {
@@ -1508,10 +1523,21 @@ fn handle_modal_key(
     modifiers: KeyModifiers,
     code: KeyCode,
 ) {
+    if let Some(Modal::Plan { state }) = app.modal.as_ref() {
+        if state.submitting {
+            return;
+        }
+        if (code, modifiers) == (KeyCode::Char('p'), KeyModifiers::CONTROL) {
+            app.open_plan_model_picker();
+            return;
+        }
+    }
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     let events = app.events.clone();
     let mut close = false;
     let mut return_memory_list = false;
+    let mut return_plan_review = false;
+    let plan_review_open = matches!(app.modal, Some(Modal::Plan { .. }));
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
@@ -1758,7 +1784,12 @@ fn handle_modal_key(
             (KeyCode::Esc, _) => close = true,
             _ => {}
         },
-        Modal::Model { models, picker, .. } => {
+        Modal::Model {
+            models,
+            picker,
+            target,
+            ..
+        } => {
             let filtered = crate::modal::filtered_models(models, &picker.query);
             match (code, modifiers) {
                 (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
@@ -1807,34 +1838,46 @@ fn handle_modal_key(
                     let Some((_, model)) = filtered.get(picker.selected) else {
                         return;
                     };
-                    let Some(session_id) = session_id.clone() else {
-                        picker.error = Some("当前没有活动会话".into());
-                        return;
-                    };
-                    picker.loading = true;
-                    picker.error = None;
-                    let client = connection.client.clone();
-                    let events = events.clone();
-                    let selector = model.id.clone();
-                    tokio::spawn(async move {
-                        match client
-                            .call::<SessionSetModel>(SessionSetModelParams {
-                                session_id,
-                                selector,
-                            })
-                            .await
-                        {
-                            Ok(_) => {
-                                let _ = events.send(AppEvent::ModelSwitched);
+                    if let crate::modal::ModelTarget::PlanReview(state) = target {
+                        state.execution_model = model.id.clone();
+                        return_plan_review = true;
+                    } else {
+                        let Some(session_id) = session_id.clone() else {
+                            picker.error = Some("当前没有活动会话".into());
+                            return;
+                        };
+                        picker.loading = true;
+                        picker.error = None;
+                        let client = connection.client.clone();
+                        let events = events.clone();
+                        let selector = model.id.clone();
+                        tokio::spawn(async move {
+                            match client
+                                .call::<SessionSetModel>(SessionSetModelParams {
+                                    session_id,
+                                    selector,
+                                })
+                                .await
+                            {
+                                Ok(_) => {
+                                    let _ = events.send(AppEvent::ModelSwitched);
+                                }
+                                Err(error) => {
+                                    let _ = events.send(AppEvent::PickerError(format!(
+                                        "切换模型失败：{error}"
+                                    )));
+                                }
                             }
-                            Err(error) => {
-                                let _ = events
-                                    .send(AppEvent::PickerError(format!("切换模型失败：{error}")));
-                            }
-                        }
-                    });
+                        });
+                    }
                 }
-                (KeyCode::Esc, _) => close = true,
+                (KeyCode::Esc, _) => {
+                    if matches!(target, crate::modal::ModelTarget::PlanReview(_)) {
+                        return_plan_review = true;
+                    } else {
+                        close = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -2075,77 +2118,57 @@ fn handle_modal_key(
                 _ => {}
             }
         }
-        Modal::Plan {
-            plan_id,
-            selected,
-            scroll_offset,
-            ..
-        } => {
-            match (code, modifiers) {
-                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                    *scroll_offset = scroll_offset.saturating_sub(1);
-                }
-                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    *scroll_offset = scroll_offset.saturating_add(1);
-                }
-                (KeyCode::PageUp, _) => {
-                    *scroll_offset = scroll_offset.saturating_sub(10);
-                }
-                (KeyCode::PageDown, _) => {
-                    *scroll_offset = scroll_offset.saturating_add(10);
-                }
-                (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => *selected = 0,
-                (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => *selected = 1,
-                (KeyCode::Tab, _) => *selected = 1 - *selected,
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if let Some(session_id) = session_id {
-                        let action = if *selected == 0 {
-                            moc_protocol::methods::PlanAction::Execute
-                        } else {
-                            moc_protocol::methods::PlanAction::Reject
-                        };
-                        let client = connection.client.clone();
-                        let plan_id = plan_id.clone();
-                        let events = app.events.clone();
-                        app.inflight_prompts.insert(session_id.clone());
-                        tokio::spawn(async move {
-                            let original_session = session_id.clone();
-                            let result: anyhow::Result<()> = async {
-                                let result = client
-                                    .call::<SessionPlanApprove>(SessionPlanApproveParams {
-                                        session_id,
-                                        plan_id,
-                                        action,
-                                    })
-                                    .await?;
-                                // 计划自动跟进与普通发送共享 RPC 收尾事件。
-                                if let (Some(session_id), Some(prompt)) =
-                                    (Some(result.session_id), result.auto_prompt)
-                                    && !prompt.trim().is_empty()
-                                {
-                                    let params = PromptParams {
-                                        session_id,
-                                        input: vec![InputPart::Text { text: prompt }],
-                                        mode: None,
-                                    };
-                                    client
-                                        .call::<moc_protocol::methods::SessionPrompt>(params)
-                                        .await?;
-                                }
-                                Ok(())
-                            }
-                            .await;
-                            let _ = events.send(AppEvent::PromptReturned {
-                                session: original_session,
-                                result,
-                            });
-                        });
-                    }
-                    close = true;
-                }
-                _ => {}
+        Modal::Plan { state } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                state.scroll_offset = state.scroll_offset.saturating_sub(1);
             }
-        }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                state.scroll_offset = state.scroll_offset.saturating_add(1);
+            }
+            (KeyCode::PageUp, _) => state.scroll_offset = state.scroll_offset.saturating_sub(10),
+            (KeyCode::PageDown, _) => state.scroll_offset = state.scroll_offset.saturating_add(10),
+            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+                state.selected = state.selected.saturating_sub(1);
+            }
+            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+                state.selected = (state.selected + 1).min(3);
+            }
+            (KeyCode::Tab, _) => state.selected = (state.selected + 1) % 4,
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                if state.selected == 3 {
+                    close = true;
+                } else if !state.submitting
+                    && let Some(session_id) = session_id
+                {
+                    let action = match state.selected {
+                        0 => moc_protocol::methods::PlanAction::Execute,
+                        1 => moc_protocol::methods::PlanAction::ExecuteCompacted,
+                        2 => moc_protocol::methods::PlanAction::ExecuteNewSession,
+                        _ => unreachable!("计划审阅选项已限制为四项"),
+                    };
+                    state.submitting = true;
+                    state.error = None;
+                    let client = connection.client.clone();
+                    let plan_id = state.plan_id.clone();
+                    let execution_model = state.execution_model.clone();
+                    let events = app.events.clone();
+                    tokio::spawn(async move {
+                        let result = client
+                            .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                                session_id,
+                                plan_id,
+                                action,
+                                execution_model: Some(execution_model),
+                            })
+                            .await
+                            .map_err(anyhow::Error::from);
+                        let _ = events.send(AppEvent::PlanApproval(result));
+                    });
+                }
+            }
+            (KeyCode::Esc, _) => close = true,
+            _ => {}
+        },
         Modal::Help | Modal::Context { .. } => {
             if matches!(
                 (code, modifiers),
@@ -2314,7 +2337,15 @@ fn handle_modal_key(
             _ => {}
         },
     }
-    if return_memory_list {
+    if return_plan_review {
+        if let Some(Modal::Model {
+            target: crate::modal::ModelTarget::PlanReview(state),
+            ..
+        }) = app.modal.take()
+        {
+            app.modal = Some(Modal::Plan { state });
+        }
+    } else if return_memory_list {
         if let Some(Modal::MemoryEditor {
             root_uri,
             entries,
@@ -2330,7 +2361,9 @@ fn handle_modal_key(
         }
     } else if close {
         app.modal = None;
-        crate::queue::dispatch(app, connection);
+        if !plan_review_open {
+            crate::queue::dispatch(app, connection);
+        }
     }
 }
 
@@ -2368,6 +2401,170 @@ fn advance_ask(
         *question += 1;
         false
     }
+}
+
+fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    if session.mode != SessionMode::Plan {
+        app.set_notice("只有计划模式可以重新审阅计划");
+        return;
+    }
+    let session_id = session.id.clone();
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = async {
+            let loaded = client
+                .call::<SessionLoad>(SessionLoadParams {
+                    session_id,
+                    max_entries: None,
+                })
+                .await?;
+            anyhow::ensure!(
+                loaded.session.mode == SessionMode::Plan,
+                "会话已离开计划模式"
+            );
+            let plan = loaded
+                .plans
+                .into_iter()
+                .rev()
+                .find(|plan| plan.status == moc_protocol::methods::PlanStatus::Submitted)
+                .ok_or_else(|| anyhow::anyhow!("当前会话没有已写入的待审计划"))?;
+            anyhow::ensure!(
+                !plan.markdown.trim().is_empty()
+                    && plan.path
+                        == format!("local://{}/plans/{}.md", loaded.session.id, plan.plan_id),
+                "待审计划的正文或实体 URI 无效"
+            );
+            Ok(plan)
+        }
+        .await;
+        let _ = events.send(AppEvent::PlanReview(result));
+    });
+}
+
+fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanInfo) {
+    let Some(session) = app.session.as_ref() else {
+        return;
+    };
+    app.modal = Some(Modal::Plan {
+        state: crate::modal::PlanReviewState::new(plan, session.model.clone()),
+    });
+}
+
+fn apply_plan_review(app: &mut App, result: anyhow::Result<moc_protocol::methods::PlanInfo>) {
+    match result {
+        Ok(plan)
+            if app.session.as_ref().is_some_and(|session| {
+                session.mode == SessionMode::Plan
+                    && plan.path == format!("local://{}/plans/{}.md", session.id, plan.plan_id)
+            }) =>
+        {
+            open_plan_review(app, plan)
+        }
+        Ok(_) => app.set_notice("当前会话已变化，不能打开该计划"),
+        Err(error) => app.set_notice(format!("无法审阅计划：{error}")),
+    }
+}
+
+pub(crate) fn apply_plan_approval(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    result: anyhow::Result<moc_protocol::methods::SessionPlanApproveResult>,
+) {
+    match result {
+        Ok(result) => {
+            app.modal = None;
+            if app
+                .session
+                .as_ref()
+                .is_some_and(|session| session.id == result.session_id)
+            {
+                start_plan_execution(app, connection, result.auto_prompt);
+            } else {
+                let client = connection.client.clone();
+                let events = app.events.clone();
+                tokio::spawn(async move {
+                    let loaded = client
+                        .call::<SessionLoad>(SessionLoadParams {
+                            session_id: result.session_id,
+                            max_entries: None,
+                        })
+                        .await
+                        .map_err(anyhow::Error::from);
+                    let _ = events.send(AppEvent::PlanExecutionLoaded {
+                        result: loaded,
+                        auto_prompt: result.auto_prompt,
+                    });
+                });
+            }
+        }
+        Err(error) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.submitting = false;
+                state.error = Some(error.to_string());
+            } else {
+                app.set_notice(format!("计划审批失败：{error}"));
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_plan_execution_loaded(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    result: anyhow::Result<SessionLoadResult>,
+    auto_prompt: Option<String>,
+) {
+    match result {
+        Ok(loaded) => {
+            let cwd = loaded.session.cwd.clone();
+            let id = loaded.session.id.clone();
+            let before = loaded.entries.first().map(|entry| entry.id.clone());
+            app.switch_session(
+                loaded.session,
+                crate::transcript_restore::blocks_from_entries_with_children(
+                    &loaded.entries,
+                    &loaded.child_calls,
+                ),
+            );
+            app.todos = loaded.todos;
+            app.set_history_cursor(loaded.truncated, before);
+            refresh_git_branch(app, &cwd);
+            refresh_context(app, connection, false);
+            load_subagents_for_parent(app, &connection.client, Some(id));
+            start_plan_execution(app, connection, auto_prompt);
+        }
+        Err(error) => app.set_notice(format!(
+            "计划已批准，但加载执行会话失败：{error}；可通过 /resume 恢复"
+        )),
+    }
+}
+
+fn start_plan_execution(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    auto_prompt: Option<String>,
+) {
+    let Some(prompt) = auto_prompt else {
+        return;
+    };
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    app.push_user(prompt.clone());
+    app.inflight_prompts.insert(session_id.clone());
+    app.prompt_running = true;
+    crate::queue::send_prompt(
+        &connection.client,
+        session_id,
+        vec![InputPart::Text { text: prompt }],
+        None,
+        app.events.clone(),
+    );
 }
 
 fn apply_update_and_refresh(
@@ -2441,6 +2638,16 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             batch_id, calls, ..
         } => {
             app.register_tool_batch(batch_id, calls.into_iter().map(|call| call.tool_call_id));
+        }
+        SessionUpdate::GenerationStarted { .. } => app.start_generation(),
+        SessionUpdate::GuardNotice {
+            message, terminal, ..
+        } => {
+            if terminal {
+                app.discard_generation();
+            }
+            app.push_note(message.clone(), terminal);
+            app.set_warning(message);
         }
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
             moc_protocol::methods::AssistantDelta::Text { delta } => {
@@ -2522,7 +2729,10 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         } => app.finish_tool_block(tool_call_id, status, result, duration_ms, diff),
         SessionUpdate::ToolStarted {
             tool_call_id, name, ..
-        } => app.start_tool_block(tool_call_id, name),
+        } => {
+            app.commit_generation();
+            app.start_tool_block(tool_call_id, name);
+        }
         SessionUpdate::ToolFinished {
             tool_call_id,
             status,
@@ -2570,17 +2780,19 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::PlanSubmitted {
             plan_id,
             title,
+            path,
             markdown,
-            ..
         } => {
-            app.pending_plan = Some((plan_id.clone(), title.clone(), markdown.clone()));
-            app.modal = Some(Modal::Plan {
-                plan_id,
-                title,
-                markdown,
-                selected: 0,
-                scroll_offset: 0,
-            });
+            open_plan_review(
+                app,
+                moc_protocol::methods::PlanInfo {
+                    plan_id,
+                    title,
+                    path,
+                    markdown,
+                    status: moc_protocol::methods::PlanStatus::Submitted,
+                },
+            );
         }
         SessionUpdate::ContextCompacted {
             tokens_before,
@@ -2736,6 +2948,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     match name {
+        "/confirm-plan" => confirm_plan(app, connection),
         "/agents" => open_subagents(app, connection),
         "/agent" => {
             let mut parts = rest.trim().splitn(2, ' ');
@@ -4272,3 +4485,7 @@ mod tests {
         core.shutdown().await;
     }
 }
+
+#[cfg(test)]
+#[path = "event_plan_tests.rs"]
+mod plan_tests;

@@ -112,7 +112,10 @@ pub(crate) fn visible_history_start(state: &SessionState) -> usize {
         .count()
 }
 
-fn repair_tool_history(mut message: Message, model: Option<&crate::ResolvedModel>) -> Message {
+pub(super) fn repair_tool_history(
+    mut message: Message,
+    model: Option<&crate::ResolvedModel>,
+) -> Message {
     if message.role != Role::Assistant {
         return message;
     }

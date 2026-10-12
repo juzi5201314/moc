@@ -58,6 +58,7 @@ pub mod client;
 pub mod codec;
 pub mod config;
 pub mod error;
+pub mod guard;
 pub mod retry;
 pub mod stream;
 pub mod types;
@@ -68,6 +69,7 @@ pub use config::{
     ResponseFormatDialect, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
 pub use error::{ApiError, ApiErrorKind, LlmError, TransportError, TransportKind};
+pub use guard::{GuardViolation, StreamGuardConfig};
 pub use retry::RetryPolicy;
 pub use stream::ChatStream;
 pub use types::{

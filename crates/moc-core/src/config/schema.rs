@@ -446,6 +446,13 @@ impl Default for RemoteCompactionConfig {
 pub struct LimitsConfig {
     pub max_turns_per_prompt: usize,
     pub max_length_continues: usize,
+    pub loop_detection: bool,
+    pub max_response_bytes: usize,
+    pub max_response_duration_secs: u64,
+    pub max_prompt_bytes: usize,
+    pub max_prompt_output_tokens: u64,
+    pub max_tool_calls_per_prompt: usize,
+    pub max_prompt_duration_secs: u64,
 }
 
 impl Default for LimitsConfig {
@@ -453,8 +460,47 @@ impl Default for LimitsConfig {
         Self {
             max_turns_per_prompt: 128,
             max_length_continues: 2,
+            loop_detection: true,
+            max_response_bytes: 8 * 1024 * 1024,
+            max_response_duration_secs: 900,
+            max_prompt_bytes: 64 * 1024 * 1024,
+            max_prompt_output_tokens: 512_000,
+            max_tool_calls_per_prompt: 1024,
+            max_prompt_duration_secs: 3600,
         }
     }
+}
+
+impl LimitsConfig {
+    pub fn stream_guard(&self) -> moc_llm::StreamGuardConfig {
+        moc_llm::StreamGuardConfig {
+            enabled: self.loop_detection,
+            max_response_bytes: self.max_response_bytes,
+            max_response_duration_secs: self.max_response_duration_secs,
+            max_wire_bytes: None,
+        }
+    }
+}
+
+pub(super) fn validate_limits(config: &LimitsConfig) -> Result<(), CoreError> {
+    if config.max_turns_per_prompt == 0
+        || config.max_response_bytes == 0
+        || config.max_response_duration_secs == 0
+        || config.max_prompt_bytes == 0
+        || config.max_prompt_output_tokens == 0
+        || config.max_tool_calls_per_prompt == 0
+        || config.max_prompt_duration_secs == 0
+    {
+        return Err(CoreError::Config(
+            "limits：轮数、响应／提示资源上限和时限必须大于 0".into(),
+        ));
+    }
+    if config.max_prompt_duration_secs > 604_800 || config.max_response_duration_secs > 604_800 {
+        return Err(CoreError::Config(
+            "limits：响应和提示时限不得超过 7 天".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

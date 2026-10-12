@@ -19,6 +19,7 @@ use crate::codec::StreamDecoder;
 use crate::codec::sse::SseDecoder;
 use crate::config::{LlmConfig, Protocol};
 use crate::error::LlmError;
+use crate::guard::{GuardViolation, StreamGuard};
 use crate::types::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, Message, ReasoningBlock, Role,
     StreamEvent, ToolCall, Usage,
@@ -317,6 +318,9 @@ pub struct ChatStream {
     idle_timeout: Option<Duration>,
     /// 空闲计时器。
     idle: Option<Pin<Box<Sleep>>>,
+    guard: StreamGuard,
+    wire_bytes: usize,
+    deadline: Pin<Box<Sleep>>,
 }
 
 impl ChatStream {
@@ -338,10 +342,19 @@ impl ChatStream {
             protocol: cfg.protocol,
             idle_timeout: cfg.timeout_secs.map(Duration::from_secs_f64),
             idle: None,
+            guard: StreamGuard::new(req.options.stream_guard),
+            wire_bytes: 0,
+            deadline: Box::pin(tokio::time::sleep(Duration::from_secs(
+                req.options.stream_guard.max_response_duration_secs,
+            ))),
         };
         // 从响应头到达开始计时：首个字节同样受空闲上限约束。
         stream.reset_idle();
         stream
+    }
+
+    pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
+        self.deadline.as_mut().reset(deadline);
     }
 
     /// 取出下一个事件；流结束或出错后返回 `None`。
@@ -369,7 +382,30 @@ impl ChatStream {
     /// | Responses 下没有保留工具调用时丢弃 reasoning item | reasoning item 与其后的 function_call 成对使用，孤立 item 无意义 |
     /// | 文本与已累积的思维链文本保留 | 用户看到的内容不丢 |
     pub fn interrupt(self) -> ChatResponse {
+        if let Some(LlmError::Guard(violation)) = &self.error {
+            let reason = violation.finish_reason();
+            return self.discard(reason);
+        }
         self.accumulator.fold(self.protocol, true)
+    }
+
+    /// 丢弃本次失败生成的正文、工具和不透明思考，只保留已知用量。
+    pub fn discard(self, reason: FinishReason) -> ChatResponse {
+        ChatResponse {
+            id: self.accumulator.id,
+            model: self.accumulator.model,
+            reasoning_effort: self.accumulator.effort,
+            message: Message::default(),
+            finish_reason: reason,
+            usage: self.accumulator.usage,
+            raw: None,
+            compaction: None,
+        }
+    }
+
+    /// 本次实际接收的响应体字节，包含 SSE 开销和心跳。
+    pub fn received_bytes(&self) -> usize {
+        self.wire_bytes
     }
 
     /// 读一块字节并把解出的事件推入队列；返回 `Pending` 表示网络暂无数据。
@@ -377,9 +413,31 @@ impl ChatStream {
         match self.body.as_mut().poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(chunk))) => {
+                self.wire_bytes = self.wire_bytes.saturating_add(chunk.len());
+                // SSE 转义和协议字段也占客户端资源；硬上限与模型 token 声明独立。
+                let limit = self.guard.config.max_response_bytes.saturating_mul(16);
+                let limit = self
+                    .guard
+                    .config
+                    .max_wire_bytes
+                    .map_or(limit, |remaining| remaining.min(limit));
+                if self.wire_bytes > limit {
+                    self.stop_with(
+                        GuardViolation::Resource("单次响应体超过本地字节上限".into()).into(),
+                    );
+                    return Poll::Ready(());
+                }
                 self.sse.push(&chunk);
                 self.reset_idle();
                 self.drain_frames();
+                if !self.finished
+                    && self.sse.pending_bytes()
+                        > self.guard.config.max_response_bytes.saturating_mul(2)
+                {
+                    self.stop_with(
+                        GuardViolation::Resource("未完成的 SSE 帧超过本地字节上限".into()).into(),
+                    );
+                }
                 Poll::Ready(())
             }
             Poll::Ready(Some(Err(err))) => {
@@ -400,6 +458,9 @@ impl ChatStream {
         while let Some(frame) = self.sse.next_event() {
             self.decoder.decode(frame, &mut self.pending);
             self.flush_pending();
+            if self.finished {
+                return;
+            }
             if self.decoder.is_terminated() {
                 // 终态：不再读网络，连接随 drop 关闭。
                 self.finished = true;
@@ -410,19 +471,39 @@ impl ChatStream {
 
     /// 把暂存事件交给累加器与调用方。
     fn flush_pending(&mut self) {
-        for event in self.pending.drain(..) {
+        let mut pending = std::mem::take(&mut self.pending);
+        for event in pending.drain(..) {
+            if let Ok(stream_event) = &event
+                && let Err(violation) = self.guard.observe(stream_event)
+            {
+                self.stop_with(violation.into());
+                break;
+            }
             match &event {
                 Ok(stream_event) => self.accumulator.apply(stream_event),
                 Err(error) => self.error = Some(error.clone()),
             }
             self.queue.push_back(event);
         }
+        self.pending = pending;
     }
 
     /// 以错误结束流。
     fn stop_with(&mut self, error: LlmError) {
         self.finished = true;
         self.error = Some(error.clone());
+        // 立即释放上游；即使调用方保留 ChatStream 也不继续下载。
+        self.body = Box::pin(crate::stream::EmptyBody);
+        if matches!(self.error, Some(LlmError::Guard(_))) {
+            if let Some(LlmError::Guard(violation)) = &self.error {
+                self.accumulator.finish_reason = Some(violation.finish_reason());
+            }
+            self.accumulator.blocks.clear();
+            self.accumulator.slots.clear();
+            self.accumulator.compaction = None;
+            self.queue.clear();
+            self.sse = SseDecoder::new();
+        }
         self.queue.push_back(Err(error));
     }
 
@@ -448,6 +529,9 @@ impl Stream for ChatStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
+            if !this.finished && this.deadline.as_mut().poll(cx).is_ready() {
+                this.stop_with(GuardViolation::Resource("单次生成超过本地时限".into()).into());
+            }
             if let Some(event) = this.queue.pop_front() {
                 return Poll::Ready(Some(event));
             }
@@ -479,6 +563,16 @@ impl std::fmt::Debug for ChatStream {
             .field("queued", &self.queue.len())
             .field("blocks", &self.accumulator.blocks.len())
             .finish()
+    }
+}
+
+struct EmptyBody;
+
+impl Stream for EmptyBody {
+    type Item = reqwest::Result<Bytes>;
+
+    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Ready(None)
     }
 }
 
@@ -1172,5 +1266,97 @@ mod tests {
         // 契约：ChatStream 可以 `tokio::spawn` 到独立任务中消费。
         fn assert_send_unpin<T: Send + Unpin>() {}
         assert_send_unpin::<ChatStream>();
+    }
+
+    #[tokio::test]
+    async fn guard_drops_upstream_and_discards_reasoning_and_tools_in_same_chunk() {
+        struct DroppedBody {
+            data: Option<Bytes>,
+            dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl Stream for DroppedBody {
+            type Item = reqwest::Result<Bytes>;
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                match self.data.take() {
+                    Some(data) => Poll::Ready(Some(Ok(data))),
+                    None => Poll::Pending,
+                }
+            }
+        }
+        impl Drop for DroppedBody {
+            fn drop(&mut self) {
+                self.dropped
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let frame = serde_json::json!({"choices":[{"index":0,"delta":{"reasoning_content":"再次检查结果并确认当前判断。".repeat(100)},"finish_reason":null}]});
+        let body = DroppedBody {
+            data: Some(Bytes::from(format!("data: {frame}\n\ndata: [DONE]\n\n"))),
+            dropped: std::sync::Arc::clone(&dropped),
+        };
+        let mut stream = ChatStream::new(Box::pin(body), &config(Protocol::OpenAiChat), &request());
+        let mut events = Vec::new();
+        while let Some(event) = stream.next_event().await {
+            events.push(event);
+        }
+        assert!(dropped.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Err(LlmError::Guard(GuardViolation::Loop { .. }))))
+        );
+        let partial = stream.interrupt();
+        assert!(partial.message.content.is_empty());
+        assert_eq!(partial.finish_reason, FinishReason::LoopDetected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_hard_deadline_is_independent_of_idle_and_released_upstream() {
+        let mut req = request();
+        req.options.stream_guard.max_response_duration_secs = 1;
+        let cfg = config(Protocol::OpenAiChat);
+        let mut stream = stream_from_chunks(&cfg, &req, vec![]);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(matches!(
+            stream.next_event().await,
+            Some(Err(LlmError::Guard(GuardViolation::Resource(_))))
+        ));
+        assert!(stream.next_event().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn unterminated_frames_hit_memory_budget_without_waiting_for_delimiter() {
+        let mut req = request();
+        req.options.stream_guard.max_response_bytes = 8;
+        let mut stream = stream_from_chunks(
+            &config(Protocol::OpenAiChat),
+            &req,
+            vec!["data: {unfinished unfinished unfinished"],
+        );
+        assert!(matches!(
+            stream.next_event().await,
+            Some(Err(LlmError::Guard(GuardViolation::Resource(_))))
+        ));
+        assert!(stream.next_event().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_only_stream_cannot_bypass_prompt_byte_budget() {
+        let mut req = request();
+        req.options.stream_guard.max_wire_bytes = Some(10);
+        let mut stream = stream_from_chunks(
+            &config(Protocol::OpenAiChat),
+            &req,
+            vec![": ping\n\n", ": ping\n\n"],
+        );
+        assert!(matches!(
+            stream.next_event().await,
+            Some(Err(LlmError::Guard(GuardViolation::Resource(_))))
+        ));
+        assert!(stream.next_event().await.is_none());
     }
 }

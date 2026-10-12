@@ -12,7 +12,7 @@ use crate::config::ResolvedConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
-const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required. Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only until submit_plan, which ends the turn; ptc permits direct run_code only. All modes permit session-only state and todo updates. The current mode is supplied in a tail reminder.";
+const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required. Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. The current mode is supplied in a tail reminder.";
 
 pub struct PromptPiece {
     /// Section category (`system`, `project`, or `skills`) for context accounting.
@@ -144,7 +144,7 @@ pub fn mode_reminder(mode: SessionMode) -> Message {
                 .to_owned()
         }
         SessionMode::Plan => {
-            "Current mode: plan. The workspace is read-only while exploring. When the plan is complete, call submit_plan and end the turn. run_code inherits this restriction."
+            "Current mode: plan. The workspace is read-only while exploring. When the plan is complete, call write_plan with its title and markdown to save it, then call exit_plan with an empty object to end this round and request review. run_code inherits this restriction."
                 .to_owned()
         }
         SessionMode::Ptc => {

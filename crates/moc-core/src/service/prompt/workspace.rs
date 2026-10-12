@@ -53,16 +53,21 @@ pub(super) async fn check_workspace(
         .as_ref()
         .map(|before| crate::workspace::watch::diff(before, &after))
         .unwrap_or_default();
+    let mut progressed = !changes.is_empty();
     let violation = matches!(
         mode,
         moc_protocol::methods::SessionMode::Ask | moc_protocol::methods::SessionMode::Plan
     );
     if !violation && let Some(before_tools) = before_tools {
         let tool_changes = crate::workspace::watch::diff(before_tools, &after);
+        progressed |= !tool_changes.is_empty();
         changes.retain(|change| !tool_changes.iter().any(|owned| owned.path == change.path));
     }
     *previous = Some(after);
     drop(previous);
+    if progressed && let Some(guard) = runtime.guard.lock().clone() {
+        guard.record_change();
+    }
     if changes.is_empty() {
         return Ok(());
     }

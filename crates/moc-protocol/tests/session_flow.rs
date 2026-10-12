@@ -104,6 +104,7 @@ async fn new_session_methods_are_dispatched_to_core() {
             session_id: "ses_1".to_owned(),
             plan_id: "plan_12345678".to_owned(),
             action: PlanAction::Execute,
+            execution_model: None,
         })
         .await
         .expect_err("脚本 core 不实现计划批准");

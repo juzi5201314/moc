@@ -42,6 +42,13 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 });
             }
         }
+        AppEvent::PlanApproval(result) => {
+            crate::event::apply_plan_approval(app, connection, result)
+        }
+        AppEvent::PlanExecutionLoaded {
+            result,
+            auto_prompt,
+        } => crate::event::apply_plan_execution_loaded(app, connection, result, auto_prompt),
         AppEvent::PromptReturned { session, result } => {
             app.inflight_prompts.remove(&session);
             let interrupted = app.interrupt_pending.remove(&session);

@@ -85,6 +85,7 @@ async fn perform(
                 format!("[E_ARTIFACT] {err}")
             }
         };
+        ctx.guard.bytes(content.len());
         let duration_ms = Some(started.elapsed().as_millis() as u64);
         let status = status(&outcome);
         let audit = ctx
@@ -293,6 +294,8 @@ pub(super) async fn run(
         }
         input = serde_json::to_vec(&[HostCompletion { id, result }]).expect("完成项可序列化");
     }
+    // 取消尚在执行的只读／进程子工具；写入事务按已有执行出口完整提交。
+    child.cancel.cancel();
     let code = if outcome.error_code.as_deref() == Some("E_TURN_ENDED") {
         "E_TURN_ENDED"
     } else if outcome.error_code.as_deref() == Some("E_TIMEOUT") {

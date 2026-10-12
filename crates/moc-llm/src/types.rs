@@ -485,6 +485,10 @@ pub enum FinishReason {
     Cancelled,
     /// 仅由 [`crate::ChatStream::interrupt`] 产生，永不来自线上字段。
     Interrupted,
+    /// 本地检测到模型循环，当前提示不可自动继续。
+    LoopDetected,
+    /// 本地资源硬预算耗尽，区别于供应商长度截断。
+    ResourceLimit,
     /// 其余线上取值，原样保留。
     Other(String),
 }
@@ -493,6 +497,11 @@ impl FinishReason {
     /// 是否以工具调用结束。
     pub fn is_tool_calls(&self) -> bool {
         matches!(self, FinishReason::ToolCalls)
+    }
+
+    /// 本地保护已结束提示，不允许自动续写或重试。
+    pub fn is_guard_stop(&self) -> bool {
+        matches!(self, Self::LoopDetected | Self::ResourceLimit)
     }
 }
 
@@ -508,6 +517,8 @@ impl std::fmt::Display for FinishReason {
             FinishReason::PauseTurn => "pause_prompt",
             FinishReason::Cancelled => "cancelled",
             FinishReason::Interrupted => "interrupted",
+            FinishReason::LoopDetected => "loop_detected",
+            FinishReason::ResourceLimit => "resource_limit",
             FinishReason::Other(other) => other.as_str(),
         };
         f.write_str(name)
@@ -603,6 +614,9 @@ pub struct RequestOptions {
     pub user_id: Option<String>,
     /// 是否把原始响应体存入 [`ChatResponse::raw`]。
     pub capture_raw: bool,
+    /// 本地流式保护，不改变线上请求字段。
+    #[serde(default)]
+    pub stream_guard: crate::StreamGuardConfig,
     /// 覆盖 [`crate::LlmConfig::headers`] 中的同名请求头。
     pub headers: BTreeMap<String, String>,
 }

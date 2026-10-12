@@ -66,17 +66,34 @@ impl Client {
     ) -> Result<ChatResponse, LlmError> {
         let encoded = codec::encode(cfg, req, false)?;
         let started = Instant::now();
-        let response = self
-            .with_retry(cfg, || self.execute(cfg, &encoded, false))
-            .await?;
-        let body = response.bytes().await?;
+        let guard = req.options.stream_guard;
+        let body = tokio::time::timeout(
+            Duration::from_secs(guard.max_response_duration_secs),
+            async {
+                let response = self
+                    .with_retry(cfg, || self.execute(cfg, &encoded, false))
+                    .await?;
+                let limit = guard.max_response_bytes.saturating_mul(2);
+                bounded_body(
+                    response,
+                    guard
+                        .max_wire_bytes
+                        .map_or(limit, |remaining| remaining.min(limit)),
+                )
+                .await
+            },
+        )
+        .await
+        .map_err(|_| crate::GuardViolation::Resource("完整响应超过本地时限".into()))??;
         tracing::debug!(
             status = 200,
             elapsed_ms = started.elapsed().as_millis() as u64,
             body_bytes = body.len(),
             "收到完整响应"
         );
-        codec::decode_response(cfg, req, &body)
+        let response = codec::decode_response(cfg, req, &body)?;
+        crate::guard::StreamGuard::new(guard).check_response(&response)?;
+        Ok(response)
     }
 
     /// 调用 OpenAI Responses 原生压缩端点。
@@ -84,6 +101,7 @@ impl Client {
         &self,
         cfg: &LlmConfig,
         items: &[Value],
+        guard: crate::StreamGuardConfig,
     ) -> Result<CompactResponse, LlmError> {
         if cfg.protocol != Protocol::OpenAiResponses {
             return Err(LlmError::Encode(
@@ -101,10 +119,24 @@ impl Client {
             headers: codec::common_headers(cfg, &request).into_vec(),
             body,
         };
-        let response = self
-            .with_retry(cfg, || self.execute(cfg, &encoded, false))
-            .await?;
-        let body = response.bytes().await?;
+        let body = tokio::time::timeout(
+            Duration::from_secs(guard.max_response_duration_secs),
+            async {
+                let response = self
+                    .with_retry(cfg, || self.execute(cfg, &encoded, false))
+                    .await?;
+                let limit = guard.max_response_bytes.saturating_mul(2);
+                bounded_body(
+                    response,
+                    guard
+                        .max_wire_bytes
+                        .map_or(limit, |remaining| remaining.min(limit)),
+                )
+                .await
+            },
+        )
+        .await
+        .map_err(|_| crate::GuardViolation::Resource("压缩响应超过本地时限".into()))??;
         let value: Value = serde_json::from_slice(&body).map_err(|error| LlmError::Decode {
             message: format!("Responses 压缩响应不是合法 JSON: {error}"),
             body: Some(codec::truncated(&String::from_utf8_lossy(&body), 512).into_boxed_str()),
@@ -133,12 +165,19 @@ impl Client {
     /// 历史决定。
     pub async fn stream(&self, cfg: &LlmConfig, req: &ChatRequest) -> Result<ChatStream, LlmError> {
         let encoded = codec::encode(cfg, req, true)?;
-        let response = self
-            .with_retry(cfg, || self.execute(cfg, &encoded, true))
-            .await?;
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_secs(req.options.stream_guard.max_response_duration_secs);
+        let response = tokio::time::timeout_at(
+            deadline,
+            self.with_retry(cfg, || self.execute(cfg, &encoded, true)),
+        )
+        .await
+        .map_err(|_| crate::GuardViolation::Resource("模型连接与重试超过本地时限".into()))??;
         let body: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>> =
             Box::pin(response.bytes_stream());
-        Ok(ChatStream::new(body, cfg, req))
+        let mut stream = ChatStream::new(body, cfg, req);
+        stream.set_deadline(deadline);
+        Ok(stream)
     }
 
     /// 重试循环：`send` 只在「请求未被上游完整处理」时被重复调用。
@@ -264,6 +303,19 @@ impl Client {
         tracing::debug!(status = status.as_u16(), "收到响应头");
         Ok(response)
     }
+}
+
+async fn bounded_body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, LlmError> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Err(
+                crate::GuardViolation::Resource(format!("完整响应体超过 {limit} 字节")).into(),
+            );
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 impl Default for Client {

@@ -24,6 +24,42 @@ pub struct PickerState {
     pub error: Option<String>,
 }
 
+/// 计划审阅窗口的完整状态。
+#[derive(Debug, Clone)]
+pub struct PlanReviewState {
+    pub plan_id: String,
+    pub title: String,
+    pub path: String,
+    pub markdown: String,
+    pub selected: usize,
+    pub scroll_offset: usize,
+    pub execution_model: String,
+    pub submitting: bool,
+    pub error: Option<String>,
+}
+
+impl PlanReviewState {
+    pub fn new(plan: moc_protocol::methods::PlanInfo, execution_model: String) -> Self {
+        Self {
+            plan_id: plan.plan_id,
+            title: plan.title,
+            path: plan.path,
+            markdown: plan.markdown,
+            selected: 0,
+            scroll_offset: 0,
+            execution_model,
+            submitting: false,
+            error: None,
+        }
+    }
+}
+
+/// 同一模型选择器可切换会话模型，也可只选择计划执行模型。
+pub enum ModelTarget {
+    Session,
+    PlanReview(PlanReviewState),
+}
+
 impl PickerState {
     pub fn reset(&mut self) {
         self.query.clear();
@@ -170,6 +206,7 @@ pub enum Modal {
         models: Vec<ModelInfo>,
         current: String,
         picker: PickerState,
+        target: ModelTarget,
     },
     /// OpenViking 工作区记忆目录。
     Memories {
@@ -205,13 +242,7 @@ pub enum Modal {
         scroll_offset: usize,
     },
     /// 计划审批（`session/plan_approve`）。
-    Plan {
-        plan_id: String,
-        title: String,
-        markdown: String,
-        selected: usize,
-        scroll_offset: usize,
-    },
+    Plan { state: PlanReviewState },
     /// 快捷键帮助。
     Help,
     /// 上下文组成估算详情。
@@ -240,7 +271,7 @@ impl Modal {
             Modal::Sessions { .. } => "恢复会话".into(),
             Modal::Subagents { .. } => "子代理".into(),
             Modal::SubagentDetail { agent_id, .. } => format!("子代理：{agent_id}"),
-            Modal::Plan { title, .. } => format!("计划审批：{title}"),
+            Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
         }
@@ -282,7 +313,7 @@ impl Modal {
                 })
                 .count(),
             Modal::SubagentDetail { .. } => 0,
-            Modal::Plan { .. } => 2,
+            Modal::Plan { .. } => 4,
             Modal::Help | Modal::Context { .. } => 0,
         }
     }
@@ -311,8 +342,14 @@ impl Modal {
             return;
         }
         match self {
-            Modal::Permission { selected, .. } | Modal::Plan { selected, .. } => {
+            Modal::Permission { selected, .. } => {
                 *selected = (*selected as i32 + delta).clamp(0, count as i32 - 1) as usize;
+            }
+            Modal::Plan { state } => {
+                state.selected = state
+                    .selected
+                    .saturating_add_signed(isize::try_from(delta).expect("方向增量可表示为 isize"))
+                    .min(count - 1);
             }
             Modal::Ask { .. }
             | Modal::MemoryEditor { .. }

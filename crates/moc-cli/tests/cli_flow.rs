@@ -137,12 +137,16 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     Mock::given(method("POST")).respond_with(move |request: &wiremock::Request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         if body["stream"] != true { return ResponseTemplate::new(200).set_body_json(json!({"id":"s","choices":[{"index":0,"message":{"role":"assistant","content":"保留已批准计划"},"finish_reason":"stop"}]})); }
-        let response = if seen.fetch_add(1, Ordering::SeqCst) == 0 {
-            assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "submit_plan"));
-            call("plan", "submit_plan", json!({"title":"实施方案","markdown":"# 可审阅计划\n保留公开接口。"}))
-        } else {
-            assert!(body.to_string().contains("active-plan"));
-            text("执行完成")
+        let response = match seen.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "write_plan"));
+                call("plan", "write_plan", json!({"title":"实施方案","markdown":"# 可审阅计划\n保留公开接口。"}))
+            }
+            1 => call("exit", "exit_plan", json!({})),
+            _ => {
+                assert!(body.to_string().contains("active-plan"));
+                text("执行完成")
+            }
         };
         ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
     }).mount(&upstream).await;

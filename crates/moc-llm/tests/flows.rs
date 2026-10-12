@@ -758,7 +758,10 @@ async fn responses_compact_uses_endpoint_and_preserves_items() {
     };
     let input = vec![json!({ "type": "message", "role": "user" })];
 
-    let response = Client::new().compact(&cfg, &input).await.expect("压缩成功");
+    let response = Client::new()
+        .compact(&cfg, &input, Default::default())
+        .await
+        .expect("压缩成功");
 
     assert_eq!(response.items, output);
     assert_eq!(response.usage.input_tokens, 40);
@@ -782,7 +785,7 @@ async fn responses_compact_requires_output_and_keeps_bounded_body() {
     .await;
     let cfg = config(Protocol::OpenAiResponses, &server);
     let error = Client::new()
-        .compact(&cfg, &[])
+        .compact(&cfg, &[], Default::default())
         .await
         .expect_err("缺少 output 不应被接受");
     match error {

@@ -74,6 +74,7 @@ fn prompt_content_rows(app: &App, width: u16) -> usize {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
+    app.plan_model_area = Rect::default();
     let saving = app.saving_config();
     if let Some(panel) = &mut app.settings {
         crate::settings::draw(frame, panel, saving, app.theme);

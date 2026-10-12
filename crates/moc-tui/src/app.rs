@@ -92,8 +92,6 @@ pub struct App {
     pub completion_prefix: Option<String>,
     /// 打开的模态；键盘优先路由给它。
     pub modal: Option<Modal>,
-    /// 待审批计划（`PlanSubmitted` 的最新一份）。
-    pub pending_plan: Option<(String, String, String)>,
     /// 当前焦点。
     pub focus: Focus,
     /// 最近一次绘制的输入框区域，用于鼠标点击恢复焦点。
@@ -102,6 +100,8 @@ pub struct App {
     pub context_area: Rect,
     /// 输入框下边框右端模式名的屏幕区域（鼠标点击就地弹出模式菜单）。
     pub mode_area: Rect,
+    /// 计划审阅中的执行模型文本命中区。
+    pub plan_model_area: Rect,
     /// 就地模式菜单；`None` = 关闭。
     pub mode_menu: Option<ModeMenu>,
     /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
@@ -186,6 +186,7 @@ pub struct App {
     tool_indices: HashMap<String, usize>,
     /// 增量阶段累积的参数：`tool_call_id → JSON 片段拼接`（在工具块创建前到达）。
     pending_args: HashMap<String, String>,
+    generation_start: Option<usize>,
 }
 
 /// 排队等待写入的配置改动。
@@ -205,6 +206,7 @@ impl App {
             session: None,
             models: Vec::new(),
             blocks: Vec::new(),
+            generation_start: None,
             history_has_more: false,
             history_before_entry_id: None,
             history_loading: false,
@@ -219,11 +221,11 @@ impl App {
             prompt_revision: 0,
             completion_prefix: None,
             modal: None,
-            pending_plan: None,
             focus: Focus::Prompt,
             prompt_area: Rect::default(),
             context_area: Rect::default(),
             mode_area: Rect::default(),
+            plan_model_area: Rect::default(),
             mode_menu: None,
             transient_mode: None,
             context_usage: None,
@@ -485,9 +487,12 @@ impl App {
 
     /// 流式尾部是否已有该类块。
     pub fn has_streaming(&self, matches: impl Fn(&Block) -> bool) -> bool {
-        self.blocks
-            .last()
-            .is_some_and(|entry| matches(&entry.block))
+        self.generation_start
+            .is_none_or(|start| self.blocks.len() > start)
+            && self
+                .blocks
+                .last()
+                .is_some_and(|entry| matches(&entry.block))
     }
 
     /// 追加一条系统提示。
@@ -503,6 +508,26 @@ impl App {
     /// 追加一条实时块（助手正文 / 思维链 / 工具调用）：带落地时刻。
     pub fn push_block(&mut self, block: Block) {
         self.blocks.push(Entry::timed(block));
+    }
+
+    pub fn start_generation(&mut self) {
+        self.generation_start = Some(self.blocks.len());
+        self.pending_args.clear();
+    }
+
+    pub fn commit_generation(&mut self) {
+        self.generation_start = None;
+    }
+
+    pub fn discard_generation(&mut self) {
+        if let Some(start) = self.generation_start.take() {
+            self.blocks.truncate(start);
+            self.view_gen = self.view_gen.wrapping_add(1);
+        }
+        self.tool_indices
+            .retain(|_, index| *index < self.blocks.len());
+        self.pending_args.clear();
+        self.thinking_started_at = None;
     }
     /// 结束当前思考块并记录实际思考时长。
     pub fn finish_thinking(&mut self) {
@@ -525,6 +550,7 @@ impl App {
     /// 提示收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
     pub fn finish_prompt(&mut self) {
         self.finish_thinking();
+        self.generation_start = None;
         let elapsed = self.prompt_started_at.map(|at| at.elapsed());
         let was_cancel_requested = self.cancel_requested;
         self.prompt_running = false;
@@ -584,21 +610,47 @@ impl App {
         }
     }
 
-    /// 打开模型选择器。
+    /// 打开普通会话模型选择器。
     pub fn open_model_picker(&mut self) {
+        let current = self
+            .session
+            .as_ref()
+            .map_or_else(String::new, |session| session.model.clone());
+        self.open_model_picker_for(current, crate::modal::ModelTarget::Session);
+    }
+
+    /// 选择计划执行模型，不修改当前会话模型。
+    pub fn open_plan_model_picker(&mut self) {
+        let state = match self.modal.take() {
+            Some(Modal::Plan { state }) => state,
+            modal => {
+                self.modal = modal;
+                return;
+            }
+        };
+        if state.submitting || self.models.is_empty() {
+            self.modal = Some(Modal::Plan { state });
+            return;
+        }
+        self.plan_model_area = Rect::default();
+        self.open_model_picker_for(
+            state.execution_model.clone(),
+            crate::modal::ModelTarget::PlanReview(state),
+        );
+    }
+
+    fn open_model_picker_for(&mut self, current: String, target: crate::modal::ModelTarget) {
         if self.models.is_empty() {
             self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
-        let current = self
-            .session
-            .as_ref()
-            .map(|s| s.model.clone())
-            .unwrap_or_default();
+        let current_id = current
+            .rsplit_once(':')
+            .map_or(current.as_str(), |(id, _)| id);
         let selected = self
             .models
             .iter()
-            .position(|model| model.id == current || current.starts_with(&model.id))
+            .position(|model| model.id == current_id)
             .unwrap_or(0);
         let picker = crate::modal::PickerState {
             selected,
@@ -609,6 +661,7 @@ impl App {
             models: self.models.clone(),
             current,
             picker,
+            target,
         });
     }
 
@@ -652,6 +705,7 @@ impl App {
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;
+        self.plan_model_area = Rect::default();
         if clm_active {
             self.set_notice("CLM 实验模式已启用：模型将维护实时上下文");
         }
@@ -688,6 +742,9 @@ impl App {
         if blocks.is_empty() {
             self.history_loading = false;
             return;
+        }
+        if let Some(start) = &mut self.generation_start {
+            *start += blocks.len();
         }
         blocks.append(&mut self.blocks);
         self.blocks = blocks;
@@ -1048,5 +1105,26 @@ mod tests {
         assert!(app.notice_deadline().is_none());
         // 过期的槽位不再需要重绘，事件循环据此不再安排超时分支
         assert_eq!(app.warning.as_deref(), Some("effort max → high"));
+    }
+
+    #[test]
+    fn failed_generation_removes_only_uncommitted_preview() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.push_block(crate::transcript::Block::Assistant {
+            text: "已提交正文".into(),
+        });
+        app.start_generation();
+        assert!(
+            !app.has_streaming(|block| matches!(block, crate::transcript::Block::Assistant { .. }))
+        );
+        app.push_block(crate::transcript::Block::Assistant {
+            text: "异常重复预览".into(),
+        });
+        app.discard_generation();
+        assert_eq!(app.blocks.len(), 1);
+        assert!(
+            matches!(&app.blocks[0].block, crate::transcript::Block::Assistant { text } if text == "已提交正文")
+        );
     }
 }
