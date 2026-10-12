@@ -18,6 +18,7 @@ pub mod plan;
 pub mod ptc;
 pub mod read;
 pub mod todo;
+pub mod websearch;
 pub mod write;
 pub use job::JobManager;
 pub use output::ToolOutput;
@@ -245,6 +246,8 @@ impl ToolRegistry {
                 Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::RunCodeTool),
                 Arc::new(crate::skills::tool::SkillTool),
+                Arc::new(websearch::WebSearchTool),
+                Arc::new(websearch::WebFetchTool),
             ],
         }
     }

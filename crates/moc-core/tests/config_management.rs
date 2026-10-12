@@ -2,7 +2,7 @@ use moc_core::{
     CoreConfig, ResolvedConfig,
     config::{discovery, editor},
 };
-use moc_protocol::ConfigScope;
+use moc_protocol::{ConfigScope, FieldKind};
 use serde_json::json;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -204,4 +204,48 @@ async fn workspace_rename_preserves_identity_and_manual_cleanup_is_scoped() {
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1, "读取及重绑不应修改远端知识");
+}
+
+#[test]
+fn web_search_base_url_round_trips_through_editor() {
+    let (_root, boot) = workspace();
+    let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
+    let web_search_field = |name: &str| {
+        view.fields.iter().find(|field| {
+            field.path.len() == 2 && field.path[0] == "web_search" && field.path[1] == name
+        })
+    };
+    let provider_field = web_search_field("provider").expect("provider 字段出现在设置目录");
+    assert_eq!(provider_field.tab, "工具");
+    assert_eq!(provider_field.label, "供应商");
+    let FieldKind::Choice(options) = &provider_field.kind else {
+        panic!("provider 应为候选列表");
+    };
+    assert!(
+        options
+            .iter()
+            .any(|option| option.value == "tavily" && option.label == "Tavily"),
+        "provider 候选应包含 Tavily: {options:?}"
+    );
+    let api_key_field = web_search_field("api_key").expect("api_key 字段出现在设置目录");
+    assert!(matches!(api_key_field.kind, FieldKind::Secret));
+    let resolved = editor::save(
+        &boot,
+        ConfigScope::Global,
+        &boot.cwd,
+        json!({"web_search": {"base_url": "https://proxy.example.com"}}),
+        &view.revision,
+    )
+    .unwrap();
+    assert_eq!(resolved.web_search.base_url, "https://proxy.example.com");
+    let saved: toml::Value =
+        toml::from_str(&std::fs::read_to_string(boot.home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        saved["web_search"]["base_url"].as_str(),
+        Some("https://proxy.example.com")
+    );
+    assert!(
+        saved["web_search"].get("provider").is_none(),
+        "未编辑的默认项不落盘"
+    );
 }

@@ -107,8 +107,8 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
                 .collect::<Vec<_>>()
         ),
         FieldKind::Object => {
-            let value: Value = serde_json::from_str(text)
-                .map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
+            let value: Value =
+                serde_json::from_str(text).map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
             anyhow::ensure!(
                 value.is_object() || value.is_string(),
                 "请输入 JSON 对象；端点风格也可为字符串"
@@ -439,7 +439,11 @@ fn collapse(panel: &mut SettingsPanel, expand: bool) {
     }
 }
 
-fn find_parent_group(panel: &SettingsPanel, current_index: usize, current_depth: u8) -> Option<usize> {
+fn find_parent_group(
+    panel: &SettingsPanel,
+    current_index: usize,
+    current_depth: u8,
+) -> Option<usize> {
     for idx in (0..current_index).rev() {
         if let Some(r) = panel.rows.get(idx) {
             if r.depth < current_depth && matches!(r.kind, RowKind::Group(_)) {
@@ -753,7 +757,9 @@ fn apply_edit(
 ) -> anyhow::Result<()> {
     match target {
         EditTarget::Field(path) => {
-            let value = if path.last().is_some_and(|k| k == "input") && path.iter().any(|p| p == "models") {
+            let value = if path.last().is_some_and(|k| k == "input")
+                && path.iter().any(|p| p == "models")
+            {
                 if text.contains("image") || text.contains("图片") || text.contains("多模态") {
                     json!(["text", "image"])
                 } else {
@@ -958,4 +964,3 @@ pub(super) fn parse_thinking_levels(text: &str) -> anyhow::Result<Value> {
         Ok(json!(levels))
     }
 }
-

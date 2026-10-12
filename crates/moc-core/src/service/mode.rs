@@ -289,9 +289,21 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "skill",
             "clm_context",
             "run_code",
+            "web_search",
+            "web_fetch",
         ],
         SessionMode::Ask => &[
-            "read", "grep", "find", "todo", "job", "bash", "ask", "skill", "run_code",
+            "read",
+            "grep",
+            "find",
+            "todo",
+            "job",
+            "bash",
+            "ask",
+            "skill",
+            "run_code",
+            "web_search",
+            "web_fetch",
         ],
         SessionMode::Plan => &[
             "read",
@@ -305,6 +317,8 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "write_plan",
             "exit_plan",
             "run_code",
+            "web_search",
+            "web_fetch",
         ],
         SessionMode::Ptc => &["run_code"],
     }
@@ -338,6 +352,7 @@ pub fn tool_enabled(
         "todo" => config.tools.todo.enabled,
         "job" => config.tools.job.enabled,
         "skill" => config.skills.enabled,
+        "web_search" | "web_fetch" => config.web_search.available(),
         _ => true,
     }
 }

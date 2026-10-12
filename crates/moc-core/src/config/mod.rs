@@ -24,7 +24,7 @@ pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FeatureConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig,
     OutputConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig,
-    SourcesConfig, SystemPromptConfig, ToolsConfig, WorkspaceConfig, WriteConfig,
+    SourcesConfig, SystemPromptConfig, ToolsConfig, WebSearchConfig, WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -32,6 +32,29 @@ pub use schema::{
 pub struct SessionSettings {
     pub dir: PathBuf,
     pub retention: RetentionConfig,
+}
+
+/// web search 供应商的运行时配置；api_key 已按 env:/!command 语法解析。
+///
+/// 与 `model::ResolvedProvider` 一致不派生 `Debug`：结构持有已解析密钥，`{:?}` 会把密钥带进日志。
+#[derive(Clone)]
+pub struct ResolvedWebSearch {
+    pub enabled: bool,
+    /// 校验阶段已归一化为小写。
+    pub provider: String,
+    /// 原样保存；空串 = Tavily 官方地址（规范化在 websearch 模块做）。
+    pub base_url: String,
+    pub timeout_secs: u64,
+    pub api_key: Option<String>,
+}
+
+impl ResolvedWebSearch {
+    /// 两个 web 工具是否对模型可见：启用且已解析出密钥。
+    ///
+    /// 工具定义过滤、执行门槛与系统提示词共用同一判定，保持单点。
+    pub fn available(&self) -> bool {
+        self.enabled && self.api_key.is_some()
+    }
 }
 
 /// 一次完成路径合并、密钥解析与 provider/model 校验的运行时配置。
@@ -51,6 +74,7 @@ pub struct ResolvedConfig {
     pub session: SessionSettings,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
+    pub web_search: ResolvedWebSearch,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
     overlays: Vec<PathBuf>,
@@ -163,6 +187,9 @@ impl ResolvedConfig {
         validate_compaction(&document.compaction)?;
         schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
+        let web_search_provider = schema::validate_web_search(&document.web_search)?;
+        let web_search_key =
+            model::resolve_secret("web_search.api_key", &document.web_search.api_key)?;
         schema::validate_ptc(&document.tools.ptc)?;
         schema::validate_limits(&document.limits)?;
         if document.tools.job.max_running == 0 {
@@ -188,6 +215,13 @@ impl ResolvedConfig {
             },
             mcp: document.mcp,
             skills: document.skills,
+            web_search: ResolvedWebSearch {
+                enabled: document.web_search.enabled,
+                provider: web_search_provider,
+                base_url: document.web_search.base_url,
+                timeout_secs: document.web_search.timeout_secs,
+                api_key: web_search_key,
+            },
             providers,
             base_raw,
             overlays,
@@ -632,5 +666,115 @@ max_output_tokens = 128000
                 "{roles} 不能是 none"
             );
         }
+    }
+
+    #[test]
+    fn web_search_defaults_hide_tools_without_api_key() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(home.join("config.toml"), provider_config("literal")).expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
+        assert!(config.web_search.enabled);
+        assert_eq!(config.web_search.provider, "tavily");
+        assert_eq!(config.web_search.base_url, "");
+        assert_eq!(config.web_search.timeout_secs, 30);
+        assert!(config.web_search.api_key.is_none());
+        let registry = crate::tools::ToolRegistry::new();
+        let visible = |config: &ResolvedConfig, name: &str| {
+            registry
+                .definitions(
+                    moc_protocol::methods::SessionMode::Normal,
+                    false,
+                    config,
+                    true,
+                )
+                .iter()
+                .any(|definition| definition.name == name)
+        };
+        assert!(!visible(&config, "web_search"), "无 key 时工具对模型隐藏");
+        assert!(!visible(&config, "web_fetch"), "无 key 时工具对模型隐藏");
+
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "{}\n[web_search]\napi_key='tvly-test'\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
+        assert_eq!(config.web_search.api_key.as_deref(), Some("tvly-test"));
+        assert!(visible(&config, "web_search"));
+        assert!(visible(&config, "web_fetch"));
+    }
+
+    #[test]
+    fn rejects_invalid_web_search_settings() {
+        for (snippet, expected) in [
+            ("provider='google'\n", "web_search.provider"),
+            (
+                "base_url='ftp://proxy.example.com'\n",
+                "web_search.base_url",
+            ),
+            ("timeout_secs=0\n", "web_search.timeout_secs"),
+        ] {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let home = dir.path().join("home");
+            fs::create_dir_all(&home).expect("创建 home");
+            fs::write(
+                home.join("config.toml"),
+                format!("{}\n[web_search]\n{snippet}", provider_config("literal")),
+            )
+            .expect("写配置");
+            let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+                Ok(_) => panic!("{snippet} 应被拒绝"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error for {snippet}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalizes_web_search_provider_case() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "{}\n[web_search]\nprovider=' Tavily '\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写配置");
+        let config = ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new()))
+            .expect("大小写与空白被归一化");
+        assert_eq!(config.web_search.provider, "tavily");
+    }
+
+    #[test]
+    fn web_search_env_secret_reports_missing_variable() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "{}\n[web_search]\napi_key='env:MOC_TEST_MISSING_WEB_KEY_7261'\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写配置");
+        let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+            Ok(_) => panic!("缺失环境变量应报错"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("web_search.api_key"));
     }
 }

@@ -171,3 +171,10 @@ disable = []
 catalog_budget_percent = 1
 catalog_budget_min_tokens = 8000
 description_max_chars = 1024
+
+[web_search]
+enabled = true
+provider = "tavily"
+api_key = ""
+base_url = ""
+timeout_secs = 30

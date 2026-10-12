@@ -620,43 +620,40 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-fn resolve_api_key(provider: &str, spec: &str) -> Result<Option<String>, CoreError> {
+/// 解析密钥描述：空 → None；`env:NAME` → 环境变量；`!command` → 命令输出；否则字面量。
+///
+/// `label` 用于错误信息（如 `providers.p.api_key`、`web_search.api_key`），从不携带密钥值。
+pub(crate) fn resolve_secret(label: &str, spec: &str) -> Result<Option<String>, CoreError> {
     if spec.is_empty() {
         return Ok(None);
     }
     let value = if let Some(name) = spec.strip_prefix("env:") {
-        std::env::var(name).map_err(|_| {
-            CoreError::Config(format!(
-                "providers.{provider}.api_key 环境变量 {name} 不存在"
-            ))
-        })?
+        std::env::var(name)
+            .map_err(|_| CoreError::Config(format!("{label} 环境变量 {name} 不存在")))?
     } else if let Some(command) = spec.strip_prefix('!') {
-        let output = shell_command(command).output().map_err(|error| {
-            CoreError::Config(format!(
-                "providers.{provider}.api_key 命令无法启动: {error}"
-            ))
-        })?;
+        let output = shell_command(command)
+            .output()
+            .map_err(|error| CoreError::Config(format!("{label} 命令无法启动: {error}")))?;
         if !output.status.success() {
             return Err(CoreError::Config(format!(
-                "providers.{provider}.api_key 命令以状态 {} 失败",
+                "{label} 命令以状态 {} 失败",
                 output.status
             )));
         }
-        String::from_utf8(output.stdout).map_err(|error| {
-            CoreError::Config(format!(
-                "providers.{provider}.api_key 命令输出不是 UTF-8: {error}"
-            ))
-        })?
+        String::from_utf8(output.stdout)
+            .map_err(|error| CoreError::Config(format!("{label} 命令输出不是 UTF-8: {error}")))?
     } else {
         spec.to_owned()
     };
     let value = value.trim().to_owned();
     if value.is_empty() {
-        return Err(CoreError::Config(format!(
-            "providers.{provider}.api_key 解析为空"
-        )));
+        return Err(CoreError::Config(format!("{label} 解析为空")));
     }
     Ok(Some(value))
+}
+
+fn resolve_api_key(provider: &str, spec: &str) -> Result<Option<String>, CoreError> {
+    resolve_secret(&format!("providers.{provider}.api_key"), spec)
 }
 
 pub(super) fn validate_roles(

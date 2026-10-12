@@ -12,7 +12,10 @@ use crate::config::ResolvedConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
-const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required. Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. The current mode is supplied in a tail reminder.";
+const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required.";
+/// 仅当 web_search/web_fetch 对模型可见时拼入工具政策。
+const WEB_SEARCH_POLICY: &str = "Use web_search for current web information and web_fetch to read specific URLs; cite the URLs you use.";
+const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. The current mode is supplied in a tail reminder.";
 
 pub struct PromptPiece {
     /// Section category (`system`, `project`, or `skills`) for context accounting.
@@ -70,9 +73,19 @@ pub fn pieces(
         title: "system",
         text: intro.to_owned(),
     });
+    let mut tool_policy = String::with_capacity(
+        TOOL_POLICY.len() + TOOL_POLICY_REST.len() + WEB_SEARCH_POLICY.len() + 2,
+    );
+    tool_policy.push_str(TOOL_POLICY);
+    if config.web_search.available() {
+        tool_policy.push(' ');
+        tool_policy.push_str(WEB_SEARCH_POLICY);
+    }
+    tool_policy.push(' ');
+    tool_policy.push_str(TOOL_POLICY_REST);
     sections.push(PromptPiece {
         title: "system",
-        text: TOOL_POLICY.to_owned(),
+        text: tool_policy,
     });
     sections.push(PromptPiece {
         title: "system",
@@ -225,6 +238,35 @@ mod tests {
         assert!(text.contains("state.store"));
         assert!(text.contains("Standard tool batches allow up to 16"));
         assert!(!text.contains("Current mode:"));
+    }
+
+    #[test]
+    fn web_search_policy_follows_tool_visibility() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).expect("create repo");
+        let mut config = resolved(&cwd, &home);
+        let model = config.resolve_role("default").expect("resolve model");
+        let context_files =
+            context_files::load_context_files(&cwd, &config.home, &config.context_files);
+        let prompt = |config: &ResolvedConfig| {
+            build(
+                config,
+                &model,
+                &cwd,
+                &context_files,
+                &crate::skills::SkillIndex::empty(),
+                "",
+            )
+            .text()
+        };
+        assert!(
+            !prompt(&config).contains("web_search"),
+            "未配置密钥时系统提示不得提及 web 工具"
+        );
+        config.web_search.api_key = Some("tvly-test".to_owned());
+        assert!(prompt(&config).contains("web_search"));
     }
 
     #[test]

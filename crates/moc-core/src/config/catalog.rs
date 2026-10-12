@@ -244,7 +244,7 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
         "模型"
     } else {
         match path.first().map_or("", String::as_str) {
-            "tools" | "workspace" => "工具",
+            "tools" | "workspace" | "web_search" => "工具",
             "compaction" | "limits" => "上下文",
             "context_files" | "system_prompt" | "sources" => "指令",
             "defaults" => "模型",
@@ -280,6 +280,9 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
         ],
         "response_format_dialect" => &[("standard", "标准"), ("unsupported", "不发送")],
         "echo_reasoning" => &[("auto", "自动"), ("always", "总是"), ("never", "从不")],
+        "provider" if path.first().is_some_and(|part| part == "web_search") => {
+            &[("tavily", "Tavily")]
+        }
         "mode" if path.iter().any(|part| part == "threshold") => {
             &[("percent", "按上下文比例"), ("tokens", "按固定长度")]
         }
@@ -388,6 +391,14 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "openviking.url" => ("服务地址", "OpenViking 服务地址；留空则不连接。"),
         "openviking.api_key" => ("API 密钥", "访问 OpenViking 的密钥；留空表示无需鉴权。"),
         "openviking.timeout_secs" => ("请求超时（秒）", "单次请求等待 OpenViking 回复的最长时间。"),
+        "web_search.enabled" => (
+            "启用",
+            "关闭后 web_search 与 web_fetch 工具不再向模型开放。",
+        ),
+        "web_search.provider" => ("供应商", "网页搜索服务供应商；空格键切换。"),
+        "web_search.api_key" => ("API 密钥", "Tavily 密钥；可填 env:变量名 或 !命令。"),
+        "web_search.base_url" => ("接口地址", "留空使用官方 https://api.tavily.com。"),
+        "web_search.timeout_secs" => ("请求超时（秒）", "单次搜索或提取请求的最长等待时间。"),
         "mcp.connect_timeout_secs" => (
             "连接超时（秒）",
             "启动 MCP 服务并获取工具列表的最长等待时间。",

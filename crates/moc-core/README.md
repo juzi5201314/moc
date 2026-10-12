@@ -80,6 +80,13 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`send_agent`、`steer_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可递归创建其它子代理。
 
 子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续 `send_agent`。TUI 按 `Ctrl+N` 或 `/agents` 打开当前会话的子代理列表，宽屏显示状态侧栏；`/agent [inherit|default|explore|plan] <task>` 创建任务，`/steer-agent <id> <message>` 与 `/stop-agent <id>` 快捷控制。REPL 提供 `/agents`、`/agent`、`/steer-agent`、`/stop-agent`。
+
+### Web 搜索
+
+`web_search` 查询互联网并返回答案与编号来源；`web_fetch` 提取 1–20 个 URL 的正文（markdown）。两者都是只读工具，在标准、问答与计划模式可用，未配置密钥时对模型隐藏。`web_search` 的查询支持 `site:host`、`-site:host`、`after:YYYY-MM-DD`、`before:YYYY-MM-DD`、引号短语与 `-term`；带时间过滤的查询零结果时自动去掉时间过滤重试一次。每条来源摘要按 240 字符截断；`web_fetch` 传入 `query` 时每页只返回与查询相关的约 800 字符块，省略则返回整页。失败项随成功正文一同返回，全部失败仍算成功，便于模型更换地址重试。
+
+`[web_search]` 当前只有 Tavily 一个供应商：`api_key` 支持字面量、`env:变量名` 或 `!命令`（与供应商密钥同语法），`base_url` 留空使用官方 `https://api.tavily.com`，自定义代理直接按 `{base}/search`、`{base}/extract` 拼接，`timeout_secs` 默认 30。`enabled=false` 或留空 `api_key` 时两个工具都不会出现在模型工具定义里。鉴权失败、限流（429/432/433）与超时分别以 `E_WEB_AUTH`、`E_WEB_RATE_LIMIT`、`E_TIMEOUT` 返回，限流提示附带 `Retry-After`。
+
 ### 代码编排（PTC）
 
 `run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在随宿主内嵌的固定 QuickJS/WASM guest 中，工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。

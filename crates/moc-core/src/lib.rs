@@ -18,6 +18,7 @@ pub mod session;
 pub mod skills;
 pub mod system_prompt;
 pub mod tools;
+pub mod websearch;
 pub mod workspace;
 pub use service::Core;
 

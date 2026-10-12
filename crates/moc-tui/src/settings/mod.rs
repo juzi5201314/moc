@@ -919,11 +919,18 @@ impl SettingsPanel {
         let (popup, choice_selected) = match &kind {
             FieldKind::Multiline | FieldKind::Strings | FieldKind::Object => (true, 0),
             FieldKind::Choice(options) => {
-                if field.path.last().is_some_and(|k| k == "input") && field.path.iter().any(|p| p == "models") {
-                    let has_image = value.as_array().is_some_and(|arr| arr.iter().any(|v| v == "image"))
+                if field.path.last().is_some_and(|k| k == "input")
+                    && field.path.iter().any(|p| p == "models")
+                {
+                    let has_image = value
+                        .as_array()
+                        .is_some_and(|arr| arr.iter().any(|v| v == "image"))
                         || value.as_str().is_some_and(|s| s.contains("image"));
                     let pos = if has_image {
-                        options.iter().position(|opt| opt.value.contains("image")).unwrap_or(1)
+                        options
+                            .iter()
+                            .position(|opt| opt.value.contains("image"))
+                            .unwrap_or(1)
                     } else {
                         0
                     };
@@ -962,13 +969,20 @@ impl SettingsPanel {
         };
         let field = self.fields[*index].clone();
         let value = self.value(&field.path).cloned().unwrap_or(Value::Null);
-        if field.path.last().is_some_and(|k| k == "input") && field.path.iter().any(|p| p == "models") {
-            let has_image = value.as_array().is_some_and(|arr| arr.iter().any(|v| v == "image"))
+        if field.path.last().is_some_and(|k| k == "input")
+            && field.path.iter().any(|p| p == "models")
+        {
+            let has_image = value
+                .as_array()
+                .is_some_and(|arr| arr.iter().any(|v| v == "image"))
                 || value.as_str().is_some_and(|s| s.contains("image"));
             let (next_val, label_text) = if has_image {
                 (json!(["text"]), "仅文本 (text)")
             } else {
-                (json!(["text", "image"]), "文本与图片 / 多模态 (text, image)")
+                (
+                    json!(["text", "image"]),
+                    "文本与图片 / 多模态 (text, image)",
+                )
             };
             let label = format!("{}: {}", field.label, label_text);
             let path = field.path.clone();
@@ -1007,7 +1021,9 @@ impl SettingsPanel {
     }
     /// 字段的编辑类型：模型角色与输入模态改为候选列表。
     fn field_kind(&self, field: &ConfigField, value: &Value) -> FieldKind {
-        if field.path.last().is_some_and(|k| k == "input") && field.path.iter().any(|p| p == "models") {
+        if field.path.last().is_some_and(|k| k == "input")
+            && field.path.iter().any(|p| p == "models")
+        {
             return FieldKind::Choice(vec![
                 moc_protocol::ChoiceOption::new("text", "仅文本 (text)"),
                 moc_protocol::ChoiceOption::new("text, image", "文本与图片 / 多模态 (text, image)"),
@@ -1545,24 +1561,54 @@ mod tests {
         assert_eq!(forms::parse("开", &FieldKind::Bool).unwrap(), json!(true));
         assert_eq!(forms::parse("开启", &FieldKind::Bool).unwrap(), json!(true));
         assert_eq!(forms::parse("关", &FieldKind::Bool).unwrap(), json!(false));
-        assert_eq!(forms::parse("关闭", &FieldKind::Bool).unwrap(), json!(false));
+        assert_eq!(
+            forms::parse("关闭", &FieldKind::Bool).unwrap(),
+            json!(false)
+        );
         assert_eq!(forms::parse("true", &FieldKind::Bool).unwrap(), json!(true));
-        assert_eq!(forms::parse("false", &FieldKind::Bool).unwrap(), json!(false));
+        assert_eq!(
+            forms::parse("false", &FieldKind::Bool).unwrap(),
+            json!(false)
+        );
         assert_eq!(forms::parse("y", &FieldKind::Bool).unwrap(), json!(true));
         assert_eq!(forms::parse("n", &FieldKind::Bool).unwrap(), json!(false));
         assert!(forms::parse("notabool", &FieldKind::Bool).is_err());
 
-        assert_eq!(forms::parse("123", &FieldKind::Integer).unwrap(), json!(123));
-        assert_eq!(forms::parse("200k", &FieldKind::Integer).unwrap(), json!(200_000));
-        assert_eq!(forms::parse("200K", &FieldKind::Integer).unwrap(), json!(200_000));
-        assert_eq!(forms::parse("1m", &FieldKind::Integer).unwrap(), json!(1_000_000));
-        assert_eq!(forms::parse("200,000", &FieldKind::Integer).unwrap(), json!(200_000));
+        assert_eq!(
+            forms::parse("123", &FieldKind::Integer).unwrap(),
+            json!(123)
+        );
+        assert_eq!(
+            forms::parse("200k", &FieldKind::Integer).unwrap(),
+            json!(200_000)
+        );
+        assert_eq!(
+            forms::parse("200K", &FieldKind::Integer).unwrap(),
+            json!(200_000)
+        );
+        assert_eq!(
+            forms::parse("1m", &FieldKind::Integer).unwrap(),
+            json!(1_000_000)
+        );
+        assert_eq!(
+            forms::parse("200,000", &FieldKind::Integer).unwrap(),
+            json!(200_000)
+        );
         assert!(forms::parse("invalid", &FieldKind::Integer).is_err());
 
-        assert_eq!(forms::parse("1.5k", &FieldKind::Number).unwrap(), json!(1500.0));
-        assert_eq!(forms::parse("10,000.5", &FieldKind::Number).unwrap(), json!(10000.5));
+        assert_eq!(
+            forms::parse("1.5k", &FieldKind::Number).unwrap(),
+            json!(1500.0)
+        );
+        assert_eq!(
+            forms::parse("10,000.5", &FieldKind::Number).unwrap(),
+            json!(10000.5)
+        );
 
-        assert_eq!(forms::parse("   ", &FieldKind::Integer).unwrap(), Value::Null);
+        assert_eq!(
+            forms::parse("   ", &FieldKind::Integer).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
@@ -1579,21 +1625,21 @@ mod tests {
             forms::parse_thinking_levels("低、中、高、超高、最大").unwrap(),
             json!(["low", "medium", "high", "xhigh", "max"])
         );
-        assert_eq!(
-            forms::parse_thinking_levels("关").unwrap(),
-            json!(["off"])
-        );
-        assert_eq!(
-            forms::parse_thinking_levels("  ").unwrap(),
-            Value::Null
-        );
+        assert_eq!(forms::parse_thinking_levels("关").unwrap(), json!(["off"]));
+        assert_eq!(forms::parse_thinking_levels("  ").unwrap(), Value::Null);
         assert!(forms::parse_thinking_levels("unknown_level").is_err());
     }
 
     #[test]
     fn test_display_value_features() {
         let field_input = ConfigField {
-            path: vec!["providers".into(), "openai".into(), "models".into(), "gpt-4o".into(), "input".into()],
+            path: vec![
+                "providers".into(),
+                "openai".into(),
+                "models".into(),
+                "gpt-4o".into(),
+                "input".into(),
+            ],
             tab: "模型".into(),
             label: "输入模态".into(),
             description: "模型支持接收的内容类型".into(),
@@ -1610,7 +1656,13 @@ mod tests {
         );
 
         let field_thinking = ConfigField {
-            path: vec!["providers".into(), "openai".into(), "models".into(), "o1".into(), "thinking_levels".into()],
+            path: vec![
+                "providers".into(),
+                "openai".into(),
+                "models".into(),
+                "o1".into(),
+                "thinking_levels".into(),
+            ],
             tab: "模型".into(),
             label: "可选思考等级".into(),
             description: "思考等级".into(),

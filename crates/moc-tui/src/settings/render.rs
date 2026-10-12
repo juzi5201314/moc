@@ -601,7 +601,10 @@ fn draw_fields(
                 } else {
                     String::new()
                 };
-                let label_text = format!("{cursor_marker} {indent}{custom_marker}{}{search_tab}", field.label);
+                let label_text = format!(
+                    "{cursor_marker} {indent}{custom_marker}{}{search_tab}",
+                    field.label
+                );
                 let label_style = if is_explicit && !selected {
                     style.fg(theme.text_primary).add_modifier(Modifier::BOLD)
                 } else {
@@ -651,7 +654,9 @@ fn draw_fields(
                                     style.fg(theme.gray),
                                 );
                             }
-                            Value::Null if field.path.last().is_some_and(|k| k == "thinking_levels") => {
+                            Value::Null
+                                if field.path.last().is_some_and(|k| k == "thinking_levels") =>
+                            {
                                 label(
                                     frame,
                                     Rect::new(value_area.x, y, value_area.width, 1),
@@ -701,7 +706,10 @@ fn draw_fields(
             } else {
                 ("│", Style::new().fg(theme.gray_dim))
             };
-            frame.render_widget(Paragraph::new(ch).style(style), Rect::new(scroll_x, y, 1, 1));
+            frame.render_widget(
+                Paragraph::new(ch).style(style),
+                Rect::new(scroll_x, y, 1, 1),
+            );
             let clicked_row = (i * total / height).min(total.saturating_sub(1));
             hits.push((Rect::new(scroll_x, y, 1, 1), Hit::Row(clicked_row)));
         }
@@ -712,7 +720,8 @@ fn draw_fields(
     match panel.row() {
         Some(RowKind::Group(group)) => (
             group_description(group),
-            "Enter/Space 展开收起 · ←→/hl 层级导航 · e/c 展收全部 · Del 删除 · / 搜索 · Esc 返回".into(),
+            "Enter/Space 展开收起 · ←→/hl 层级导航 · e/c 展收全部 · Del 删除 · / 搜索 · Esc 返回"
+                .into(),
         ),
         Some(RowKind::Field(index)) => {
             let field = &panel.fields[*index];
@@ -729,7 +738,8 @@ fn draw_fields(
             let description = format!("{} {}", field.description, state);
             let is_choice = matches!(field.kind, FieldKind::Choice(_))
                 || field.path.starts_with(&["models".into(), "roles".into()])
-                || (field.path.last().is_some_and(|k| k == "input") && field.path.iter().any(|p| p == "models"));
+                || (field.path.last().is_some_and(|k| k == "input")
+                    && field.path.iter().any(|p| p == "models"));
             let action_hint = if let FieldKind::Bool = field.kind {
                 "Space/Enter 切换开关"
             } else if is_choice {
@@ -829,7 +839,12 @@ fn draw_models(
             row.id,
             if row.name == row.id { "" } else { &row.name }
         );
-        let area = Rect::new(body.x, body.y + 2 + cells(index - panel.offset), row_width, 1);
+        let area = Rect::new(
+            body.x,
+            body.y + 2 + cells(index - panel.offset),
+            row_width,
+            1,
+        );
         label(
             frame,
             area,
@@ -861,7 +876,10 @@ fn draw_models(
             } else {
                 ("│", Style::new().fg(theme.gray_dim))
             };
-            frame.render_widget(Paragraph::new(ch).style(style), Rect::new(scroll_x, y, 1, 1));
+            frame.render_widget(
+                Paragraph::new(ch).style(style),
+                Rect::new(scroll_x, y, 1, 1),
+            );
             let clicked_row = (i * total / height).min(total.saturating_sub(1));
             hits.push((Rect::new(scroll_x, y, 1, 1), Hit::Check(clicked_row)));
         }
@@ -900,7 +918,12 @@ fn draw_workspaces(
     let scrollbar_margin = if has_scrollbar { 1 } else { 0 };
     let row_width = body.width.saturating_sub(scrollbar_margin);
     for (index, row) in rows.iter().enumerate().skip(panel.offset).take(height) {
-        let area = Rect::new(body.x, body.y + 2 + cells(index - panel.offset), row_width, 1);
+        let area = Rect::new(
+            body.x,
+            body.y + 2 + cells(index - panel.offset),
+            row_width,
+            1,
+        );
         label(
             frame,
             area,
@@ -941,7 +964,10 @@ fn draw_workspaces(
             } else {
                 ("│", Style::new().fg(theme.gray_dim))
             };
-            frame.render_widget(Paragraph::new(ch).style(style), Rect::new(scroll_x, y, 1, 1));
+            frame.render_widget(
+                Paragraph::new(ch).style(style),
+                Rect::new(scroll_x, y, 1, 1),
+            );
             let clicked_row = (i * total / height).min(total.saturating_sub(1));
             hits.push((Rect::new(scroll_x, y, 1, 1), Hit::Check(clicked_row)));
         }
@@ -994,7 +1020,12 @@ fn draw_edit_popup(
         }
         if area.bottom() > rect.bottom() {
             hits.push((
-                Rect::new(area.x, rect.bottom(), area.width, area.bottom() - rect.bottom()),
+                Rect::new(
+                    area.x,
+                    rect.bottom(),
+                    area.width,
+                    area.bottom() - rect.bottom(),
+                ),
                 Hit::DismissPopup,
             ));
         }
@@ -1006,7 +1037,12 @@ fn draw_edit_popup(
         }
         if area.right() > rect.right() {
             hits.push((
-                Rect::new(rect.right(), rect.y, area.right() - rect.right(), rect.height),
+                Rect::new(
+                    rect.right(),
+                    rect.y,
+                    area.right() - rect.right(),
+                    rect.height,
+                ),
                 Hit::DismissPopup,
             ));
         }
@@ -1110,7 +1146,12 @@ fn draw_edit_popup(
     }
     if area.bottom() > rect.bottom() {
         hits.push((
-            Rect::new(area.x, rect.bottom(), area.width, area.bottom() - rect.bottom()),
+            Rect::new(
+                area.x,
+                rect.bottom(),
+                area.width,
+                area.bottom() - rect.bottom(),
+            ),
             Hit::DismissPopup,
         ));
     }
@@ -1122,7 +1163,12 @@ fn draw_edit_popup(
     }
     if area.right() > rect.right() {
         hits.push((
-            Rect::new(rect.right(), rect.y, area.right() - rect.right(), rect.height),
+            Rect::new(
+                rect.right(),
+                rect.y,
+                area.right() - rect.right(),
+                rect.height,
+            ),
             Hit::DismissPopup,
         ));
     }
@@ -1285,7 +1331,11 @@ pub(crate) fn format_number(value: u64) -> String {
 
 /// 值的展示形式：布尔、密钥、候选与容器都换成用户可读文字。
 pub(super) fn display_value(value: &Value, field: &ConfigField) -> String {
-    if field.path.last().is_some_and(|key| key == "thinking_levels") {
+    if field
+        .path
+        .last()
+        .is_some_and(|key| key == "thinking_levels")
+    {
         if value.is_null() {
             return "默认 (low, medium, high, xhigh, max)".into();
         }
@@ -1300,8 +1350,12 @@ pub(super) fn display_value(value: &Value, field: &ConfigField) -> String {
                 .join("、");
         }
     }
-    if field.path.last().is_some_and(|key| key == "input") && field.path.iter().any(|part| part == "models") {
-        let has_image = value.as_array().is_some_and(|arr| arr.iter().any(|v| v == "image"))
+    if field.path.last().is_some_and(|key| key == "input")
+        && field.path.iter().any(|part| part == "models")
+    {
+        let has_image = value
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|v| v == "image"))
             || value.as_str().is_some_and(|s| s.contains("image"));
         return if has_image {
             "‹ 文本与图片 / 多模态 (text, image) ›".into()
