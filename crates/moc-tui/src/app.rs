@@ -173,6 +173,11 @@ pub struct App {
     pub subagent_generation: u64,
     pub queues: HashMap<String, std::collections::VecDeque<crate::queue::QueuedPrompt>>,
     pub inflight_prompts: std::collections::HashSet<String>,
+    /// 本前端发起、会占住会话提示锁的操作（模型切换、手动压缩）在飞的会话。
+    ///
+    /// 期间队列不派发：core 用提示锁拒绝并发提示，抢跑只会把用户刚发出的消息变成
+    /// `SessionBusy` 报错；等操作收尾的事件到达再继续派发。
+    pub inflight_session_ops: std::collections::HashSet<String>,
     pub next_queue_id: u64,
     pub queue_hits: Vec<(u64, Rect, Rect)>,
     pub queue_area: Rect,
@@ -270,6 +275,7 @@ impl App {
             subagent_generation: 0,
             queues: HashMap::new(),
             inflight_prompts: std::collections::HashSet::new(),
+            inflight_session_ops: std::collections::HashSet::new(),
             next_queue_id: 0,
             queue_hits: Vec::new(),
             queue_area: Rect::default(),

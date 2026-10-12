@@ -1,7 +1,9 @@
-//! 将异步管理操作的回执投影到 UI；队列以 RPC 收尾而非 PromptFinished 通知为边界。
+//! 将异步管理操作的回执投影到 UI：配置、投递与模型切换回执；队列以 RPC 收尾而非
+//! PromptFinished 通知为边界。
 
 use crate::{
     app::App,
+    modal::Modal,
     protocol::{AppEvent, EmbeddedConnection},
 };
 
@@ -96,6 +98,58 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 }
             }
         }
-        _ => unreachable!("只接收配置及投递回执"),
+        AppEvent::ModelSwitchConfirm {
+            session_id,
+            selector,
+            overflow,
+        } => {
+            // 选择器那次调用已收尾；随后由卡片自身挡住派发，无需保留忙标记。
+            app.inflight_session_ops.remove(&session_id);
+            if matches!(app.modal, Some(Modal::Model { .. })) {
+                app.modal = Some(Modal::SwitchModel {
+                    session_id,
+                    selector,
+                    overflow,
+                    option: 0,
+                    loading: false,
+                    error: None,
+                });
+            }
+        }
+        AppEvent::SessionControlSettled {
+            session_id,
+            notice,
+            result,
+        } => {
+            app.inflight_session_ops.remove(&session_id);
+            match result {
+                Ok(compaction_error) => {
+                    // 只关闭这次操作打开的选择器与确认卡片，不碰用户后来打开的模态。
+                    if matches!(
+                        app.modal,
+                        Some(Modal::Model { .. } | Modal::SwitchModel { .. })
+                    ) {
+                        app.modal = None;
+                    }
+                    if let Some(error) = compaction_error {
+                        app.push_note(format!("上下文压缩失败：{error}"), true);
+                    }
+                    if let Some(notice) = notice {
+                        app.set_notice(notice);
+                    }
+                }
+                Err(error) => {
+                    let shown = app
+                        .modal
+                        .as_mut()
+                        .is_some_and(|modal| modal.set_error(&error));
+                    if !shown {
+                        app.set_notice(error);
+                    }
+                }
+            }
+            crate::queue::dispatch(app, connection);
+        }
+        _ => unreachable!("只接收配置、投递与模型切换回执"),
     }
 }

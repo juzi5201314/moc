@@ -914,6 +914,71 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             )));
             lines
         }
+        Modal::SwitchModel {
+            selector,
+            overflow,
+            option,
+            loading,
+            error,
+            ..
+        } => {
+            let window = crate::render::tokens_k(overflow.context_window);
+            let leading = if overflow.tokens > overflow.context_window {
+                format!(
+                    "当前上下文 {} 超过 {selector} 的窗口 {window}",
+                    crate::render::tokens_k(overflow.tokens)
+                )
+            } else {
+                format!(
+                    "当前上下文 {} 超过 {selector} 的压缩触发线 {}（窗口 {window}）",
+                    crate::render::tokens_k(overflow.tokens),
+                    crate::render::tokens_k(overflow.threshold)
+                )
+            };
+            let mut lines = vec![
+                Line::from(Span::styled(leading, Style::new().fg(theme.text_primary))),
+                Line::from(Span::styled(
+                    format!(
+                        "确认后先切换到 {selector}，再由它压缩上下文（压缩后不超过 {}）",
+                        crate::render::tokens_k(overflow.target_tokens)
+                    ),
+                    Style::new().fg(theme.text_secondary),
+                )),
+                Line::from(String::new()),
+            ];
+            if *loading {
+                lines.push(Line::from(Span::styled(
+                    "正在切换并压缩…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            } else if let Some(error) = error {
+                lines.push(Line::from(Span::styled(
+                    format!("错误：{error}"),
+                    Style::new().fg(theme.accent_error),
+                )));
+            }
+            for (index, text) in ["切换并压缩", "取消"].iter().enumerate() {
+                let marker = if index == *option { "❯ " } else { "  " };
+                let style = if index == *option {
+                    Style::new()
+                        .fg(theme.accent_user)
+                        .bg(theme.bg_visual)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme.text_secondary)
+                };
+                lines.push(Line::from(Span::styled(format!("{marker}{text}"), style)));
+            }
+            lines.push(Line::from(Span::styled(
+                if error.is_some() {
+                    "enter 重试 · esc 取消"
+                } else {
+                    "↑↓ 选择 · enter 确认 · esc 取消"
+                },
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines
+        }
         Modal::Memories {
             root_uri,
             entries,

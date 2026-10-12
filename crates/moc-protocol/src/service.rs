@@ -39,8 +39,9 @@ use crate::methods::{
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
-    SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
-    SessionUpdateMethod, SessionUpdateParams, SessionUsageParams, SessionUsageResult,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
+    SessionUsageResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -237,11 +238,13 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionSetPermissionParams,
     ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
     /// 切换会话模型（按选择器）；被他人持锁时回 `SessionLocked`。
+    ///
+    /// 目标模型容不下当前上下文时按 [`SessionSetModelParams::overflow`] 处理。
     fn session_set_model(
         &self,
         ctx: RequestContext,
         params: SessionSetModelParams,
-    ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
+    ) -> impl Future<Output = Result<SessionSetModelResult, RpcError>> + Send;
 
     /// 批准或拒绝已提交计划。
     fn session_plan_approve(

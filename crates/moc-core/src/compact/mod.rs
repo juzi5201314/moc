@@ -22,6 +22,8 @@ pub enum CompactReason {
     Overflow,
     Manual,
     PreApprove,
+    /// 切换模型后按目标模型窗口压缩。
+    Switch,
 }
 
 /// 每四个 ASCII 字节估算一个 token，非 ASCII 字符各估算一个。
@@ -97,6 +99,56 @@ fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
         .map_or(0, |serialized| estimate_tokens(&serialized))
 }
 
+/// 提示路径口径的上下文基准：给定模型的系统提示、工具定义与完整估算。
+pub(crate) struct ModelContext {
+    /// 该模型下的系统提示（压缩摘要请求同样复用它）。
+    pub system: Message,
+    /// 该模型下注册的工具定义。
+    pub tools: Vec<ToolDef>,
+    /// 不带系统提示的模型回放消息。
+    pub messages: Vec<Message>,
+    /// 系统提示与工具定义自身的 token 合计（不含 transcript 与附加内容）。
+    pub fixed_tokens: u64,
+    /// 与提示路径一致的完整上下文估算（含 `additional_tokens`）。
+    pub tokens: u64,
+}
+
+/// 组装给定模型的系统提示与工具定义，并按提示路径口径估算当前上下文。
+pub(crate) async fn model_context(
+    inner: &CoreInner,
+    ctx: &RequestContext,
+    state: &crate::session::state::SessionState,
+    config: &ResolvedConfig,
+    model: &crate::ResolvedModel,
+    additional_tokens: u64,
+) -> Result<ModelContext, CoreError> {
+    let cwd = std::path::Path::new(&state.session.cwd);
+    let skills = inner.project_skills(cwd)?;
+    let summary = inner.mcp_summary(config).await?;
+    let context_files = inner.project_context_files(&state.session.id, cwd).await;
+    let system = crate::system_prompt::build(config, model, cwd, &context_files, &skills, &summary);
+    let tools = inner.tools.definitions(
+        state.mode,
+        inner.client_supports_ask(ctx.connection_id()),
+        config,
+        true,
+    );
+    let messages = replay::model_messages(state, None, Some(model));
+    let mut measured = Vec::with_capacity(messages.len() + 1);
+    measured.push(system.clone());
+    measured.extend(messages.iter().cloned());
+    let tokens = context_tokens_with_additional(state, &measured, &tools, additional_tokens);
+    let fixed_tokens =
+        messages_tokens(std::slice::from_ref(&system)).saturating_add(tools_tokens(&tools));
+    Ok(ModelContext {
+        system,
+        tools,
+        messages,
+        fixed_tokens,
+        tokens,
+    })
+}
+
 /// 有上游用量时以其为基准，仅估算响应之后追加的消息；同时以完整本地
 /// 会话估算作为下限，避免请求前变换导致上下文历史被低估。
 pub(crate) fn context_tokens_with_additional(
@@ -165,9 +217,10 @@ pub(crate) fn recovery_band(config: &ResolvedConfig, context_window: u64) -> u64
 fn required_tokens(config: &ResolvedConfig, context_window: u64, reason: CompactReason) -> u64 {
     match reason {
         CompactReason::Overflow => threshold(config, context_window),
-        CompactReason::Threshold | CompactReason::Manual | CompactReason::PreApprove => {
-            recovery_band(config, context_window)
-        }
+        CompactReason::Threshold
+        | CompactReason::Manual
+        | CompactReason::PreApprove
+        | CompactReason::Switch => recovery_band(config, context_window),
     }
 }
 
@@ -210,41 +263,20 @@ pub(crate) async fn compact(
         ));
     }
     let model = config.resolve_model(model_selector.unwrap_or(&state.model))?;
-    let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
-    let summary = inner.mcp_summary(&config).await?;
-    let context_files = inner
-        .project_context_files(session_id, std::path::Path::new(&state.session.cwd))
-        .await;
-    let system = crate::system_prompt::build(
+    let mut measured = model_context(
+        inner,
+        ctx,
+        &state,
         &config,
         &model,
-        std::path::Path::new(&state.session.cwd),
-        &context_files,
-        &skills,
-        &summary,
-    );
-    let tools = inner.tools.definitions(
-        state.mode,
-        inner.client_supports_ask(ctx.connection_id()),
-        &config,
-        true,
-    );
-    let fixed_tokens = messages_tokens(std::slice::from_ref(&system))
-        .saturating_add(tools_tokens(&tools))
-        .saturating_add(context.additional_tokens);
-    let mut current_messages = replay::model_messages(&state, None, Some(&model));
-    let mut measured_messages = Vec::with_capacity(current_messages.len() + 1);
-    measured_messages.push(system.clone());
-    measured_messages.extend(current_messages.iter().cloned());
-    let tokens_before = context_tokens_with_additional(
-        &state,
-        &measured_messages,
-        &tools,
         context.additional_tokens,
-    );
+    )
+    .await?;
     let budget = CompactionBudget {
-        tokens_before,
-        fixed_tokens,
+        tokens_before: measured.tokens,
+        fixed_tokens: measured
+            .fixed_tokens
+            .saturating_add(context.additional_tokens),
     };
     let required_tokens = required_tokens(&config, model.context_window, reason);
     if instructions.is_some() {
@@ -254,8 +286,8 @@ pub(crate) async fn compact(
             state: &state,
             config: &config,
             model: &model,
-            system: &system,
-            tools: &tools,
+            system: &measured.system,
+            tools: &measured.tools,
             instructions,
             budget,
         })
@@ -277,7 +309,7 @@ pub(crate) async fn compact(
                     &state,
                     &config,
                     &model,
-                    &current_messages,
+                    &measured.messages,
                     budget,
                 )
                 .await
@@ -292,8 +324,8 @@ pub(crate) async fn compact(
                     state: &state,
                     config: &config,
                     model: &model,
-                    system: &system,
-                    tools: &tools,
+                    system: &measured.system,
+                    tools: &measured.tools,
                     instructions,
                     budget,
                 })
@@ -311,7 +343,7 @@ pub(crate) async fn compact(
                 }
                 last_result = Some(report);
                 state = record.state.lock().await.clone();
-                current_messages = replay::model_messages(&state, None, Some(&model));
+                measured.messages = replay::model_messages(&state, None, Some(&model));
             }
             Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => return Err(error),
             Err(error @ CoreError::Llm(moc_llm::LlmError::Guard(_))) => return Err(error),
@@ -478,6 +510,10 @@ mod tests {
         assert_eq!(
             required_tokens(&config, 200_000, CompactReason::Overflow),
             170_000
+        );
+        assert_eq!(
+            required_tokens(&config, 200_000, CompactReason::Switch),
+            136_000
         );
         assert!(165_000 > recovery_band(&config, 200_000));
         assert!(130_000 <= recovery_band(&config, 200_000));

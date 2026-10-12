@@ -89,8 +89,22 @@ pub enum AppEvent {
         selected: moc_protocol::methods::TranscriptEntry,
         result: anyhow::Result<moc_protocol::SessionLoadResult>,
     },
-    /// 模型切换完成（关闭选择器）。
-    ModelSwitched,
+    /// 会占住会话提示锁的前端操作收尾（模型切换、思考等级切换、手动压缩）。
+    ///
+    /// 先解除 [`crate::app::App::inflight_session_ops`] 忙标记，再继续派发队列。
+    SessionControlSettled {
+        session_id: String,
+        /// 成功时的状态行提示。
+        notice: Option<String>,
+        /// `Ok(压缩失败原因)`：`None` 表示没压缩或压缩成功；`Err(失败原因)`：操作本身失败。
+        result: Result<Option<String>, String>,
+    },
+    /// 切换模型需要压缩确认（`ask` 动作回报容量缺口）。
+    ModelSwitchConfirm {
+        session_id: String,
+        selector: String,
+        overflow: moc_protocol::methods::ModelSwitchOverflow,
+    },
     /// resource/complete 返回；输入版本与 prefix 在 app 侧校验。
     ResourceCompletion {
         session_id: String,

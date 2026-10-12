@@ -102,6 +102,8 @@ PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`
 
 上下文计量优先使用最近一次上游完整 input/output usage 作为精确锚点，仅对锚点后的新消息本地估算；同时以当前完整会话、系统提示和工具定义的本地估算作为安全下限。图片按固定视觉 token 估算，不把 Base64 当作文本。压缩改变历史后会清除旧锚点并重新估算。上下文详情按 `system`、`project`、`skills`、`tools`、`messages` 等固定分块展示占用分解；供应商 usage 可用时，内部触发使用 provider 锚点与本地估算的较大值。
 
+`session/set_model` 在切换前按目标模型窗口与它在当前压缩配置下的触发线检查上下文：装得下就直接切换，装不下则按参数 `overflow` 处理——`switch` 直接切换并把缺口回报给前端，`compact` 先切换再由新模型压缩上下文，`ask` 不切换、只回报缺口让前端询问用户。压缩必须发生在切换之后：`ModelChange` 会作废旧模型的原生载荷与远程摘要，checkpoint 只能由新模型产出。压缩失败不回退切换，失败原因随结果返回。
+
 ### CLM 实验模式
 
 使用 `--mode clm-experimental` 或 `/clm-experimental` 启用。模型可通过 `clm_context` 工具读取、替换或追加实时工作上下文；不可变 JSONL transcript 作为完整审计源保留。TUI 状态栏显示 `(clm)`，会话第一次请求后模式锁定，不能切换回其它模式。

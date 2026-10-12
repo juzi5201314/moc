@@ -481,6 +481,50 @@ pub struct SessionSetModelParams {
     pub session_id: String,
     /// 模型选择器（`config/get` 返回的 `ModelInfo::id`，或 core 接受的别名）。
     pub selector: String,
+    /// 目标模型容不下当前上下文时执行的动作；缺省 [`SessionModelOverflowAction::Switch`]。
+    #[serde(default)]
+    pub overflow: SessionModelOverflowAction,
+}
+
+/// 目标模型容不下当前上下文时 [`SessionSetModel`] 执行的动作。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionModelOverflowAction {
+    /// 直接切换，交给后续请求的既有压缩逻辑。
+    #[default]
+    Switch,
+    /// 切换后用目标模型压缩上下文。
+    Compact,
+    /// 不切换，回报缺口由前端询问用户。
+    Ask,
+}
+
+/// 一次模型切换检查出的容量缺口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelSwitchOverflow {
+    /// 当前上下文按目标模型口径的估算 token 数。
+    pub tokens: u64,
+    /// 目标模型的上下文窗口。
+    pub context_window: u64,
+    /// 目标模型的压缩触发线。
+    pub threshold: u64,
+    /// 压缩后的目标占用。
+    pub target_tokens: u64,
+}
+
+/// `session/set_model` 的结果。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetModelResult {
+    /// 当前会话信息；`overflow` 非空且动作为 `ask` 时仍是切换前的模型。
+    pub session: SessionInfo,
+    /// 本次检查出的容量缺口；`None` 表示目标模型装得下。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<ModelSwitchOverflow>,
+    /// 已切换但压缩失败的原因；`None` 表示没压缩或压缩成功。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_error: Option<String>,
 }
 
 /// `session/compact` 的参数。
@@ -598,7 +642,7 @@ impl ClientRequest for SessionSetPermission {}
 impl Method for SessionSetModel {
     const NAME: &'static str = "session/set_model";
     type Params = SessionSetModelParams;
-    type Result = SessionInfo;
+    type Result = SessionSetModelResult;
 }
 
 impl ClientRequest for SessionSetModel {}

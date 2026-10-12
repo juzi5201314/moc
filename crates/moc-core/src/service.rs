@@ -18,8 +18,8 @@ use moc_protocol::methods::{
     SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
     SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
-    SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
-    SessionUpdate, SessionUsageParams, SessionUsageResult,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -387,27 +387,6 @@ impl Core {
     pub fn models(config: &CoreConfig) -> anyhow::Result<Vec<crate::ResolvedModel>> {
         resolve_models(config)
     }
-    /// 修改空闲会话的模型，作废与旧模型绑定的原生载荷。
-    pub async fn set_model(&self, session_id: &str, selector: &str) -> anyhow::Result<String> {
-        let record = self.inner.sessions.get(session_id).await?;
-        let _prompt = record.try_prompt_lock()?;
-        let cwd = record.state.lock().await.session.cwd.clone();
-        let config = self.inner.project_config(Path::new(&cwd))?;
-        let model = config.resolve_model(selector)?;
-        let _file_lock = self
-            .inner
-            .sessions
-            .acquire_lock(session_id, "moc-cli")
-            .await?;
-        if record.state.lock().await.model != model.selector {
-            self.inner
-                .sessions
-                .set_model(session_id, model.selector.clone())
-                .await?;
-        }
-        Ok(model.selector)
-    }
-
     /// 撤销当前会话最近一次文件编辑。
     pub async fn undo(&self, session_id: &str) -> anyhow::Result<String> {
         let record = self.inner.sessions.get(session_id).await?;
@@ -1178,7 +1157,7 @@ impl AgentService for Core {
         &self,
         ctx: RequestContext,
         params: SessionSetModelParams,
-    ) -> Result<SessionInfo, RpcError> {
+    ) -> Result<SessionSetModelResult, RpcError> {
         let record = self
             .inner
             .sessions
@@ -1198,30 +1177,24 @@ impl AgentService for Core {
             .acquire_lock(&params.session_id, &ctx.client().frontend)
             .await
             .map_err(to_rpc)?;
-        let mut info = if record.state.lock().await.model != model.selector {
-            self.inner
-                .sessions
-                .set_model(&params.session_id, model.selector.clone())
-                .await
-                .map_err(to_rpc)?
-        } else {
-            let mut session = record.state.lock().await.session_info();
-            session.lock = None;
-            session
-        };
+        let outcome = model::switch(
+            &self.inner,
+            &ctx,
+            &params.session_id,
+            &model,
+            params.overflow,
+        )
+        .await
+        .map_err(to_rpc)?;
         drop(file_lock);
-        info.lock = None;
-        info.permission = self.inner.effective_permission(info.permission);
-        ctx.updates()
-            .emit(
-                params.session_id,
-                SessionUpdate::ModelChanged {
-                    model: info.model.clone(),
-                },
-            )
-            .await
-            .map_err(protocol_to_rpc)?;
-        Ok(info)
+        let mut session = outcome.session;
+        session.lock = None;
+        session.permission = self.inner.effective_permission(session.permission);
+        Ok(SessionSetModelResult {
+            session,
+            overflow: outcome.overflow,
+            compaction_error: outcome.compaction_error,
+        })
     }
 
     async fn session_plan_approve(
@@ -1498,4 +1471,5 @@ pub(crate) async fn snapshot_workspace(
 mod bash;
 mod management;
 pub(crate) mod mode;
+mod model;
 pub(crate) mod prompt;

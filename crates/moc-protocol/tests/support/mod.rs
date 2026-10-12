@@ -805,7 +805,7 @@ impl AgentService for ScriptedService {
         &self,
         _ctx: RequestContext,
         _params: SessionSetModelParams,
-    ) -> Result<SessionInfo, RpcError> {
+    ) -> Result<moc_protocol::methods::SessionSetModelResult, RpcError> {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
 

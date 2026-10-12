@@ -5,8 +5,8 @@
 
 use moc_protocol::Role;
 use moc_protocol::methods::{
-    AskParams, AskResult, ContextUsageResult, ModelInfo, PermissionRequestParams, PermissionResult,
-    SessionInfo, TranscriptEntry,
+    AskParams, AskResult, ContextUsageResult, ModelInfo, ModelSwitchOverflow,
+    PermissionRequestParams, PermissionResult, SessionInfo, TranscriptEntry,
 };
 
 /// 可搜索列表模态的状态。
@@ -247,6 +247,17 @@ pub enum Modal {
     Help,
     /// 上下文组成估算详情。
     Context { usage: Option<ContextUsageResult> },
+    /// 切换模型需要压缩上下文时的确认卡片。
+    SwitchModel {
+        /// 发起切换的会话；卡片期间该会话视为忙，队列不派发。
+        session_id: String,
+        selector: String,
+        overflow: ModelSwitchOverflow,
+        /// 0 = 切换并压缩，1 = 取消。
+        option: usize,
+        loading: bool,
+        error: Option<String>,
+    },
 }
 /// 回复通道的错误类型别名（协议层 RpcError 的重导出位置）。
 type RpcErrorOf = moc_protocol::RpcError;
@@ -274,6 +285,7 @@ impl Modal {
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
+            Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
         }
     }
 
@@ -315,6 +327,7 @@ impl Modal {
             Modal::SubagentDetail { .. } => 0,
             Modal::Plan { .. } => 4,
             Modal::Help | Modal::Context { .. } => 0,
+            Modal::SwitchModel { .. } => 2,
         }
     }
 
@@ -357,6 +370,9 @@ impl Modal {
             | Modal::SubagentDetail { .. }
             | Modal::Help
             | Modal::Context { .. } => {}
+            Modal::SwitchModel { option, .. } => {
+                *option = (*option as i32 + delta).clamp(0, count as i32 - 1) as usize;
+            }
             Modal::Model { picker, .. }
             | Modal::Memories { picker, .. }
             | Modal::Sessions { picker, .. }
@@ -375,10 +391,24 @@ impl Modal {
         }
     }
 
-    pub fn set_error(&mut self, message: String) {
-        if let Some(picker) = self.picker_mut() {
-            picker.loading = false;
-            picker.error = Some(message);
+    /// 把错误交给当前模态；模态没有显示位置（帮助、上下文占用等）时返回 `false`，
+    /// 由调用方改成通知，避免错误被静默丢弃。
+    pub fn set_error(&mut self, message: &str) -> bool {
+        match self {
+            Modal::SwitchModel { loading, error, .. } => {
+                *loading = false;
+                *error = Some(message.to_owned());
+                true
+            }
+            _ => {
+                if let Some(picker) = self.picker_mut() {
+                    picker.loading = false;
+                    picker.error = Some(message.to_owned());
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 }
@@ -503,5 +533,54 @@ mod tests {
         state.move_horizontal(1);
         assert_eq!((state.selected_prompt, state.selected_item), (1, 0));
         assert_eq!(state.selected().expect("选中条目").message.role, Role::User);
+    }
+
+    /// 错误只能落在有显示位置的模态上；其余模态返回 `false` 由调用方回落到通知。
+    #[test]
+    fn set_error_reports_when_modal_cannot_show_errors() {
+        let overflow = moc_protocol::methods::ModelSwitchOverflow {
+            tokens: 3_000,
+            context_window: 1_000,
+            threshold: 850,
+            target_tokens: 680,
+        };
+        let mut card = Modal::SwitchModel {
+            session_id: "ses".into(),
+            selector: "p/tiny".into(),
+            overflow,
+            option: 0,
+            loading: true,
+            error: None,
+        };
+        assert!(card.set_error("切换模型失败：断开"));
+        assert!(matches!(
+            &card,
+            Modal::SwitchModel {
+                loading: false,
+                error: Some(error),
+                ..
+            } if error == "切换模型失败：断开"
+        ));
+
+        let mut picker = Modal::Memories {
+            root_uri: "openviking://".into(),
+            entries: Vec::new(),
+            picker: PickerState {
+                loading: true,
+                ..Default::default()
+            },
+        };
+        assert!(picker.set_error("读取失败"));
+        assert!(matches!(
+            &picker,
+            Modal::Memories { picker: PickerState { loading: false, error: Some(error), .. }, .. }
+                if error == "读取失败"
+        ));
+
+        assert!(!Modal::Help.set_error("没有位置显示"));
+        assert!(
+            !Modal::Context { usage: None }.set_error("没有位置显示"),
+            "上下文占用卡片不承载错误"
+        );
     }
 }

@@ -5,12 +5,13 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 use moc_core::{Core, CoreConfig, resolve_models};
 use moc_protocol::methods::{
-    AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, PermissionRequestParams,
-    PermissionResult, PlanAction, PlanStatus, SessionCancel, SessionCancelParams, SessionCompact,
-    SessionCompactParams, SessionInfo, SessionList, SessionListParams, SessionLoad,
-    SessionLoadParams, SessionMode, SessionNew, SessionNewParams, SessionPermission,
-    SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRequestAsk,
-    SessionRequestPermission, SessionSetMode, SessionSetModeParams, SessionSetPermission,
+    AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, ModelSwitchOverflow,
+    PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, SessionCancel,
+    SessionCancelParams, SessionCompact, SessionCompactParams, SessionInfo, SessionList,
+    SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction,
+    SessionNew, SessionNewParams, SessionPermission, SessionPlanApprove, SessionPlanApproveParams,
+    SessionPrompt, SessionRequestAsk, SessionRequestPermission, SessionSetMode,
+    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
     SessionSetPermissionParams, SessionUpdateMethod, SessionUsage, SessionUsageParams,
 };
 use moc_protocol::{
@@ -197,7 +198,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     if handshake.server.name != "moc-core" {
         bail!("连接到非 moc-core 服务：{}", handshake.server.name);
     }
-    let result = run_repl(&core, &client, &input, &args, initial_prompt).await;
+    let result = run_repl(&client, &input, &args, initial_prompt).await;
     client.close().await;
     server.shutdown();
     connection.wait().await;
@@ -205,7 +206,6 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
 }
 
 async fn run_repl(
-    core: &Core,
     client: &ClientHandle,
     input: &Input,
     args: &CliArgs,
@@ -249,7 +249,20 @@ async fn run_repl(
     if let Some(selector) = &args.model
         && selector != &session.model
     {
-        session.model = core.set_model(&session.id, selector).await?;
+        let result = client
+            .call::<SessionSetModel>(SessionSetModelParams {
+                session_id: session.id.clone(),
+                selector: selector.clone(),
+                overflow: SessionModelOverflowAction::Switch,
+            })
+            .await?;
+        session = result.session;
+        if let Some(overflow) = &result.overflow {
+            eprintln!(
+                "警告：{}；可用 /compact 立即压缩",
+                capacity_notice(overflow, selector)
+            );
+        }
     }
     let mut mode = session.mode;
 
@@ -300,7 +313,7 @@ async fn run_repl(
             continue;
         }
         if let Some(command) = line.strip_prefix('/') {
-            match run_command(core, client, command, &mut session, &mut mode).await {
+            match run_command(client, command, &mut session, &mut mode, input).await {
                 Ok(CommandResult::Continue) => continue,
                 Ok(CommandResult::Quit) => break,
                 Err(error) => eprintln!("命令失败：{error:#}"),
@@ -315,11 +328,11 @@ async fn run_repl(
 }
 
 async fn run_command(
-    core: &Core,
     client: &ClientHandle,
     command: &str,
     session: &mut SessionInfo,
     mode: &mut SessionMode,
+    input: &Input,
 ) -> anyhow::Result<CommandResult> {
     let (name, argument) = command.split_once(' ').unwrap_or((command, ""));
     let argument = argument.trim();
@@ -443,8 +456,42 @@ async fn run_command(
             if argument.is_empty() {
                 bail!("用法：/model <selector>");
             }
-            session.model = core.set_model(&session.id, argument).await?;
-            println!("模型已切换为 {}", session.model);
+            let mut result = client
+                .call::<SessionSetModel>(SessionSetModelParams {
+                    session_id: session.id.clone(),
+                    selector: argument.to_owned(),
+                    overflow: SessionModelOverflowAction::Ask,
+                })
+                .await?;
+            if let Some(overflow) = &result.overflow {
+                println!(
+                    "{}；切换会先用 {} 压缩上下文（压缩后不超过 {} token）",
+                    capacity_notice(overflow, argument),
+                    argument,
+                    overflow.target_tokens
+                );
+                print!("是否切换到 {argument} 并压缩？[y/N] ");
+                std::io::stdout().flush()?;
+                let confirmed = read_line(input)
+                    .await?
+                    .is_some_and(|line| matches!(line.trim(), "y" | "Y" | "yes" | "YES"));
+                if !confirmed {
+                    println!("已取消切换，模型仍为 {}", session.model);
+                    return Ok(CommandResult::Continue);
+                }
+                result = client
+                    .call::<SessionSetModel>(SessionSetModelParams {
+                        session_id: session.id.clone(),
+                        selector: argument.to_owned(),
+                        overflow: SessionModelOverflowAction::Compact,
+                    })
+                    .await?;
+            }
+            *session = result.session;
+            match result.compaction_error {
+                Some(error) => eprintln!("已切换到 {}，但上下文压缩失败：{error}", session.model),
+                None => println!("模型已切换为 {}", session.model),
+            }
         }
         "agents" => {
             let result = client
@@ -745,6 +792,21 @@ fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
     }
 }
 
+/// 容量缺口的中文描述；token 按原值输出，与 REPL 其它统计一致。
+fn capacity_notice(overflow: &ModelSwitchOverflow, selector: &str) -> String {
+    if overflow.tokens > overflow.context_window {
+        format!(
+            "当前上下文 {} token 超过 {} 的窗口 {} token",
+            overflow.tokens, selector, overflow.context_window
+        )
+    } else {
+        format!(
+            "当前上下文 {} token 超过 {} 的压缩触发线 {} token（窗口 {} token）",
+            overflow.tokens, selector, overflow.threshold, overflow.context_window
+        )
+    }
+}
+
 fn print_sessions(sessions: &[SessionInfo]) {
     for session in sessions {
         println!(
@@ -803,7 +865,7 @@ fn format_duration(active_ms: u64) -> String {
 
 fn print_help() {
     println!(
-        "/mode <normal|plan|ptc|clm-experimental>  切换工作模式\n/clm-experimental          启用 CLM 实验模式；首次请求后本会话固定为 CLM\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/agents                  列出当前会话的直接子代理\n/agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）\n/steer-agent <id> <消息>  补充运行中子代理\n/stop-agent <id>          停止运行中的子代理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换当前模型\n/quit                    退出"
+        "/mode <normal|plan|ptc|clm-experimental>  切换工作模式\n/clm-experimental          启用 CLM 实验模式；首次请求后本会话固定为 CLM\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/agents                  列出当前会话的直接子代理\n/agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）\n/steer-agent <id> <消息>  补充运行中子代理\n/stop-agent <id>          停止运行中的子代理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换模型（装不下当前上下文时先询问再压缩）\n/quit                    退出"
     );
     println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
 }

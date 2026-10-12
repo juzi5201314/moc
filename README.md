@@ -49,7 +49,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 
 `/config` 或 `Ctrl+G` 打开设置页，包含模型、供应商、指令、技能、工具、上下文、会话、MCP、OpenViking、界面和高级设置。供应商与模型按分组展示，`←→` 或 `Enter` 展开／收起；`↑↓` 选择，`Enter` 就地编辑单行字段，多行内容在弹出的小窗里编辑并用 `Ctrl+Enter` 应用。`Space` 切换开关，`Delete` 删除整组，`R` 恢复默认值，`F2` 切换全局／项目，`F4` 显示高级项，`/` 搜索。**每次修改都会立刻写入配置文件并让内核生效，不需要手动保存**；`Ctrl+Z` 撤回，`Ctrl+Y`（或 `Ctrl+Shift+Z`）重做，撤回记录只存在于当前进程内。密钥默认隐藏，`F6` 临时显示；写入前会校验配置及外部修改冲突。
 
-运行中 `Enter` 会把消息作为补充要求交给正在执行的模型；底部 statusline 显示 `Working`、`Thinking`、`Responding`、`Running`、`Waiting` 或 `Stopping`，输入框边框显示 `Esc Stop`。可在“界面”页改为“先停下再重新提示”，即停止当前回答后发送新消息。`Ctrl+Enter` 把消息排到待发送队列（显示在输入框右上方），点击可重新编辑，点击 `×` 取消。队列按会话隔离，在当前回答结束后依次发送；设置页或弹窗打开时暂停派发，关闭后自动继续。
+运行中 `Enter` 会把消息作为补充要求交给正在执行的模型；底部 statusline 显示 `Working`、`Thinking`、`Responding`、`Running`、`Waiting` 或 `Stopping`，输入框边框显示 `Esc Stop`。可在“界面”页改为“先停下再重新提示”，即停止当前回答后发送新消息。`Ctrl+Enter` 把消息排到待发送队列（显示在输入框右上方），点击可重新编辑，点击 `×` 取消。队列按会话隔离，在当前回答结束后依次发送；设置页或弹窗打开时暂停派发，关闭后自动继续。模型切换（含确认后的上下文压缩）与 `/compact` 在飞时同样暂停派发，等它们收尾再发送，不会把消息撞成 `SessionBusy` 报错。
 
 输入框为空且当前没有运行中的提示时连续按两次 `Esc`，会打开消息回退选择器。`↑↓` 在当前用户消息的请求、模型回复和工具结果之间移动，`←→` 切换用户消息，`Enter` 会创建一个保留原会话的回退分支并将上下文切换到选中位置；选中用户消息时会把原消息恢复到输入框，供修改后重新发送。
 
@@ -85,7 +85,7 @@ diff 红绿底、OneHalfDark 代码高亮，启动时按终端能力从 truecolo
 | `Esc` | 运行中停止当前提示；空闲时清除选区或输入，空输入框双击打开消息回退，或关闭模态 |
 | `Ctrl+C` | Cancel while running; press again to exit |
 
-斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/agent` `/steer-agent` `/stop-agent` `/compact` `/usage` `/config` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。
+斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/agent` `/steer-agent` `/stop-agent` `/compact` `/usage` `/config` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 或模型选择器在目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
 
 ### 剪贴板
 

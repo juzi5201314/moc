@@ -103,6 +103,7 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
     };
     if app.prompt_running
         || app.inflight_prompts.contains(&session)
+        || app.inflight_session_ops.contains(&session)
         || app.modal.is_some()
         || app.settings.is_some()
     {

@@ -146,8 +146,8 @@
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-//!     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-//!     PromptResult,
+//!     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
+//!     SessionUpdate, PromptResult,
 //! };
 //! use moc_protocol::{
 //!     AgentService, FinishReason, Message, RequestContext, RpcError, RpcErrorCode, Usage,
@@ -268,7 +268,7 @@
 //!     async fn session_set_mode(&self, _ctx: RequestContext, _params: SessionSetModeParams) -> Result<SessionInfo, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
-//!     async fn session_set_model(&self, _ctx: RequestContext, _params: SessionSetModelParams) -> Result<SessionInfo, RpcError> {
+//!     async fn session_set_model(&self, _ctx: RequestContext, _params: SessionSetModelParams) -> Result<SessionSetModelResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_plan_approve(&self, _ctx: RequestContext, _params: SessionPlanApproveParams) -> Result<SessionPlanApproveResult, RpcError> {

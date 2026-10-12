@@ -16,12 +16,16 @@ struct Project {
 }
 impl Project {
     fn new(url: &str) -> Self {
+        Self::with_extra(url, "")
+    }
+    /// `extra` 追加到生成的 `config.toml` 末尾，用于补充模型表或覆盖配置段。
+    fn with_extra(url: &str, extra: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cwd = root.path().join("work");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&cwd).unwrap();
-        std::fs::write(home.join("config.toml"), format!("[models.roles]\ndefault='p/gpt-test:off'\nexplore='p/gpt-test:off'\nplan='p/gpt-test:off'\n[providers.p]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n[providers.p.models.gpt-test]\ncontext_window=1000000\n[context_files]\nenabled=false\n[workspace]\nwatch=false\n[compaction]\nmethod_order=['soft']\n"))
+        std::fs::write(home.join("config.toml"), format!("[models.roles]\ndefault='p/gpt-test:off'\nexplore='p/gpt-test:off'\nplan='p/gpt-test:off'\n[providers.p]\napi='openai_chat'\nbase_url='{url}/v1'\napi_key=''\nretry={{max_attempts=1}}\n[providers.p.models.gpt-test]\ncontext_window=1000000\n[context_files]\nenabled=false\n[workspace]\nwatch=false\n[compaction]\nmethod_order=['soft']\n{extra}"))
             .unwrap();
         Self { root, home, cwd }
     }
@@ -211,6 +215,47 @@ async fn bang_commands_execute_locally_and_only_single_bang_enters_model_context
     assert!(body.contains("exit 6"));
     assert!(!body.contains("private-output"));
     assert!(!body.contains("manual-marker"));
+}
+
+/// 目标模型装不下当前上下文时，REPL 先询问；确认后用新模型压缩上下文。
+#[tokio::test]
+async fn repl_model_switch_confirms_before_compacting() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text("答复"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({"id":"summary","choices":[{"index":0,"message":{"role":"assistant","content":"压缩后的检查点"},"finish_reason":"stop"}]}))
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let project = Project::with_extra(
+        &upstream.uri(),
+        "[providers.p.models.small]\ncontext_window=1000\nmax_output_tokens=4096\n",
+    );
+    let output = project
+        .run(
+            &["--repl"],
+            "你好\n/model p/small\nn\n/model p/small\ny\n/quit\n",
+        )
+        .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("超过 p/small 的窗口"), "{stdout}");
+    assert!(
+        stdout.contains("是否切换到 p/small 并压缩？[y/N]"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("已取消切换，模型仍为"), "{stdout}");
+    assert!(stdout.contains("上下文压缩"), "{stdout}");
+    assert!(stdout.contains("模型已切换为 p/small:off"), "{stdout}");
 }
 
 async fn wait_file(path: &Path) {

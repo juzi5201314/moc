@@ -39,10 +39,11 @@ use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, InputPart, PlanAction, PlanStatus, PromptParams,
-    SessionCompact, SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode, SessionNew,
-    SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
-    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
-    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, UpstreamField,
+    SessionCompact, SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode,
+    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPlanApprove,
+    SessionPlanApproveParams, SessionPrompt, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate, SessionUpdateMethod,
+    UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -140,10 +141,11 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
         .call::<SessionSetModel>(SessionSetModelParams {
             session_id: session.id.clone(),
             selector: "test/ds:off".into(),
+            overflow: SessionModelOverflowAction::Switch,
         })
         .await
         .expect("switch session model");
-    assert_eq!(switched.model, "test/ds:off");
+    assert_eq!(switched.session.model, "test/ds:off");
     client
         .call::<SessionPrompt>(PromptParams {
             session_id: session.id.clone(),
@@ -206,6 +208,339 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
     server.shutdown();
     connection.wait().await;
     core.shutdown().await;
+}
+
+/// 目标模型装不下当前上下文时，`ask` 只回报缺口：不切换、不压缩、不推送模型变化。
+#[tokio::test]
+async fn model_switch_asks_before_compacting_when_the_target_window_is_too_small() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            }
+        })
+        .mount(&upstream)
+        .await;
+
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/glm:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.ds]\ncontext_window=200000\nmax_output_tokens=4096\n\
+         [compaction]\nthreshold={mode=\"tokens\",value=1}\nmethod_order=['soft']\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+
+    let asked = harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.clone(),
+            selector: "test/ds:off".into(),
+            overflow: SessionModelOverflowAction::Ask,
+        })
+        .await
+        .expect("检查目标模型容量");
+    let overflow = asked.overflow.expect("1 token 触发线必然被越过");
+    assert!(overflow.tokens > overflow.threshold);
+    assert!(overflow.tokens <= overflow.context_window);
+    assert_eq!(overflow.context_window, 200_000);
+    assert_eq!(overflow.threshold, 1);
+    assert_eq!(overflow.target_tokens, 0);
+    assert_eq!(asked.session.model, "test/glm:off", "ask 动作不切换模型");
+    assert!(asked.compaction_error.is_none());
+
+    // 目标就是当前模型：不检查容量，按原样回报。
+    let same = harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.clone(),
+            selector: "test/glm:off".into(),
+            overflow: SessionModelOverflowAction::Ask,
+        })
+        .await
+        .expect("切换同一模型");
+    assert!(same.overflow.is_none());
+    assert_eq!(same.session.model, "test/glm:off");
+
+    let updates = harness.updates.lock().clone();
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ModelChanged { .. })),
+        "ask 动作没有切换模型：{updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompacted { .. })),
+        "ask 动作不做压缩：{updates:?}"
+    );
+    harness.close().await;
+}
+
+/// `compact` 动作先切换模型，再由新模型压缩上下文。
+#[tokio::test]
+async fn model_switch_compact_switches_first_and_compacts_with_the_target_model() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let model = body["model"].as_str().expect("请求带模型");
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
+            } else {
+                assert_eq!(model, "small", "压缩必须由切换后的模型执行");
+                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            }
+        })
+        .mount(&upstream)
+        .await;
+
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/glm:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [compaction]\nauto=false\nmethod_order=['soft']\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, &"上下文填充".repeat(2000)).await;
+
+    let switched = harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.clone(),
+            selector: "test/small:off".into(),
+            overflow: SessionModelOverflowAction::Compact,
+        })
+        .await
+        .expect("切换并压缩");
+    assert!(
+        switched.overflow.is_some(),
+        "2000 窗口装不下万级 token 历史"
+    );
+    assert_eq!(switched.session.model, "test/small:off");
+    assert!(switched.compaction_error.is_none());
+
+    let updates = harness.updates.lock().clone();
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::ModelChanged { model } if model == "test/small:off"
+        )),
+        "{updates:?}"
+    );
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::ContextCompacted { method, .. } if method == "soft"
+        )),
+        "{updates:?}"
+    );
+
+    harness.prompt(&session, "继续").await;
+    assert_eq!(harness.load(&session).await.session.model, "test/small:off");
+    harness.close().await;
+}
+
+/// 目标模型装得下当前上下文时不打扰用户，照常切换。
+#[tokio::test]
+async fn model_switch_reports_no_overflow_when_the_target_window_fits() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            }
+        })
+        .mount(&upstream)
+        .await;
+
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/glm:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.big]\ncontext_window=2000000\nmax_output_tokens=4096\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "先垫一点历史").await;
+
+    let switched = harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.clone(),
+            selector: "test/big:off".into(),
+            overflow: SessionModelOverflowAction::Ask,
+        })
+        .await
+        .expect("切换到宽窗口模型");
+    assert!(switched.overflow.is_none(), "{:?}", switched.overflow);
+    assert_eq!(switched.session.model, "test/big:off");
+    assert!(switched.compaction_error.is_none());
+
+    let updates = harness.updates.lock().clone();
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ModelChanged { .. })),
+        "{updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompacted { .. })),
+        "{updates:?}"
+    );
+    harness.close().await;
+}
+
+/// 压缩失败时保留已经完成的切换，只回报失败原因。
+#[tokio::test]
+async fn model_switch_keeps_the_switch_when_compaction_fails() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            }
+        })
+        .mount(&upstream)
+        .await;
+
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/glm:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [compaction]\nmethod_order=['shake']\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, &"上下文填充".repeat(2000)).await;
+
+    let switched = harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.clone(),
+            selector: "test/small:off".into(),
+            overflow: SessionModelOverflowAction::Compact,
+        })
+        .await
+        .expect("切换并压缩");
+    assert_eq!(
+        switched.session.model, "test/small:off",
+        "压缩失败不回退切换"
+    );
+    assert!(switched.overflow.is_some());
+    let error = switched.compaction_error.expect("无工具输出可供修剪");
+    assert!(error.contains("Shake"), "{error}");
+
+    let updates = harness.updates.lock().clone();
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::ModelChanged { model } if model == "test/small:off"
+        )),
+        "{updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompacted { .. })),
+        "{updates:?}"
+    );
+    harness.close().await;
+}
+
+/// `switch` 动作直接切换并回报缺口，交给后续请求的既有压缩逻辑。
+#[tokio::test]
+async fn model_switch_action_switch_reports_overflow_after_switching() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            if body["stream"] == true {
+                ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            }
+        })
+        .mount(&upstream)
+        .await;
+
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/glm:off",
+        "test/glm:off",
+        "[providers.test.models.glm]\ncontext_window=100000\nmax_output_tokens=4096\n\
+         [providers.test.models.small]\ncontext_window=2000\nmax_output_tokens=4096\n\
+         [compaction]\nmethod_order=['shake']\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, &"上下文填充".repeat(2000)).await;
+
+    let switched = harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session.clone(),
+            selector: "test/small:off".into(),
+            overflow: SessionModelOverflowAction::Switch,
+        })
+        .await
+        .expect("直接切换");
+    assert_eq!(switched.session.model, "test/small:off");
+    let overflow = switched.overflow.expect("回报容量缺口供前端告警");
+    assert!(overflow.tokens > overflow.context_window);
+    assert!(switched.compaction_error.is_none(), "switch 动作不压缩");
+
+    let updates = harness.updates.lock().clone();
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::ModelChanged { model } if model == "test/small:off"
+        )),
+        "{updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompacted { .. })),
+        "{updates:?}"
+    );
+    harness.close().await;
 }
 
 #[tokio::test]
