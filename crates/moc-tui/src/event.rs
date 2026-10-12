@@ -3005,7 +3005,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 app.set_notice("用法：/steer-agent <id> <message>");
             }
         }
-        "/config" => crate::settings::open(app, connection),
+        "/config" | "/settings" => crate::settings::open(app, connection),
         "/new" => {
             let client = connection.client.clone();
             let events = app.events.clone();

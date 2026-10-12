@@ -75,9 +75,23 @@ pub fn complete_view(value: &mut Value) {
     }
 }
 
+fn available_models(root: &Value) -> Vec<String> {
+    let mut list = Vec::new();
+    if let Some(providers) = root.get("providers").and_then(Value::as_object) {
+        for (provider, value) in providers {
+            if let Some(models) = value.get("models").and_then(Value::as_object) {
+                for model in models.keys() {
+                    list.push(format!("{provider}/{model}"));
+                }
+            }
+        }
+    }
+    list
+}
+
 pub fn fields(effective: &Value) -> Vec<ConfigField> {
     let mut output = Vec::new();
-    walk(effective, &mut Vec::new(), &mut output);
+    walk(effective, effective, &mut Vec::new(), &mut output);
     output
 }
 
@@ -172,7 +186,7 @@ fn rank(key: &str) -> usize {
     }
 }
 
-fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
+fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
     let object_editor = path.last().is_some_and(|key| {
         matches!(
             key.as_str(),
@@ -193,7 +207,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         keys.sort_by_key(|key| rank(key));
         for key in keys {
             path.push(key.clone());
-            walk(&values[key], path, output);
+            walk(root, &values[key], path, output);
             path.pop();
         }
         return;
@@ -278,12 +292,37 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 .map(|(value, label)| ChoiceOption::new(value, label))
                 .collect(),
         )
+    } else if path.as_slice() == ["models", "roles", "default"] {
+        let models = available_models(root);
+        if models.is_empty() {
+            FieldKind::Text
+        } else {
+            FieldKind::Choice(
+                models
+                    .into_iter()
+                    .map(|m| ChoiceOption::new(&m, &m))
+                    .collect(),
+            )
+        }
     } else if path.as_slice() == ["models", "roles", "explore"] {
-        FieldKind::Choice(vec![ChoiceOption::new(ROLE_INHERIT, "沿用主模型")])
+        let mut choices = vec![ChoiceOption::new(ROLE_INHERIT, "沿用主模型")];
+        for m in available_models(root) {
+            choices.push(ChoiceOption::new(&m, &m));
+        }
+        FieldKind::Choice(choices)
     } else if path.as_slice() == ["models", "roles", "plan"] {
-        FieldKind::Choice(vec![
+        let mut choices = vec![
             ChoiceOption::new(ROLE_INHERIT, "沿用主模型"),
             ChoiceOption::new(ROLE_NONE, "沿用当前会话模型"),
+        ];
+        for m in available_models(root) {
+            choices.push(ChoiceOption::new(&m, &m));
+        }
+        FieldKind::Choice(choices)
+    } else if key == "input" && path.iter().any(|part| part == "models") {
+        FieldKind::Choice(vec![
+            ChoiceOption::new("text", "仅文本 (text)"),
+            ChoiceOption::new("text, image", "文本与图片 / 多模态 (text, image)"),
         ])
     } else if matches!(key, "api_key") {
         FieldKind::Secret
@@ -400,11 +439,18 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "请求体字节上限",
                 "图片请求超过该字节数时按旧到新淘汰图片；留空使用 50 MiB 默认值。",
             ),
+            "reasoning" => (
+                "支持思考推理",
+                "模型是否具备深度思考与推理能力（例如 o1、o3、DeepSeek-R1、Claude 3.7 Sonnet）。",
+            ),
             "thinking_levels" => (
                 "可选思考等级",
-                "逐行填写可选的思考等级，例如 low、high；留空使用默认。",
+                "支持 off、low、medium、high、xhigh、max（也支持中文低、中、高，用逗号或换行分隔；留空使用默认等级）。",
             ),
-            "input" => ("可接收内容", "逐行填写模型能接收的类型：text、image。"),
+            "input" => (
+                "输入模态",
+                "模型支持接收的内容类型：仅文本 或 文本与图片/多模态。",
+            ),
             "remote_compaction" => ("由服务端压缩", "留空自动判断；仅部分接口支持。"),
             "pricing" => (
                 "价格（每百万 token）",

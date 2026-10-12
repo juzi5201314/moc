@@ -19,6 +19,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "打开设置：模型、供应商、界面等",
     },
     SlashCommand {
+        name: "/settings",
+        description: "打开设置（/config 别名）",
+    },
+    SlashCommand {
         name: "/help",
         description: "快捷键与命令帮助",
     },

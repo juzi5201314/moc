@@ -2,12 +2,15 @@ use super::*;
 
 pub(super) fn hint_for(kind: &FieldKind) -> &'static str {
     match kind {
-        FieldKind::Choice(_) => "↑↓ 选择 · Enter 应用 · Esc 取消",
-        FieldKind::Strings => "每行一项 · Ctrl+Enter 应用 · Esc 取消",
-        FieldKind::Object => "JSON 格式 · Ctrl+Enter 应用 · Esc 取消",
-        FieldKind::Multiline => "Ctrl+Enter 应用 · Esc 取消",
-        FieldKind::Secret => "F6 显示或隐藏 · Enter 应用 · Esc 取消",
-        _ => "Enter 应用 · Esc 取消",
+        FieldKind::Choice(_) => "↑↓/jk 选择 · Enter 应用 · Esc 取消",
+        FieldKind::Strings => "每行一项 · Ctrl+Enter/Ctrl+S 应用 · Esc 取消",
+        FieldKind::Object => "JSON 格式 · Ctrl+Enter/Ctrl+S 应用 · Esc 取消",
+        FieldKind::Multiline => "Ctrl+Enter/Ctrl+S 应用 · Esc 取消",
+        FieldKind::Secret => "F6/Ctrl+R 切换明文 · Enter 应用 · Esc 取消",
+        FieldKind::Integer | FieldKind::Number => {
+            "输入数值（支持 k/m/千分位）· Enter 应用 · 留空恢复默认 · Esc 取消"
+        }
+        _ => "Enter 应用 · 留空恢复默认 · Esc 取消",
     }
 }
 
@@ -44,7 +47,7 @@ pub(super) fn edit_text(value: &Value, kind: &FieldKind) -> String {
     format_value(value, kind)
 }
 
-fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
+pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(match kind {
@@ -54,10 +57,46 @@ fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
         });
     }
     Ok(match kind {
-        FieldKind::Bool => json!(trimmed.parse::<bool>()?),
-        FieldKind::Integer => json!(trimmed.parse::<u64>()?),
+        FieldKind::Bool => {
+            let b = match trimmed.to_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" | "开" | "开启" | "y" | "t" => true,
+                "false" | "0" | "no" | "off" | "关" | "关闭" | "n" | "f" => false,
+                _ => anyhow::bail!("请输入开/关或 true/false"),
+            };
+            json!(b)
+        }
+        FieldKind::Integer => {
+            let s = trimmed.replace(',', "");
+            let (multiplier, s) = if s.ends_with('k') || s.ends_with('K') {
+                (1_000u64, &s[..s.len() - 1])
+            } else if s.ends_with('m') || s.ends_with('M') {
+                (1_000_000u64, &s[..s.len() - 1])
+            } else {
+                (1u64, s.as_str())
+            };
+            let n = s
+                .trim()
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("请输入有效整数（支持 200k、1m 或千分位）"))?;
+            let val = n
+                .checked_mul(multiplier)
+                .ok_or_else(|| anyhow::anyhow!("数值超出支持范围"))?;
+            json!(val)
+        }
         FieldKind::Number => {
-            let number = trimmed.parse::<f64>()?;
+            let s = trimmed.replace(',', "");
+            let (multiplier, s) = if s.ends_with('k') || s.ends_with('K') {
+                (1_000.0f64, &s[..s.len() - 1])
+            } else if s.ends_with('m') || s.ends_with('M') {
+                (1_000_000.0f64, &s[..s.len() - 1])
+            } else {
+                (1.0f64, s.as_str())
+            };
+            let number = s
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| anyhow::anyhow!("请输入有效数字"))?;
+            let number = number * multiplier;
             anyhow::ensure!(number.is_finite() && number >= 0.0, "请输入有限的非负数");
             json!(number)
         }
@@ -68,7 +107,8 @@ fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
                 .collect::<Vec<_>>()
         ),
         FieldKind::Object => {
-            let value: Value = serde_json::from_str(text)?;
+            let value: Value = serde_json::from_str(text)
+                .map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
             anyhow::ensure!(
                 value.is_object() || value.is_string(),
                 "请输入 JSON 对象；端点风格也可为字符串"
@@ -106,7 +146,7 @@ pub(super) fn key(
     }
 }
 
-/// 编辑态按键：Enter 保存、Esc 取消，候选值用 ↑↓ 切换。
+/// 编辑态按键：Enter 保存、Esc 取消，单选列表用 ↑↓/jk 选择。
 fn edit_key(
     panel: &mut SettingsPanel,
     app: &mut App,
@@ -120,16 +160,65 @@ fn edit_key(
     if code == KeyCode::Esc {
         return false;
     }
-    if code == KeyCode::F(6) {
+    if code == KeyCode::F(6)
+        || (mods.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('r' | 'R')))
+    {
         edit.reveal = !edit.reveal;
         panel.edit = Some(edit);
         return false;
+    }
+    if let FieldKind::Choice(options) = &edit.kind {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if !options.is_empty() {
+                    edit.choice_selected = edit
+                        .choice_selected
+                        .checked_sub(1)
+                        .unwrap_or(options.len() - 1);
+                }
+                panel.edit = Some(edit);
+                return false;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !options.is_empty() {
+                    edit.choice_selected = (edit.choice_selected + 1) % options.len();
+                }
+                panel.edit = Some(edit);
+                return false;
+            }
+            KeyCode::Enter => {
+                if let Some(option) = options.get(edit.choice_selected) {
+                    let text = option.value.clone();
+                    match apply_edit(
+                        panel,
+                        app,
+                        connection,
+                        &edit.target,
+                        &edit.kind,
+                        &text,
+                        &edit.title,
+                    ) {
+                        Ok(()) => panel.error = None,
+                        Err(error) => {
+                            panel.error = Some(error.to_string());
+                            panel.edit = Some(edit);
+                        }
+                    }
+                }
+                return false;
+            }
+            _ => {
+                panel.edit = Some(edit);
+                return false;
+            }
+        }
     }
     let multiline = matches!(
         edit.kind,
         FieldKind::Multiline | FieldKind::Strings | FieldKind::Object
     );
-    let submit = code == KeyCode::Enter && (mods.contains(KeyModifiers::CONTROL) || !multiline);
+    let submit = (code == KeyCode::Enter && (mods.contains(KeyModifiers::CONTROL) || !multiline))
+        || (code == KeyCode::Char('s') && mods.contains(KeyModifiers::CONTROL));
     if submit {
         match apply_edit(
             panel,
@@ -148,22 +237,7 @@ fn edit_key(
         }
         return false;
     }
-    match (&edit.kind, code) {
-        (FieldKind::Choice(options), KeyCode::Up | KeyCode::Down) if !options.is_empty() => {
-            let current = options
-                .iter()
-                .position(|option| option.label == edit.input.text)
-                .unwrap_or(0);
-            let next = if code == KeyCode::Up {
-                current.checked_sub(1).unwrap_or(options.len() - 1)
-            } else {
-                (current + 1) % options.len()
-            };
-            edit.input.text = options[next].label.clone();
-            edit.input.cursor = edit.input.text.len();
-        }
-        _ => edit_input(&mut edit.input, mods, code),
-    }
+    edit_input(&mut edit.input, mods, code);
     panel.edit = Some(edit);
     false
 }
@@ -176,16 +250,69 @@ fn fields_key(
     code: KeyCode,
 ) -> bool {
     if code == KeyCode::Esc {
+        if !panel.filter.is_empty() {
+            // 如果搜索中光标停在某个字段上，顺带切到该字段所属的选项卡
+            if let Some(RowKind::Field(idx)) = panel.row() {
+                if let Some(field) = panel.fields.get(*idx) {
+                    if let Some(pos) = TABS.iter().position(|t| *t == field.tab) {
+                        panel.tab = pos;
+                    }
+                }
+            }
+            panel.filter.clear();
+            panel.rebuild_rows();
+            return false;
+        }
         // 改动都是即时保存的，直接返回即可。
         return true;
     }
-    if code == KeyCode::F(2) {
+    // 数字键 1-9, 0, - 直达 11 个选项卡
+    let tab_jump = match code {
+        KeyCode::Char('1') => Some(0),
+        KeyCode::Char('2') => Some(1),
+        KeyCode::Char('3') => Some(2),
+        KeyCode::Char('4') => Some(3),
+        KeyCode::Char('5') => Some(4),
+        KeyCode::Char('6') => Some(5),
+        KeyCode::Char('7') => Some(6),
+        KeyCode::Char('8') => Some(7),
+        KeyCode::Char('9') => Some(8),
+        KeyCode::Char('0') => Some(9),
+        KeyCode::Char('-') => Some(10),
+        _ => None,
+    };
+    if let Some(target_tab) = tab_jump {
+        if target_tab < TABS.len() {
+            panel.select_tab(target_tab);
+            return false;
+        }
+    }
+    // 方括号 [ 和 ] 快速切页
+    if code == KeyCode::Char('[') {
+        let prev = panel.tab.checked_sub(1).unwrap_or(TABS.len() - 1);
+        panel.select_tab(prev);
+        return false;
+    }
+    if code == KeyCode::Char(']') {
+        let next = (panel.tab + 1) % TABS.len();
+        panel.select_tab(next);
+        return false;
+    }
+    if code == KeyCode::F(2) || code == KeyCode::Char('s') {
         switch_scope(panel, app, connection);
         return false;
     }
-    if code == KeyCode::F(4) {
+    if code == KeyCode::F(4) || code == KeyCode::Char('v') {
         panel.advanced = !panel.advanced;
         panel.rebuild_rows();
+        return false;
+    }
+    if code == KeyCode::Char('e') {
+        panel.expand_all();
+        return false;
+    }
+    if code == KeyCode::Char('c') {
+        panel.collapse_all();
         return false;
     }
     if code == KeyCode::Tab || code == KeyCode::BackTab {
@@ -220,15 +347,27 @@ fn fields_key(
     }
     let last = panel.rows.len().saturating_sub(1);
     match code {
-        KeyCode::Up => panel.selected = panel.selected.saturating_sub(1),
-        KeyCode::Down => panel.selected = (panel.selected + 1).min(last),
+        KeyCode::Up | KeyCode::Char('k') => panel.selected = panel.selected.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => panel.selected = (panel.selected + 1).min(last),
         KeyCode::PageUp => panel.selected = panel.selected.saturating_sub(10),
         KeyCode::PageDown => panel.selected = (panel.selected + 10).min(last),
-        KeyCode::Home => panel.selected = 0,
-        KeyCode::End => panel.selected = last,
-        KeyCode::Enter | KeyCode::Char(' ') => panel.begin_edit(app, connection),
-        KeyCode::Left => collapse(panel, false),
-        KeyCode::Right => collapse(panel, true),
+        KeyCode::Home | KeyCode::Char('g') => panel.selected = 0,
+        KeyCode::End | KeyCode::Char('G') => panel.selected = last,
+        KeyCode::Char('m') if TABS[panel.tab] == "会话" => panel.request(
+            connection,
+            &app.events,
+            ConfigAction::Maintenance { apply: false },
+            Job::Maintenance,
+        ),
+        KeyCode::Char(' ') => {
+            if panel.cycle_choice(app, connection, true) {
+                return false;
+            }
+            panel.begin_edit(app, connection);
+        }
+        KeyCode::Enter => panel.begin_edit(app, connection),
+        KeyCode::Left | KeyCode::Char('h') => collapse(panel, false),
+        KeyCode::Right | KeyCode::Char('l') => collapse(panel, true),
         KeyCode::Char('a') => panel.add(),
         KeyCode::Char('f') => panel.fetch(connection, &app.events),
         KeyCode::Char('w') if TABS[panel.tab] == "OpenViking" => panel.request(
@@ -236,12 +375,6 @@ fn fields_key(
             &app.events,
             ConfigAction::Workspaces,
             Job::Workspaces,
-        ),
-        KeyCode::Char('g') if TABS[panel.tab] == "会话" => panel.request(
-            connection,
-            &app.events,
-            ConfigAction::Maintenance { apply: false },
-            Job::Maintenance,
         ),
         KeyCode::Char('d') if mods == KeyModifiers::CONTROL => panel.begin_named(
             EditTarget::ModelDefaults,
@@ -259,27 +392,62 @@ fn fields_key(
             )
         }
         KeyCode::Char('r') => reset_field(panel, app, connection),
-        KeyCode::Delete => delete_group(panel),
+        KeyCode::Delete => {
+            if panel.group().is_some() {
+                delete_group(panel);
+            } else if panel.field().is_some() {
+                reset_field(panel, app, connection);
+            }
+        }
         _ => {}
     }
     false
 }
 
-/// 分组行的展开与收起；字段行不动。
+/// 分组行的展开与收起；在字段行上按向左可直接跳至父级分组。
 fn collapse(panel: &mut SettingsPanel, expand: bool) {
-    let Some((key, depth)) = panel
-        .rows
-        .get(panel.selected)
-        .and_then(|row| match &row.kind {
-            RowKind::Group(group) => Some((group.key.clone(), row.depth)),
-            RowKind::Field(_) => None,
-        })
-    else {
+    let Some(row) = panel.rows.get(panel.selected) else {
         return;
     };
-    if panel.is_expanded(&key, usize::from(depth)) != expand {
-        panel.toggle_group(&key, depth);
+    match &row.kind {
+        RowKind::Group(group) => {
+            let depth = row.depth;
+            let key = group.key.clone();
+            let is_expanded = panel.is_expanded(&key, usize::from(depth));
+            if expand {
+                if !is_expanded {
+                    panel.toggle_group(&key, depth);
+                } else if panel.selected + 1 < panel.rows.len() {
+                    panel.selected += 1;
+                }
+            } else if is_expanded {
+                panel.toggle_group(&key, depth);
+            } else if depth > 0 {
+                if let Some(parent_idx) = find_parent_group(panel, panel.selected, depth) {
+                    panel.selected = parent_idx;
+                }
+            }
+        }
+        RowKind::Field(_) => {
+            if !expand {
+                let field_depth = row.depth;
+                if let Some(parent_idx) = find_parent_group(panel, panel.selected, field_depth) {
+                    panel.selected = parent_idx;
+                }
+            }
+        }
     }
+}
+
+fn find_parent_group(panel: &SettingsPanel, current_index: usize, current_depth: u8) -> Option<usize> {
+    for idx in (0..current_index).rev() {
+        if let Some(r) = panel.rows.get(idx) {
+            if r.depth < current_depth && matches!(r.kind, RowKind::Group(_)) {
+                return Some(idx);
+            }
+        }
+    }
+    None
 }
 
 /// R：删除该项在当前文件中的设置，回到默认值。
@@ -332,10 +500,10 @@ fn confirm_key(
     let View::Confirm { text, action } = std::mem::replace(&mut panel.view, View::Fields) else {
         return false;
     };
-    if matches!(code, KeyCode::Esc | KeyCode::Char('n')) {
+    if matches!(code, KeyCode::Esc | KeyCode::Char('n' | 'N')) {
         return false;
     }
-    if code != KeyCode::Char('y') {
+    if !matches!(code, KeyCode::Char('y' | 'Y') | KeyCode::Enter) {
         panel.view = View::Confirm { text, action };
         return false;
     }
@@ -372,10 +540,12 @@ fn models_key(
     }
     let last = rows.len().saturating_sub(1);
     match code {
-        KeyCode::Up => selected = selected.saturating_sub(1),
-        KeyCode::Down => selected = (selected + 1).min(last),
+        KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(last),
         KeyCode::PageUp => selected = selected.saturating_sub(10),
         KeyCode::PageDown => selected = (selected + 10).min(last),
+        KeyCode::Home | KeyCode::Char('g') => selected = 0,
+        KeyCode::End | KeyCode::Char('G') => selected = last,
         KeyCode::Char(' ') => {
             if let Some(row) = rows.get(selected) {
                 let path = vec![
@@ -386,6 +556,38 @@ fn models_key(
                 ];
                 if panel.value(&path).is_none() && !checked.remove(&row.id) {
                     checked.insert(row.id.clone());
+                }
+            }
+        }
+        KeyCode::Char('a' | 'A') => {
+            let all_checked = rows
+                .iter()
+                .filter(|r| {
+                    panel
+                        .value(&[
+                            "providers".into(),
+                            provider.clone(),
+                            "models".into(),
+                            r.id.clone(),
+                        ])
+                        .is_none()
+                })
+                .all(|r| checked.contains(&r.id));
+            if all_checked {
+                checked.clear();
+            } else {
+                for r in &rows {
+                    if panel
+                        .value(&[
+                            "providers".into(),
+                            provider.clone(),
+                            "models".into(),
+                            r.id.clone(),
+                        ])
+                        .is_none()
+                    {
+                        checked.insert(r.id.clone());
+                    }
                 }
             }
         }
@@ -448,9 +650,14 @@ fn workspaces_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     if code == KeyCode::Esc {
         return false;
     }
+    let last = rows.len().saturating_sub(1);
     match code {
-        KeyCode::Up => selected = selected.saturating_sub(1),
-        KeyCode::Down => selected = (selected + 1).min(rows.len().saturating_sub(1)),
+        KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(last),
+        KeyCode::PageUp => selected = selected.saturating_sub(10),
+        KeyCode::PageDown => selected = (selected + 10).min(last),
+        KeyCode::Home | KeyCode::Char('g') => selected = 0,
+        KeyCode::End | KeyCode::Char('G') => selected = last,
         KeyCode::Enter => {
             if let Some(binding) = rows.get(selected) {
                 panel.begin_named(
@@ -509,11 +716,27 @@ fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
         };
         return false;
     }
-    if code == KeyCode::Down {
-        panel.offset = (panel.offset + 1).min(report.archived.len() + report.removed.len());
-    }
-    if code == KeyCode::Up {
-        panel.offset = panel.offset.saturating_sub(1);
+    let total = report.archived.len() + report.removed.len();
+    match code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            panel.offset = (panel.offset + 1).min(total);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            panel.offset = panel.offset.saturating_sub(1);
+        }
+        KeyCode::PageDown => {
+            panel.offset = (panel.offset + 10).min(total);
+        }
+        KeyCode::PageUp => {
+            panel.offset = panel.offset.saturating_sub(10);
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            panel.offset = 0;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            panel.offset = total.saturating_sub(1);
+        }
+        _ => {}
     }
     panel.view = View::Maintenance(report);
     false
@@ -530,7 +753,17 @@ fn apply_edit(
 ) -> anyhow::Result<()> {
     match target {
         EditTarget::Field(path) => {
-            let value = parse(text, kind)?;
+            let value = if path.last().is_some_and(|k| k == "input") && path.iter().any(|p| p == "models") {
+                if text.contains("image") || text.contains("图片") || text.contains("多模态") {
+                    json!(["text", "image"])
+                } else {
+                    json!(["text"])
+                }
+            } else if path.last().is_some_and(|k| k == "thinking_levels") {
+                parse_thinking_levels(text)?
+            } else {
+                parse(text, kind)?
+            };
             let path = path.clone();
             panel.commit(label, app, connection, |panel| {
                 if value.is_null() {
@@ -568,8 +801,24 @@ fn apply_edit(
             panel.message = Some("已添加供应商，请填写服务地址与密钥".into());
         }
         EditTarget::Model(provider) => {
-            let id = text.trim().to_owned();
+            let mut provider = provider.clone();
+            let mut id = text.trim().to_owned();
             anyhow::ensure!(!id.is_empty(), "模型 ID 不能为空");
+            if let Some((p, m)) = id.split_once('/') {
+                let p = p.trim();
+                let m = m.trim();
+                if !p.is_empty()
+                    && !m.is_empty()
+                    && panel
+                        .effective
+                        .get("providers")
+                        .and_then(|providers| providers.get(p))
+                        .is_some()
+                {
+                    provider = p.to_string();
+                    id = m.to_string();
+                }
+            }
             let path = vec![
                 "providers".into(),
                 provider.clone(),
@@ -647,8 +896,14 @@ fn moc_mcp_name(name: &str) -> anyhow::Result<()> {
 fn edit_input(input: &mut PromptState, mods: KeyModifiers, code: KeyCode) {
     match (code, mods) {
         (KeyCode::Enter, _) => input.insert_char('\n'),
-        (KeyCode::Backspace, _) => input.backspace(),
-        (KeyCode::Delete, _) => input.delete(),
+        (KeyCode::Backspace, _) | (KeyCode::Char('h'), KeyModifiers::CONTROL) => input.backspace(),
+        (KeyCode::Delete, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => input.delete(),
+        (KeyCode::Left, KeyModifiers::ALT)
+        | (KeyCode::Left, KeyModifiers::CONTROL)
+        | (KeyCode::Char('b'), KeyModifiers::ALT) => input.move_word_back(),
+        (KeyCode::Right, KeyModifiers::ALT)
+        | (KeyCode::Right, KeyModifiers::CONTROL)
+        | (KeyCode::Char('f'), KeyModifiers::ALT) => input.move_word_forward(),
         (KeyCode::Left, _) => input.left(),
         (KeyCode::Right, _) => input.right(),
         (KeyCode::Up, _) => {
@@ -659,6 +914,7 @@ fn edit_input(input: &mut PromptState, mods: KeyModifiers, code: KeyCode) {
         }
         (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL) => input.move_line_start(),
         (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => input.move_line_end(),
+        (KeyCode::Char('k'), KeyModifiers::CONTROL) => input.clear_line_to_end(),
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => input.clear(),
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => input.delete_word_back(),
         (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT)
@@ -669,3 +925,37 @@ fn edit_input(input: &mut PromptState, mods: KeyModifiers, code: KeyCode) {
         _ => {}
     }
 }
+
+pub(super) fn parse_thinking_levels(text: &str) -> anyhow::Result<Value> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut levels = Vec::new();
+    for token in trimmed
+        .split(|c: char| c == ',' || c == '，' || c == '、' || c == '\n' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        let normalized = match token.to_lowercase().as_str() {
+            "off" | "关" | "关闭" => "off",
+            "low" | "低" => "low",
+            "medium" | "med" | "中" => "medium",
+            "high" | "高" => "high",
+            "xhigh" | "extra_high" | "超高" => "xhigh",
+            "max" | "最大" | "最强" => "max",
+            other => anyhow::bail!(
+                "未知的思考等级“{other}”；可选：off(关)、low(低)、medium(中)、high(高)、xhigh(超高)、max(最大)"
+            ),
+        };
+        if !levels.contains(&normalized.to_string()) {
+            levels.push(normalized.to_string());
+        }
+    }
+    if levels.is_empty() {
+        Ok(Value::Null)
+    } else {
+        Ok(json!(levels))
+    }
+}
+
