@@ -374,6 +374,53 @@ mod tests {
     }
 
     #[test]
+    fn legacy_compaction_entries_without_a_model_keep_the_old_invalidation() {
+        // 旧 JSONL 的 Compaction 记录没有 model 字段：必须仍可解析且清理语义与旧版一致。
+        let header = Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp".into(),
+            "p/old".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            None,
+            "title".into(),
+            1,
+        );
+        let legacy = serde_json::json!({
+            "type": "compaction",
+            "id": "entry_legacy0001",
+            "parent_id": header.id(),
+            "at_ms": 2,
+            "method": "remote",
+            "summary": "原生载荷占位",
+            "first_kept_id": null,
+            "tokens_before": 100,
+            "tokens_after": 10,
+            "instructions": null,
+            "native": [{"type": "compaction", "encrypted_content": "opaque"}],
+        });
+        let entry: Entry = serde_json::from_value(legacy).expect("旧记录可解析");
+        let mut state = SessionState::from_entries(vec![header, entry.clone()]).unwrap();
+        assert!(state.summary.is_some());
+        assert!(state.native_input.is_some());
+        assert!(state.summary_model.is_none());
+        // 缺省产出模型不写入新记录，新旧 JSONL 形状保持一致。
+        let round_trip = serde_json::to_value(&entry).expect("序列化");
+        assert!(round_trip.get("model").is_none(), "{round_trip}");
+        // 换模型时保守作废：与旧版行为等价。
+        state.apply_entry(Entry::from_payload(
+            EntryPayload::ModelChange {
+                model: "p/new".into(),
+            },
+            state.last_entry_id.clone(),
+            3,
+        ));
+        assert!(state.native_input.is_none());
+        assert!(state.summary.is_none());
+        assert!(state.first_kept_id.is_none());
+    }
+
+    #[test]
     fn clm_projection_replaces_model_view_but_preserves_transcript() {
         let header = Entry::header(
             "ses_clm12345678".into(),
