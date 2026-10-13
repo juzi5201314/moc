@@ -1184,8 +1184,8 @@ async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
 }
 
 const SHAKE_ONLY: &str = "[compaction]\nmethod_order=['shake']\nthreshold={mode='tokens',value=900000}\n\
-    [compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\nkeep_last_prompts=0\n\
-    protect_recent_tool_tokens=0\n";
+    protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\n\
+    keep_last_prompts=0\n";
 
 #[tokio::test]
 async fn shake_archives_the_full_pre_compaction_history() {
@@ -1237,12 +1237,130 @@ async fn shake_archives_the_full_pre_compaction_history() {
     h.close().await;
 }
 
+/// 响应协议下的「工具调用 → 收尾」流。
+fn responses_tool_stream(call_id: &str, name: &str, arguments: &Value) -> String {
+    let arguments = arguments.to_string();
+    format!(
+        "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: {}\n\n",
+        json!({"type":"response.created","response":{"id":"resp_tool","model":"gpt-test"}}),
+        json!({"type":"response.output_item.added","output_index":0,
+               "item":{"type":"function_call","id":"fc_read","call_id":call_id,"name":name}}),
+        json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":arguments}),
+        json!({"type":"response.completed","response":{"id":"resp_tool","status":"completed",
+               "output":[{"type":"function_call","call_id":call_id}],
+               "usage":{"input_tokens":5,"output_tokens":1}}})
+    )
+}
+
+/// shake 复用远端 checkpoint 时必须保留 `remote` 方法名，否则换模型不会清理原生载荷。
+#[tokio::test]
+async fn shake_keeps_the_reused_remote_checkpoint_provenance() {
+    let workspace = tempfile::tempdir().expect("临时目录");
+    let long_file = workspace.path().join("long.txt");
+    std::fs::write(
+        &long_file,
+        format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800)),
+    )
+    .expect("写长文件");
+    let upstream = MockServer::start().await;
+    let read_path = long_file.to_string_lossy().into_owned();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(move |_: &wiremock::Request| {
+            let response = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                responses_tool_stream("read_long", "read", &json!({"path": read_path.clone()}))
+            } else {
+                responses_stream("已读取")
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses/compact"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let mut output =
+                vec![json!({"type":"compaction","id":"cmp_remote","encrypted_content":"opaque"})];
+            output.extend(
+                body["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item["role"] != "system")
+                    .cloned(),
+            );
+            ResponseTemplate::new(200).set_body_json(json!({"output":output}))
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_responses",
+        "[compaction]\nmethod_order=['remote','shake']\nthreshold={mode='tokens',value=900000}\n\
+         protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\n\
+         tail_chars=10\nkeep_last_prompts=0\n",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "读取长文件").await;
+    let remote = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("远端压缩");
+    assert_eq!(remote.method, "remote");
+
+    // 远端端点随后失败：压缩链落到 shake，并复用远端 checkpoint 的摘要与原生载荷。
+    upstream.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses/compact"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_json(json!({"error":{"message":"远端压缩不可用"}})),
+        )
+        .mount(&upstream)
+        .await;
+    let shaken = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("shake 接管压缩");
+    assert_eq!(
+        shaken.method, "remote",
+        "复用远端载荷的 checkpoint 不得改写成 shake"
+    );
+    let entries = support::transcript_entries(&h, &id).await;
+    let methods: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            moc_core::session::entries::Entry::Compaction { method, .. } => Some(method.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(methods, ["remote", "remote"]);
+    let texts = support::tool_result_texts(&h.load(&id).await);
+    assert!(
+        texts.iter().any(|text| text.contains("[tool output pruned]")),
+        "shake 必须真的剪枝：{texts:?}"
+    );
+    h.close().await;
+}
+
 #[tokio::test]
 async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
     let (h, id) = prunable_session(
         "[compaction]\nmethod_order=['soft','shake']\nthreshold={mode='tokens',value=900000}\n\
-         [compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\nkeep_last_prompts=0\n\
-         protect_recent_tool_tokens=0\n",
+         protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\n\
+         tail_chars=10\nkeep_last_prompts=0\n",
         "",
     ).await;
     // soft 以空摘要失败，但已经把本次调用计入 usage；随后的 shake 整表 rewrite 不得丢掉它。
@@ -1262,9 +1380,29 @@ async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
         })
         .await
         .expect("会话用量");
+    let disk_usage = support::transcript_entries(&h, &id)
+        .await
+        .iter()
+        .filter(|entry| matches!(entry, moc_core::session::entries::Entry::Usage { .. }))
+        .count();
+    eprintln!(
+        "DBGUSAGE memory={} disk={disk_usage}",
+        usage.total.calls
+    );
+    // soft 的空摘要失败发生在记录用量之后：整表 rewrite 不得丢掉期间追加的用量 entry。
     assert!(
-        usage.total.calls >= 1,
-        "失败方法写入的用量 entry 必须留在 transcript 里"
+        usage.total.calls >= 2,
+        "整表 rewrite 不得减少已落盘的用量 entry：{}",
+        usage.total.calls
+    );
+    let disk = support::transcript_entries(&h, &id)
+        .await
+        .iter()
+        .filter(|entry| matches!(entry, moc_core::session::entries::Entry::Usage { .. }))
+        .count();
+    assert_eq!(
+        disk, usage.total.calls as usize,
+        "磁盘与内存的用量记录必须一致"
     );
     h.close().await;
 }
