@@ -241,22 +241,26 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
         return 0;
     };
     let Some((batch_id, name)) = tool_batch_key(entry) else {
-        return estimate_entry_height(entry, width);
+        return estimate_entry_height(entry, app, width);
     };
     if batch_group_start(app, index, batch_id, name) != index {
         return 0;
     }
-    let count = app
+    let tools = app
         .blocks
         .iter()
-        .filter(|entry| is_same_batch_tool(entry, batch_id, name))
+        .filter(|candidate| is_same_batch_tool(candidate, batch_id, name))
         .count();
-    app.blocks
-        .iter()
-        .filter(|entry| is_same_batch_tool(entry, batch_id, name))
-        .map(|entry| estimate_entry_height(entry, width))
-        .sum::<usize>()
-        .saturating_sub(count.saturating_sub(1))
+    estimate_tool_batch_height(tools, index == 0)
+}
+
+/// 批次渲染的行数：标题 + 每个工具的摘要行 + 完成统计 + 尾随留白。
+///
+/// 批次只在组首块渲染，其余成员高度为零；批次忽略展开内容，故不按成员逐个估算。
+fn estimate_tool_batch_height(tools: usize, first: bool) -> usize {
+    tools
+        .saturating_add(3)
+        .saturating_add(usize::from(!first))
 }
 
 fn is_same_batch_tool(entry: &Entry, batch_id: &str, name: &str) -> bool {
@@ -272,24 +276,104 @@ fn batch_group_start(app: &App, index: usize, batch_id: &str, name: &str) -> usi
         .expect("当前工具必须存在于批次中")
 }
 
-fn estimate_entry_height(entry: &Entry, width: u16) -> usize {
+/// 懒块的估算高度：与各渲染分支同结构（标题行 + 内容行 + 尾注 + 尾随留白）。
+///
+/// 工具结果的截断规则、折叠态与展开态都与渲染共用同一套判定；正文按显示宽度折行
+/// 近似 markdown 的落行数。估算与渲染差一个数量级会让滚动范围、滚动条与懒渲染的
+/// 可见区间同时失真。
+fn estimate_entry_height(entry: &Entry, app: &App, width: u16) -> usize {
     let width = usize::from(width).max(8);
-    let rows = |text: &str| {
-        text.lines()
-            .map(|line| (str_width(line).saturating_add(width - 1) / width).max(1))
-            .sum::<usize>()
-            .max(1)
-    };
     match &entry.block {
         Block::User { text } | Block::Assistant { text } | Block::Note { text, .. } => {
-            rows(text).saturating_add(2)
+            wrapped_rows(text, width).saturating_add(2)
         }
-        Block::Thinking { .. } => 2,
-        Block::Tool(tool) => 3usize
-            .saturating_add(rows(&tool.arguments))
-            .saturating_add(tool.result.as_deref().map_or(0, rows)),
-        Block::Todo { phases } => phases.len().saturating_add(2),
+        Block::Thinking { text, .. } => {
+            if app.show_thinking && !entry.folded {
+                wrapped_rows(text, width.saturating_sub(PROSE_INDENT + 2)).saturating_add(2)
+            } else {
+                2
+            }
+        }
+        Block::Tool(tool) => estimate_tool_height(tool, app, entry.folded, width),
+        Block::Todo { phases } => estimate_todo_height(phases, width),
     }
+}
+
+/// 文本按显示宽度的折行行数（空文本也算一行）。
+fn wrapped_rows(text: &str, width: usize) -> usize {
+    let width = width.max(8);
+    text.lines()
+        .map(|line| (str_width(line).saturating_add(width - 1) / width).max(1))
+        .sum::<usize>()
+        .max(1)
+}
+
+/// 工具块高度：折叠态只有标题行；展开态按 [`render_tool`] 的分支规则累计。
+fn estimate_tool_height(tool: &ToolCallBlock, app: &App, folded: bool, width: usize) -> usize {
+    if app.tools_collapsed || folded {
+        return 1;
+    }
+    let inner_width = width.saturating_sub(4);
+    let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
+    let mut rows = 1;
+    if let Some(diff) = &tool.diff {
+        rows += diff::row_count(diff);
+    } else if tool.name == "bash" {
+        let command = args
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        rows += wrap_text(command, inner_width.saturating_sub(2)).len();
+        rows += tool.result.as_deref().map_or(0, |result| {
+            clamped_rows(result, inner_width.saturating_sub(2), false).1
+        });
+    } else if tool.name == "read" || tool.name == "find" {
+        rows += file_list_row_count(&args);
+    } else if tool.name == "grep" {
+        rows += 1;
+        rows += tool.result.as_deref().map_or(0, |result| {
+            clamped_rows(result, inner_width.saturating_sub(2), false).1
+        });
+    } else {
+        rows += tool
+            .result
+            .as_deref()
+            .map_or(0, |result| clamped_rows(result, inner_width, false).1);
+    }
+    rows += usize::from(tool.duration_ms.is_some());
+    rows + 1
+}
+
+/// Todo 树高度：标题行 + 每阶段一行 + 每条目折行 + 尾随留白。
+fn estimate_todo_height(phases: &[moc_protocol::methods::TodoPhase], width: usize) -> usize {
+    let phase_count = phases.len();
+    let mut rows = 2; // 标题行 + 尾随留白
+    for (index, phase) in phases.iter().enumerate() {
+        rows += 1;
+        // 与 render_todo 的条目缩进同源：末阶段用空白分支，其余用竖线分支
+        let branch = if index + 1 == phase_count {
+            "    "
+        } else {
+            "│   "
+        };
+        let budget = width.saturating_sub(TITLE_INDENT + branch.len() + 2 + 4).max(8);
+        rows += phase
+            .items
+            .iter()
+            .map(|item| wrap_text(&item.task, budget).len())
+            .sum::<usize>();
+    }
+    rows
+}
+
+/// read / find 文件列表的行数（每条一行，超宽由渲染层省略）。
+fn file_list_row_count(args: &Value) -> usize {
+    let path = usize::from(args.get("path").and_then(Value::as_str).is_some());
+    let globs = args
+        .get("glob")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    path.saturating_add(globs)
 }
 
 /// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
@@ -805,21 +889,38 @@ fn file_list_rows(args: &Value, width: usize, theme: &Theme) -> Vec<Line<'static
     rows
 }
 
-/// 结果文本行数截断：头部 + 省略提示。
+/// 结果文本的展示行（头部 [`TOOL_RESULT_TAIL_ROWS`] 行 + 省略提示）。
 fn clamp_rows(result: &str, width: usize) -> Vec<String> {
+    clamped_rows(result, width, true).0
+}
+
+/// 结果文本的展示行与行数，估算与渲染共用同一条截断规则。
+///
+/// `collect_rows` 为假时只数行数、不保留行文本：懒渲染的高度估算必须与真实渲染
+/// 得出同一个数字，否则滚动范围与可见区间都会失真。
+fn clamped_rows(result: &str, width: usize, collect_rows: bool) -> (Vec<String>, usize) {
     let width = width.max(8);
     let mut rows: Vec<String> = Vec::new();
-    let mut total_rows = 0usize;
+    let mut count = 0usize;
+    let mut total_lines = 0usize;
     for line in result.lines() {
-        total_rows += 1;
-        if rows.len() < TOOL_RESULT_TAIL_ROWS {
-            rows.extend(wrap_text(line, width));
+        total_lines += 1;
+        if count < TOOL_RESULT_TAIL_ROWS {
+            for row in wrap_text(line, width) {
+                count += 1;
+                if collect_rows {
+                    rows.push(row);
+                }
+            }
         }
     }
-    if total_rows > TOOL_RESULT_TAIL_ROWS {
-        rows.push(format!("⋯ 还有 {} 行", total_rows - TOOL_RESULT_TAIL_ROWS));
+    if total_lines > TOOL_RESULT_TAIL_ROWS {
+        count += 1;
+        if collect_rows {
+            rows.push(format!("⋯ 还有 {} 行", total_lines - TOOL_RESULT_TAIL_ROWS));
+        }
     }
-    rows
+    (rows, count)
 }
 
 /// 截断到显示宽度上限，末尾补省略号。
@@ -1050,5 +1151,74 @@ mod tests {
             offset = next;
         }
         assert!(covered > 0, "视口应落在至少一个块上");
+    }
+
+    /// M25：懒块的估算高度与渲染同规则。
+    ///
+    /// 估算按全文计高（工具结果 2000 行即 2000 行、折叠态也按展开算）时，滚动范围、
+    /// 滚动条与懒渲染的可见区间都失真一个数量级。
+    #[test]
+    fn estimates_follow_render_rules() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus, ToolStatus};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        let long_result = (0..200)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        app.start_tool_block("call_bash".into(), "bash".into());
+        app.start_batched_tool_block("call_a".into(), "read".into(), "batch".into());
+        app.start_batched_tool_block("call_b".into(), "read".into(), "batch".into());
+        app.tool_entry_mut("call_bash")
+            .expect("工具块")
+            .push_args(r#"{"command":"print lines"}"#);
+        app.finish_tool_block(
+            "call_bash".into(),
+            ToolStatus::Completed,
+            ToolResult {
+                tool_call_id: "call_bash".into(),
+                content: long_result,
+                is_error: false,
+                images: Vec::new(),
+            },
+            Some(42),
+            None,
+        );
+        app.push_block(Block::Todo {
+            phases: vec![TodoPhase {
+                phase: "阶段".into(),
+                items: vec![TodoItem {
+                    status: TodoStatus::Pending,
+                    task: "很长的任务描述".repeat(12),
+                    reason: None,
+                }],
+            }],
+        });
+
+        let rendered = |app: &App, index: usize| {
+            render_entry(index, &app.blocks[index], app, width, index == 0).len()
+        };
+        for index in 0..app.blocks.len() {
+            assert_eq!(
+                estimate_entry_height_at(&app, index, width),
+                rendered(&app, index),
+                "第 {index} 块的估算应与渲染一致"
+            );
+        }
+
+        let bash = estimate_entry_height_at(&app, 0, width);
+        assert!(bash < 30, "200 行结果不得按全文估算：{bash}");
+
+        // 折叠态：全局折叠与单块折叠都只剩标题行
+        app.tools_collapsed = true;
+        assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), 1);
+        app.tools_collapsed = false;
+        app.blocks[0].toggle_fold();
+        assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
     }
 }

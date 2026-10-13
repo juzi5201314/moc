@@ -47,6 +47,28 @@ pub fn render_diff(diff: &ToolDiff, width: usize, theme: &Theme) -> Vec<Line<'st
     lines
 }
 
+/// diff 的展示行数（与 [`render_diff`] 同规则，但不做高亮）。
+///
+/// 懒渲染用它估算工具块高度；hunk 之间的「⋯ N 行未变」与截断提示各占一行。
+/// 行数与宽度无关：diff 行不做换行，超长行交给终端自身折行。
+pub fn row_count(diff: &ToolDiff) -> usize {
+    let mut rows = 0usize;
+    for file in &diff.files {
+        if rows > MAX_RENDERED_ROWS {
+            // 渲染到上限就收束，后续文件不再进渲染器
+            break;
+        }
+        rows += file
+            .hunks
+            .iter()
+            .map(|hunk| hunk.lines.len())
+            .sum::<usize>();
+        rows += file.hunks.len().saturating_sub(1);
+        rows += usize::from(diff.truncated);
+    }
+    rows
+}
+
 fn render_file(
     file: &ToolFileDiff,
     truncated: bool,
