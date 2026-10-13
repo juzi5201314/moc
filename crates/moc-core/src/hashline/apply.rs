@@ -589,20 +589,19 @@ fn publish_edit(
 ) -> String {
     after.hashes = hashes;
     let (output, shown) = render_diff(path, before, &after);
-    // 固定锚点空间只需一个字节位集，记录旧权限与新文件占用。
-    let mut flags = vec![0u8; ANCHOR_SPACE as usize];
-    for hash in served.hashes.iter().flatten() {
-        debug_assert!(*hash < ANCHOR_SPACE);
-        flags[*hash as usize] |= 1;
-    }
+    // 只记录真实出现过的锚点；定长位图会让每次编辑都分配并清零 238 KiB。
+    let served_before: std::collections::HashSet<u32> =
+        served.hashes.iter().flatten().copied().collect();
+    let mut current: std::collections::HashSet<u32> =
+        std::collections::HashSet::with_capacity(after.hashes.len());
     let rows: Vec<_> = after
         .hashes
         .iter()
         .enumerate()
         .filter_map(|(position, &hash)| {
+            current.insert(hash);
             debug_assert!(hash < ANCHOR_SPACE);
-            flags[hash as usize] |= 2;
-            (flags[hash as usize] & 1 != 0 || shown.contains(&position)).then_some((position, hash))
+            (served_before.contains(&hash) || shown.contains(&position)).then_some((position, hash))
         })
         .collect();
     let mut retired = std::mem::take(&mut served.retired);
@@ -611,9 +610,7 @@ fn publish_edit(
             .hashes
             .iter()
             .enumerate()
-            .filter_map(|(position, &hash)| {
-                (flags[hash as usize] & 2 == 0).then_some((hash, position))
-            }),
+            .filter_map(|(position, &hash)| (!current.contains(&hash)).then_some((hash, position))),
     );
     served.record_served(&rows, &after.lines, &after);
     served.retired = retired;

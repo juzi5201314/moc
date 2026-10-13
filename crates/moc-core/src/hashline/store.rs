@@ -166,25 +166,25 @@ impl ServedFile {
             self.cards.resize(lines.len(), 0);
             self.epoch = Some(snapshot.epoch);
         }
-        // 锚点固定在 62³ 内；临时反向表把孤儿愈合从逐行扫描降为线性。
-        let mut positions = vec![usize::MAX; super::ANCHOR_SPACE as usize];
-        for (position, hash) in self.hashes.iter().enumerate() {
-            if let Some(hash) = hash {
-                debug_assert!(*hash < super::ANCHOR_SPACE);
-                positions[*hash as usize] = position;
-            }
-        }
+        // 锚点固定在 62³ 内；反查表只覆盖已分配锚点，避免每次 read 都分配并
+        // 清零约 1.9 MiB 的定长表。
+        let mut positions: HashMap<u32, usize> = self
+            .hashes
+            .iter()
+            .enumerate()
+            .filter_map(|(position, hash)| hash.map(|hash| (hash, position)))
+            .collect();
         for &(position, hash) in rows {
             if position >= self.hashes.len() {
                 continue;
             }
             debug_assert!(hash < super::ANCHOR_SPACE);
-            let previous = positions[hash as usize];
-            if previous != usize::MAX && previous != position {
+            if let Some(previous) = positions.insert(hash, position)
+                && previous != position
+            {
                 self.hashes[previous] = None;
                 self.canons[previous] = 0;
             }
-            positions[hash as usize] = position;
             self.hashes[position] = Some(hash);
             self.canons[position] = canon_hash(&lines[position]);
             self.cards[position] = position;
