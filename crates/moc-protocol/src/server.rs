@@ -35,11 +35,12 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentSend, AgentSpawn, AgentSteer, AgentStop, AgentWait, ClientInfo, ConfigGet,
-    Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite, Ping,
-    PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel, SessionCancelResult,
-    SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad, SessionLoadPage,
-    SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
-    SessionSetModel, SessionSetPermission, SessionUnload, SessionUnlock, SessionUsage,
+    ConfigManage, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite,
+    Ping, PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel,
+    SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
+    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
+    SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
+    SessionUnlock, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -455,8 +456,8 @@ impl<S: AgentService> ServerDispatch<S> {
         cancel: CancellationToken,
     ) -> Result<Value, RpcError> {
         match method {
-            "config/manage" => {
-                let params = params_from_value::<crate::ConfigManage>(params)?;
+            <ConfigManage as Method>::NAME => {
+                let params = params_from_value::<ConfigManage>(params)?;
                 value_from(
                     self.server
                         .service
@@ -464,8 +465,8 @@ impl<S: AgentService> ServerDispatch<S> {
                         .await?,
                 )
             }
-            "session/steer" => {
-                let params = params_from_value::<crate::SessionSteer>(params)?;
+            <SessionSteer as Method>::NAME => {
+                let params = params_from_value::<SessionSteer>(params)?;
                 value_from(
                     self.server
                         .service
