@@ -634,7 +634,8 @@ mod tests {
         }
         notify.notify_waiters();
         // 唤醒落在等待者建立之后：必须立即就绪，不得依赖后续通知。
-        tokio::time::timeout(Duration::from_millis(100), watch.notified)
+        // 上限取 5s：只用于兜住「永不被唤醒」的原缺陷，避免并行测试的调度延迟造成误报。
+        tokio::time::timeout(Duration::from_secs(5), watch.notified)
             .await
             .expect("完成通知不得丢失");
     }
