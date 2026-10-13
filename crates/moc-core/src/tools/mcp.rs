@@ -1,8 +1,9 @@
 //! MCP server 工具桥接：把 moc-mcp 的协商结果适配为 [`Tool`]。
 //!
 //! 命名沿用 Claude Code 生态惯例 `mcp__<server>__<tool>`；server 名在配置层
-//! 保证不含 `__`，限定名因此可无歧义反解。风险类别取自 MCP `annotations`：
-//! `readOnlyHint` → 只读且可并行，其余按 Exec 处理，审批与模式限制随之生效。
+//! 保证不含 `__`，限定名因此可无歧义反解。风险类别不取 MCP `annotations`
+//! 的服务端自述：`readOnlyHint` 只作为描述信息保留，`tier` 与并行性都由本地
+//! 策略决定，服务端无法据此扩大自己的权限。
 
 use std::sync::Arc;
 
@@ -39,16 +40,18 @@ impl Tool for McpTool {
             .unwrap_or("MCP server-provided tool.")
     }
 
+    /// MCP 工具的风险类别不取服务端自述的 `readOnlyHint`。
+    ///
+    /// 自述只读的 `mcp__*` 工具会在 Ask/Plan 只读模式下被放行，等于让 server 自行
+    /// 扩大权限；因此一律按 `Tier::Exec` 处理，只读模式不开放 MCP 工具。
     fn tier(&self) -> Tier {
-        if self.info.read_only {
-            Tier::Read
-        } else {
-            Tier::Exec
-        }
+        Tier::Exec
     }
 
+    /// 并行性同样不取服务端自述：声明只读却在自身状态上写入的 server 会被并发调用
+    /// 打乱。取舍是只读 MCP 工具也串行执行，用一批调用的延迟换掉一条不可信输入。
     fn parallel_safe(&self) -> bool {
-        self.info.read_only
+        false
     }
 
     fn def(&self) -> ToolDef {
@@ -97,5 +100,57 @@ impl Tool for McpTool {
                 .collect();
             Ok(outcome)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use moc_protocol::SessionMode;
+
+    fn tool(declared_read_only: bool) -> McpTool {
+        McpTool::new(
+            Arc::new(McpManager::new(
+                Vec::new(),
+                tokio_util::sync::CancellationToken::new(),
+            )),
+            Arc::new(McpToolInfo {
+                server: "demo".into(),
+                name: "search".into(),
+                qualified: "mcp__demo__search".into(),
+                title: None,
+                description: None,
+                input_schema: serde_json::json!({"type": "object"}),
+                output_schema: None,
+                read_only: declared_read_only,
+            }),
+        )
+    }
+
+    #[test]
+    fn server_declared_read_only_does_not_widen_authority() {
+        for declared in [true, false] {
+            let tool = tool(declared);
+            assert_eq!(
+                tool.tier(),
+                Tier::Exec,
+                "服务端自述的 readOnlyHint 不得提升风险类别"
+            );
+            assert!(
+                !tool.parallel_safe(),
+                "服务端自述不得放开并发执行：{declared}"
+            );
+            for mode in [SessionMode::Ask, SessionMode::Plan] {
+                assert!(
+                    !crate::service::mode::mode_allows(mode, tool.name(), tool.tier()),
+                    "只读模式不得放行声明只读的 MCP 工具"
+                );
+            }
+            assert!(crate::service::mode::mode_allows(
+                SessionMode::Normal,
+                tool.name(),
+                tool.tier()
+            ));
+        }
     }
 }
