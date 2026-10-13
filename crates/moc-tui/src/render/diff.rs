@@ -55,6 +55,9 @@ fn render_file(
     out: &mut Vec<Line<'static>>,
 ) {
     let syntax_token = syntax_token_of(&file.path);
+    // 整文件共用一个高亮会话：块注释/多行字符串的解析状态跨行延续
+    let mut highlighter = highlight::LineHighlighter::new(&syntax_token);
+    let mut source_line = String::new();
     // gutter 宽度 = 全文件最大行号位数 + 1 位修饰符（- / + / 空格）
     let gutter_width = file
         .hunks
@@ -129,30 +132,29 @@ fn render_file(
                 Span::styled("  ".to_owned(), Style::new().bg(bg)),
             ];
             let changed_range = intra_ranges.get(line_idx).and_then(Option::as_ref);
-            let highlighted = highlight::highlight(&syntax_token, &line.text);
-            if let Some(spans_of_line) = highlighted.lines.first() {
-                let mut byte_offset = 0;
-                for span in spans_of_line {
-                    let span_len = span.text.len();
-                    let span_range = byte_offset..byte_offset + span_len;
-                    byte_offset += span_len;
-                    let is_changed = changed_range
-                        .is_some_and(|r| span_range.start < r.end && span_range.end > r.start);
-                    let mut style = Style::new()
-                        .fg(span.fg.map(highlight::rgb_to_color).unwrap_or(fallback_fg))
-                        .bg(bg);
-                    if is_changed {
-                        style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-                    }
-                    spans.push(Span::styled(span.text.clone(), style));
+            source_line.clear();
+            source_line.push_str(&line.text);
+            source_line.push('\n');
+            let spans_of_line = highlighter.line(&source_line);
+            let mut byte_offset = 0;
+            for span in &spans_of_line {
+                let span_len = span.text.len();
+                let span_range = byte_offset..byte_offset + span_len;
+                byte_offset += span_len;
+                let is_changed = changed_range
+                    .is_some_and(|r| span_range.start < r.end && span_range.end > r.start);
+                let mut style = Style::new()
+                    .fg(span.fg.map(highlight::rgb_to_color).unwrap_or(fallback_fg))
+                    .bg(bg);
+                if is_changed {
+                    style = style.add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
                 }
+                spans.push(Span::styled(span.text.clone(), style));
             }
-            let content_width_used: usize = highlighted.lines.first().map_or(0, |spans| {
-                spans
-                    .iter()
-                    .map(|span| super::wrap::str_width(&span.text))
-                    .sum()
-            });
+            let content_width_used: usize = spans_of_line
+                .iter()
+                .map(|span| super::wrap::str_width(&span.text))
+                .sum();
             if content_width_used < content_width && line.kind != DiffLineKind::Equal {
                 spans.push(Span::styled(
                     " ".repeat(content_width - content_width_used),
@@ -219,4 +221,72 @@ fn syntax_token_of(path: &str) -> String {
         .and_then(|ext| ext.to_str())
         .unwrap_or("txt")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ColorLevel;
+    use moc_protocol::methods::{DiffHunk, DiffLine, DiffLineKind};
+
+    /// 逐行渲染共用高亮会话：hunk 分隔、行号 gutter 与行内差异标记都保持原样。
+    #[test]
+    fn renders_hunk_lines_with_shared_highlighter() {
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let diff = ToolDiff {
+            files: vec![ToolFileDiff {
+                path: "src/lib.rs".into(),
+                hunks: vec![
+                    DiffHunk {
+                        old_start: 1,
+                        new_start: 1,
+                        lines: vec![
+                            DiffLine {
+                                kind: DiffLineKind::Delete,
+                                old_no: Some(1),
+                                new_no: None,
+                                text: "let value = 1;".into(),
+                            },
+                            DiffLine {
+                                kind: DiffLineKind::Insert,
+                                old_no: None,
+                                new_no: Some(1),
+                                text: "let value = 2;".into(),
+                            },
+                        ],
+                    },
+                    DiffHunk {
+                        old_start: 10,
+                        new_start: 10,
+                        lines: vec![DiffLine {
+                            kind: DiffLineKind::Equal,
+                            old_no: Some(10),
+                            new_no: Some(10),
+                            text: "}".into(),
+                        }],
+                    },
+                ],
+            }],
+            truncated: false,
+        };
+
+        let lines = render_diff(&diff, 80, &theme);
+        assert_eq!(lines.len(), 4, "两行改动 + 一条 hunk 分隔 + 一行上下文");
+        let text_of = |line: &Line<'static>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        assert!(text_of(&lines[0]).contains("let value = 1;"));
+        assert!(text_of(&lines[1]).contains("let value = 2;"));
+        assert!(text_of(&lines[2]).contains("行未变"), "hunk 之间给出未变行数");
+        for (line, changed) in [(&lines[0], '1'), (&lines[1], '2')] {
+            assert!(
+                line.spans.iter().any(|span| span.content.contains(changed)
+                    && span.style.add_modifier.contains(Modifier::UNDERLINED)),
+                "行内差异片段应带下划线标记"
+            );
+        }
+    }
 }
