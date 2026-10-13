@@ -2619,29 +2619,41 @@ fn start_plan_execution(
     );
 }
 
+/// 把一条会话更新折进界面；只接受当前会话与已知子代理的更新。
+///
+/// - 当前会话：正常折叠进转写与状态；
+/// - 已知子代理（其会话 ID 就是代理 ID）：折进侧栏的子代理视图；
+/// - 其余来源（运行中切走后的旧会话、别的会话）：内容一律丢弃，只按
+///   `PromptFinished` 回收本前端的在飞记账——旧会话的 delta/工具块写进新会话就是串台。
 fn apply_update_and_refresh(
     app: &mut App,
     connection: &EmbeddedConnection,
     session_id: String,
     update: SessionUpdate,
 ) {
-    if app
+    let is_current = app
         .session
         .as_ref()
-        .is_some_and(|session| session.id != session_id)
-        && let Some(view) = app.subagents.get_mut(&session_id)
-    {
-        if let SessionUpdate::AgentStatusChanged {
-            status,
-            last_message,
-            ..
-        } = &update
-        {
-            view.set_status(*status, last_message.clone());
-        } else {
-            view.apply(update);
+        .is_some_and(|session| session.id == session_id);
+    if !is_current {
+        if let Some(view) = app.subagents.get_mut(&session_id) {
+            if let SessionUpdate::AgentStatusChanged {
+                status,
+                last_message,
+                ..
+            } = &update
+            {
+                view.set_status(*status, last_message.clone());
+            } else {
+                view.apply(update);
+            }
+            app.subagent_generation = app.subagent_generation.wrapping_add(1);
+            return;
         }
-        app.subagent_generation = app.subagent_generation.wrapping_add(1);
+        if matches!(&update, SessionUpdate::PromptFinished { .. }) {
+            app.inflight_prompts.remove(&session_id);
+            app.interrupt_pending.remove(&session_id);
+        }
         return;
     }
     if let SessionUpdate::AgentStarted { agent } = &update {
@@ -5049,6 +5061,78 @@ mod tests {
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('y'));
         assert_eq!(app.prompt_text(), "", "有选区时 y 不进入输入框");
         assert!(app.selection.is_some(), "空选区内容不清空选区");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// M17+M18：运行中切会话后，旧会话的更新不得写进新会话，收尾仍回收在飞记账。
+    ///
+    /// 不按会话/代理路由时，旧会话的 delta 直接落进新会话转写、PromptStarted 复位
+    /// 新会话状态、工具块与耗时回填全都串台。
+    #[tokio::test]
+    async fn foreign_session_updates_are_dropped_and_recycled() {
+        use moc_protocol::methods::{AssistantDelta, SessionUpdate};
+        use moc_protocol::{ContentPart, FinishReason, Message, Role, Usage};
+
+        let (core, connection, mut app) = setup_test_app().await;
+        let old_session = app.session.as_ref().expect("测试会话").id.clone();
+        // 旧会话的提示仍在飞，前端运行中切到另一个会话。
+        app.inflight_prompts.insert(old_session.clone());
+        app.interrupt_pending.insert(old_session.clone());
+        let mut other = app.session.clone().expect("测试会话");
+        other.id = "ses_other".into();
+        app.switch_session(other, Vec::new());
+        assert!(!app.prompt_running);
+
+        // 旧会话开始的推送：不得把新会话置为运行中
+        apply_update_and_refresh(
+            &mut app,
+            &connection,
+            old_session.clone(),
+            SessionUpdate::PromptStarted {
+                prompt_id: "prompt_old".into(),
+                model: "test/model".into(),
+                at_ms: 0,
+            },
+        );
+        assert!(!app.prompt_running, "旧会话的 PromptStarted 不得复位新会话");
+
+        // 旧会话的正文增量：不得进入当前转写
+        apply_update_and_refresh(
+            &mut app,
+            &connection,
+            old_session.clone(),
+            SessionUpdate::AssistantDelta {
+                prompt_id: "prompt_old".into(),
+                delta: AssistantDelta::Text {
+                    delta: "旧会话内容".into(),
+                },
+            },
+        );
+        assert!(app.blocks.is_empty(), "旧会话增量不得写入当前转写");
+
+        // 旧会话收尾：只回收本前端的在飞记账，仍不改当前会话状态
+        apply_update_and_refresh(
+            &mut app,
+            &connection,
+            old_session.clone(),
+            SessionUpdate::PromptFinished {
+                prompt_id: "prompt_old".into(),
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::Text("旧回复".into())],
+                },
+                finish_reason: FinishReason::Stop,
+                usage: Usage::default(),
+            },
+        );
+        assert!(
+            !app.inflight_prompts.contains(&old_session),
+            "旧会话收尾应回收在飞记账"
+        );
+        assert!(!app.interrupt_pending.contains(&old_session));
+        assert!(app.blocks.is_empty(), "旧会话内容不得落到新会话转写");
 
         connection.shutdown().await;
         core.shutdown().await;
