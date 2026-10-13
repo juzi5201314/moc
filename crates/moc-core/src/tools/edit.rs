@@ -29,6 +29,20 @@ impl EditPayload {
     }
 }
 
+/// 解析 edit 参数；授权（含工作区边界与预览）与执行共用同一份解析。
+pub(crate) fn parse_requests(args: Value) -> Result<Vec<EditRequest>, ToolError> {
+    let requests = serde_json::from_value::<EditPayload>(args)
+        .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?
+        .into_requests();
+    if requests.is_empty() {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "files must contain at least one file",
+        ));
+    }
+    Ok(requests)
+}
+
 pub struct EditTool;
 
 impl Tool for EditTool {
@@ -59,15 +73,7 @@ impl Tool for EditTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let payload = args.to_string();
-            let requests = serde_json::from_value::<EditPayload>(args)
-                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?
-                .into_requests();
-            if requests.is_empty() {
-                return Err(ToolError::new(
-                    "E_BAD_PAYLOAD",
-                    "files must contain at least one file",
-                ));
-            }
+            let requests = parse_requests(args)?;
 
             let mut content = String::new();
             let mut files = Vec::new();

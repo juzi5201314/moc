@@ -14,9 +14,15 @@ use moc_protocol::{ToolDiff, ToolFileDiff};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WriteArgs {
-    path: String,
-    content: String,
+pub(crate) struct WriteArgs {
+    pub(crate) path: String,
+    pub(crate) content: String,
+}
+
+/// 解析 write 参数；授权与执行共用同一份解析。
+pub(crate) fn parse_args(args: Value) -> Result<WriteArgs, ToolError> {
+    serde_json::from_value(args)
+        .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))
 }
 
 pub struct WriteTool;
@@ -52,8 +58,7 @@ impl Tool for WriteTool {
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
-            let args: WriteArgs = serde_json::from_value(args)
-                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            let args = parse_args(args)?;
             ResourceRouter::write(&args.path)
                 .map_err(|error| ToolError::new(error.code, error.message))?;
             if args.path.starts_with("ov://") || args.path.starts_with("viking://") {

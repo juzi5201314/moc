@@ -425,7 +425,7 @@ async fn execute_tool(
     let execution_permission = match authorize(ctx, &call.id, name, &args).await? {
         Authorization::Denied => {
             return Ok(ToolOutcome {
-                content: "[E_PERMISSION_DENIED] The user denied this command".into(),
+                content: "[E_PERMISSION_DENIED] The user denied this operation".into(),
                 is_error: true,
                 structured_content: None,
                 error_code: Some("E_PERMISSION_DENIED".into()),
@@ -497,15 +497,33 @@ enum Authorization {
     Denied,
 }
 
+/// 授权入口：`full` 是 yolo；`workspace` 下 bash 与写工具都要过边界判定。
+///
+/// 工作区外写入与「沙盒外执行命令」共用同一条审批链：能弹出权限询问的前端
+/// 得到一次显式授权，否则直接拒绝。只读工具不设边界——沙盒本身对工作区外
+/// 就是只读接管，read/find/grep 与沙盒内命令的能力保持一致。
 async fn authorize(
     ctx: &ToolCtx,
     tool_call_id: &str,
     tool_name: &str,
     arguments: &Value,
 ) -> Result<Authorization, CoreError> {
-    if tool_name != "bash" || ctx.permission != moc_protocol::SessionPermission::Workspace {
+    if ctx.permission != moc_protocol::SessionPermission::Workspace {
         return Ok(Authorization::Allowed(ctx.permission));
     }
+    match tool_name {
+        "bash" => authorize_bash(ctx, tool_call_id, arguments).await,
+        "write" | "edit" => authorize_write_tools(ctx, tool_call_id, tool_name, arguments).await,
+        _ => Ok(Authorization::Allowed(ctx.permission)),
+    }
+}
+
+/// bash：可留在沙盒内的命令直接放行，其余命令先问用户。
+async fn authorize_bash(
+    ctx: &ToolCtx,
+    tool_call_id: &str,
+    arguments: &Value,
+) -> Result<Authorization, CoreError> {
     let Some(command) = arguments.get("command").and_then(Value::as_str) else {
         return Ok(Authorization::Allowed(ctx.permission));
     };
@@ -517,6 +535,99 @@ async fn authorize(
     {
         return Ok(Authorization::Allowed(ctx.permission));
     }
+    request_permission(
+        ctx,
+        tool_call_id,
+        "bash",
+        format!(
+            "允许在沙盒外执行命令：{}",
+            command.lines().next().unwrap_or(command)
+        ),
+        Some(command.to_owned()),
+        None,
+    )
+    .await
+}
+
+/// 写工具（write/edit）中越出工作区的目标；空表示无需审批。
+///
+/// 与执行阶段共用参数解析，解析失败由工具自身返回 `E_BAD_PAYLOAD`。
+fn outside_workspace_targets(
+    cwd: &std::path::Path,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<Vec<std::path::PathBuf>, crate::tools::ToolError> {
+    let targets: Vec<String> = if tool_name == "write" {
+        vec![
+            crate::tools::write::parse_args(arguments.clone())?.path,
+        ]
+    } else {
+        crate::tools::edit::parse_requests(arguments.clone())?
+            .into_iter()
+            .flat_map(|request| {
+                std::iter::once(request.path).chain(
+                    request
+                        .move_lines
+                        .into_iter()
+                        .map(|movement| movement.target_path),
+                )
+            })
+            .collect()
+    };
+    Ok(targets
+        .iter()
+        .filter_map(|target| crate::tools::workspace_escape(cwd, target))
+        .collect())
+}
+
+/// write / edit：目标都在工作区内则直接放行，越界（含符号链接逃逸）先问用户。
+async fn authorize_write_tools(
+    ctx: &ToolCtx,
+    tool_call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<Authorization, CoreError> {
+    let outside =
+        outside_workspace_targets(&ctx.cwd, tool_name, arguments).map_err(|error| {
+            CoreError::Tool(error.to_string())
+        })?;
+    if outside.is_empty() {
+        return Ok(Authorization::Allowed(ctx.permission));
+    }
+    let paths = outside
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    request_permission(
+        ctx,
+        tool_call_id,
+        tool_name,
+        format!(
+            "允许在工作区外写入：{}",
+            outside
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Some(format!(
+            "以下写入目标位于会话工作区之外：\n{paths}\n工作区外的写入不做沙盒接管，请确认目标无误。"
+        )),
+        None,
+    )
+    .await
+}
+
+/// 发起一次权限询问；无法询问或用户未选择 `allow_once` 都按拒绝处理。
+async fn request_permission(
+    ctx: &ToolCtx,
+    tool_call_id: &str,
+    tool_name: &str,
+    title: String,
+    body: Option<String>,
+    diff: Option<moc_protocol::methods::ToolDiff>,
+) -> Result<Authorization, CoreError> {
     let request = &ctx.request;
     if !ctx
         .core
@@ -546,13 +657,10 @@ async fn authorize(
             prompt_id: ctx.prompt_id.clone(),
             request_id: request_id.clone(),
             tool_call_id: tool_call_id.to_owned(),
-            tool_name: "bash".into(),
-            title: format!(
-                "允许在沙盒外执行命令：{}",
-                command.lines().next().unwrap_or(command)
-            ),
-            body: Some(command.to_owned()),
-            diff: None,
+            tool_name: tool_name.to_owned(),
+            title,
+            body,
+            diff,
             options: moc_protocol::methods::default_options(),
         })
         .await;
@@ -644,4 +752,78 @@ pub(super) async fn repair_pending_calls(
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace(directory: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = directory.path().join("work");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        (root.canonicalize().unwrap(), outside.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn writes_inside_the_workspace_need_no_approval() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, _) = workspace(&directory);
+        for arguments in [
+            serde_json::json!({"path":"src/main.rs","content":"x"}),
+            serde_json::json!({"path":root.join("nested/new.txt").display().to_string(),"content":"x"}),
+        ] {
+            assert!(
+                outside_workspace_targets(&root, "write", &arguments)
+                    .unwrap()
+                    .is_empty(),
+                "{arguments}"
+            );
+        }
+        let edit = serde_json::json!({
+            "files": [
+                {"path":"src/main.rs","edits":[["AAA","AAA","change"]]},
+                {"path":root.join("other.rs").display().to_string(),"edits":[["BBB","BBB","change"]]}
+            ]
+        });
+        assert!(
+            outside_workspace_targets(&root, "edit", &edit)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn write_and_move_targets_outside_the_workspace_require_approval() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, outside) = workspace(&directory);
+        let write = serde_json::json!({
+            "path": outside.join("result.txt").display().to_string(),
+            "content": "x"
+        });
+        assert_eq!(
+            outside_workspace_targets(&root, "write", &write).unwrap(),
+            vec![outside.join("result.txt")]
+        );
+        // move 的 target_path 与源文件同批授权，跨出工作区的目标必须被发现。
+        let edit = serde_json::json!({
+            "path": "src/main.rs",
+            "edits": [["AAA","AAA","change"]],
+            "move": {"from":"AAA","to":"AAA","target_path": outside.join("moved.txt").display().to_string()}
+        });
+        assert_eq!(
+            outside_workspace_targets(&root, "edit", &edit).unwrap(),
+            vec![outside.join("moved.txt")]
+        );
+    }
+
+    #[test]
+    fn malformed_write_arguments_surface_the_tool_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, _) = workspace(&directory);
+        let error = outside_workspace_targets(&root, "edit", &serde_json::json!({"files":[]}))
+            .unwrap_err();
+        assert_eq!(error.code, "E_BAD_PAYLOAD");
+    }
 }

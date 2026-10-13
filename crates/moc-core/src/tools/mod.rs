@@ -341,3 +341,81 @@ pub fn resolve_tool_path(cwd: &std::path::Path, value: &str) -> Result<PathBuf, 
         .ok_or_else(|| ToolError::new("E_ACCESS", "invalid filename"))?;
     Ok(parent.join(filename))
 }
+
+/// 写目标越出工作区时的解析结果：返回展开符号链接后的目标路径。
+///
+/// 已存在的目标直接 canonicalize；尚未存在的目标展开最近存在祖先的符号链接
+/// 后再拼回剩余组件，因此工作区内的符号链接不能把写入引到工作区外。
+/// 返回 `None` 表示路径无法解析，交由工具自身在写入阶段报错。
+pub fn workspace_escape(
+    cwd: &std::path::Path,
+    value: &str,
+) -> Option<PathBuf> {
+    let root = std::fs::canonicalize(cwd).ok()?;
+    let supplied = std::path::Path::new(value);
+    let joined = if supplied.is_absolute() {
+        supplied.to_owned()
+    } else {
+        cwd.join(supplied)
+    };
+    let resolved = resolve_deepest_existing(&joined)?;
+    (!resolved.starts_with(&root)).then_some(resolved)
+}
+
+/// canonicalize 路径中已存在的最深前缀，再拼回尚未存在的尾部组件。
+fn resolve_deepest_existing(joined: &std::path::Path) -> Option<PathBuf> {
+    let mut existing = joined;
+    loop {
+        if let Ok(resolved) = std::fs::canonicalize(existing) {
+            let tail = joined.strip_prefix(existing).ok()?;
+            return Some(resolved.join(tail));
+        }
+        existing = existing.parent()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace(directory: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+        let root = directory.path().join("work");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        (root.canonicalize().unwrap(), outside.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn workspace_escape_only_reports_targets_outside_the_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, outside) = workspace(&directory);
+        assert!(workspace_escape(&root, "src/main.rs").is_none());
+        assert!(workspace_escape(&root, "src/new/deep.rs").is_none());
+        assert!(workspace_escape(&root, "src/../src/main.rs").is_none());
+        assert!(workspace_escape(&root, ".").is_none());
+        let absolute = workspace_escape(&root, &outside.join("notes.txt").display().to_string())
+            .expect("绝对路径越界");
+        assert_eq!(absolute, outside.join("notes.txt"));
+        let parent = workspace_escape(&root, "../outside/notes.txt").expect("相对路径越界");
+        assert_eq!(parent, outside.join("notes.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_escape_follows_symlinks_out_of_the_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, outside) = workspace(&directory);
+        std::fs::write(outside.join("target.txt"), "outside\n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("target.txt"), root.join("file-link")).unwrap();
+        // 目录链接下新建文件、以及指向文件外目标的链接，都必须判为越界。
+        let escaped = workspace_escape(&root, "dir-link/new.txt").expect("目录链接逃逸");
+        assert_eq!(escaped, outside.join("new.txt"));
+        let file = workspace_escape(&root, "file-link").expect("文件链接逃逸");
+        assert_eq!(file, outside.join("target.txt"));
+        // 工作区内的链接仍可正常写入，不产生误报。
+        std::os::unix::fs::symlink(root.join("src"), root.join("internal-link")).unwrap();
+        assert!(workspace_escape(&root, "internal-link/main.rs").is_none());
+    }
+}
