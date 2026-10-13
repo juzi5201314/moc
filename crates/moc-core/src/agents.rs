@@ -233,10 +233,21 @@ async fn finish(
             };
             (status, Some(result.message), Some(result.finish_reason))
         }
-        Err(_) if cancel.is_cancelled() => {
+        Err(error) if cancel.is_cancelled() => {
+            tracing::debug!(agent_id = %agent_id, %error, "子代理已取消");
             (AgentStatus::Stopped, None, Some(FinishReason::Cancelled))
         }
-        Err(_) => (AgentStatus::Failed, None, None),
+        Err(error) => {
+            // 父会话只看到 failed 状态时无从判断原因：失败消息与日志都要留下。
+            tracing::warn!(agent_id = %agent_id, %error, "子代理提示失败");
+            (
+                AgentStatus::Failed,
+                Some(Message::assistant_text(format!(
+                    "Subagent prompt failed: {error}"
+                ))),
+                None,
+            )
+        }
     };
     let last_message = message.as_ref().map(|message| {
         let text = message.text();
