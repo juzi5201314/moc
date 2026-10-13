@@ -144,6 +144,15 @@ impl History {
         }
         stack.push(snapshot);
     }
+
+    /// 把刚取出、尚未应用的快照放回原来的栈。
+    ///
+    /// 撤回/重做因保存进行中而放弃时必须走这里：走 [`History::put`] 等于声明
+    /// 「发生了一次新改动」，会顺手清空重做栈——撤回被放弃却把重做历史丢了。
+    fn restore(&mut self, snapshot: Snapshot, undo: bool) {
+        let stack = if undo { &mut self.undo } else { &mut self.redo };
+        stack.push(snapshot);
+    }
 }
 
 /// 撤回栈与重做栈共享的上限；超出后丢弃最早的记录。
@@ -407,7 +416,7 @@ impl SettingsPanel {
         let verb = if undo { "已撤回" } else { "已重做" };
         if entry.scope != self.scope {
             if app.saving_config() {
-                self.history.put(entry, undo);
+                self.history.restore(entry, undo);
                 self.message = Some("正在保存改动，请稍候".into());
                 return;
             }
@@ -1527,6 +1536,35 @@ pub fn remove(value: &mut Value, path: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 小6：放弃未应用的撤回只把快照放回原栈，重做历史必须留着。
+    ///
+    /// 走 `History::put` 会按「新改动」语义清空重做栈——撤回没执行，重做却没了。
+    #[test]
+    fn restore_keeps_the_other_stack() {
+        let snapshot = |label: &str| Snapshot {
+            scope: ConfigScope::Global,
+            document: Value::Null,
+            tui: Value::Null,
+            label: label.into(),
+        };
+        let mut history = History {
+            undo: vec![snapshot("改 A")],
+            redo: vec![snapshot("被撤回的 B")],
+        };
+
+        // 撤回被保存阻塞：快照放回撤回栈，重做栈不动
+        let entry = history.undo.pop().expect("撤回栈有快照");
+        history.restore(entry, true);
+        assert_eq!(history.undo.len(), 1, "快照回到原栈");
+        assert_eq!(history.redo.len(), 1, "重做历史不受影响");
+        assert_eq!(history.undo[0].label, "改 A");
+
+        // 对照：put 的语义是「发生新改动」，会清空重做栈
+        let entry = history.undo.pop().expect("撤回栈有快照");
+        history.put(entry, true);
+        assert!(history.redo.is_empty(), "put 作为新改动清空重做栈");
+    }
 
     #[test]
     fn test_matches_filter_multidimensional() {
