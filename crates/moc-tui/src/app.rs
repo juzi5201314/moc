@@ -556,14 +556,10 @@ impl App {
     /// 提示收尾：把耗时与结束时刻回填到最后一条助手块（`Worked for` 尾注）。
     pub fn finish_prompt(&mut self) {
         self.finish_thinking();
-        self.generation_start = None;
         let elapsed = self.prompt_started_at.map(|at| at.elapsed());
         let was_cancel_requested = self.cancel_requested;
+        self.reset_prompt_state();
         self.prompt_running = false;
-        self.cancel_requested = false;
-        self.ctrl_c_pending = None;
-        self.prompt_started_at = None;
-        self.transient_mode = None;
         if was_cancel_requested {
             self.set_notice("Stopped");
         }
@@ -706,8 +702,20 @@ impl App {
     }
 
     /// 用加载的会话替换当前会话与转写。
+    ///
+    /// 前端同时只呈现一个会话：上一个会话的提示计时、取消标记、临时模式、用量与
+    /// todo 都在此收尾，否则队列不再派发、状态栏与停止键都停留在上一会话。
+    /// 会话范围的在飞记账（`inflight_prompts`/`inflight_session_ops`/`interrupt_pending`）
+    /// 按会话保留：切回仍在运行的会话时，「运行中」的判定与排队派发才正确。
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
         let clm_active = info.mode == SessionMode::ClmExperimental;
+        let session_id = info.id.clone();
+        self.reset_prompt_state();
+        self.prompt_running = self.inflight_prompts.contains(&session_id);
+        self.usage = Usage::default();
+        self.usage_samples.clear();
+        self.cost_usd = 0.0;
+        self.todos.clear();
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;
@@ -728,6 +736,18 @@ impl App {
         self.history_load_requested = false;
         self.scroll_max_offset = 0;
         self.view_gen += 1;
+    }
+
+    /// 收掉与「当前提示」绑定的本地状态；[`App::finish_prompt`] 与会话切换共用。
+    ///
+    /// `prompt_running` 不在其中：提示收尾要清它，切会话则按会话级在飞记账重算。
+    fn reset_prompt_state(&mut self) {
+        self.thinking_started_at = None;
+        self.generation_start = None;
+        self.prompt_started_at = None;
+        self.cancel_requested = false;
+        self.ctrl_c_pending = None;
+        self.transient_mode = None;
     }
 
     pub fn set_history_cursor(&mut self, has_more: bool, before_entry_id: Option<String>) {
@@ -1034,6 +1054,77 @@ mod tests {
     use super::{ModeMenu, mode_label, model_selector_label};
     use moc_protocol::SessionMode;
     use ratatui::layout::Rect;
+
+    /// M17：切会话收尾上一会话的本地状态，但保留会话级在飞记账。
+    ///
+    /// 不重置会让队列永久不派发（`prompt_running` 卡真）、状态栏显示上一会话的用量、
+    /// Esc/Ctrl+C 走进「停止当前提示」分支。
+    #[test]
+    fn switch_session_resets_local_prompt_state() {
+        use super::{App, CtrlCPending};
+        use moc_protocol::methods::{TodoPhase, TodoStatus, TodoItem};
+        use moc_protocol::{SessionInfo, SessionMode, Usage};
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let session = |id: &str| SessionInfo {
+            id: id.into(),
+            title: "标题".into(),
+            model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            mode: SessionMode::Normal,
+            parent_session_id: None,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        };
+
+        // 旧会话正在跑提示：计时、用量、todo、临时模式与取消标记都在飞。
+        app.session = Some(session("ses_a"));
+        app.prompt_running = true;
+        app.prompt_started_at = Some(std::time::Instant::now());
+        app.thinking_started_at = Some(std::time::Instant::now());
+        app.cancel_requested = true;
+        app.transient_mode = Some(SessionMode::Ask);
+        app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
+        app.usage = Usage {
+            input_tokens: 10,
+            ..Usage::default()
+        };
+        app.cost_usd = 1.5;
+        app.todos = vec![TodoPhase {
+            phase: "阶段".into(),
+            items: vec![TodoItem {
+                status: TodoStatus::Pending,
+                task: "任务".into(),
+                reason: None,
+            }],
+        }];
+        app.inflight_prompts.insert("ses_a".into());
+        app.inflight_session_ops.insert("ses_a".into());
+        app.interrupt_pending.insert("ses_a".into());
+
+        // 切到一个空闲会话：本地状态清空，会话级记账仍留给原会话回收。
+        app.switch_session(session("ses_b"), Vec::new());
+        assert!(!app.prompt_running, "新会话按空闲呈现");
+        assert!(!app.cancel_requested);
+        assert!(app.ctrl_c_pending.is_none());
+        assert!(app.prompt_started_at.is_none());
+        assert!(app.thinking_started_at.is_none());
+        assert!(app.transient_mode.is_none());
+        assert_eq!(app.usage, Usage::default());
+        assert_eq!(app.cost_usd, 0.0);
+        assert!(app.todos.is_empty());
+        assert!(app.inflight_prompts.contains("ses_a"), "在飞记账按会话保留");
+        assert!(app.inflight_session_ops.contains("ses_a"));
+        assert!(app.interrupt_pending.contains("ses_a"));
+
+        // 切回仍在运行的会话：按记账继续呈现「运行中」，排队判定与停止键才对。
+        app.switch_session(session("ses_a"), Vec::new());
+        assert!(app.prompt_running, "切回运行中的会话应显示运行中");
+    }
 
     /// 模型与模式在界面上一律用英文标识，且思考关闭时不出现在模型名里。
     #[test]
