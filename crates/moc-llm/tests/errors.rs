@@ -255,6 +255,27 @@ async fn error_body_and_metadata_are_preserved() {
 }
 
 #[tokio::test]
+async fn error_body_is_truncated_at_local_limit() {
+    let server = start().await;
+    // 上限 1 MiB，上游给两倍：错误体必须被截断，而不是整份读进内存。
+    let payload = "<html>".to_string() + &"x".repeat(2 * 1024 * 1024);
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(502).set_body_raw(payload, "text/html"))
+        .mount(&server)
+        .await;
+
+    let cfg = config(Protocol::OpenAiChat, &server, fast_retry(1));
+    let error = Client::new().complete(&cfg, &request()).await.unwrap_err();
+    let api = error.api_error().expect("应携带上游错误");
+    assert_eq!(api.status, Some(502));
+    assert_eq!(api.kind, ApiErrorKind::ServerError);
+    assert_eq!(api.raw_body.len(), 1024 * 1024);
+    assert!(api.raw_body.starts_with("<html>x"), "{}", &api.raw_body[..16]);
+    assert!(api.message.starts_with("<html>x"), "{}", api.message);
+}
+
+#[tokio::test]
 async fn mid_stream_error_is_not_retried() {
     let server = start().await;
     mount_sse(

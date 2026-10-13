@@ -287,7 +287,7 @@ impl Client {
         let status = response.status();
         if !status.is_success() {
             let headers = response.headers().clone();
-            let body = response.bytes().await?;
+            let body = error_body(response).await;
             tracing::warn!(
                 status = status.as_u16(),
                 body_bytes = body.len(),
@@ -303,6 +303,43 @@ impl Client {
         tracing::debug!(status = status.as_u16(), "收到响应头");
         Ok(response)
     }
+}
+
+/// 非 2xx 响应体的读取上限。
+///
+/// 错误体只用于分类与排障，不进会话上下文，因此独立于正常响应体的字节预算：
+/// 异常上游或代理可以用错误响应绕过那些预算，把整份响应体读进内存。
+const MAX_ERROR_BODY_BYTES: usize = 1024 * 1024;
+
+/// 读取非 2xx 响应体，最多 [`MAX_ERROR_BODY_BYTES`] 字节。
+///
+/// 达到上限即停止读取（状态码与已读部分足以分类），读取中途失败也按已读内容
+/// 继续：真正重要的是不要丢掉带状态码的 [`crate::ApiError`]。
+async fn error_body(mut response: reqwest::Response) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        let room = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+        if room == 0 {
+            tracing::warn!(limit = MAX_ERROR_BODY_BYTES, "错误响应体达到上限，停止读取");
+            break;
+        }
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if chunk.len() > room {
+                    body.extend_from_slice(&chunk[..room]);
+                    tracing::warn!(limit = MAX_ERROR_BODY_BYTES, "错误响应体超过上限，已截断");
+                    break;
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                tracing::warn!(error = %error, "读取错误响应体失败，按已读内容继续");
+                break;
+            }
+        }
+    }
+    body
 }
 
 async fn bounded_body(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>, LlmError> {
