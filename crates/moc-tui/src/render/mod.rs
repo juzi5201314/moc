@@ -139,32 +139,29 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         .buffer_mut()
         .set_style(frame_area, Style::new().bg(theme.bg_base));
 
-    let total = view.sync(app, scroll_area.width);
+    view.sync(app, scroll_area.width);
     let viewport = usize::from(scroll_area.height);
-    let max_offset = total.saturating_sub(viewport);
-    app.scroll_max_offset = max_offset;
-    if app.scroll_offset > max_offset {
-        app.scroll_offset = max_offset;
-    }
-    let skip_rows = max_offset - app.scroll_offset;
-    view.ensure_visible(app, skip_rows, viewport);
+    // 窗口由懒渲染按渲染后高度重算：`skip_rows`/`scroll_offset` 与绘制同源。
+    let window = view.ensure_visible(app, viewport, app.scroll_offset);
+    app.scroll_max_offset = window.max_offset;
+    app.scroll_offset = window.scroll_offset;
     app.mouse_hits.clear();
     app.paint_lines.clear();
     let collect_lines = app.selection.is_some() || app.pending_click.is_some();
     view.paint(
         frame.buffer_mut(),
         scroll_area,
-        skip_rows,
+        window.skip_rows,
         collect_lines,
         &mut app.mouse_hits,
         &mut app.paint_lines,
     );
-    view.trim_outside(skip_rows, viewport);
+    view.trim_outside(window.skip_rows, viewport);
     highlight_selection(frame, app, scroll_area);
     draw_notice(frame, app, scroll_area);
     draw_warning(frame, app, scroll_area);
     // 滚动条贴终端右缘：与内容边距无关，避免压住正文
-    draw_scrollbar(frame, app, scroll_area, max_offset);
+    draw_scrollbar(frame, app, scroll_area, window.max_offset);
 
     draw_header(frame, app, inset(header_area, MARGIN_X));
     draw_prompt(frame, app, prompt_area);

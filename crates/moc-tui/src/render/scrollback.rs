@@ -35,12 +35,27 @@ struct CachedEntry {
     rendered: bool,
 }
 
+/// 绘制窗口：从内容顶部跳过的行数、距尾部的滚动量与最大滚动量。
+///
+/// 懒渲染会修正块高，因此这两个量连同视口在 [`ScrollbackView::ensure_visible`]
+/// 里按**渲染后**的高度重算，绘制与滚动条读的是同一份窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowWindow {
+    /// 绘制起点：从内容顶部跳过的行数。
+    pub skip_rows: usize,
+    /// 夹紧到新总高后的滚动量（距尾部行数）。
+    pub scroll_offset: usize,
+    /// 最大滚动量（总高 − 视口）。
+    pub max_offset: usize,
+}
+
 impl ScrollbackView {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn sync(&mut self, app: &App, width: u16) -> usize {
+    /// 让缓存与 `app.blocks` 对齐（懒块只留估算高度），高度累计由 [`RowWindow`] 负责。
+    pub fn sync(&mut self, app: &App, width: u16) {
         const EAGER_BLOCKS: usize = 64;
         if self.width != width {
             self.width = width;
@@ -84,7 +99,6 @@ impl ScrollbackView {
             }
         }
         self.cache.truncate(app.blocks.len());
-        self.cache.iter().map(|cached| cached.height).sum()
     }
 
     /// 在绘制后释放完全离开视口的行，只保留高度与缓存键。
@@ -101,20 +115,56 @@ impl ScrollbackView {
         }
     }
 
-    /// 为当前视口懒加载被回收的块。
-    pub fn ensure_visible(&mut self, app: &App, skip_rows: usize, viewport: usize) {
-        let end = skip_rows.saturating_add(viewport);
-        let mut offset = 0usize;
-        for (index, cached) in self.cache.iter_mut().enumerate() {
-            let next = offset.saturating_add(cached.height);
-            if !cached.rendered && offset < end && next > skip_rows {
-                let lines = render_entry(index, &app.blocks[index], app, self.width, index == 0);
-                cached.height = lines.len();
-                cached.lines = lines;
-                cached.rendered = true;
+    /// 为当前视口懒加载被回收的块，并用渲染后的高度重算行窗口。
+    ///
+    /// 渲染与绘制必须共用同一份高度累计：估算高度在视口内被修正会同时改变总高与
+    /// 起点，若绘制仍按旧累计直接切片，就会切进只存了估算高度的空块。渲染会改写
+    /// 块高进而改写起点，故迭代到「窗口内没有可渲染的块」为止；每轮至少渲染一块，
+    /// 迭代次数以缓存长度为界。
+    pub fn ensure_visible(
+        &mut self,
+        app: &App,
+        viewport: usize,
+        scroll_offset: usize,
+    ) -> RowWindow {
+        let mut window = self.row_window(viewport, scroll_offset);
+        for _ in 0..=self.cache.len() {
+            let mut rendered = false;
+            let end = window.skip_rows.saturating_add(viewport);
+            let mut offset = 0usize;
+            for (index, cached) in self.cache.iter_mut().enumerate() {
+                let next = offset.saturating_add(cached.height);
+                if !cached.rendered && offset < end && next > window.skip_rows {
+                    let lines = render_entry(index, &app.blocks[index], app, self.width, index == 0);
+                    cached.height = lines.len();
+                    cached.lines = lines;
+                    cached.rendered = true;
+                    rendered = true;
+                }
+                offset = offset.saturating_add(cached.height);
             }
-            offset = next;
+            if !rendered {
+                break;
+            }
+            window = self.row_window(viewport, scroll_offset);
         }
+        window
+    }
+
+    /// 按当前高度累计把「距尾部的滚动量」翻译成行窗口。
+    fn row_window(&self, viewport: usize, scroll_offset: usize) -> RowWindow {
+        let max_offset = self.total_height().saturating_sub(viewport);
+        let scroll_offset = scroll_offset.min(max_offset);
+        RowWindow {
+            skip_rows: max_offset - scroll_offset,
+            scroll_offset,
+            max_offset,
+        }
+    }
+
+    /// 当前缓存高度累计出的内容总高。
+    fn total_height(&self) -> usize {
+        self.cache.iter().map(|cached| cached.height).sum()
     }
 
     /// 从第 `skip_rows` 行开始把内容画进视口，并登记命中表与行文本。
@@ -929,5 +979,76 @@ mod tests {
         assert!(text.contains("a.rs"));
         assert!(text.contains("b.rs"));
         assert_eq!(render_entry(1, &app.blocks[1], &app, 80, false).len(), 0);
+    }
+
+    /// C6：懒渲染与绘制共用同一份渲染后高度累计。
+    ///
+    /// 估算高度只影响滚动范围，随时会被真实渲染修正（工具结果按全文估高、渲染却
+    /// 截断到 [`TOOL_RESULT_TAIL_ROWS`] 行）。若绘制仍按渲染前的累计取起点，向上滚进
+    /// 懒区时就会切进只存估算高度的空块。用例同时钉住契约：视口覆盖的块必须已渲染。
+    #[test]
+    fn lazy_paint_never_slices_unrendered_blocks() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let result = (0..200)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // 70 个工具块：只有末尾 64 块进 eager 渲染，前面几块只留估算高度。
+        for index in 0..70 {
+            let id = format!("call_{index}");
+            app.start_tool_block(id.clone(), "bash".into());
+            app.tool_entry_mut(&id)
+                .expect("工具块存在")
+                .push_args(r#"{"command":"run"}"#);
+            app.finish_tool_block(
+                id.clone(),
+                ToolStatus::Completed,
+                ToolResult {
+                    tool_call_id: id,
+                    content: result.clone(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                Some(1),
+                None,
+            );
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .expect("首帧绘制成功");
+        let viewport = usize::from(app.scrollback_area.height);
+        assert!(viewport > 0, "测试终端应有转写区");
+
+        // 向上滚进懒区：绘制起点落在首个懒块的估算高度范围内。
+        let estimate = view.cache[0].height;
+        app.scroll_offset = app.scroll_max_offset.saturating_sub(estimate / 2);
+        app.selection = Some(((0, 0), (0, 0)));
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .expect("懒区绘制不得越界切片");
+
+        let skip_rows = app.scroll_max_offset - app.scroll_offset;
+        let end = skip_rows.saturating_add(viewport);
+        let mut offset = 0usize;
+        let mut covered = 0usize;
+        for cached in &view.cache {
+            let next = offset.saturating_add(cached.height);
+            if next > skip_rows && offset < end {
+                assert!(cached.rendered, "视口覆盖的块必须已渲染");
+                assert_eq!(cached.lines.len(), cached.height, "渲染高度必须等于行数");
+                covered += 1;
+            }
+            offset = next;
+        }
+        assert!(covered > 0, "视口应落在至少一个块上");
     }
 }
