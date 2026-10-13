@@ -5,17 +5,9 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::hashline::{
-    ANCHOR_SPACE, AnchorError, FileSnapshot, LineEnding, ServedFile, SnapshotId, assign_hashes,
-    canon_hash, decode_anchor, encode_anchor,
+    AnchorError, FileSnapshot, LineEnding, ServedFile, SnapshotId, assign_hashes, canon_hash,
+    decode_anchor,
 };
-
-/// 从错误边界中恢复后应重新展示的当前区间。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FreshRange {
-    pub from_line: usize,
-    pub to_line: usize,
-    pub rendered: String,
-}
 
 /// 验证 edit range 的机器可读错误。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -27,10 +19,7 @@ pub enum RangeError {
     #[error("E_STALE_RANGE: file changed after read; retry with current anchors")]
     StaleRange,
     #[error("E_UNSERVED_RANGE: {kind} was not shown to the model by the earlier read")]
-    Unserved {
-        kind: &'static str,
-        fresh: Option<FreshRange>,
-    },
+    Unserved { kind: &'static str },
     #[error("E_RANGE_TOO_LARGE: one anchored range may contain at most 100000 lines")]
     TooLarge,
     #[error("E_ANCHOR_SPACE_EXHAUSTED")]
@@ -113,14 +102,6 @@ pub fn split_file_lines(text: &str) -> Vec<String> {
     lines
 }
 
-/// 构造当前文件专属、不可重复的三字符锚点。
-pub fn new_anchors(lines: &[String]) -> Result<Vec<u32>, AnchorError> {
-    if lines.len() as u32 > ANCHOR_SPACE {
-        return Err(AnchorError::Exhausted);
-    }
-    assign_hashes(lines, &[])
-}
-
 /// 将未服务、损坏或漂移的锚点转为当前行位置。
 pub fn verify_range(
     served: &ServedFile,
@@ -140,19 +121,16 @@ pub fn verify_range(
     if served.epoch != Some(snapshot.epoch) {
         return Err(RangeError::Unserved {
             kind: "file content changed; current file",
-            fresh: Some(fresh_all(snapshot)),
         });
     }
     let Some(from_position) = find_served(served, snapshot, from_hash) else {
         return Err(RangeError::Unserved {
             kind: "start anchor",
-            fresh: fresh_for_anchor(snapshot, from_hash),
         });
     };
     let Some(to_position) = find_served(served, snapshot, to_hash) else {
         return Err(RangeError::Unserved {
             kind: "end anchor",
-            fresh: fresh_for_anchor(snapshot, to_hash),
         });
     };
     let (start, end, warning) = if from_position <= to_position {
@@ -171,7 +149,6 @@ pub fn verify_range(
         if served.hashes.get(position).copied().flatten().is_none() {
             return Err(RangeError::Unserved {
                 kind: "unserved line inside range",
-                fresh: Some(render_range(snapshot, position, position)),
             });
         }
         let expected = served.canons.get(position).copied().unwrap_or_default();
@@ -193,42 +170,13 @@ fn find_served(served: &ServedFile, snapshot: &FileSnapshot, hash: u32) -> Optio
         })
 }
 
-fn fresh_for_anchor(snapshot: &FileSnapshot, hash: u32) -> Option<FreshRange> {
-    snapshot
-        .hashes
-        .iter()
-        .position(|current| *current == hash)
-        .map(|position| render_range(snapshot, position, position))
-        .or_else(|| (!snapshot.lines.is_empty()).then(|| fresh_all(snapshot)))
-}
-
-fn fresh_all(snapshot: &FileSnapshot) -> FreshRange {
-    render_range(snapshot, 0, snapshot.lines.len().saturating_sub(1))
-}
-
-fn render_range(snapshot: &FileSnapshot, start: usize, end: usize) -> FreshRange {
-    let rendered = (start..=end)
-        .filter_map(|position| {
-            let line = snapshot.lines.get(position)?;
-            let hash = snapshot.hashes[position];
-            Some(format!("{}│{}", encode_anchor(hash).ok()?, line))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    FreshRange {
-        from_line: start.saturating_add(1),
-        to_line: end.saturating_add(1),
-        rendered,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashline::ServedFile;
+    use crate::hashline::{ServedFile, encode_anchor};
 
     #[test]
-    fn preserves_line_endings_and_returns_fresh_rows_for_unserved_ranges() {
+    fn preserves_line_endings_and_rejects_unserved_ranges() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
         std::fs::write(&path, b"one\r\ntwo\r\nthree\r\n").expect("写文件");
@@ -244,7 +192,12 @@ mod tests {
             &encode_anchor(snapshot.hashes[2]).unwrap(),
         )
         .expect_err("未服务尾部边界必须拒绝");
-        assert!(matches!(error, RangeError::Unserved { fresh: Some(_), .. }));
+        assert!(matches!(
+            error,
+            RangeError::Unserved {
+                kind: "end anchor"
+            }
+        ));
     }
 
     #[test]

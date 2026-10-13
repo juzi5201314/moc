@@ -39,8 +39,6 @@ pub enum ResourceBacking {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedResource {
     pub uri: String,
-    pub display_name: String,
-    pub read_only: bool,
     pub backing: ResourceBacking,
 }
 
@@ -147,8 +145,6 @@ impl ArtifactStore {
         let path = checked_child(&root, name, "E_ARTIFACT_PATH", "E_ARTIFACT_NOT_FOUND")?;
         Ok(ResolvedResource {
             uri: input.to_owned(),
-            display_name: input.to_owned(),
-            read_only: true,
             backing: ResourceBacking::File(path),
         })
     }
@@ -487,8 +483,6 @@ fn resolve_skill(
     )?;
     Ok(ResolvedResource {
         uri: input.into(),
-        display_name: input.into(),
-        read_only: true,
         backing: ResourceBacking::File(path),
     })
 }
@@ -519,8 +513,6 @@ fn resolve_local(
     )?;
     Ok(ResolvedResource {
         uri: input.into(),
-        display_name: input.into(),
-        read_only: true,
         backing: ResourceBacking::File(path),
     })
 }
@@ -560,8 +552,6 @@ fn resolve_history(
     };
     Ok(ResolvedResource {
         uri: input.into(),
-        display_name: input.into(),
-        read_only: true,
         backing: ResourceBacking::File(path),
     })
 }
@@ -640,7 +630,10 @@ mod tests {
         let store = ArtifactStore::new("ses_1", paths.clone());
         let uri = store.uri_for_path(&path).unwrap();
         assert_eq!(uri, "artifact://ses_1/artifacts/out.txt");
-        assert!(store.resolve_uri(&uri).unwrap().read_only);
+        assert_eq!(
+            store.resolve_uri(&uri).unwrap().backing,
+            ResourceBacking::File(path.canonicalize().unwrap())
+        );
         assert_eq!(
             store
                 .resolve_uri("artifact://ses_2/artifacts/out.txt")

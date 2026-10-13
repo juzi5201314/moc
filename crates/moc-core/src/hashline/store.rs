@@ -128,8 +128,6 @@ pub struct ServedFile {
     pub epoch: Option<SnapshotId>,
     /// 当前文件修改后不可再分配的锚点及其死亡位置。
     pub retired: Vec<(u32, usize)>,
-    pub reported: Vec<u32>,
-    pub cards: Vec<usize>,
 }
 
 impl ServedFile {
@@ -139,8 +137,6 @@ impl ServedFile {
             canons: Vec::new(),
             epoch: None,
             retired: Vec::new(),
-            reported: Vec::new(),
-            cards: Vec::new(),
         }
     }
 
@@ -162,8 +158,6 @@ impl ServedFile {
             self.hashes.fill(None);
             self.canons.fill(0);
             self.retired.clear();
-            self.reported.clear();
-            self.cards.resize(lines.len(), 0);
             self.epoch = Some(snapshot.epoch);
         }
         // 锚点固定在 62³ 内；反查表只覆盖已分配锚点，避免每次 read 都分配并
@@ -187,7 +181,6 @@ impl ServedFile {
             }
             self.hashes[position] = Some(hash);
             self.canons[position] = canon_hash(&lines[position]);
-            self.cards[position] = position;
         }
     }
 
@@ -196,7 +189,6 @@ impl ServedFile {
         self.epoch = None;
         self.hashes.fill(None);
         self.canons.fill(0);
-        self.cards.fill(0);
     }
 }
 
@@ -288,10 +280,6 @@ impl AnchorStore {
             .or_default()
             .record_served(rows, &snapshot.lines, &snapshot);
         self.snapshots.write().insert(path, snapshot);
-    }
-
-    pub fn snapshot(&self, path: &Path) -> Option<FileSnapshot> {
-        self.snapshots.read().get(path).cloned()
     }
 
     pub fn reuse_hashes(&self, path: &Path, snapshot: &mut FileSnapshot) {
@@ -395,15 +383,6 @@ impl AnchorStore {
 
     pub fn latest_undo_path(&self) -> Option<PathBuf> {
         self.undo.read().order.last().cloned()
-    }
-
-    pub fn clear_undo(&self, path: &Path) {
-        let mut undo = self.undo.write();
-        if let Some(stack) = undo.by_path.remove(path) {
-            let cleared: usize = stack.iter().map(|record| record.bytes.len()).sum();
-            undo.bytes = undo.bytes.saturating_sub(cleared);
-        }
-        undo.order.retain(|entry| entry.as_path() != path);
     }
 
     /// 测试用：撤销栈当前保留的总字节数。
@@ -570,7 +549,7 @@ mod tests {
         let store = AnchorStore::new();
         store.record_served(path.clone(), &[(0, snapshot.hashes[0])], snapshot);
         store.invalidate(&path);
-        assert!(store.snapshot(&path).is_none());
+        // 已服务行全部退役（快照记录同时丢弃，无外部消费者）。
         assert!(
             store
                 .served(&path)
