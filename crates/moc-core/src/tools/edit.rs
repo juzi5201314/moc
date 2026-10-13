@@ -210,13 +210,17 @@ async fn apply_one(
 ) -> Result<Result<EditOutput, ToolOutcome>, ToolError> {
     reject_resource_path(&request.path)?;
     let source_path = resolve_tool_path(&ctx.cwd, &request.path)?;
+    // 授权入口之外的调用也要受检；判定与授权阶段同源。
+    crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &source_path)?;
     request.path = source_path.to_string_lossy().into_owned();
     let target_path = request
         .move_lines
         .as_ref()
         .map(|movement| {
             reject_resource_path(&movement.target_path)?;
-            resolve_tool_path(&ctx.cwd, &movement.target_path)
+            let path = resolve_tool_path(&ctx.cwd, &movement.target_path)?;
+            crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &path)?;
+            Ok(path)
         })
         .transpose()?;
     let mut source_served = ctx.anchors.served(&source_path).unwrap_or_default();

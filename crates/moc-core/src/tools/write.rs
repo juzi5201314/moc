@@ -64,6 +64,8 @@ impl Tool for WriteTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let args = parse_args(args)?;
+            // 授权入口之外的调用也要受检；解析前先按词法落点判定一次。
+            crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &args.path)?;
             ResourceRouter::write(&args.path)
                 .map_err(|error| ToolError::new(error.code, error.message))?;
             if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
@@ -98,6 +100,9 @@ impl Tool for WriteTool {
                 .await
                 .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
+            // create_dir_all 可能补出尾段组件：按当前解析结果重跑边界判定，
+            // 未获授权的越界在这里被拦下，不会落到磁盘。
+            crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &path)?;
             let max_file_bytes = ctx.config.tools.output.max_file_bytes;
             if args.content.len() as u64 > max_file_bytes {
                 return Err(ToolError::new(

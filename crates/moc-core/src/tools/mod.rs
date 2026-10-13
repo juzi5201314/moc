@@ -342,36 +342,77 @@ pub fn resolve_tool_path(cwd: &std::path::Path, value: &str) -> Result<PathBuf, 
     Ok(parent.join(filename))
 }
 
-/// 写目标越出工作区时的解析结果：返回展开符号链接后的目标路径。
+/// 写目标越出工作区时的解析结果：返回真实的写入落点。
 ///
-/// 已存在的目标直接 canonicalize；尚未存在的目标展开最近存在祖先的符号链接
-/// 后再拼回剩余组件，因此工作区内的符号链接不能把写入引到工作区外。
-/// 返回 `None` 表示路径无法解析，交由工具自身在写入阶段报错。
+/// 已存在的目标直接 canonicalize；尚未存在的目标展开最近存在祖先的符号链接，
+/// 再把剩余组件按词法折叠成落点，因此工作区内的符号链接与尾段 `..` 都不能
+/// 把写入引到工作区外。返回 `None` 表示目标在工作区内或无法解析。
 pub fn workspace_escape(
     cwd: &std::path::Path,
-    value: &str,
+    value: impl AsRef<std::path::Path>,
 ) -> Option<PathBuf> {
     let root = std::fs::canonicalize(cwd).ok()?;
-    let supplied = std::path::Path::new(value);
+    let supplied = value.as_ref();
     let joined = if supplied.is_absolute() {
         supplied.to_owned()
     } else {
         cwd.join(supplied)
     };
-    let resolved = resolve_deepest_existing(&joined)?;
-    (!resolved.starts_with(&root)).then_some(resolved)
+    let landing = resolve_landing(&joined)?;
+    (!landing.starts_with(&root)).then_some(landing)
 }
 
-/// canonicalize 路径中已存在的最深前缀，再拼回尚未存在的尾部组件。
-fn resolve_deepest_existing(joined: &std::path::Path) -> Option<PathBuf> {
+/// canonicalize 路径中已存在的最深前缀，再按文件系统语义词法折叠剩余组件。
+///
+/// 尾段组件在写入前不存在，其中的 `..` 只会抵消这些待创建组件本身，因此词法
+/// 折叠与 `create_dir_all` 之后的真实落点一致；已存在部分的符号链接由
+/// canonicalize 展开，不能借链接逃出工作区。
+fn resolve_landing(joined: &std::path::Path) -> Option<PathBuf> {
     let mut existing = joined;
     loop {
         if let Ok(resolved) = std::fs::canonicalize(existing) {
             let tail = joined.strip_prefix(existing).ok()?;
-            return Some(resolved.join(tail));
+            let mut landing = resolved;
+            for component in tail.components() {
+                match component {
+                    std::path::Component::Normal(part) => landing.push(part),
+                    std::path::Component::ParentDir => {
+                        landing.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                        return None;
+                    }
+                }
+            }
+            return Some(landing);
         }
         existing = existing.parent()?;
     }
+}
+
+/// 写入路径的工作区边界复校验：授权入口之外的调用不得越界写入。
+///
+/// 与授权阶段共用 [`workspace_escape`]，保证判定与解析同源；`full` 权限
+/// （yolo，或本次调用已获一次性授权）不做限制。
+pub fn ensure_workspace_write(
+    cwd: &std::path::Path,
+    permission: SessionPermission,
+    value: impl AsRef<std::path::Path>,
+) -> Result<(), ToolError> {
+    if permission != SessionPermission::Workspace {
+        return Ok(());
+    }
+    let Some(landing) = workspace_escape(cwd, value) else {
+        return Ok(());
+    };
+    Err(ToolError::new(
+        "E_PERMISSION_DENIED",
+        format!(
+            "{} is outside the session workspace and was not approved; approve the write from an interactive frontend or switch the session permission",
+            landing.display()
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -399,6 +440,58 @@ mod tests {
         assert_eq!(absolute, outside.join("notes.txt"));
         let parent = workspace_escape(&root, "../outside/notes.txt").expect("相对路径越界");
         assert_eq!(parent, outside.join("notes.txt"));
+    }
+
+    #[test]
+    fn unresolved_parent_components_cannot_hide_an_escape() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, _) = workspace(&directory);
+        // 尾段组件尚不存在，`..` 会在 create_dir_all 补出组件后再折叠：落点必须
+        // 按词法折叠判定，不能把带 `..` 的字面路径当作工作区内。
+        for value in ["z/../../x", "y/deep/../../../../x"] {
+            let escape = workspace_escape(&root, value).expect("尾段 `..` 必须判为越界");
+            assert!(!escape.starts_with(&root), "{value} -> {}", escape.display());
+        }
+        let absolute = root.join("z/../../x").display().to_string();
+        let escape = workspace_escape(&root, &absolute).expect("绝对路径变体必须判为越界");
+        assert_eq!(escape, directory.path().join("x"));
+        // 对照组语义不变：已存在组件之上的 `..` 与其他越界仍然拒绝，区内路径不受影响。
+        assert!(workspace_escape(&root, "src/new/deep.rs").is_none());
+        assert_eq!(
+            workspace_escape(&root, "src/../../evil2.txt").expect("已存在组件上的 `..` 越界"),
+            directory.path().join("evil2.txt")
+        );
+        assert_eq!(
+            workspace_escape(&root, "../outside/notes.txt").expect("父级相对路径越界"),
+            directory.path().join("outside/notes.txt")
+        );
+    }
+
+    #[test]
+    fn unapproved_writes_outside_the_workspace_are_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let (root, outside) = workspace(&directory);
+        let error =
+            ensure_workspace_write(&root, SessionPermission::Workspace, "z/../../x").unwrap_err();
+        assert_eq!(error.code, "E_PERMISSION_DENIED");
+        assert!(error.message.contains("outside the session workspace"));
+        assert!(
+            ensure_workspace_write(
+                &root,
+                SessionPermission::Workspace,
+                outside.join("absolute.txt")
+            )
+            .is_err()
+        );
+        // full 权限（yolo 或本次调用已获授权）与工作区内的目标不受限制。
+        assert!(ensure_workspace_write(&root, SessionPermission::Full, "z/../../x").is_ok());
+        assert!(
+            ensure_workspace_write(&root, SessionPermission::Workspace, "src/new/deep.rs").is_ok()
+        );
+        assert!(
+            ensure_workspace_write(&root, SessionPermission::Workspace, root.join("src/main.rs"))
+                .is_ok()
+        );
     }
 
     #[cfg(unix)]
