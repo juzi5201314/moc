@@ -1162,3 +1162,109 @@ async fn failed_manual_compaction_preserves_upstream_error_and_history() {
     assert!(after.session.lock.is_none());
     h.close().await;
 }
+
+/// 建立一个含可剪枝 `read` 工具结果的会话；`extra` 追加压缩配置。
+async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
+    let workspace = tempfile::tempdir().expect("临时目录");
+    let long_file = workspace.path().join("long.txt");
+    let content = format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800));
+    std::fs::write(&long_file, &content).expect("写长文件");
+    let upstream = MockServer::start().await;
+    support::mount_read_round(&upstream, &long_file, summary).await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", extra).await;
+    let id = h.session(SessionMode::Normal).await;
+    let loaded = h.prompt(&id, "读取长文件").await;
+    assert_eq!(loaded.message.text(), "已读取");
+    let texts = support::tool_result_texts(&h.load(&id).await);
+    assert!(
+        texts.iter().any(|text| text.contains(support::PRUNE_MARKER)),
+        "会话必须先落下可剪枝的工具结果"
+    );
+    (h, id)
+}
+
+const SHAKE_ONLY: &str = "[compaction]\nmethod_order=['shake']\nthreshold={mode='tokens',value=900000}\n\
+    [compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\nkeep_last_prompts=0\n\
+    protect_recent_tool_tokens=0\n";
+
+#[tokio::test]
+async fn shake_archives_the_full_pre_compaction_history() {
+    let (h, id) = prunable_session(SHAKE_ONLY, "压缩摘要").await;
+    let compacted = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("本地剪枝压缩");
+    assert_eq!(compacted.method, "shake");
+
+    // 整表 rewrite 之后会话里只剩剪枝结果。
+    let texts = support::tool_result_texts(&h.load(&id).await);
+    assert!(
+        texts.iter().all(|text| !text.contains(support::PRUNE_MARKER)),
+        "压缩后 transcript 不应保留原始长输出"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("[tool output pruned]")),
+        "shake 必须真的剪枝"
+    );
+
+    // 归档承诺给模型的是完整压缩前历史，不能是剪枝后的内容。
+    let store = moc_core::session::store::SessionStore::new(h.root.path().join("sessions"));
+    let paths = store.find(&id).await.unwrap().unwrap();
+    let mut segments: Vec<_> = std::fs::read_dir(paths.compaction())
+        .expect("归档目录")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect();
+    assert!(!segments.is_empty(), "压缩必须写出历史归档");
+    segments.sort();
+    let mut archive = String::new();
+    for segment in segments {
+        archive.push_str(&std::fs::read_to_string(segment).expect("读取归档段"));
+    }
+    assert!(
+        archive.contains(support::PRUNE_MARKER),
+        "归档必须包含压缩前的完整工具输出"
+    );
+    assert!(
+        !archive.contains("[tool output pruned]"),
+        "归档不得记录剪枝后的占位内容"
+    );
+    h.close().await;
+}
+
+#[tokio::test]
+async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
+    let (h, id) = prunable_session(
+        "[compaction]\nmethod_order=['soft','shake']\nthreshold={mode='tokens',value=900000}\n\
+         [compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10\nkeep_last_prompts=0\n\
+         protect_recent_tool_tokens=0\n",
+        "",
+    ).await;
+    // soft 以空摘要失败，但已经把本次调用计入 usage；随后的 shake 整表 rewrite 不得丢掉它。
+    let compacted = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("失败后由 shake 接管");
+    assert_eq!(compacted.method, "shake");
+    let usage = h
+        .client
+        .call::<SessionUsage>(SessionUsageParams {
+            session_id: id.clone(),
+        })
+        .await
+        .expect("会话用量");
+    assert!(
+        usage.total.calls >= 1,
+        "失败方法写入的用量 entry 必须留在 transcript 里"
+    );
+    h.close().await;
+}
