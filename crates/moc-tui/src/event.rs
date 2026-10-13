@@ -630,23 +630,8 @@ async fn event_loop(
                             app.modal = Some(Modal::MemoryEditor { uri: document.uri, editor, dirty: false, root_uri, entries, picker });
                         }
                     }
-                    Some(AppEvent::MemorySaved(_)) => {
-                        let root = match app.modal.take() {
-                            Some(Modal::MemoryEditor { root_uri, .. }) => root_uri,
-                            other => { app.modal = other; String::new() }
-                        };
-                        if root.is_empty() { app.set_notice("记忆已保存"); }
-                        else {
-                            app.modal = Some(Modal::Memories { root_uri: root.clone(), entries: Vec::new(), picker: crate::modal::PickerState { loading: true, ..Default::default() } });
-                            let client = connection.client.clone();
-                            let events = app.events.clone();
-                            tokio::spawn(async move {
-                                match client.call::<OpenVikingList>(OpenVikingListParams { uri: root, recursive: false, limit: 128 }).await {
-                                    Ok(result) => { let _ = events.send(AppEvent::Memories(result.entries)); }
-                                    Err(error) => { let _ = events.send(AppEvent::PickerError(format!("刷新记忆列表失败：{error}"))); }
-                                }
-                            });
-                        }
+                    Some(AppEvent::MemorySaved(uri)) => {
+                        apply_memory_saved(app, connection, uri);
                     }
                     Some(AppEvent::Usage(result)) => {
                         app.push_note(format_usage(&result), false);
@@ -2041,7 +2026,7 @@ fn handle_modal_key(
                 let content = editor.text.clone();
                 let client = connection.client.clone();
                 let events = events.clone();
-                *dirty = false;
+                // `dirty` 由保存回执清除：写入失败时标题必须仍然带 `*`。
                 tokio::spawn(async move {
                     match client
                         .call::<OpenVikingWrite>(OpenVikingWriteParams {
@@ -2593,6 +2578,60 @@ pub(crate) fn apply_plan_execution_loaded(
             "计划已批准，但加载执行会话失败：{error}；可通过 /resume 恢复"
         )),
     }
+}
+
+/// 记忆保存回执：清掉该文档的 `*` 标记并回到列表。
+///
+/// `dirty` 只在回执到达时清（写入发起时清会让标题提前显示为已保存，失败时
+/// 用户看不到「还有未保存改动」）。
+fn apply_memory_saved(app: &mut App, connection: &EmbeddedConnection, uri: String) {
+    if let Some(Modal::MemoryEditor {
+        uri: open_uri,
+        dirty,
+        ..
+    }) = app.modal.as_mut()
+        && *open_uri == uri
+    {
+        *dirty = false;
+    }
+    let root = match app.modal.take() {
+        Some(Modal::MemoryEditor { root_uri, .. }) => root_uri,
+        other => {
+            app.modal = other;
+            String::new()
+        }
+    };
+    if root.is_empty() {
+        app.set_notice("记忆已保存");
+        return;
+    }
+    app.modal = Some(Modal::Memories {
+        root_uri: root.clone(),
+        entries: Vec::new(),
+        picker: crate::modal::PickerState {
+            loading: true,
+            ..Default::default()
+        },
+    });
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<OpenVikingList>(OpenVikingListParams {
+                uri: root,
+                recursive: false,
+                limit: 128,
+            })
+            .await
+        {
+            Ok(result) => {
+                let _ = events.send(AppEvent::Memories(result.entries));
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::PickerError(format!("刷新记忆列表失败：{error}")));
+            }
+        }
+    });
 }
 
 fn start_plan_execution(
@@ -5155,6 +5194,52 @@ mod tests {
                 assert_eq!(editor.text, "xy", "x 应作为普通字符进入消息");
             }
             _ => unreachable!("子代理详情模态应保持打开"),
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 小8：记忆编辑器的 `*` 标记在保存回执到达时才清。
+    ///
+    /// 写入发起时就清会让标题提前显示为已保存；失败时用户再也看不到「还有未保存
+    /// 改动」，静默丢改动。
+    #[tokio::test]
+    async fn memory_editor_clears_dirty_on_save_receipt() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let uri = "viking://memories/note.md".to_owned();
+        let mut editor = crate::widgets::prompt::PromptState::default();
+        editor.insert_str_raw("记忆正文");
+        app.modal = Some(Modal::MemoryEditor {
+            uri: uri.clone(),
+            editor,
+            dirty: true,
+            root_uri: "viking://memories".into(),
+            entries: Vec::new(),
+            picker: crate::modal::PickerState::default(),
+        });
+
+        // Ctrl+S 只发起写入：回执未到之前必须仍是「已修改」
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('s'),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::MemoryEditor { dirty, .. }) => {
+                assert!(*dirty, "写入回执前标题应保留 *");
+            }
+            _ => unreachable!("保存期间编辑器保持打开"),
+        }
+
+        // 回执到达：清标记并回到记忆列表
+        apply_memory_saved(&mut app, &connection, uri);
+        match app.modal.as_ref() {
+            Some(Modal::Memories { root_uri, .. }) => {
+                assert_eq!(root_uri, "viking://memories", "保存后回到所在目录");
+            }
+            _ => unreachable!("保存回执后应回到记忆列表"),
         }
 
         connection.shutdown().await;
