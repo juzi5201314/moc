@@ -65,9 +65,31 @@ pub struct JobManager {
     pub(crate) slots: Arc<crate::concurrency::Gate>,
 }
 
+/// 已结束任务的保留数量；更早的任务随驱逐释放日志句柄与环形缓冲。
+const RETAINED_FINISHED_JOBS: usize = 16;
+
 impl JobManager {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 驱逐超出保留上限的已结束任务：释放 JobLog 句柄与 persistent 环形缓冲。
+    ///
+    /// 运行中与正在终止的任务不受影响；按开始时间淘汰最旧的已结束任务。
+    fn evict_finished(&self, jobs: &mut HashMap<String, JobInfo>) {
+        let mut finished: Vec<(std::time::Instant, String)> = jobs
+            .values()
+            .filter(|job| !matches!(job.status, JobStatus::Running | JobStatus::Killing))
+            .map(|job| (job.started_at, job.id.clone()))
+            .collect();
+        if finished.len() <= RETAINED_FINISHED_JOBS {
+            return;
+        }
+        finished.sort_by_key(|(started_at, _)| *started_at);
+        let excess = finished.len() - RETAINED_FINISHED_JOBS;
+        for (_, id) in finished.into_iter().take(excess) {
+            jobs.remove(&id);
+        }
     }
 
     pub(crate) fn with_slots(slots: Arc<crate::concurrency::Gate>) -> Self {
@@ -249,6 +271,7 @@ impl JobManager {
                 job.log_truncated = log.log_truncated();
                 job.group.take();
             }
+            self.evict_finished(&mut jobs);
             status
         };
         self.changed.notify_waiters();
@@ -356,11 +379,10 @@ impl JobManager {
             let notified = self.changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let status = self
-                .info(id)
-                .await
-                .expect("运行中的任务不会从表移除")
-                .status;
+            let Some(status) = self.info(id).await.map(|job| job.status) else {
+                // 任务已结束并被驱逐（超过保留上限）：终止已经生效。
+                return Ok(JobStatus::Killed);
+            };
             if !matches!(status, JobStatus::Running | JobStatus::Killing) {
                 return Ok(status);
             }
@@ -552,6 +574,68 @@ fn require_id(id: Option<String>) -> Result<String, ToolError> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn job(
+        directory: &tempfile::TempDir,
+        id: &str,
+        started_at: std::time::Instant,
+        status: JobStatus,
+    ) -> JobInfo {
+        let path = directory.path().join(format!("{id}.log"));
+        let log = super::super::job_log::JobLog::create(
+            path.clone(),
+            super::super::job_log::JobLogMode::Persistent,
+            1024,
+        )
+        .expect("创建日志");
+        JobInfo {
+            id: id.into(),
+            command: "sleep".into(),
+            path,
+            status,
+            lifecycle: JobLifecycle::Monitored,
+            origin: JobOrigin::Explicit,
+            started_at,
+            hard_deadline_secs: None,
+            warning_count: 0,
+            log_truncated: false,
+            pid: None,
+            group: None,
+            log,
+        }
+    }
+
+    #[test]
+    fn finished_jobs_beyond_the_retention_cap_are_evicted() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let manager = JobManager::new();
+        let start = std::time::Instant::now();
+        let mut jobs = manager.jobs.lock();
+        jobs.insert(
+            "running".into(),
+            job(&directory, "running", start, JobStatus::Running),
+        );
+        for index in 0..RETAINED_FINISHED_JOBS + 3 {
+            let id = format!("finished_{index:02}");
+            jobs.insert(
+                id.clone(),
+                job(
+                    &directory,
+                    &id,
+                    start + Duration::from_secs(index as u64),
+                    JobStatus::Finished(Some(0)),
+                ),
+            );
+        }
+        manager.evict_finished(&mut jobs);
+        assert_eq!(jobs.len(), RETAINED_FINISHED_JOBS + 1);
+        assert!(jobs.contains_key("running"), "运行中的任务不得被驱逐");
+        assert!(!jobs.contains_key("finished_00") && !jobs.contains_key("finished_02"));
+        assert!(jobs.contains_key("finished_03"));
+        assert!(jobs.contains_key(&format!("finished_{RETAINED_FINISHED_JOBS:02}")));
+    }
+
     #[test]
     fn read_tail_returns_last_lines_within_bound() {
         let directory = tempfile::tempdir().expect("临时目录");
