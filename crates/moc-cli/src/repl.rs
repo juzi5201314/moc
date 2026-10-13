@@ -336,6 +336,12 @@ async fn run_command(
 ) -> anyhow::Result<CommandResult> {
     let (name, argument) = command.split_once(' ').unwrap_or((command, ""));
     let argument = argument.trim();
+    // 命令表是唯一来源：`/help` 的文本、这张表与下面的分派分支必须一致，
+    // `help_matches_command_table` 用例把「帮助承诺了不存在的命令」挡在 CI 里。
+    if !name.is_empty() && !COMMANDS.contains(&name) {
+        print_unknown_command(name);
+        return Ok(CommandResult::Continue);
+    }
     match name {
         "quit" | "exit" => return Ok(CommandResult::Quit),
         "cancel" => {
@@ -557,9 +563,58 @@ async fn run_command(
             println!("停止请求已处理：{}", result.stopped);
         }
         "" => {}
-        _ => eprintln!("未知命令 `/{name}`；输入 /help 查看命令。"),
+        _ => print_unknown_command(name),
     }
     Ok(CommandResult::Continue)
+}
+
+/// 全部 REPL 命令名；`/help` 文本必须与它一一对应（见下方用例）。
+const COMMANDS: &[&str] = &[
+    "help",
+    "quit",
+    "exit",
+    "cancel",
+    "new",
+    "sessions",
+    "mode",
+    "clm-experimental",
+    "permission",
+    "plan",
+    "ask",
+    "approve",
+    "agents",
+    "agent",
+    "steer-agent",
+    "stop-agent",
+    "compact",
+    "usage",
+    "model",
+];
+
+/// 帮助文本：一行一条命令，行首必须是 `/<命令名>`。
+const HELP_TEXT: &str = "\
+/help                     显示本帮助
+/quit                     退出
+/exit                     退出（同 /quit）
+/cancel                   取消当前提示（运行中按 Ctrl+C）
+/mode <normal|plan|ptc|clm-experimental>  切换工作模式
+/clm-experimental         启用 CLM 实验模式；首次请求后本会话固定为 CLM
+/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）
+/plan <提示词>            切换计划模式并发送提示词
+/ask <问题>               仅本条消息按问答模式（只读）处理
+/approve <execute|compact|new|reject>  处理已提交的计划
+/agents                   列出当前会话的直接子代理
+/agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）
+/steer-agent <id> <消息>  补充运行中子代理
+/stop-agent <id>          停止运行中的子代理
+/compact                  压缩当前上下文
+/usage                    查看当前会话模型用量
+/new                      创建新会话
+/sessions                 列出会话
+/model <selector>         切换模型（装不下当前上下文时先询问再压缩）";
+
+fn print_unknown_command(name: &str) {
+    eprintln!("未知命令 `/{name}`；输入 /help 查看命令。");
 }
 
 async fn approve_plan(
@@ -864,13 +919,36 @@ fn format_duration(active_ms: u64) -> String {
 }
 
 fn print_help() {
-    println!(
-        "/mode <normal|plan|ptc|clm-experimental>  切换工作模式\n/clm-experimental          启用 CLM 实验模式；首次请求后本会话固定为 CLM\n/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）\n/plan <提示词>            切换计划模式并发送提示词\n/ask <问题>               仅本条消息按问答模式（只读）处理\n/agents                  列出当前会话的直接子代理\n/agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）\n/steer-agent <id> <消息>  补充运行中子代理\n/stop-agent <id>          停止运行中的子代理\n/approve <execute|compact|new|reject>\n/compact                 压缩当前上下文\n/usage                   查看当前会话模型用量\n/undo                    撤销最近一次编辑\n/new                     创建新会话\n/sessions                列出会话\n/model <selector>        切换模型（装不下当前上下文时先询问再压缩）\n/quit                    退出"
-    );
-    println!("/cancel                  取消当前提示（运行中按 Ctrl+C）");
+    println!("{HELP_TEXT}");
 }
 
 enum CommandResult {
     Continue,
     Quit,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 帮助文本与命令表必须一一对应：`/undo` 曾经只存在于帮助里，
+    /// 而 `/help`、`/exit` 又漏收。
+    #[test]
+    fn help_matches_command_table() {
+        let listed: Vec<&str> = HELP_TEXT
+            .lines()
+            .filter_map(|line| line.strip_prefix('/'))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .collect();
+        assert_eq!(
+            listed.len(),
+            HELP_TEXT.lines().count(),
+            "帮助每行都必须以 `/<命令名>` 开头"
+        );
+        let mut listed_sorted = listed.clone();
+        listed_sorted.sort_unstable();
+        let mut commands_sorted = COMMANDS.to_vec();
+        commands_sorted.sort_unstable();
+        assert_eq!(listed_sorted, commands_sorted, "帮助文本与命令表必须一致");
+    }
 }
