@@ -36,10 +36,10 @@ pub enum LlmError {
     /// 本地保护停止；不得作为传输失败重试。
     #[error(transparent)]
     Guard(#[from] crate::GuardViolation),
-    /// 重试次数耗尽。
-    #[error("重试 {attempts} 次后仍失败: {last}")]
+    /// 重试预算耗尽。
+    #[error("共尝试 {attempts} 次（含首次）后仍失败: {last}")]
     RetriesExhausted {
-        /// 实际尝试次数（含首次）。
+        /// 总尝试次数，含首次：`attempts == 3` 表示首发一次、重试两次。
         attempts: u32,
         /// 最后一次失败原因。
         #[source]
@@ -503,6 +503,12 @@ mod tests {
             Some(ApiErrorKind::ServerError)
         );
         assert!(exhausted.to_string().contains("unavailable"));
+        assert!(
+            exhausted
+                .to_string()
+                .contains("共尝试 3 次（含首次）后仍失败"),
+            "{exhausted}"
+        );
 
         let encode = LlmError::Encode("缺少 max_tokens".into());
         assert!(!encode.is_retryable());
