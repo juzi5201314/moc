@@ -59,7 +59,7 @@ impl Tool for FindTool {
                 serde_json::json!({
                     "glob":{"type":"array","minItems":1,"items":{"type":"string"}},
                     "path":{"type":"string","description":"Absolute or cwd-relative scan root"},
-                    "hidden":{"type":"boolean"},
+                    "hidden":{"type":"boolean","description":"Include hidden entries such as dotfiles and .git; default false"},
                     "gitignore":{"type":"boolean"},
                     "limit":{"type":"integer","minimum":1,"maximum":200},
                     "sort":{"type":"string","enum":["mtime","path"]},
@@ -157,7 +157,7 @@ impl Scan {
         let gitignore = self.args.gitignore.unwrap_or(true);
         let mut walker = ignore::WalkBuilder::new(&root);
         walker
-            .hidden(!self.args.hidden.unwrap_or(true))
+            .hidden(!self.args.hidden.unwrap_or(false))
             .git_ignore(gitignore)
             .git_global(gitignore)
             .git_exclude(gitignore)
@@ -309,6 +309,26 @@ mod tests {
                 .code,
             "E_BAD_GLOB"
         );
+    }
+
+    #[test]
+    fn hidden_entries_are_excluded_by_default() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git/objects")).unwrap();
+        std::fs::write(root.path().join(".git/objects/pack"), "").unwrap();
+        std::fs::write(root.path().join(".env"), "").unwrap();
+        std::fs::write(root.path().join("visible.rs"), "").unwrap();
+        let default = scan(root.path(), serde_json::json!({"glob":["*"]}), 100).unwrap();
+        assert!(default.contains("visible.rs"));
+        assert!(!default.contains(".env") && !default.contains(".git"));
+        let included = scan(
+            root.path(),
+            serde_json::json!({"glob":["*"],"hidden":true}),
+            100,
+        )
+        .unwrap();
+        assert!(included.contains(".env"));
+        assert!(included.contains(".git/objects/pack"));
     }
 }
 

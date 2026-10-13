@@ -58,7 +58,7 @@ impl Tool for GrepTool {
                     "glob":{"type":"array","items":{"type":"string"}},
                     "case":{"type":"boolean"},
                     "gitignore":{"type":"boolean"},
-                    "hidden":{"type":"boolean"},
+                    "hidden":{"type":"boolean","description":"Include hidden entries such as dotfiles and .git; default false"},
                     "context_before":{"type":"integer","minimum":0},
                     "context_after":{"type":"integer","minimum":0},
                     "skip":{"type":"integer","minimum":0},
@@ -562,6 +562,26 @@ mod tests {
         };
         let output = run(root.path(), serde_json::json!({"pattern":"hit"}), config);
         assert!(output.contains("results may be incomplete"));
+    }
+
+    #[test]
+    fn hidden_entries_are_excluded_by_default() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".git/objects")).unwrap();
+        std::fs::write(root.path().join(".git/objects/pack"), "hit\n").unwrap();
+        std::fs::write(root.path().join(".env"), "hit\n").unwrap();
+        std::fs::write(root.path().join("visible.txt"), "hit\n").unwrap();
+        let config = crate::config::GrepConfig::default();
+        let default = run(root.path(), serde_json::json!({"pattern":"hit"}), config.clone());
+        assert!(default.contains("visible.txt:1:hit"));
+        assert!(!default.contains(".env") && !default.contains(".git"));
+        let included = run(
+            root.path(),
+            serde_json::json!({"pattern":"hit","hidden":true}),
+            config,
+        );
+        assert!(included.contains(".env:1:hit"));
+        assert!(included.contains(".git/objects/pack:1:hit"));
     }
 }
 
