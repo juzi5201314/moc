@@ -63,23 +63,29 @@ fn canonical_or_owned(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn git_root(cwd: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
+    if let Ok(output) = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .output()
-        .ok()?;
-    if output.status.success() {
-        let path = String::from_utf8(output.stdout).ok()?;
+        && output.status.success()
+        && let Ok(path) = String::from_utf8(output.stdout)
+    {
         return Some(PathBuf::from(path.trim()));
     }
-    let mut current = cwd;
-    while let Some(parent) = current.parent() {
-        if current.join(".git").exists() {
-            return Some(current.to_owned());
+    enclosing_repository(cwd)
+}
+
+/// git 不可用或拒绝作答时按 `.git` 标记向上查找；找不到仓库一律返回 `None`，
+/// 绝不回退到文件系统根，否则会把 `/` 下的 AGENTS.md 当成项目指令。
+fn enclosing_repository(cwd: &Path) -> Option<PathBuf> {
+    let mut current = Some(cwd);
+    while let Some(directory) = current {
+        if directory.join(".git").exists() {
+            return Some(directory.to_owned());
         }
-        current = parent;
+        current = directory.parent();
     }
-    Some(current.to_owned())
+    None
 }
 
 fn push_file(
@@ -392,6 +398,23 @@ mod tests {
         assert!(
             !prompt.contains("OVERSIZED-MARKER"),
             "超限文件不得进入提示"
+        );
+    }
+
+    #[test]
+    fn repository_discovery_never_falls_back_to_the_filesystem_root() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        assert_eq!(
+            git_root(directory.path()),
+            None,
+            "非 Git 目录不得把 / 当作仓库根"
+        );
+        let repository = directory.path().join("repo");
+        fs::create_dir_all(repository.join(".git")).expect("伪仓库目录");
+        assert_eq!(
+            git_root(&repository),
+            Some(repository.clone()),
+            "没有可用 git 命令时按 .git 标记向上查找"
         );
     }
 }
