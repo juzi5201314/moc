@@ -50,13 +50,51 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
         return Ok(());
     }
     let core = Core::new(config).context("初始化 MOC core 失败")?;
-    let result = if use_tui(&args) {
-        moc_tui::run(core.clone(), tui_options(&args)).await
-    } else {
-        run_embedded(core.clone(), args).await
+    // SIGTERM / SIGHUP 不会走前端的正常退出路径：先把前端 future 收掉（TUI 的
+    // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
+    // 保证 raw mode、MCP 子进程与 OpenViking commit 都不因信号退出而丢失。
+    let result = tokio::select! {
+        result = run_frontend(Arc::clone(&core), args) => result,
+        signal = termination_signal() => {
+            eprintln!("收到 {signal}，正在退出");
+            Ok(())
+        }
     };
     core.shutdown().await;
     result
+}
+
+/// 跑选定的前端：TUI（默认）或行式 REPL / print。
+async fn run_frontend(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
+    if use_tui(&args) {
+        moc_tui::run(core, tui_options(&args)).await
+    } else {
+        run_embedded(core, args).await
+    }
+}
+
+/// 等 SIGTERM / SIGHUP 到来，返回信号名（清理由调用方负责）。
+#[cfg(unix)]
+fn termination_signal() -> impl std::future::Future<Output = &'static str> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let terminate = signal(SignalKind::terminate());
+    let hangup = signal(SignalKind::hangup());
+    async move {
+        match (terminate, hangup) {
+            (Ok(mut terminate), Ok(mut hangup)) => tokio::select! {
+                _ = terminate.recv() => "SIGTERM",
+                _ = hangup.recv() => "SIGHUP",
+            },
+            // 注册失败（极罕见）：退回永不就绪，不改变正常退出路径
+            _ => std::future::pending().await,
+        }
+    }
+}
+
+/// Windows 没有这两个信号：永不就绪，退出仍走交互路径的 Ctrl+C。
+#[cfg(not(unix))]
+fn termination_signal() -> impl std::future::Future<Output = &'static str> {
+    std::future::pending()
 }
 
 /// 交互模式默认进 TUI；`--repl` 强制行式，非 TTY（管道 / CI）自动降级。
