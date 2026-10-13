@@ -77,24 +77,7 @@ impl Tool for FindTool {
         Box::pin(async move {
             let args: FindArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            if let Some(path) = args.path.as_deref()
-                && path.contains("://")
-                && !path.starts_with("ov://")
-                && !path.starts_with("viking://")
-            {
-                let _ = crate::resources::ResourceRouter::resolve_read(ctx, path)
-                    .map_err(|error| ToolError::new(error.code, error.message))?
-                    .ok_or_else(|| {
-                        ToolError::new(
-                            "E_URI_UNSUPPORTED",
-                            "resource URI cannot be a find root; use read or grep",
-                        )
-                    })?;
-                return Err(ToolError::new(
-                    "E_URI_UNSUPPORTED",
-                    "resource URI cannot be a find root; use read or grep",
-                ));
-            }
+            reject_resource_root(args.path.as_deref())?;
             let cancel = ctx.cancel.child_token();
             let _cancel_on_drop = cancel.clone().drop_guard();
             let scan = Scan {
@@ -111,6 +94,17 @@ impl Tool for FindTool {
             Ok(ToolOutcome::success(output))
         })
     }
+}
+
+/// find 只扫描本地路径；资源 URI 应交给 read 或 grep。
+fn reject_resource_root(path: Option<&str>) -> Result<(), ToolError> {
+    if path.is_some_and(crate::resources::is_resource_uri) {
+        return Err(ToolError::new(
+            "E_URI_UNSUPPORTED",
+            "resource URI cannot be a find root; use read or grep",
+        ));
+    }
+    Ok(())
 }
 
 struct Scan {
@@ -309,6 +303,28 @@ mod tests {
                 .code,
             "E_BAD_GLOB"
         );
+    }
+
+    #[test]
+    fn resource_roots_are_rejected_only_for_registered_schemes() {
+        for uri in [
+            "skill://demo/SKILL.md",
+            "artifact://ses_1/jobs/job.log",
+            "local://ses_1/plans/plan.md",
+            "history://ses_1/transcript",
+            "viking://~/notes",
+            "ov://repo",
+        ] {
+            assert_eq!(
+                reject_resource_root(Some(uri)).unwrap_err().code,
+                "E_URI_UNSUPPORTED",
+                "{uri}"
+            );
+        }
+        for path in ["plain://dir/file", "/tmp/notes", "src/main.rs"] {
+            assert!(reject_resource_root(Some(path)).is_ok(), "{path}");
+        }
+        assert!(reject_resource_root(None).is_ok());
     }
 
     #[test]

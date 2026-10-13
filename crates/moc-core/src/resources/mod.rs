@@ -210,6 +210,23 @@ impl ArtifactStore {
     }
 }
 
+/// 是否为 MOC 资源 URI（含 `ov://` 别名）。
+///
+/// 只有注册过的 scheme 才算资源 URI；含 `://` 的其它字符串是合法本地路径，
+/// 工具必须按文件系统路径处理，不能按 URI 报错。
+pub fn is_resource_uri(input: &str) -> bool {
+    resource_scheme(input).is_some()
+}
+
+/// 读取输入前缀里的已注册 scheme；不是资源 URI 时返回 `None`。
+fn resource_scheme(input: &str) -> Option<ResourceScheme> {
+    let (scheme, _) = input.split_once("://")?;
+    if scheme == "ov" {
+        return Some(ResourceScheme::OpenViking);
+    }
+    ResourceScheme::parse(scheme)
+}
+
 /// 所有 MOC-native URI 的统一入口。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ResourceRouter;
@@ -674,6 +691,23 @@ mod tests {
                 .iter()
                 .any(|candidate| candidate.uri == "local://ses_1/plans/")
         );
+    }
+
+    #[test]
+    fn resource_uri_predicate_covers_registered_schemes_only() {
+        for uri in [
+            "artifact://ses_1/jobs/job.log",
+            "skill://demo/SKILL.md",
+            "local://ses_1/plans/plan.md",
+            "history://ses_1/transcript",
+            "viking://~/notes",
+            "ov://repo",
+        ] {
+            assert!(is_resource_uri(uri), "{uri}");
+        }
+        for path in ["plain://dir/file", "/tmp/report://draft", "src/main.rs", ""] {
+            assert!(!is_resource_uri(path), "{path}");
+        }
     }
 
     #[test]
