@@ -21,6 +21,14 @@ use crate::types::{
     ToolDef,
 };
 
+/// 单次流式响应里允许的 `tool_calls[].index` 上界。
+///
+/// 线上的 `index` 会被直接当作 `Vec` 下标使用，因此必须由本地常量兜底而不是
+/// `debug_assert`：异常网关给出的大值会驱动一次超大分配（`handle_alloc_error`
+/// 直接 abort 进程），回绕值会让 `index + 1` 溢出。模型返回的并行调用数是个位数，
+/// 1024 与 [`crate::guard`] 的 `MAX_BLOCKS` 同量级。
+const MAX_TOOL_CALL_SLOTS: usize = 1024;
+
 /// 编码请求。
 pub(crate) fn encode(
     cfg: &LlmConfig,
@@ -538,7 +546,8 @@ pub(crate) struct ChatStreamDecoder {
     /// 工具调用 index → 首个非空 ID。
     ///
     /// 线上 `tool_calls[].index` 在同一次响应内稠密、从 0 开始，上界为模型返回的
-    /// 并行调用数（个位数），因此用 `Vec` 直接下标寻址，不做哈希。
+    /// 并行调用数（个位数），因此用 `Vec` 直接下标寻址，不做哈希；下标另由
+    /// [`MAX_TOOL_CALL_SLOTS`] 兜底，超限即拒绝整条流。
     tool_ids: Vec<String>,
 }
 
@@ -616,7 +625,11 @@ impl ChatStreamDecoder {
             .ok_or_else(|| LlmError::Stream("Chat 工具调用增量缺少 index".into()))?;
         let index = usize::try_from(raw_index)
             .map_err(|_| LlmError::Stream(format!("Chat 工具调用 index 超出范围: {raw_index}")))?;
-        debug_assert!(index < 1024, "工具调用 index 应稠密且很小，实际 {index}");
+        if index >= MAX_TOOL_CALL_SLOTS {
+            return Err(LlmError::Stream(format!(
+                "Chat 工具调用 index {index} 超过本地上限 {MAX_TOOL_CALL_SLOTS}"
+            )));
+        }
 
         if self.tool_ids.len() <= index {
             self.tool_ids.resize(index + 1, String::new());
@@ -1533,6 +1546,67 @@ mod tests {
                 },
                 StreamEvent::ToolCallArgumentsDelta {
                     index: 0,
+                    json: "{}".into(),
+                },
+                StreamEvent::Done {
+                    finish_reason: FinishReason::ToolCalls,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_tool_call_index_is_bounded_by_local_slots() {
+        // `index` 直接用作 `Vec` 下标：巨大值会驱动一次超大分配，回绕值
+        // （`usize::MAX`）会在 `index + 1` 处溢出，两者都必须以流错误结束。
+        for raw in ["1024", "4294967296", "18446744073709551615"] {
+            let mut decoder = ChatStreamDecoder::new(&config());
+            let out = feed(
+                &mut decoder,
+                &[&format!(
+                    r#"{{"choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":{raw},"id":"call_1","function":{{"name":"get_weather","arguments":"{{}}"}}}}]}},"finish_reason":null}}]}}"#
+                )],
+            );
+            assert_eq!(
+                out.iter().filter(|event| event.is_err()).count(),
+                1,
+                "index {raw}: {out:?}"
+            );
+            assert!(
+                matches!(out.last(), Some(Err(LlmError::Stream(_)))),
+                "index {raw}: {:?}",
+                out.last()
+            );
+            assert!(
+                decoder.tool_ids.is_empty(),
+                "index {raw}: 不应为越界下标分配槽位"
+            );
+        }
+
+        // 上限内的最后一个下标仍然可用。
+        let last = MAX_TOOL_CALL_SLOTS - 1;
+        let mut decoder = ChatStreamDecoder::new(&config());
+        let out = events(
+            &mut decoder,
+            &[&format!(
+                r#"{{"choices":[{{"index":0,"delta":{{"tool_calls":[{{"index":{last},"id":"call_1","function":{{"name":"get_weather","arguments":"{{}}"}}}}]}},"finish_reason":"tool_calls"}}]}}"#
+            )],
+        );
+        assert_eq!(
+            out,
+            vec![
+                StreamEvent::Start {
+                    id: None,
+                    model: None,
+                    effort: None,
+                },
+                StreamEvent::ToolCallStart {
+                    index: last,
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                },
+                StreamEvent::ToolCallArgumentsDelta {
+                    index: last,
                     json: "{}".into(),
                 },
                 StreamEvent::Done {
