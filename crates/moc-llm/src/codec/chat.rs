@@ -504,7 +504,8 @@ fn string_at(value: &Value, pointer: &str) -> String {
         .to_owned()
 }
 
-/// 取出文本：字符串直接取，数组取其中 `text` 字段拼接（部分网关返回内容块数组）。
+/// 取出文本：字符串直接取，数组取其中 `text` 字段拼接（部分网关返回内容块数组，
+/// 数组里的裸字符串同样计入）。
 fn text_of(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(text)) => text.clone(),
@@ -512,6 +513,8 @@ fn text_of(value: Option<&Value>) -> String {
             let mut out = String::new();
             for part in parts {
                 if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    out.push_str(text);
+                } else if let Some(text) = part.as_str() {
                     out.push_str(text);
                 }
             }
@@ -588,13 +591,11 @@ impl ChatStreamDecoder {
                 text: reasoning,
             }));
         }
-        if let Some(text) = delta.get("content").and_then(Value::as_str)
-            && !text.is_empty()
-        {
-            out.push(Ok(StreamEvent::TextDelta {
-                index: 0,
-                text: text.to_owned(),
-            }));
+        // 少数网关在流式增量里也返回内容块数组（与非流式路径同样的兼容），
+        // 只认字符串形态会让整条响应变成「成功但空回复」。
+        let text = text_of(delta.get("content"));
+        if !text.is_empty() {
+            out.push(Ok(StreamEvent::TextDelta { index: 0, text }));
         }
         // OpenAI 没有独立的拒绝通道：`refusal` 增量并入文本，
         // `finish_reason = content_filter` 已表达语义。
@@ -1611,6 +1612,42 @@ mod tests {
                 },
                 StreamEvent::Done {
                     finish_reason: FinishReason::ToolCalls,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_accepts_block_array_content() {
+        // 少数网关在流式增量里给内容块数组：与非流式路径一样必须取出文本，
+        // 否则响应「成功」但正文为空。
+        let mut decoder = ChatStreamDecoder::new(&config());
+        let events = events(
+            &mut decoder,
+            &[
+                r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"role":"assistant","content":[{"type":"text","text":"你"},{"type":"text","text":"好"}]},"finish_reason":null}]}"#,
+                r#"{"choices":[{"index":0,"delta":{"content":["再","见"]},"finish_reason":"stop"}]}"#,
+                "[DONE]",
+            ],
+        );
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Start {
+                    id: Some("chatcmpl-1".into()),
+                    model: None,
+                    effort: None,
+                },
+                StreamEvent::TextDelta {
+                    index: 0,
+                    text: "你好".into(),
+                },
+                StreamEvent::TextDelta {
+                    index: 0,
+                    text: "再见".into(),
+                },
+                StreamEvent::Done {
+                    finish_reason: FinishReason::Stop,
                 },
             ]
         );
