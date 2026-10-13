@@ -378,8 +378,11 @@ impl OpenVikingClient {
                 Err(OpenVikingError::HttpStatus {
                     status: 404 | 405, ..
                 }) => {
-                    for message in chunk {
-                        last = self
+                    // 服务端不认识批量端点：退回逐条发送。任一条失败就把这条以及之后
+                    // 尚未发出的消息写进 pending 再上报——与批量路径同一语义，
+                    // 静默丢记忆是这里最坏的收场。
+                    for (offset, message) in chunk.iter().enumerate() {
+                        let sent = self
                             .send_json(
                                 self.http
                                     .post(self.endpoint(&format!(
@@ -388,7 +391,15 @@ impl OpenVikingClient {
                                     .json(&serde_json::json!({"peer_id":peer,"message":message})),
                                 Some(peer),
                             )
-                            .await?;
+                            .await;
+                        match sent {
+                            Ok(result) => last = result,
+                            Err(error) => {
+                                let unsent = &messages[index * 100 + offset..];
+                                self.queue_messages(session_id, unsent, peer).await?;
+                                return Err(error);
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -543,6 +554,7 @@ pub fn resolve_peer_id(cwd: &Path) -> Result<WorkspaceIdentity, std::io::Error> 
 fn crate_path_encoding(path: &Path) -> String {
     path.to_string_lossy().replace(['/', '\\', ':'], "-")
 }
+
 fn sanitize_peer(value: &str) -> String {
     let value = value
         .trim()
@@ -677,5 +689,84 @@ mod wiremock_tests {
             .await
             .expect("replay and append");
         assert!(!client.pending_path("moc-s", "peer-a").exists());
+    }
+
+    #[tokio::test]
+    async fn batch_404_falls_back_to_single_message_endpoint() {
+        let server = MockServer::start().await;
+        let directory = tempfile::tempdir().expect("pending directory");
+        let mut client = OpenVikingClient::new(OpenVikingConfig {
+            url: server.uri(),
+            ..Default::default()
+        })
+        .expect("client config")
+        .expect("enabled");
+        client.pending_root = directory.path().to_owned();
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sessions/moc-s/messages/batch"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("no batch endpoint"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sessions/moc-s/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"result":{"accepted":true}})),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let messages = vec![serde_json::json!({"seq":1}), serde_json::json!({"seq":2})];
+        let last = client
+            .append_messages("moc-s", &messages, "peer-a")
+            .await
+            .expect("逐条回退应当成功");
+        assert_eq!(last["accepted"], serde_json::json!(true));
+        assert!(
+            !client.pending_path("moc-s", "peer-a").exists(),
+            "全部发出后不该留 pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_failure_queues_unsent_messages() {
+        let server = MockServer::start().await;
+        let directory = tempfile::tempdir().expect("pending directory");
+        let mut client = OpenVikingClient::new(OpenVikingConfig {
+            url: server.uri(),
+            ..Default::default()
+        })
+        .expect("client config")
+        .expect("enabled");
+        client.pending_root = directory.path().to_owned();
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sessions/moc-s/messages/batch"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("no batch endpoint"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/sessions/moc-s/messages"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let messages = vec![serde_json::json!({"seq":1}), serde_json::json!({"seq":2})];
+        let result = client.append_messages("moc-s", &messages, "peer-a").await;
+        assert!(
+            matches!(result, Err(OpenVikingError::HttpStatus { status: 500, .. })),
+            "逐条回退失败必须上报：{result:?}"
+        );
+
+        // 失败的那条与之后尚未发出的消息都要留在 pending，下一次 append 会重放
+        let pending = tokio::fs::read_to_string(client.pending_path("moc-s", "peer-a"))
+            .await
+            .expect("剩余消息必须进 pending");
+        let lines: Vec<&str> = pending.lines().collect();
+        assert_eq!(lines.len(), 2, "两条都未发出：{pending}");
+        for (line, seq) in lines.iter().zip([1, 2]) {
+            let value: serde_json::Value = serde_json::from_str(line).expect("JSON 行");
+            assert_eq!(value["seq"], serde_json::json!(seq));
+        }
     }
 }
