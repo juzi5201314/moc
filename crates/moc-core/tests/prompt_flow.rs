@@ -38,12 +38,12 @@ use std::sync::Arc;
 use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
-    ClientCapabilities, ClientInfo, InputPart, PlanAction, PlanStatus, PromptParams,
-    SessionCompact, SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode,
-    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPlanApprove,
-    SessionPlanApproveParams, SessionPrompt, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate, SessionUpdateMethod,
-    UpstreamField,
+    ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope, InputPart,
+    PlanAction, PlanStatus, PromptParams, SessionCompact, SessionCompactParams, SessionLoad,
+    SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
+    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
+    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -2130,5 +2130,165 @@ async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
     assert_eq!(errors[2].0, "invalid_exit");
     assert!(errors[2].1.contains("E_BAD_PAYLOAD"));
     assert_eq!(calls.load(Ordering::SeqCst), 5);
+    h.close().await;
+}
+
+/// 在飞提示时 `session/unload` 必须拒绝，且不得摘除提示正在使用的运行态。
+#[tokio::test]
+async fn unload_is_refused_while_a_prompt_is_in_flight() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(400))
+                .set_body_raw(text_stream("进行中"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    let id = h.session(SessionMode::Normal).await;
+    let client = h.client.clone();
+    let request_id = id.clone();
+    let pending = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: request_id,
+                input: vec![InputPart::Text {
+                    text: "开始".into(),
+                }],
+                mode: None,
+            })
+            .await
+    });
+    // 上游已收到请求且响应被延迟：提示锁与运行态都在飞。
+    let mut waited = 0;
+    while upstream.received_requests().await.map_or(0, |requests| requests.len()) == 0 {
+        assert!(waited < 200, "上游必须收到提示请求");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        waited += 1;
+    }
+    let refused = h
+        .client
+        .call::<SessionUnload>(SessionUnloadParams {
+            session_id: id.clone(),
+        })
+        .await;
+    let error = match refused {
+        Ok(_) => panic!("在飞提示时不得卸载会话"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SESSION_BUSY"), "{error}");
+    assert_eq!(
+        pending.await.unwrap().expect("提示正常完成").message.text(),
+        "进行中"
+    );
+    h.client
+        .call::<SessionUnload>(SessionUnloadParams {
+            session_id: id.clone(),
+        })
+        .await
+        .expect("提示结束后可卸载");
+    h.close().await;
+}
+
+/// 多轮提示每轮都从当前会话状态重建请求投影，不得重复或丢失已提交的消息。
+#[tokio::test]
+async fn tool_rounds_rebuild_the_request_projection_from_current_state() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let upstream = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let response = if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                support::tool_stream(vec![(
+                    "todo_1",
+                    "todo",
+                    serde_json::json!({"op":"add","text":"第一轮任务"}),
+                )])
+            } else {
+                text_stream("收尾完成")
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    let id = h.session(SessionMode::Normal).await;
+    assert_eq!(h.prompt(&id, "执行两轮").await.message.text(), "收尾完成");
+    let requests = upstream.received_requests().await.expect("请求记录");
+    assert_eq!(requests.len(), 2);
+    let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let rendered = second.to_string();
+    assert_eq!(
+        rendered.matches("执行两轮").count(),
+        1,
+        "用户消息必须恰好出现一次：{rendered}"
+    );
+    assert_eq!(
+        rendered.matches("todo_1").count(),
+        2,
+        "工具调用与结果各出现一次"
+    );
+    assert_eq!(second["messages"][0]["role"], "system");
+    h.close().await;
+}
+
+/// 保存配置后既有会话必须重新读取指令文件，而不是沿用首次提示的缓存。
+#[tokio::test]
+async fn config_save_invalidates_the_session_instruction_cache() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_raw(text_stream("好的"), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    std::fs::write(
+        h.root.path().join("work/AGENTS.md"),
+        "配置后指令：始终使用中文回答\n",
+    )
+    .expect("写指令文件");
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "第一次").await;
+    let cwd = h.root.path().join("work").to_string_lossy().into_owned();
+    let reply = h
+        .client
+        .call::<ConfigManage>(ConfigAction::Read {
+            scope: ConfigScope::Global,
+            cwd: cwd.clone(),
+        })
+        .await
+        .expect("读取配置");
+    let ConfigReply::Settings(document) = reply else {
+        panic!("设置文档");
+    };
+    let mut edited = document.document.clone();
+    edited["context_files"] = serde_json::json!({"enabled": true});
+    h.client
+        .call::<ConfigManage>(ConfigAction::Save {
+            scope: ConfigScope::Global,
+            cwd,
+            document: edited,
+            revision: document.revision,
+        })
+        .await
+        .expect("保存配置");
+    h.prompt(&id, "第二次").await;
+    let requests = upstream.received_requests().await.expect("请求记录");
+    let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(
+        !first.to_string().contains("配置后指令"),
+        "指令文件未启用时不得进入系统提示"
+    );
+    let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert!(
+        second.to_string().contains("配置后指令"),
+        "保存配置后既有会话必须重新读取指令文件"
+    );
     h.close().await;
 }
