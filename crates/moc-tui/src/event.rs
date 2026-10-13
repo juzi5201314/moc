@@ -1313,7 +1313,7 @@ fn handle_key(
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
-        (KeyCode::Char('y'), KeyModifiers::NONE) => copy_selection(app),
+        (KeyCode::Char('y'), KeyModifiers::NONE) if app.selection.is_some() => copy_selection(app),
         (KeyCode::Esc, _) => {
             if app.selection.is_some() {
                 app.selection = None;
@@ -5028,6 +5028,27 @@ mod tests {
 
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         assert_eq!(app.prompt_text(), "", "空输入 Enter 无操作");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// M16：没有选区时小写 `y` 照常输入；有选区时才走复制快捷键。
+    #[tokio::test]
+    async fn lowercase_y_inserts_without_selection() {
+        let (core, connection, mut app) = setup_test_app().await;
+        for ch in "yes".chars() {
+            handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
+        }
+        assert_eq!(app.prompt_text(), "yes", "无选区时 y 必须进入输入框");
+
+        // 拖选后 y 仍是复制键：内容不进输入框（选区正文由 paint_lines 提供）。
+        app.prompt.clear();
+        app.prompt_changed();
+        app.selection = Some(((4, 2), (9, 2)));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('y'));
+        assert_eq!(app.prompt_text(), "", "有选区时 y 不进入输入框");
+        assert!(app.selection.is_some(), "空选区内容不清空选区");
 
         connection.shutdown().await;
         core.shutdown().await;
