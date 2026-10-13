@@ -305,19 +305,6 @@ impl McpManager {
         McpSnapshot { statuses, tools }
     }
 
-    /// 按限定名查找工具描述；只覆盖已连接的 server。
-    pub fn resolve(&self, qualified: &str) -> Option<Arc<McpToolInfo>> {
-        let (server, _) = parse_qualified(qualified)?;
-        let slot = self.slots.get(server)?;
-        match &*slot.phase.read() {
-            Phase::Connected { tools, .. } => tools
-                .iter()
-                .find(|info| info.qualified == qualified)
-                .cloned(),
-            _ => None,
-        }
-    }
-
     /// 调用一次工具。
     ///
     /// 连接层故障时等待重连（至多 [`RECONNECT_WAIT`]）并重试一次；
@@ -420,17 +407,6 @@ fn shutdown_or_failed(slot: &ServerSlot, shutdown: &CancellationToken) -> bool {
     shutdown.is_cancelled()
         || matches!(&*slot.phase.read(), Phase::Failed { .. })
         || slot.generation.is_closed()
-}
-
-/// 解析 `mcp__<server>__<tool>`；server 段保证不含 `__`，取首个分隔即可。
-pub(crate) fn parse_qualified(qualified: &str) -> Option<(&str, &str)> {
-    let rest = qualified.strip_prefix("mcp__")?;
-    let (server, tool) = rest.split_once("__")?;
-    if server.is_empty() || tool.is_empty() {
-        None
-    } else {
-        Some((server, tool))
-    }
 }
 
 /// 工具名合法化：限定名只保留 `[A-Za-z0-9_-]`。
@@ -700,21 +676,6 @@ async fn supervise(
 #[cfg(test)]
 mod naming {
     use super::*;
-
-    #[test]
-    fn parse_qualified_splits_on_first_separator() {
-        assert_eq!(
-            parse_qualified("mcp__github__list_issues"),
-            Some(("github", "list_issues"))
-        );
-        assert_eq!(
-            parse_qualified("mcp__github__server__nested__tool"),
-            Some(("github", "server__nested__tool"))
-        );
-        assert_eq!(parse_qualified("github__list"), None);
-        assert_eq!(parse_qualified("mcp__github__"), None);
-        assert_eq!(parse_qualified("mcp____x"), None);
-    }
 
     #[test]
     fn sanitize_keeps_identifier_chars_only() {
