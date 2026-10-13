@@ -215,6 +215,56 @@ async fn claude_adaptive_thinking_with_cache_control() {
 }
 
 #[tokio::test]
+async fn claude_cache_breakpoints_match_replay_indices() {
+    let server = start().await;
+    let cfg = LlmConfig {
+        auth: Auth::Header {
+            name: "x-api-key".into(),
+            value: "sk-ant".into(),
+        },
+        ..config(Protocol::AnthropicMessages, &server)
+    };
+    // core 对 Anthropic 恒定把断点放在 `messages[0]`（系统提示）与最近两条消息上。
+    let messages = vec![
+        Message::system("系统提示"),
+        Message::user_text("先查"),
+        assistant_with_tools(&[("tool_1", "get_weather")]),
+        Message::tool_result("tool_1", "晴", false),
+        Message::user_text("继续"),
+    ];
+    let breakpoints = vec![0, messages.len() - 2, messages.len() - 1];
+    let req = ChatRequest {
+        messages,
+        tools: vec![weather_tool()],
+        max_output_tokens: Some(8192),
+        options: RequestOptions {
+            cache: Some(CacheConfig {
+                breakpoints,
+                ttl: Some(CacheTtl::FiveMinutes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let body = sent_body(&server, &cfg, &req).await;
+
+    // 系统提示与工具定义构成第一个缓存单元，最近两条消息各落一个断点。
+    let marker = json!({"type": "ephemeral", "ttl": "5m"});
+    assert_eq!(
+        body["system"],
+        json!([{"type": "text", "text": "系统提示", "cache_control": marker}])
+    );
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3);
+    assert!(messages[1]["content"][0].get("cache_control").is_none());
+    let tail = messages[2]["content"].as_array().unwrap();
+    assert_eq!(tail.len(), 2);
+    assert_eq!(tail[0]["cache_control"], marker, "工具结果");
+    assert_eq!(tail[1]["cache_control"], marker, "用户插话");
+}
+
+#[tokio::test]
 async fn responses_stateless_continuation() {
     let server = start().await;
     let cfg = config(Protocol::OpenAiResponses, &server);
