@@ -123,6 +123,9 @@ pub(crate) fn decode_response(
         message: format!("响应体不是合法 JSON: {err}"),
         body: Some(String::from_utf8_lossy(body).into_owned().into_boxed_str()),
     })?;
+    if let Some(error) = in_band_error(cfg, &value, body) {
+        return Err(LlmError::Api(error));
+    }
     let mut response = match cfg.protocol {
         Protocol::OpenAiChat => chat::decode_response(cfg, req, &value)?,
         Protocol::OpenAiResponses => responses::decode_response(cfg, req, &value)?,
@@ -132,6 +135,43 @@ pub(crate) fn decode_response(
         response.raw = Some(Box::new(value));
     }
     Ok(response)
+}
+
+/// 识别「HTTP 200 但响应体是错误对象」的形态：网关与代理经常这样返回。
+///
+/// 流式路径三家协议都有等价判断，非流式此前会把它解码成空回复，用户只看到
+/// 「成功但没有内容」。错误消息与代号由各协议的错误体解析器给出；解析不出
+/// 任何字段（`{"error":null}`、`{"error":{}}`）时按正常响应继续解码。
+fn in_band_error(cfg: &LlmConfig, value: &Value, body: &[u8]) -> Option<ApiError> {
+    if !value.get("error").is_some_and(|error| !error.is_null()) {
+        return None;
+    }
+    let (kind, fields) = match cfg.protocol {
+        // Anthropic 的错误类型有现成映射表，流中错误事件与 200 响应体共用。
+        Protocol::AnthropicMessages => {
+            let fields = anthropic::parse_error_value(value)?;
+            let kind = anthropic::kind_from_error_type(
+                fields.code.as_deref().unwrap_or_default(),
+                &fields.message,
+            );
+            (kind, fields)
+        }
+        // OpenAI 两家没有错误类型表：按关键词细化，未命中即 `Unknown`。
+        Protocol::OpenAiChat | Protocol::OpenAiResponses => {
+            let fields = openai::parse_error_value(value)?;
+            let kind = ApiErrorKind::Unknown.refine(fields.code.as_deref(), &fields.message);
+            (kind, fields)
+        }
+    };
+    let mut error = ApiError::new(
+        None,
+        kind,
+        fields.message,
+        String::from_utf8_lossy(body).into_owned(),
+    );
+    error.code = fields.code;
+    error.request_id = fields.request_id;
+    Some(error)
 }
 
 /// 非 2xx 响应解码为 [`ApiError`]。
@@ -523,6 +563,108 @@ mod tests {
                 assert_eq!(body.as_deref(), Some("not json"));
             }
             other => panic!("期望 Decode 错误，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_response_rejects_in_band_error_body() {
+        // HTTP 200 + 错误体：三家协议都必须报错，而不是解码成「成功但空回复」。
+        let cases = [
+            (
+                // 没有 HTTP 状态码时 OpenAI 风格错误只能按关键词细化，未命中即 Unknown。
+                Protocol::OpenAiChat,
+                json!({"error": {"message": "bad temperature", "type": "invalid_request_error"}}),
+                ApiErrorKind::Unknown,
+                "bad temperature",
+                Some("invalid_request_error"),
+            ),
+            (
+                Protocol::OpenAiResponses,
+                json!({"error": {"message": "upstream exploded", "code": "server_error"}}),
+                ApiErrorKind::Unknown,
+                "upstream exploded",
+                Some("server_error"),
+            ),
+            (
+                // Anthropic 有错误类型表，与流中错误事件走同一映射。
+                Protocol::AnthropicMessages,
+                json!({
+                    "type": "error",
+                    "error": {"type": "overloaded_error", "message": "Overloaded"},
+                    "request_id": "req_1",
+                }),
+                ApiErrorKind::Overloaded,
+                "Overloaded",
+                Some("overloaded_error"),
+            ),
+        ];
+        for (protocol, body, kind, message, code) in cases {
+            let cfg = LlmConfig {
+                protocol,
+                ..Default::default()
+            };
+            let body = body.to_string();
+            let err = decode_response(&cfg, &ChatRequest::default(), body.as_bytes()).unwrap_err();
+            match err {
+                LlmError::Api(error) => {
+                    assert_eq!(error.status, None, "{protocol:?}");
+                    assert_eq!(error.kind, kind, "{protocol:?}");
+                    assert_eq!(error.message, message, "{protocol:?}");
+                    assert_eq!(error.code.as_deref(), code, "{protocol:?}");
+                    assert_eq!(error.raw_body.as_ref(), body, "{protocol:?}");
+                }
+                other => panic!("{protocol:?} 期望 Api 错误，实际 {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn decode_response_keeps_null_error_field_as_success() {
+        // `null` 与空对象不是错误体：网关在正常响应里也会带上该字段。
+        let cases = [
+            (
+                Protocol::OpenAiChat,
+                json!({
+                    "error": null,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+                }),
+                "hi",
+            ),
+            (
+                Protocol::OpenAiChat,
+                json!({
+                    "error": {},
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+                }),
+                "hi",
+            ),
+            (
+                Protocol::OpenAiResponses,
+                json!({
+                    "error": null,
+                    "status": "completed",
+                    "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]}],
+                }),
+                "ok",
+            ),
+            (
+                Protocol::AnthropicMessages,
+                json!({
+                    "error": null,
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                }),
+                "ok",
+            ),
+        ];
+        for (protocol, body, text) in cases {
+            let cfg = LlmConfig {
+                protocol,
+                ..Default::default()
+            };
+            let body = body.to_string();
+            let response = decode_response(&cfg, &ChatRequest::default(), body.as_bytes()).unwrap();
+            assert_eq!(response.message.text(), text, "{protocol:?}");
         }
     }
 

@@ -640,6 +640,11 @@ fn decode_usage(usage: Option<&Value>) -> Usage {
 /// 解析 Anthropic 错误体。
 pub(crate) fn parse_error_body(body: &[u8]) -> Option<ErrorFields> {
     let value: Value = serde_json::from_slice(body).ok()?;
+    parse_error_value(&value)
+}
+
+/// 解析 Anthropic 错误体（已解析的 JSON）：`{"error":{"type","message"}}`。
+pub(crate) fn parse_error_value(value: &Value) -> Option<ErrorFields> {
     let error = value.get("error")?;
     let message = error
         .get("message")
@@ -659,8 +664,10 @@ pub(crate) fn parse_error_body(body: &[u8]) -> Option<ErrorFields> {
     })
 }
 
-/// Anthropic 错误类型到分类的映射（流中错误事件没有 HTTP 状态码可用）。
-fn kind_from_error_type(error_type: &str, message: &str) -> ApiErrorKind {
+/// Anthropic 错误类型到分类的映射。
+///
+/// 流中错误事件与 200 响应体里的错误都没有 HTTP 状态码，只能靠错误类型字符串分类。
+pub(crate) fn kind_from_error_type(error_type: &str, message: &str) -> ApiErrorKind {
     let base = match error_type {
         "authentication_error" => ApiErrorKind::Auth,
         "permission_error" => ApiErrorKind::Permission,
