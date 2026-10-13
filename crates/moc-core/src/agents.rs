@@ -38,6 +38,35 @@ fn terminal(status: AgentStatus) -> bool {
     )
 }
 
+/// 常驻注册表保留的已完成子代理条目上限；更早的终态条目按更新时间回收。
+///
+/// 终态信息仍可从 transcript 复原（`list_agents` 会回退到会话信息），
+/// 这里只需为最近的 `wait_agent` 查询保留一段窗口。
+const MAX_TERMINAL_AGENTS: usize = 64;
+
+/// 回收超出上限的终态条目；运行中的条目永远保留。
+fn prune_terminal_agents(registry: &mut AgentRegistry) {
+    let terminal_count = registry
+        .items
+        .values()
+        .filter(|runtime| terminal(runtime.info.status))
+        .count();
+    let excess = terminal_count.saturating_sub(MAX_TERMINAL_AGENTS);
+    if excess == 0 {
+        return;
+    }
+    let mut finished: Vec<(u64, String)> = registry
+        .items
+        .iter()
+        .filter(|(_, runtime)| terminal(runtime.info.status))
+        .map(|(id, runtime)| (runtime.info.updated_at_ms, id.clone()))
+        .collect();
+    finished.sort_unstable();
+    for (_, id) in finished.into_iter().take(excess) {
+        registry.items.remove(&id);
+    }
+}
+
 fn invalid(message: impl Into<String>) -> CoreError {
     CoreError::Config(format!("INVALID_PARAMS: {}", message.into()))
 }
@@ -189,6 +218,12 @@ async fn activate(
     let task_inner = Arc::clone(&inner);
     let task_request = request.clone();
     let mut tasks = inner.agent_tasks.lock().await;
+    // 已完成的任务连同输出一起回收，避免 JoinSet 随会话时长无界增长。
+    while let Some(result) = tasks.try_join_next() {
+        if let Err(error) = result {
+            tracing::error!(%error, "子代理任务失败");
+        }
+    }
     tasks.spawn(async move {
         let result = crate::service::prompt::run_prompt(
             Arc::clone(&task_inner),
@@ -267,7 +302,9 @@ async fn finish(
         runtime.info.last_message = last_message.clone();
         runtime.message = message;
         runtime.finish_reason = finish_reason;
-        Arc::clone(&runtime.notify)
+        let notify = Arc::clone(&runtime.notify);
+        prune_terminal_agents(&mut registry);
+        notify
     };
     notify.notify_waiters();
     let _ = request
@@ -509,4 +546,72 @@ pub(crate) async fn wait(
         message: runtime.message.clone(),
         finish_reason: runtime.finish_reason.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use moc_protocol::methods::AgentStatus;
+
+    /// 与 `spawn` 登记的运行态一致，只保留等待语义需要的字段。
+    fn running_agent(notify: Arc<Notify>) -> AgentRuntime {
+        AgentRuntime {
+            info: AgentInfo {
+                id: "ses_agent00001".into(),
+                parent_id: "ses_parent0001".into(),
+                title: "子代理".into(),
+                model: "p/m".into(),
+                cwd: "/tmp/project".into(),
+                status: AgentStatus::Running,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                last_message: None,
+            },
+            cancel: CancellationToken::new(),
+            notify,
+            message: None,
+            finish_reason: None,
+        }
+    }
+
+    #[test]
+    fn pruning_keeps_running_agents_and_the_newest_finished_entries() {
+        let mut registry = AgentRegistry::default();
+        for index in 0..(MAX_TERMINAL_AGENTS + 5) {
+            let mut runtime = running_agent(Arc::new(Notify::new()));
+            runtime.info.id = format!("ses_done{index:05}");
+            runtime.info.status = AgentStatus::Completed;
+            runtime.info.updated_at_ms = u64::try_from(index).expect("索引可表示为时间戳");
+            registry.items.insert(runtime.info.id.clone(), runtime);
+        }
+        let mut active = running_agent(Arc::new(Notify::new()));
+        active.info.id = "ses_running0001".into();
+        registry.items.insert(active.info.id.clone(), active);
+
+        prune_terminal_agents(&mut registry);
+
+        let terminal_count = registry
+            .items
+            .values()
+            .filter(|runtime| terminal(runtime.info.status))
+            .count();
+        assert_eq!(terminal_count, MAX_TERMINAL_AGENTS);
+        assert!(
+            registry.items.contains_key("ses_running0001"),
+            "运行中的条目必须保留"
+        );
+        assert!(
+            !registry.items.contains_key("ses_done00000"),
+            "最旧的终态条目被回收"
+        );
+        assert!(
+            registry
+                .items
+                .contains_key(&format!("ses_done{:05}", MAX_TERMINAL_AGENTS + 4)),
+            "最新的终态条目必须保留"
+        );
+        // 上限之内重复回收不得再删除条目。
+        prune_terminal_agents(&mut registry);
+        assert_eq!(registry.items.len(), MAX_TERMINAL_AGENTS + 1);
+    }
 }
