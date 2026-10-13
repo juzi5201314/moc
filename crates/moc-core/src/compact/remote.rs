@@ -170,7 +170,7 @@ pub(crate) async fn compact(
         ctx,
         &state.session.id,
         super::Checkpoint {
-            method: "remote",
+            method: "remote".to_owned(),
             summary,
             first_kept_id,
             tokens_before,

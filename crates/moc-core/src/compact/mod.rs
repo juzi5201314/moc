@@ -375,7 +375,8 @@ pub(crate) enum HistoryArchive {
 }
 
 pub(crate) struct Checkpoint {
-    pub method: &'static str,
+    /// checkpoint 的产出方法；复用上一份 summary/native 时必须保留其真实方法名。
+    pub method: String,
     pub summary: String,
     pub first_kept_id: Option<String>,
     pub tokens_before: u64,
@@ -409,7 +410,7 @@ pub(crate) async fn record_compaction(
         .append(
             session_id,
             EntryPayload::Compaction {
-                method: method.to_owned(),
+                method: method.clone(),
                 summary,
                 first_kept_id,
                 tokens_before,
@@ -423,7 +424,7 @@ pub(crate) async fn record_compaction(
         .emit(
             session_id.to_owned(),
             SessionUpdate::ContextCompacted {
-                method: method.to_owned(),
+                method: method.clone(),
                 tokens_before,
                 tokens_after,
             },
@@ -431,7 +432,7 @@ pub(crate) async fn record_compaction(
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
     Ok(CompactResult {
-        method: method.to_owned(),
+        method,
         tokens_before,
         tokens_after,
         summary_chars,

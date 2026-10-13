@@ -173,7 +173,7 @@ pub(crate) async fn compact(
         ctx,
         &state.session.id,
         super::Checkpoint {
-            method: "soft",
+            method: "soft".to_owned(),
             summary,
             first_kept_id: first_kept,
             tokens_before,
