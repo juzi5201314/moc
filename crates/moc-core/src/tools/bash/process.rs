@@ -13,6 +13,11 @@ use std::{
 };
 use tokio::{io::AsyncWriteExt, process::Command};
 use tokio_util::sync::CancellationToken;
+
+/// 子进程退出后等待管道写完的窗口；超时即放弃读取并回收任务，
+/// 避免逃出进程组的子孙进程一直持有 stdout 占住 Gate 名额。
+const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
 pub(crate) struct ProcessExit {
     pub code: Option<i32>,
     pub timed_out: bool,
@@ -118,7 +123,7 @@ impl Process {
         let stdout = child.stdout.take().expect("stdout 已配置为管道");
         let output_group = completion_group.clone();
         let reader_log = log.clone();
-        let reader = tokio::spawn(async move {
+        let mut reader = tokio::spawn(async move {
             let write_input = async move {
                 if let (Some(mut input), Some(text)) = (input, args.stdin) {
                     match input.write_all(text.as_bytes()).await {
@@ -148,10 +153,18 @@ impl Process {
                 }
             };
             drop(completion_group);
-            let (output_truncated, _input) = reader
+            let (output_truncated, _input) = match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader)
                 .await
-                .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
-                .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
+            {
+                Ok(joined) => joined
+                    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
+                    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
+                Err(_) => {
+                    tracing::warn!("子进程退出后 stdout 仍被占用，停止继续读取输出");
+                    reader.abort();
+                    (false, ())
+                }
+            };
             let status =
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
             log.finish()
@@ -516,6 +529,27 @@ mod unix_tests {
         let result = process.completion.await.expect("等待 external shell");
         assert_ne!(result.code, Some(0));
         assert!(!external.exists(), "沙盒不应写入工作区外");
+    }
+
+    #[tokio::test]
+    async fn lingering_grandchild_does_not_stall_completion() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = test_log(directory.path().join("drain.log")).await;
+        let process = Process::spawn(
+            bash_args("sleep 20 & echo done"),
+            directory.path().to_owned(),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(60)),
+            log,
+            SessionPermission::Full,
+        )
+        .await
+        .expect("启动 shell");
+        let result = tokio::time::timeout(Duration::from_secs(6), process.completion)
+            .await
+            .expect("持有 stdout 的子孙进程不得让任务永不回收")
+            .expect("等待 shell");
+        assert_eq!(result.code, Some(0));
     }
 }
 
