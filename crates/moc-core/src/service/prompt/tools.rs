@@ -614,6 +614,26 @@ async fn authorize_write_tools(
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>()
         .join("\n");
+    let (diff, content) = match tool_name {
+        "write" => match crate::tools::write::parse_args(arguments.clone()) {
+            Ok(args) => (
+                crate::tools::write::preview_arguments(ctx, &args).await,
+                Some(args.content),
+            ),
+            Err(_) => (None, None),
+        },
+        _ => (crate::tools::edit::preview_arguments(ctx, arguments), None),
+    };
+    let mut body = format!(
+        "以下写入目标位于会话工作区之外：\n{paths}\n工作区外的写入不做沙盒接管，请确认目标无误。"
+    );
+    if let Some(content) = &content {
+        body.push_str(&format!(
+            "\n\n将写入的内容（前 {WRITE_PREVIEW_LINES} 行，共 {} 字节）：\n{}",
+            content.len(),
+            write_preview(content)
+        ));
+    }
     request_permission(
         ctx,
         tool_call_id,
@@ -626,12 +646,33 @@ async fn authorize_write_tools(
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Some(format!(
-            "以下写入目标位于会话工作区之外：\n{paths}\n工作区外的写入不做沙盒接管，请确认目标无误。"
-        )),
-        None,
+        Some(body),
+        diff,
     )
     .await
+}
+
+/// 权限弹窗中写入内容预览的行数与字节上限。
+const WRITE_PREVIEW_LINES: usize = 40;
+const WRITE_PREVIEW_BYTES: usize = 4096;
+
+/// 写入内容预览：前若干行加字节数，超限时注明截断。
+fn write_preview(content: &str) -> String {
+    let mut preview = String::new();
+    let mut lines = 0usize;
+    let mut bytes = 0usize;
+    for line in content.lines() {
+        let width = line.len() + 1;
+        if lines >= WRITE_PREVIEW_LINES || bytes + width > WRITE_PREVIEW_BYTES {
+            preview.push_str("\n[...]");
+            break;
+        }
+        preview.push_str(line);
+        preview.push('\n');
+        lines += 1;
+        bytes += width;
+    }
+    preview
 }
 
 /// 发起一次权限询问；无法询问或用户未选择 `allow_once` 都按拒绝处理。
@@ -831,6 +872,21 @@ mod tests {
             outside_workspace_targets(&root, "edit", &edit).unwrap(),
             vec![outside.join("moved.txt")]
         );
+    }
+
+    #[test]
+    fn write_preview_carries_content_and_marks_truncation() {
+        let body = write_preview("first\nsecond");
+        assert!(body.contains("first\nsecond"));
+        let long = (0..WRITE_PREVIEW_LINES + 5)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let preview = write_preview(&long);
+        assert!(preview.contains("line 0") && !preview.contains("line 44"));
+        assert!(preview.ends_with("[...]"));
+        let wide = "x".repeat(WRITE_PREVIEW_BYTES + 1);
+        assert!(write_preview(&wide).ends_with("[...]"));
     }
 
     #[test]

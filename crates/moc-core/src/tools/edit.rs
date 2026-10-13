@@ -151,6 +151,60 @@ impl BatchReport {
     }
 }
 
+/// 授权预览：用与执行相同的计划计算 edit 将产生的结构化 diff。
+///
+/// 任一文件无法预览（如 E_UNSERVED_RANGE）时整体放弃：宁可没有预览，也不给
+/// 出一份与实际执行无关的 diff。
+pub(crate) fn preview_arguments(ctx: &ToolCtx, args: &Value) -> Option<moc_protocol::ToolDiff> {
+    let requests = parse_requests(args.clone()).ok()?;
+    preview_requests(
+        &ctx.cwd,
+        requests,
+        &ctx.anchors,
+        ctx.config.tools.edit.max_edits,
+        ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
+    )
+}
+
+/// 预览主体：与 [`apply_one`] 相同的解析、快照与计划计算，只是不落盘。
+fn preview_requests(
+    cwd: &std::path::Path,
+    requests: Vec<EditRequest>,
+    anchors: &crate::hashline::AnchorStore,
+    max_edits: usize,
+    max_file_bytes: u64,
+) -> Option<moc_protocol::ToolDiff> {
+    let mut files = Vec::new();
+    let mut truncated = false;
+    for request in requests {
+        reject_resource_path(&request.path).ok()?;
+        let source_path = resolve_tool_path(cwd, &request.path).ok()?;
+        let target_path = request
+            .move_lines
+            .as_ref()
+            .map(|movement| resolve_tool_path(cwd, &movement.target_path))
+            .transpose()
+            .ok()?;
+        let served = anchors.served(&source_path).unwrap_or_default();
+        let target_served = target_path.as_ref().and_then(|path| anchors.served(path));
+        let mut resolved = request;
+        resolved.path = source_path.to_string_lossy().into_owned();
+        let diff = crate::hashline::apply::preview_edit(
+            cwd,
+            &resolved,
+            &served,
+            target_served.as_ref(),
+            anchors,
+            max_edits,
+            max_file_bytes,
+        )
+        .ok()?;
+        truncated |= diff.truncated;
+        files.extend(diff.files);
+    }
+    Some(moc_protocol::ToolDiff { files, truncated })
+}
+
 fn edit_schema() -> Value {
     let properties = edit_file_properties();
     let required = ["path", "edits"];
@@ -310,6 +364,38 @@ mod tests {
         let applied = outcome.diff.expect("失败结果保留已应用 diff");
         assert_eq!(applied.files.len(), 1);
         assert_eq!(applied.files[0].path, "a.rs");
+    }
+
+    #[test]
+    fn preview_reports_the_diff_the_approval_flow_shows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        std::fs::write(&path, "alpha\nbeta\n").unwrap();
+        let snapshot = crate::hashline::served::read_snapshot(&path, 4096).unwrap();
+        let anchors = crate::hashline::AnchorStore::new();
+        let rows: Vec<_> = snapshot.hashes.iter().copied().enumerate().collect();
+        anchors.record_served(path.clone(), &rows, snapshot.clone());
+        let anchor = crate::hashline::encode_anchor(snapshot.hashes[0]).unwrap();
+        let requests = parse_requests(serde_json::json!({
+            "path": "file.txt",
+            "edits": [[anchor.clone(), anchor, "inserted"]],
+        }))
+        .unwrap();
+        let diff = preview_requests(dir.path(), requests, &anchors, 32, 4096).expect("预览成功");
+        assert_eq!(diff.files.len(), 1);
+        assert_eq!(diff.files[0].path, path.display().to_string());
+        assert!(diff.files[0].hunks.iter().any(|hunk| hunk
+            .lines
+            .iter()
+            .any(|line| line.kind == moc_protocol::DiffLineKind::Insert
+                && line.text == "inserted")));
+        // 未读取过的文件没有可预览的计划：整体放弃而不是给出误导性 diff。
+        let missing = parse_requests(serde_json::json!({
+            "path": "other.txt",
+            "edits": [["AAA", "AAA", "inserted"]],
+        }))
+        .unwrap();
+        assert!(preview_requests(dir.path(), missing, &anchors, 32, 4096).is_none());
     }
 
     #[test]

@@ -172,6 +172,22 @@ impl Tool for WriteTool {
     }
 }
 
+/// 授权预览：用与执行相同的旧内容与归一化计算覆盖 diff，不落盘。
+pub(crate) async fn preview_arguments(ctx: &ToolCtx, args: &WriteArgs) -> Option<ToolDiff> {
+    if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
+        return None;
+    }
+    let path = resolve_tool_path(&ctx.cwd, &args.path).ok()?;
+    let max_file_bytes = ctx.config.tools.output.max_file_bytes;
+    let (old, oversized) = read_previous(&path, max_file_bytes).await.ok()?;
+    if oversized {
+        return None;
+    }
+    let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
+    let content = normalize_line_endings(&args.content, ending);
+    write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES)
+}
+
 fn reject_served_hash_echo(
     path: &Path,
     content: &str,
