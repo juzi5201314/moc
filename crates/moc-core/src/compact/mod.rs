@@ -366,6 +366,14 @@ pub(crate) async fn compact(
     )))
 }
 
+/// checkpoint 归档的来源。
+pub(crate) enum HistoryArchive {
+    /// 记录时按当前状态写出压缩前历史。
+    Write,
+    /// 调用方已在改写 transcript 之前完成归档，直接复用其结果。
+    Precomputed(Option<String>),
+}
+
 pub(crate) struct Checkpoint {
     pub method: &'static str,
     pub summary: String,
@@ -374,6 +382,7 @@ pub(crate) struct Checkpoint {
     pub tokens_after: u64,
     pub instructions: Option<String>,
     pub native: Option<Box<serde_json::Value>>,
+    pub archive: HistoryArchive,
 }
 
 pub(crate) async fn record_compaction(
@@ -390,8 +399,9 @@ pub(crate) async fn record_compaction(
         tokens_after,
         instructions,
         native,
+        archive,
     } = checkpoint;
-    append_runtime_checkpoint(inner, session_id, &mut summary).await?;
+    append_runtime_checkpoint(inner, session_id, &mut summary, archive).await?;
     inner.reset_loaded_skills(session_id).await;
     let summary_chars = summary.chars().count().min(u32::MAX as usize) as u32;
     inner
@@ -432,10 +442,14 @@ async fn append_runtime_checkpoint(
     inner: &CoreInner,
     session_id: &str,
     summary: &mut String,
+    archive: HistoryArchive,
 ) -> Result<(), CoreError> {
     let record = inner.sessions.get(session_id).await?;
     let state = record.state.lock().await.clone();
-    let archive_uri = archive::write(&record.paths, session_id, &state).await?;
+    let archive_uri = match archive {
+        HistoryArchive::Write => archive::write(&record.paths, session_id, &state).await?,
+        HistoryArchive::Precomputed(uri) => uri,
+    };
     let jobs = inner.runtime(session_id).await.jobs.list().await;
     if archive_uri.is_none() && state.todos.is_empty() && jobs.is_empty() {
         return Ok(());

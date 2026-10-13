@@ -25,8 +25,12 @@ pub(crate) async fn compact(
             "local pruning found no reclaimable tool output".into(),
         ));
     }
-    inner.sessions.rewrite(&state.session.id, entries).await?;
+    // 归档必须覆盖完整的压缩前历史：整表 rewrite 之后 transcript 只剩剪枝结果，
+    // 而 summary 向模型承诺的正是这份压缩前历史。
     let record = inner.sessions.get(&state.session.id).await?;
+    let archive_uri =
+        super::archive::write(&record.paths, &state.session.id, state).await?;
+    inner.sessions.rewrite(&state.session.id, entries).await?;
     let snapshot = record.state.lock().await.clone();
     let tokens_after = fixed_tokens
         .saturating_add(super::native_input_tokens(&snapshot))
@@ -60,6 +64,7 @@ pub(crate) async fn compact(
                 .native_input
                 .clone()
                 .map(|items| Box::new(serde_json::Value::Array(items))),
+            archive: super::HistoryArchive::Precomputed(archive_uri),
         },
     )
     .await
