@@ -1,7 +1,6 @@
 //! Volatile time, job, workspace, and read-only reminders.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::process::Command;
 
 use moc_protocol::methods::PathChange;
@@ -104,11 +103,6 @@ fn bounded_tail(text: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(max_lines);
     lines[start..].join("\n")
-}
-
-/// 仅用于展示的 cwd 路径；绝不写入稳定 system 前缀。
-pub fn cwd_reminder(cwd: &Path) -> String {
-    format!("cwd: {}", cwd.display())
 }
 
 #[cfg(test)]
