@@ -9,6 +9,8 @@
 //! 2. **缓存断点落位**：合并会改变下标，因此规整过程同步产出
 //!    「IR 消息下标 → 线上 (消息下标, 内容块下标)」映射，`cache_control` 据此落位。
 
+use std::collections::BTreeSet;
+
 use serde_json::{Map, Value, json};
 
 use super::echo::{self, ReasoningEchoPlan};
@@ -700,6 +702,11 @@ pub(crate) struct AnthropicStreamDecoder {
     terminated: bool,
     /// `message_delta` 里记录的结束原因。
     stop_reason: Option<FinishReason>,
+    /// 服务端工具块（`server_tool_use` / `mcp_tool_use`）的内容块下标。
+    ///
+    /// 这些块的 `input_json_delta` 由服务端自己执行，不是客户端工具调用，
+    /// 必须整段跳过。下标按响应内出现顺序最多几十个，`BTreeSet` 足够。
+    server_tool_indices: BTreeSet<usize>,
 }
 
 impl AnthropicStreamDecoder {
@@ -709,6 +716,7 @@ impl AnthropicStreamDecoder {
             started: false,
             terminated: false,
             stop_reason: None,
+            server_tool_indices: BTreeSet::new(),
         }
     }
 
@@ -751,6 +759,11 @@ impl AnthropicStreamDecoder {
                             })),
                         }));
                     }
+                    // 服务端工具由上游自己执行：它的入参不是客户端工具调用，
+                    // 记下下标后由 `input_json_delta` 分支整段跳过。
+                    Some("server_tool_use" | "mcp_tool_use") => {
+                        self.server_tool_indices.insert(index);
+                    }
                     // 文本与 thinking 由首个增量隐式开始。
                     _ => {}
                 }
@@ -774,6 +787,11 @@ impl AnthropicStreamDecoder {
                         signature: string_at(delta, "/signature"),
                     })),
                     Some("input_json_delta") => {
+                        // 服务端工具的入参不是客户端工具调用：折进消息会得到
+                        // id/name 全空的 ToolCall，下一轮回灌必被上游 400 拒绝。
+                        if self.server_tool_indices.contains(&index) {
+                            return;
+                        }
                         out.push(Ok(StreamEvent::ToolCallArgumentsDelta {
                             index,
                             json: string_at(delta, "/partial_json"),
@@ -1861,6 +1879,51 @@ mod tests {
                     output_tokens: 40,
                     ..Default::default()
                 }),
+                StreamEvent::Done {
+                    finish_reason: FinishReason::ToolCalls,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_skips_server_tool_arguments() {
+        // 服务端工具（web_search / MCP）由上游自己执行，其 input_json_delta
+        // 不是客户端工具调用；产出 id/name 全空的 ToolCall 后下一轮必 400。
+        let mut decoder = AnthropicStreamDecoder::new(&config(), &base_request());
+        let events = unwrapped(events(
+            &mut decoder,
+            &[
+                r#"{"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-5"}}"#,
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search"}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"moc\"}"}}"#,
+                r#"{"type":"content_block_stop","index":0}"#,
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[]}}"#,
+                r#"{"type":"content_block_start","index":2,"content_block":{"type":"mcp_tool_use","id":"mcptoolu_1","name":"remote"}}"#,
+                r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+                r#"{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather"}}"#,
+                r#"{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"北京\"}"}}"#,
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#,
+                r#"{"type":"message_stop"}"#,
+            ],
+        ));
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Start {
+                    id: Some("msg_1".into()),
+                    model: Some("claude-sonnet-4-5".into()),
+                    effort: None,
+                },
+                StreamEvent::ToolCallStart {
+                    index: 3,
+                    id: "toolu_1".into(),
+                    name: "get_weather".into(),
+                },
+                StreamEvent::ToolCallArgumentsDelta {
+                    index: 3,
+                    json: "{\"city\":\"北京\"}".into(),
+                },
                 StreamEvent::Done {
                     finish_reason: FinishReason::ToolCalls,
                 },
