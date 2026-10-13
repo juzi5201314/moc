@@ -174,12 +174,14 @@ pub(crate) async fn compact(
         &state.session.id,
         super::Checkpoint {
             method: "soft".to_owned(),
+            model: Some(model.selector.clone()),
             summary,
             first_kept_id: first_kept,
             tokens_before,
             tokens_after,
             instructions: instructions.map(str::to_owned),
             native: None,
+            archive: super::HistoryArchive::Write,
         },
     )
     .await
@@ -311,6 +313,7 @@ mod tests {
                 tokens_after: 10,
                 instructions: None,
                 native: None,
+                model: Some("p/m".into()),
             },
             parent,
             2,

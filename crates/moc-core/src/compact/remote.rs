@@ -171,12 +171,14 @@ pub(crate) async fn compact(
         &state.session.id,
         super::Checkpoint {
             method: "remote".to_owned(),
+            model: Some(model.selector.clone()),
             summary,
             first_kept_id,
             tokens_before,
             tokens_after,
             instructions: None,
             native,
+            archive: super::HistoryArchive::Write,
         },
     )
     .await

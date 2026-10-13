@@ -45,18 +45,20 @@ pub(crate) async fn compact(
             .get(super::replay::visible_history_start(state))
             .map(|entry| entry.id.clone())
     });
-    // 复用上一份 checkpoint 的 summary/native 时必须保留其真实方法名：
-    // `ModelChange` 依赖 `remote` 作废不再匹配的原生载荷，写成 `shake` 会让清理失效。
-    let method = state
-        .summary
-        .as_ref()
-        .map_or_else(|| "shake".to_owned(), |(method, _)| method.clone());
+    // 复用上一份 checkpoint 的 summary/native 时必须保留其真实来源（方法名与产出模型）：
+    // `ModelChange` 依赖 `remote` 与产出模型作废不再匹配的原生载荷，写成 `shake`/
+    // 当前模型都会让清理失效。
+    let (method, model) = match state.summary.as_ref() {
+        Some((method, _)) => (method.clone(), state.summary_model.clone()),
+        None => ("shake".to_owned(), None),
+    };
     record_compaction(
         inner,
         ctx,
         &state.session.id,
         super::Checkpoint {
             method,
+            model,
             summary: state
                 .summary
                 .as_ref()

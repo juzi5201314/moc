@@ -187,6 +187,7 @@ mod tests {
                 tokens_after: 50,
                 instructions: None,
                 native: None,
+                model: Some("p/model".into()),
             },
             first_id,
             3,
@@ -279,6 +280,8 @@ mod tests {
                     tokens_after: 10,
                     instructions: None,
                     native: Some(Box::new(native)),
+                    // 旧记录没有产出模型：换模型时必须保守作废。
+                    model: None,
                 },
             ] {
                 state.apply_entry(Entry::from_payload(payload, state.last_entry_id.clone(), 2));
@@ -305,6 +308,68 @@ mod tests {
                 ["必须保留的用户纠正"]
             );
             assert!(state.native_input.is_none());
+        }
+    }
+
+    #[test]
+    fn model_change_keeps_a_checkpoint_produced_for_the_target_model() {
+        for (checkpoint_model, retained) in [
+            (Some("p/new"), true),
+            (Some("p/old"), false),
+            (None, false),
+        ] {
+            let header = Entry::header(
+                "ses_123456789abc".into(),
+                "/tmp".into(),
+                "p/old".into(),
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                "title".into(),
+                1,
+            );
+            let mut state = SessionState::new(header).unwrap();
+            let tail = Entry::from_payload(
+                EntryPayload::Message {
+                    message: Message::user_text("压缩后保留的尾部"),
+                    tool: None,
+                    finish_reason: None,
+                },
+                state.last_entry_id.clone(),
+                2,
+            );
+            let tail_id = tail.id().to_owned();
+            state.apply_entry(tail);
+            state.apply_entry(Entry::from_payload(
+                EntryPayload::Compaction {
+                    method: "remote".into(),
+                    summary: "原生载荷占位".into(),
+                    first_kept_id: Some(tail_id.clone()),
+                    tokens_before: 100,
+                    tokens_after: 10,
+                    instructions: None,
+                    native: Some(Box::new(serde_json::json!([
+                        {"type": "compaction", "encrypted_content": "opaque"}
+                    ]))),
+                    model: checkpoint_model.map(str::to_owned),
+                },
+                state.last_entry_id.clone(),
+                3,
+            ));
+            state.apply_entry(Entry::from_payload(
+                EntryPayload::ModelChange {
+                    model: "p/new".into(),
+                },
+                state.last_entry_id.clone(),
+                4,
+            ));
+            assert_eq!(
+                state.native_input.is_some(),
+                retained,
+                "checkpoint 产出模型 {checkpoint_model:?} 的原生载荷保留判定"
+            );
+            assert_eq!(state.summary.is_some(), retained);
+            assert_eq!(state.first_kept_id.is_some(), retained);
         }
     }
 

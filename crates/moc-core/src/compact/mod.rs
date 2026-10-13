@@ -377,6 +377,8 @@ pub(crate) enum HistoryArchive {
 pub(crate) struct Checkpoint {
     /// checkpoint 的产出方法；复用上一份 summary/native 时必须保留其真实方法名。
     pub method: String,
+    /// checkpoint 的产出模型；决定原生载荷在换模型后是否仍然有效。
+    pub model: Option<String>,
     pub summary: String,
     pub first_kept_id: Option<String>,
     pub tokens_before: u64,
@@ -394,6 +396,7 @@ pub(crate) async fn record_compaction(
 ) -> Result<CompactResult, CoreError> {
     let Checkpoint {
         method,
+        model,
         mut summary,
         first_kept_id,
         tokens_before,
@@ -417,6 +420,7 @@ pub(crate) async fn record_compaction(
                 tokens_after,
                 instructions,
                 native,
+                model,
             },
         )
         .await?;

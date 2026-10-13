@@ -67,6 +67,8 @@ pub struct SessionState {
     pub ptc_state: BTreeMap<String, Arc<serde_json::Value>>,
     pub ptc_state_bytes: usize,
     pub summary: Option<(String, String)>,
+    /// 当前 checkpoint 的产出模型；原生载荷只对该模型有效。
+    pub summary_model: Option<String>,
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
     pub parent_session_id: Option<String>,
@@ -135,6 +137,7 @@ impl SessionState {
             usage_at: 0,
             server_compaction_disabled: false,
             summary: None,
+            summary_model: None,
             first_kept_id: None,
             native_input: None,
             clm_context: None,
@@ -180,11 +183,13 @@ impl SessionState {
                 summary,
                 native,
                 first_kept_id,
+                model,
                 ..
             } => {
                 self.usage = Usage::default();
                 self.usage_at = 0;
                 self.first_kept_id.clone_from(first_kept_id);
+                self.summary_model.clone_from(model);
                 self.native_input = native
                     .as_ref()
                     .and_then(|native| native.as_array())
@@ -201,6 +206,7 @@ impl SessionState {
                     // 不可解码的载荷不能成为截断历史的依据。
                     self.summary = None;
                     self.first_kept_id = None;
+                    self.summary_model = None;
                 } else {
                     self.summary = Some((method.clone(), summary.clone()));
                 }
@@ -209,6 +215,7 @@ impl SessionState {
                 self.ptc_state.clear();
                 self.ptc_state_bytes = 0;
                 self.summary = None;
+                self.summary_model = None;
                 self.native_input = None;
                 self.first_kept_id = None;
                 self.clm_context = None;
@@ -237,15 +244,21 @@ impl SessionState {
             Entry::ModelChange { model, .. } => {
                 self.model.clone_from(model);
                 self.session.model.clone_from(model);
-                self.native_input = None;
-                if self
-                    .summary
-                    .as_ref()
-                    .is_some_and(|(method, _)| method == "remote")
-                {
-                    // 加密 checkpoint 不可跨模型使用；恢复日志而非仅留下占位摘要。
-                    self.summary = None;
-                    self.first_kept_id = None;
+                // 原生载荷只对产出它的模型有效；为同一模型产出的 checkpoint（例如计划
+                // 审批先把上下文压到执行模型再切换）必须保留，否则压缩会被静默作废。
+                let foreign_checkpoint = self.summary_model.as_deref() != Some(model.as_str());
+                if foreign_checkpoint {
+                    self.native_input = None;
+                    if self
+                        .summary
+                        .as_ref()
+                        .is_some_and(|(method, _)| method == "remote")
+                    {
+                        // 加密 checkpoint 不可跨模型使用；恢复日志而非仅留下占位摘要。
+                        self.summary = None;
+                        self.first_kept_id = None;
+                        self.summary_model = None;
+                    }
                 }
                 self.usage = Usage::default();
                 self.usage_at = 0;
