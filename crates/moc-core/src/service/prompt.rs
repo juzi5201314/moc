@@ -886,13 +886,15 @@ async fn run_prompt_locked(
                 ctx,
                 &params.session_id,
                 compact::Checkpoint {
-                    method: "remote",
+                    method: "remote".to_owned(),
+                    model: Some(model.selector.clone()),
                     summary: compact::remote::checkpoint_summary(&compact_state),
                     first_kept_id,
                     tokens_before: response.usage.input_tokens,
                     tokens_after,
                     instructions: None,
                     native: Some(Box::new(native)),
+                    archive: compact::HistoryArchive::Write,
                 },
             )
             .await
