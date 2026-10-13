@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+
+// 共享测试 fixture：被多个集成 target 各自编译一份，每个 target 只用其中一部分，
+// 子集未用属正常（与 moc-protocol/tests/support 同一写法）。
 pub mod content;
 
 use moc_core::{Core, CoreConfig};
