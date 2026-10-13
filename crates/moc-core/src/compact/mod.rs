@@ -350,6 +350,10 @@ pub(crate) async fn compact(
             Err(error) => {
                 tracing::warn!(session_id, method = ?method, %error, "上下文压缩方法失败，尝试下一方法");
                 failures.push(format!("{method:?}: {error}"));
+                // 失败的方法可能已改写 transcript（shake 的整表 rewrite）或写入 usage：
+                // 后续方法必须基于当前状态，否则会用旧快照覆盖期间追加的 entry。
+                state = record.state.lock().await.clone();
+                measured.messages = replay::model_messages(&state, None, Some(&model));
             }
         }
     }
