@@ -31,6 +31,7 @@ use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_em
 use crate::render;
 use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
+use crate::widgets::prompt::{clamp_cursor, cursor_next, cursor_prev};
 
 /// TUI 启动参数（从 CLI 参数翻译而来）。
 #[derive(Debug, Clone, Default)]
@@ -1623,12 +1624,9 @@ fn handle_modal_key(
                         *editing_custom = false;
                         close |= advance_ask(params, question, selected, custom, reply);
                     }
-                    (KeyCode::Left, _) => {
-                        *custom_cursor = custom_cursor.saturating_sub(1);
-                    }
-                    (KeyCode::Right, _) => {
-                        *custom_cursor = (*custom_cursor + 1).min(custom.len());
-                    }
+                    // 光标与删除一律按字符步进：`custom` 是 UTF-8 文本，按字节移动会切进多字节字符。
+                    (KeyCode::Left, _) => *custom_cursor = cursor_prev(custom, *custom_cursor),
+                    (KeyCode::Right, _) => *custom_cursor = cursor_next(custom, *custom_cursor),
                     (KeyCode::Home, _) => *custom_cursor = 0,
                     (KeyCode::End, _) => *custom_cursor = custom.len(),
                     (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
@@ -1636,28 +1634,25 @@ fn handle_modal_key(
                         *custom_cursor = 0;
                     }
                     (KeyCode::Backspace, _) => {
-                        if *custom_cursor > 0 && !custom.is_empty() {
-                            let mut prev_char_len = 1;
-                            if let Some((idx, ch)) =
-                                custom[..*custom_cursor].char_indices().next_back()
-                            {
-                                prev_char_len = ch.len_utf8();
-                                custom.remove(idx);
-                            }
-                            *custom_cursor = custom_cursor.saturating_sub(prev_char_len);
+                        let previous = cursor_prev(custom, *custom_cursor);
+                        if previous != *custom_cursor {
+                            custom.remove(previous);
                         }
+                        *custom_cursor = previous;
                     }
                     (KeyCode::Delete, _) => {
-                        if *custom_cursor < custom.len() {
-                            custom.remove(*custom_cursor);
+                        let cursor = clamp_cursor(custom, *custom_cursor);
+                        if custom[cursor..].chars().next().is_some() {
+                            custom.remove(cursor);
                         }
+                        *custom_cursor = cursor;
                     }
                     (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
                         if !ch.is_control() =>
                     {
-                        let pos = (*custom_cursor).min(custom.len());
+                        let pos = clamp_cursor(custom, *custom_cursor);
                         custom.insert(pos, ch);
-                        *custom_cursor += ch.len_utf8();
+                        *custom_cursor = pos + ch.len_utf8();
                     }
                     _ => {}
                 }
@@ -4969,6 +4964,112 @@ mod tests {
         );
         assert_eq!(app.prompt_text(), "hello");
         assert_eq!(app.notice.as_deref(), Some("clear input"));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 单问 ask 模态：选项一个 + 自定义行（`z` 进入编辑态）。
+    fn ask_modal() -> Modal {
+        use moc_protocol::methods::{AskOption, AskParams, AskQuestion};
+        Modal::Ask {
+            params: AskParams {
+                session_id: "ses_test".into(),
+                prompt_id: "prompt_test".into(),
+                request_id: "ask_test".into(),
+                questions: vec![AskQuestion {
+                    id: "q1".into(),
+                    question: "选哪个？".into(),
+                    header: None,
+                    multi: false,
+                    recommended: None,
+                    options: vec![AskOption {
+                        label: "选项一".into(),
+                        description: None,
+                        preview: None,
+                    }],
+                }],
+            },
+            question: 0,
+            highlight: vec![0],
+            selected: vec![Vec::new()],
+            custom: String::new(),
+            custom_cursor: 0,
+            editing_custom: false,
+            preview_scroll: 0,
+            reply: None,
+        }
+    }
+
+    /// ask 自定义输入的当前文本与光标。
+    fn ask_custom(app: &App) -> (String, usize) {
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                custom,
+                custom_cursor,
+                ..
+            }) => (custom.clone(), *custom_cursor),
+            _ => unreachable!("测试期间应保持 ask 模态"),
+        }
+    }
+
+    /// 走一遍模态渲染路径（越界切分会在这里 panic）。
+    fn draw_ask(app: &mut App) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        terminal
+            .draw(|frame| crate::render::modal::draw_modal(frame, app))
+            .expect("绘制提问模态");
+    }
+
+    /// C7：ask 自定义输入的光标按字符移动，多字节字符不得被切在中间。
+    #[tokio::test]
+    async fn ask_custom_cursor_steps_by_char() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal());
+
+        // z 进入自定义编辑态，输入两个汉字。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('z'));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('中'));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('文'));
+        assert_eq!(ask_custom(&app), ("中文".to_owned(), "中文".len()));
+
+        // ← 回退一个字符后重绘：按字节移动会在 split_at 处 panic。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(ask_custom(&app).1, "中".len(), "光标停在字符边界");
+        draw_ask(&mut app);
+
+        // Delete 删光标处字符、Backspace 删前一个字符，光标随之回退。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Delete);
+        assert_eq!(ask_custom(&app), ("中".to_owned(), "中".len()));
+        draw_ask(&mut app);
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Backspace,
+        );
+        assert_eq!(ask_custom(&app), (String::new(), 0));
+        draw_ask(&mut app);
+
+        // → 到行尾饱和；行首 ← 与空串 Backspace/Delete 都不越界。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('中'));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(ask_custom(&app).1, "中".len());
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(ask_custom(&app).1, 0, "行首左移饱和");
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Backspace,
+        );
+        assert_eq!(ask_custom(&app), ("中".to_owned(), 0), "行首无前驱可删");
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Delete);
+        assert_eq!(ask_custom(&app), (String::new(), 0), "Delete 删光标处字符");
+        draw_ask(&mut app);
 
         connection.shutdown().await;
         core.shutdown().await;

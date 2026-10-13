@@ -16,6 +16,7 @@ use crate::modal::Modal;
 use crate::render::wrap::str_width;
 use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
+use crate::widgets::prompt::clamp_cursor;
 
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
 pub fn draw_completion_menu(
@@ -735,7 +736,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 Style::new().fg(theme.gray)
             };
             let custom_display = if *editing_custom {
-                let cursor_pos = (*custom_cursor).min(custom.len());
+                let cursor_pos = clamp_cursor(custom, *custom_cursor);
                 let (before, after) = custom.split_at(cursor_pos);
                 format!("{before}▏{after}")
             } else {

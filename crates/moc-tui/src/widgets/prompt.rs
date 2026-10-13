@@ -15,6 +15,36 @@ const PASTE_CHIP_BYTES: usize = 10_000;
 /// 历史上限。
 const HISTORY_MAX: usize = 200;
 
+/// 把字节偏移吸附到最近的字符边界。
+///
+/// 光标（[`PromptState::cursor`] 与模态内联输入）恒以字节偏移表示，且必须
+/// 落在字符边界：切片、`insert`、`remove` 都按这个不变量取下标。
+pub(crate) fn clamp_cursor(text: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(text.len());
+    while cursor > 0 && !text.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
+}
+
+/// 光标左移一个字符；已在行首时停在 0。
+pub(crate) fn cursor_prev(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_cursor(text, cursor);
+    text[..cursor]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(index, _)| index)
+}
+
+/// 光标右移一个字符；已在行尾时停在末尾。
+pub(crate) fn cursor_next(text: &str, cursor: usize) -> usize {
+    let cursor = clamp_cursor(text, cursor);
+    text[cursor..]
+        .chars()
+        .next()
+        .map_or(cursor, |ch| cursor + ch.len_utf8())
+}
+
 /// 文本粘贴 chip。
 #[derive(Debug, Clone)]
 struct PasteChip {
@@ -264,23 +294,11 @@ impl PromptState {
     }
 
     pub fn left(&mut self) {
-        if let Some(previous) = self.text[..self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(index, _)| index)
-        {
-            self.cursor = previous;
-        }
+        self.cursor = cursor_prev(&self.text, self.cursor);
     }
 
     pub fn right(&mut self) {
-        if self.cursor < self.text.len() {
-            self.cursor = self.text[self.cursor..]
-                .char_indices()
-                .nth(1)
-                .map(|(index, _)| self.cursor + index)
-                .unwrap_or(self.text.len());
-        }
+        self.cursor = cursor_next(&self.text, self.cursor);
     }
 
     /// 光标按词向前跳转（跳到前一个词的首部）。
