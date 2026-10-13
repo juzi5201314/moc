@@ -1278,6 +1278,7 @@ fn handle_key(
             } else if !app.prompt_text().is_empty() {
                 if app.take_ctrl_c_pending(CtrlCPending::ClearPrompt) {
                     app.prompt.clear();
+                    app.prompt_changed();
                     app.notice = None;
                     app.notice_at = None;
                 } else {
@@ -1325,6 +1326,7 @@ fn handle_key(
             } else if app.focus == Focus::Prompt && !app.prompt_text().is_empty() {
                 if app.clear_pending {
                     app.prompt.clear();
+                    app.prompt_changed();
                     app.clear_pending = false;
                 } else {
                     app.clear_pending = true;
@@ -4964,6 +4966,68 @@ mod tests {
         );
         assert_eq!(app.prompt_text(), "hello");
         assert_eq!(app.notice.as_deref(), Some("clear input"));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// C5：Ctrl+C 清空输入后补全菜单立即失效，Enter/Tab 不得按陈旧区间替换空串。
+    #[tokio::test]
+    async fn ctrl_c_clear_invalidates_completion_menu() {
+        let (core, connection, mut app) = setup_test_app().await;
+        for ch in "/mo".chars() {
+            handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
+        }
+        assert!(app.completion.is_some(), "输入 /mo 应打开补全菜单");
+
+        // 连按两次 Ctrl+C：第一次提示，第二次清空。
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
+        assert_eq!(app.prompt_text(), "/mo", "首次 Ctrl+C 只提示");
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
+        assert_eq!(app.prompt_text(), "");
+        assert!(app.completion.is_none(), "清空后补全菜单必须失效");
+
+        // 空串上按 Enter/Tab：既不能越界替换，也不能吞掉按键语义。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Prompt, "空输入 Enter 无操作");
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Scrollback, "Tab 仍按焦点切换处理");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// C5：双 Esc 清空输入后同样不得留下补全菜单。
+    #[tokio::test]
+    async fn esc_clear_invalidates_completion_menu() {
+        let (core, connection, mut app) = setup_test_app().await;
+        for ch in "/re".chars() {
+            handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
+        }
+        assert!(app.completion.is_some());
+
+        // 首次 Esc 只关菜单，第二次进入清空确认，第三次清空。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(app.completion.is_none());
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(app.prompt_text(), "/re");
+        assert_eq!(app.notice.as_deref(), Some("再次按 Esc 清空输入"));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(app.prompt_text(), "");
+        assert!(app.completion.is_none(), "清空后补全菜单必须失效");
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(app.prompt_text(), "", "空输入 Enter 无操作");
 
         connection.shutdown().await;
         core.shutdown().await;
