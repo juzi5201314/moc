@@ -162,7 +162,8 @@ pub struct McpDocument {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub user_config: bool,
-    #[serde(default = "default_true")]
+    /// 项目里的 `.mcp.json` 会启动仓库自带的命令，默认关闭；开启即信任该仓库。
+    #[serde(default)]
     pub project_config: bool,
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_secs: u64,
@@ -177,7 +178,7 @@ impl Default for McpDocument {
         Self {
             enabled: true,
             user_config: true,
-            project_config: true,
+            project_config: false,
             connect_timeout_secs: default_connect_timeout(),
             call_timeout_secs: default_call_timeout(),
             servers: BTreeMap::new(),
@@ -659,5 +660,14 @@ mod tests {
         .unwrap();
         assert!(!config.enabled);
         assert_eq!(config.call_timeout_secs, 30);
+    }
+
+    #[test]
+    fn project_config_json_stays_opt_in() {
+        assert!(!McpDocument::default().project_config);
+        let absent: McpDocument = serde_json::from_value(json!({"enabled": true})).unwrap();
+        assert!(!absent.project_config, "缺省值不得自动信任项目 .mcp.json");
+        let explicit: McpDocument = serde_json::from_value(json!({"project_config": true})).unwrap();
+        assert!(explicit.project_config);
     }
 }

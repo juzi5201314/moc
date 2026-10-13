@@ -154,7 +154,7 @@ max_prompt_duration_secs = 3600
 [mcp]
 enabled = true
 user_config = true
-project_config = true
+project_config = false
 connect_timeout_secs = 15
 call_timeout_secs = 120
 

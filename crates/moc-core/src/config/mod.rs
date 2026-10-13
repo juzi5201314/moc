@@ -228,8 +228,9 @@ impl ResolvedConfig {
         })
     }
 
-    /// 汇总该项目的全部 MCP server 配置：TOML `[mcp.servers]` 与社区
-    /// `.mcp.json`（cwd 向上到 git root）、`~/.moc/mcp.json` 合并。
+    /// 汇总该项目的全部 MCP server 配置：TOML `[mcp.servers]`、用户
+    /// `~/.moc/mcp.json`，以及需显式开启 `[mcp] project_config` 才加载的社区
+    /// `.mcp.json`（cwd 向上到 git root）。
     pub fn mcp_servers(&self) -> Result<Vec<moc_mcp::ServerConfig>, CoreError> {
         if !self.mcp.enabled {
             return Ok(Vec::new());
