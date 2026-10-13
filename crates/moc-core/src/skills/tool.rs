@@ -48,24 +48,7 @@ impl Tool for SkillTool {
         Box::pin(async move {
             let args: SkillArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let Some(skill) = ctx.skills.get(&args.name) else {
-                let available: Vec<&str> = ctx
-                    .skills
-                    .list()
-                    .filter(|skill| skill.model_invocable)
-                    .map(|skill| skill.name.as_str())
-                    .take(20)
-                    .collect();
-                let hint = if available.is_empty() {
-                    "No model-invocable skills are available.".to_owned()
-                } else {
-                    format!("Available: {}", available.join(", "))
-                };
-                return Err(ToolError::new(
-                    "E_NOT_FOUND",
-                    format!("Unknown skill `{}`. {hint}", args.name),
-                ));
-            };
+            let skill = model_skill(&ctx.skills, &args.name)?;
             if !ctx.loaded_skills.write().insert(args.name.clone()) {
                 return Ok(ToolOutcome::success(format!(
                     "Skill `{}` is already loaded in this session; its content is still in context.",
@@ -96,6 +79,40 @@ impl Tool for SkillTool {
             Ok(ToolOutcome::success(output))
         })
     }
+}
+
+/// 模型只能加载 `model_invocable` 的 skill；`disable-model-invocation` 的
+/// skill 仍可由用户显式加载，但不能经该工具进入上下文。
+fn model_skill<'a>(
+    skills: &'a super::SkillIndex,
+    name: &str,
+) -> Result<&'a super::SkillMeta, ToolError> {
+    let Some(skill) = skills.get(name) else {
+        let available: Vec<&str> = skills
+            .list()
+            .filter(|skill| skill.model_invocable)
+            .map(|skill| skill.name.as_str())
+            .take(20)
+            .collect();
+        let hint = if available.is_empty() {
+            "No model-invocable skills are available.".to_owned()
+        } else {
+            format!("Available: {}", available.join(", "))
+        };
+        return Err(ToolError::new(
+            "E_NOT_FOUND",
+            format!("Unknown skill `{name}`. {hint}"),
+        ));
+    };
+    if !skill.model_invocable {
+        return Err(ToolError::new(
+            "E_SKILL_NOT_INVOCABLE",
+            format!(
+                "Skill `{name}` does not allow model invocation; only the user can load it explicitly."
+            ),
+        ));
+    }
+    Ok(skill)
 }
 
 /// 列出 skill 目录一级条目（SKILL.md 本体除外），按名称排序。
@@ -156,6 +173,37 @@ mod tests {
     use super::*;
     use crate::skills::{SkillIndex, SkillMeta};
     use std::collections::HashSet;
+
+    fn meta(name: &str, base_dir: std::path::PathBuf, model_invocable: bool) -> SkillMeta {
+        SkillMeta {
+            name: name.into(),
+            description: "演示".into(),
+            when_to_use: None,
+            globs: Vec::new(),
+            model_invocable,
+            base_dir,
+            source: "test".into(),
+        }
+    }
+
+    #[test]
+    fn model_invocation_requires_an_invocable_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = SkillIndex::empty();
+        for (name, invocable) in [("open", true), ("locked", false)] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+            index.insert(meta(name, dir.path().join(name), invocable));
+        }
+        assert!(model_skill(&index, "open").is_ok());
+        assert_eq!(
+            model_skill(&index, "locked").unwrap_err().code,
+            "E_SKILL_NOT_INVOCABLE"
+        );
+        let unknown = model_skill(&index, "missing").unwrap_err();
+        assert_eq!(unknown.code, "E_NOT_FOUND");
+        let listing = unknown.to_string();
+        assert!(listing.contains("open") && !listing.contains("locked"));
+    }
 
     #[test]
     fn resources_listing_skips_skill_md_and_hidden() {
