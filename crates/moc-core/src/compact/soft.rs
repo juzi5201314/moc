@@ -187,6 +187,11 @@ pub(crate) async fn compact(
     .await
 }
 
+/// 选取能放进 `budget` 的完整轮次后缀；最近一轮自身超预算时退化为有界摘录。
+///
+/// 返回 `(交给摘要模型的最近历史, 被省略的完整轮次数)`。预算检查必须覆盖最近的
+/// 一轮：本轮工具结果可能整组超预算，原样塞进摘要请求会让该请求必然超窗，
+/// 之后没有任何压缩方法能成功。
 fn fit_summary_history(history: &[Message], budget: u64) -> (Vec<Message>, usize) {
     if history.is_empty() {
         return (Vec::new(), 0);
@@ -194,41 +199,41 @@ fn fit_summary_history(history: &[Message], budget: u64) -> (Vec<Message>, usize
     let mut end = history.len();
     let mut start = end;
     let mut remaining = budget;
+    let mut kept = false;
     while end > 0 {
         let prompt_start = history[..end]
             .iter()
             .rposition(|message| message.role == moc_llm::Role::User)
             .unwrap_or(0);
         let cost = messages_tokens(&history[prompt_start..end]);
-        if start != history.len() && cost > remaining {
-            break;
+        if cost > remaining {
+            if kept {
+                break;
+            }
+            return (oversized_excerpt(&history[prompt_start..end], budget), 1);
         }
         start = prompt_start;
+        kept = true;
         remaining = remaining.saturating_sub(cost);
         end = prompt_start;
-    }
-    if start == history.len() {
-        let message = history
-            .last()
-            .cloned()
-            .unwrap_or_else(|| Message::user_text(""));
-        let serialized = serde_json::to_string(&message).unwrap_or_default();
-        let max_chars = usize::try_from(budget.saturating_mul(4))
-            .unwrap_or(usize::MAX)
-            .max(128);
-        let excerpt: String = serialized.chars().take(max_chars).collect();
-        return (
-            vec![Message::user_text(format!(
-                "<oversized-prompt>\n{excerpt}\n</oversized-prompt>"
-            ))],
-            1,
-        );
     }
     let omitted_prompts = history[..start]
         .iter()
         .filter(|message| message.role == moc_llm::Role::User)
         .count();
     (history[start..].to_vec(), omitted_prompts)
+}
+
+/// 超预算轮次的有界摘录；按 4 字符 1 token 的估算裁剪序列化文本。
+fn oversized_excerpt(group: &[Message], budget: u64) -> Vec<Message> {
+    let serialized = serde_json::to_string(group).unwrap_or_default();
+    let max_chars = usize::try_from(budget.saturating_mul(4))
+        .unwrap_or(usize::MAX)
+        .max(128);
+    let excerpt: String = serialized.chars().take(max_chars).collect();
+    vec![Message::user_text(format!(
+        "<oversized-prompt>\n{excerpt}\n</oversized-prompt>"
+    ))]
 }
 
 fn summary_prompt(
@@ -364,5 +369,53 @@ mod tests {
         assert_eq!(selected.len(), 2);
         assert_eq!(selected[0].text(), "recent user");
         assert_eq!(omitted, 1);
+    }
+
+    #[test]
+    fn summary_history_stops_at_the_first_group_that_does_not_fit() {
+        let history = vec![
+            Message::user_text("older ".repeat(400)),
+            Message::user_text("recent"),
+        ];
+        let budget = messages_tokens(&history[1..]);
+        let (selected, omitted) = fit_summary_history(&history, budget);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].text(), "recent");
+        assert_eq!(omitted, 1);
+    }
+
+    #[test]
+    fn oversized_recent_prompt_falls_back_to_a_bounded_excerpt() {
+        // 最近一轮（含本轮工具结果）自身超预算：整组塞进摘要请求必然超窗。
+        let history = vec![Message::user_text("x".repeat(4_000))];
+        let budget = 50;
+        let (selected, omitted) = fit_summary_history(&history, budget);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(omitted, 1);
+        let text = selected[0].text();
+        assert!(text.starts_with("<oversized-prompt>"), "{text}");
+        assert!(text.ends_with("</oversized-prompt>"), "{text}");
+        assert!(
+            messages_tokens(&selected) <= budget + 32,
+            "摘录必须落在预算内，实际 {} token",
+            messages_tokens(&selected)
+        );
+    }
+
+    #[test]
+    fn oversized_recent_group_keeps_the_excerpt_of_the_whole_turn() {
+        let history = vec![
+            Message::user_text("historic prompt ".repeat(50)),
+            Message::user_text("current"),
+            Message::tool_result("call_1", "y".repeat(8_000), false),
+        ];
+        let budget = 40;
+        let (selected, omitted) = fit_summary_history(&history, budget);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(omitted, 1);
+        let text = selected[0].text();
+        assert!(text.starts_with("<oversized-prompt>"), "{text}");
+        assert!(text.contains("current"), "摘录必须来自本轮而不是更早的轮次");
+        assert!(messages_tokens(&selected) <= budget + 32);
     }
 }
