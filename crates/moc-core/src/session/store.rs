@@ -375,12 +375,10 @@ impl SessionStore {
                 if !seen.insert(path.clone()) {
                     continue;
                 }
-                let Some((mut info, has_entries)) = read_session_info(&path).await? else {
+                let Some(mut info) = listed_session(&path).await else {
                     continue;
                 };
-                if !has_entries {
-                    continue;
-                }
+
                 info.lock = super::lock::read(
                     path.parent()
                         .unwrap_or(&self.root)
@@ -422,6 +420,18 @@ impl SessionStore {
     }
 }
 
+/// 列表用的会话元信息；单条损坏记录只跳过该文件并告警，不让整个列表不可用。
+async fn listed_session(path: &Path) -> Option<moc_protocol::methods::SessionInfo> {
+    match read_session_info(path).await {
+        Ok(Some((info, true))) => Some(info),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "会话文件无法读取，已从 session/list 跳过");
+            None
+        }
+    }
+}
+
 /// 读取 header 与轻量元信息；`has_entries` 为 `false` 表示文件只有 header，
 /// 该会话从未产生任何对话内容（延迟落盘前被抛弃的空会话）。
 async fn read_session_info(
@@ -456,8 +466,14 @@ async fn read_session_info(
             break;
         }
         has_entries = true;
-        let metadata: Metadata = serde_json::from_str(&line)
-            .map_err(|error| CoreError::Session(format!("{}：{error}", path.display())))?;
+        let metadata: Metadata = match serde_json::from_str(&line) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                // 一条损坏记录只影响它自己携带的元信息，其余记录继续参与列表。
+                tracing::warn!(path = %path.display(), %error, "跳过损坏的 transcript 记录");
+                continue;
+            }
+        };
         info.updated_at_ms = metadata.at_ms;
         match metadata.kind.as_str() {
             "title_change" => {
@@ -651,5 +667,81 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("2024-10-04T00-00-00-123Z_")
         );
+    }
+
+    #[tokio::test]
+    async fn list_skips_corrupted_records_without_failing_the_whole_page() {
+        use super::super::entries::EntryPayload;
+        let directory = tempfile::tempdir().expect("临时目录");
+        let store = SessionStore::new(directory.path());
+        let cwd = Path::new("/tmp/project");
+
+        let healthy = Entry::header(
+            "ses_healthy0001".into(),
+            "/tmp/project".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            None,
+            "健康".into(),
+            1,
+        );
+        let healthy_paths = store.paths_for(cwd, "ses_healthy0001", 1);
+        let file = SessionFile::create_with_header(&healthy_paths.transcript, &healthy)
+            .await
+            .expect("创建会话文件");
+        let message = Entry::from_payload(
+            EntryPayload::Message {
+                message: moc_llm::Message::user_text("第一条"),
+                tool: None,
+                finish_reason: None,
+            },
+            healthy.id().into(),
+            2,
+        );
+        file.append(&message, None).await.expect("追加消息");
+
+        // 一条损坏记录之后的合法记录仍必须生效。
+        let broken = Entry::header(
+            "ses_broken00001".into(),
+            "/tmp/project".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            None,
+            "原始标题".into(),
+            3,
+        );
+        let broken_paths = store.paths_for(cwd, "ses_broken00001", 3);
+        SessionFile::create_with_header(&broken_paths.transcript, &broken)
+            .await
+            .expect("创建会话文件");
+        let title = Entry::from_payload(
+            EntryPayload::TitleChange {
+                title: "损坏行之后的标题".into(),
+            },
+            broken.id().into(),
+            4,
+        );
+        let mut bytes = std::fs::read(&broken_paths.transcript).expect("读取 JSONL");
+        bytes.extend_from_slice(b"{\"type\":\"title_change\",\n");
+        bytes.extend_from_slice(serde_json::to_string(&title).expect("序列化").as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(&broken_paths.transcript, &bytes).expect("写入损坏记录");
+
+        // header 损坏的文件整条跳过，其余文件照常列出。
+        let unreadable = store.paths_for(cwd, "ses_unread0001", 5);
+        std::fs::write(&unreadable.transcript, b"{\"type\":\n").expect("写入损坏 header");
+
+        let listed = store.list().await.expect("列表必须可用");
+        assert_eq!(listed.len(), 2);
+        assert!(!listed.iter().any(|info| info.id == "ses_unread0001"));
+        let broken = listed
+            .iter()
+            .find(|info| info.id == "ses_broken00001")
+            .expect("含损坏记录的会话仍在列表中");
+        assert_eq!(broken.title, "损坏行之后的标题");
+        assert_eq!(broken.updated_at_ms, 4);
+        assert!(listed.iter().any(|info| info.id == "ses_healthy0001"));
     }
 }
