@@ -164,9 +164,10 @@ fn search_resource_text(
     for index in selected {
         let before = args.context_before.unwrap_or(config.context_before);
         let after = args.context_after.unwrap_or(config.context_after);
-        rows.extend(
-            index.saturating_sub(before)..=(index + after).min(lines.len().saturating_sub(1)),
-        );
+        let end = index
+            .saturating_add(after)
+            .min(lines.len().saturating_sub(1));
+        rows.extend(index.saturating_sub(before)..=end);
     }
     let mut output = String::new();
     for index in rows {
@@ -553,6 +554,24 @@ mod tests {
         assert!(output.contains("skip=2"));
         assert!(!output.contains("a.rs:") && !output.contains("0.bin"));
     }
+    #[test]
+    fn resource_context_ranges_saturate_instead_of_overflowing() {
+        let config = crate::config::GrepConfig::default();
+        let args: GrepArgs = serde_json::from_value(serde_json::json!({
+            "pattern": "hit",
+            "context_before": usize::MAX,
+            "context_after": usize::MAX,
+        }))
+        .unwrap();
+        let output =
+            search_resource_text("skill://demo/SKILL.md", "first\nhit\nlast\n", &args, &config)
+                .unwrap();
+        assert_eq!(
+            output,
+            "skill://demo/SKILL.md-1-first\nskill://demo/SKILL.md:2:hit\nskill://demo/SKILL.md-3-last"
+        );
+    }
+
     #[test]
     fn zero_deadline_reports_incomplete_instead_of_false_negative() {
         let root = tempfile::tempdir().unwrap();
