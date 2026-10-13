@@ -236,35 +236,23 @@ impl ResourceRouter {
         ctx: &crate::tools::ToolCtx,
         input: &str,
     ) -> Result<Option<ResolvedResource>, ResourceError> {
-        let Some((scheme, _)) = input.split_once("://") else {
+        // 未注册 scheme 的 `://` 字符串是合法本地路径，必须交给文件系统解析。
+        let Some(scheme) = resource_scheme(input) else {
             return Ok(None);
         };
-        if matches!(scheme, "ov" | "viking") {
-            return Ok(None);
-        }
         let context = ctx.resource_context();
-        Self::resolve_context(&context, input)
+        Self::resolve_context(&context, scheme, input)
     }
 
     pub fn write(input: &str) -> Result<(), ResourceError> {
-        let Some((scheme, _)) = input.split_once("://") else {
-            return Ok(());
-        };
-        if matches!(scheme, "ov" | "viking") {
-            return Ok(());
-        }
-        let uri = InternalUri::parse(input)
-            .map_err(|error| ResourceError::new(error.code, error.message))?;
-        if matches!(uri.scheme(), "artifact" | "skill" | "local" | "history") {
-            return Err(ResourceError::new(
+        match resource_scheme(input) {
+            // OpenViking 有独立的写入出口；其余 `://` 字符串按本地路径写入。
+            None | Some(ResourceScheme::OpenViking) => Ok(()),
+            Some(_) => Err(ResourceError::new(
                 "E_URI_READ_ONLY",
                 "MOC internal URIs are read-only and cannot be write targets",
-            ));
+            )),
         }
-        Err(ResourceError::new(
-            "E_URI_SCHEME",
-            "unsupported resource scheme",
-        ))
     }
 
     pub fn complete(
@@ -299,21 +287,19 @@ impl ResourceRouter {
 
     fn resolve_context(
         context: &ResourceContext<'_>,
+        scheme: ResourceScheme,
         input: &str,
     ) -> Result<Option<ResolvedResource>, ResourceError> {
         let uri = InternalUri::parse(input)
             .map_err(|error| ResourceError::new(error.code, error.message))?;
-        match uri.scheme() {
-            "artifact" => ArtifactStore::new(context.session_id, context.paths.clone())
+        match scheme {
+            ResourceScheme::Artifact => ArtifactStore::new(context.session_id, context.paths.clone())
                 .resolve_uri(input)
                 .map(Some),
-            "skill" => resolve_skill(context, &uri, input).map(Some),
-            "local" => resolve_local(context, &uri, input).map(Some),
-            "history" => resolve_history(context, &uri, input).map(Some),
-            _ => Err(ResourceError::new(
-                "E_URI_SCHEME",
-                format!("unsupported resource scheme `{}`", uri.scheme()),
-            )),
+            ResourceScheme::Skill => resolve_skill(context, &uri, input).map(Some),
+            ResourceScheme::Local => resolve_local(context, &uri, input).map(Some),
+            ResourceScheme::History => resolve_history(context, &uri, input).map(Some),
+            ResourceScheme::OpenViking => Ok(None),
         }
     }
 }
@@ -712,13 +698,28 @@ mod tests {
 
     #[test]
     fn write_rejects_native_resources() {
-        assert_eq!(
-            ResourceRouter::write("skill://demo").unwrap_err().code,
-            "E_URI_READ_ONLY"
-        );
-        assert_eq!(
-            ResourceRouter::write("unknown://value").unwrap_err().code,
-            "E_URI_SCHEME"
-        );
+        for input in [
+            "skill://demo",
+            "artifact://ses_1/jobs/a.log",
+            "local://ses_1/plans/p.md",
+            "history://ses_1/transcript",
+        ] {
+            assert_eq!(
+                ResourceRouter::write(input).unwrap_err().code,
+                "E_URI_READ_ONLY",
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_paths_with_scheme_separators_are_not_resource_uris() {
+        for path in ["plain://dir/file", "/tmp/report://draft", "unknown://value"] {
+            assert!(ResourceRouter::write(path).is_ok(), "{path}");
+            assert!(!is_resource_uri(path), "{path}");
+        }
+        // OpenViking 由独立分支处理，路由层不拦截。
+        assert!(ResourceRouter::write("viking://~/notes").is_ok());
+        assert!(ResourceRouter::write("ov://repo").is_ok());
     }
 }
