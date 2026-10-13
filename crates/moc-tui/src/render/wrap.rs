@@ -31,7 +31,7 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
         // token 放不下：先结算当前行（行尾空格不保留）
         if !current.is_empty() {
             let finished = std::mem::take(&mut current);
-            lines.push(finished.trim_end().to_owned());
+            push_row(&mut lines, &finished);
             current_width = 0;
         }
         if token_width <= width {
@@ -46,7 +46,7 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
                 let ch_width = ch.width().unwrap_or(0);
                 if current_width + ch_width > width {
                     let finished = std::mem::take(&mut current);
-                    lines.push(finished.trim_end().to_owned());
+                    push_row(&mut lines, &finished);
                     current_width = 0;
                 }
                 current.push(ch);
@@ -54,8 +54,19 @@ pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
             }
         }
     }
-    lines.push(current.trim_end().to_owned());
+    push_row(&mut lines, &current);
     lines
+}
+
+/// 结算一行：丢弃行尾空格；纯空格行只有「还没有任何行」时才入列。
+///
+/// 断行位置的空格已被消耗，把它当成一行只会凭空多出一行（调用方按行数估高、
+/// 排版），因此不再入列。
+fn push_row(lines: &mut Vec<String>, row: &str) {
+    let row = row.trim_end();
+    if !row.is_empty() || lines.is_empty() {
+        lines.push(row.to_owned());
+    }
 }
 
 /// 切 token：保留空格信息（空格与相邻 token 分离，便于回溯断点）。
@@ -106,5 +117,14 @@ mod tests {
     #[test]
     fn zero_width_returns_single_line() {
         assert_eq!(wrap_text("abc", 0), vec!["abc"]);
+    }
+
+    /// 纯空格行不入列：断行位置的空格已被消耗，空行只会放大高度。
+    #[test]
+    fn pure_space_rows_are_dropped() {
+        assert_eq!(wrap_text("a    b", 3), vec!["a", " b"]);
+        assert_eq!(wrap_text("aa    bb", 4), vec!["aa", "bb"]);
+        assert_eq!(wrap_text("   ", 5), vec![""], "全空格仍保留一行占位");
+        assert_eq!(wrap_text("", 5), vec![""]);
     }
 }
