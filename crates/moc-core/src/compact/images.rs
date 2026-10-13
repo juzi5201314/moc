@@ -45,7 +45,7 @@ pub fn apply(
     let trigger = max_bytes.saturating_sub(TRIGGER_HEADROOM_BYTES);
     let reclaim = max_bytes / 2;
     let fixed_bytes = serialized_bytes(tools).saturating_add(serialized_bytes(&native_input));
-    let mut body_bytes =
+    let body_bytes =
         fixed_bytes.saturating_add(messages.iter().map(serialized_bytes).sum::<usize>());
     if body_bytes <= trigger {
         return (
@@ -58,6 +58,7 @@ pub fn apply(
         );
     }
 
+    let mut total_bytes = body_bytes;
     let mut evicted = 0;
     for index in 0..messages.len() {
         if !has_images(&messages[index]) {
@@ -66,8 +67,8 @@ pub fn apply(
         let before = serialized_bytes(&messages[index]);
         evicted += strip_images(&mut messages[index]);
         let after = serialized_bytes(&messages[index]);
-        body_bytes = body_bytes.saturating_sub(before).saturating_add(after);
-        if body_bytes <= reclaim {
+        total_bytes = total_bytes.saturating_sub(before).saturating_add(after);
+        if total_bytes <= reclaim {
             break;
         }
     }
@@ -75,7 +76,7 @@ pub fn apply(
         messages,
         ImageBudgetOutcome {
             body_bytes,
-            body_bytes_after: body_bytes,
+            body_bytes_after: total_bytes,
             evicted,
         },
     )
