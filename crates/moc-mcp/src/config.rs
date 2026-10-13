@@ -393,8 +393,8 @@ pub struct JsonSource {
 }
 
 /// 按优先级合并全部来源：项目 `.mcp.json`（近者优先）> TOML `[mcp.servers]` > 用户 `mcp.json`。
-/// 返回按名称排序的配置列表；同名冲突告警并保留最高优先者。
-pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Result<Vec<ServerConfig>, McpError> {
+/// 返回按名称排序的配置列表；同名冲突告警并保留最高优先者，单条非法只告警跳过该条。
+pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Vec<ServerConfig> {
     let mut merged: BTreeMap<String, (RawServerSpec, String)> = BTreeMap::new();
     // 项目级按发现顺序（近 → 远）遍历：近者先占位，远处同名告警后忽略。
     for (path, servers) in &json.project_files {
@@ -436,14 +436,13 @@ pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Result<Vec<ServerCo
 
     let mut configs = Vec::with_capacity(merged.len());
     for (name, (spec, _)) in merged {
-        configs.push(resolve_server(
-            &name,
-            &spec,
-            toml.connect_timeout_secs,
-            toml.call_timeout_secs,
-        )?);
+        match resolve_server(&name, &spec, toml.connect_timeout_secs, toml.call_timeout_secs) {
+            Ok(config) => configs.push(config),
+            // 单条非法配置只丢自己：其余 server 继续可用，不能整份 MCP 配置一起跳过。
+            Err(error) => tracing::warn!("跳过非法的 MCP server `{name}`：{error}"),
+        }
     }
-    Ok(configs)
+    configs
 }
 
 #[cfg(test)]
@@ -620,7 +619,7 @@ mod tests {
                 )]),
             )),
         };
-        let resolved = resolve_all(&toml, &json).unwrap();
+        let resolved = resolve_all(&toml, &json);
         let by_name: BTreeMap<&str, &ServerConfig> =
             resolved.iter().map(|c| (c.name.as_str(), c)).collect();
         assert_eq!(by_name.len(), 2);
@@ -632,6 +631,40 @@ mod tests {
             Transport::Stdio { command, .. } => assert_eq!(command, "t"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn invalid_server_entry_does_not_drop_the_rest() {
+        let toml = McpDocument {
+            servers: BTreeMap::from([
+                (
+                    "broken".to_owned(),
+                    RawServerSpec {
+                        // 同时声明 command 与 http 类型：该条无法解析为传输方式。
+                        kind: Some("http".into()),
+                        command: Some("echo".into()),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "good".to_owned(),
+                    RawServerSpec {
+                        command: Some("echo".into()),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        let resolved = resolve_all(
+            &toml,
+            &JsonSource {
+                project_files: Vec::new(),
+                user_file: None,
+            },
+        );
+        let names: Vec<&str> = resolved.iter().map(|config| config.name.as_str()).collect();
+        assert_eq!(names, ["good"], "非法条目只应丢自己");
     }
 
     #[test]

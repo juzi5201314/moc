@@ -269,8 +269,7 @@ impl ResolvedConfig {
             project_files,
             user_file,
         };
-        moc_mcp::resolve_all(&self.mcp, &source)
-            .map_err(|error| CoreError::Config(error.to_string()))
+        Ok(moc_mcp::resolve_all(&self.mcp, &source))
     }
 }
 
