@@ -256,9 +256,13 @@ async fn run_prompt_locked(
         let ov_session = openviking_session_id(&params.session_id);
         let _ = client.create_session(&ov_session, &identity.peer_id).await;
         let message = serde_json::json!({"role":"user","parts":[{"type":"text","text":truncate_memory(&user_message.text())}]});
-        let _ = client
+        if let Err(error) = client
             .append_messages(&ov_session, &[message], &identity.peer_id)
-            .await;
+            .await
+        {
+            // 记忆写入不阻塞提示：失败只记录，避免整轮对话因远端不可用而静默丢失事件。
+            tracing::warn!(session_id = %params.session_id, %error, "OpenViking 用户消息写入失败");
+        }
     }
 
     if state_snapshot.session.title == "新会话" {
@@ -909,9 +913,13 @@ async fn run_prompt_locked(
             let ov_session = openviking_session_id(&params.session_id);
             let tool_calls: Vec<_> = calls.iter().map(|call| serde_json::json!({"id": call.id, "name": call.name, "arguments": truncate_memory(&call.arguments)})).collect();
             let message = serde_json::json!({"role":"assistant","parts":[{"type":"text","text":truncate_memory(&response.message.text())}],"tool_calls":tool_calls});
-            let _ = client
+            if let Err(error) = client
                 .append_messages(&ov_session, &[message], &identity.peer_id)
-                .await;
+                .await
+            {
+                // 记忆写入不阻塞提示：失败只记录，避免整轮对话因远端不可用而静默丢失事件。
+                tracing::warn!(session_id = %params.session_id, %error, "OpenViking 助手消息写入失败");
+            }
         }
         if calls.is_empty() || interrupted {
             if interrupted {
