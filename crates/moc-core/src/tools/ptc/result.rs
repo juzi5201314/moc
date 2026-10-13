@@ -63,7 +63,7 @@ pub(super) async fn script_result(
             if bytes.len() > limit {
                 return Err(oversized(result));
             }
-            result.content = String::from_utf8(bytes).map_err(|err| error("E_RESULT_READ", err))?;
+            result.content = decode_result_bytes(&bytes);
         }
     }
     let bytes = serde_json::to_vec(&result).expect("结果可序列化");
@@ -89,6 +89,11 @@ pub(super) async fn script_result(
     }
 }
 
+/// 与其它出口一致地宽松解码结果文件；二进制输出保留替换字符而不是整体失败。
+fn decode_result_bytes(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 fn oversized(mut result: ScriptToolResult) -> ScriptError {
     result.content = "Tool ran, but its result exceeded the code-read limit".into();
     result.structured_content = None;
@@ -98,5 +103,18 @@ fn oversized(mut result: ScriptToolResult) -> ScriptError {
         code: "E_RESULT_LIMIT".into(),
         message: result.content.clone(),
         result: Some(result),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_result_bytes_decode_lossily_instead_of_failing() {
+        assert_eq!(
+            decode_result_bytes(&[0x68, 0x69, 0xff, 0x00, b'\n']),
+            "hi\u{fffd}\0\n"
+        );
     }
 }
