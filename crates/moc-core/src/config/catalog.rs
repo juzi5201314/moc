@@ -423,7 +423,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "user_config" => ("用户 MCP 配置", "加载 ~/.moc/mcp.json 里定义的 MCP 服务。"),
             "project_config" => (
                 "项目 MCP 配置",
-                "加载项目里的 .mcp.json / mcp.json；其中的本地服务会被启动。",
+                "加载项目里的 .mcp.json / mcp.json；其中的本地服务会被启动。默认关闭。",
             ),
             "api" => ("API 格式", "按供应商支持的协议选择；可在供应商文档中确认。"),
             "base_url" => ("服务地址", "供应商接口地址；通常会自动补上 /v1。"),
@@ -487,7 +487,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "max_file_bytes" => ("单文件大小上限", "工具处理单个文件的最大字节数。"),
             "foreground_after_secs" => (
                 "前台等待秒数",
-                "前台 monitored 命令超过该时间后自动转为后台。",
+                "前台 monitored 命令超过该时间后自动转为后台；tools.job.enabled 关闭时保持前台。",
             ),
             "monitored_timeout_secs" => (
                 "有限任务超时（秒）",
