@@ -105,6 +105,11 @@ pub(super) async fn manage(
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();
             inner.openviking_clients.lock().await.clear();
+            // 指令文件按会话缓存：保存配置后必须同步失效，否则既有会话沿用旧开关。
+            let runtimes: Vec<_> = inner.runtimes.lock().await.values().cloned().collect();
+            for runtime in runtimes {
+                *runtime.context_files.lock().await = None;
+            }
             Ok(ConfigReply::Settings(editor::inspect(
                 &inner.boot,
                 scope,
