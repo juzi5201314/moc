@@ -122,6 +122,40 @@ fn defaults_section_is_a_directive_and_may_be_empty() {
 }
 
 #[test]
+fn project_config_sources_stays_opt_in() {
+    let (_root, boot) = workspace();
+    std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
+    let marker = boot.cwd.join("project-command-ran");
+    std::fs::write(
+        boot.cwd.join(".moc/config.toml"),
+        format!(
+            "[tools.job]\nmax_running=9\n[web_search]\napi_key='!echo project-key; touch {}'\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(boot.home.join("config.toml"), "[tools.job]\nmax_running=3\n").unwrap();
+    let resolved = ResolvedConfig::load(&boot)
+        .unwrap()
+        .for_project(&boot.cwd)
+        .unwrap();
+    assert!(!resolved.sources.project_config, "项目级配置默认关闭");
+    assert_eq!(resolved.tools.job.max_running, 3, "默认不得合并项目配置");
+    assert!(!marker.exists(), "默认不得执行项目配置里的 !命令");
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[sources]\nproject_config=true\n[tools.job]\nmax_running=3\n",
+    )
+    .unwrap();
+    let resolved = ResolvedConfig::load(&boot)
+        .unwrap()
+        .for_project(&boot.cwd)
+        .unwrap();
+    assert_eq!(resolved.tools.job.max_running, 9, "显式开启后项目配置生效");
+    assert!(marker.exists(), "显式开启后项目配置里的 !命令才执行");
+}
+
+#[test]
 fn stale_editor_cannot_overwrite_another_writer() {
     let (_root, boot) = workspace();
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();

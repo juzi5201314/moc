@@ -101,6 +101,9 @@ impl ResolvedConfig {
     }
 
     /// 以项目配置覆盖全局配置，再按原顺序合并 CLI 覆盖层。
+    ///
+    /// 项目级 `.moc/config.toml` 只在 `[sources] project_config = true` 时合并：
+    /// 它会改写全局设置并触发其中的 `!命令`，默认按不可信仓库处理。
     pub fn for_project(&self, cwd: impl AsRef<Path>) -> Result<Self, CoreError> {
         let cwd = expand_home_path(cwd.as_ref());
         let mut raw = self.base_raw.clone();
@@ -468,7 +471,7 @@ mod tests {
         fs::write(
             home.join("config.toml"),
             format!(
-                "{}\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n[tools.bash]\nallow_patterns=['^python3\\s+build\\.py$']\n",
+                "{}\n[sources]\nproject_config=true\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n[tools.bash]\nallow_patterns=['^python3\\s+build\\.py$']\n",
                 provider_config("literal")
             ),
         )
@@ -493,6 +496,10 @@ mod tests {
             config.tools.bash.allow_patterns,
             vec![r"^python3\s+build\.py$".to_owned()]
         );
+        // 项目配置覆盖全局、CLI 覆盖层再覆盖项目：三层的值都能看出来。
+        assert_eq!(config.tools.read.default_limit, 700);
+        assert_eq!(config.tools.read.line_max_bytes, 12345);
+        assert_eq!(config.tools.read.max_bytes, 8192);
         assert_eq!(
             config
                 .resolve_role("default")

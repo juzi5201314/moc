@@ -46,7 +46,7 @@ fn merged(
         .get("sources")
         .and_then(|v| v.get("project_config"))
         .and_then(toml::Value::as_bool)
-        .unwrap_or(true);
+        .unwrap_or(false);
     if project_enabled {
         if scope == ConfigScope::Project {
             merge_value(&mut effective, document);

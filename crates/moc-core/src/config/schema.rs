@@ -617,18 +617,11 @@ impl Default for SessionDocument {
 }
 
 /// 配置文件来源；显式 CLI 覆盖层始终加载。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SourcesConfig {
+    /// 项目级 `.moc/config.toml` 能改写全局设置、触发其中的密钥命令，默认关闭。
     pub project_config: bool,
-}
-
-impl Default for SourcesConfig {
-    fn default() -> Self {
-        Self {
-            project_config: true,
-        }
-    }
 }
 
 /// 文件容量与工具输出预算属于公共工具策略，不归某个具体工具所有。

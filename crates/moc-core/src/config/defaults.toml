@@ -8,7 +8,8 @@ plan = "inherit"
 [providers]
 
 [sources]
-project_config = true
+# 项目级 .moc/config.toml 能改写全局设置并触发其中的 !命令，默认关闭。
+project_config = false
 
 [tools]
 max_concurrent_calls = 16

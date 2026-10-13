@@ -385,7 +385,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "compaction.enabled" => ("启用压缩", "关闭后不再自动压缩对话历史。"),
         "sources.project_config" => (
             "允许项目配置",
-            "允许项目里的 .moc/config.toml 覆盖全局设置。",
+            "允许项目里的 .moc/config.toml 覆盖全局设置；默认关闭，开启即信任该仓库。",
         ),
         "compaction.threshold.mode" => (
             "压缩触发方式",
