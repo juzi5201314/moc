@@ -19,7 +19,7 @@ pub fn model_template() -> Value {
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
             "reasoning_field_aliases":["reasoning_content","reasoning"],"tool_choice_dialect":"standard",
             "parallel_tool_calls":true,"developer_role":false,"response_format_dialect":"standard",
-            "echo_reasoning":"auto","requires_reasoning_content_for_tool_calls":false,
+            "echo_reasoning":"protocol","requires_reasoning_content_for_tool_calls":false,
             "requires_reasoning_content_for_all_assistant_turns":false,"requires_assistant_content_for_tool_calls":false,
             "thinking":{"toggle_field":"thinking","enabled_value":"enabled","disabled_value":"disabled",
                 "effort_field":"reasoning_effort","effort_map":{},"toggle_extra":{}},"extra_body":{}}})
@@ -279,7 +279,11 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
             ("unsupported", "不发送"),
         ],
         "response_format_dialect" => &[("standard", "标准"), ("unsupported", "不发送")],
-        "echo_reasoning" => &[("auto", "自动"), ("always", "总是"), ("never", "从不")],
+        "echo_reasoning" => &[
+            ("protocol", "按协议默认"),
+            ("always", "总是"),
+            ("never", "从不"),
+        ],
         "provider" if path.first().is_some_and(|part| part == "web_search") => {
             &[("tavily", "Tavily")]
         }
@@ -662,7 +666,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "关闭后 developer 消息会转成 system 发送。",
             ),
             "response_format_dialect" => ("结构化输出", "上游不支持时选择不发送。"),
-            "echo_reasoning" => ("回传历史思考", "自动、总是或从不回传历史思考内容。"),
+            "echo_reasoning" => ("回传历史思考", "按协议默认、总是或从不回传历史思考内容。"),
             "requires_reasoning_content_for_tool_calls" => (
                 "工具历史需思考字段",
                 "为工具调用历史补齐上游要求的思考字段。",
@@ -681,5 +685,40 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "toggle_extra" => ("思考附加字段", "JSON：追加到思考对象内部的字段。"),
             _ => (key, "自定义配置项；修改前请确认该服务接受的值。"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn echo_options(value: &Value) -> Vec<String> {
+        let fields = fields(value);
+        let field = fields
+            .iter()
+            .find(|field| {
+                field.path.len() >= 2
+                    && field.path[field.path.len() - 2] == "compat"
+                    && field.path.last().is_some_and(|key| key == "echo_reasoning")
+            })
+            .expect("echo_reasoning 出现在配置目录");
+        let FieldKind::Choice(options) = &field.kind else {
+            panic!("echo_reasoning 应为候选列表");
+        };
+        options.iter().map(|option| option.value.clone()).collect()
+    }
+
+    #[test]
+    fn echo_reasoning_template_and_choices_stay_inside_the_schema() {
+        let template = model_template();
+        let value = template["compat"]["echo_reasoning"].clone();
+        serde_json::from_value::<moc_llm::ReasoningEcho>(value)
+            .expect("模型模板写出的 echo_reasoning 必须是合法枚举值");
+        let options = echo_options(&json!({"providers": {"p": {"models": {"m": template}}}}));
+        assert!(!options.is_empty(), "候选列表不得为空");
+        for option in &options {
+            serde_json::from_value::<moc_llm::ReasoningEcho>(json!(option))
+                .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
+        }
     }
 }
