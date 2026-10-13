@@ -64,12 +64,24 @@ pub async fn connect_unix(path: impl AsRef<Path>) -> io::Result<tokio::net::Unix
     tokio::net::UnixStream::connect(path).await
 }
 
-/// 监听 Unix 域套接字。
+/// 监听 Unix 域套接字，并把套接字文件权限收紧到 `0600`。
 ///
-/// 套接字文件的权限决定谁能连上（core 会执行工具，权限比 TCP 端口更好把控）。
+/// 套接字文件的权限决定谁能连上（core 会执行工具，权限比 TCP 端口更好把控），
+/// 因此这里显式设置而不依赖进程 umask：设置失败即整体失败，绝不留一个权限随
+/// 环境变化的套接字。
 #[cfg(unix)]
 pub async fn listen_unix(path: impl AsRef<Path>) -> io::Result<tokio::net::UnixListener> {
-    tokio::net::UnixListener::bind(path)
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = path.as_ref();
+    let listener = tokio::net::UnixListener::bind(path)?;
+    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        // 清理掉权限不可信的套接字文件，否则下一次绑定会撞上它
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(listener)
 }
 
 #[cfg(test)]
@@ -84,5 +96,30 @@ mod tests {
             result,
             Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listener_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("moc-unix-{stamp}"));
+        std::fs::create_dir_all(&directory).expect("临时目录");
+        let path = directory.join("core.sock");
+
+        let listener = listen_unix(&path).await.expect("绑定成功");
+        let mode = std::fs::metadata(&path)
+            .expect("套接字文件存在")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "套接字必须只有属主可连");
+
+        drop(listener);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&directory);
     }
 }
