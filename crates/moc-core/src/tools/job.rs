@@ -275,8 +275,7 @@ impl JobManager {
         let log_uri = ctx
             .artifact_store()
             .uri_for_path(&log_path)
-            .map_err(|error| format!("[{}] {}", error.code, error.message))
-            .expect("后台日志必须位于当前会话 jobs sidecar");
+            .unwrap_or_else(|error| format!("[{}] {}", error.code, error.message));
         ctx.state.lock().await.notices.push(format!("Background {lifecycle:?} job {id} finished ({exit_label}); output preview:\n{output}\nFull output: {log_uri}"));
         let update = SessionUpdate::JobFinished {
             job_id: id.clone(),
@@ -464,8 +463,12 @@ impl Tool for JobTool {
                     } else {
                         jobs.iter()
                             .map(|job| {
-                                let uri = ctx.artifact_store().uri_for_path(&job.path)
-                                    .expect("job 日志必须位于当前会话 sidecar");
+                                let uri = ctx
+                                    .artifact_store()
+                                    .uri_for_path(&job.path)
+                                    .unwrap_or_else(|error| {
+                                        format!("[{}] {}", error.code, error.message)
+                                    });
                                 format!(
                                     "{}\tlifecycle={:?}\torigin={:?}\tstatus={:?}\telapsed_secs={}\twarnings={}\tlog_truncated={}\t{}",
                                     job.id, job.lifecycle, job.origin, job.status,
@@ -549,8 +552,6 @@ fn require_id(id: Option<String>) -> Result<String, ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn read_tail_returns_last_lines_within_bound() {
         let directory = tempfile::tempdir().expect("临时目录");
