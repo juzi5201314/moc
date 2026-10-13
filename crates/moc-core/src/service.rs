@@ -954,6 +954,9 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
+        // unload_locked 要求调用者持有提示锁：在飞提示会因运行态被摘除而 panic 或写入失败，
+        // 这里还会先杀掉提示正在使用的后台任务。与其他改动类 RPC 一致，先取锁或返回 SESSION_BUSY。
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
         let runtime = self.inner.runtime(&params.session_id).await;
         runtime.jobs.kill_all().await;
