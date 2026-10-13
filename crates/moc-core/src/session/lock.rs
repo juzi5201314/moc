@@ -327,10 +327,17 @@ mod tests {
     fn force_unlock_removes_a_claim_left_by_a_crashed_reclaim() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("ses_123.lock");
-        let claim = claim_path(&path);
-        fs::write(&claim, std::process::id().to_string()).expect("写认领文件");
+        let stale = LockRecord {
+            pid: std::process::id().saturating_add(1_000_000),
+            frontend: "crashed".into(),
+            process_name: None,
+            acquired_at_ms: 1,
+        };
+        fs::write(&path, serde_json::to_vec(&stale).expect("锁记录 JSON")).expect("写陈旧锁");
+        fs::write(claim_path(&path), stale.pid.to_string()).expect("写认领文件");
         assert!(unlock(&path, true).expect("强制释放"));
-        assert!(!claim.exists(), "force 解锁必须清理残留认领文件");
+        assert!(!path.exists());
+        assert!(!claim_path(&path).exists(), "force 解锁必须清理残留认领文件");
     }
 
     #[test]
