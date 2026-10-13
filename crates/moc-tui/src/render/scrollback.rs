@@ -26,6 +26,8 @@ const TOOL_RESULT_TAIL_ROWS: usize = 14;
 pub struct ScrollbackView {
     width: u16,
     cache: Vec<CachedEntry>,
+    /// 每帧重算的块内容代次（批次成员取同批最大值），与 `App::blocks` 对齐。
+    generations: Vec<u64>,
 }
 
 struct CachedEntry {
@@ -62,9 +64,10 @@ impl ScrollbackView {
             self.cache.clear();
         }
         let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
+        fill_block_generations(&app.blocks, &mut self.generations);
         for (index, entry) in app.blocks.iter().enumerate() {
             let key = (
-                entry_cache_generation(app, index),
+                self.generations.get(index).copied().unwrap_or(0),
                 entry.folded,
                 app.view_gen,
             );
@@ -212,19 +215,30 @@ impl ScrollbackView {
     }
 }
 
-fn entry_cache_generation(app: &App, index: usize) -> u64 {
-    let Some(entry) = app.blocks.get(index) else {
-        return 0;
-    };
-    let Some((batch_id, name)) = tool_batch_key(entry) else {
-        return entry.generation;
-    };
-    app.blocks
-        .iter()
-        .filter(|candidate| is_same_batch_tool(candidate, batch_id, name))
-        .fold(entry.generation, |generation, candidate| {
-            generation.max(candidate.generation)
-        })
+/// 计算块内容代次：批次成员的代次归并到同批最大值。
+///
+/// 逐块现算要对每个批次成员全表扫描一次（O(块数²)/帧）；这里一遍建表、一遍回填，
+/// 结果与逐块计算一致，`generations` 复用调用方的缓冲避免每帧分配。
+fn fill_block_generations(blocks: &[Entry], generations: &mut Vec<u64>) {
+    use std::collections::HashMap;
+
+    generations.clear();
+    generations.extend(blocks.iter().map(|entry| entry.generation));
+    let mut batch_max: HashMap<(&str, &str), u64> = HashMap::new();
+    for entry in blocks {
+        let Some((batch_id, name)) = tool_batch_key(entry) else {
+            continue;
+        };
+        let slot = batch_max.entry((batch_id, name)).or_insert(entry.generation);
+        *slot = (*slot).max(entry.generation);
+    }
+    for (index, entry) in blocks.iter().enumerate() {
+        if let Some((batch_id, name)) = tool_batch_key(entry)
+            && let Some(generation) = batch_max.get(&(batch_id, name))
+        {
+            generations[index] = *generation;
+        }
+    }
 }
 
 fn tool_batch_key(entry: &Entry) -> Option<(&str, &str)> {
@@ -1220,5 +1234,45 @@ mod tests {
         app.tools_collapsed = false;
         app.blocks[0].toggle_fold();
         assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
+    }
+
+    /// 小2：批次代次一遍算清——每个成员都取同批最大代次，非批次块保留自身代次。
+    ///
+    /// 逐块现算时每个批次成员都要全表扫描一次（O(块数²)/帧）；归并结果必须与它一致，
+    /// 否则批次里任一成员变化都可能漏掉刷新。
+    #[test]
+    fn batch_members_share_one_generation_scan() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_batched_tool_block("call_a".into(), "read".into(), "batch".into());
+        app.start_batched_tool_block("call_b".into(), "read".into(), "batch".into());
+        app.start_batched_tool_block("call_c".into(), "read".into(), "batch".into());
+        app.push_note("独立块".into(), false);
+        // 只有第二个成员继续变化：同批成员的代次都应是这一批的最大值。
+        app.tool_entry_mut("call_b")
+            .expect("批次成员")
+            .touch();
+        let latest = app.blocks[1].generation;
+        assert!(latest > app.blocks[0].generation, "成员各自推进");
+
+        let mut generations = Vec::new();
+        fill_block_generations(&app.blocks, &mut generations);
+        assert_eq!(generations.len(), app.blocks.len());
+        assert_eq!(
+            &generations[..3],
+            &[latest, latest, latest],
+            "同批成员共用最大代次"
+        );
+        assert_eq!(
+            generations[3],
+            app.blocks[3].generation,
+            "非批次块保留自身代次"
+        );
+
+        // 缓存 key 用的就是这份代次
+        let mut view = ScrollbackView::new();
+        view.sync(&app, 80);
+        assert_eq!(view.cache[0].key, (latest, app.blocks[0].folded, app.view_gen));
+        assert_eq!(view.cache[1].key.0, latest);
     }
 }
