@@ -319,7 +319,9 @@ async fn wait_foreground(
     match selection {
         Selection::Finished(result) => result.map(Some),
         Selection::Background => {
-            if let Some(permit) = ctx.jobs.slots.try_acquire(ctx.config.tools.job.max_running) {
+            if ctx.config.tools.job.enabled
+                && let Some(permit) = ctx.jobs.slots.try_acquire(ctx.config.tools.job.max_running)
+            {
                 ctx.jobs.start(
                     ctx.clone(),
                     job_id,
