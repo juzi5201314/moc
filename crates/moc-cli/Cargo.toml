@@ -13,6 +13,13 @@ clap.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
+tracing.workspace = true
+# 与 moc-tui 同一份版本与 features：依赖树里只应存在一个 tracing-subscriber
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "std",
+    "ansi",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true

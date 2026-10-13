@@ -98,7 +98,7 @@ fn termination_signal() -> impl std::future::Future<Output = &'static str> {
 }
 
 /// 交互模式默认进 TUI；`--repl` 强制行式，非 TTY（管道 / CI）自动降级。
-fn use_tui(args: &CliArgs) -> bool {
+pub(crate) fn use_tui(args: &CliArgs) -> bool {
     if args.print || args.list || args.repl {
         return false;
     }
