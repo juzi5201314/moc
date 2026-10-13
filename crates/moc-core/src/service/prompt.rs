@@ -135,8 +135,10 @@ pub async fn run_prompt(
         result
     };
     *runtime.guard.lock() = None;
-    if let Ok(result) = &result {
-        update
+    // 推送失败只影响前端可见性，不能跳过收尾：steering 复位、工具配对修复、
+    // 补充消息落库与解锁广播都必须无条件执行。
+    let finished = match &result {
+        Ok(result) => update
             .emit(
                 session_id.clone(),
                 SessionUpdate::PromptFinished {
@@ -147,8 +149,10 @@ pub async fn run_prompt(
                 },
             )
             .await
-            .map_err(protocol_to_rpc)?;
-    }
+            .map_err(protocol_to_rpc)
+            .err(),
+        Err(_) => None,
+    };
     inner
         .runtime(&session_id)
         .await
@@ -173,8 +177,9 @@ pub async fn run_prompt(
     match result {
         Err(error) => Err(error),
         Ok(outcome) => {
+            // 完成推送与解锁广播都是通知：任一失败都要让客户端知道本次提示未完整交付。
             unlocked?;
-            Ok(outcome)
+            finished.map_or(Ok(outcome), Err)
         }
     }
 }
