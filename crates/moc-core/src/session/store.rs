@@ -256,30 +256,6 @@ impl SessionStore {
         }
     }
 
-    /// 登记一个尚未落盘的会话句柄；首次 append 时才创建 transcript 文件。
-    pub fn open_deferred(&self, cwd: &Path, session_id: &str, created_at_ms: u64) -> SessionFile {
-        let paths = self.paths_for(cwd, session_id, created_at_ms);
-        self.index
-            .write()
-            .insert(session_id.to_owned(), paths.clone());
-        SessionFile {
-            path: paths.transcript.clone(),
-            file: tokio::sync::Mutex::new(None),
-            // 零值纪元仅表示「磁盘上还没有文件」；changed_on_disk 在
-            // NotFound 时同样返回 true，两条路径语义一致。
-            revision: RwLock::new(crate::hashline::SnapshotId {
-                device: 0,
-                inode: 0,
-                modified_secs: 0,
-                modified_nanos: 0,
-                changed_secs: 0,
-                changed_nanos: 0,
-                size: 0,
-                content_hash: 0,
-            }),
-        }
-    }
-
     /// 通过会话 ID 查找记录路径，必要时扫描磁盘目录。
     pub async fn find(&self, session_id: &str) -> Result<Option<SessionPaths>, CoreError> {
         if let Some(paths) = self.index.read().get(session_id).cloned() {
