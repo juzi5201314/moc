@@ -1019,6 +1019,63 @@ mod tests {
         assert_eq!(restored.entries.len(), 3);
         assert_eq!(restored.entries[2].message.text(), "续写");
     }
+
+    #[tokio::test]
+    async fn lock_refresh_restores_an_externally_archived_transcript() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path(), true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                None,
+            )
+            .await
+            .expect("创建会话");
+        table
+            .append_message(&info.id, Message::user_text("归档前"), None, None)
+            .await
+            .expect("追加消息");
+        let record = table.get(&info.id).await.expect("取会话");
+        let transcript = record.paths.transcript.clone();
+        // 外部维护把可写日志压缩归档后删除原文件。
+        let archive = transcript.with_extension("jsonl.gz");
+        {
+            let source =
+                tokio::io::BufReader::new(tokio::fs::File::open(&transcript).await.expect("打开"));
+            let mut encoder = async_compression::tokio::bufread::GzipEncoder::with_quality(
+                source,
+                async_compression::Level::Fastest,
+            );
+            let mut out = tokio::fs::File::create(&archive).await.expect("创建归档");
+            tokio::io::copy(&mut encoder, &mut out)
+                .await
+                .expect("写入归档");
+            out.sync_all().await.expect("刷写归档");
+        }
+        tokio::fs::remove_file(&transcript)
+            .await
+            .expect("删除可写日志");
+        // 刷新路径必须先恢复可写日志再重新打开，否则会话无法再追加记录。
+        let guard = table
+            .acquire_lock(&info.id, "tui")
+            .await
+            .expect("归档后仍能取得锁");
+        assert!(guard.is_some());
+        table
+            .append_message(&info.id, Message::assistant_text("归档后追加"), None, None)
+            .await
+            .expect("归档后仍能追加");
+        drop(guard);
+        let loaded = table.load(&info.id, None).await.expect("加载会话");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[1].message.text(), "归档后追加");
+        assert!(transcript.exists(), "恢复后的可写日志回到原路径");
+        assert!(!archive.exists(), "归档文件在恢复后移除");
+    }
     #[tokio::test]
     async fn rewind_truncates_user_message_and_keeps_tool_history_complete() {
         let directory = tempfile::tempdir().expect("临时目录");
