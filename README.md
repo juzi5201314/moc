@@ -121,7 +121,8 @@ statusline = "{model} * {mode} -> {workdir}"
 ## 工具调用 diff
 
 edit / write 执行时由 core 生成结构化 diff（LCS 对齐、上下文 3 行、
-超限截断标记），经 `ToolFinished` 与权限请求携带到前端；权限弹窗内直接
-预览将要产生的变更。
+超限截断标记），经 `ToolFinished` 携带到前端；越出工作区的写入在授权弹窗里
+再给一次预览：`edit` 是待应用 diff（无法完整预览时不带），`write` 另附最多
+40 行 / 4 KiB 的内容摘录，超出以 `[...]` 截断，确认后才落盘。
 
 `edit` 保留单文件 `{path, edits}` 格式，也支持 `{files: [{path, edits}, ...]}`。后者按文件顺序串行应用，每个文件仍必须先由 `read` 提供当前 hashline 锚点；全部成功后回传合并 diff。

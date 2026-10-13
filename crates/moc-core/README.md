@@ -123,7 +123,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/usage`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读，不隔离网络。`edit` / `write` 仍由 core 直接写入工作区。
+交互命令包括 `/mode`、`/permission full|workspace`、`/plan`、`/approve execute|compact|new|reject`、`/compact`、`/usage`、`/undo`、`/new`、`/sessions`、`/model` 和 `/quit`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读，不隔离网络。`edit` / `write` 越出工作区时需一次性授权，`read` / `find` / `grep` 不设读边界；细则见「行为与安全边界」。
 
 ## 嵌入接口
 
@@ -136,7 +136,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 ## 行为与安全边界
 
 - `full` 是 yolo：bash 不做授权询问，但危险命令拒绝规则始终生效。
-- `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 仍由 core 直接写入工作区。
+- `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 由 core 直接写入，边界按解析后的真实落点判定（展开符号链接、折叠新建路径里的 `..`）：越出工作区（含 `ov://` / `viking://` 写入）复用同一条一次性授权链，弹窗携带写入内容预览与 diff，授权只对本次调用有效；无法弹窗或拒绝则不写入，执行阶段还会按同源判定复校验一次。`read` / `find` / `grep` 是只读工具，不设读边界，能力与沙盒外只读挂载一致。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - 计划模式进入时应用 `models.roles.plan`（`none` 时沿用当前模型），手动退出时恢复进入前的模型；审批退出改用选定执行模型。`session/new` 直接以计划模式创建会话同样应用计划角色模型。
 - `write_plan` 只保存会话计划文件和 Submitted entry；`exit_plan({})` 触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，父会话仍保持计划模式，子会话以选定模型开始 Normal 执行。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
