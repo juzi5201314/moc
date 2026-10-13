@@ -110,10 +110,7 @@ mod tests {
 
     fn tool(declared_read_only: bool) -> McpTool {
         McpTool::new(
-            Arc::new(McpManager::new(
-                Vec::new(),
-                tokio_util::sync::CancellationToken::new(),
-            )),
+            McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
             Arc::new(McpToolInfo {
                 server: "demo".into(),
                 name: "search".into(),
