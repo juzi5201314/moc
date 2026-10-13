@@ -3195,6 +3195,8 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             });
         }
         "/help" => app.modal = Some(Modal::Help),
+        "/context" => open_context(app, connection),
+        "/quit" => app.should_quit = true,
         "/compact" => {
             if let Some(session_id) = session_id {
                 let client = connection.client.clone();
@@ -5285,6 +5287,37 @@ mod tests {
         assert_eq!(result.answers[1].custom, None, "第 2 问不得带上第 1 问的答案");
         assert_eq!(result.answers[1].selected, vec!["选项一".to_owned()]);
         assert!(app.modal.is_none(), "提交后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 补全表里的每条命令都必须有实际处理分支：输入后不得回落到「未知命令」。
+    ///
+    /// 补全表、帮助与实际处理三者漂移过一次（`/context`、`/quit` 曾在表里但没有分支），
+    /// 这条用例把「表 ⊆ 处理」钉住。
+    #[tokio::test]
+    async fn every_slash_command_has_an_execution_branch() {
+        let (core, connection, mut app) = setup_test_app().await;
+        for command in crate::widgets::completion::SLASH_COMMANDS {
+            // 逐条重置：模态、设置页、提示、退出标记与忙标记都不该影响下一条
+            app.modal = None;
+            app.settings = None;
+            app.notice = None;
+            app.should_quit = false;
+            app.inflight_session_ops.clear();
+
+            execute_command(&mut app, &connection, command.name.to_owned());
+            let notice = app.notice.clone().unwrap_or_default();
+            assert!(
+                !notice.starts_with("未知命令"),
+                "{} 没有处理分支（提示：{notice}）",
+                command.name
+            );
+            if command.name == "/quit" {
+                assert!(app.should_quit, "/quit 应走既有退出路径");
+            }
+        }
 
         connection.shutdown().await;
         core.shutdown().await;
