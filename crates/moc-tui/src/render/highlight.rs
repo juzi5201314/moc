@@ -42,7 +42,8 @@ pub struct Span {
 /// 对代码块做整块高亮（行级别，保留跨行解析状态）。
 ///
 /// `info` 是 markdown fence 的语言标记（```` ```rust ```` 中的 `rust`）；
-/// 未识别时按纯文本渲染。整块输入保证 syntect 的 `ParseState` 连续。
+/// 未识别时按纯文本渲染。整块输入保证 syntect 的 `ParseState` 连续。单行高亮失败
+/// 时该行退化为纯文本并 `warn`，不静默丢内容。
 pub fn highlight(info: &str, code: &str) -> HighlightedCode {
     let syntax = syntax_set()
         .find_syntax_by_token(info.trim())
@@ -50,21 +51,30 @@ pub fn highlight(info: &str, code: &str) -> HighlightedCode {
     let mut highlighter = HighlightLines::new(syntax, highlight_theme());
     let mut lines = Vec::new();
     for line in syntect::util::LinesWithEndings::from(code) {
-        let Ok(regions) = highlighter.highlight_line(line, syntax_set()) else {
-            continue;
-        };
-        let mut spans: Vec<Span> = Vec::with_capacity(regions.len());
-        for (style, text) in regions {
-            let text = text.trim_end_matches(['\n', '\r']);
-            if text.is_empty() {
-                continue;
+        match highlighter.highlight_line(line, syntax_set()) {
+            Ok(regions) => {
+                let mut spans: Vec<Span> = Vec::with_capacity(regions.len());
+                for (style, text) in regions {
+                    let text = text.trim_end_matches(['\n', '\r']);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    spans.push(Span {
+                        fg: fg_rgb(style),
+                        text: text.to_owned(),
+                    });
+                }
+                lines.push(spans);
             }
-            spans.push(Span {
-                fg: fg_rgb(style),
-                text: text.to_owned(),
-            });
+            Err(error) => {
+                // 降级：语法高亮失败不该吞掉这一行内容，按纯文本输出
+                tracing::warn!(%error, "语法高亮失败，按纯文本输出该行");
+                lines.push(vec![Span {
+                    fg: None,
+                    text: line.trim_end_matches(['\n', '\r']).to_owned(),
+                }]);
+            }
         }
-        lines.push(spans);
     }
     HighlightedCode { lines }
 }
