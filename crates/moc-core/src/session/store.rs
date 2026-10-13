@@ -116,7 +116,12 @@ impl SessionFile {
         Ok(*self.revision.read() != crate::hashline::SnapshotId::from_metadata(&metadata))
     }
 
+    /// 重新打开磁盘上的 transcript。
+    ///
+    /// 外部维护可能已把日志归档成 `.jsonl.gz`：先解压恢复可写日志再打开，
+    /// 否则重新打开的会话无法再追加记录。调用者持会话文件锁。
     pub async fn reopen(&self) -> Result<(), CoreError> {
+        super::maintenance::restore(&self.path).await?;
         let mut current = self.file.lock().await;
         let reopened = OpenOptions::new()
             .read(true)
