@@ -514,7 +514,7 @@ impl std::fmt::Display for FinishReason {
             FinishReason::ToolCalls => "tool_calls",
             FinishReason::ContentFilter => "content_filter",
             FinishReason::Refusal => "refusal",
-            FinishReason::PauseTurn => "pause_prompt",
+            FinishReason::PauseTurn => "pause_turn",
             FinishReason::Cancelled => "cancelled",
             FinishReason::Interrupted => "interrupted",
             FinishReason::LoopDetected => "loop_detected",
@@ -870,7 +870,7 @@ mod tests {
             (FinishReason::ToolCalls, "tool_calls"),
             (FinishReason::ContentFilter, "content_filter"),
             (FinishReason::Refusal, "refusal"),
-            (FinishReason::PauseTurn, "pause_prompt"),
+            (FinishReason::PauseTurn, "pause_turn"),
             (FinishReason::Cancelled, "cancelled"),
             (FinishReason::Interrupted, "interrupted"),
             (

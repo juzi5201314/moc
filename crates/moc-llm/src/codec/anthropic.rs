@@ -597,13 +597,16 @@ pub(crate) fn decode_response(
 }
 
 /// Anthropic 的 `stop_reason` 映射。
+///
+/// 取值以官方 Messages 文档为准：`end_turn` 是自然结束，`pause_turn` 表示服务端
+/// 工具把回合交还给客户端，需要原样重发请求续跑。
 fn map_stop_reason(reason: &str) -> FinishReason {
     match reason {
-        "end_prompt" => FinishReason::Stop,
+        "end_turn" => FinishReason::Stop,
         "stop_sequence" => FinishReason::StopSequence,
         "max_tokens" | "model_context_window_exceeded" => FinishReason::Length,
         "tool_use" => FinishReason::ToolCalls,
-        "pause_prompt" => FinishReason::PauseTurn,
+        "pause_turn" => FinishReason::PauseTurn,
         "refusal" => FinishReason::Refusal,
         other => FinishReason::Other(other.to_owned()),
     }
@@ -1662,12 +1665,12 @@ mod tests {
     #[test]
     fn stop_reason_table() {
         let cases = [
-            ("end_prompt", FinishReason::Stop),
+            ("end_turn", FinishReason::Stop),
             ("stop_sequence", FinishReason::StopSequence),
             ("max_tokens", FinishReason::Length),
             ("model_context_window_exceeded", FinishReason::Length),
             ("tool_use", FinishReason::ToolCalls),
-            ("pause_prompt", FinishReason::PauseTurn),
+            ("pause_turn", FinishReason::PauseTurn),
             ("refusal", FinishReason::Refusal),
             ("something_new", FinishReason::Other("something_new".into())),
         ];
@@ -1683,6 +1686,35 @@ mod tests {
             response.finish_reason,
             FinishReason::Other("unknown".into())
         );
+    }
+
+    #[test]
+    fn stream_maps_official_stop_reason_values() {
+        // `end_turn` 必须落成自然结束；落成 `Other` 会让 core 把正常结束当异常。
+        for (wire, expected) in [
+            ("end_turn", FinishReason::Stop),
+            ("pause_turn", FinishReason::PauseTurn),
+        ] {
+            let mut decoder = AnthropicStreamDecoder::new(&config(), &base_request());
+            let events = unwrapped(events(
+                &mut decoder,
+                &[
+                    r#"{"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-5"}}"#,
+                    r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"写完"}}"#,
+                    &format!(
+                        r#"{{"type":"message_delta","delta":{{"stop_reason":"{wire}"}},"usage":{{"output_tokens":4}}}}"#
+                    ),
+                    r#"{"type":"message_stop"}"#,
+                ],
+            ));
+            assert_eq!(
+                events.last(),
+                Some(&StreamEvent::Done {
+                    finish_reason: expected,
+                }),
+                "{wire}"
+            );
+        }
     }
 
     #[test]
