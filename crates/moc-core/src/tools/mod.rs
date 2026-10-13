@@ -351,8 +351,15 @@ pub fn workspace_escape(
     cwd: &std::path::Path,
     value: impl AsRef<std::path::Path>,
 ) -> Option<PathBuf> {
-    let root = std::fs::canonicalize(cwd).ok()?;
     let supplied = value.as_ref();
+    // OpenViking 写入是远程写入，不属于会话工作区：按越界处理并在工作区权限下
+    // 走一次性授权。只读的 MOC 内部 URI 由 ResourceRouter 直接拒绝写入。
+    if let Some(text) = supplied.to_str()
+        && crate::resources::is_writable_resource_uri(text)
+    {
+        return Some(supplied.to_owned());
+    }
+    let root = std::fs::canonicalize(cwd).ok()?;
     let joined = if supplied.is_absolute() {
         supplied.to_owned()
     } else {
@@ -492,6 +499,18 @@ mod tests {
             ensure_workspace_write(&root, SessionPermission::Workspace, root.join("src/main.rs"))
                 .is_ok()
         );
+        // OpenViking 写入是远程写入：工作区权限下按越界处理，需要一次性授权。
+        for uri in ["viking://~/notes/memory.md", "ov://repo/notes.md"] {
+            assert!(workspace_escape(&root, uri).is_some(), "{uri}");
+            assert!(
+                ensure_workspace_write(&root, SessionPermission::Workspace, uri).is_err(),
+                "{uri}"
+            );
+            assert!(ensure_workspace_write(&root, SessionPermission::Full, uri).is_ok());
+        }
+        // 只读的 MOC 内部 URI 不在此列：写入由 ResourceRouter 直接拒绝。
+        assert!(workspace_escape(&root, "artifact://ses_1/artifacts/out.txt").is_none());
+        assert!(workspace_escape(&root, "plain://dir/file").is_none());
     }
 
     #[cfg(unix)]

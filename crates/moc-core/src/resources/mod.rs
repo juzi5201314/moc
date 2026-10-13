@@ -218,6 +218,14 @@ pub fn is_resource_uri(input: &str) -> bool {
     resource_scheme(input).is_some()
 }
 
+/// 是否为带独立写入出口的资源 URI（OpenViking）。
+///
+/// 其余 MOC 内部 URI 由 [`ResourceRouter::write`] 直接拒绝写入；OpenViking
+/// 写入是远程写入，不属于会话工作区，需要一次性授权。
+pub fn is_writable_resource_uri(input: &str) -> bool {
+    matches!(resource_scheme(input), Some(ResourceScheme::OpenViking))
+}
+
 /// 读取输入前缀里的已注册 scheme；不是资源 URI 时返回 `None`。
 fn resource_scheme(input: &str) -> Option<ResourceScheme> {
     let (scheme, _) = input.split_once("://")?;
