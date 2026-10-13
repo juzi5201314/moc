@@ -2353,8 +2353,7 @@ fn handle_modal_key(
                     editor.clear();
                 }
             }
-            (KeyCode::Char('x'), KeyModifiers::NONE)
-            | (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                 let target_agent_id = agent_id.clone();
                 let parent_session_id = session_id.clone();
                 let client = connection.client.clone();
@@ -5133,6 +5132,30 @@ mod tests {
         );
         assert!(!app.interrupt_pending.contains(&old_session));
         assert!(app.blocks.is_empty(), "旧会话内容不得落到新会话转写");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 小7：子代理详情编辑器的裸 `x` 是普通字符，停止只认 Ctrl+S。
+    #[tokio::test]
+    async fn subagent_detail_typing_x_does_not_stop() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(Modal::SubagentDetail {
+            agent_id: "agent_1".into(),
+            editor: crate::widgets::prompt::PromptState::default(),
+            scroll_offset: 0,
+        });
+
+        for ch in "xy".chars() {
+            handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
+        }
+        match app.modal.as_ref() {
+            Some(Modal::SubagentDetail { editor, .. }) => {
+                assert_eq!(editor.text, "xy", "x 应作为普通字符进入消息");
+            }
+            _ => unreachable!("子代理详情模态应保持打开"),
+        }
 
         connection.shutdown().await;
         core.shutdown().await;
