@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod args;
 mod render;
 mod repl;

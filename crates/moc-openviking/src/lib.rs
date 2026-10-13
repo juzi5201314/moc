@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
