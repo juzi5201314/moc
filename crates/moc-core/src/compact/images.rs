@@ -36,9 +36,10 @@ pub fn apply(
     native_input: Option<&[Value]>,
     configured_max_bytes: Option<u64>,
 ) -> (Vec<Message>, ImageBudgetOutcome) {
+    // 配置上限原样生效：小于触发余量的上限会让图片全部被淘汰（0 已在校验阶段拒绝），
+    // 静默回落到默认值会让用户设置的请求体上限失效。
     let max_bytes = configured_max_bytes
         .and_then(|value| usize::try_from(value).ok())
-        .filter(|value| *value > TRIGGER_HEADROOM_BYTES * 4)
         .unwrap_or(DEFAULT_MAX_REQUEST_BYTES);
     let trigger = max_bytes.saturating_sub(TRIGGER_HEADROOM_BYTES);
     let reclaim = max_bytes / 2;
@@ -143,6 +144,27 @@ mod tests {
         }];
         let (messages, outcome) = apply(messages, &[], None, Some(8 * 1024 * 1024));
         assert_eq!(outcome.evicted, 1);
+        assert!(outcome.body_bytes_after < outcome.body_bytes);
+        assert!(matches!(messages[0].content[0], ContentPart::Text(_)));
+    }
+
+    #[test]
+    fn configured_limit_below_the_trigger_headroom_is_honored() {
+        let image = ImageSource::Base64 {
+            media_type: "image/png".into(),
+            data: "x".repeat(5 * 1024 * 1024),
+        };
+        let messages = vec![Message {
+            role: moc_llm::Role::User,
+            content: vec![ContentPart::Image {
+                source: image,
+                detail: None,
+            }],
+        }];
+        // 4 MiB 上限低于默认值：必须按配置淘汰，而不是静默回落到 50 MiB。
+        let (messages, outcome) = apply(messages, &[], None, Some(4 * 1024 * 1024));
+        assert_eq!(outcome.evicted, 1);
+        assert!(outcome.body_bytes > 4 * 1024 * 1024);
         assert!(outcome.body_bytes_after < outcome.body_bytes);
         assert!(matches!(messages[0].content[0], ContentPart::Text(_)));
     }
