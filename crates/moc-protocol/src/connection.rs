@@ -19,14 +19,20 @@
 //! 3. **收尾单点且幂等**：读任务因 EOF / 致命分帧错 / 令牌取消 / 写任务死亡退出后，
 //!    统一 trip 连接令牌 → `JoinSet::shutdown` abort 在飞任务（服务 future 被 drop，
 //!    其 Drop guard 自行清理）→ 排空 pending 表（每个等待者立即拿到失败）→ 等写任务
-//!    排空已排队报文并关闭写半边。
+//!    尽力写完已排队的报文并关闭写半边。写路径全程响应取消：对端活着但不再读取时
+//!    `write_all` 会永久挂起，收尾因此**不等**对端，只写它当下能接收的量。
 //!
 //! 出站报文**绝不半写**：序列化或长度超限都在写任务内就地降级（响应换 `-32603`、
 //! 通知丢弃并 `warn`、反向请求让本地等待者立即失败），不会把断头帧写到线上。
+//! 唯一可能中断在途帧的时机是连接取消（收尾已开始、对端连已有的字节都不再接收，
+//! 此时它本来就会以分帧错误结束这次连接）。
 
 use std::collections::HashMap;
+use std::future::{Future, poll_fn};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::task::Poll;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -395,7 +401,8 @@ impl Connection {
         tasks.shutdown().await;
         self.traffic.pending.drain();
         if !write_finished {
-            // 取消后写任务只会排空已排队报文，不会长等；此处等它关掉写半边
+            // 写任务在取消后只写对端当下能接收的量（对端不读也立刻停手），
+            // 因此这里的等待有界：收尾不会被一个不读数据的对端拖住
             let _ = write_task.await;
         }
     }
@@ -484,9 +491,9 @@ async fn write_loop<W>(
             biased;
             message = outbound.recv() => message,
             () = closed.cancelled() => {
-                // 收尾：尽力写完已排队的报文，不再等待新报文
+                // 收尾：尽力写完已排队的报文；对端不再读取时一个字节都不等
                 while let Ok(message) = outbound.try_recv() {
-                    if !write_one(&mut writer, &mut buffers, message, &pending).await {
+                    if !write_one(&mut writer, &mut buffers, message, &pending, Wait::Now).await {
                         break;
                     }
                 }
@@ -496,7 +503,15 @@ async fn write_loop<W>(
         let Some(message) = message else {
             break;
         };
-        if !write_one(&mut writer, &mut buffers, message, &pending).await {
+        if !write_one(
+            &mut writer,
+            &mut buffers,
+            message,
+            &pending,
+            Wait::UntilCancelled(&closed),
+        )
+        .await
+        {
             closed.cancel();
             break;
         }
@@ -582,12 +597,25 @@ impl EncodeFailure {
     }
 }
 
+/// 写一帧时的等待策略。
+///
+/// 对端停止读取时 `write_all` 会永远挂起，而连接收尾要等写任务退出：写路径必须
+/// 有一条不等对端的路，否则 `close()` / `wait()` 跟着一起挂死。
+#[derive(Clone, Copy)]
+enum Wait<'a> {
+    /// 正常路径：等对端接收（背压来源就是这里），但 `closed` 取消即停手。
+    UntilCancelled(&'a CancellationToken),
+    /// 收尾路径：只写对端当下能接收的量，一个字节都不等。
+    Now,
+}
+
 /// 写出一条出站报文；返回 `false` 表示写半边已不可用。
 async fn write_one<W>(
     writer: &mut W,
     buffers: &mut WriteBuffers,
     message: Outbound,
     pending: &PendingMap,
+    wait: Wait<'_>,
 ) -> bool
 where
     W: AsyncWrite + Unpin,
@@ -599,7 +627,7 @@ where
         Outbound::Notification(notification) => Degrade::Notification(notification.method.clone()),
     };
     let failure = match buffers.encode(message.into()) {
-        Ok(()) => return write_frame(writer, &buffers.frame).await,
+        Ok(()) => return write_frame(writer, &buffers.frame, wait).await,
         Err(failure) => failure,
     };
     let detail = failure.detail();
@@ -610,7 +638,7 @@ where
             tracing::warn!("反向请求 {id} 未写出（{detail}），已让本地等待者失败")
         }
     }
-    degrade.apply(writer, buffers, pending, detail).await
+    degrade.apply(writer, buffers, pending, detail, wait).await
 }
 
 /// 出站报文的降级处置策略。
@@ -631,6 +659,7 @@ impl Degrade {
         buffers: &mut WriteBuffers,
         pending: &PendingMap,
         detail: String,
+        wait: Wait<'_>,
     ) -> bool
     where
         W: AsyncWrite + Unpin,
@@ -642,7 +671,7 @@ impl Degrade {
                     tracing::error!("降级错误报文仍无法写出，关闭连接");
                     return false;
                 }
-                write_frame(writer, &buffers.frame).await
+                write_frame(writer, &buffers.frame, wait).await
             }
             // 丢弃已在调用处记过日志
             Self::Notification(_) => true,
@@ -657,20 +686,69 @@ impl Degrade {
     }
 }
 
-/// 把整帧写到线上并 flush。
-async fn write_frame<W>(writer: &mut W, frame: &[u8]) -> bool
+/// 把整帧写到线上并 flush；返回 `false` 表示这一帧没能完整写出。
+async fn write_frame<W>(writer: &mut W, frame: &[u8], wait: Wait<'_>) -> bool
 where
     W: AsyncWrite + Unpin,
 {
-    if let Err(error) = writer.write_all(frame).await {
-        tracing::debug!("写失败：{error}");
-        return false;
+    let mut written = 0;
+    while written < frame.len() {
+        let slice = &frame[written..];
+        let step = poll_step(
+            wait,
+            poll_fn(|cx| Pin::new(&mut *writer).poll_write(cx, slice)),
+        )
+        .await;
+        match step {
+            // 取消、对端不再接收或写不进去：本帧到此为止
+            None => {
+                tracing::debug!("写未完成（{} 字节待写），连接已收尾", frame.len() - written);
+                return false;
+            }
+            Some(Ok(0)) => {
+                tracing::debug!("写半边已关闭");
+                return false;
+            }
+            Some(Ok(size)) => written += size,
+            Some(Err(error)) => {
+                tracing::debug!("写失败：{error}");
+                return false;
+            }
+        }
     }
-    if let Err(error) = writer.flush().await {
-        tracing::debug!("flush 失败：{error}");
-        return false;
+    match poll_step(wait, poll_fn(|cx| Pin::new(&mut *writer).poll_flush(cx))).await {
+        Some(Ok(())) => true,
+        Some(Err(error)) => {
+            tracing::debug!("flush 失败：{error}");
+            false
+        }
+        None => {
+            tracing::debug!("flush 未完成，连接已收尾");
+            false
+        }
     }
-    true
+}
+
+/// 取一次写进度：是否等待由 [`Wait`] 决定。
+///
+/// `None` = 这一步需要等待（取消，或收尾路径下对端当下不可写）。返回值直接透传
+/// `poll_write` / `poll_flush` 的结果，让调用处只处理一种形状。
+async fn poll_step<T>(wait: Wait<'_>, step: impl Future<Output = T>) -> Option<T> {
+    match wait {
+        Wait::UntilCancelled(closed) => tokio::select! {
+            biased;
+            () = closed.cancelled() => None,
+            value = step => Some(value),
+        },
+        Wait::Now => {
+            // 只poll 一次：未就绪就放弃，绝不等待
+            tokio::pin!(step);
+            match poll_fn(|cx| Poll::Ready(step.as_mut().poll(cx))).await {
+                Poll::Ready(value) => Some(value),
+                Poll::Pending => None,
+            }
+        }
+    }
 }
 
 /// 序列化请求参数；失败按 `-32603` 报告（core / 前端的参数类型必须可序列化）。
