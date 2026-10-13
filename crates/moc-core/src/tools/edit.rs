@@ -5,7 +5,7 @@ use moc_llm::ToolDef;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, resolve_tool_path};
+use super::{Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, ToolOutput, resolve_tool_path};
 use crate::hashline::apply::{EditError, EditOutput, EditRequest, apply_edit};
 use crate::resources::ResourceRouter;
 
@@ -75,28 +75,15 @@ impl Tool for EditTool {
             let payload = args.to_string();
             let requests = parse_requests(args)?;
 
-            let mut content = String::new();
-            let mut files = Vec::new();
-            let mut truncated = false;
-            let mut changed = false;
+            let mut report = BatchReport::default();
             for request in requests {
                 match apply_one(ctx, request).await? {
-                    Ok(output) => {
-                        if !content.is_empty() {
-                            content.push('\n');
-                        }
-                        changed |= output.content != "No changes made.";
-                        content.push_str(&output.content);
-                        if let Some(diff) = output.diff {
-                            truncated |= diff.truncated;
-                            files.extend(diff.files);
-                        }
-                    }
-                    Err(outcome) => return Ok(outcome),
+                    Ok(output) => report.record(output),
+                    Err(outcome) => return Ok(report.finish_failure(outcome)),
                 }
             }
 
-            let count = ctx.anchors.observe_edit(payload, changed);
+            let count = ctx.anchors.observe_edit(payload, report.changed);
             if count >= ctx.config.tools.edit.noop_loop_threshold {
                 return Err(ToolError::new(
                     "E_NOOP_LOOP",
@@ -104,16 +91,63 @@ impl Tool for EditTool {
                 ));
             }
             Ok(ToolOutcome {
-                content: content.into(),
+                content: report.content.into(),
                 is_error: false,
                 structured_content: None,
                 error_code: None,
                 images: Vec::new(),
                 control: ToolControl::Continue,
                 status: None,
-                diff: (!files.is_empty()).then_some(moc_protocol::ToolDiff { files, truncated }),
+                diff: (!report.files.is_empty()).then_some(moc_protocol::ToolDiff {
+                    files: report.files,
+                    truncated: report.truncated,
+                }),
             })
         })
+    }
+}
+
+/// 多文件 edit 的累计输出；中途失败时保留此前已提交文件的摘要与 diff。
+#[derive(Default)]
+struct BatchReport {
+    content: String,
+    files: Vec<moc_protocol::ToolFileDiff>,
+    truncated: bool,
+    changed: bool,
+}
+
+impl BatchReport {
+    fn record(&mut self, output: EditOutput) {
+        if !self.content.is_empty() {
+            self.content.push('\n');
+        }
+        self.changed |= output.content != "No changes made.";
+        self.content.push_str(&output.content);
+        if let Some(diff) = output.diff {
+            self.truncated |= diff.truncated;
+            self.files.extend(diff.files);
+        }
+    }
+
+    /// 失败结果补上已应用的内容与 diff：前端与模型都要知道哪些文件已经改过。
+    fn finish_failure(self, mut outcome: ToolOutcome) -> ToolOutcome {
+        if let ToolOutput::Text(failed) = outcome.content {
+            let mut report = String::new();
+            if !self.content.is_empty() {
+                report.push_str("Already applied before the failure:\n");
+                report.push_str(&self.content);
+                report.push_str("\n\n");
+            }
+            report.push_str(&failed);
+            outcome.content = report.into();
+        }
+        if !self.files.is_empty() {
+            outcome.diff = Some(moc_protocol::ToolDiff {
+                files: self.files,
+                truncated: self.truncated,
+            });
+        }
+        outcome
     }
 }
 
@@ -234,5 +268,56 @@ async fn apply_one(
             }))
         }
         Err(error) => Err(ToolError::new("E_ACCESS", error.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diff(path: &str) -> moc_protocol::ToolDiff {
+        moc_protocol::ToolDiff {
+            files: vec![moc_protocol::ToolFileDiff {
+                path: path.into(),
+                hunks: Vec::new(),
+            }],
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn batch_failure_keeps_applied_files_and_their_diff() {
+        let mut report = BatchReport::default();
+        report.record(EditOutput {
+            content: "[a.rs]\n- AA1│old\n+ AA1│new".into(),
+            diff: Some(diff("a.rs")),
+        });
+        let outcome = report.finish_failure(ToolOutcome::failure(
+            "E_STALE_RANGE",
+            "b.rs changed externally after read",
+        ));
+        assert!(outcome.is_error);
+        let ToolOutput::Text(text) = outcome.content else {
+            panic!("失败结果是文本");
+        };
+        assert!(text.contains("Already applied before the failure:"));
+        assert!(text.contains("[a.rs]"));
+        assert!(text.contains("E_STALE_RANGE"));
+        let applied = outcome.diff.expect("失败结果保留已应用 diff");
+        assert_eq!(applied.files.len(), 1);
+        assert_eq!(applied.files[0].path, "a.rs");
+    }
+
+    #[test]
+    fn failure_without_applied_files_keeps_the_original_error() {
+        let outcome = BatchReport::default().finish_failure(ToolOutcome::failure(
+            "E_BAD_PAYLOAD",
+            "edits must contain at least one item",
+        ));
+        let ToolOutput::Text(text) = outcome.content else {
+            panic!("失败结果是文本");
+        };
+        assert_eq!(text, "[E_BAD_PAYLOAD] edits must contain at least one item");
+        assert!(outcome.diff.is_none());
     }
 }
