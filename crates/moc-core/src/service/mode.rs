@@ -268,8 +268,12 @@ pub async fn approve_plan(
     })
 }
 
+/// 只在 CLM 模式可用的内置工具；名单里的其余条目在 Normal 与 CLM 下都可用。
+const CLM_ONLY_TOOLS: &[&str] = &["clm_context"];
+
 pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     match mode {
+        // `clm_context` 是 CLM 专属工具：Normal 下由 `mode_allows` 拒绝。
         SessionMode::Normal | SessionMode::ClmExperimental => &[
             "read",
             "grep",
@@ -326,9 +330,13 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
 
 /// 是否允许在当前模式调用该工具。
 ///
-/// 内置工具沿用名字白名单；动态（MCP）工具按风险类别判定：
-/// Normal 全量放行，Ask/Plan 只放行 `Tier::Read` 的只读工具。
+/// 内置工具沿用名字白名单；`clm_context` 只在 CLM 模式可用，Normal 下可用会
+/// 让一次工具调用伪造实时上下文视图并锁死会话模式。动态（MCP）工具按风险类别
+/// 判定：Normal 全量放行，Ask/Plan 只放行 `Tier::Read` 的只读工具。
 pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> bool {
+    if CLM_ONLY_TOOLS.contains(&name) && mode != SessionMode::ClmExperimental {
+        return false;
+    }
     if allowed_tools(mode).contains(&name) {
         return true;
     }
@@ -359,8 +367,29 @@ pub fn tool_enabled(
 
 #[cfg(test)]
 mod agent_mode_tests {
-    use super::allowed_tools;
+    use super::{allowed_tools, mode_allows};
+    use crate::tools::Tier;
     use moc_protocol::SessionMode;
+
+    #[test]
+    fn clm_context_is_limited_to_clm_mode() {
+        assert!(mode_allows(
+            SessionMode::ClmExperimental,
+            "clm_context",
+            Tier::Write
+        ));
+        for mode in [
+            SessionMode::Normal,
+            SessionMode::Ask,
+            SessionMode::Plan,
+            SessionMode::Ptc,
+        ] {
+            assert!(
+                !mode_allows(mode, "clm_context", Tier::Write),
+                "{mode:?} 不得开放实时上下文写入"
+            );
+        }
+    }
 
     #[test]
     fn child_agent_controls_only_exist_in_normal_modes() {

@@ -504,10 +504,13 @@ impl SessionTable {
         let record = self.get(session_id).await?;
         self.reject_foreign_lock(session_id, &record.paths)?;
         let state = record.state.lock().await;
-        let clm_locked = state
-            .entries
-            .iter()
-            .any(|entry| matches!(entry, Entry::ClmContext { .. }));
+        // README：CLM 会话「第一次请求后」锁定模式。实时上下文 entry 只在 CLM 模式
+        // 下产生，因此要求当前模式也是 CLM；否则其它模式下写入的伪造 entry 会永久锁死会话。
+        let clm_locked = state.mode == SessionMode::ClmExperimental
+            && state
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, Entry::ClmContext { .. }));
         if clm_locked && mode != SessionMode::ClmExperimental {
             return Err(CoreError::Session(
                 "CLM 实验模式已在本会话中使用，不能切换到其它模式".into(),
@@ -1075,6 +1078,69 @@ mod tests {
         assert_eq!(loaded.entries[1].message.text(), "归档后追加");
         assert!(transcript.exists(), "恢复后的可写日志回到原路径");
         assert!(!archive.exists(), "归档文件在恢复后移除");
+    }
+
+    #[tokio::test]
+    async fn clm_mode_locks_only_after_the_session_wrote_live_context() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let create = |mode| {
+            let table = &table;
+            async move {
+                table
+                    .create(
+                        "/tmp/project",
+                        "p/model",
+                        mode,
+                        SessionPermission::Full,
+                        None,
+                        None,
+                    )
+                    .await
+                    .expect("创建会话")
+            }
+        };
+        // 尚未发出 CLM 请求的会话不锁定模式。
+        let untouched = create(SessionMode::ClmExperimental).await;
+        table
+            .set_mode(&untouched.id, SessionMode::Normal)
+            .await
+            .expect("首次请求前允许切换模式");
+        // 其它模式下写入的实时上下文不能让会话永久锁死。
+        let forged = create(SessionMode::Normal).await;
+        table
+            .append(
+                &forged.id,
+                EntryPayload::ClmContext {
+                    content: "伪造的实时上下文".into(),
+                },
+            )
+            .await
+            .expect("写入实时上下文");
+        table
+            .set_mode(&forged.id, SessionMode::Ask)
+            .await
+            .expect("正常模式下的实时上下文不得锁死模式");
+        // CLM 会话在第一次请求写入实时上下文后锁定。
+        let clm = create(SessionMode::ClmExperimental).await;
+        table
+            .append(
+                &clm.id,
+                EntryPayload::ClmContext {
+                    content: "真实实时上下文".into(),
+                },
+            )
+            .await
+            .expect("写入实时上下文");
+        let error = table
+            .set_mode(&clm.id, SessionMode::Normal)
+            .await
+            .expect_err("CLM 首次请求后必须锁定");
+        assert!(error.to_string().contains("CLM"), "{error}");
+        table
+            .set_mode(&clm.id, SessionMode::ClmExperimental)
+            .await
+            .expect("CLM 模式内保持不变");
     }
     #[tokio::test]
     async fn rewind_truncates_user_message_and_keeps_tool_history_complete() {
