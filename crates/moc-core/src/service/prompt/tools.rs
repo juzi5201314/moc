@@ -435,6 +435,18 @@ async fn execute_tool(
                 diff: None,
             });
         }
+        Authorization::Unavailable => {
+            return Ok(ToolOutcome {
+                content: "[E_PERMISSION_UNAVAILABLE] This frontend cannot show permission prompts; approve from an interactive frontend or switch the session permission".into(),
+                is_error: true,
+                structured_content: None,
+                error_code: Some("E_PERMISSION_UNAVAILABLE".into()),
+                images: Vec::new(),
+                control: ToolControl::Continue,
+                status: Some(ToolStatus::Denied),
+                diff: None,
+            });
+        }
         Authorization::Allowed(permission) => permission,
     };
     if ctx.cancel.is_cancelled() {
@@ -494,7 +506,10 @@ pub(crate) async fn execute_nested_tool(
 
 enum Authorization {
     Allowed(moc_protocol::SessionPermission),
+    /// 用户明确拒绝本次操作。
     Denied,
+    /// 前端不支持权限询问，无法取得一次性授权。
+    Unavailable,
 }
 
 /// 授权入口：`full` 是 yolo；`workspace` 下 bash 与写工具都要过边界判定。
@@ -636,7 +651,7 @@ async fn request_permission(
         .get(&request.connection_id())
         .is_some_and(|caps| caps.permission_requests)
     {
-        return Ok(Authorization::Denied);
+        return Ok(Authorization::Unavailable);
     }
     let request_id = crate::ids::entry_id();
     request
