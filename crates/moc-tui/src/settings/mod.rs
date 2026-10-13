@@ -1470,23 +1470,18 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                 panel.selected = index;
             }
         }
-        Hit::Check(index) => match &mut panel.view {
-            View::Models {
-                rows,
-                checked,
-                selected,
-                ..
-            } => {
-                *selected = index;
-                if let Some(row) = rows.get(index)
-                    && !checked.remove(&row.id)
-                {
-                    checked.insert(row.id.clone());
-                }
+        Hit::Check(index) => {
+            match &mut panel.view {
+                View::Models { selected, .. } => *selected = index,
+                View::Workspaces { selected, .. } => *selected = index,
+                _ => {}
             }
-            View::Workspaces { selected, .. } => *selected = index,
-            _ => {}
-        },
+            if matches!(panel.view, View::Models { .. }) {
+                // 与 Space 同一条勾选路径：已添加的模型保持不可勾选，否则会攒出
+                // 一条不含任何新增的空改动，并提示「已添加 0 个模型」。
+                handle_key(app, connection, KeyModifiers::NONE, KeyCode::Char(' '));
+            }
+        }
         Hit::Key(code, modifiers) => handle_key(app, connection, modifiers, code),
         _ => {}
     }
@@ -1564,6 +1559,101 @@ mod tests {
         let entry = history.undo.pop().expect("撤回栈有快照");
         history.put(entry, true);
         assert!(history.redo.is_empty(), "put 作为新改动清空重做栈");
+    }
+
+    /// nit7：鼠标点已添加的模型不产生空改动，也不提示「已添加 0 个模型」。
+    ///
+    /// 旧的鼠标路径直接翻转 `checked`，绕过了「已添加即不可勾选」的判定：勾不出
+    /// 任何新增，Enter 却照常写入一条空改动。
+    #[tokio::test]
+    async fn clicking_an_added_model_keeps_the_selection_empty() {
+        use crate::settings::{Hit, View};
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use moc_core::{Core, CoreConfig};
+        use moc_protocol::methods::CatalogModel;
+        use ratatui::layout::Rect;
+        use std::collections::BTreeSet;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+
+        app.settings = Some(SettingsPanel {
+            id: 1,
+            cwd: "/tmp".into(),
+            scope: ConfigScope::Global,
+            data: None,
+            tui: Value::Null,
+            effective: serde_json::json!({
+                "providers": { "p": { "models": { "m1": {} } } }
+            }),
+            fields: Vec::new(),
+            rows: Vec::new(),
+            collapsed: BTreeSet::new(),
+            expanded: BTreeSet::new(),
+            tab: 0,
+            selected: 0,
+            offset: 0,
+            advanced: false,
+            filter: String::new(),
+            edit: None,
+            error: None,
+            message: None,
+            busy: false,
+            hits: vec![(Rect::new(10, 5, 20, 1), Hit::Check(0))],
+            pending: None,
+            view: View::Models {
+                provider: "p".into(),
+                rows: vec![CatalogModel {
+                    id: "m1".into(),
+                    name: "m1".into(),
+                }],
+                checked: BTreeSet::new(),
+                selected: 0,
+            },
+            history: History::default(),
+            outcome: None,
+            restore: None,
+        });
+
+        mouse(
+            &mut app,
+            &connection,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 12,
+                row: 5,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        );
+
+        let panel = app.settings.as_ref().expect("面板仍在");
+        match &panel.view {
+            View::Models { checked, .. } => {
+                assert!(checked.is_empty(), "已添加的模型不得进入勾选集合");
+            }
+            _ => unreachable!("仍在模型候选视图"),
+        }
+        assert!(panel.message.is_none(), "不得产生任何提示");
+
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     #[test]
