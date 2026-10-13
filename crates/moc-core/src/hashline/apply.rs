@@ -284,6 +284,17 @@ pub async fn apply_edit(
         max_edits,
         max_file_bytes,
     )?;
+    commit_plan(plan, served, target_served, anchors, max_file_bytes).await
+}
+
+/// 提交一份已通过验证的编辑计划；到 rename 前才重读快照确认没有并发写入。
+async fn commit_plan(
+    plan: EditPlan,
+    served: &mut ServedFile,
+    target_served: Option<&mut ServedFile>,
+    anchors: &AnchorStore,
+    max_file_bytes: u64,
+) -> Result<EditOutput, EditError> {
     if plan.no_changes {
         return Ok(EditOutput {
             content: "No changes made.".into(),
@@ -339,6 +350,14 @@ pub async fn apply_edit(
     } else {
         None
     };
+    // 校验与 rename 之间存在窗口：紧邻提交前重读源文件，窗口内被外部写入时放弃。
+    if let Err(error) = ensure_epoch(&source_path, source_snapshot.epoch, max_file_bytes).await {
+        cleanup_staged(source_temp, target_temp).await;
+        if let Some(backup) = &source_backup {
+            let _ = tokio::fs::remove_file(backup).await;
+        }
+        return Err(error);
+    }
     if let Err(error) = tokio::fs::rename(&source_temp, &source_path).await {
         cleanup_staged(source_temp, target_temp).await;
         if let Some(backup) = source_backup {
@@ -346,25 +365,31 @@ pub async fn apply_edit(
         }
         return Err(error.into());
     }
-    if let (Some(temporary), Some((target_path, ..))) = (target_temp, target_change.as_ref())
-        && let Err(error) = tokio::fs::rename(&temporary, target_path).await
+    if let (Some(temporary), Some((target_path, target_snapshot, ..))) =
+        (target_temp, target_change.as_ref())
     {
-        let _ = tokio::fs::remove_file(&temporary).await;
-        if let Some(backup) = &source_backup
-            && let Err(rollback) = tokio::fs::rename(backup, &source_path).await
-        {
+        if let Err(error) = ensure_epoch(target_path, target_snapshot.epoch, max_file_bytes).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(rollback_source(error, &source_path, source_backup.as_ref()).await);
+        }
+        if let Err(error) = tokio::fs::rename(&temporary, target_path).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            if let Some(backup) = &source_backup
+                && let Err(rollback) = tokio::fs::rename(backup, &source_path).await
+            {
+                return Err(tool_error(
+                    "E_BATCH_ABORT",
+                    &format!(
+                        "target commit failed: {error}; source rollback failed: {rollback}; original content is saved at {}",
+                        backup.display()
+                    ),
+                ));
+            }
             return Err(tool_error(
                 "E_BATCH_ABORT",
-                &format!(
-                    "target commit failed: {error}; source rollback failed: {rollback}; original content is saved at {}",
-                    backup.display()
-                ),
+                &format!("target commit failed; source file was restored: {error}"),
             ));
         }
-        return Err(tool_error(
-            "E_BATCH_ABORT",
-            &format!("target commit failed; source file was restored: {error}"),
-        ));
     }
     if let Some(backup) = source_backup {
         tokio::fs::remove_file(backup).await?;
@@ -546,6 +571,57 @@ fn encode_file(snapshot: &FileSnapshot, lines: &[String]) -> Vec<u8> {
         }
     }
     output
+}
+
+/// rename 前紧邻重读目标文件；epoch 与计划不一致说明窗口内被并发写入。
+///
+/// 失败错误固定为 `E_STALE_RANGE`：调用方保留磁盘上的外部内容，不覆盖。
+async fn ensure_epoch(
+    path: &Path,
+    expected: super::SnapshotId,
+    max_file_bytes: u64,
+) -> Result<(), EditError> {
+    let stale = || {
+        tool_error(
+            "E_STALE_RANGE",
+            &format!(
+                "{} changed externally while the edit was being committed; retry with current anchors",
+                path.display()
+            ),
+        )
+    };
+    let metadata = tokio::fs::metadata(path).await.map_err(|_| stale())?;
+    if metadata.len() > max_file_bytes {
+        return Err(stale());
+    }
+    let bytes = tokio::fs::read(path).await.map_err(|_| stale())?;
+    if bytes.len() as u64 > max_file_bytes
+        || super::SnapshotId::from_metadata_and_bytes(&metadata, &bytes) != expected
+    {
+        return Err(stale());
+    }
+    Ok(())
+}
+
+/// 目标提交失败时把源文件恢复回提交前内容；恢复失败单独报告，避免静默丢内容。
+async fn rollback_source(
+    error: EditError,
+    source_path: &Path,
+    backup: Option<&PathBuf>,
+) -> EditError {
+    let Some(backup) = backup else {
+        return error;
+    };
+    match tokio::fs::rename(backup, source_path).await {
+        Ok(()) => error,
+        Err(rollback) => tool_error(
+            "E_BATCH_ABORT",
+            &format!(
+                "source rollback failed: {rollback}; original content is saved at {}",
+                backup.display()
+            ),
+        ),
+    }
 }
 
 async fn stage_file(path: &Path, bytes: &[u8]) -> Result<PathBuf, EditError> {
@@ -1020,5 +1096,71 @@ mod transaction_tests {
         store.reuse_hashes(&path, &mut current);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\ndrop\n");
         assert_eq!(current.hashes[1], original.hashes[0]);
+    }
+
+    #[tokio::test]
+    async fn commit_rejects_external_writes_that_land_after_planning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source");
+        let store = AnchorStore::new();
+        let (snapshot, mut served) = prepare(&path, "one\ntwo\n", &store);
+        let anchor = encode_anchor(snapshot.hashes[0]).unwrap();
+        let request = EditRequest {
+            path: "source".into(),
+            edits: vec![[anchor.clone(), anchor, "inserted".into()]],
+            move_lines: None,
+        };
+        let plan = plan_edit(dir.path(), &request, &served, None, &store, 32, 4096).unwrap();
+        // 模拟 plan 之后、rename 之前落地的外部写入。
+        std::fs::write(&path, "external\n").unwrap();
+        let error = commit_plan(plan, &mut served, None, &store, 4096)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("E_STALE_RANGE"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+        assert!(store.latest_undo_path().is_none());
+        // 临时文件与备份都已清理，目录里只剩目标文件本身。
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn target_epoch_change_rolls_back_the_committed_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("target");
+        let store = AnchorStore::new();
+        let (a, mut served_a) = prepare(&source, "move\nkeep\n", &store);
+        let (_, mut served_b) = prepare(&target, "target\n", &store);
+        let hash = |index| encode_anchor(a.hashes[index]).unwrap();
+        let request = EditRequest {
+            path: "source".into(),
+            edits: vec![[hash(1), hash(1), "after".into()]],
+            move_lines: Some(MoveRequest {
+                from: hash(0),
+                to: hash(0),
+                target_path: "target".into(),
+                target_anchor: None,
+            }),
+        };
+        let plan = plan_edit(
+            dir.path(),
+            &request,
+            &served_a,
+            Some(&served_b),
+            &store,
+            32,
+            4096,
+        )
+        .unwrap();
+        // 目标文件在 plan 之后被外部改写：源文件必须回滚，目标保留外部内容。
+        std::fs::write(&target, "external\n").unwrap();
+        let error = commit_plan(plan, &mut served_a, Some(&mut served_b), &store, 4096)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("E_STALE_RANGE"), "{error}");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "move\nkeep\n");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "external\n");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert!(store.latest_undo_path().is_none());
     }
 }
