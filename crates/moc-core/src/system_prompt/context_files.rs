@@ -2,7 +2,13 @@
 
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// 单个指令文件与整条 `@` 导入链的字节上限：解码与 token 预算都发生在读取之后，
+/// 因此必须在读取处封顶（`@/dev/zero` 不能无限增长，FIFO 不能挂住启动）。
+const MAX_CONTEXT_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_IMPORT_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextFile {
@@ -89,17 +95,40 @@ fn push_file(
     if !visited.insert(path.clone()) {
         return;
     }
-    let Ok(content) = fs::read_to_string(&path) else {
+    let Some(content) = read_bounded_text(&path) else {
         return;
     };
     if content.trim().is_empty() {
         return;
     }
-    let expanded = expand_imports(&path, &content, root, 0, max_depth, visited, output);
+    let mut budget = MAX_IMPORT_TOTAL_BYTES;
+    let expanded = expand_imports(&path, &content, root, 0, max_depth, visited, &mut budget);
     output.push(ContextFile {
         path,
         content: expanded,
     });
+}
+
+/// 只读取有界的普通文件；目录、设备、FIFO 与超限文件一律跳过并告警。
+fn read_bounded_text(path: &Path) -> Option<String> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return None;
+    };
+    if !metadata.is_file() || metadata.len() > MAX_CONTEXT_FILE_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            "跳过不是普通文件或超出上限的指令文件"
+        );
+        return None;
+    }
+    let mut content = String::new();
+    fs::File::open(path)
+        .ok()?
+        // 元数据检查与读取之间文件仍可能增长，读取量按上限封顶。
+        .take(MAX_CONTEXT_FILE_BYTES + 1)
+        .read_to_string(&mut content)
+        .ok()?;
+    Some(content)
 }
 
 fn expand_imports(
@@ -109,7 +138,7 @@ fn expand_imports(
     depth: usize,
     max_depth: usize,
     visited: &mut HashSet<PathBuf>,
-    output: &mut Vec<ContextFile>,
+    budget: &mut usize,
 ) -> String {
     let mut result = String::with_capacity(content.len());
     let mut fenced = false;
@@ -139,10 +168,19 @@ fn expand_imports(
         if !visited.insert(canonical.clone()) {
             continue;
         }
-        let Ok(imported) = fs::read_to_string(&canonical) else {
+        let Some(imported) = read_bounded_text(&canonical) else {
             result.push_str(line);
             continue;
         };
+        if imported.len() > *budget {
+            if *budget > 0 {
+                tracing::warn!("@ 导入总量超过上限，后续导入被忽略");
+                *budget = 0;
+            }
+            result.push_str(line);
+            continue;
+        }
+        *budget -= imported.len();
         let expanded = expand_imports(
             &canonical,
             &imported,
@@ -150,7 +188,7 @@ fn expand_imports(
             depth + 1,
             max_depth,
             visited,
-            output,
+            budget,
         );
         if !expanded.trim().is_empty() {
             result.push_str(&format!(
@@ -160,7 +198,6 @@ fn expand_imports(
             ));
         }
     }
-    let _ = output;
     result
 }
 
@@ -317,5 +354,44 @@ mod tests {
             "指令根之外的文件不得进入系统提示：{prompt}"
         );
         assert!(prompt.contains("../secret.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn imports_reject_special_and_oversized_files() {
+        use std::sync::mpsc;
+
+        let root = tempfile::tempdir().expect("临时项目");
+        let home = tempfile::tempdir().expect("临时 home");
+        fs::create_dir_all(root.path().join(".git")).expect("仓库标记");
+        fs::create_dir_all(root.path().join("sub")).expect("子目录");
+        let fifo = root.path().join("pipe.md");
+        let raw = std::ffi::CString::new(fifo.to_str().expect("路径是 UTF-8")).expect("CString");
+        // SAFETY：mkfifo 只创建测试用的命名管道。
+        assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+        fs::write(
+            root.path().join("big.md"),
+            "OVERSIZED-MARKER ".repeat(120_000),
+        )
+        .expect("超限文件");
+        fs::write(root.path().join("ok.md"), "small rules\n").expect("小文件");
+        fs::write(
+            root.path().join("AGENTS.md"),
+            "root rules\n@pipe.md\n@big.md\n@ok.md\n",
+        )
+        .expect("根规则");
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let prompt = prompt_for(&root.path().join("sub"), home.path());
+            let _ = sender.send(prompt);
+        });
+        let prompt = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("导入不得阻塞启动");
+        assert!(prompt.contains("small rules"), "普通文件应保留：{prompt}");
+        assert!(
+            !prompt.contains("OVERSIZED-MARKER"),
+            "超限文件不得进入提示"
+        );
     }
 }
