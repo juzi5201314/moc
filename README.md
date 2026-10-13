@@ -22,7 +22,7 @@ cargo build
 ./target/debug/moc --resume <id>   # 恢复历史会话（TUI / REPL 均可）
 ```
 
-无 TTY（管道 / 脚本）时自动降级为行式 REPL。
+无 TTY（管道 / 脚本）时自动降级为行式 REPL。行式前端（REPL、`--print`、`--list`）的日志写 stderr，stdout 只承载应答正文与工具输出：默认级别 `info`，排查时用 `RUST_LOG` 或 `MOC_LOG` 提级（取首个可解析的值）。TUI 独占终端，日志写到 `$MOC_HOME/tui.log`，文件超过 8 MiB 后重建。
 
 首次启动不会预置供应商、模型或密钥。TUI 自动打开 `/config`：添加供应商、填写 API 地址与认证，按 `F` 获取模型，勾选需要的模型后添加；也可以手动添加模型。改动即刻生效，无需手动保存。主模型必须明确配置，其他模型角色默认沿用主模型。
 
