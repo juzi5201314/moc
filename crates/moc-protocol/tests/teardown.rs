@@ -1,4 +1,4 @@
-//! 连接收尾测试：对端不读数据时，收尾也必须完成。
+//! 连接收尾测试：对端不读数据、处理器 panic 时，收尾都必须完成。
 //!
 //! 用可控假对端复现「连接活着但对端不再读取」：读半边只递一次请求，写半边接受
 //! 固定字节数后永远不 ready。服务端的 `write_all` 因此永久挂起——收尾若不响应
@@ -13,9 +13,10 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use moc_protocol::frame::DEFAULT_MAX_FRAME_BYTES;
-use moc_protocol::{FrameEncoder, Framing, Server, ServerOptions};
+use moc_protocol::methods::{SessionPrompt, SessionUpdateMethod};
+use moc_protocol::{ClientBuilder, FrameEncoder, Framing, RpcCallError, Server, ServerOptions};
 use serde_json::json;
-use support::{ScriptedService, request};
+use support::{ScriptedService, client_info, local_client, prompt_params, request};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 // ───────────────────────────── 假对端 ─────────────────────────────
@@ -132,4 +133,40 @@ async fn teardown_completes_while_peer_stops_reading() {
         .await
         .expect("对端不读数据时收尾也必须完成");
     assert!(connection.is_closed());
+}
+
+// ───────────────────────────── 处理器 panic ─────────────────────────────
+
+#[tokio::test]
+async fn handler_panic_still_finishes_the_connection() {
+    // 前端注册的通知处理器 panic 会沿读循环展开主任务：完成信号必须照样触发，
+    // 否则 `close()` / `closed()` 永久挂起、写任务跟着泄漏。
+    let builder = ClientBuilder::new(client_info()).on_notification::<SessionUpdateMethod, _, _>(
+        |_params, _ctx| -> std::future::Ready<()> {
+            panic!("处理器故意 panic，验证收尾兜底")
+        },
+    );
+    let (_server, connection, handle, _) = local_client(ScriptedService::new(), builder).await;
+
+    let prompt_handle = handle.clone();
+    let prompt = tokio::spawn(async move {
+        prompt_handle
+            .call::<SessionPrompt>(prompt_params("ses_1", "触发更新"))
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), handle.closed())
+        .await
+        .expect("处理器 panic 后前端连接必须收尾");
+    assert!(handle.is_closed());
+    let outcome = prompt.await.expect("任务正常结束");
+    assert!(
+        matches!(outcome, Err(RpcCallError::Closed)),
+        "连接已死，在飞提示应当收到 Closed：{outcome:?}"
+    );
+
+    // 前端半边随写任务退出而关闭：服务端也要收尾
+    tokio::time::timeout(Duration::from_secs(5), connection.wait())
+        .await
+        .expect("前端 panic 后服务端连接必须收尾");
 }

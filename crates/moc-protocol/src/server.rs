@@ -26,7 +26,8 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::connection::{
-    BoxFuture, Connection, ConnectionOptions, Inbound, now_ms, params_from_value, value_from,
+    BoxFuture, Connection, ConnectionOptions, FinishGuard, Inbound, now_ms, params_from_value,
+    value_from,
 };
 use crate::error::{RpcError, RpcErrorCode};
 use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
@@ -132,7 +133,9 @@ impl<S: AgentService> Server<S> {
         let accept_token = token.clone();
         let finished = CancellationToken::new();
         let finished_signal = finished.clone();
+        let task_closed = token.clone();
         tokio::spawn(async move {
+            let _finish = FinishGuard::new(task_closed, finished_signal);
             loop {
                 let stream = tokio::select! {
                     biased;
@@ -153,7 +156,6 @@ impl<S: AgentService> Server<S> {
                     .wait()
                     .await;
             }
-            finished_signal.cancel();
         });
         ServerConnection {
             closed: token,
@@ -169,7 +171,9 @@ impl<S: AgentService> Server<S> {
         let accept_token = token.clone();
         let finished = CancellationToken::new();
         let finished_signal = finished.clone();
+        let task_closed = token.clone();
         tokio::spawn(async move {
+            let _finish = FinishGuard::new(task_closed, finished_signal);
             loop {
                 let stream = tokio::select! {
                     biased;
@@ -187,7 +191,6 @@ impl<S: AgentService> Server<S> {
                     .wait()
                     .await;
             }
-            finished_signal.cancel();
         });
         ServerConnection {
             closed: token,
@@ -211,9 +214,11 @@ impl<S: AgentService> Server<S> {
         ));
         let finished = CancellationToken::new();
         let finished_signal = finished.clone();
+        let task_closed = token.clone();
         tokio::spawn(async move {
+            // 守卫先建立：`run` 会被处理器 panic 打断，没有它完成信号就永不触发
+            let _finish = FinishGuard::new(task_closed, finished_signal);
             connection.run(reader, writer, outbound, dispatch).await;
-            finished_signal.cancel();
         });
         ServerConnection {
             closed: token,

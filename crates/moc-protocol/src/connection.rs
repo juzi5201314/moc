@@ -273,6 +273,30 @@ pub(crate) trait Inbound: Send + Sync + 'static {
     fn on_notification(self: Arc<Self>, notification: Notification) -> BoxFuture<()>;
 }
 
+/// 连接任务收尾守卫：任务正常结束、panic 展开、被 abort 三条路径都会触发完成信号。
+///
+/// 完成信号是令牌而不是 `JoinHandle`（句柄要能被多次 `wait`），因此任何一条退出
+/// 路径漏掉 `cancel()` 都会让 `close()` / `wait()` 永久挂起——主循环 await 的是
+/// 调用方注册的处理器，panic 正好只会走这一条路径。guard 顺带取消连接令牌，
+/// 让写任务与在飞任务一起收尾，不留后台残留。
+pub(crate) struct FinishGuard {
+    closed: CancellationToken,
+    finished: CancellationToken,
+}
+
+impl FinishGuard {
+    pub(crate) fn new(closed: CancellationToken, finished: CancellationToken) -> Self {
+        Self { closed, finished }
+    }
+}
+
+impl Drop for FinishGuard {
+    fn drop(&mut self) {
+        self.closed.cancel();
+        self.finished.cancel();
+    }
+}
+
 /// 一条连接。
 pub(crate) struct Connection {
     id: u64,
