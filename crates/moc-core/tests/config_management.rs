@@ -54,6 +54,37 @@ fn first_configuration_requires_a_primary_and_inherits_other_roles() {
 }
 
 #[test]
+fn project_mcp_json_is_opt_in() {
+    let (_root, boot) = workspace();
+    std::fs::write(
+        boot.cwd.join(".mcp.json"),
+        r#"{"mcpServers":{"project":{"command":"echo","args":["hi"]}}}"#,
+    )
+    .unwrap();
+    let resolved = ResolvedConfig::load(&boot)
+        .unwrap()
+        .for_project(&boot.cwd)
+        .unwrap();
+    assert!(!resolved.mcp.project_config, "项目级 MCP 配置默认关闭");
+    assert!(
+        resolved.mcp_servers().unwrap().is_empty(),
+        "默认不得启动项目 .mcp.json 里的命令"
+    );
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[mcp]\nproject_config=true\n",
+    )
+    .unwrap();
+    let resolved = ResolvedConfig::load(&boot)
+        .unwrap()
+        .for_project(&boot.cwd)
+        .unwrap();
+    let servers = resolved.mcp_servers().unwrap();
+    assert_eq!(servers.len(), 1, "显式开启后才加载项目配置");
+    assert_eq!(servers[0].name, "project");
+}
+
+#[test]
 fn stale_editor_cannot_overwrite_another_writer() {
     let (_root, boot) = workspace();
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();

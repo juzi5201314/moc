@@ -3,7 +3,9 @@
 mod support;
 
 use moc_protocol::{BashCommand, BashParams, SessionBash, methods::*};
+use parking_lot::Mutex;
 use serde_json::Value;
+use std::sync::Arc;
 use support::Harness;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
@@ -173,6 +175,57 @@ async fn empty_manual_commands_release_the_session_for_next_execution() {
     let result = bash(&harness, &id, "!printf enabled-for-user").await;
     assert_eq!(result.result.content, "enabled-for-user");
     assert_eq!(result.status, ToolStatus::Completed);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
+    let upstream = MockServer::start().await;
+    let streams = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorder = Arc::clone(&streams);
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] != true {
+                return ResponseTemplate::new(200).set_body_json(support::complete("摘要"));
+            }
+            let mut streams = recorder.lock();
+            let first = streams.is_empty();
+            streams.push(body.to_string());
+            drop(streams);
+            let response = if first {
+                support::tool_stream(vec![(
+                    "call_1",
+                    "bash",
+                    serde_json::json!({"command": "printf foreground-hi"}),
+                )])
+            } else {
+                support::text_stream("完成")
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[tools.bash]\nforeground_after_secs=0\n[tools.job]\nenabled=false\n",
+    )
+    .await;
+    let id = harness.session(SessionMode::Normal).await;
+    harness.prompt(&id, "运行命令").await;
+    let follow_up = {
+        let streams = streams.lock();
+        streams.last().cloned().expect("工具结果会回灌给模型")
+    };
+    assert!(
+        follow_up.contains("foreground-hi"),
+        "命令输出应留在前台结果里：{follow_up}"
+    );
+    assert!(
+        !follow_up.contains("exceeded the foreground threshold"),
+        "job 关闭时超时命令不得自动后台化：{follow_up}"
+    );
     harness.close().await;
 }
 
