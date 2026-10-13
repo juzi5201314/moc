@@ -215,6 +215,64 @@ async fn claude_adaptive_thinking_with_cache_control() {
 }
 
 #[tokio::test]
+async fn responses_interrupted_summary_roundtrip() {
+    let server = start().await;
+    // 流里只有摘要增量，没有 `response.output_item.done`：中断后就地修剪。
+    mount_sse_once(
+        &server,
+        "/v1/responses",
+        &[
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"想了一半\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"正文\"}\n\n",
+        ],
+    )
+    .await;
+
+    let cfg = config(Protocol::OpenAiResponses, &server);
+    let req = ChatRequest {
+        messages: vec![Message::user_text("查天气")],
+        ..Default::default()
+    };
+    let mut stream = Client::new().stream(&cfg, &req).await.unwrap();
+    loop {
+        if let StreamEvent::TextDelta { .. } = stream
+            .next_event()
+            .await
+            .expect("流应持续产出事件")
+            .unwrap()
+        {
+            break;
+        }
+    }
+    let partial = stream.interrupt();
+    assert_eq!(partial.finish_reason, FinishReason::Interrupted);
+    assert_eq!(
+        partial.message.content,
+        vec![ContentPart::Text("正文".into())],
+        "摘要型思维链没有线上形态"
+    );
+
+    // 回灌历史：编码阶段必须通过，且不合成 reasoning item。
+    let next = ChatRequest {
+        messages: vec![
+            Message::user_text("查天气"),
+            partial.message,
+            Message::user_text("继续"),
+        ],
+        ..Default::default()
+    };
+    let body = sent_body(&server, &cfg, &next).await;
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input.len(), 3);
+    assert!(
+        input.iter().all(|item| item["type"] != "reasoning"),
+        "{input:?}"
+    );
+}
+
+#[tokio::test]
 async fn claude_redacted_thinking_roundtrip() {
     let server = start().await;
     mount_sse_once(
@@ -242,7 +300,7 @@ async fn claude_redacted_thinking_roundtrip() {
         max_output_tokens: Some(4096),
         ..Default::default()
     };
-    let mut stream = Client::new().stream(&cfg, &req).await.unwrap();
+    let stream = Client::new().stream(&cfg, &req).await.unwrap();
     let response = stream.finish().await.unwrap();
     assert_eq!(
         response.message.content,

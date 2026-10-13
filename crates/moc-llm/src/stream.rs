@@ -250,6 +250,12 @@ impl Accumulator {
                     if protocol == Protocol::AnthropicMessages && item.is_some() {
                         continue;
                     }
+                    // Responses 只接受原样回传的 reasoning item：中断或截断的流
+                    // 只有摘要增量（缺 `output_item.done`），这种摘要型块没有
+                    // 线上形态，合成的 item 会被上游拒绝。
+                    if protocol == Protocol::OpenAiResponses && item.is_none() {
+                        continue;
+                    }
                     if interrupted {
                         // Responses 的 reasoning item 与其后的 function_call 成对
                         // 使用，孤立 item 无意义。
@@ -1115,6 +1121,71 @@ mod tests {
                 .message
                 .content
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn responses_summary_only_reasoning_is_pruned() {
+        // 中断/截断的 Responses 流只有摘要增量，没有权威 reasoning item：
+        // 摘要型块会让「落库后会话锁死」，必须按协议修剪。
+        let accumulator = accumulate(
+            Protocol::OpenAiResponses,
+            &[
+                StreamEvent::ReasoningDelta {
+                    index: 0,
+                    text: "想了一半".into(),
+                },
+                StreamEvent::TextDelta {
+                    index: 1,
+                    text: "正文".into(),
+                },
+                StreamEvent::ToolCallStart {
+                    index: 2,
+                    id: "call_1".into(),
+                    name: "get_weather".into(),
+                },
+                StreamEvent::ToolCallArgumentsDelta {
+                    index: 2,
+                    json: "{\"city\":\"北京\"}".into(),
+                },
+                StreamEvent::Done {
+                    finish_reason: FinishReason::Stop,
+                },
+            ],
+        );
+        for interrupted in [false, true] {
+            let response = accumulator.fold(Protocol::OpenAiResponses, interrupted);
+            assert_eq!(
+                response.message.content,
+                vec![
+                    ContentPart::Text("正文".into()),
+                    ContentPart::ToolCall(ToolCall::new(
+                        "call_1",
+                        "get_weather",
+                        "{\"city\":\"北京\"}"
+                    )),
+                ],
+                "interrupted={interrupted}"
+            );
+        }
+
+        // 产物回灌历史后必须能构建出请求。
+        let response = accumulator.fold(Protocol::OpenAiResponses, true);
+        let request = ChatRequest {
+            messages: vec![
+                Message::user_text("查天气"),
+                response.message,
+                Message::tool_result("call_1", "晴", false),
+            ],
+            ..Default::default()
+        };
+        let encoded =
+            crate::codec::encode(&config(Protocol::OpenAiResponses), &request, false).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&encoded.body).unwrap();
+        let input = body["input"].as_array().unwrap();
+        assert!(
+            input.iter().all(|item| item["type"] != "reasoning"),
+            "不应合成 reasoning item：{input:?}"
         );
     }
 
