@@ -27,6 +27,11 @@ pub(crate) fn parse_args(args: Value) -> Result<WriteArgs, ToolError> {
 
 pub struct WriteTool;
 
+/// 逐行 diff 的输入上限；更大的内容仍可整体替换，只是不展示 diff。
+///
+/// 与 `edit` 的 4 MiB 快照上限一致：逐行拆分的成本只服务于前端展示。
+const WRITE_DIFF_MAX_BYTES: usize = 4 * 1024 * 1024;
+
 impl Tool for WriteTool {
     fn name(&self) -> &'static str {
         "write"
@@ -93,7 +98,8 @@ impl Tool for WriteTool {
                 .await
                 .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
-            if args.content.len() as u64 > ctx.config.tools.output.max_file_bytes {
+            let max_file_bytes = ctx.config.tools.output.max_file_bytes;
+            if args.content.len() as u64 > max_file_bytes {
                 return Err(ToolError::new(
                     "E_TOO_LARGE",
                     "content exceeds the per-file byte limit",
@@ -105,24 +111,28 @@ impl Tool for WriteTool {
                 &ctx.anchors,
                 ctx.config.tools.write.hash_echo_min_hits,
             )?;
-            let old = match tokio::fs::read(&path).await {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(ToolError::new("E_ACCESS", error.to_string())),
-            };
+            // 覆盖既有文件前先看旧文件大小：超过读写上限时不读旧内容，
+            // 也就不做 diff、不写撤销记录（几 GB 旧文件会把内存打爆）。
+            let (old, oversized_old) = read_previous(&path, max_file_bytes).await?;
             let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
             let content = normalize_line_endings(&args.content, ending);
-            let diff = build_write_diff(&path, old.as_deref(), &content);
+            let diff = write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES);
             let temporary = stage(&path, content.as_bytes()).await?;
             if let Err(error) = tokio::fs::rename(&temporary, &path).await {
                 let _ = tokio::fs::remove_file(&temporary).await;
                 return Err(ToolError::new("E_ACCESS", error.to_string()));
             }
+            let mut notes = String::new();
+            if oversized_old {
+                notes.push_str(
+                    "\n[The previous file exceeded the per-file read limit; it was replaced without diff or undo record.]",
+                );
+            }
             if let Some(old) = old {
                 let metadata = tokio::fs::metadata(&path)
                     .await
                     .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
-                ctx.anchors.push_undo(
+                let kept = ctx.anchors.push_undo(
                     path.clone(),
                     old,
                     crate::hashline::SnapshotId::from_metadata_and_bytes(
@@ -130,12 +140,17 @@ impl Tool for WriteTool {
                         content.as_bytes(),
                     ),
                 );
+                if !kept {
+                    notes.push_str(
+                        "\n[The previous file exceeded the undo byte budget; /undo cannot restore it.]",
+                    );
+                }
             }
             ctx.anchors.invalidate(&path);
             let lines = content.lines().count();
             Ok(ToolOutcome {
                 content: format!(
-                    "Wrote {} ({lines} lines, {} bytes)",
+                    "Wrote {} ({lines} lines, {} bytes){notes}",
                     path.display(),
                     content.len()
                 )
@@ -185,6 +200,37 @@ fn reject_served_hash_echo(
         ));
     }
     Ok(())
+}
+
+/// 覆盖既有文件前读取旧内容；超过读写上限的旧文件不读取。
+///
+/// 返回 `(旧内容, 是否因为超过上限而跳过)`：跳过时不做 diff、不写撤销记录。
+async fn read_previous(
+    path: &Path,
+    max_file_bytes: u64,
+) -> Result<(Option<Vec<u8>>, bool), ToolError> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) if metadata.len() > max_file_bytes => Ok((None, true)),
+        Ok(_) => match tokio::fs::read(path).await {
+            Ok(bytes) => Ok((Some(bytes), false)),
+            Err(error) => Err(ToolError::new("E_ACCESS", error.to_string())),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((None, false)),
+        Err(error) => Err(ToolError::new("E_ACCESS", error.to_string())),
+    }
+}
+
+/// 覆盖 diff：任一侧超过展示预算时返回 `None`，整体替换本身不受影响。
+fn write_diff(
+    path: &Path,
+    old: Option<&[u8]>,
+    content: &str,
+    max_bytes: usize,
+) -> Option<ToolDiff> {
+    if old.map_or(0, |bytes| bytes.len()) > max_bytes || content.len() > max_bytes {
+        return None;
+    }
+    build_write_diff(path, old, content)
 }
 
 fn line_ending(bytes: &[u8]) -> &'static [u8] {
@@ -288,5 +334,32 @@ mod tests {
     fn line_endings_are_preserved_without_normalizing_content_semantics() {
         assert_eq!(normalize_line_endings("a\nb\n", b"\r\n"), "a\r\nb\r\n");
         assert_eq!(line_ending(b"a\r\nb\r\n"), b"\r\n");
+    }
+
+    #[tokio::test]
+    async fn previous_content_is_skipped_above_the_read_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        fs::write(&path, vec![b'x'; 4096]).unwrap();
+        let (old, oversized) = read_previous(&path, 1024).await.unwrap();
+        assert!(old.is_none() && oversized);
+        let (old, oversized) = read_previous(&path, 8192).await.unwrap();
+        assert_eq!(old.unwrap().len(), 4096);
+        assert!(!oversized);
+        let (old, oversized) = read_previous(&dir.path().join("missing.txt"), 1024)
+            .await
+            .unwrap();
+        assert!(old.is_none() && !oversized);
+    }
+
+    #[test]
+    fn diff_is_skipped_above_the_display_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        let old = b"old\n";
+        assert!(write_diff(&path, Some(&old[..]), "new\n", 1024).is_some());
+        assert!(write_diff(&path, Some(&old[..]), "a longer body", 4).is_none());
+        let big = vec![b'x'; 4096];
+        assert!(write_diff(&path, Some(&big), "new\n", 1024).is_none());
     }
 }

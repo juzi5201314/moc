@@ -218,6 +218,47 @@ pub struct AnchorStore {
 struct UndoHistory {
     by_path: HashMap<PathBuf, Vec<UndoRecord>>,
     order: Vec<PathBuf>,
+    /// 全部记录的字节总和；按字节淘汰时使用。
+    bytes: usize,
+}
+
+/// 单路径最多保留的撤销记录数。
+const MAX_UNDO_RECORDS_PER_PATH: usize = 8;
+/// 全部撤销记录的字节上限；超过该值的单条记录不保留。
+const MAX_UNDO_BYTES: usize = 64 * 1024 * 1024;
+
+/// 撤销栈的淘汰规则：先保证单路径深度，再按全局最旧优先压到字节上限。
+///
+/// 每条记录保存整份旧内容，没有上限时长时间会话会随写入累积到数 GB。
+impl UndoHistory {
+    /// 淘汰某路径最旧的记录及其在全局次序中的位置。
+    fn evict_front(&mut self, path: &Path) {
+        let Some(stack) = self.by_path.get_mut(path) else {
+            return;
+        };
+        let removed = stack.remove(0);
+        self.bytes = self.bytes.saturating_sub(removed.bytes.len());
+        let empty = stack.is_empty();
+        if empty {
+            self.by_path.remove(path);
+        }
+        if let Some(index) = self
+            .order
+            .iter()
+            .position(|entry| entry.as_path() == path)
+        {
+            self.order.remove(index);
+        }
+    }
+
+    /// 淘汰全店最旧的记录；没有记录时返回 false。
+    fn evict_oldest(&mut self) -> bool {
+        let Some(path) = self.order.first().cloned() else {
+            return false;
+        };
+        self.evict_front(&path);
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -287,7 +328,23 @@ impl AnchorStore {
         self.snapshots.write().remove(path);
     }
 
-    pub fn push_undo(&self, path: PathBuf, bytes: Vec<u8>, expected: SnapshotId) {
+    /// 压入一条撤销记录；超过字节上限的单条记录不保留并返回 `false`。
+    pub fn push_undo(&self, path: PathBuf, bytes: Vec<u8>, expected: SnapshotId) -> bool {
+        self.push_undo_with_budget(path, bytes, expected, MAX_UNDO_BYTES)
+    }
+
+    /// 带显式预算的压入：`budget` 是整栈保留的字节上限，淘汰顺序为全局最旧优先。
+    fn push_undo_with_budget(
+        &self,
+        path: PathBuf,
+        bytes: Vec<u8>,
+        expected: SnapshotId,
+        budget: usize,
+    ) -> bool {
+        if bytes.len() > budget {
+            return false;
+        }
+        let added = bytes.len();
         let mut undo = self.undo.write();
         undo.by_path
             .entry(path.clone())
@@ -296,7 +353,17 @@ impl AnchorStore {
                 bytes: bytes.into(),
                 expected,
             });
-        undo.order.push(path);
+        undo.order.push(path.clone());
+        undo.bytes = undo.bytes.saturating_add(added);
+        while undo
+            .by_path
+            .get(&path)
+            .is_some_and(|stack| stack.len() > MAX_UNDO_RECORDS_PER_PATH)
+        {
+            undo.evict_front(&path);
+        }
+        while undo.bytes > budget && undo.evict_oldest() {}
+        true
     }
 
     pub(crate) fn peek_undo(&self, path: &Path) -> Option<UndoRecord> {
@@ -305,20 +372,23 @@ impl AnchorStore {
 
     pub(crate) fn commit_undo(&self, path: &Path, restored: SnapshotId) {
         let mut undo = self.undo.write();
-        let empty = if let Some(stack) = undo.by_path.get_mut(path) {
-            stack.pop();
+        let popped = if let Some(stack) = undo.by_path.get_mut(path) {
+            let popped = stack.pop();
             if let Some(previous) = stack.last_mut() {
                 // 原子替换会改变 inode；下一次撤销必须认可刚恢复的版本。
                 previous.expected = restored;
             }
-            stack.is_empty()
+            popped
         } else {
             return;
         };
+        undo.bytes = undo
+            .bytes
+            .saturating_sub(popped.map_or(0, |record| record.bytes.len()));
         if let Some(index) = undo.order.iter().rposition(|entry| entry.as_path() == path) {
             undo.order.remove(index);
         }
-        if empty {
+        if undo.by_path.get(path).is_some_and(Vec::is_empty) {
             undo.by_path.remove(path);
         }
     }
@@ -329,8 +399,23 @@ impl AnchorStore {
 
     pub fn clear_undo(&self, path: &Path) {
         let mut undo = self.undo.write();
-        undo.by_path.remove(path);
+        if let Some(stack) = undo.by_path.remove(path) {
+            let cleared: usize = stack.iter().map(|record| record.bytes.len()).sum();
+            undo.bytes = undo.bytes.saturating_sub(cleared);
+        }
         undo.order.retain(|entry| entry.as_path() != path);
+    }
+
+    /// 测试用：撤销栈当前保留的总字节数。
+    #[cfg(test)]
+    fn undo_bytes(&self) -> usize {
+        self.undo.read().bytes
+    }
+
+    /// 测试用：某路径当前保留的撤销记录数。
+    #[cfg(test)]
+    fn undo_record_count(&self, path: &Path) -> usize {
+        self.undo.read().by_path.get(path).map_or(0, Vec::len)
     }
 }
 
@@ -410,6 +495,71 @@ mod tests {
             ]
         );
         assert_eq!(served.canons[1], 0);
+    }
+
+    fn id(size: u64) -> SnapshotId {
+        SnapshotId {
+            device: 0,
+            inode: 0,
+            modified_secs: 0,
+            modified_nanos: 0,
+            changed_secs: 0,
+            changed_nanos: 0,
+            size,
+            content_hash: 0,
+        }
+    }
+
+    #[test]
+    fn undo_depth_is_bounded_per_path() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("file.txt");
+        let store = AnchorStore::new();
+        for index in 0..MAX_UNDO_RECORDS_PER_PATH + 3 {
+            assert!(store.push_undo(path.clone(), vec![7u8; 16], id(index as u64)));
+        }
+        assert_eq!(store.undo_record_count(&path), MAX_UNDO_RECORDS_PER_PATH);
+        assert_eq!(store.latest_undo_path().as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn undo_bytes_are_bounded_and_oversized_records_are_rejected() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let store = AnchorStore::new();
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        let third = dir.path().join("third.txt");
+        let budget = 300;
+        assert!(store.push_undo_with_budget(first.clone(), vec![1u8; 150], id(1), budget));
+        assert!(store.push_undo_with_budget(second.clone(), vec![2u8; 150], id(1), budget));
+        assert_eq!(store.undo_bytes(), budget);
+        // 第三条推过预算：淘汰全局最旧的记录（first 的第一次压入），
+        // 而不是本次压入的路径。
+        assert!(store.push_undo_with_budget(first.clone(), vec![3u8; 150], id(1), budget));
+        assert_eq!(store.undo_bytes(), budget);
+        assert_eq!(store.undo_record_count(&first), 1);
+        assert_eq!(store.undo_record_count(&second), 1);
+        // 再压一条：这次轮到 second 最旧；first 的最新记录保留。
+        assert!(store.push_undo_with_budget(third.clone(), vec![4u8; 150], id(1), budget));
+        assert_eq!(store.undo_bytes(), budget);
+        assert!(store.peek_undo(&second).is_none());
+        assert!(store.peek_undo(&first).is_some());
+        assert_eq!(store.latest_undo_path().as_deref(), Some(third.as_path()));
+        // 单条超过预算的记录不保留，也不污染记账。
+        assert!(!store.push_undo_with_budget(third.clone(), vec![0u8; budget + 1], id(1), budget));
+        assert_eq!(store.undo_bytes(), budget);
+    }
+
+    #[test]
+    fn committing_undo_releases_its_budget() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("file.txt");
+        let store = AnchorStore::new();
+        assert!(store.push_undo(path.clone(), vec![9u8; 128], id(1)));
+        assert_eq!(store.undo_bytes(), 128);
+        store.commit_undo(&path, id(2));
+        assert_eq!(store.undo_bytes(), 0);
+        assert!(store.latest_undo_path().is_none());
     }
 
     #[test]
