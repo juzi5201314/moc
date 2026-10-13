@@ -85,6 +85,43 @@ fn project_mcp_json_is_opt_in() {
 }
 
 #[test]
+fn defaults_section_is_a_directive_and_may_be_empty() {
+    let (_root, boot) = workspace();
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[defaults]\n[models.roles]\ndefault='p/m'\n[providers.p]\napi='openai_chat'\n\
+         base_url='http://127.0.0.1:1'\n[providers.p.models.m]\nreasoning=true\n",
+    )
+    .unwrap();
+    let loaded = ResolvedConfig::load(&boot);
+    assert!(
+        loaded.is_ok(),
+        "空的 [defaults] 表与没有 defaults 段等价：{:?}",
+        loaded.err()
+    );
+    assert!(editor::inspect(&boot, ConfigScope::Global, &boot.cwd).is_ok());
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[defaults.models.m]\ncontext_window=123456\n[models.roles]\ndefault='p/m'\n\
+         [providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n\
+         [providers.p.models.m]\nreasoning=true\n",
+    )
+    .unwrap();
+    let resolved = ResolvedConfig::load(&boot).unwrap();
+    let models = resolved.available_models();
+    assert_eq!(models.len(), 1);
+    assert_eq!(
+        models[0].context_window, 123456,
+        "defaults.models 应给匹配的模型补缺省字段"
+    );
+    std::fs::write(boot.home.join("config.toml"), "[defaults]\nmodels = 3\n").unwrap();
+    assert!(
+        ResolvedConfig::load(&boot).is_err(),
+        "defaults.models 不是表时仍要报错"
+    );
+}
+
+#[test]
 fn stale_editor_cannot_overwrite_another_writer() {
     let (_root, boot) = workspace();
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();

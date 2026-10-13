@@ -368,12 +368,20 @@ fn merge_value(target: &mut Value, overlay: Value) {
 }
 
 fn apply_model_defaults(raw: &mut Value) -> Result<(), CoreError> {
-    let Some(defaults) = raw.get("defaults") else {
+    // `defaults` 是给模型补缺省字段的指令，不属于类型化配置：无论能否用上，
+    // 都要在解析前摘除，否则 deny_unknown_fields 会把整个 [defaults] 段判成非法字段。
+    let Some(defaults) = raw
+        .as_table_mut()
+        .and_then(|table| table.remove("defaults"))
+    else {
         return Ok(());
     };
-    let defaults_models = defaults
-        .get("models")
-        .and_then(Value::as_table)
+    // 空的 [defaults] 表没有任何默认值可用，与「没有 defaults 段」等价。
+    let Some(models) = defaults.get("models") else {
+        return Ok(());
+    };
+    let defaults_models = models
+        .as_table()
         .cloned()
         .ok_or_else(|| CoreError::Config("defaults.models 必须是表".into()))?;
     for pattern in defaults_models.keys() {
@@ -425,9 +433,6 @@ fn apply_model_defaults(raw: &mut Value) -> Result<(), CoreError> {
             *explicit = merged;
         }
     }
-    raw.as_table_mut()
-        .expect("配置根节点必须是表")
-        .remove("defaults");
     Ok(())
 }
 
