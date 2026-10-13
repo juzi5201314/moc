@@ -49,34 +49,7 @@ impl Tool for SkillTool {
             let args: SkillArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             let skill = model_skill(&ctx.skills, &args.name)?;
-            if !ctx.loaded_skills.write().insert(args.name.clone()) {
-                return Ok(ToolOutcome::success(format!(
-                    "Skill `{}` is already loaded in this session; its content is still in context.",
-                    args.name
-                )));
-            }
-            let text = tokio::fs::read_to_string(skill.skill_file())
-                .await
-                .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
-            let parsed = super::frontmatter::parse(&text)
-                .map_err(|error| ToolError::new("E_SKILL", error.to_string()))?;
-            let mut output = format!(
-                "<skill_content name=\"{}\" base=\"skill://{}\">\n{}\n</skill_content>",
-                skill.name,
-                skill.name,
-                parsed.body.trim()
-            );
-            let resources = list_resources(&skill.base_dir)
-                .into_iter()
-                .map(|resource| format!("skill://{}/{}", skill.name, resource))
-                .collect::<Vec<_>>();
-            if !resources.is_empty() {
-                output.push_str(&format!(
-                    "\n\nResources bundled with this skill (use read to inspect):\n{}",
-                    resources.join("\n")
-                ));
-            }
-            Ok(ToolOutcome::success(output))
+            load_skill_text(skill, &ctx.loaded_skills).await
         })
     }
 }
@@ -115,6 +88,41 @@ fn model_skill<'a>(
     Ok(skill)
 }
 
+/// 读取并渲染 skill 正文；读取与解析都成功后才会登记为已加载。
+async fn load_skill_text(
+    skill: &super::SkillMeta,
+    loaded: &parking_lot::RwLock<LoadedSkills>,
+) -> Result<ToolOutcome, ToolError> {
+    if loaded.read().contains(&skill.name) {
+        return Ok(ToolOutcome::success(format!(
+            "Skill `{}` is already loaded in this session; its content is still in context.",
+            skill.name
+        )));
+    }
+    let text = tokio::fs::read_to_string(skill.skill_file())
+        .await
+        .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
+    let parsed = super::frontmatter::parse(&text)
+        .map_err(|error| ToolError::new("E_SKILL", error.to_string()))?;
+    let mut output = format!(
+        "<skill_content name=\"{}\" base=\"skill://{}\">\n{}\n</skill_content>",
+        skill.name,
+        skill.name,
+        parsed.body.trim()
+    );
+    let resources = list_resources(&skill.base_dir)
+        .into_iter()
+        .map(|resource| format!("skill://{}/{}", skill.name, resource))
+        .collect::<Vec<_>>();
+    if !resources.is_empty() {
+        output.push_str(&format!(
+            "\n\nResources bundled with this skill (use read to inspect):\n{}",
+            resources.join("\n")
+        ));
+    }
+    loaded.write().insert(skill.name.clone());
+    Ok(ToolOutcome::success(output))
+}
 /// 列出 skill 目录一级条目（SKILL.md 本体除外），按名称排序。
 fn list_resources(base_dir: &std::path::Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(base_dir) else {
@@ -172,6 +180,7 @@ pub fn render_for_invocation(
 mod tests {
     use super::*;
     use crate::skills::{SkillIndex, SkillMeta};
+    use crate::tools::ToolOutput;
     use std::collections::HashSet;
 
     fn meta(name: &str, base_dir: std::path::PathBuf, model_invocable: bool) -> SkillMeta {
@@ -203,6 +212,30 @@ mod tests {
         assert_eq!(unknown.code, "E_NOT_FOUND");
         let listing = unknown.to_string();
         assert!(listing.contains("open") && !listing.contains("locked"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_skill_read_is_not_recorded_as_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("demo");
+        std::fs::create_dir_all(&base).unwrap();
+        let skill = meta("demo", base.clone(), true);
+        let loaded = parking_lot::RwLock::new(LoadedSkills::default());
+        // SKILL.md 缺失时读取失败，不得留下「已加载」记账。
+        assert!(load_skill_text(&skill, &loaded).await.is_err());
+        assert!(!loaded.read().contains("demo"));
+        std::fs::write(
+            base.join("SKILL.md"),
+            "---\nname: demo\ndescription: 演示\n---\n# 步骤\n照做。",
+        )
+        .unwrap();
+        load_skill_text(&skill, &loaded).await.unwrap();
+        assert!(loaded.read().contains("demo"));
+        let again = load_skill_text(&skill, &loaded).await.unwrap();
+        let ToolOutput::Text(text) = &again.content else {
+            panic!("重复加载返回文本提示");
+        };
+        assert!(text.contains("already loaded"));
     }
 
     #[test]
