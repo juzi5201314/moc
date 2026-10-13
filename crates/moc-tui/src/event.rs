@@ -482,7 +482,6 @@ async fn event_loop(
     let mut next_frame = tokio::time::Instant::now();
     let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
     let mut dirty = true;
-    let mut deferred_event: Option<AppEvent> = None;
     loop {
         if app.should_quit {
             return Ok(());
@@ -531,9 +530,7 @@ async fn event_loop(
                     }
                 }
             }
-            app_event = async {
-                if let Some(event) = deferred_event.take() { Some(event) } else { event_rx.recv().await }
-            } => {
+            app_event = event_rx.recv() => {
                 dirty = true;
                 match app_event {
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
@@ -547,20 +544,6 @@ async fn event_loop(
                     Some(AppEvent::RewindLoaded(result)) => apply_rewind_loaded(app, result),
                     Some(AppEvent::Rewound { selected, result }) => {
                         apply_rewound(app, connection, selected, result);
-                    }
-                    Some(AppEvent::Update(params)) => {
-                        apply_update_and_refresh(app, connection, params.session_id, params.update);
-                        while let Ok(next) = event_rx.try_recv() {
-                            match next {
-                                AppEvent::Update(params) => {
-                                    apply_update_and_refresh(app, connection, params.session_id, params.update)
-                                }
-                                other => {
-                                    deferred_event = Some(other);
-                                    break;
-                                }
-                            }
-                        }
                     }
                     Some(AppEvent::HistoryPageLoaded { prepend, result }) => {
                         apply_history_page(app, prepend, result);

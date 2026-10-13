@@ -46,8 +46,6 @@ pub enum AppEvent {
         result: anyhow::Result<moc_protocol::SessionLoadResult>,
         auto_prompt: Option<String>,
     },
-    /// `session/update` 通知。
-    Update(SessionUpdateParams),
     /// 授权请求；主循环收到后弹出模态，回选经 `reply` 送回协议层。
     Permission {
         params: PermissionRequestParams,
