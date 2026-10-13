@@ -22,14 +22,50 @@ use crate::config::{CompiledToolFilter, ServerConfig};
 use crate::content::{ToolOutput, map_call_result};
 use crate::error::McpError;
 
-/// 重连预算：连续失败达到上限后放弃，直到下次 [`McpManager::start`]。
-pub(crate) const MAX_ATTEMPTS: u32 = 10;
-const BASE_BACKOFF: Duration = Duration::from_millis(500);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// 连接稳定运行超过该时长后重置重连预算。
-const STABLE_RUNTIME: Duration = Duration::from_secs(30);
 /// 调用遇到连接错误后，等待重连成功的最长时长。
 const RECONNECT_WAIT: Duration = Duration::from_secs(15);
+
+/// 重连预算与退避参数。
+///
+/// 默认值即线上语义：连续失败 [`ReconnectPolicy::max_attempts`] 次后进入
+/// [`ServerStatus::Failed`]，只有稳定运行满 [`ReconnectPolicy::stable_runtime`]
+/// 的连接才清零失败计数——「握手成功但随即退出」的 server 会一路累加，直到放弃。
+/// 参数化只为让测试用毫秒级参数验证预算耗尽路径。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReconnectPolicy {
+    /// 连续失败上限；超过即放弃本次启动的监督。
+    pub(crate) max_attempts: u32,
+    /// 首次退避时长；之后指数增长。
+    pub(crate) base_backoff: Duration,
+    /// 退避上限。
+    pub(crate) max_backoff: Duration,
+    /// 连接连续运行满该时长后才清零失败计数。
+    pub(crate) stable_runtime: Duration,
+    /// 检查传输是否关闭的轮询间隔。
+    pub(crate) close_poll: Duration,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 10,
+            base_backoff: Duration::from_millis(500),
+            max_backoff: Duration::from_secs(30),
+            stable_runtime: Duration::from_secs(30),
+            close_poll: Duration::from_millis(500),
+        }
+    }
+}
+
+impl ReconnectPolicy {
+    /// 第 `attempts` 次失败后的退避时长（指数增长、封顶）。
+    fn backoff(&self, attempts: u32) -> Duration {
+        let factor = 2u32.saturating_pow(attempts.saturating_sub(1).min(16));
+        self.base_backoff
+            .saturating_mul(factor)
+            .min(self.max_backoff)
+    }
+}
 
 /// 供 core 适配 `Tool` trait 的单个 MCP 工具描述。
 #[derive(Debug, Clone)]
@@ -126,6 +162,7 @@ pub struct McpManager {
     notices: mpsc::UnboundedSender<McpNotice>,
     notices_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<McpNotice>>>,
     tasks: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
+    policy: ReconnectPolicy,
 }
 
 impl McpManager {
@@ -141,6 +178,26 @@ impl McpManager {
         servers: Vec<ServerConfig>,
         shutdown: CancellationToken,
         connector_for: impl Fn(&ServerConfig) -> Connector,
+    ) -> Arc<Self> {
+        Self::assemble(servers, shutdown, connector_for, ReconnectPolicy::default())
+    }
+
+    /// 以自定义重连参数构建；测试用毫秒级参数验证预算耗尽路径。
+    #[cfg(test)]
+    pub(crate) fn build_with_policy(
+        servers: Vec<ServerConfig>,
+        shutdown: CancellationToken,
+        connector_for: impl Fn(&ServerConfig) -> Connector,
+        policy: ReconnectPolicy,
+    ) -> Arc<Self> {
+        Self::assemble(servers, shutdown, connector_for, policy)
+    }
+
+    fn assemble(
+        servers: Vec<ServerConfig>,
+        shutdown: CancellationToken,
+        connector_for: impl Fn(&ServerConfig) -> Connector,
+        policy: ReconnectPolicy,
     ) -> Arc<Self> {
         let (notices, notices_rx) = mpsc::unbounded_channel();
         let mut slots = BTreeMap::new();
@@ -165,6 +222,7 @@ impl McpManager {
             notices,
             notices_rx: tokio::sync::Mutex::new(Some(notices_rx)),
             tasks: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+            policy,
         })
     }
 
@@ -179,7 +237,8 @@ impl McpManager {
             {
                 let shutdown = self.shutdown.clone();
                 let notices = self.notices.clone();
-                tasks.spawn(supervise(slot.clone(), shutdown, notices));
+                let policy = self.policy;
+                tasks.spawn(supervise(slot.clone(), shutdown, notices, policy));
             }
         }
     }
@@ -470,16 +529,12 @@ async fn call_once(
     }
 }
 
-fn backoff_delay(attempts: u32) -> Duration {
-    let factor = 2u32.saturating_pow(attempts.saturating_sub(1).min(16));
-    BASE_BACKOFF.saturating_mul(factor).min(MAX_BACKOFF)
-}
-
 /// 单个 server 的终身监督：连接 → 监听变更/关闭 → 重连退避 → 预算耗尽放弃。
 async fn supervise(
     slot: Arc<ServerSlot>,
     shutdown: CancellationToken,
     notices: mpsc::UnboundedSender<McpNotice>,
+    policy: ReconnectPolicy,
 ) {
     if !slot.config.enabled {
         slot.set_phase(Phase::Disabled);
@@ -491,7 +546,6 @@ async fn supervise(
     let mut attempts: u32 = 0;
     'supervise: loop {
         let (changed_tx, mut changed_rx) = mpsc::unbounded_channel::<()>();
-        let started = Instant::now();
         // 连接 + 列取工具，整体受 connect_timeout 约束。
         let established = async {
             let service = (slot.connector)(changed_tx).await?;
@@ -508,19 +562,20 @@ async fn supervise(
         };
         match tokio::time::timeout(connect_timeout, established).await {
             Ok(Ok((peer, tools, mut service))) => {
-                attempts = 0;
                 let tool_count = tools.len();
                 slot.set_phase(Phase::Connected {
                     peer: peer.clone(),
                     tools,
                 });
+                // 稳定性从握手成功起算：连接尝试耗时长不该算成「稳定运行」
+                let connected_at = Instant::now();
                 let _ = notices.send(McpNotice {
                     server: server.clone(),
                     message: format!("Connected ({tool_count} tools)"),
                 });
 
                 let connection_lost;
-                let mut closed_tick = tokio::time::interval(Duration::from_millis(500));
+                let mut closed_tick = tokio::time::interval(policy.close_poll);
                 closed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
@@ -586,7 +641,9 @@ async fn supervise(
                     slot.supervising.store(false, Ordering::Release);
                     return;
                 }
-                if started.elapsed() >= STABLE_RUNTIME {
+                // 只有稳定运行满 `stable_runtime` 的连接才清零预算：握手成功随即退出的
+                // server 会一路累加，直到预算耗尽进入 `Failed`。
+                if connected_at.elapsed() >= policy.stable_runtime {
                     attempts = 0;
                 }
                 slot.set_phase(Phase::Reconnecting {
@@ -617,7 +674,7 @@ async fn supervise(
             }
         }
         attempts += 1;
-        if attempts > MAX_ATTEMPTS {
+        if attempts > policy.max_attempts {
             let error = match &*slot.phase.read() {
                 Phase::Reconnecting { error, .. } => error.clone(),
                 _ => "unknown error".into(),
@@ -631,7 +688,7 @@ async fn supervise(
             });
             break 'supervise;
         }
-        let delay = backoff_delay(attempts);
+        let delay = policy.backoff(attempts);
         tokio::select! {
             _ = shutdown.cancelled() => break 'supervise,
             _ = tokio::time::sleep(delay) => {}
@@ -667,10 +724,13 @@ mod naming {
 
     #[test]
     fn backoff_is_exponential_and_capped() {
-        assert_eq!(backoff_delay(1), Duration::from_millis(500));
-        assert_eq!(backoff_delay(2), Duration::from_secs(1));
-        assert_eq!(backoff_delay(3), Duration::from_secs(2));
-        assert_eq!(backoff_delay(10), MAX_BACKOFF);
+        let policy = ReconnectPolicy::default();
+        assert_eq!(policy.backoff(1), Duration::from_millis(500));
+        assert_eq!(policy.backoff(2), Duration::from_secs(1));
+        assert_eq!(policy.backoff(3), Duration::from_secs(2));
+        assert_eq!(policy.backoff(10), policy.max_backoff);
+        assert_eq!(policy.max_attempts, 10);
+        assert_eq!(policy.stable_runtime, Duration::from_secs(30));
     }
 }
 
@@ -698,6 +758,8 @@ mod tests {
         /// 触发服务端退出（传输关闭，供重连用例）。
         kill: tokio::sync::Notify,
         connect_count: AtomicUsize,
+        /// 一次 `tools/list` 已应答（供「握手成功随即退出」用例同步）。
+        listed: tokio::sync::Notify,
     }
 
     struct TestServer {
@@ -727,6 +789,7 @@ mod tests {
             _request: Option<rmcp::model::PaginatedRequestParams>,
             _context: RequestContext<RoleServer>,
         ) -> Result<ListToolsResult, rmcp::model::ErrorData> {
+            self.state.listed.notify_one();
             let mut tools = vec![
                 Tool::new(
                     "echo",
@@ -814,6 +877,47 @@ mod tests {
                     .map_err(|error| McpError::Transport(error.to_string()))
             })
         })
+    }
+
+    /// 「握手成功但随即退出」的连接器：先让客户端完成列出工具，再关掉传输。
+    ///
+    /// 这正是重连预算必须能耗尽的场景：若握手成功就清零预算，监督任务会以最小退避
+    /// 无限重启子进程，`Phase::Failed` 永不出现。
+    fn flapping_connector(state: Arc<TestState>) -> Connector {
+        Arc::new(move |tool_list_changed| {
+            let state = Arc::clone(&state);
+            Box::pin(async move {
+                state.connect_count.fetch_add(1, Ordering::SeqCst);
+                let (client_io, server_io) = tokio::io::duplex(1 << 16);
+                let server_state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    let serving = TestServer {
+                        state: Arc::clone(&server_state),
+                    }
+                    .serve(server_io);
+                    if let Ok(service) = serving.await {
+                        // 等本次 tools/list 应答完再退出，保证走的是「握手成功」路径
+                        server_state.listed.notified().await;
+                        drop(service);
+                    }
+                });
+                ClientHandlerBridge::new(tool_list_changed)
+                    .serve(client_io)
+                    .await
+                    .map_err(|error| McpError::Transport(error.to_string()))
+            })
+        })
+    }
+
+    /// 小参数策略：毫秒级退避与轮询，让预算耗尽路径能在测试里跑完。
+    fn fast_policy(max_attempts: u32, stable_runtime: Duration) -> ReconnectPolicy {
+        ReconnectPolicy {
+            max_attempts,
+            base_backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(10),
+            stable_runtime,
+            close_poll: Duration::from_millis(10),
+        }
     }
 
     fn test_server(name: &str, enabled: bool) -> ServerConfig {
@@ -1009,6 +1113,68 @@ mod tests {
             .call(&info, json!({}), CancellationToken::new())
             .await;
         assert!(matches!(result, Err(McpError::Transport(_))));
+        manager.shutdown().await;
+    }
+
+    /// 握手成功但立即退出的 server 必须耗尽重连预算，而不是无限重启。
+    #[tokio::test]
+    async fn handshake_then_immediate_exit_exhausts_reconnect_budget() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build_with_policy(
+            vec![test_server("flap", true)],
+            CancellationToken::new(),
+            |_| flapping_connector(Arc::clone(&state)),
+            fast_policy(1, Duration::from_secs(30)),
+        );
+        manager.start().await;
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let snapshot = manager.snapshot().await;
+            if matches!(
+                snapshot.statuses.get("flap"),
+                Some(ServerStatus::Failed { .. })
+            ) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "重连预算未耗尽，仍在重启：{:?}（已连接 {} 次）",
+                snapshot.statuses,
+                state.connect_count.load(Ordering::SeqCst)
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let connects = state.connect_count.load(Ordering::SeqCst);
+        assert!(connects <= 3, "预算耗尽后不得继续重启：{connects} 次连接");
+        manager.shutdown().await;
+    }
+
+    /// 稳定运行满 `stable_runtime` 的连接才清零预算：达标后掉线继续重连，不进入 Failed。
+    #[tokio::test]
+    async fn stable_connection_resets_the_reconnect_budget() {
+        let state = Arc::new(TestState::default());
+        // stable_runtime = 0：每次连接都算「稳定」，预算每轮清零
+        let manager = McpManager::build_with_policy(
+            vec![test_server("flap", true)],
+            CancellationToken::new(),
+            |_| flapping_connector(Arc::clone(&state)),
+            fast_policy(1, Duration::ZERO),
+        );
+        manager.start().await;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.connect_count.load(Ordering::SeqCst) < 3 {
+            assert!(Instant::now() < deadline, "稳定期达标后应当继续重连");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            !matches!(
+                manager.snapshot().await.statuses.get("flap"),
+                Some(ServerStatus::Failed { .. })
+            ),
+            "预算已清零，不该进入 Failed"
+        );
         manager.shutdown().await;
     }
 }
