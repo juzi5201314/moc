@@ -179,6 +179,36 @@ pub async fn run_prompt(
     }
 }
 
+/// 一轮请求所需的会话状态投影。
+///
+/// 只复制构建请求必需的内容，避免 `'turns` 循环每轮深拷贝整份 [`SessionState`]
+/// （默认 128 轮；长会话含 base64 图片时单次可达数十 MB）。
+struct TurnInputs {
+    messages: Vec<Message>,
+    context_tokens: u64,
+    native_input: Option<Vec<Value>>,
+    server_compaction_disabled: bool,
+}
+
+/// 在调用方持有的会话状态锁内构建一轮投影；锁不跨越任何 await。
+fn turn_inputs(
+    state: &crate::session::state::SessionState,
+    system: &Message,
+    model: &crate::ResolvedModel,
+    tools: &[moc_llm::ToolDef],
+    additional_tokens: u64,
+) -> TurnInputs {
+    let messages = model_messages(state, Some(system.clone()), Some(model));
+    let context_tokens =
+        compact::context_tokens_with_additional(state, &messages, tools, additional_tokens);
+    TurnInputs {
+        messages,
+        context_tokens,
+        native_input: state.native_input.clone(),
+        server_compaction_disabled: state.server_compaction_disabled,
+    }
+}
+
 async fn run_prompt_locked(
     inner: Arc<CoreInner>,
     ctx: &RequestContext,
@@ -374,7 +404,6 @@ async fn run_prompt_locked(
         super::management::drain_steering(&inner, &params.session_id, false)
             .await
             .map_err(to_rpc)?;
-        let mut snapshot = record.state.lock().await.clone();
         let mut reminder_messages = vec![mode_reminder(mode)];
         if let Some(detail) = cycle_redirect.take() {
             reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}。不要再次执行相同的无进展动作；改用能获得新证据的操作，或总结现有结果并结束。再次形成无进展循环将终止本次提示。</system-interrupt>")));
@@ -478,14 +507,18 @@ async fn run_prompt_locked(
             }));
         }
         let reminder_messages = merge_reminders(reminder_messages);
-        let mut messages = model_messages(&snapshot, Some(system.clone()), Some(&model));
-        let context_tokens = compact::context_tokens_with_additional(
-            &snapshot,
-            &messages,
-            &tools_available,
-            compact::messages_tokens(&reminder_messages),
-        );
-        messages.extend(reminder_messages.iter().cloned());
+        let mut inputs = {
+            let state = record.state.lock().await;
+            turn_inputs(
+                &state,
+                &system,
+                &model,
+                &tools_available,
+                compact::messages_tokens(&reminder_messages),
+            )
+        };
+        inputs.messages.extend(reminder_messages.iter().cloned());
+        let context_tokens = inputs.context_tokens;
         if mode != moc_protocol::methods::SessionMode::ClmExperimental
             && project_config.compaction.enabled
             && project_config.compaction.auto
@@ -518,9 +551,17 @@ async fn run_prompt_locked(
                         final_reason = FinishReason::Other("compacted".into());
                         break 'turns;
                     }
-                    snapshot = record.state.lock().await.clone();
-                    messages = model_messages(&snapshot, Some(system.clone()), Some(&model));
-                    messages.extend(reminder_messages.iter().cloned());
+                    inputs = {
+                        let state = record.state.lock().await;
+                        turn_inputs(
+                            &state,
+                            &system,
+                            &model,
+                            &tools_available,
+                            compact::messages_tokens(&reminder_messages),
+                        )
+                    };
+                    inputs.messages.extend(reminder_messages.iter().cloned());
                 }
                 Err(error) => {
                     tracing::warn!(session_id = %params.session_id, %error, "自动上下文压缩失败，继续请求")
@@ -530,9 +571,9 @@ async fn run_prompt_locked(
         let mut request = build_request(
             &model,
             &project_config,
-            messages,
+            std::mem::take(&mut inputs.messages),
             tools_available.clone(),
-            snapshot.native_input.clone(),
+            inputs.native_input.clone(),
             &params.session_id,
         );
         let mut overflow_attempts = 0;
@@ -543,7 +584,7 @@ async fn run_prompt_locked(
                 && project_config.compaction.remote.enabled
                 && project_config.compaction.remote.server_side
                 && model.remote_compaction
-                && !snapshot.server_compaction_disabled
+                && !inputs.server_compaction_disabled
                 && model.llm.protocol == moc_llm::Protocol::OpenAiResponses
             {
                 llm_config.server_compaction_threshold =
@@ -589,7 +630,7 @@ async fn run_prompt_locked(
                         && error.to_string().contains("context_management") =>
                 {
                     record.state.lock().await.server_compaction_disabled = true;
-                    snapshot.server_compaction_disabled = true;
+                    inputs.server_compaction_disabled = true;
                     tracing::warn!(session_id = %params.session_id, "上游不支持 context_management，本会话关闭服务端压缩");
                 }
                 Err(error)
@@ -635,16 +676,24 @@ async fn run_prompt_locked(
                         final_reason = FinishReason::Other("compacted".into());
                         break 'turns;
                     }
-                    snapshot = record.state.lock().await.clone();
-                    let mut retry_messages =
-                        model_messages(&snapshot, Some(system.clone()), Some(&model));
+                    inputs = {
+                        let state = record.state.lock().await;
+                        turn_inputs(
+                            &state,
+                            &system,
+                            &model,
+                            &tools_available,
+                            compact::messages_tokens(&reminder_messages),
+                        )
+                    };
+                    let mut retry_messages = inputs.messages;
                     retry_messages.extend(reminder_messages.iter().cloned());
                     request = build_request(
                         &model,
                         &project_config,
                         retry_messages,
                         tools_available.clone(),
-                        snapshot.native_input.clone(),
+                        inputs.native_input.clone(),
                         &params.session_id,
                     );
                 }
