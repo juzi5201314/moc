@@ -374,6 +374,18 @@ impl<S: AgentService> ServerDispatch<S> {
         cancel: CancellationToken,
         claim: PromptClaim,
     ) {
+        // 守卫在读循环占位之后立刻建立：未握手被拒、方法未知、参数解析失败等任何
+        // 提前返回路径都会摘掉占位，只有真正跑进 core 的提示才持占到结束。
+        let _guard = match claim {
+            PromptClaim::Claimed(session_id) => Some(PromptGuard {
+                prompts: Arc::clone(&self.prompts),
+                session_id,
+            }),
+            // 无占位：非提示类请求，或参数里读不出 `session_id`
+            PromptClaim::NotPrompt => None,
+            // 占位冲突在读循环里就回了 `-32011`，不会走到这里
+            PromptClaim::Busy => None,
+        };
         let Request { id, method, params } = request;
         let payload = match method.as_ref() {
             <Initialize as Method>::NAME => self.initialize(params).await,
@@ -381,10 +393,7 @@ impl<S: AgentService> ServerDispatch<S> {
                 server_time_ms: now_ms(),
             }),
             _ => match self.ready_client() {
-                Some(client) => {
-                    self.route(client, method.as_ref(), params, cancel, claim)
-                        .await
-                }
+                Some(client) => self.route(client, method.as_ref(), params, cancel).await,
                 None => Err(RpcError::of(RpcErrorCode::ServerNotInitialized)),
             },
         };
@@ -431,13 +440,14 @@ impl<S: AgentService> ServerDispatch<S> {
     }
 
     /// 已握手连接的方法分发。
+    ///
+    /// 占位守卫由 [`ServerDispatch::dispatch`] 持有，这里不再接触注册表。
     async fn route(
         self: &Arc<Self>,
         client: ClientInfo,
         method: &str,
         params: Option<Value>,
         cancel: CancellationToken,
-        claim: PromptClaim,
     ) -> Result<Value, RpcError> {
         match method {
             "config/manage" => {
@@ -658,13 +668,6 @@ impl<S: AgentService> ServerDispatch<S> {
                 value_from(result)
             }
             <SessionBash as Method>::NAME => {
-                let _guard = match claim {
-                    PromptClaim::Claimed(session_id) => Some(PromptGuard {
-                        prompts: Arc::clone(&self.prompts),
-                        session_id,
-                    }),
-                    _ => None,
-                };
                 let params = params_from_value::<SessionBash>(params)?;
                 value_from(
                     self.server
@@ -674,17 +677,10 @@ impl<S: AgentService> ServerDispatch<S> {
                 )
             }
             <SessionPrompt as Method>::NAME => {
-                // 占位已在读循环里完成（保证「先提示后 cancel」的顺序），
-                // 这里只把守卫接过来：解析失败、core 报错、任务被 abort 都会释放占位
-                let guard = match claim {
-                    PromptClaim::Claimed(session_id) => Some(PromptGuard {
-                        prompts: Arc::clone(&self.prompts),
-                        session_id,
-                    }),
-                    _ => None,
-                };
+                // 占位已在读循环里完成（保证「先提示后 cancel」的顺序），守卫由
+                // `dispatch` 持有：解析失败、core 报错、未握手被拒都会摘掉占位
                 let params = params_from_value::<SessionPrompt>(params)?;
-                self.prompt(client, params, cancel, guard).await
+                self.prompt(client, params, cancel).await
             }
             // 取消由协议层自答：trip 令牌即可，不经过 core，也不受出站队列拥塞影响
             <SessionCancel as Method>::NAME => {
@@ -749,20 +745,18 @@ impl<S: AgentService> ServerDispatch<S> {
         }
     }
 
-    /// 跑一次提示：进 core，结束后由守卫释放占位。
+    /// 跑一次提示：进 core；结束后由 `dispatch` 的占位守卫释放注册表。
     async fn prompt(
         self: &Arc<Self>,
         client: ClientInfo,
         params: PromptParams,
         cancel: CancellationToken,
-        guard: Option<PromptGuard>,
     ) -> Result<Value, RpcError> {
         let result = self
             .server
             .service
             .session_prompt(self.context(client, cancel), params)
             .await;
-        drop(guard);
         value_from(result?)
     }
 

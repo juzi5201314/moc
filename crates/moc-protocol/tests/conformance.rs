@@ -241,6 +241,62 @@ async fn invalid_params_returns_invalid_params() {
 }
 
 #[tokio::test]
+async fn rejected_before_handshake_releases_prompt_claim() {
+    let service = ScriptedService::new();
+    let (_server, _connection, mut peer) = raw_pair(service.clone(), ServerOptions::default());
+
+    // 未握手：带合法 `session_id` 的提示类请求被拒，且不得占住连接级提示注册表
+    for (id, method, params) in [
+        (
+            2,
+            "session/prompt",
+            json!({ "session_id": "ses_1", "input": [{ "type": "text", "text": "hi" }] }),
+        ),
+        (
+            3,
+            "session/bash",
+            json!({ "session_id": "ses_2", "command": "echo hi", "timeout_secs": 5 }),
+        ),
+    ] {
+        peer.send(&request(id, method, params)).await;
+        assert_eq!(
+            peer.recv_err(id).await,
+            RpcErrorCode::ServerNotInitialized.code(),
+            "未握手时 {method} 应当被拒绝"
+        );
+    }
+
+    handshake(&mut peer).await;
+
+    // 握手后同一会话仍可提示：占位若没释放，这里恒回 `-32011`（误导性的「进行中」）
+    peer.send(&request(
+        4,
+        "session/prompt",
+        json!({ "session_id": "ses_1", "input": [{ "type": "text", "text": "hi" }] }),
+    ))
+    .await;
+    let (response, _) = support::recv_with_auto_permission(&mut peer, 4, "allow_once").await;
+    assert!(
+        response.payload.is_ok(),
+        "未握手时被拒的提示请求不该占住会话：{:?}",
+        response.payload
+    );
+
+    // bash 占位同样要释放：否则该会话的提示类请求一律 `-32011`
+    peer.send(&request(
+        5,
+        "session/bash",
+        json!({ "session_id": "ses_2", "command": "echo hi", "timeout_secs": 5 }),
+    ))
+    .await;
+    assert_ne!(
+        peer.recv_err(5).await,
+        RpcErrorCode::SessionBusy.code(),
+        "未握手时的 bash 请求不该占住会话提示"
+    );
+}
+
+#[tokio::test]
 async fn ping_does_not_touch_service() {
     let service = ScriptedService::new();
     let (_server, _connection, mut peer) = raw_pair(service.clone(), ServerOptions::default());
