@@ -28,8 +28,9 @@ pub struct ImageBudgetOutcome {
 /// 在请求副本上按旧到新的顺序移除图片，直到降到低水位。
 ///
 /// 该接口只改变 `messages`，因此不会损坏可回放的 transcript；同样的输入会得到同样
-/// 的输出，后续请求可以继续复用稳定前缀。若正文本身超过上限但没有图片，调用方仍会
-/// 交给上游返回上下文或请求体错误。
+/// 的输出，后续请求可以继续复用稳定前缀。体积只统计一次，随后按被改动消息的差值
+/// 增量维护，不在每一步重新序列化整个消息列表。若正文本身超过上限但没有图片，
+/// 调用方仍会交给上游返回上下文或请求体错误。
 pub fn apply(
     mut messages: Vec<Message>,
     tools: &[ToolDef],
@@ -44,7 +45,8 @@ pub fn apply(
     let trigger = max_bytes.saturating_sub(TRIGGER_HEADROOM_BYTES);
     let reclaim = max_bytes / 2;
     let fixed_bytes = serialized_bytes(tools).saturating_add(serialized_bytes(&native_input));
-    let body_bytes = fixed_bytes.saturating_add(serialized_bytes(&messages));
+    let mut body_bytes =
+        fixed_bytes.saturating_add(messages.iter().map(serialized_bytes).sum::<usize>());
     if body_bytes <= trigger {
         return (
             messages,
@@ -58,20 +60,34 @@ pub fn apply(
 
     let mut evicted = 0;
     for index in 0..messages.len() {
+        if !has_images(&messages[index]) {
+            continue;
+        }
+        let before = serialized_bytes(&messages[index]);
         evicted += strip_images(&mut messages[index]);
-        if evicted > 0 && fixed_bytes.saturating_add(serialized_bytes(&messages)) <= reclaim {
+        let after = serialized_bytes(&messages[index]);
+        body_bytes = body_bytes.saturating_sub(before).saturating_add(after);
+        if body_bytes <= reclaim {
             break;
         }
     }
-    let body_bytes_after = fixed_bytes.saturating_add(serialized_bytes(&messages));
     (
         messages,
         ImageBudgetOutcome {
             body_bytes,
-            body_bytes_after,
+            body_bytes_after: body_bytes,
             evicted,
         },
     )
+}
+
+/// 该消息是否携带图片；用于跳过与图片无关的序列化。
+fn has_images(message: &Message) -> bool {
+    message.content.iter().any(|part| match part {
+        ContentPart::Image { .. } => true,
+        ContentPart::ToolResult(result) => !result.images.is_empty(),
+        _ => false,
+    })
 }
 
 pub fn strip_images(message: &mut Message) -> usize {
@@ -106,7 +122,15 @@ pub fn strip_images(message: &mut Message) -> usize {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// 测试用序列化调用计数，钉住「体积只统计一次、按差值增量维护」的性能契约。
+    static SERIALIZED_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn serialized_bytes<T: Serialize + ?Sized>(value: &T) -> usize {
+    #[cfg(test)]
+    SERIALIZED_CALLS.with(|calls| calls.set(calls.get() + 1));
     struct Counter(usize);
     impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -167,5 +191,52 @@ mod tests {
         assert!(outcome.body_bytes > 4 * 1024 * 1024);
         assert!(outcome.body_bytes_after < outcome.body_bytes);
         assert!(matches!(messages[0].content[0], ContentPart::Text(_)));
+    }
+
+    #[test]
+    fn image_eviction_stops_at_the_low_watermark() {
+        let messages: Vec<Message> = (0..10)
+            .map(|_| Message {
+                role: moc_llm::Role::User,
+                content: vec![ContentPart::Image {
+                    source: ImageSource::Base64 {
+                        media_type: "image/png".into(),
+                        data: "y".repeat(1024 * 1024),
+                    },
+                    detail: None,
+                }],
+            })
+            .collect();
+        let (messages, outcome) = apply(messages, &[], None, Some(8 * 1024 * 1024));
+        assert!(
+            outcome.evicted > 0 && outcome.evicted < 10,
+            "够用即停，实际淘汰 {} 张",
+            outcome.evicted
+        );
+        assert!(outcome.body_bytes_after <= 4 * 1024 * 1024 + 4096);
+        assert!(
+            messages
+                .iter()
+                .any(|message| matches!(message.content[0], ContentPart::Image { .. })),
+            "较新的图片必须保留"
+        );
+    }
+
+    #[test]
+    fn image_free_bodies_are_serialized_once_per_message() {
+        let messages: Vec<Message> = (0..200)
+            .map(|_| Message::user_text("z".repeat(64 * 1024)))
+            .collect();
+        let count = messages.len();
+        SERIALIZED_CALLS.with(|calls| calls.set(0));
+        let (_, outcome) = apply(messages, &[], None, Some(4 * 1024 * 1024));
+        assert_eq!(outcome.evicted, 0);
+        assert_eq!(outcome.body_bytes, outcome.body_bytes_after);
+        // 额外两次是请求封套（工具定义与原生载荷）；旧实现会跑满全表 O(n²)。
+        let calls = SERIALIZED_CALLS.with(std::cell::Cell::get);
+        assert!(
+            calls <= count + 4,
+            "无图片时每条消息只允许序列化一次，实际 {calls} 次"
+        );
     }
 }
