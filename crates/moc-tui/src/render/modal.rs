@@ -681,8 +681,6 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             highlight,
             selected,
             custom,
-            custom_cursor,
-            editing_custom,
             preview_scroll,
             ..
         } => {
@@ -722,7 +720,9 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 )));
             }
             let editing_here = highlight[*question] == current.options.len();
-            let custom_style = if *editing_custom {
+            let answer = custom.get(*question);
+            let editing = answer.is_some_and(|answer| answer.editing);
+            let custom_style = if editing {
                 Style::new()
                     .fg(theme.accent_running)
                     .bg(theme.bg_visual)
@@ -735,12 +735,14 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             } else {
                 Style::new().fg(theme.gray)
             };
-            let custom_display = if *editing_custom {
-                let cursor_pos = clamp_cursor(custom, *custom_cursor);
-                let (before, after) = custom.split_at(cursor_pos);
-                format!("{before}▏{after}")
-            } else {
-                custom.clone()
+            let custom_display = match answer {
+                Some(answer) if answer.editing => {
+                    let cursor_pos = clamp_cursor(&answer.text, answer.cursor);
+                    let (before, after) = answer.text.split_at(cursor_pos);
+                    format!("{before}▏{after}")
+                }
+                Some(answer) => answer.text.clone(),
+                None => String::new(),
             };
             body.push(Line::from(Span::styled(
                 format!(
@@ -1914,9 +1916,7 @@ mod tests {
             question: 0,
             highlight: vec![highlight],
             selected: vec![Vec::new()],
-            custom: String::new(),
-            custom_cursor: 0,
-            editing_custom: false,
+            custom: vec![crate::modal::CustomAnswer::default()],
             preview_scroll,
             reply: None,
         }

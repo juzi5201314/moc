@@ -602,12 +602,10 @@ async fn event_loop(
                             .collect();
                         app.modal = Some(Modal::Ask {
                             params,
-                            question: 0,
                             highlight,
                             selected,
-                            custom: String::new(),
-                            custom_cursor: 0,
-                            editing_custom: false,
+                            custom: vec![crate::modal::CustomAnswer::default(); per_question],
+                            question: 0,
                             preview_scroll: 0,
                             reply: Some(reply),
                         });
@@ -1595,8 +1593,6 @@ fn handle_modal_key(
             highlight,
             selected,
             custom,
-            custom_cursor,
-            editing_custom,
             preview_scroll,
             reply,
         } => {
@@ -1604,44 +1600,55 @@ fn handle_modal_key(
                 return;
             };
             let option_count = current.options.len();
-            if *editing_custom {
-                match (code, modifiers) {
-                    (KeyCode::Esc, _) => *editing_custom = false,
-                    (KeyCode::Enter, _) => {
-                        *editing_custom = false;
-                        close |= advance_ask(params, question, selected, custom, reply);
-                    }
-                    // 光标与删除一律按字符步进：`custom` 是 UTF-8 文本，按字节移动会切进多字节字符。
-                    (KeyCode::Left, _) => *custom_cursor = cursor_prev(custom, *custom_cursor),
-                    (KeyCode::Right, _) => *custom_cursor = cursor_next(custom, *custom_cursor),
-                    (KeyCode::Home, _) => *custom_cursor = 0,
-                    (KeyCode::End, _) => *custom_cursor = custom.len(),
-                    (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                        custom.clear();
-                        *custom_cursor = 0;
-                    }
-                    (KeyCode::Backspace, _) => {
-                        let previous = cursor_prev(custom, *custom_cursor);
-                        if previous != *custom_cursor {
-                            custom.remove(previous);
+            let Some(answer) = custom.get_mut(*question) else {
+                return;
+            };
+            if answer.editing {
+                let mut submit = false;
+                {
+                    match (code, modifiers) {
+                        (KeyCode::Esc, _) => answer.editing = false,
+                        (KeyCode::Enter, _) => {
+                            answer.editing = false;
+                            submit = true;
                         }
-                        *custom_cursor = previous;
-                    }
-                    (KeyCode::Delete, _) => {
-                        let cursor = clamp_cursor(custom, *custom_cursor);
-                        if custom[cursor..].chars().next().is_some() {
-                            custom.remove(cursor);
+                        // 光标与删除一律按字符步进：正文是 UTF-8，按字节移动会切进多字节字符。
+                        (KeyCode::Left, _) => answer.cursor = cursor_prev(&answer.text, answer.cursor),
+                        (KeyCode::Right, _) => {
+                            answer.cursor = cursor_next(&answer.text, answer.cursor);
                         }
-                        *custom_cursor = cursor;
+                        (KeyCode::Home, _) => answer.cursor = 0,
+                        (KeyCode::End, _) => answer.cursor = answer.text.len(),
+                        (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                            answer.text.clear();
+                            answer.cursor = 0;
+                        }
+                        (KeyCode::Backspace, _) => {
+                            let previous = cursor_prev(&answer.text, answer.cursor);
+                            if previous != answer.cursor {
+                                answer.text.remove(previous);
+                            }
+                            answer.cursor = previous;
+                        }
+                        (KeyCode::Delete, _) => {
+                            let cursor = clamp_cursor(&answer.text, answer.cursor);
+                            if answer.text[cursor..].chars().next().is_some() {
+                                answer.text.remove(cursor);
+                            }
+                            answer.cursor = cursor;
+                        }
+                        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                            if !ch.is_control() =>
+                        {
+                            let pos = clamp_cursor(&answer.text, answer.cursor);
+                            answer.text.insert(pos, ch);
+                            answer.cursor = pos + ch.len_utf8();
+                        }
+                        _ => {}
                     }
-                    (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
-                        if !ch.is_control() =>
-                    {
-                        let pos = clamp_cursor(custom, *custom_cursor);
-                        custom.insert(pos, ch);
-                        *custom_cursor = pos + ch.len_utf8();
-                    }
-                    _ => {}
+                }
+                if submit {
+                    close |= advance_ask(params, question, selected, custom, reply);
                 }
                 if close {
                     app.modal = None;
@@ -1672,8 +1679,10 @@ fn handle_modal_key(
                 }
                 (KeyCode::Char('z'), KeyModifiers::NONE) => {
                     highlight[*question] = option_count;
-                    *editing_custom = true;
-                    *custom_cursor = custom.len();
+                    if let Some(answer) = custom.get_mut(*question) {
+                        answer.editing = true;
+                        answer.cursor = answer.text.len();
+                    }
                     *preview_scroll = 0;
                 }
                 (KeyCode::Char(' '), KeyModifiers::NONE) => {
@@ -1694,8 +1703,10 @@ fn handle_modal_key(
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) => {
                     if highlight[*question] == option_count {
-                        *editing_custom = true;
-                        *custom_cursor = custom.len();
+                        if let Some(answer) = custom.get_mut(*question) {
+                            answer.editing = true;
+                            answer.cursor = answer.text.len();
+                        }
                     } else if let Some(option) = current.options.get(highlight[*question]) {
                         let label = option.label.clone();
                         if current.multi {
@@ -2404,12 +2415,11 @@ fn handle_modal_key(
 }
 
 /// ask 推进到下一问或在最后一问提交；返回是否已提交（应关闭模态）。
-#[allow(clippy::too_many_arguments)]
 fn advance_ask(
     params: &moc_protocol::methods::AskParams,
     question: &mut usize,
     selected: &[Vec<String>],
-    custom: &str,
+    custom: &[crate::modal::CustomAnswer],
     reply: &mut Option<
         tokio::sync::oneshot::Sender<
             Result<moc_protocol::methods::AskResult, moc_protocol::RpcError>,
@@ -2424,7 +2434,11 @@ fn advance_ask(
             |(index, current_question)| moc_protocol::methods::AskAnswer {
                 id: current_question.id.clone(),
                 selected: selected.get(index).cloned().unwrap_or_default(),
-                custom: (!custom.is_empty() && index == *question).then(|| custom.to_owned()),
+                // 自定义答案各归各问：取该问自己的输入，不共用一份缓冲
+                custom: custom
+                    .get(index)
+                    .filter(|answer| !answer.text.is_empty())
+                    .map(|answer| answer.text.clone()),
             },
         )
         .collect();
@@ -3521,6 +3535,7 @@ fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
 mod tests {
     use super::*;
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use moc_protocol::methods::{AskOption, AskParams, AskQuestion, AskResult};
     use moc_protocol::methods::UpstreamFieldMismatch;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -4255,9 +4270,7 @@ mod tests {
             question: 0,
             highlight: vec![0, 0],
             selected: vec![Vec::new(), Vec::new()],
-            custom: String::new(),
-            custom_cursor: 0,
-            editing_custom: false,
+            custom: vec![crate::modal::CustomAnswer::default(); 2],
             preview_scroll: 0,
             reply: None,
         });
@@ -5246,46 +5259,104 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 小9：多问时自定义答案各归各问，第 1 问的输入不会挂到最后一问。
+    #[tokio::test]
+    async fn ask_custom_answers_stay_with_their_question() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(
+            vec![ask_question("q1"), ask_question("q2")],
+            Some(reply_tx),
+        ));
+
+        // 第 1 问：z 进自定义、输入「甲」、Enter 推进到第 2 问
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('z'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('甲'),
+        );
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(ask_custom(&app), (String::new(), 0), "第 2 问的缓冲是空的");
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                custom, question, ..
+            }) => {
+                assert_eq!(*question, 1, "已推进到第 2 问");
+                assert_eq!(custom[0].text, "甲", "第 1 问的答案留在第 1 问");
+                assert!(custom[1].text.is_empty());
+            }
+            _ => unreachable!("ask 模态"),
+        }
+
+        // 第 2 问不做自定义，直接 tab 提交：答案必须各归各问
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(' '));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        let result = reply_rx
+            .try_recv()
+            .expect("最后一问提交后应回报")
+            .expect("提问结果");
+        assert_eq!(result.answers.len(), 2);
+        assert_eq!(result.answers[0].custom.as_deref(), Some("甲"));
+        assert_eq!(result.answers[1].custom, None, "第 2 问不得带上第 1 问的答案");
+        assert_eq!(result.answers[1].selected, vec!["选项一".to_owned()]);
+        assert!(app.modal.is_none(), "提交后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 单问 ask 模态：选项一个 + 自定义行（`z` 进入编辑态）。
     fn ask_modal() -> Modal {
-        use moc_protocol::methods::{AskOption, AskParams, AskQuestion};
+        ask_modal_with(vec![ask_question("q1")], None)
+    }
+
+    fn ask_question(id: &str) -> AskQuestion {
+        AskQuestion {
+            id: id.into(),
+            question: "选哪个？".into(),
+            header: None,
+            multi: false,
+            recommended: None,
+            options: vec![AskOption {
+                label: "选项一".into(),
+                description: None,
+                preview: None,
+            }],
+        }
+    }
+
+    fn ask_modal_with(
+        questions: Vec<AskQuestion>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<AskResult, moc_protocol::RpcError>>>,
+    ) -> Modal {
+        let count = questions.len();
         Modal::Ask {
             params: AskParams {
                 session_id: "ses_test".into(),
                 prompt_id: "prompt_test".into(),
                 request_id: "ask_test".into(),
-                questions: vec![AskQuestion {
-                    id: "q1".into(),
-                    question: "选哪个？".into(),
-                    header: None,
-                    multi: false,
-                    recommended: None,
-                    options: vec![AskOption {
-                        label: "选项一".into(),
-                        description: None,
-                        preview: None,
-                    }],
-                }],
+                questions,
             },
             question: 0,
-            highlight: vec![0],
-            selected: vec![Vec::new()],
-            custom: String::new(),
-            custom_cursor: 0,
-            editing_custom: false,
+            highlight: vec![0; count],
+            selected: vec![Vec::new(); count],
+            custom: vec![crate::modal::CustomAnswer::default(); count],
             preview_scroll: 0,
-            reply: None,
+            reply,
         }
     }
 
-    /// ask 自定义输入的当前文本与光标。
+    /// 当前问自定义输入的文本与光标。
     fn ask_custom(app: &App) -> (String, usize) {
         match app.modal.as_ref() {
             Some(Modal::Ask {
-                custom,
-                custom_cursor,
-                ..
-            }) => (custom.clone(), *custom_cursor),
+                custom, question, ..
+            }) => custom
+                .get(*question)
+                .map(|answer| (answer.text.clone(), answer.cursor))
+                .unwrap_or_default(),
             _ => unreachable!("测试期间应保持 ask 模态"),
         }
     }

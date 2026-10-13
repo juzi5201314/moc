@@ -194,9 +194,8 @@ pub enum Modal {
         highlight: Vec<usize>,
         /// 每问已选中的 option label 集合。
         selected: Vec<Vec<String>>,
-        custom: String,
-        custom_cursor: usize,
-        editing_custom: bool,
+        /// 每问的自定义答案输入，与 `selected` 一一对应（切问不串答案）。
+        custom: Vec<CustomAnswer>,
         /// 当前聚焦项预览的滚动行数（切换选项/问题时归零）。
         preview_scroll: usize,
         reply: Option<tokio::sync::oneshot::Sender<Result<AskResult, RpcErrorOf>>>,
@@ -261,6 +260,17 @@ pub enum Modal {
 }
 /// 回复通道的错误类型别名（协议层 RpcError 的重导出位置）。
 type RpcErrorOf = moc_protocol::RpcError;
+
+/// 一问的自定义答案输入状态。
+#[derive(Debug, Clone, Default)]
+pub struct CustomAnswer {
+    /// 已输入正文。
+    pub text: String,
+    /// 光标（字节偏移，恒在字符边界）。
+    pub cursor: usize,
+    /// 是否处于编辑态（编辑态下按键都归输入行）。
+    pub editing: bool,
+}
 
 impl Modal {
     /// 标题行。
@@ -444,7 +454,7 @@ pub fn filtered_sessions<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Modal, PickerState, RewindState};
+    use super::{CustomAnswer, Modal, PickerState, RewindState};
     use moc_protocol::methods::{AskOption, AskParams, AskQuestion, TranscriptEntry};
     use moc_protocol::{Message, Role};
 
@@ -477,9 +487,7 @@ mod tests {
             question,
             highlight: vec![0; 2],
             selected: vec![Vec::new(); 2],
-            custom: String::new(),
-            custom_cursor: 0,
-            editing_custom: false,
+            custom: vec![CustomAnswer::default(); 2],
             preview_scroll: 0,
             reply: None,
         };
