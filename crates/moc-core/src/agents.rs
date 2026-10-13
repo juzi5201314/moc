@@ -38,6 +38,47 @@ fn terminal(status: AgentStatus) -> bool {
     )
 }
 
+/// 一次完成的终态快照，供 `wait_agent` 立即返回。
+struct AgentCompletion {
+    info: AgentInfo,
+    message: Option<Message>,
+    finish_reason: Option<FinishReason>,
+}
+
+/// 等待者与终态快照必须在同一临界区取得：先建立等待者，再读终态。
+struct AgentWatch {
+    notified: tokio::sync::futures::OwnedNotified,
+    completion: Option<AgentCompletion>,
+}
+
+/// 在注册表锁内建立等待者并读取终态。
+///
+/// 完成路径先写终态、再 `notify_waiters`；两者若与这里的读取交错，等待者会错过
+/// 唤醒并永久挂起（`notify_waiters` 不保存许可）。锁内先建等待者再读状态，
+/// 任何顺序的交错都会落在「立即返回终态」或「等待者已就绪」之一。
+fn watch_locked(
+    registry: &AgentRegistry,
+    parent_id: &str,
+    agent_id: &str,
+) -> Result<Option<AgentWatch>, CoreError> {
+    let Some(runtime) = registry.items.get(agent_id) else {
+        return Ok(None);
+    };
+    if runtime.info.parent_id != parent_id {
+        return Err(invalid("目标不是调用方的直接子代理"));
+    }
+    let notified = Arc::clone(&runtime.notify).notified_owned();
+    let completion = terminal(runtime.info.status).then(|| AgentCompletion {
+        info: runtime.info.clone(),
+        message: runtime.message.clone(),
+        finish_reason: runtime.finish_reason.clone(),
+    });
+    Ok(Some(AgentWatch {
+        notified,
+        completion,
+    }))
+}
+
 /// 常驻注册表保留的已完成子代理条目上限；更早的终态条目按更新时间回收。
 ///
 /// 终态信息仍可从 transcript 复原（`list_agents` 会回退到会话信息），
@@ -498,26 +539,11 @@ pub(crate) async fn wait(
     if timeout_ms == Some(0) {
         return Err(invalid("timeout_ms 必须大于 0"));
     }
-    let notify = {
+    let watch = {
         let registry = inner.agents.lock().await;
-        if let Some(runtime) = registry.items.get(&agent_id) {
-            if runtime.info.parent_id != parent_id {
-                return Err(invalid("目标不是调用方的直接子代理"));
-            }
-            if terminal(runtime.info.status) {
-                return Ok(AgentWaitResult {
-                    agent: runtime.info.clone(),
-                    completed: true,
-                    message: runtime.message.clone(),
-                    finish_reason: runtime.finish_reason.clone(),
-                });
-            }
-            Some(Arc::clone(&runtime.notify))
-        } else {
-            None
-        }
+        watch_locked(&registry, &parent_id, &agent_id)?
     };
-    let Some(notify) = notify else {
+    let Some(watch) = watch else {
         let sessions = inner.sessions.list().await?;
         let session = find_parent(&sessions, &agent_id, &parent_id)?;
         return Ok(AgentWaitResult {
@@ -527,12 +553,20 @@ pub(crate) async fn wait(
             finish_reason: None,
         });
     };
+    if let Some(completion) = watch.completion {
+        return Ok(AgentWaitResult {
+            agent: completion.info,
+            completed: true,
+            message: completion.message,
+            finish_reason: completion.finish_reason,
+        });
+    }
     let completed = if let Some(timeout_ms) = timeout_ms {
-        tokio::time::timeout(Duration::from_millis(timeout_ms), notify.notified())
+        tokio::time::timeout(Duration::from_millis(timeout_ms), watch.notified)
             .await
             .is_ok()
     } else {
-        notify.notified().await;
+        watch.notified.await;
         true
     };
     let registry = inner.agents.lock().await;
@@ -542,7 +576,8 @@ pub(crate) async fn wait(
         .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {agent_id}")))?;
     Ok(AgentWaitResult {
         agent: runtime.info.clone(),
-        completed,
+        // 超时边界上刚结束的子代理也要按完成回报，不能报成仍在运行。
+        completed: completed || terminal(runtime.info.status),
         message: runtime.message.clone(),
         finish_reason: runtime.finish_reason.clone(),
     })
@@ -572,6 +607,69 @@ mod tests {
             message: None,
             finish_reason: None,
         }
+    }
+
+    #[tokio::test]
+    async fn completion_between_status_check_and_wait_is_not_lost() {
+        let notify = Arc::new(Notify::new());
+        let mut registry = AgentRegistry::default();
+        registry.items.insert(
+            "ses_agent00001".into(),
+            running_agent(Arc::clone(&notify)),
+        );
+        // 等待者与终态读取在同一临界区建立；此刻代理仍在运行。
+        let watch = watch_locked(&registry, "ses_parent0001", "ses_agent00001")
+            .expect("读取注册表")
+            .expect("代理已登记");
+        assert!(watch.completion.is_none());
+        // 完成路径按 `finish` 的顺序执行：先写终态，再唤醒等待者。
+        {
+            let runtime = registry
+                .items
+                .get_mut("ses_agent00001")
+                .expect("代理已登记");
+            runtime.info.status = AgentStatus::Completed;
+            runtime.info.last_message = Some("子代理完成".into());
+            runtime.message = Some(Message::assistant_text("子代理完成"));
+        }
+        notify.notify_waiters();
+        // 唤醒落在等待者建立之后：必须立即就绪，不得依赖后续通知。
+        tokio::time::timeout(Duration::from_millis(100), watch.notified)
+            .await
+            .expect("完成通知不得丢失");
+    }
+
+    #[tokio::test]
+    async fn terminal_agent_returns_its_completion_snapshot() {
+        let notify = Arc::new(Notify::new());
+        let mut registry = AgentRegistry::default();
+        registry
+            .items
+            .insert("ses_agent00001".into(), running_agent(notify));
+        {
+            let runtime = registry
+                .items
+                .get_mut("ses_agent00001")
+                .expect("代理已登记");
+            runtime.info.status = AgentStatus::Failed;
+            runtime.message = Some(Message::assistant_text("上游失败"));
+        }
+        let watch = watch_locked(&registry, "ses_parent0001", "ses_agent00001")
+            .expect("读取注册表")
+            .expect("代理已登记");
+        let completion = watch.completion.expect("终态快照");
+        assert_eq!(completion.info.status, AgentStatus::Failed);
+        assert_eq!(
+            completion.message.expect("失败消息").text(),
+            "上游失败"
+        );
+        assert!(
+            watch_locked(&registry, "ses_other00001", "ses_agent00001").is_err(),
+            "非直接父会话不得等待该子代理"
+        );
+        assert!(watch_locked(&registry, "ses_parent0001", "ses_missing0001")
+            .expect("读取注册表")
+            .is_none());
     }
 
     #[test]
