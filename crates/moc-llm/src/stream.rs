@@ -46,6 +46,8 @@ enum AccumulatedBlock {
         signature: Option<String>,
         /// Responses 的完整 reasoning item（`output_item.done` 给出）。
         item: Option<Box<serde_json::Value>>,
+        /// Anthropic 的不可读思维链（`redacted_thinking`）的不透明数据。
+        redacted: Option<String>,
     },
     ToolCall {
         id: String,
@@ -111,12 +113,20 @@ impl Accumulator {
                 });
             }
             StreamEvent::ReasoningItem { index, item } => {
+                let redacted = redacted_data(item);
                 self.with_block(BlockKind::Reasoning, *index, |slot| match slot {
-                    // 完整 item 是权威形态（含 encrypted_content），
-                    // 覆盖增量阶段积累的摘要文本。
-                    AccumulatedBlock::Reasoning { item: target, .. } => {
-                        *target = Some(item.clone());
-                    }
+                    AccumulatedBlock::Reasoning {
+                        item: target,
+                        redacted: target_redacted,
+                        ..
+                    } => match redacted {
+                        // Anthropic 的不透明思维链有专用 IR 形态：编码器只接受
+                        // `Redacted`，原样保留 item 会让产物无法再编码。
+                        Some(data) => *target_redacted = Some(data),
+                        // 完整 item 是权威形态（含 encrypted_content），
+                        // 覆盖增量阶段积累的摘要文本。
+                        None => *target = Some(item.clone()),
+                    },
                     _ => unreachable!("同一种类同一 index 的块结构固定"),
                 });
             }
@@ -172,6 +182,7 @@ impl Accumulator {
                         text: String::new(),
                         signature: None,
                         item: None,
+                        redacted: None,
                     },
                     BlockKind::ToolCall => AccumulatedBlock::ToolCall {
                         id: String::new(),
@@ -231,8 +242,14 @@ impl Accumulator {
                     text,
                     signature,
                     item,
-                    ..
+                    redacted,
                 } => {
+                    // 编码器硬拒绝的形态一律不留（留着会让产物落库后整条会话在
+                    // 下一轮以不可重试的 Encode 失败）：Anthropic 只接受
+                    // `redacted_thinking` 与带签名的 `thinking`。
+                    if protocol == Protocol::AnthropicMessages && item.is_some() {
+                        continue;
+                    }
                     if interrupted {
                         // Responses 的 reasoning item 与其后的 function_call 成对
                         // 使用，孤立 item 无意义。
@@ -241,27 +258,27 @@ impl Accumulator {
                             continue;
                         }
                         // Anthropic 的 thinking 块缺签名会被上游拒绝（签名在块末尾
-                        // 的 signature_delta 中到达）。
-                        if item.is_none()
+                        // 的 signature_delta 中到达）；`redacted_thinking` 在
+                        // content_block_start 里就是完整的，不受此限。
+                        if redacted.is_none()
+                            && item.is_none()
                             && protocol == Protocol::AnthropicMessages
                             && signature.as_deref().unwrap_or_default().is_empty()
                         {
                             continue;
                         }
                     }
-                    match item {
-                        Some(item) => {
-                            content
-                                .push(ContentPart::Reasoning(ReasoningBlock::Item(item.clone())));
-                        }
-                        None => {
-                            if !text.is_empty() || signature.is_some() {
-                                content.push(ContentPart::Reasoning(ReasoningBlock::Text {
-                                    text: text.clone(),
-                                    signature: signature.clone(),
-                                }));
-                            }
-                        }
+                    if let Some(data) = redacted {
+                        content.push(ContentPart::Reasoning(ReasoningBlock::Redacted {
+                            data: data.clone(),
+                        }));
+                    } else if let Some(item) = item {
+                        content.push(ContentPart::Reasoning(ReasoningBlock::Item(item.clone())));
+                    } else if !text.is_empty() || signature.is_some() {
+                        content.push(ContentPart::Reasoning(ReasoningBlock::Text {
+                            text: text.clone(),
+                            signature: signature.clone(),
+                        }));
                     }
                 }
                 AccumulatedBlock::ToolCall {
@@ -290,6 +307,19 @@ fn is_json_object(arguments: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(arguments)
         .map(|value| value.is_object())
         .unwrap_or(false)
+}
+
+/// 从 [`StreamEvent::ReasoningItem`] 里取出 Anthropic 的不透明思维链数据。
+///
+/// `redacted_thinking` 是唯一带此 `type` 的块：它对应 [`ReasoningBlock::Redacted`]，
+/// 而不是 Responses 那种需要原样回传的 reasoning item。
+fn redacted_data(item: &serde_json::Value) -> Option<String> {
+    if item.get("type").and_then(serde_json::Value::as_str) != Some("redacted_thinking") {
+        return None;
+    }
+    item.get("data")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 /// 流式响应。
@@ -378,8 +408,9 @@ impl ChatStream {
     /// | 修剪动作 | 原因 |
     /// |---|---|
     /// | 丢弃参数不是合法 JSON 对象的工具调用 | 中断产生的是 JSON 前缀，回灌后上游必然 400；参数完整的调用保留，core 已执行的结果仍能配对 |
-    /// | Anthropic 下丢弃无签名的思维链块 | 缺签名会被上游拒绝（签名在块末尾到达） |
+    /// | Anthropic 下丢弃无签名的思维链块 | 缺签名会被上游拒绝（签名在块末尾到达）；`redacted_thinking` 随开始块一次性给出，保留 |
     /// | Responses 下没有保留工具调用时丢弃 reasoning item | reasoning item 与其后的 function_call 成对使用，孤立 item 无意义 |
+    /// | 丢弃编码器不接受的思维链形态 | 例如 Anthropic 会话里的 Responses reasoning item，否则落库后整条会话再发不出请求 |
     /// | 文本与已累积的思维链文本保留 | 用户看到的内容不丢 |
     pub fn interrupt(self) -> ChatResponse {
         if let Some(LlmError::Guard(violation)) = &self.error {
@@ -1011,6 +1042,79 @@ mod tests {
                     "{\"city\":\"北京\"}"
                 )),
             ]
+        );
+    }
+
+    #[test]
+    fn redacted_thinking_folds_into_redacted_block() {
+        // Anthropic 的 `redacted_thinking` 折成 `ReasoningBlock::Item` 时编码器
+        // 硬拒绝：产物一旦落库，该会话后续所有请求都以不可重试的 Encode 失败。
+        let accumulator = accumulate(
+            Protocol::AnthropicMessages,
+            &[
+                StreamEvent::ReasoningItem {
+                    index: 0,
+                    item: Box::new(serde_json::json!({
+                        "type": "redacted_thinking",
+                        "data": "opaque",
+                    })),
+                },
+                StreamEvent::TextDelta {
+                    index: 1,
+                    text: "答案".into(),
+                },
+                StreamEvent::Done {
+                    finish_reason: FinishReason::Stop,
+                },
+            ],
+        );
+        for interrupted in [false, true] {
+            let response = accumulator.fold(Protocol::AnthropicMessages, interrupted);
+            assert_eq!(
+                response.message.content,
+                vec![
+                    ContentPart::Reasoning(ReasoningBlock::Redacted {
+                        data: "opaque".into(),
+                    }),
+                    ContentPart::Text("答案".into()),
+                ],
+                "interrupted={interrupted}"
+            );
+        }
+
+        // 与非流式一致地可再编码：同一条消息放回历史，下一个请求必须能构建。
+        let response = accumulator.fold(Protocol::AnthropicMessages, true);
+        let request = ChatRequest {
+            messages: vec![
+                Message::user_text("查天气"),
+                response.message,
+                Message::user_text("继续"),
+            ],
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let encoded =
+            crate::codec::encode(&config(Protocol::AnthropicMessages), &request, false).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&encoded.body).unwrap();
+        assert_eq!(
+            body["messages"][1]["content"][0],
+            serde_json::json!({"type": "redacted_thinking", "data": "opaque"})
+        );
+
+        // 与协议不匹配的 reasoning item 同样不能留下：Anthropic 编码器对它硬拒绝。
+        let accumulator = accumulate(
+            Protocol::AnthropicMessages,
+            &[StreamEvent::ReasoningItem {
+                index: 0,
+                item: Box::new(serde_json::json!({"type": "reasoning", "id": "rs_1"})),
+            }],
+        );
+        assert!(
+            accumulator
+                .fold(Protocol::AnthropicMessages, false)
+                .message
+                .content
+                .is_empty()
         );
     }
 

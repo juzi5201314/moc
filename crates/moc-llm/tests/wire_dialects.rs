@@ -215,6 +215,64 @@ async fn claude_adaptive_thinking_with_cache_control() {
 }
 
 #[tokio::test]
+async fn claude_redacted_thinking_roundtrip() {
+    let server = start().await;
+    mount_sse_once(
+        &server,
+        "/v1/messages",
+        &[
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-4-5\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"答案\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ],
+    )
+    .await;
+
+    let cfg = LlmConfig {
+        auth: Auth::Header {
+            name: "x-api-key".into(),
+            value: "sk-ant".into(),
+        },
+        ..config(Protocol::AnthropicMessages, &server)
+    };
+    let req = ChatRequest {
+        messages: vec![Message::user_text("查天气")],
+        max_output_tokens: Some(4096),
+        ..Default::default()
+    };
+    let mut stream = Client::new().stream(&cfg, &req).await.unwrap();
+    let response = stream.finish().await.unwrap();
+    assert_eq!(
+        response.message.content,
+        vec![
+            ContentPart::Reasoning(ReasoningBlock::Redacted {
+                data: "opaque".into(),
+            }),
+            ContentPart::Text("答案".into()),
+        ]
+    );
+    assert_eq!(response.finish_reason, FinishReason::Stop);
+
+    // 流式产物回灌历史：编码阶段必须通过，并把不透明数据原样送回上游。
+    let next = ChatRequest {
+        messages: vec![
+            Message::user_text("查天气"),
+            response.message,
+            Message::user_text("继续"),
+        ],
+        max_output_tokens: Some(4096),
+        ..Default::default()
+    };
+    let body = sent_body(&server, &cfg, &next).await;
+    assert_eq!(
+        body["messages"][1]["content"][0],
+        json!({"type": "redacted_thinking", "data": "opaque"})
+    );
+}
+
+#[tokio::test]
 async fn claude_cache_breakpoints_match_replay_indices() {
     let server = start().await;
     let cfg = LlmConfig {

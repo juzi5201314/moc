@@ -738,6 +738,10 @@ pub enum StreamEvent {
         signature: String,
     },
     /// 完整思维链条目（Anthropic 的 `redacted_thinking`、Responses 的 reasoning item）。
+    ///
+    /// [`crate::ChatStream`] 的累加器把 Anthropic 的 `redacted_thinking` 折成
+    /// [`ReasoningBlock::Redacted`]（编码器只接受该形态），Responses 的 reasoning
+    /// item 原样保留为 [`ReasoningBlock::Item`]。
     ReasoningItem {
         /// 内容块序号。
         index: usize,
