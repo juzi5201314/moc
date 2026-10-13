@@ -555,14 +555,31 @@ fn crate_path_encoding(path: &Path) -> String {
     path.to_string_lossy().replace(['/', '\\', ':'], "-")
 }
 
+/// 剥离 remote 里的 userinfo，只留主机与路径。
+///
+/// CI 常见的 `https://x-access-token:<TOKEN>@host/owner/repo.git` 会把访问令牌带进
+/// 请求头、请求体与 pending 目录名；scp 形式 `git@host:owner/repo.git` 的 `git@`
+/// 同样在这里摘掉。
+fn strip_userinfo(remote: &str) -> &str {
+    if let Some((_, rest)) = remote.split_once("://") {
+        return rest.split_once('@').map_or(rest, |(_, host)| host);
+    }
+    // scp 形式：userinfo 在首个 `:` 与首个 `/` 之前（本地路径里的 `@` 不算）
+    let at = remote.find('@');
+    let colon = remote.find(':');
+    let slash = remote.find('/');
+    match at {
+        Some(at)
+            if colon.is_some_and(|colon| at < colon) && slash.is_none_or(|slash| at < slash) =>
+        {
+            &remote[at + 1..]
+        }
+        _ => remote,
+    }
+}
+
 fn sanitize_peer(value: &str) -> String {
-    let value = value
-        .trim()
-        .trim_end_matches('/')
-        .replace("git@", "")
-        .replace("https://", "")
-        .replace("http://", "");
-    value
+    strip_userinfo(value.trim().trim_end_matches('/'))
         .replace(['/', '\\', ':', '@', '.'], "-")
         .trim_matches('-')
         .to_ascii_lowercase()
@@ -604,6 +621,33 @@ mod tests {
         let right = resolve_peer_id(b.path()).expect("identity");
         assert_ne!(left.peer_id, right.peer_id);
         assert!(left.peer_id.contains("tmp"));
+    }
+
+    #[test]
+    fn peer_id_drops_remote_credentials() {
+        // CI 的令牌式 remote：token 绝不能进入 peer id（它会被写进请求头与 pending 目录名）
+        let token = sanitize_peer("https://x-access-token:ghs_SECRET@github.com/acme/repo.git");
+        assert_eq!(token, "github-com-acme-repo-git");
+        assert!(!token.contains("secret"));
+        assert!(!token.contains("x-access-token"));
+
+        // scp 形式与普通 URL 保持既有结果
+        assert_eq!(
+            sanitize_peer("git@github.com:acme/repo.git"),
+            "github-com-acme-repo-git"
+        );
+        assert_eq!(
+            sanitize_peer("https://github.com/acme/repo.git"),
+            "github-com-acme-repo-git"
+        );
+        assert_eq!(
+            sanitize_peer("ssh://git@github.com/acme/repo.git"),
+            "github-com-acme-repo-git"
+        );
+
+        // 本地路径里的 `@` 不是 userinfo，不能被吃掉
+        assert_eq!(sanitize_peer("/srv/my@repo"), "srv-my-repo");
+        assert_eq!(sanitize_peer("file:///srv/repo"), "srv-repo");
     }
 }
 
