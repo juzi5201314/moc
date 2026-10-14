@@ -6,19 +6,29 @@ use moc_protocol::methods::PlanStatus;
 use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
-/// 本地注入上下文消息的固定前缀：压缩摘要、活动计划、todo 快照。
-const INJECTED_PREFIXES: [&str; 3] = ["<compaction-summary", "<active-plan", "<active-todos"];
+/// 本地注入上下文消息的固定前缀与正文分块短名：压缩摘要、活动计划、todo 快照。
+const INJECTED_PREFIXES: [(&str, &str); 3] = [
+    ("<compaction-summary", "compaction summary"),
+    ("<active-plan", "active plan"),
+    ("<active-todos", "active todos"),
+];
 
 /// 消息是否由 moc 注入而非用户输入。
 ///
 /// 这些消息由本模块与计划流程生成并随 transcript 进入上下文；任何要再次引用
 /// 其内容的地方（例如子代理任务推导）都必须先跳过，避免整段复制进系统提示。
 pub(crate) fn is_injected_context(message: &Message) -> bool {
+    injected_name(message).is_some()
+}
+
+/// 注入消息的正文分块短名；用户与模型消息返回 `None`。
+pub(crate) fn injected_name(message: &Message) -> Option<&'static str> {
     let text = message.text();
     let trimmed = text.trim_start();
     INJECTED_PREFIXES
         .iter()
-        .any(|prefix| trimmed.starts_with(prefix))
+        .find(|(prefix, _)| trimmed.starts_with(prefix))
+        .map(|(_, name)| *name)
 }
 
 /// 构造 system、checkpoint、活动计划和 todo 等合成前缀，不复制 transcript。
@@ -127,7 +137,7 @@ pub(crate) fn visible_history_start(state: &SessionState) -> usize {
         .count()
 }
 
-pub(super) fn repair_tool_history(
+pub(crate) fn repair_tool_history(
     mut message: Message,
     model: Option<&crate::ResolvedModel>,
 ) -> Message {

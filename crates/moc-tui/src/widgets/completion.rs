@@ -64,7 +64,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/context",
-        description: "查看上下文占用明细",
+        description: "查看上下文内容",
     },
     SlashCommand {
         name: "/usage",

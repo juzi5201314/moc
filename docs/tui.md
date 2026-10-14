@@ -77,7 +77,7 @@
 | `←` `←` | 聚焦子代理时连按两次返回主会话 |
 | `Ctrl+C` | Cancel while running; press again to exit |
 
-斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/compact` `/usage` `/config` `/settings` `/memories` `/context` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 或模型选择器在目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
+斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/compact` `/usage` `/config` `/settings` `/memories` `/context` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。`/context` 打开上下文正文窗（见下文），顶部信息条右端的进度条点击打开的是上下文占用窗，两者看的是同一份上下文。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 或模型选择器在目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
 
 ### 子代理
 
@@ -101,7 +101,17 @@ statusline = "{model} * {mode} -> {workdir}"
 
 ## 上下文占用窗
 
-`/context` 或点击顶部信息条右端的上下文进度条打开。窗内按 `system`、`project`、`skills`、`tools`、`messages` 逐块列出估算 token 与占已用上下文的比例，每块的色标与下方色条上对应那段同色。色条按模型上下文窗口定标：已用部分落在左侧，右侧 `─` 是剩余窗口，空会话整条都是空窗口；色条下方标注各分块右界的累积用量，空间不够时只保留挤得下的标注，「已用总量」与右端窗口上限优先。token 一律按 k 显示（`9030 → 9.03k`，非零但不足 10 token 记 `<0.01k`），全 TUI 同一套写法。
+点击顶部信息条右端的上下文进度条打开。窗内按 `system`、`project`、`skills`、`tools`、`messages` 逐块列出估算 token 与占已用上下文的比例，每块的色标与下方色条上对应那段同色。色条按模型上下文窗口定标：已用部分落在左侧，右侧 `─` 是剩余窗口，空会话整条都是空窗口；色条下方标注各分块右界的累积用量，空间不够时只保留挤得下的标注，「已用总量」与右端窗口上限优先。token 一律按 k 显示（`9030 → 9.03k`，非零但不足 10 token 记 `<0.01k`），全 TUI 同一套写法。
+
+## 上下文正文窗
+
+`/context` 打开：窗内列出**真正送进模型的内容**，顺序与请求一致——系统提示片段（`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`subagent`、`environment`、`append`）、逐个工具 schema（分块名就是工具名）、注入消息（`compaction summary`、`active plan`、`active todos`）与会话消息（`user`、`assistant`、`tool result`、`bash`、`agent`）。每块一行标题，`▌` 色标与分块名同色（按分块顺序取调色板），右端是该块单独估算的 token；标题栏显示合计与窗口上限，与占用窗、顶部进度条同口径。新会话只有前面组装好的上下文，消息部分为空。
+
+正文超过 6 行的块默认折叠成前 6 行加一行「… 还有 N 行 · 点击展开」，点标题或正文任意一行展开，再点收起。单块正文超过 256 KiB 时由 core 按字符边界截断，块尾标注被丢掉的字节数。窗口约占终端四分之三宽、五分之四高（上限 120×40），右缘是可拖拽的滚动条（按在滑块上保持抓取点，按在轨道空白处把滑块挪过来），鼠标滚轮一次三行。
+
+键盘：`↑↓`/`k`/`j` 逐行滚动，`PgUp`/`PgDn` 翻页，`Home`/`End`（`g`/`G`）跳到顶／底，`Tab`/`Shift+Tab` 切换分块（自动滚进视口，高亮该块标题），`Enter`/`空格` 展开收起当前分块，`e`/`c` 全部展开／收起，`Esc`（或 `q`）关闭。
+
+窗里是会话状态里存着的内容；尾部提醒（当前模式、本地时间、后台任务、工作区变更、违规告警）每次请求现生成、不落进会话，因此不在窗内展示。
 
 ## 工具调用 Diff
 

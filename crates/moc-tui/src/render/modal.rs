@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::modal::Modal;
+use crate::render::context_content;
 use crate::render::wrap::str_width;
 use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
@@ -171,9 +172,6 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.plan_model_area = Rect::default();
-    let Some(modal) = &app.modal else {
-        return;
-    };
     let area = frame.area();
     if area.width < 20 || area.height < 6 {
         return;
@@ -183,6 +181,15 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     frame
         .buffer_mut()
         .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
+    if matches!(app.modal, Some(Modal::ContextContent { .. })) {
+        // 正文窗按自己的列宽折行、按整行滚动，并自带滚动条与命中几何，
+        // 不走 `modal_lines` 的「一次性铺满」路径。
+        context_content::draw(frame, app, area);
+        return;
+    }
+    let Some(modal) = &app.modal else {
+        return;
+    };
     let max_content = usize::from(area.height.saturating_sub(6)).max(1);
     let (width, content_width) = if matches!(modal, Modal::Help) {
         // 帮助是双列快捷键表：按内容自然宽度取值，窄终端由 help_lines 退回单列。
@@ -420,7 +427,7 @@ const CONTEXT_PERCENT_COL: usize = 6;
 const CONTEXT_GAP: usize = 2;
 
 /// 占比：保留一位小数；非零但不足 0.1% 显示 `<0.1%`，不缩成 0.0%。
-fn share_percent(part: u64, total: u64) -> String {
+pub(crate) fn share_percent(part: u64, total: u64) -> String {
     let percent = part as f64 * 100.0 / total.max(1) as f64;
     if percent > 0.0 && percent < 0.05 {
         "<0.1%".to_owned()
@@ -1346,12 +1353,14 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             lines
         }
         Modal::Help => help_lines(app, width, max_lines).0,
+        // 正文窗自带布局与滚动，`draw_modal` 在此之前就已分派走。
+        Modal::ContextContent { .. } => Vec::new(),
     };
     lines.truncate(max_lines.max(1));
     lines
 }
 
-fn ellipsize(text: &str, width: usize) -> String {
+pub(crate) fn ellipsize(text: &str, width: usize) -> String {
     if crate::render::wrap::str_width(text) <= width {
         return text.to_owned();
     }

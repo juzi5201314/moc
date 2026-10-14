@@ -8,12 +8,9 @@ use moc_core::{Core, CoreConfig};
 use moc_protocol::{ClientBuilder, ClientHandle, Server, ServerConnection, methods::*, transport};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use wiremock::{
-    Mock, MockServer, ResponseTemplate,
-    matchers::method,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
 pub struct Harness {
     pub root: tempfile::TempDir,
@@ -190,11 +187,7 @@ pub const PRUNE_MARKER: &str = "PRUNE-ME-OMEGA";
 ///
 /// 非流式请求返回 `summary`（压缩摘要）：留空会让 soft 压缩以空摘要失败，
 /// 用于验证压缩链的失败分支。`long_file` 需要事先写入超过剪枝阈值的内容。
-pub async fn mount_read_round(
-    upstream: &MockServer,
-    long_file: &std::path::Path,
-    summary: &str,
-) {
+pub async fn mount_read_round(upstream: &MockServer, long_file: &std::path::Path, summary: &str) {
     let path = long_file.to_string_lossy().into_owned();
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
@@ -210,11 +203,7 @@ pub async fn mount_read_round(
                 .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
             if counter.fetch_add(1, Ordering::SeqCst) == 0 && !has_tool_result {
                 return ResponseTemplate::new(200).set_body_raw(
-                    tool_stream(vec![(
-                        "read_long",
-                        "read",
-                        json!({ "path": path.clone() }),
-                    )]),
+                    tool_stream(vec![("read_long", "read", json!({ "path": path.clone() }))]),
                     "text/event-stream",
                 );
             }
@@ -240,7 +229,10 @@ pub fn tool_result_texts(loaded: &SessionLoadResult) -> Vec<String> {
 }
 
 /// 读取磁盘上的 transcript entries。
-pub async fn transcript_entries(harness: &Harness, session_id: &str) -> Vec<moc_core::session::entries::Entry> {
+pub async fn transcript_entries(
+    harness: &Harness,
+    session_id: &str,
+) -> Vec<moc_core::session::entries::Entry> {
     let store = moc_core::session::store::SessionStore::new(harness.root.path().join("sessions"));
     let paths = store
         .find(session_id)

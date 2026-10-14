@@ -138,11 +138,12 @@
 //!
 //! ```no_run
 //! use moc_protocol::methods::{
-//!     CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult,
+//!     CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult,
 //!     Empty, InitializeParams, InitializeResult,
 //!     OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
 //!     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
-//!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
+//!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams,
+//!     SessionContextContentParams, SessionContextParams,
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
@@ -278,6 +279,9 @@
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_context(&self, _ctx: RequestContext, _params: SessionContextParams) -> Result<ContextUsageResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_context_content(&self, _ctx: RequestContext, _params: SessionContextContentParams) -> Result<ContextContentResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn openviking_list(&self, _ctx: RequestContext, params: OpenVikingListParams) -> Result<OpenVikingListResult, RpcError> {

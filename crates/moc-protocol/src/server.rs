@@ -37,10 +37,10 @@ use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet,
     ConfigManage, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite,
     Ping, PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel,
-    SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
-    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
-    SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
-    SessionUnlock, SessionUsage,
+    SessionCancelResult, SessionCompact, SessionContext, SessionContextContent, SessionDelete,
+    SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt,
+    SessionRename, SessionRewind, SessionSetMode, SessionSetModel, SessionSetPermission,
+    SessionSteer, SessionUnload, SessionUnlock, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -661,6 +661,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_context(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionContextContent as Method>::NAME => {
+                let params = params_from_value::<SessionContextContent>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_context_content(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

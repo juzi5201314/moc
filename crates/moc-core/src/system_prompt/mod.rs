@@ -28,9 +28,13 @@ pub enum PieceScope {
     Project,
 }
 
+#[derive(Clone)]
 pub struct PromptPiece {
     /// Section category (`system`, `project`, or `skills`) for context accounting.
     pub title: &'static str,
+    /// 正文分块的短名（1-3 个英文单词）：上下文正文窗的标题行直接用这个，
+    /// 与 `title` 的占用分组名互不影响。
+    pub name: &'static str,
     /// 片段作用域。
     pub scope: PieceScope,
     pub text: String,
@@ -104,6 +108,7 @@ pub fn pieces(
     };
     sections.push(PromptPiece {
         title: "system",
+        name: "intro",
         scope: PieceScope::Static,
         text: intro.to_owned(),
     });
@@ -119,11 +124,13 @@ pub fn pieces(
     tool_policy.push_str(TOOL_POLICY_REST);
     sections.push(PromptPiece {
         title: "system",
+        name: "tool policy",
         scope: PieceScope::Static,
         text: tool_policy,
     });
     sections.push(PromptPiece {
         title: "system",
+        name: "ptc runtime",
         scope: PieceScope::Static,
         text: format!(
             "All modes support run_code. In PTC, it is the only native entry point; other modes may call built-in tools directly. Discover MCP tools only inside run_code: first `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`. Discovery does not grant permission.\n\nEach result has `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent and parse text-only JSON explicitly with `JSON.parse(r.content)`. Failures reject with serializable `code`, `message`, and `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls allow up to {}. Writes, bash approval, and session-state updates are barriers: await all calls before returning. Return only final information; intermediate results are not added to model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, and `state.keys()` persist session JSON; missing keys return undefined, writes commit immediately, and later failures do not roll them back. JavaScript globals do not persist. WASM has no file, network, process, or timer APIs; use host tools.",
@@ -134,6 +141,7 @@ pub fn pieces(
     if !mcp_summary.is_empty() {
         sections.push(PromptPiece {
             title: "tools",
+            name: "mcp servers",
             scope: PieceScope::Project,
             text: mcp_summary.to_owned(),
         });
@@ -154,6 +162,7 @@ pub fn pieces(
         rules.push_str("\n</repo-rules>");
         sections.push(PromptPiece {
             title: "project",
+            name: "repo rules",
             scope: PieceScope::Project,
             text: rules,
         });
@@ -163,6 +172,7 @@ pub fn pieces(
     {
         sections.push(PromptPiece {
             title: "skills",
+            name: "skills",
             scope: PieceScope::Project,
             text: catalog,
         });
@@ -170,12 +180,14 @@ pub fn pieces(
     if let Some(subagent) = subagent {
         sections.push(PromptPiece {
             title: "project",
+            name: "subagent",
             scope: PieceScope::Project,
             text: subagent.to_owned(),
         });
     }
     sections.push(PromptPiece {
         title: "system",
+        name: "environment",
         scope: PieceScope::Project,
         text: format!(
             "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
@@ -189,6 +201,7 @@ pub fn pieces(
     if !config.system_prompt.append.trim().is_empty() {
         sections.push(PromptPiece {
             title: "system",
+            name: "append",
             scope: PieceScope::Project,
             text: config.system_prompt.append.trim().to_owned(),
         });

@@ -83,17 +83,18 @@ pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
 };
 pub use session::{
-    CompactResult, ContextUsageResult, ContextUsageSection, ModelSwitchOverflow, ModelUsageSummary,
-    SessionCompact, SessionCompactParams, SessionContext, SessionContextParams, SessionDelete,
-    SessionDeleteParams, SessionInfo, SessionList, SessionListParams, SessionListResult,
-    SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionMode, SessionModelOverflowAction, SessionNew,
-    SessionNewParams, SessionPermission, SessionRename, SessionRenameParams, SessionRewind,
-    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams,
-    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
-    SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
-    TranscriptEntry,
+    CompactResult, ContextContentResult, ContextContentSection, ContextUsageResult,
+    ContextUsageSection, ModelSwitchOverflow, ModelUsageSummary, SessionCompact,
+    SessionCompactParams, SessionContext, SessionContextContent, SessionContextContentParams,
+    SessionContextParams, SessionDelete, SessionDeleteParams, SessionInfo, SessionList,
+    SessionListParams, SessionListResult, SessionLoad, SessionLoadPage, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionLockInfo, SessionMode,
+    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission, SessionRename,
+    SessionRenameParams, SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams,
+    SessionSetModel, SessionSetModelParams, SessionSetModelResult, SessionSetPermission,
+    SessionSetPermissionParams, SessionUnload, SessionUnloadParams, SessionUnlock,
+    SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult, ToolExecution,
+    ToolStatus, TranscriptChildCall, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -144,6 +145,10 @@ mod tests {
             (<SessionSteer as Method>::NAME, "session/steer"),
             (<SessionCompact as Method>::NAME, "session/compact"),
             (<SessionContext as Method>::NAME, "session/context"),
+            (
+                <SessionContextContent as Method>::NAME,
+                "session/context_content",
+            ),
             (<SessionUsage as Method>::NAME, "session/usage"),
             (<SessionPrompt as Method>::NAME, "session/prompt"),
             (<SessionBash as Method>::NAME, "session/bash"),
@@ -200,6 +205,7 @@ mod tests {
         client::<AgentStop>();
         client::<AgentWait>();
         client::<SessionCompact>();
+        client::<SessionContextContent>();
         server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();
         assert_eq!(Empty {}, Empty::default());

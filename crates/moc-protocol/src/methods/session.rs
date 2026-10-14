@@ -123,6 +123,9 @@ pub struct SessionCompact;
 /// `session/context`：估算当前会话上下文，并按组成部分返回 token 明细。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionContext;
+/// `session/context_content`：读取当前上下文里的真实正文，按分块返回。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionContextContent;
 /// `session/usage`：读取当前会话累计的模型调用用量。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUsage;
@@ -199,6 +202,46 @@ pub struct ContextUsageResult {
     /// 系统底座、项目指令、技能、工具定义、会话消息等明细；分块名是 `system`、
     /// `project`、`skills`、`tools`、`messages` 固定英文短语。
     pub sections: Vec<ContextUsageSection>,
+}
+
+/// `session/context_content` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionContextContentParams {
+    /// 目标会话。
+    pub session_id: String,
+    /// 单个分块正文的字节上限；超出按字符边界截断，被丢弃的字节数记入
+    /// [`ContextContentSection::truncated_bytes`]。`None` 表示不截断。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_section_bytes: Option<u32>,
+}
+
+/// 上下文正文的一个分块。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextContentSection {
+    /// 分块短名（1-3 个英文单词），直接显示在正文窗的标题行。
+    pub name: String,
+    /// 分块正文；截断时以 `…` 收尾。
+    pub text: String,
+    /// 该分块单独估算的 token；消息与工具数组的固定开销不摊到分块上，
+    /// 合计口径见 [`ContextContentResult::total_tokens`]。
+    pub tokens: u64,
+    /// 被截断丢弃的字节数；`0` 表示正文完整。
+    #[serde(default)]
+    pub truncated_bytes: u64,
+}
+
+/// 当前上下文里的真实正文，顺序即送入模型的顺序。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextContentResult {
+    /// 模型上下文窗口上限。
+    pub context_window: u64,
+    /// 与 `session/context` 同口径的合计估算 token。
+    pub total_tokens: u64,
+    /// 系统提示片段、工具 schema、注入消息与转写消息。
+    pub sections: Vec<ContextContentSection>,
 }
 
 /// `session/new` 的参数。
@@ -677,6 +720,14 @@ impl Method for SessionContext {
 }
 
 impl ClientRequest for SessionContext {}
+
+impl Method for SessionContextContent {
+    const NAME: &'static str = "session/context_content";
+    type Params = SessionContextContentParams;
+    type Result = ContextContentResult;
+}
+
+impl ClientRequest for SessionContextContent {}
 
 #[cfg(test)]
 mod tests {

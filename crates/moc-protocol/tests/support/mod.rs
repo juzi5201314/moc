@@ -17,17 +17,18 @@ use std::time::Duration;
 
 use moc_protocol::methods::{
     AgentProfile, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
-    ConfigGetParams, ConfigGetResult, Empty, InitializeParams, InitializeResult, InputPart,
-    ModelInfo, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
-    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
-    OpenVikingWriteResult, PermissionRequestParams, PermissionResult, PromptParams, PromptResult,
-    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextParams,
-    SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
-    SessionLoadResult, SessionLockInfo, SessionMode, SessionNewParams, SessionPermission,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk,
-    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
-    TranscriptEntry, default_options,
+    ConfigGetParams, ConfigGetResult, ContextContentResult, Empty, InitializeParams,
+    InitializeResult, InputPart, ModelInfo, OpenVikingDeleteParams, OpenVikingDeleteResult,
+    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
+    OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
+    PromptParams, PromptResult, ServerCapabilities, ServerInfo, SessionCompactParams,
+    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
+    SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
+    SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry,
+    default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -831,6 +832,13 @@ impl AgentService for ScriptedService {
         _ctx: RequestContext,
         _params: SessionContextParams,
     ) -> Result<moc_protocol::methods::ContextUsageResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+    async fn session_context_content(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionContextContentParams,
+    ) -> Result<ContextContentResult, RpcError> {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
     async fn session_prompt(

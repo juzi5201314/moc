@@ -3,11 +3,16 @@
 //! 每种模态自带键盘状态（选中项等）与答复通道（oneshot sender）；键盘
 //! 事件优先路由给打开的模态（见 `crate::event`），渲染浮层在 `crate::render`。
 
+use std::ops::Range;
+
 use moc_protocol::Role;
 use moc_protocol::methods::{
-    AskParams, AskResult, ContextUsageResult, ModelInfo, ModelSwitchOverflow,
-    PermissionRequestParams, PermissionResult, SessionInfo, TranscriptEntry,
+    AskParams, AskResult, ContextContentResult, ContextContentSection, ContextUsageResult,
+    ModelInfo, ModelSwitchOverflow, PermissionRequestParams, PermissionResult, SessionInfo,
+    TranscriptEntry,
 };
+use ratatui::layout::Rect;
+use ratatui::text::Line;
 
 /// 可搜索列表模态的状态。
 #[derive(Debug, Clone, Default)]
@@ -178,6 +183,218 @@ impl RewindState {
     }
 }
 
+/// 上下文正文窗：分块折叠后的可见行数，超出的部分折叠成「点击展开」提示行。
+pub const CONTEXT_COLLAPSED_LINES: usize = 6;
+
+/// 上下文正文窗：单个分块的正文上限（字节）。超长工具结果不至于把整窗拉成
+/// 几十兆，缺口在分块末尾标出来。
+pub const CONTEXT_SECTION_BYTES: u32 = 256 * 1024;
+
+/// 正文窗的渲染缓存：与分块列表、展开状态和列宽同源。
+#[derive(Debug)]
+pub struct ContextLayout {
+    /// 生成缓存时的正文列宽。
+    pub width: usize,
+    /// 每块在行表里的行区间（标题行 + 正文行 + 提示行 + 块间空行）。
+    pub spans: Vec<Range<usize>>,
+    /// 全部渲染行。
+    pub lines: Vec<Line<'static>>,
+}
+
+impl ContextLayout {
+    /// 行数不足一屏时的最大滚动偏移（0 表示内容不溢出）。
+    pub fn max_offset(&self, viewport: usize) -> usize {
+        self.lines.len().saturating_sub(viewport)
+    }
+}
+
+/// 正文窗滚动条上一帧的几何：拖拽与点击都按它换算滚动位置。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContextScrollbar {
+    /// 轨道区域（屏幕坐标，一列宽）。
+    pub track: Rect,
+    /// 滑块行数。
+    pub thumb: u16,
+    /// 上一帧的最大滚动偏移。
+    pub max_offset: usize,
+}
+
+impl ContextScrollbar {
+    /// 滑块顶端相对轨道顶端的行数；内容不溢出时贴轨道顶端。
+    pub fn thumb_top(&self, scroll: usize) -> u16 {
+        let travel = self.track.height.saturating_sub(self.thumb);
+        if self.max_offset == 0 || travel == 0 {
+            return 0;
+        }
+        let position = scroll.min(self.max_offset) * usize::from(travel) / self.max_offset;
+        position as u16
+    }
+
+    /// 光标行对应的滚动偏移；`grab` 是拖拽起点到滑块顶端的行差。
+    ///
+    /// 轨道不足一屏（`max_offset == 0`）时永远回到顶端。
+    pub fn offset_at(&self, row: u16, grab: i32) -> usize {
+        let travel = i32::from(self.track.height.saturating_sub(self.thumb));
+        if travel <= 0 || self.max_offset == 0 {
+            return 0;
+        }
+        let target =
+            (i32::from(row).saturating_sub(i32::from(self.track.y)) - grab).clamp(0, travel);
+        (target as usize * self.max_offset) / travel as usize
+    }
+}
+
+/// 正文窗的滚动条拖拽状态。
+#[derive(Debug, Clone, Copy)]
+pub struct ContextDrag {
+    /// 按下时光标到滑块顶端的行差（点空白处时取滑块中线）。
+    pub grab: i32,
+}
+
+/// 上下文正文窗：分块正文、折叠状态与滚动位置。
+#[derive(Debug, Default)]
+pub struct ContextContentState {
+    /// 拉取结果；`None` = 还在读。
+    pub content: Option<ContextContentResult>,
+    /// 读取失败的原因。
+    pub error: Option<String>,
+    /// 每块的展开状态，与 `sections` 等长；短块展不展开都全文显示。
+    pub expanded: Vec<bool>,
+    /// 键盘焦点块；`None` = 未选中（Tab 或点击后出现高亮）。
+    pub focus: Option<usize>,
+    /// 视口顶端行号。
+    pub scroll: usize,
+    /// 上一帧的正文视口行数（滚动夹取与命中判定用）。
+    pub viewport: usize,
+    /// 渲染缓存；分块、展开状态或列宽变化时丢弃重建。
+    pub layout: Option<ContextLayout>,
+    /// 滚动条几何；上一帧绘制时更新。
+    pub scrollbar: ContextScrollbar,
+    /// 滚动条拖拽状态；`Some` 时鼠标横向移动都被它吃掉。
+    pub drag: Option<ContextDrag>,
+}
+
+impl ContextContentState {
+    /// 装载结果：全部折叠、焦点清空、视口回到顶部。
+    pub fn set_content(&mut self, content: ContextContentResult) {
+        self.expanded = vec![false; content.sections.len()];
+        self.content = Some(content);
+        self.error = None;
+        self.focus = None;
+        self.scroll = 0;
+        self.layout = None;
+    }
+
+    /// 装上失败原因。
+    pub fn set_error(&mut self, error: String) {
+        self.error = Some(error);
+        self.content = None;
+        self.layout = None;
+    }
+
+    /// 分块列表；还没读到结果时为空。
+    pub fn sections(&self) -> &[ContextContentSection] {
+        self.content
+            .as_ref()
+            .map_or(&[], |content| content.sections.as_slice())
+    }
+
+    /// 当前分块数。
+    pub fn count(&self) -> usize {
+        self.sections().len()
+    }
+
+    /// 切换第 `index` 块的展开状态。
+    pub fn toggle(&mut self, index: usize) {
+        let Some(flag) = self.expanded.get_mut(index) else {
+            return;
+        };
+        *flag = !*flag;
+        self.layout = None;
+    }
+
+    /// 全部展开或全部收起。
+    pub fn set_all_expanded(&mut self, expanded: bool) {
+        self.expanded.fill(expanded);
+        self.layout = None;
+    }
+
+    /// 滚动 `delta` 行（正数向下）；按上一帧的缓存夹住范围。
+    pub fn scroll_by(&mut self, delta: i64) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let max = layout.max_offset(self.viewport);
+        self.scroll = if delta < 0 {
+            self.scroll.saturating_sub(delta.unsigned_abs() as usize)
+        } else {
+            self.scroll.saturating_add(delta as usize)
+        }
+        .min(max);
+    }
+
+    /// 跳到顶部或底部。
+    pub fn scroll_to_edge(&mut self, bottom: bool) {
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        self.scroll = if bottom {
+            layout.max_offset(self.viewport)
+        } else {
+            0
+        };
+    }
+
+    /// 焦点移到相邻块，并把该块滚进视口；未选中时从首块开始。
+    pub fn focus_step(&mut self, delta: isize) {
+        let count = self.count();
+        if count == 0 {
+            return;
+        }
+        let current = match self.focus {
+            None => 0,
+            Some(index) if delta < 0 => index.saturating_sub(delta.unsigned_abs()),
+            Some(index) => index.saturating_add(delta as usize).min(count - 1),
+        };
+        self.focus = Some(current);
+        self.reveal_focused();
+    }
+
+    /// 把焦点块滚进视口（块比视口高时对齐「更近」的那一端）。
+    pub fn reveal_focused(&mut self) {
+        let Some(index) = self.focus else {
+            return;
+        };
+        let Some(layout) = &self.layout else {
+            return;
+        };
+        let Some(span) = layout.spans.get(index) else {
+            return;
+        };
+        let viewport = self.viewport;
+        let max = layout.max_offset(viewport);
+        if span.start < self.scroll {
+            self.scroll = span.start.min(max);
+        } else if span.end > self.scroll + viewport {
+            self.scroll = span.end.saturating_sub(viewport).min(max);
+        }
+    }
+
+    /// 命中屏幕行所在的分块；正文之外返回 `None`。
+    pub fn block_at(&self, row: u16) -> Option<usize> {
+        let track = self.scrollbar.track;
+        if row < track.y || row >= track.y.saturating_add(track.height) {
+            return None;
+        }
+        let line = self.scroll + usize::from(row - track.y);
+        let layout = self.layout.as_ref()?;
+        layout
+            .spans
+            .iter()
+            .position(|span| line >= span.start && line < span.end)
+    }
+}
+
 /// 打开的模态。
 pub enum Modal {
     /// 工具授权：展示 diff 预览（若有）与选项列表。
@@ -241,6 +458,8 @@ pub enum Modal {
     Help,
     /// 上下文组成估算详情。
     Context { usage: Option<ContextUsageResult> },
+    /// 上下文正文：分块展示真正送进模型的内容。
+    ContextContent { state: ContextContentState },
     /// 切换模型需要压缩上下文时的确认卡片。
     SwitchModel {
         /// 发起切换的会话；卡片期间该会话视为忙，队列不派发。
@@ -289,6 +508,7 @@ impl Modal {
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
+            Modal::ContextContent { .. } => "上下文内容".into(),
             Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
         }
     }
@@ -329,7 +549,7 @@ impl Modal {
                 })
                 .count(),
             Modal::Plan { .. } => 4,
-            Modal::Help | Modal::Context { .. } => 0,
+            Modal::Help | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
             Modal::SwitchModel { .. } => 2,
         }
     }
@@ -371,7 +591,8 @@ impl Modal {
             | Modal::MemoryEditor { .. }
             | Modal::Rewind { .. }
             | Modal::Help
-            | Modal::Context { .. } => {}
+            | Modal::Context { .. }
+            | Modal::ContextContent { .. } => {}
             Modal::SwitchModel { option, .. } => {
                 *option = (*option as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
@@ -400,6 +621,10 @@ impl Modal {
             Modal::SwitchModel { loading, error, .. } => {
                 *loading = false;
                 *error = Some(message.to_owned());
+                true
+            }
+            Modal::ContextContent { state } => {
+                state.set_error(message.to_owned());
                 true
             }
             _ => {
@@ -583,5 +808,105 @@ mod tests {
             !Modal::Context { usage: None }.set_error("没有位置显示"),
             "上下文占用卡片不承载错误"
         );
+    }
+
+    /// 正文窗的滚动、焦点与命中：都按上一帧缓存的几何换算。
+    #[test]
+    fn context_content_navigation_follows_cached_geometry() {
+        use moc_protocol::methods::{ContextContentResult, ContextContentSection};
+        use ratatui::layout::Rect;
+
+        let mut state = super::ContextContentState::default();
+        state.set_content(ContextContentResult {
+            context_window: 500_000,
+            total_tokens: 4_000,
+            sections: ["intro", "tool policy", "read"]
+                .into_iter()
+                .map(|name| ContextContentSection {
+                    name: name.into(),
+                    text: "正文".into(),
+                    tokens: 10,
+                    truncated_bytes: 0,
+                })
+                .collect(),
+        });
+        assert_eq!(state.count(), 3);
+        assert_eq!(state.expanded, vec![false; 3]);
+        // 视口 10 行、全文 30 行：滚动夹在 [0, 20]。
+        state.viewport = 10;
+        state.layout = Some(super::ContextLayout {
+            width: 40,
+            spans: vec![0..10, 10..20, 20..30],
+            lines: vec![ratatui::text::Line::default(); 30],
+        });
+        state.scroll_by(100);
+        assert_eq!(state.scroll, 20, "滚到底部");
+        state.scroll_by(-5);
+        assert_eq!(state.scroll, 15);
+        state.scroll_to_edge(false);
+        assert_eq!(state.scroll, 0);
+
+        // 焦点从首块开始逐块推进，并把目标块滚进视口。
+        state.focus_step(1);
+        assert_eq!(state.focus, Some(0));
+        state.focus_step(1);
+        assert_eq!(state.focus, Some(1));
+        state.focus_step(10);
+        assert_eq!(state.focus, Some(2), "越界夹在末块");
+        assert_eq!(state.scroll, 20, "末块整块滚进视口");
+        state.focus_step(-10);
+        assert_eq!(state.focus, Some(0));
+        assert_eq!(state.scroll, 0);
+
+        // 展开状态切换会作废渲染缓存。
+        state.layout = Some(super::ContextLayout {
+            width: 40,
+            spans: vec![0..1, 1..2],
+            lines: vec![ratatui::text::Line::default(); 2],
+        });
+        state.toggle(1);
+        assert_eq!(state.expanded, vec![false, true, false]);
+        assert!(state.layout.is_none(), "折叠状态变了必须重排");
+
+        // 命中：轨道覆盖正文区，行号换算成行表里的行。
+        state.scrollbar.track = Rect::new(30, 4, 1, 10);
+        state.scroll = 5;
+        state.layout = Some(super::ContextLayout {
+            width: 40,
+            spans: vec![0..6, 6..14, 14..20],
+            lines: vec![ratatui::text::Line::default(); 20],
+        });
+        assert_eq!(state.block_at(4), Some(0), "轨道首行 = 视口首行");
+        assert_eq!(state.block_at(5), Some(1));
+        assert_eq!(state.block_at(3), None, "轨道上方不是正文");
+        assert_eq!(state.block_at(14), None, "轨道下方不是正文");
+    }
+
+    /// 滚动条几何：滑块位置与拖拽换算互为逆运算。
+    #[test]
+    fn context_scrollbar_maps_rows_to_offsets() {
+        use ratatui::layout::Rect;
+
+        let scrollbar = super::ContextScrollbar {
+            track: Rect::new(10, 2, 1, 20),
+            thumb: 4,
+            max_offset: 100,
+        };
+        assert_eq!(scrollbar.thumb_top(0), 0, "顶部偏移贴轨道顶端");
+        assert_eq!(scrollbar.thumb_top(100), 16, "底部偏移贴轨道末端");
+        // 抓取滑块顶端后拖到轨道末端：偏移走满。
+        assert_eq!(scrollbar.offset_at(2 + 16, 0), 100);
+        assert_eq!(scrollbar.offset_at(2, 0), 0);
+        assert_eq!(scrollbar.offset_at(2 + 8, 0), 50);
+        // 抓取点偏下时同样的行号落在更小的偏移上。
+        assert!(scrollbar.offset_at(2 + 8, 2) < scrollbar.offset_at(2 + 8, 0));
+        // 内容不溢出：任何行号都回到顶端。
+        let flat = super::ContextScrollbar {
+            track: Rect::new(10, 2, 1, 20),
+            thumb: 20,
+            max_offset: 0,
+        };
+        assert_eq!(flat.offset_at(20, 3), 0);
+        assert_eq!(flat.thumb_top(0), 0);
     }
 }

@@ -30,18 +30,18 @@ use crate::method::Method;
 use crate::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentSpawnParams,
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
-    CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty,
-    InitializeParams, InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult,
+    CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult,
+    Empty, InitializeParams, InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult,
     OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
     OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
     PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
-    SessionCompactParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
-    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
-    SessionUsageResult,
+    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
+    SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
+    SessionUsageParams, SessionUsageResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -258,6 +258,12 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionContextParams,
     ) -> impl Future<Output = Result<ContextUsageResult, RpcError>> + Send;
+    /// 读取当前上下文里的真实正文（系统提示片段、工具 schema、注入与转写消息）。
+    fn session_context_content(
+        &self,
+        ctx: RequestContext,
+        params: SessionContextContentParams,
+    ) -> impl Future<Output = Result<ContextContentResult, RpcError>> + Send;
     /// 返回当前会话各模型的累计调用、token、缓存、思考与激活时间。
     fn session_usage(
         &self,

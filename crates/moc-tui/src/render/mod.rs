@@ -12,6 +12,8 @@ pub mod scrollback;
 pub mod subagent;
 pub mod wrap;
 
+pub(crate) mod context_content;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};

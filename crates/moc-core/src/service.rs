@@ -8,12 +8,12 @@ use moc_llm::Client;
 use moc_protocol::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentProfile,
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
-    AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams,
-    ConfigGetResult, ContextUsageResult, ContextUsageSection, Empty, InitializeParams,
-    InitializeResult, ModelInfo, ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult,
-    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
-    OpenVikingWriteParams, OpenVikingWriteResult, PromptResult, ResourceCompleteParams,
-    ResourceCompleteResult, ServerCapabilities, ServerInfo, SessionCompactParams,
+    AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
+    ContextContentResult, ContextUsageResult, Empty, InitializeParams, InitializeResult, ModelInfo,
+    ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
+    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
+    OpenVikingWriteResult, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
+    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextContentParams,
     SessionContextParams, SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult,
     SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
     SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
@@ -1282,113 +1282,15 @@ impl AgentService for Core {
         ctx: RequestContext,
         params: SessionContextParams,
     ) -> Result<ContextUsageResult, RpcError> {
-        let record = self
-            .inner
-            .sessions
-            .get(&params.session_id)
-            .await
-            .map_err(to_rpc)?;
-        let state = record.state.lock().await.clone();
-        let cwd = PathBuf::from(&state.session.cwd);
-        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
-        let model = config.resolve_model(&state.model).map_err(to_rpc)?;
-        let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
-        let context_files = self
-            .inner
-            .project_context_files(&params.session_id, &cwd)
-            .await;
-        let summary = self.inner.mcp_summary(&config).await.map_err(to_rpc)?;
-        let subagent = crate::agents::subagent_prompt(&self.inner, &params.session_id).await;
-        let pieces = crate::system_prompt::pieces(
-            &config,
-            &model,
-            &cwd,
-            &context_files,
-            &skills,
-            &summary,
-            subagent.as_ref().map(|prompt| prompt.block.as_str()),
-        );
-        // 分块口径的 token 账必须在组装前算好：组装后片段不再单独存在。
-        let directory_tokens = pieces
-            .iter()
-            .filter(|piece| piece.title == "tools")
-            .map(|piece| crate::compact::estimate_tokens(&piece.text))
-            .sum::<u64>();
-        let mut project_tokens = 0u64;
-        let mut skills_tokens = 0u64;
-        for piece in &pieces {
-            match piece.title {
-                "project" => {
-                    project_tokens =
-                        project_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
-                }
-                "skills" => {
-                    skills_tokens =
-                        skills_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
-                }
-                _ => {}
-            }
-        }
-        let system = crate::system_prompt::compose(pieces);
-        let synthetic =
-            crate::compact::replay::synthetic_messages(&state, Some(system.message.clone()));
-        let synthetic_tokens = crate::compact::messages_tokens(&synthetic[1..]);
-        let visible_start = crate::compact::replay::visible_history_start(&state);
-        let history_tokens = synthetic_tokens.saturating_add(
-            state.transcript_token_counts[visible_start..]
-                .iter()
-                .copied()
-                .sum::<u64>(),
-        );
-        let tools = self.inner.tools.definitions(
-            state.mode,
-            self.inner.client_supports_ask(ctx.connection_id()),
-            &config,
-            crate::tools::ToolScope {
-                control_agents: state.session.parent_session_id.is_none(),
-                subagent: state.session.parent_session_id.is_some(),
-            },
-        );
-        let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system.message));
-        let tool_tokens = crate::compact::tools_tokens(&tools).saturating_add(directory_tokens);
-        let total_tokens = system_tokens
-            .saturating_add(crate::compact::tools_tokens(&tools))
-            .saturating_add(history_tokens);
-        let system_base_tokens = system_tokens
-            .saturating_sub(project_tokens)
-            .saturating_sub(skills_tokens)
-            .saturating_sub(directory_tokens);
+        context::usage(&self.inner, ctx, params).await
+    }
 
-        let mut sections = Vec::with_capacity(5);
-        sections.push(ContextUsageSection {
-            name: "system".into(),
-            tokens: system_base_tokens,
-        });
-        if project_tokens > 0 {
-            sections.push(ContextUsageSection {
-                name: "project".into(),
-                tokens: project_tokens,
-            });
-        }
-        if skills_tokens > 0 {
-            sections.push(ContextUsageSection {
-                name: "skills".into(),
-                tokens: skills_tokens,
-            });
-        }
-        sections.push(ContextUsageSection {
-            name: "tools".into(),
-            tokens: tool_tokens,
-        });
-        sections.push(ContextUsageSection {
-            name: "messages".into(),
-            tokens: history_tokens,
-        });
-        Ok(ContextUsageResult {
-            context_window: model.context_window,
-            total_tokens,
-            sections,
-        })
+    async fn session_context_content(
+        &self,
+        ctx: RequestContext,
+        params: SessionContextContentParams,
+    ) -> Result<ContextContentResult, RpcError> {
+        context::content(&self.inner, ctx, params).await
     }
     async fn session_usage(
         &self,
@@ -1522,6 +1424,7 @@ pub(crate) async fn snapshot_workspace(
 }
 
 mod bash;
+mod context;
 mod management;
 pub(crate) mod mode;
 mod model;

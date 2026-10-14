@@ -14,8 +14,9 @@ use moc_protocol::{
     ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, OpenVikingList,
     OpenVikingListParams, OpenVikingRead, OpenVikingReadParams, OpenVikingWrite,
     OpenVikingWriteParams, ResourceComplete, ResourceCompleteParams, Role, SessionCompact,
-    SessionCompactParams, SessionContext, SessionInfo, SessionList, SessionListParams, SessionLoad,
-    SessionLoadPage, SessionLoadPageParams, SessionLoadParams, SessionLoadResult, SessionMode,
+    SessionCompactParams, SessionContext, SessionContextContent, SessionContextContentParams,
+    SessionInfo, SessionList, SessionListParams, SessionLoad, SessionLoadPage,
+    SessionLoadPageParams, SessionLoadParams, SessionLoadResult, SessionMode,
     SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
     SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
     SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
@@ -26,7 +27,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::app::{App, CtrlCPending, Focus, MODES};
 use crate::input::{InputEvent, InputThread};
-use crate::modal::Modal;
+use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
 use crate::render;
 use crate::terminal::TerminalGuard;
@@ -437,6 +438,43 @@ fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     });
     refresh_context(app, connection, true);
 }
+
+/// `/context`：拉取上下文里的真实正文，开着窗等结果（拉取失败在窗内显示）。
+fn open_context_content(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    app.modal = Some(Modal::ContextContent {
+        state: ContextContentState::default(),
+    });
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionContextContent>(SessionContextContentParams {
+                session_id,
+                max_section_bytes: Some(CONTEXT_SECTION_BYTES),
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::ContextContent(result));
+    });
+}
+
+/// 上下文正文回执：只落进仍然开着的正文窗（用户可能已经关掉或换了模态）。
+fn apply_context_content(
+    app: &mut App,
+    result: anyhow::Result<moc_protocol::methods::ContextContentResult>,
+) {
+    if let Some(Modal::ContextContent { state }) = app.modal.as_mut() {
+        match result {
+            Ok(content) => state.set_content(content),
+            Err(error) => state.set_error(error.to_string()),
+        }
+    }
+}
+
 fn apply_rewind_loaded(app: &mut App, result: anyhow::Result<moc_protocol::SessionLoadResult>) {
     let Some(Modal::Rewind { state }) = app.modal.as_mut() else {
         return;
@@ -673,6 +711,9 @@ async fn event_loop(
                             *current = Some(usage);
                         }
                     }
+                    Some(AppEvent::ContextContent(result)) => {
+                        apply_context_content(app, result);
+                    }
                     Some(AppEvent::Sessions(sessions)) => {
                         app.modal = Some(Modal::Sessions {
                             sessions,
@@ -863,6 +904,10 @@ fn handle_mouse_with_connection(
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
     if app.modal.is_some() {
+        if matches!(app.modal, Some(Modal::ContextContent { .. })) {
+            handle_context_content_mouse(app, mouse);
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && app
                 .plan_model_area
@@ -937,6 +982,48 @@ fn handle_mouse_with_connection(
         }
     }
     handle_mouse(app, mouse);
+}
+
+/// 上下文正文窗的鼠标：滚轮滚动、点击分块展开收起、拖拽滚动条。
+///
+/// 几何全部来自上一帧绘制（轨道、滑块、行区间），因此这里只做换算，不重排正文。
+fn handle_context_content_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
+        return;
+    };
+    match mouse.kind {
+        MouseEventKind::ScrollUp => state.scroll_by(-3),
+        MouseEventKind::ScrollDown => state.scroll_by(3),
+        MouseEventKind::Down(MouseButton::Left) => {
+            let scrollbar = state.scrollbar;
+            let track = scrollbar.track;
+            let on_track = mouse.column == track.x
+                && mouse.row >= track.y
+                && mouse.row < track.y.saturating_add(track.height);
+            if on_track {
+                // 按在滑块上就保持抓取点，按在轨道空白处把滑块中线挪到光标。
+                let top = track.y.saturating_add(scrollbar.thumb_top(state.scroll));
+                let grab = if mouse.row >= top && mouse.row < top.saturating_add(scrollbar.thumb) {
+                    i32::from(mouse.row - top)
+                } else {
+                    i32::from(scrollbar.thumb) / 2
+                };
+                state.drag = Some(ContextDrag { grab });
+                state.scroll = scrollbar.offset_at(mouse.row, grab);
+            } else if let Some(index) = state.block_at(mouse.row) {
+                state.focus = Some(index);
+                state.toggle(index);
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(drag) = state.drag {
+                state.scroll = state.scrollbar.offset_at(mouse.row, drag.grab);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => state.drag = None,
+        _ => {}
+    }
 }
 
 /// 就地模式菜单的鼠标处理：命中条目即切换模式，点到菜单外（含再点一次图例）关闭。
@@ -2275,6 +2362,29 @@ fn handle_modal_key(
                 close = true;
             }
         }
+        Modal::ContextContent { state } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => state.scroll_by(-1),
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => state.scroll_by(1),
+            (KeyCode::PageUp, _) => state.scroll_by(-(state.viewport as i64)),
+            (KeyCode::PageDown, _) => state.scroll_by(state.viewport as i64),
+            (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => {
+                state.scroll_to_edge(false);
+            }
+            (KeyCode::End, _) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => {
+                state.scroll_to_edge(true);
+            }
+            (KeyCode::Tab, KeyModifiers::NONE) => state.focus_step(1),
+            (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => state.focus_step(-1),
+            (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                if let Some(index) = state.focus {
+                    state.toggle(index);
+                }
+            }
+            (KeyCode::Char('e'), KeyModifiers::NONE) => state.set_all_expanded(true),
+            (KeyCode::Char('c'), KeyModifiers::NONE) => state.set_all_expanded(false),
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
+            _ => {}
+        },
         Modal::Subagents { agents, picker } => {
             let filtered: Vec<_> = agents
                 .iter()
@@ -3144,7 +3254,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             });
         }
         "/help" => app.modal = Some(Modal::Help),
-        "/context" => open_context(app, connection),
+        "/context" => open_context_content(app, connection),
         "/quit" => app.should_quit = true,
         "/compact" => {
             if let Some(session_id) = session_id {
@@ -3476,6 +3586,205 @@ mod tests {
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
         App::new(Theme::global(), events)
+    }
+
+    /// 搭一个连到真 core 的 app，并把事件接收端一并交出（用例要观察回执）。
+    async fn app_with_core() -> (
+        std::sync::Arc<moc_core::Core>,
+        EmbeddedConnection,
+        App,
+        tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+        tempfile::TempDir,
+    ) {
+        use moc_core::{Core, CoreConfig};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/model'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.model]\ncontext_window=200000\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let session = connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode: SessionMode::Normal,
+            })
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        app.session = Some(session);
+        (core, connection, app, receiver, root)
+    }
+
+    /// `/context` 打开正文窗，并把 core 的真实分块装进窗里。
+    #[tokio::test]
+    async fn context_command_opens_content_window_with_core_sections() {
+        use moc_protocol::methods::ContextContentResult;
+
+        let (core, connection, mut app, mut receiver, _root) = app_with_core().await;
+        execute_command(&mut app, &connection, "/context".into());
+        assert!(
+            matches!(app.modal, Some(Modal::ContextContent { .. })),
+            "/context 打开上下文正文窗"
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("正文分块应在超时前返回")
+            .expect("事件队列未关闭");
+        let AppEvent::ContextContent(result) = event else {
+            panic!("应收到上下文正文事件");
+        };
+        let content = result.expect("读取上下文正文");
+        assert!(content.total_tokens > 0);
+        assert!(
+            content
+                .sections
+                .iter()
+                .any(|section| section.name == "intro"),
+            "系统提示片段必须在分块里"
+        );
+        assert!(
+            content.sections.iter().all(|section| !matches!(
+                section.name.as_str(),
+                "user" | "assistant" | "tool result"
+            )),
+            "空会话不该有消息分块"
+        );
+
+        apply_context_content(&mut app, Ok(content));
+        let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
+            panic!("正文窗应保持打开");
+        };
+        assert!(state.content.is_some());
+        assert!(!state.expanded.is_empty() && state.expanded.iter().all(|flag| !flag));
+
+        // 窗已关掉时回执不得把窗重新打开。
+        app.modal = None;
+        apply_context_content(
+            &mut app,
+            Ok(ContextContentResult {
+                context_window: 1,
+                total_tokens: 1,
+                sections: Vec::new(),
+            }),
+        );
+        assert!(app.modal.is_none());
+        core.shutdown().await;
+    }
+
+    /// 正文窗的鼠标：滚轮滚动、点分块切换展开、拖滑块换算滚动位置。
+    #[test]
+    fn context_window_mouse_toggles_and_drags() {
+        use crate::modal::{ContextLayout, ContextScrollbar};
+        use moc_protocol::methods::{ContextContentResult, ContextContentSection};
+        use ratatui::layout::Rect;
+
+        let mut app = app();
+        let mut state = ContextContentState::default();
+        state.set_content(ContextContentResult {
+            context_window: 100_000,
+            total_tokens: 1_000,
+            sections: (0..3)
+                .map(|index| ContextContentSection {
+                    name: format!("block{index}"),
+                    text: "正文".into(),
+                    tokens: 10,
+                    truncated_bytes: 0,
+                })
+                .collect(),
+        });
+        state.viewport = 10;
+        state.layout = Some(ContextLayout {
+            width: 40,
+            spans: vec![0..5, 5..12, 12..30],
+            lines: vec![ratatui::text::Line::default(); 30],
+        });
+        state.scrollbar = ContextScrollbar {
+            track: Rect::new(50, 4, 1, 10),
+            thumb: 3,
+            max_offset: 20,
+        };
+        app.modal = Some(Modal::ContextContent { state });
+        let mouse = |kind, column, row| crossterm::event::MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let scroll = |app: &App| match app.modal.as_ref() {
+            Some(Modal::ContextContent { state }) => state.scroll,
+            _ => panic!("正文窗应保持打开"),
+        };
+
+        // 滚轮：一次三行，夹在 [0, max_offset]。
+        handle_context_content_mouse(&mut app, mouse(MouseEventKind::ScrollDown, 10, 6));
+        assert_eq!(scroll(&app), 3);
+        handle_context_content_mouse(&mut app, mouse(MouseEventKind::ScrollUp, 10, 6));
+        assert_eq!(scroll(&app), 0);
+
+        // 抓滑块顶端拖到轨道末端：偏移走满。
+        handle_context_content_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 50, 4),
+        );
+        handle_context_content_mouse(
+            &mut app,
+            mouse(MouseEventKind::Drag(MouseButton::Left), 50, 11),
+        );
+        assert_eq!(scroll(&app), 20);
+        handle_context_content_mouse(
+            &mut app,
+            mouse(MouseEventKind::Up(MouseButton::Left), 50, 11),
+        );
+        let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
+            panic!("正文窗应保持打开");
+        };
+        assert!(state.drag.is_none(), "抬起后结束拖拽");
+
+        // 点第 3 块正文：命中该块并展开。
+        handle_context_content_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 10, 6),
+        );
+        let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
+            panic!("正文窗应保持打开");
+        };
+        assert_eq!(state.focus, Some(2), "命中的是滚动位置对应的块");
+        assert_eq!(state.expanded, vec![false, false, true]);
+        assert!(state.layout.is_none(), "展开后必须重排");
+        // 轨道之外的点不改变焦点。
+        let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
+            panic!("正文窗应保持打开");
+        };
+        state.layout = Some(ContextLayout {
+            width: 40,
+            spans: vec![0..5, 5..12, 12..30],
+            lines: vec![ratatui::text::Line::default(); 30],
+        });
+        handle_context_content_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 10, 30),
+        );
+        let Some(Modal::ContextContent { state }) = app.modal.as_ref() else {
+            panic!("正文窗应保持打开");
+        };
+        assert_eq!(state.focus, Some(2), "正文区之外的点不命中分块");
     }
 
     #[tokio::test]
