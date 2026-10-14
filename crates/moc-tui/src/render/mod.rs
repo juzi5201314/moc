@@ -687,6 +687,25 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(theme.gray),
         ));
     }
+    // 聚焦子代理：头部常驻标识 + 返回手势，避免忘了自己在谁的会话里。
+    if app.focused.is_some() {
+        let title = app
+            .session
+            .as_ref()
+            .map_or_else(|| "子代理".to_owned(), |session| session.title.clone());
+        spans.push(Span::styled(
+            "  ▸ 子代理 ".to_owned(),
+            Style::new().fg(theme.accent_tool),
+        ));
+        spans.push(Span::styled(
+            scrollback::truncate_to_width(title, 24),
+            Style::new().fg(theme.text_primary),
+        ));
+        spans.push(Span::styled(
+            "  esc 返回".to_owned(),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
 
     // 右侧：上下文进度条 + 已用/窗口 + 费用
     let mut right: Vec<Span<'static>> = Vec::new();

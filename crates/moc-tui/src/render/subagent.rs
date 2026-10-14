@@ -24,6 +24,11 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     )));
     for (agent_id, view) in &app.subagents {
         let selected = app.subagent_selected.as_deref() == Some(agent_id.as_str());
+        let focused = app.focused.is_some()
+            && app
+                .session
+                .as_ref()
+                .is_some_and(|session| session.id == *agent_id);
         let block_top = lines.len();
         let status = view.status_label();
         let style = if selected {
@@ -32,7 +37,12 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(theme.text_secondary)
         };
         lines.push(Line::from(Span::styled(
-            format!("{} {}", if view.running { "●" } else { "○" }, status),
+            format!(
+                "{}{} {}",
+                if focused { "▸ " } else { "" },
+                if view.running { "●" } else { "○" },
+                status
+            ),
             style,
         )));
         lines.push(Line::from(Span::styled(
@@ -89,49 +99,6 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
         area,
     );
-}
-
-pub fn draw_detail(frame: &mut Frame, app: &App, area: Rect, agent_id: &str, scroll_offset: usize) {
-    let Some(view) = app.subagents.get(agent_id) else {
-        return;
-    };
-    let theme = app.theme;
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            view.info.title.clone(),
-            Style::new()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  {} · {}", view.status_label(), view.info.model),
-            Style::new().fg(theme.gray_dim),
-        ),
-    ])];
-    for entry in view
-        .blocks
-        .iter()
-        .skip(scroll_offset)
-        .take(usize::from(area.height.saturating_sub(2)))
-    {
-        let text = match &entry.block {
-            crate::transcript::Block::User { text }
-            | crate::transcript::Block::Assistant { text }
-            | crate::transcript::Block::Thinking { text, .. }
-            | crate::transcript::Block::Note { text, .. } => text.clone(),
-            crate::transcript::Block::Tool(tool) => format!(
-                "{} · {}",
-                tool.name,
-                tool.result.as_deref().unwrap_or("运行中")
-            ),
-            crate::transcript::Block::AgentMessage { meta, body } => {
-                format!("IRC ◀ {}：{body}", meta.from_title)
-            }
-            crate::transcript::Block::Todo { .. } => "Todo 已更新".into(),
-        };
-        lines.push(Line::from(text));
-    }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 #[cfg(test)]

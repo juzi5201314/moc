@@ -553,67 +553,6 @@ async fn run_command(
                 );
             }
         }
-        "agent" => {
-            let mut parts = argument.splitn(2, ' ');
-            let model = parts.next().unwrap_or("inherit");
-            let task = parts.next().unwrap_or_default().trim();
-            if task.is_empty() {
-                bail!("用法：/agent [inherit|default|explore|plan] <任务>");
-            }
-            let result = client
-                .call::<moc_protocol::methods::AgentSpawn>(
-                    moc_protocol::methods::AgentSpawnParams {
-                        session_id: session.id.clone(),
-                        task: task.into(),
-                        title: None,
-                        model: (model != "inherit").then(|| model.into()),
-                    },
-                )
-                .await?;
-            println!("子代理已创建：{}", result.agent.id);
-        }
-        "steer-agent" => {
-            let (target, message) = argument
-                .split_once(' ')
-                .ok_or_else(|| anyhow::anyhow!("用法：/steer-agent <id|all|parent> <消息>"))?;
-            let result = client
-                .call::<moc_protocol::methods::AgentMessage>(
-                    moc_protocol::methods::AgentMessageParams {
-                        session_id: session.id.clone(),
-                        target: target.trim().into(),
-                        message: message.trim().into(),
-                    },
-                )
-                .await?;
-            for receipt in result.receipts {
-                let outcome = match receipt.outcome {
-                    moc_protocol::methods::AgentMessageOutcome::Injected => "已注入",
-                    moc_protocol::methods::AgentMessageOutcome::Woken => "已唤醒",
-                    moc_protocol::methods::AgentMessageOutcome::Failed => "失败",
-                };
-                let error = receipt
-                    .error
-                    .map(|error| format!("：{error}"))
-                    .unwrap_or_default();
-                println!(
-                    "{}（{}）：{outcome}{error}",
-                    receipt.title, receipt.agent_id
-                );
-            }
-        }
-        "stop-agent" => {
-            if argument.is_empty() {
-                bail!("用法：/stop-agent <id>");
-            }
-            let result = client
-                .call::<moc_protocol::methods::AgentStop>(moc_protocol::methods::AgentStopParams {
-                    session_id: session.id.clone(),
-                    agent_id: argument.into(),
-                    reason: None,
-                })
-                .await?;
-            println!("停止请求已处理：{}", result.stopped);
-        }
         "" => {}
         _ => print_unknown_command(name),
     }
@@ -635,9 +574,6 @@ const COMMANDS: &[&str] = &[
     "ask",
     "approve",
     "agents",
-    "agent",
-    "steer-agent",
-    "stop-agent",
     "compact",
     "usage",
     "model",
@@ -655,10 +591,7 @@ const HELP_TEXT: &str = "\
 /plan <提示词>            切换计划模式并发送提示词
 /ask <问题>               仅本条消息按问答模式（只读）处理
 /approve <execute|compact|new|reject>  处理已提交的计划
-/agents                   列出当前会话的直接子代理
-/agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）
-/steer-agent <id|all|parent> <消息>  向子代理/父代理/兄弟发送消息（运行中注入，空闲唤醒）
-/stop-agent <id>          停止运行中的子代理
+/agents                   列出当前会话的直接子代理（创建、交流、停止都在 TUI）
 /compact                  压缩当前上下文
 /usage                    查看当前会话模型用量
 /new                      创建新会话

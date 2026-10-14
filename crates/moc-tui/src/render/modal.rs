@@ -1340,61 +1340,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }
             }
             lines.push(Line::from(Span::styled(
-                "↑↓ 选择 · Enter 查看 · x 停止 · Esc 关闭",
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
-        }
-        Modal::SubagentDetail {
-            agent_id, editor, ..
-        } => {
-            let mut lines = Vec::new();
-            if let Some(view) = app.subagents.get(agent_id) {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "{} · {} · {}",
-                        view.info.title,
-                        view.status_label(),
-                        view.info.model
-                    ),
-                    Style::new().fg(theme.text_secondary),
-                )));
-                lines.push(Line::from(String::new()));
-                for entry in view.blocks.iter().take(max_lines.saturating_sub(4)) {
-                    let text = match &entry.block {
-                        crate::transcript::Block::User { text }
-                        | crate::transcript::Block::Assistant { text }
-                        | crate::transcript::Block::Thinking { text, .. }
-                        | crate::transcript::Block::Note { text, .. } => text.clone(),
-                        crate::transcript::Block::Tool(tool) => format!(
-                            "{}: {}",
-                            tool.name,
-                            tool.result.as_deref().unwrap_or("运行中")
-                        ),
-                        crate::transcript::Block::AgentMessage { meta, body } => {
-                            format!("IRC ◀ {}：{body}", meta.from_title)
-                        }
-                        crate::transcript::Block::Todo { .. } => "Todo 已更新".into(),
-                    };
-                    lines.push(Line::from(ellipsize(&text, width)));
-                }
-            } else {
-                lines.push(Line::from(Span::styled(
-                    "子代理不存在或已切换父会话",
-                    Style::new().fg(theme.accent_error),
-                )));
-            }
-            lines.push(Line::from(String::new()));
-            lines.push(Line::from(Span::styled(
-                if editor.text.is_empty() {
-                    "输入消息后 Enter 发送，Alt+Enter 换行".to_owned()
-                } else {
-                    editor.text.clone()
-                },
-                Style::new().fg(theme.text_primary),
-            )));
-            lines.push(Line::from(Span::styled(
-                "Enter 发送/steer · Ctrl+S 停止 · Esc 返回",
+                "↑↓ 选择 · Enter 聚焦 · Ctrl+S 停止 · Esc 关闭",
                 Style::new().fg(theme.gray_dim),
             )));
             lines

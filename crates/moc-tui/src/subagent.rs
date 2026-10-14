@@ -1,254 +1,44 @@
-//! TUI 子代理视图模型与运行时更新归并。
+//! TUI 子代理视图：侧栏与名册用的状态快照。
+//!
+//! 子代理的转写不在 TUI 里另存一份：`Ctrl+N` 名册里 `Enter` 把主 TUI 聚焦到该
+//! 子代理的会话，转写直接走主滚动区（见 `docs/tui.md` 的子代理一节）。
 
-use std::collections::HashMap;
+use moc_protocol::methods::{AgentInfo, AgentStatus};
 
-use moc_protocol::methods::{AgentInfo, AssistantDelta, SessionUpdate, ToolStatus};
-
-use crate::transcript::{Block, Entry, ToolCallBlock};
-
+/// 一个子代理的状态快照。
 #[derive(Debug, Clone)]
 pub struct SubagentView {
     pub info: AgentInfo,
-    pub blocks: Vec<Entry>,
-    pub tool_indices: HashMap<String, usize>,
-    pub pending_args: HashMap<String, String>,
-    pub scroll_offset: usize,
+    /// 是否仍在运行（侧栏的 ● / ○，以及名册里的排序依据）。
     pub running: bool,
-    generation_start: Option<usize>,
+}
+
+fn live(status: AgentStatus) -> bool {
+    matches!(status, AgentStatus::Queued | AgentStatus::Running)
 }
 
 impl SubagentView {
     pub fn new(info: AgentInfo) -> Self {
-        Self {
-            running: matches!(
-                info.status,
-                moc_protocol::methods::AgentStatus::Queued
-                    | moc_protocol::methods::AgentStatus::Running
-            ),
-            info,
-            blocks: Vec::new(),
-            tool_indices: HashMap::new(),
-            pending_args: HashMap::new(),
-            scroll_offset: 0,
-            generation_start: None,
-        }
+        let running = live(info.status);
+        Self { info, running }
     }
 
-    pub fn restore(&mut self, entries: Vec<Entry>) {
-        self.blocks = entries;
-        self.rebuild_tool_indices();
-    }
-
-    pub fn apply(&mut self, update: SessionUpdate) {
-        match update {
-            SessionUpdate::PromptStarted { .. } => self.running = true,
-            SessionUpdate::AssistantDelta { delta, .. } => self.apply_delta(delta),
-            SessionUpdate::GenerationStarted { .. } => {
-                self.generation_start = Some(self.blocks.len())
-            }
-            SessionUpdate::GuardNotice {
-                message, terminal, ..
-            } => {
-                if terminal {
-                    if let Some(start) = self.generation_start.take() {
-                        self.blocks.truncate(start);
-                    }
-                    self.pending_args.clear();
-                    self.rebuild_tool_indices();
-                }
-                self.blocks.push(Entry::new(Block::Note {
-                    text: message,
-                    error: terminal,
-                }));
-            }
-            SessionUpdate::ToolStarted {
-                tool_call_id, name, ..
-            } => {
-                self.generation_start = None;
-                let arguments = self.pending_args.remove(&tool_call_id).unwrap_or_default();
-                let index = self.blocks.len();
-                self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-                    id: tool_call_id.clone(),
-                    batch_id: None,
-                    parent_id: None,
-                    name,
-                    arguments,
-                    status: None,
-                    result: None,
-                    diff: None,
-                    duration_ms: None,
-                    running: true,
-                    progress: None,
-                })));
-                self.tool_indices.insert(tool_call_id, index);
-            }
-            SessionUpdate::ToolFinished {
-                tool_call_id,
-                status,
-                result,
-                duration_ms,
-                diff,
-                ..
-            } => {
-                if let Some(index) = self.tool_indices.get(&tool_call_id).copied()
-                    && let Some(entry) = self.blocks.get_mut(index)
-                {
-                    entry.finish_tool(status, result, duration_ms, diff);
-                }
-            }
-            SessionUpdate::PromptFinished { message, .. } => {
-                self.running = false;
-                self.generation_start = None;
-                let text = message.text();
-                if !text.is_empty() {
-                    self.info.last_message = Some(text);
-                }
-            }
-            SessionUpdate::TodoChanged { phases } => {
-                self.blocks.push(Entry::new(Block::Todo { phases }));
-            }
-            SessionUpdate::AgentMessage { meta, body } => {
-                self.blocks
-                    .push(Entry::timed(Block::AgentMessage { meta, body }));
-            }
-            SessionUpdate::ToolProgress {
-                tool_call_id, rows, ..
-            } => {
-                if let Some(index) = self.tool_indices.get(&tool_call_id).copied()
-                    && let Some(entry) = self.blocks.get_mut(index)
-                    && let Block::Tool(tool) = &mut entry.block
-                {
-                    tool.progress = Some(rows);
-                    entry.touch();
-                }
-            }
-            SessionUpdate::ContextCompacted {
-                method,
-                tokens_before,
-                tokens_after,
-            } => {
-                self.blocks.push(Entry::new(Block::Note {
-                    text: format!(
-                        "上下文已压缩：{method}，{tokens_before} → {tokens_after} tokens"
-                    ),
-                    error: false,
-                }));
-            }
-            _ => {}
-        }
-    }
-
-    fn apply_delta(&mut self, delta: AssistantDelta) {
-        match delta {
-            AssistantDelta::Text { delta } => {
-                if !delta.is_empty()
-                    && (self
-                        .generation_start
-                        .is_some_and(|start| self.blocks.len() == start)
-                        || !matches!(
-                            self.blocks.last().map(|entry| &entry.block),
-                            Some(Block::Assistant { .. })
-                        ))
-                {
-                    self.blocks.push(Entry::new(Block::Assistant {
-                        text: String::new(),
-                    }));
-                }
-                if let Some(Entry {
-                    block: Block::Assistant { text },
-                    ..
-                }) = self.blocks.last_mut()
-                {
-                    text.push_str(&delta);
-                }
-            }
-            AssistantDelta::Reasoning { delta } => {
-                if !delta.is_empty()
-                    && (self
-                        .generation_start
-                        .is_some_and(|start| self.blocks.len() == start)
-                        || !matches!(
-                            self.blocks.last().map(|entry| &entry.block),
-                            Some(Block::Thinking { .. })
-                        ))
-                {
-                    self.blocks.push(Entry::new(Block::Thinking {
-                        text: String::new(),
-                        reasoning_tokens: None,
-                        duration_ms: None,
-                    }));
-                }
-                if let Some(Entry {
-                    block: Block::Thinking { text, .. },
-                    ..
-                }) = self.blocks.last_mut()
-                {
-                    text.push_str(&delta);
-                }
-            }
-            AssistantDelta::ToolCallArgs {
-                tool_call_id,
-                delta,
-            } => {
-                if let Some(index) = self.tool_indices.get(&tool_call_id).copied()
-                    && let Some(entry) = self.blocks.get_mut(index)
-                {
-                    entry.push_args(&delta);
-                } else {
-                    self.pending_args
-                        .entry(tool_call_id)
-                        .or_default()
-                        .push_str(&delta);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn rebuild_tool_indices(&mut self) {
-        self.tool_indices.clear();
-        for (index, entry) in self.blocks.iter().enumerate() {
-            if let Block::Tool(tool) = &entry.block {
-                self.tool_indices.insert(tool.id.clone(), index);
-            }
+    /// 状态更新：`last_message` 只在有值时覆盖（终态带回结果预览）。
+    pub fn set_status(&mut self, status: AgentStatus, last_message: Option<String>) {
+        self.info.status = status;
+        self.info.updated_at_ms = crate::transcript::now_ms();
+        self.running = live(status);
+        if last_message.is_some() {
+            self.info.last_message = last_message;
         }
     }
 
     pub fn status_label(&self) -> &'static str {
         crate::render::scrollback::agent_status_label(self.info.status)
     }
-
-    pub fn set_status(
-        &mut self,
-        status: moc_protocol::methods::AgentStatus,
-        last_message: Option<String>,
-    ) {
-        self.info.status = status;
-        self.info.updated_at_ms = crate::transcript::now_ms();
-        self.running = matches!(
-            status,
-            moc_protocol::methods::AgentStatus::Queued
-                | moc_protocol::methods::AgentStatus::Running
-        );
-        if last_message.is_some() {
-            self.info.last_message = last_message;
-        }
-    }
-
-    pub fn finish_tool_for_test(
-        &mut self,
-        id: &str,
-        status: ToolStatus,
-        result: moc_protocol::ToolResult,
-    ) {
-        if let Some(index) = self.tool_indices.get(id).copied()
-            && let Some(entry) = self.blocks.get_mut(index)
-        {
-            entry.finish_tool(status, result, None, None);
-        }
-    }
 }
 
+/// 非模态异步操作的用户可见提示。
 #[derive(Debug, Clone)]
 pub struct AgentOperationNotice {
     /// 投递目标（代理 id、`parent` 或 `all`）。
@@ -267,7 +57,7 @@ mod tests {
             title: "child".into(),
             model: "test/model".into(),
             cwd: "/tmp".into(),
-            status: moc_protocol::methods::AgentStatus::Running,
+            status: AgentStatus::Running,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_message: None,
@@ -275,39 +65,27 @@ mod tests {
     }
 
     #[test]
+    fn queued_agent_counts_as_running() {
+        let mut info = info();
+        info.status = AgentStatus::Queued;
+        assert!(SubagentView::new(info).running);
+    }
+
+    #[test]
     fn status_update_changes_running_card() {
         let mut view = SubagentView::new(info());
-        view.set_status(
-            moc_protocol::methods::AgentStatus::Completed,
-            Some("done".into()),
-        );
+        view.set_status(AgentStatus::Completed, Some("done".into()));
         assert!(!view.running);
         assert_eq!(view.status_label(), "已完成");
         assert_eq!(view.info.last_message.as_deref(), Some("done"));
     }
 
     #[test]
-    fn agent_message_update_appends_card() {
+    fn status_update_keeps_the_previous_preview_when_absent() {
         let mut view = SubagentView::new(info());
-        view.apply(SessionUpdate::AgentMessage {
-            meta: moc_protocol::methods::AgentMessageMeta {
-                from_id: "ses_sibling".into(),
-                from_title: "兄弟".into(),
-                delivery: moc_protocol::methods::AgentMessageOutcome::Woken,
-            },
-            body: "同步一下进度".into(),
-        });
-        assert!(
-            matches!(
-                view.blocks.last().map(|entry| &entry.block),
-                Some(Block::AgentMessage { body, .. }) if body == "同步一下进度"
-            ),
-            "子代理视图必须显示收到的消息"
-        );
-        assert!(
-            view.blocks
-                .last()
-                .is_some_and(|entry| entry.at_ms.is_some())
-        );
+        view.set_status(AgentStatus::Completed, Some("done".into()));
+        view.set_status(AgentStatus::Running, None);
+        assert!(view.running);
+        assert_eq!(view.info.last_message.as_deref(), Some("done"));
     }
 }

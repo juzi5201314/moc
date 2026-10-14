@@ -84,7 +84,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 子代理用 `yield {report}` 交付最终结果并结束本轮；缺失时最多提醒三次，仍未交付则回退到最后一条 assistant 消息。结果在子代理进入终态时自动作为 notice 投进父会话，父模型下一轮即可看到预览（正文上限 500 字符，超出提示用 `wait_agent` 取全文）。
 
-子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续用 `message_agent` 唤醒。TUI 按 `Ctrl+N` 或 `/agents` 打开当前会话的子代理列表，宽屏显示状态侧栏；`/agent [inherit|default|explore|plan] <task>` 创建任务，`/steer-agent <id|all|parent> <message>` 与 `/stop-agent <id>` 快捷控制。REPL 提供 `/agents`、`/agent`、`/steer-agent`、`/stop-agent`。
+子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续用 `message_agent` 唤醒。TUI 的人类面只有一个子代理命令 `/agents`（等同 `Ctrl+N`）：名册里 `Enter` 把主 TUI 聚焦到该子代理的会话（转写与输入框都属于它，直接打字即可交流），`Esc` 或双击 `←` 返回主会话，`Ctrl+S` 停止选中的子代理；创建子代理由主模型决定。REPL 只提供 `/agents` 列表。
 
 ### Web 搜索
 
@@ -128,7 +128,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/help`、`/quit`（`/exit` 同义）、`/cancel`、`/mode`、`/clm-experimental`、`/permission full|workspace`、`/plan`、`/ask`、`/approve execute|compact|new|reject`、`/agents`、`/agent`、`/steer-agent`、`/stop-agent`、`/compact`、`/usage`、`/new`、`/sessions` 和 `/model`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读，不隔离网络。`edit` / `write` 越出工作区时需一次性授权，`read` / `find` / `grep` 不设读边界；细则见「行为与安全边界」。
+交互命令包括 `/help`、`/quit`（`/exit` 同义）、`/cancel`、`/mode`、`/clm-experimental`、`/permission full|workspace`、`/plan`、`/ask`、`/approve execute|compact|new|reject`、`/agents`、`/compact`、`/usage`、`/new`、`/sessions` 和 `/model`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读，不隔离网络。`edit` / `write` 越出工作区时需一次性授权，`read` / `find` / `grep` 不设读边界；细则见「行为与安全边界」。
 
 ## 嵌入接口
 

@@ -235,12 +235,6 @@ pub enum Modal {
         agents: Vec<moc_protocol::methods::AgentInfo>,
         picker: PickerState,
     },
-    /// 子代理详情和发送/steer 编辑器。
-    SubagentDetail {
-        agent_id: String,
-        editor: crate::widgets::prompt::PromptState,
-        scroll_offset: usize,
-    },
     /// 计划审批（`session/plan_approve`）。
     Plan { state: PlanReviewState },
     /// 快捷键帮助。
@@ -292,7 +286,6 @@ impl Modal {
             Modal::Rewind { .. } => "消息回退".into(),
             Modal::Sessions { .. } => "恢复会话".into(),
             Modal::Subagents { .. } => "子代理".into(),
-            Modal::SubagentDetail { agent_id, .. } => format!("子代理：{agent_id}"),
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
@@ -335,7 +328,6 @@ impl Modal {
                     agent.title.to_lowercase().contains(&query) || agent.id.contains(&query)
                 })
                 .count(),
-            Modal::SubagentDetail { .. } => 0,
             Modal::Plan { .. } => 4,
             Modal::Help | Modal::Context { .. } => 0,
             Modal::SwitchModel { .. } => 2,
@@ -378,7 +370,6 @@ impl Modal {
             Modal::Ask { .. }
             | Modal::MemoryEditor { .. }
             | Modal::Rewind { .. }
-            | Modal::SubagentDetail { .. }
             | Modal::Help
             | Modal::Context { .. } => {}
             Modal::SwitchModel { option, .. } => {

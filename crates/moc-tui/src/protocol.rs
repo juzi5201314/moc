@@ -117,8 +117,9 @@ pub enum AppEvent {
     /// git 分支就绪（statusline 异步刷新）。
     GitBranch(String),
     SubagentsLoaded(anyhow::Result<Vec<moc_protocol::methods::AgentInfo>>),
-    SubagentHistoryLoaded {
-        agent_id: String,
+    /// 聚焦进入或返回的会话加载结果；`returning` 区分返回主会话。
+    FocusLoaded {
+        returning: bool,
         result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
     },
     SubagentOperation(anyhow::Result<crate::subagent::AgentOperationNotice>),

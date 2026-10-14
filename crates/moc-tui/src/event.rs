@@ -242,8 +242,9 @@ fn refresh_context(app: &App, connection: &EmbeddedConnection, notify_failure: b
     });
 }
 
+/// 刷新代理面：名册与侧栏始终挂靠 [`App::agents_root_id`]（聚焦时是主会话）。
 fn load_subagents(app: &App, connection: &EmbeddedConnection) {
-    let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+    let Some(parent_session_id) = app.agents_root_id() else {
         return;
     };
     let client = connection.client.clone();
@@ -272,74 +273,10 @@ fn open_subagents(app: &mut App, connection: &EmbeddedConnection) {
     load_subagents(app, connection);
 }
 
-/// 人类面的「给某个代理发消息」：运行中注入、空闲唤醒，同名于 omp 的表述。
-fn steer_agent_operation(
-    app: &App,
-    connection: &EmbeddedConnection,
-    target: String,
-    message: String,
-) {
-    let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
-        return;
-    };
-    let client = connection.client.clone();
-    let events = app.events.clone();
-    tokio::spawn(async move {
-        let result = client
-            .call::<moc_protocol::methods::AgentMessage>(
-                moc_protocol::methods::AgentMessageParams {
-                    session_id: parent_session_id,
-                    target: target.clone(),
-                    message,
-                },
-            )
-            .await
-            .map(|result| crate::subagent::AgentOperationNotice {
-                target: target.clone(),
-                message: delivery_notice(&target, &result),
-            })
-            .map_err(anyhow::Error::from);
-        let _ = events.send(AppEvent::SubagentOperation(result));
-    });
-}
-
-/// 投递结果的用户可读文案。
-fn delivery_notice(
-    target: &str,
-    result: &moc_protocol::methods::AgentMessageResult,
-) -> String {
-    use moc_protocol::methods::AgentMessageOutcome;
-    let delivered = result
-        .receipts
-        .iter()
-        .filter(|receipt| receipt.outcome != AgentMessageOutcome::Failed)
-        .count();
-    let failure = result
-        .receipts
-        .iter()
-        .find(|receipt| receipt.outcome == AgentMessageOutcome::Failed);
-    if let Some(failed) = failure {
-        let reason = failed.error.as_deref().unwrap_or("未知原因");
-        if delivered == 0 {
-            return format!("投递失败：{target}（{reason}）");
-        }
-        return format!(
-            "投递完成：{delivered} 已送达，{} 失败（{}：{reason}）",
-            result.receipts.len() - delivered,
-            failed.title
-        );
-    }
-    match result.receipts.as_slice() {
-        [receipt] => {
-            let word = crate::render::scrollback::outcome_word(receipt.outcome);
-            format!("已投递：{target}（{word}）")
-        }
-        receipts => format!("已投递：{target}（{} 已送达）", receipts.len()),
-    }
-}
-
+/// 停止一个子代理：名册 `Ctrl+S` 与聚焦时的 `Ctrl+S` 共用。
 fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, agent_id: String) {
-    let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+    // 停止请求的父会话永远是代理面挂靠的那个：聚焦子代理时 `app.session` 是子代理自己。
+    let Some(parent_session_id) = app.agents_root_id() else {
         return;
     };
     let client = connection.client.clone();
@@ -360,6 +297,70 @@ fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, agent_id: St
         let _ = events.send(AppEvent::SubagentOperation(result));
     });
 }
+
+/// 聚焦进入或返回：按 `/resume` 同路加载目标会话。
+///
+/// 聚焦期间另一侧的更新被忽略（见 `apply_update_and_refresh` 的代理面分支），
+/// 所以返回主会话时同样以磁盘真相重载，而不是自己缓存一份转写。
+fn load_focus(app: &mut App, connection: &EmbeddedConnection, session_id: String, returning: bool) {
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionLoadPage>(SessionLoadPageParams {
+                session_id,
+                before_entry_id: None,
+                max_entries: 128,
+                max_message_bytes: Some(64 * 1024),
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::FocusLoaded { returning, result });
+    });
+}
+
+/// 聚焦一个子代理：主 TUI 整体切到它的会话。
+///
+/// 已聚焦时再聚焦另一个代理只换焦点：主会话仍是原来那一个。
+fn focus_agent(app: &mut App, connection: &EmbeddedConnection, agent_id: String) {
+    let Some(view) = app.subagents.get(&agent_id) else {
+        return;
+    };
+    let target = view.info.clone();
+    if app.focused.is_none() {
+        let Some(home) = app.session.clone() else {
+            return;
+        };
+        if home.id == target.id {
+            return;
+        }
+        app.focused = Some(crate::app::FocusedAgent {
+            home,
+            home_draft: app.prompt_text().to_owned(),
+            home_scroll: app.scroll_offset,
+        });
+    } else if app
+        .session
+        .as_ref()
+        .is_some_and(|session| session.id == target.id)
+    {
+        return;
+    }
+    app.subagent_selected = Some(target.id.clone());
+    app.modal = None;
+    load_focus(app, connection, target.id, false);
+}
+
+/// 返回主会话：还原草稿与滚动位置，并按磁盘真相重载。
+fn leave_focus(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(focused) = app.focused.take() else {
+        return;
+    };
+    app.focus_restore = Some((focused.home_draft, focused.home_scroll));
+    load_focus(app, connection, focused.home.id, true);
+}
+
+/// 刷新子代理名册；`parent_session_id` 为 `None` 时清空名册。
 fn load_subagents_for_parent(
     app: &mut App,
     client: &ClientHandle,
@@ -383,22 +384,43 @@ fn load_subagents_for_parent(
     });
 }
 
-fn load_subagent_history(app: &App, connection: &EmbeddedConnection, agent_id: String) {
-    let client = connection.client.clone();
-    let events = app.events.clone();
-    tokio::spawn(async move {
-        let result = client
-            .call::<SessionLoadPage>(SessionLoadPageParams {
-                session_id: agent_id.clone(),
-                before_entry_id: None,
-                max_entries: 128,
-                max_message_bytes: Some(64 * 1024),
-            })
-            .await
-            .map_err(anyhow::Error::from);
-        let _ = events.send(AppEvent::SubagentHistoryLoaded { agent_id, result });
-    });
+/// 应用一次聚焦加载结果：`returning` 时还原草稿与滚动位置。
+fn apply_focus_loaded(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    returning: bool,
+    result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
+) {
+    let page = match result {
+        Ok(page) => page,
+        Err(error) => {
+            app.focus_restore = None;
+            app.focused = None;
+            app.set_notice(format!("加载代理会话失败：{error}"));
+            return;
+        }
+    };
+    let blocks = crate::transcript_restore::blocks_from_entries_with_children(
+        &page.entries,
+        &page.child_calls,
+    );
+    let has_more = page.has_more;
+    let before_entry_id = page.entries.first().map(|entry| entry.id.clone());
+    let cwd = page.session.cwd.clone();
+    app.switch_session(page.session, blocks);
+    if returning && let Some((draft, scroll)) = app.focus_restore.take() {
+        if !draft.is_empty() {
+            app.prompt.insert_str_raw(&draft);
+            app.prompt_changed();
+        }
+        app.scroll_offset = scroll;
+    }
+    app.set_history_cursor(has_more, before_entry_id);
+    refresh_git_branch(app, &cwd);
+    refresh_context(app, connection, false);
+    load_subagents(app, connection);
 }
+
 fn open_context(app: &mut App, connection: &EmbeddedConnection) {
     if app.session.is_none() {
         app.set_notice("当前没有活动会话");
@@ -653,6 +675,7 @@ async fn event_loop(
                     }
                     Some(AppEvent::SubagentsLoaded(result)) => match result {
                         Ok(agents) => {
+                            let selected = app.subagent_selected.clone();
                             app.subagents = agents
                                 .into_iter()
                                 .map(|info| {
@@ -660,25 +683,21 @@ async fn event_loop(
                                     (id, crate::subagent::SubagentView::new(info))
                                 })
                                 .collect();
+                            if let Some(selected) = selected
+                                && !app.subagents.contains_key(&selected)
+                            {
+                                app.subagent_selected = None;
+                            }
                             app.subagent_generation = app.subagent_generation.wrapping_add(1);
                             if let Some(Modal::Subagents { agents: current, .. }) = app.modal.as_mut() {
                                 *current = app.subagents.values().map(|view| view.info.clone()).collect();
                             }
-                            for agent_id in app.subagents.keys().cloned().collect::<Vec<_>>() {
-                                load_subagent_history(app, connection, agent_id);
-                            }
                         }
                         Err(error) => app.set_notice(format!("读取子代理列表失败：{error}")),
                     },
-                    Some(AppEvent::SubagentHistoryLoaded { agent_id, result }) => match result {
-                        Ok(page) => {
-                            if let Some(view) = app.subagents.get_mut(&agent_id) {
-                                view.restore(crate::transcript_restore::blocks_from_entries_with_children(&page.entries, &page.child_calls));
-                                app.subagent_generation = app.subagent_generation.wrapping_add(1);
-                            }
-                        }
-                        Err(error) => app.set_notice(format!("加载子代理历史失败：{error}")),
-                    },
+                    Some(AppEvent::FocusLoaded { returning, result }) => {
+                        apply_focus_loaded(app, connection, returning, result);
+                    }
                     Some(AppEvent::SubagentOperation(result)) => match result {
                         Ok(notice) => app.set_notice(notice.message),
                         Err(error) => app.set_notice(format!("子代理操作失败：{error}")),
@@ -878,12 +897,8 @@ fn handle_mouse_with_connection(
             .iter()
             .find(|(_, area)| area.contains(position.into()))
         {
-            app.subagent_selected = Some(agent_id.clone());
-            app.modal = Some(Modal::SubagentDetail {
-                agent_id: agent_id.clone(),
-                editor: crate::widgets::prompt::PromptState::default(),
-                scroll_offset: 0,
-            });
+            let agent_id = agent_id.clone();
+            focus_agent(app, connection, agent_id);
             return;
         }
         if app.modal.is_none() && app.mode_area.contains(position.into()) {
@@ -1301,10 +1316,37 @@ fn handle_key(
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => open_session_picker(app, connection),
+        (KeyCode::Char('s'), KeyModifiers::CONTROL) if app.focused.is_some() => {
+            // 聚焦时 ctrl+s 停止的就是眼前这个子代理。
+            let agent_id = app.session.as_ref().map(|session| session.id.clone());
+            if let Some(agent_id) = agent_id {
+                stop_agent_operation(app, connection, agent_id);
+            }
+        }
+        (KeyCode::Left, _)
+            if app.focused.is_some()
+                && app.focus == Focus::Prompt
+                && app.prompt_text().is_empty() =>
+        {
+            // 双击 `←` 返回主会话（omp Hub 的手势）；单次按键不吞掉。
+            if app.take_left_tap_pending(std::time::Instant::now()) {
+                leave_focus(app, connection);
+            } else {
+                app.left_tap_pending = Some(std::time::Instant::now());
+                app.prompt.left();
+            }
+        }
         (KeyCode::Char('y'), KeyModifiers::NONE) if app.selection.is_some() => copy_selection(app),
         (KeyCode::Esc, _) => {
             if app.selection.is_some() {
                 app.selection = None;
+            } else if app.focused.is_some()
+                && app.focus == Focus::Prompt
+                && app.prompt_text().is_empty()
+            {
+                // 聚焦子代理时的 `Esc` 只返回主会话，不打断子代理（omp Hub 的语义）；
+                // 取消仍在运行的那个提示交给 `Ctrl+C`。
+                leave_focus(app, connection);
             } else if app.prompt_running {
                 if !app.cancel_requested {
                     app.cancel_requested = true;
@@ -1527,6 +1569,7 @@ fn handle_modal_key(
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     let events = app.events.clone();
     let mut close = false;
+    let mut focus_target: Option<String> = None;
     let mut return_memory_list = false;
     let mut return_plan_review = false;
     let plan_review_open = matches!(app.modal, Some(Modal::Plan { .. }));
@@ -2252,20 +2295,17 @@ fn handle_modal_key(
                     picker.selected = 0;
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if let Some(agent) = filtered.get(picker.selected) {
-                        app.subagent_selected = Some(agent.id.clone());
-                        app.modal = Some(Modal::SubagentDetail {
-                            agent_id: agent.id.clone(),
-                            editor: crate::widgets::prompt::PromptState::default(),
-                            scroll_offset: 0,
-                        });
-                    }
+                    // 借用检查：`app.modal` 正被 match 借用，聚焦要等这层借用结束。
+                    focus_target = filtered.get(picker.selected).map(|agent| agent.id.clone());
+                    close = true;
                 }
-                (KeyCode::Char('x'), KeyModifiers::NONE) => {
+                (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                    // `x` 已经被过滤输入吃掉（名册的输入行常驻），停止统一用 ctrl+s：
+                    // 与聚焦时的停止键一致，也不和查询字符抢键位。
                     if let Some(agent) = filtered.get(picker.selected) {
                         let agent_id = agent.id.clone();
                         let client = connection.client.clone();
-                        let parent_session_id = session_id.clone();
+                        let parent_session_id = app.agents_root_id();
                         let events = events.clone();
                         tokio::spawn(async move {
                             let result = match parent_session_id {
@@ -2293,86 +2333,10 @@ fn handle_modal_key(
                 _ => {}
             }
         }
-        Modal::SubagentDetail {
-            agent_id,
-            editor,
-            scroll_offset,
-        } => match (code, modifiers) {
-            (KeyCode::Esc, _) => {
-                app.modal = Some(Modal::Subagents {
-                    agents: app
-                        .subagents
-                        .values()
-                        .map(|view| view.info.clone())
-                        .collect(),
-                    picker: crate::modal::PickerState::default(),
-                });
-            }
-            (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT) => editor.insert_char('\n'),
-            (KeyCode::Enter, KeyModifiers::NONE) => {
-                let message = editor.text.trim().to_owned();
-                if !message.is_empty() {
-                    let parent_session_id = session_id.clone();
-                    let target_agent_id = agent_id.clone();
-                    let client = connection.client.clone();
-                    let events = events.clone();
-                    tokio::spawn(async move {
-                        let result = match parent_session_id {
-                            Some(parent_session_id) => client
-                                .call::<moc_protocol::methods::AgentMessage>(
-                                    moc_protocol::methods::AgentMessageParams {
-                                        session_id: parent_session_id,
-                                        target: target_agent_id.clone(),
-                                        message,
-                                    },
-                                )
-                                .await
-                                .map(|result| crate::subagent::AgentOperationNotice {
-                                    message: delivery_notice(&target_agent_id, &result),
-                                    target: target_agent_id,
-                                })
-                                .map_err(anyhow::Error::from),
-                            None => Err(anyhow::anyhow!("当前没有活动会话")),
-                        };
-                        let _ = events.send(AppEvent::SubagentOperation(result));
-                    });
-                    editor.clear();
-                }
-            }
-            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                let target_agent_id = agent_id.clone();
-                let parent_session_id = session_id.clone();
-                let client = connection.client.clone();
-                let events = events.clone();
-                tokio::spawn(async move {
-                    let result = match parent_session_id {
-                        Some(parent_session_id) => client
-                            .call::<moc_protocol::methods::AgentStop>(
-                                moc_protocol::methods::AgentStopParams {
-                                    session_id: parent_session_id,
-                                    agent_id: target_agent_id.clone(),
-                                    reason: None,
-                                },
-                            )
-                            .await
-                            .map(|result| crate::subagent::AgentOperationNotice {
-                                target: target_agent_id,
-                                message: format!("停止请求已处理：{}", result.stopped),
-                            })
-                            .map_err(anyhow::Error::from),
-                        None => Err(anyhow::anyhow!("当前没有活动会话")),
-                    };
-                    let _ = events.send(AppEvent::SubagentOperation(result));
-                });
-            }
-            (KeyCode::Backspace, _) => editor.backspace(),
-            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) if !ch.is_control() => {
-                editor.insert_char(ch)
-            }
-            (KeyCode::Up, _) => *scroll_offset = scroll_offset.saturating_add(1),
-            (KeyCode::Down, _) => *scroll_offset = scroll_offset.saturating_sub(1),
-            _ => {}
-        },
+    }
+    if let Some(agent_id) = focus_target {
+        focus_agent(app, connection, agent_id);
+        return;
     }
     if return_plan_review {
         if let Some(Modal::Model {
@@ -2678,20 +2642,30 @@ fn apply_update_and_refresh(
         .as_ref()
         .is_some_and(|session| session.id == session_id);
     if !is_current {
-        if let Some(view) = app.subagents.get_mut(&session_id) {
+        // 聚焦子代理时主会话不再是当前会话，但代理面仍挂靠在它上面：
+        // 主会话发出的状态事件与新建代理照旧更新名册，避免侧栏在聚焦期间僵住。
+        if app.agents_root_id().as_deref() == Some(session_id.as_str()) {
             if let SessionUpdate::AgentStatusChanged {
+                agent_id,
                 status,
                 last_message,
-                ..
             } = &update
+                && let Some(view) = app.subagents.get_mut(agent_id)
             {
                 view.set_status(*status, last_message.clone());
-            } else {
-                view.apply(update);
+                app.subagent_generation = app.subagent_generation.wrapping_add(1);
             }
-            app.subagent_generation = app.subagent_generation.wrapping_add(1);
+            if matches!(&update, SessionUpdate::AgentStarted { .. }) {
+                load_subagents(app, connection);
+            }
+            if matches!(&update, SessionUpdate::PromptFinished { .. }) {
+                app.inflight_prompts.remove(&session_id);
+                app.interrupt_pending.remove(&session_id);
+            }
             return;
         }
+        // 子代理自身的流：TUI 不再另存一份转写（聚焦时它才是当前会话），
+        // 只按在飞记账收尾。
         if matches!(&update, SessionUpdate::PromptFinished { .. }) {
             app.inflight_prompts.remove(&session_id);
             app.interrupt_pending.remove(&session_id);
@@ -3077,55 +3051,6 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     match name {
         "/confirm-plan" => confirm_plan(app, connection),
         "/agents" => open_subagents(app, connection),
-        "/agent" => {
-            let mut parts = rest.trim().splitn(2, ' ');
-            let model = parts.next().unwrap_or("inherit");
-            let task = parts.next().unwrap_or_default().trim();
-            if task.is_empty() {
-                app.set_notice("用法：/agent [inherit|default|explore|plan] <task>");
-                return;
-            }
-            let Some(parent_session_id) = session_id.clone() else {
-                app.set_notice("当前没有活动会话");
-                return;
-            };
-            let client = connection.client.clone();
-            let events = app.events.clone();
-            let task = task.to_owned();
-            let model = (model != "inherit").then(|| model.to_owned());
-            tokio::spawn(async move {
-                let result = client
-                    .call::<moc_protocol::methods::AgentSpawn>(
-                        moc_protocol::methods::AgentSpawnParams {
-                            session_id: parent_session_id,
-                            task,
-                            title: None,
-                            model,
-                        },
-                    )
-                    .await
-                    .map(|result| crate::subagent::AgentOperationNotice {
-                        target: result.agent.id,
-                        message: "子代理已创建".into(),
-                    })
-                    .map_err(anyhow::Error::from);
-                let _ = events.send(AppEvent::SubagentOperation(result));
-            });
-        }
-        "/steer-agent" | "/stop-agent" => {
-            let mut parts = rest.trim().splitn(2, ' ');
-            let Some(target) = parts.next().filter(|value| !value.is_empty()) else {
-                app.set_notice("用法：/steer-agent <id|all|parent> <message> 或 /stop-agent <id>");
-                return;
-            };
-            if name == "/stop-agent" {
-                stop_agent_operation(app, connection, target.to_owned());
-            } else if let Some(message) = parts.next().filter(|value| !value.trim().is_empty()) {
-                steer_agent_operation(app, connection, target.to_owned(), message.to_owned());
-            } else {
-                app.set_notice("用法：/steer-agent <id|all|parent> <message>");
-            }
-        }
         "/config" | "/settings" => crate::settings::open(app, connection),
         "/new" => {
             let client = connection.client.clone();
@@ -4450,6 +4375,20 @@ mod tests {
     }
 
     async fn setup_test_app() -> (std::sync::Arc<moc_core::Core>, EmbeddedConnection, App) {
+        let (core, connection, app, _root) = setup_test_app_keeping_root().await;
+        (core, connection, app)
+    }
+
+    /// 同 [`setup_test_app`]，但把临时目录一并交出，供需要再建会话的用例使用。
+    ///
+    /// 会话的 cwd 是那个临时目录：函数返回即删除，之后再 `session/new` 会因
+    /// cwd 不存在而失败，所以这些用例必须自己握住目录。
+    async fn setup_test_app_keeping_root() -> (
+        std::sync::Arc<moc_core::Core>,
+        EmbeddedConnection,
+        App,
+        tempfile::TempDir,
+    ) {
         use moc_core::{Core, CoreConfig};
 
         let root = tempfile::tempdir().unwrap();
@@ -4482,7 +4421,7 @@ mod tests {
             .await
             .unwrap();
         app.session = Some(session);
-        (core, connection, app)
+        (core, connection, app, root)
     }
 
     #[tokio::test]
@@ -5174,7 +5113,12 @@ mod tests {
         app.prompt.clear();
         app.prompt_changed();
         app.selection = Some(((4, 2), (9, 2)));
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('y'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('y'),
+        );
         assert_eq!(app.prompt_text(), "", "有选区时 y 不进入输入框");
         assert!(app.selection.is_some(), "空选区内容不清空选区");
 
@@ -5254,24 +5198,47 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 小7：子代理详情编辑器的裸 `x` 是普通字符，停止只认 Ctrl+S。
+    /// 名册：`x` 是过滤字符，停止统一认 Ctrl+S（不被查询输入遮蔽）。
     #[tokio::test]
-    async fn subagent_detail_typing_x_does_not_stop() {
+    async fn subagent_roster_types_x_and_stops_on_ctrl_s() {
         let (core, connection, mut app) = setup_test_app().await;
-        app.modal = Some(Modal::SubagentDetail {
-            agent_id: "agent_1".into(),
-            editor: crate::widgets::prompt::PromptState::default(),
-            scroll_offset: 0,
+        app.modal = Some(Modal::Subagents {
+            agents: vec![moc_protocol::methods::AgentInfo {
+                id: "agent_1".into(),
+                parent_id: "ses_parent".into(),
+                title: "任务".into(),
+                model: "test/model".into(),
+                cwd: "/tmp".into(),
+                status: moc_protocol::methods::AgentStatus::Running,
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                last_message: None,
+            }],
+            picker: crate::modal::PickerState::default(),
         });
-
-        for ch in "xy".chars() {
-            handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(ch));
-        }
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('x'),
+        );
         match app.modal.as_ref() {
-            Some(Modal::SubagentDetail { editor, .. }) => {
-                assert_eq!(editor.text, "xy", "x 应作为普通字符进入消息");
+            Some(Modal::Subagents { picker, .. }) => {
+                assert_eq!(picker.query, "x", "x 应作为过滤字符")
             }
-            _ => unreachable!("子代理详情模态应保持打开"),
+            _ => panic!("名册应保持打开"),
+        }
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('s'),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Subagents { picker, .. }) => {
+                assert_eq!(picker.query, "x", "Ctrl+S 不得进入过滤查询")
+            }
+            _ => panic!("名册应保持打开"),
         }
 
         connection.shutdown().await;
@@ -5335,7 +5302,12 @@ mod tests {
         ));
 
         // 第 1 问：z 进自定义、输入「甲」、Enter 推进到第 2 问
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('z'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('z'),
+        );
         handle_key(
             &mut app,
             &connection,
@@ -5356,7 +5328,12 @@ mod tests {
         }
 
         // 第 2 问不做自定义，直接 tab 提交：答案必须各归各问
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char(' '));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char(' '),
+        );
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
         let result = reply_rx
             .try_recv()
@@ -5364,7 +5341,10 @@ mod tests {
             .expect("提问结果");
         assert_eq!(result.answers.len(), 2);
         assert_eq!(result.answers[0].custom.as_deref(), Some("甲"));
-        assert_eq!(result.answers[1].custom, None, "第 2 问不得带上第 1 问的答案");
+        assert_eq!(
+            result.answers[1].custom, None,
+            "第 2 问不得带上第 1 问的答案"
+        );
         assert_eq!(result.answers[1].selected, vec!["选项一".to_owned()]);
         assert!(app.modal.is_none(), "提交后模态关闭");
 
@@ -5474,9 +5454,24 @@ mod tests {
         app.modal = Some(ask_modal());
 
         // z 进入自定义编辑态，输入两个汉字。
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('z'));
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('中'));
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('文'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('z'),
+        );
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('中'),
+        );
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('文'),
+        );
         assert_eq!(ask_custom(&app), ("中文".to_owned(), "中文".len()));
 
         // ← 回退一个字符后重绘：按字节移动会在 split_at 处 panic。
@@ -5498,7 +5493,12 @@ mod tests {
         draw_ask(&mut app);
 
         // → 到行尾饱和；行首 ← 与空串 Backspace/Delete 都不越界。
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Char('中'));
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('中'),
+        );
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
         assert_eq!(ask_custom(&app).1, "中".len());
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
@@ -5514,6 +5514,160 @@ mod tests {
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Delete);
         assert_eq!(ask_custom(&app), (String::new(), 0), "Delete 删光标处字符");
         draw_ask(&mut app);
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 造一个子代理视图：`session/new` 出来的会话 ID 就是代理 ID。
+    fn agent_view(session: &moc_protocol::methods::SessionInfo) -> crate::subagent::SubagentView {
+        crate::subagent::SubagentView::new(moc_protocol::methods::AgentInfo {
+            id: session.id.clone(),
+            parent_id: session.parent_session_id.clone().unwrap_or_default(),
+            title: session.title.clone(),
+            model: session.model.clone(),
+            cwd: session.cwd.clone(),
+            status: moc_protocol::methods::AgentStatus::Running,
+            created_at_ms: session.created_at_ms,
+            updated_at_ms: session.updated_at_ms,
+            last_message: None,
+        })
+    }
+
+    async fn load_page(
+        connection: &EmbeddedConnection,
+        session_id: &str,
+    ) -> anyhow::Result<moc_protocol::methods::SessionLoadPageResult> {
+        connection
+            .client
+            .call::<SessionLoadPage>(SessionLoadPageParams {
+                session_id: session_id.to_owned(),
+                before_entry_id: None,
+                max_entries: 128,
+                max_message_bytes: Some(64 * 1024),
+            })
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    /// 子代理会话在测试里的替身：`session/new` 起的空会话即可承载聚焦语义。
+    async fn new_child(
+        connection: &EmbeddedConnection,
+        title: &str,
+    ) -> moc_protocol::methods::SessionInfo {
+        connection
+            .client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: Some(title.to_owned()),
+                mode: SessionMode::Normal,
+            })
+            .await
+            .expect("创建子会话")
+    }
+
+    /// 聚焦：名册 `Enter` 把当前会话换成子代理，空输入的 `Esc` 返回并还原草稿。
+    #[tokio::test]
+    async fn focusing_a_subagent_switches_session_and_escape_returns() {
+        let (core, connection, mut app, _root) = setup_test_app_keeping_root().await;
+        let home = app.session.clone().expect("主会话");
+        let child = new_child(&connection, "探查者").await;
+        let view = agent_view(&child);
+        app.subagents.insert(child.id.clone(), view.clone());
+        app.modal = Some(Modal::Subagents {
+            agents: vec![view.info.clone()],
+            picker: crate::modal::PickerState::default(),
+        });
+        app.prompt.insert_str_raw("未发送的草稿");
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert!(app.modal.is_none(), "聚焦后名册关闭");
+        assert!(app.focused.is_some(), "聚焦状态必须置位");
+        assert_eq!(
+            app.agents_root_id().as_deref(),
+            Some(home.id.as_str()),
+            "代理面在被聚焦期间仍挂靠主会话"
+        );
+
+        let page = load_page(&connection, &child.id)
+            .await
+            .expect("加载子代理会话");
+        apply_focus_loaded(&mut app, &connection, false, Ok(page));
+        assert_eq!(
+            app.session.as_ref().map(|session| session.id.as_str()),
+            Some(child.id.as_str()),
+            "当前会话应换成子代理"
+        );
+
+        // 空输入的 Esc 只返回，不打断子代理。
+        app.prompt.clear();
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(app.focused.is_none(), "Esc 返回主会话");
+        let page = load_page(&connection, &home.id).await.expect("加载主会话");
+        apply_focus_loaded(&mut app, &connection, true, Ok(page));
+        assert_eq!(
+            app.session.as_ref().map(|session| session.id.as_str()),
+            Some(home.id.as_str())
+        );
+        assert_eq!(app.prompt_text(), "未发送的草稿", "返回时还原主会话草稿");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 双击 `←` 返回主会话；单次按键仍是移动光标。
+    #[tokio::test]
+    async fn double_left_returns_from_focus() {
+        let (core, connection, mut app, _root) = setup_test_app_keeping_root().await;
+        let child = new_child(&connection, "探查者").await;
+        let view = agent_view(&child);
+        app.subagents.insert(child.id.clone(), view.clone());
+        let home = app.session.clone().expect("主会话");
+        app.focused = Some(crate::app::FocusedAgent {
+            home,
+            home_draft: String::new(),
+            home_scroll: 0,
+        });
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        assert!(app.focused.is_some(), "单次左移不返回");
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        assert!(app.focused.is_none(), "双击左移返回主会话");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 聚焦期间主会话发来的代理状态事件仍要更新名册，否则侧栏在聚焦时僵住。
+    #[tokio::test]
+    async fn agent_status_updates_reach_the_roster_while_focused() {
+        let (core, connection, mut app, _root) = setup_test_app_keeping_root().await;
+        let home = app.session.clone().expect("主会话");
+        let child = new_child(&connection, "探查者").await;
+        app.subagents.insert(child.id.clone(), agent_view(&child));
+        app.session = Some(child.clone());
+        app.focused = Some(crate::app::FocusedAgent {
+            home: home.clone(),
+            home_draft: String::new(),
+            home_scroll: 0,
+        });
+
+        apply_update_and_refresh(
+            &mut app,
+            &connection,
+            home.id.clone(),
+            SessionUpdate::AgentStatusChanged {
+                agent_id: child.id.clone(),
+                status: moc_protocol::methods::AgentStatus::Completed,
+                last_message: Some("done".into()),
+            },
+        );
+
+        let view = app.subagents.get(&child.id).expect("名册里有该代理");
+        assert_eq!(view.status_label(), "已完成");
+        assert_eq!(view.info.last_message.as_deref(), Some("done"));
+        assert!(!view.running);
 
         connection.shutdown().await;
         core.shutdown().await;

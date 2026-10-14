@@ -171,6 +171,12 @@ pub struct App {
     pub subagent_area: Rect,
     pub subagent_hits: Vec<(String, Rect)>,
     pub subagent_generation: u64,
+    /// 聚焦中的子代理；`Some` 时当前会话就是它，`Esc` 或双击 `←` 返回。
+    pub focused: Option<FocusedAgent>,
+    /// 返回主会话时要还原的输入草稿与滚动偏移。
+    pub focus_restore: Option<(String, usize)>,
+    /// 双击 `←` 返回的第一次按键时刻。
+    pub left_tap_pending: Option<std::time::Instant>,
     pub queues: HashMap<String, std::collections::VecDeque<crate::queue::QueuedPrompt>>,
     pub inflight_prompts: std::collections::HashSet<String>,
     /// 本前端发起、会占住会话提示锁的操作（模型切换、手动压缩）在飞的会话。
@@ -203,7 +209,37 @@ pub struct ConfigWrite {
     pub revision: String,
 }
 
+/// 聚焦中的子代理：主 TUI 整体切到它的会话。
+///
+/// 参见 `docs/tui.md` 的子代理一节：`Ctrl+N` 名册里 `Enter` 进入，
+/// `Esc`（输入框为空）或双击 `←` 返回；返回时主会话按磁盘真相重载，
+/// 聚焦期间主会话的更新被忽略。
+#[derive(Debug, Clone)]
+pub struct FocusedAgent {
+    /// 返回时切回的会话。
+    pub home: SessionInfo,
+    /// 返回时还原的输入草稿。
+    pub home_draft: String,
+    /// 返回时还原的滚动偏移。
+    pub home_scroll: usize,
+}
+
 impl App {
+    /// 代理面（名册、侧栏）挂靠的会话：聚焦子代理时仍是主会话。
+    ///
+    /// 人类管理的是「我这一支的子代理」，不是子代理眼里的兄弟；
+    /// 模型面的 `list_agents` 在子代理里返回兄弟，那是给模型看的视角。
+    pub fn agents_root_id(&self) -> Option<String> {
+        match &self.focused {
+            Some(focused) => Some(focused.home.id.clone()),
+            None => self.session.as_ref().map(|session| session.id.clone()),
+        }
+    }
+
+    /// 是否聚焦在某个子代理上。
+    pub fn focused_agent(&self) -> bool {
+        self.focused.is_some()
+    }
     pub fn new(theme: &'static Theme, events: UnboundedSender<AppEvent>) -> Self {
         Self {
             theme,
@@ -270,6 +306,9 @@ impl App {
             startup_pending: None,
             subagents: std::collections::BTreeMap::new(),
             subagent_selected: None,
+            focused: None,
+            focus_restore: None,
+            left_tap_pending: None,
             subagent_area: Rect::default(),
             subagent_hits: Vec::new(),
             subagent_generation: 0,
@@ -368,6 +407,17 @@ impl App {
             self.ctrl_c_pending = None;
             false
         }
+    }
+
+    /// 消费「双击 `←`」的第一次按键：时间窗内返回 true（第二次即触发返回主会话）。
+    ///
+    /// 窗口与 `Ctrl+C` 的二次确认一致（3 秒），避免引入第二套节奏。
+    pub fn take_left_tap_pending(&mut self, now: std::time::Instant) -> bool {
+        let repeated = self
+            .left_tap_pending
+            .is_some_and(|at| now.duration_since(at) <= CTRL_C_TTL);
+        self.left_tap_pending = None;
+        repeated
     }
 
     /// notice 是否仍在显示期内。
