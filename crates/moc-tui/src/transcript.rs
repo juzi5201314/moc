@@ -107,6 +107,7 @@ impl Entry {
         tool.duration_ms = duration_ms;
         tool.diff = diff;
         tool.running = false;
+        tool.progress = None;
         self.touch();
     }
 }
@@ -134,6 +135,8 @@ pub struct ToolCallBlock {
     pub duration_ms: Option<u64>,
     /// 是否仍在执行。
     pub running: bool,
+    /// 运行中工具的进度行（目前只有 `wait_agent` 推送）。
+    pub progress: Option<Vec<moc_protocol::methods::ToolProgressRow>>,
 }
 
 /// 转写中的一个可渲染块。
@@ -151,6 +154,11 @@ pub enum Block {
     },
     /// 一次工具调用。
     Tool(ToolCallBlock),
+    /// 其它代理投递进来的消息（IRC 卡片）。
+    AgentMessage {
+        meta: moc_protocol::methods::AgentMessageMeta,
+        body: String,
+    },
     /// Todo 清单快照（`TodoChanged` 时替换前一块，而非追加）。
     Todo { phases: Vec<TodoPhase> },
     /// 系统提示（授权等待、错误、压缩等）。
@@ -160,6 +168,9 @@ pub enum Block {
 impl Block {
     /// 块是否响应折叠切换。
     pub fn foldable(&self) -> bool {
-        matches!(self, Block::Tool(_) | Block::Thinking { .. })
+        matches!(
+            self,
+            Block::Tool(_) | Block::Thinking { .. } | Block::AgentMessage { .. }
+        )
     }
 }

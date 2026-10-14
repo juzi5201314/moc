@@ -46,6 +46,10 @@ impl Renderer {
             } => {
                 let _ = writeln!(out, "\n[子代理 {agent_id}：{status:?}]");
             }
+            SessionUpdate::AgentMessage { meta, body } => {
+                let _ = writeln!(out, "\n[代理消息 ◀ {}：{body}]", meta.from_title);
+            }
+            SessionUpdate::ToolProgress { .. } => {}
             SessionUpdate::ToolBatchStarted { .. } => {}
             SessionUpdate::GenerationStarted { .. } => state.calls.clear(),
             SessionUpdate::GuardNotice {

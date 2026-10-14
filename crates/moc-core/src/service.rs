@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use moc_llm::Client;
 use moc_protocol::methods::{
-    AgentListParams, AgentListResult, AgentProfile, AgentSendParams, AgentSendResult,
-    AgentSpawnParams, AgentSpawnResult, AgentSteerParams, AgentStopParams, AgentStopResult,
-    AgentWaitParams, AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams,
+    AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentProfile,
+    AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
+    AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams,
     ConfigGetResult, ContextUsageResult, ContextUsageSection, Empty, InitializeParams,
     InitializeResult, ModelInfo, ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult,
     OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
@@ -43,6 +43,8 @@ pub(crate) struct SessionRuntime {
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
     pub steering: Mutex<management::Steering>,
+    /// 代理间消息收件箱：运行中的提示在轮边界取走并落库。
+    pub agent_inbox: Mutex<crate::agents::AgentInbox>,
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
 }
 
@@ -58,6 +60,7 @@ impl SessionRuntime {
             ),
             loaded_skills: Arc::new(RwLock::new(std::collections::HashSet::new())),
             steering: Mutex::new(management::Steering::default()),
+            agent_inbox: Mutex::new(crate::agents::AgentInbox::default()),
             guard: parking_lot::Mutex::new(None),
         }
     }
@@ -177,6 +180,53 @@ impl CoreInner {
         if let Some(runtime) = self.runtimes.lock().await.get(session_id).cloned() {
             runtime.loaded_skills.write().clear();
         }
+    }
+
+    /// 脱离地跑一次提示：任务挂在 `prompts` JoinSet 上，结果只记日志。
+    ///
+    /// 供代理消息唤醒顶层会话使用；与 [`Core::run_operation`] 的差别是不回传结果
+    /// （前端通过更新观察），且调用方已持有该会话的提示锁。
+    pub(crate) async fn spawn_detached_prompt(
+        inner: &Arc<CoreInner>,
+        ctx: RequestContext,
+        params: moc_protocol::methods::PromptParams,
+        record: Arc<crate::session::SessionRecord>,
+        prompt_lock: tokio::sync::OwnedMutexGuard<()>,
+    ) {
+        let session_id = params.session_id.clone();
+        let cancel = inner.shutdown.child_token();
+        let ctx = ctx.with_cancel(cancel.clone());
+        let task_inner = Arc::clone(inner);
+        let mut prompts = inner.prompts.lock().await;
+        if inner.shutdown.is_cancelled() {
+            return;
+        }
+        while let Some(result) = prompts.try_join_next() {
+            if let Err(error) = result {
+                tracing::error!(%error, "会话操作任务失败");
+            }
+        }
+        prompts.spawn(async move {
+            let running = prompt::run_prompt_with_lock(
+                Arc::clone(&task_inner),
+                ctx,
+                params,
+                record,
+                prompt_lock,
+            );
+            tokio::pin!(running);
+            let result = tokio::select! {
+                biased;
+                _ = task_inner.shutdown.cancelled() => {
+                    cancel.cancel();
+                    running.await
+                }
+                result = &mut running => result,
+            };
+            if let Err(error) = result {
+                tracing::warn!(session_id = %session_id, %error, "代理消息唤醒的提示失败");
+            }
+        });
     }
 
     pub(crate) fn client_supports_ask(&self, connection_id: u64) -> bool {
@@ -550,7 +600,7 @@ impl AgentService for Core {
         crate::agents::spawn(
             Arc::clone(&self.inner),
             ctx,
-            params.parent_session_id,
+            params.session_id,
             params.task,
             params.title,
             params.model,
@@ -564,36 +614,21 @@ impl AgentService for Core {
         _ctx: RequestContext,
         params: AgentListParams,
     ) -> Result<AgentListResult, RpcError> {
-        crate::agents::list(&self.inner, params.parent_session_id)
+        crate::agents::list(&self.inner, params.session_id)
             .await
             .map_err(to_rpc)
     }
 
-    async fn agent_send(
+    async fn agent_message(
         &self,
         ctx: RequestContext,
-        params: AgentSendParams,
-    ) -> Result<AgentSendResult, RpcError> {
-        crate::agents::send(
+        params: AgentMessageParams,
+    ) -> Result<AgentMessageResult, RpcError> {
+        crate::agents::message(
             Arc::clone(&self.inner),
             ctx,
-            params.parent_session_id,
-            params.agent_id,
-            params.message,
-        )
-        .await
-        .map_err(to_rpc)
-    }
-
-    async fn agent_steer(
-        &self,
-        _ctx: RequestContext,
-        params: AgentSteerParams,
-    ) -> Result<moc_protocol::SteerResult, RpcError> {
-        crate::agents::steer(
-            &self.inner,
-            params.parent_session_id,
-            params.agent_id,
+            params.session_id,
+            params.target,
             params.message,
         )
         .await
@@ -607,7 +642,7 @@ impl AgentService for Core {
     ) -> Result<AgentStopResult, RpcError> {
         crate::agents::stop(
             &self.inner,
-            params.parent_session_id,
+            params.session_id,
             params.agent_id,
             params.reason,
         )
@@ -617,14 +652,16 @@ impl AgentService for Core {
 
     async fn agent_wait(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: AgentWaitParams,
     ) -> Result<AgentWaitResult, RpcError> {
         crate::agents::wait(
             &self.inner,
-            params.parent_session_id,
-            params.agent_id,
-            params.timeout_ms,
+            &params.session_id,
+            params.agent_ids,
+            params.timeout_secs,
+            None,
+            &ctx.cancel(),
         )
         .await
         .map_err(to_rpc)
@@ -1261,8 +1298,16 @@ impl AgentService for Core {
             .project_context_files(&params.session_id, &cwd)
             .await;
         let summary = self.inner.mcp_summary(&config).await.map_err(to_rpc)?;
-        let pieces =
-            crate::system_prompt::pieces(&config, &model, &cwd, &context_files, &skills, &summary);
+        let agent_roster = crate::agents::subagent_prompt(&self.inner, &params.session_id).await;
+        let pieces = crate::system_prompt::pieces(
+            &config,
+            &model,
+            &cwd,
+            &context_files,
+            &skills,
+            &summary,
+            agent_roster.as_deref(),
+        );
         let system = crate::system_prompt::compose(&pieces);
         let synthetic = crate::compact::replay::synthetic_messages(&state, Some(system.clone()));
         let synthetic_tokens = crate::compact::messages_tokens(&synthetic[1..]);
@@ -1277,7 +1322,10 @@ impl AgentService for Core {
             state.mode,
             self.inner.client_supports_ask(ctx.connection_id()),
             &config,
-            true,
+            crate::tools::ToolScope {
+                control_agents: state.session.parent_session_id.is_none(),
+                subagent: state.session.parent_session_id.is_some(),
+            },
         );
         let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
         let directory_tokens = pieces

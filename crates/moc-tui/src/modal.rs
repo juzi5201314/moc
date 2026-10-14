@@ -123,7 +123,8 @@ impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>) {
         self.prompts.clear();
         for entry in entries {
-            if entry.bash.is_some() {
+            // `!!` 命令与代理消息都不是人类提问，不作为回退边界。
+            if entry.bash.is_some() || entry.agent.is_some() {
                 continue;
             }
             if entry.message.role == Role::User {
@@ -522,6 +523,7 @@ mod tests {
             message,
             tool: None,
             bash: None,
+            agent: None,
         };
         let mut state = RewindState::default();
         state.set_entries(vec![

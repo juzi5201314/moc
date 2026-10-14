@@ -31,8 +31,17 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                     diff: None,
                     duration_ms: tool.duration_ms,
                     running: false,
+                    progress: None,
                 })));
             }
+            continue;
+        }
+        // 代理消息：带来源元数据的卡片，而不是用户输入。
+        if let Some(meta) = &record.agent {
+            blocks.push(Entry::new(Block::AgentMessage {
+                meta: meta.clone(),
+                body: message.text(),
+            }));
             continue;
         }
         match message.role {
@@ -71,6 +80,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                                 diff: None,
                                 duration_ms: None,
                                 running: false,
+                                progress: None,
                             };
                             call_index.insert(call.id.clone(), blocks.len());
                             blocks.push(Entry::new(Block::Tool(block)));
@@ -152,6 +162,7 @@ pub fn blocks_from_entries_with_children(
             diff: None,
             duration_ms: child.duration_ms,
             running: false,
+            progress: None,
         };
         blocks.insert(insert_at, Entry::new(Block::Tool(block)));
         next_positions.insert(child.parent_tool_call_id.clone(), insert_at + 1);
@@ -183,6 +194,7 @@ mod tests {
             message,
             tool,
             bash: None,
+            agent: None,
         }
     }
 
@@ -261,5 +273,32 @@ mod tests {
         };
         assert_eq!(child.parent_id.as_deref(), Some("parent"));
         assert_eq!(child.result.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn agent_message_entries_restore_as_cards() {
+        let mut record = entry(Message::user_text("恢复后仍要看得到"), None);
+        record.agent = Some(moc_protocol::methods::AgentMessageMeta {
+            from_id: "ses_child".into(),
+            from_title: "探查者".into(),
+            delivery: moc_protocol::methods::AgentMessageOutcome::Woken,
+        });
+        let blocks = blocks_from_entries(&[record]);
+        match blocks.as_slice() {
+            [
+                Entry {
+                    block: Block::AgentMessage { meta, body },
+                    ..
+                },
+            ] => {
+                assert_eq!(meta.from_title, "探查者");
+                assert_eq!(
+                    meta.delivery,
+                    moc_protocol::methods::AgentMessageOutcome::Woken
+                );
+                assert_eq!(body, "恢复后仍要看得到");
+            }
+            other => panic!("代理消息必须恢复成卡片：{other:?}"),
+        }
     }
 }

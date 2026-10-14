@@ -164,6 +164,8 @@ pub struct ToolCtx {
     pub mode: SessionMode,
     pub permission: SessionPermission,
     pub allow_agents: bool,
+    /// 当前上下文是否子代理；决定 `yield` 是否可用。
+    pub subagent: bool,
     pub nested: bool,
     pub cancel: CancellationToken,
     pub(crate) guard: Arc<crate::service::prompt::guard::PromptGuard>,
@@ -217,6 +219,25 @@ pub trait Tool: Send + Sync {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>>;
 }
 
+/// 工具可见性范围：同一个 registry 在顶层会话与子代理下的差异。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolScope {
+    /// 是否允许创建、停止与等待子代理。
+    pub control_agents: bool,
+    /// 是否是子代理上下文（`yield` 只在子代理可用）。
+    pub subagent: bool,
+}
+
+impl ToolScope {
+    /// 顶层会话：全部代理控制工具可用。
+    pub fn top() -> Self {
+        Self {
+            control_agents: true,
+            subagent: false,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ToolRegistry {
     builtins: Vec<Arc<dyn Tool>>,
@@ -237,10 +258,10 @@ impl ToolRegistry {
                 Arc::new(ask::AskTool),
                 Arc::new(agent::SpawnAgentTool),
                 Arc::new(agent::ListAgentsTool),
-                Arc::new(agent::SendAgentTool),
-                Arc::new(agent::SteerAgentTool),
+                Arc::new(agent::MessageAgentTool),
                 Arc::new(agent::StopAgentTool),
                 Arc::new(agent::WaitAgentTool),
+                Arc::new(agent::YieldTool),
                 Arc::new(plan::WritePlanTool),
                 Arc::new(plan::ExitPlanTool),
                 Arc::new(clm::ClmContextTool),
@@ -264,11 +285,17 @@ impl ToolRegistry {
         mode: SessionMode,
         ask_supported: bool,
         config: &ResolvedConfig,
-        allow_agents: bool,
+        scope: ToolScope,
     ) -> Vec<ToolDef> {
         self.builtins
             .iter()
-            .filter(|tool| allow_agents || !Self::is_agent_tool(tool.name()))
+            .filter(|tool| match tool.name() {
+                // 创建与回收子代理只在顶层会话可用；子代理只能通信。
+                name if Self::is_parent_only_tool(name) => scope.control_agents,
+                // 交付终态只对子代理有意义：顶层会话没有父代理可交付。
+                "yield" => scope.subagent,
+                _ => true,
+            })
             .filter(|tool| {
                 crate::service::mode::mode_allows(mode, tool.name(), tool.tier())
                     && crate::service::mode::tool_enabled(tool.name(), ask_supported, config)
@@ -281,16 +308,9 @@ impl ToolRegistry {
             .collect()
     }
 
-    fn is_agent_tool(name: &str) -> bool {
-        matches!(
-            name,
-            "spawn_agent"
-                | "list_agents"
-                | "send_agent"
-                | "steer_agent"
-                | "stop_agent"
-                | "wait_agent"
-        )
+    /// 创建/回收/等待子代理的工具；子代理上下文一律剔除。
+    fn is_parent_only_tool(name: &str) -> bool {
+        matches!(name, "spawn_agent" | "stop_agent" | "wait_agent")
     }
 
     pub fn all(&self) -> &[Arc<dyn Tool>] {

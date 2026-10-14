@@ -48,6 +48,7 @@ pub(crate) async fn compact(
         &context_files,
         &skills,
         &summary,
+        None,
     ));
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {
@@ -56,7 +57,10 @@ pub(crate) async fn compact(
             state.mode,
             inner.client_supports_ask(ctx.connection_id()),
             config,
-            true,
+            crate::tools::ToolScope {
+                control_agents: state.session.parent_session_id.is_none(),
+                subagent: state.session.parent_session_id.is_some(),
+            },
         ),
         native_input: None,
         ..ChatRequest::default()
@@ -297,6 +301,7 @@ mod tests {
                     message: Message::user_text(text),
                     tool: None,
                     finish_reason: None,
+                    agent: None,
                 },
                 parent,
                 2,

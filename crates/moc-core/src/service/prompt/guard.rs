@@ -309,12 +309,11 @@ pub(super) async fn observe_tool(
                 .and_then(serde_json::Value::as_str)
                 == Some("Running")
     } else if !outcome.is_error && call.name == "wait_agent" {
-        serde_json::from_str::<serde_json::Value>(match &outcome.content {
-            ToolOutput::Text(text) => text,
-            _ => "",
+        // 等待中 = 还没有终态也没有新消息；读结构化结果，避免依赖文本解析。
+        outcome.structured_content.as_ref().is_some_and(|value| {
+            value.get("settled") == Some(&serde_json::Value::Bool(false))
+                && value.get("messages_pending") != Some(&serde_json::Value::Bool(true))
         })
-        .ok()
-        .is_some_and(|value| value.get("completed") == Some(&serde_json::Value::Bool(false)))
     } else {
         false
     };

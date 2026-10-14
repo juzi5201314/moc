@@ -151,6 +151,7 @@ mod tests {
                 message: Message::user_text("preserve this exact detail"),
                 tool: None,
                 finish_reason: None,
+                agent: None,
             },
             header.id().into(),
             2,

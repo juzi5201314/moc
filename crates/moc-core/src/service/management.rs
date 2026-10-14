@@ -13,6 +13,8 @@ use std::{collections::VecDeque, path::Path, sync::Arc};
 pub(crate) struct Steering {
     pub accepting: bool,
     pub messages: VecDeque<moc_llm::Message>,
+    /// 补充消息入队时唤醒 `wait_agent`，让它立刻交还控制权。
+    pub notify: Arc<tokio::sync::Notify>,
 }
 
 pub(super) async fn steer(
@@ -38,6 +40,7 @@ pub(super) async fn steer(
         return Ok(SteerResult { accepted: false });
     }
     steering.messages.push_back(message);
+    steering.notify.notify_waiters();
     Ok(SteerResult { accepted: true })
 }
 

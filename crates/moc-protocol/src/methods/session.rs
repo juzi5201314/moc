@@ -375,6 +375,9 @@ pub struct TranscriptEntry {
     /// 用户手动执行的命令；与 agent 工具调用区分，并控制模型可见性。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash: Option<super::bash::BashCommand>,
+    /// 代理间消息的来源元信息；`None` 表示本地输入。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<super::agent::AgentMessageMeta>,
 }
 
 impl TranscriptEntry {
@@ -385,9 +388,21 @@ impl TranscriptEntry {
             .is_some_and(|bash| bash.exclude_from_context)
     }
 
-    /// 模型视图：`!!` 不产生消息，`!` 带上命令来源，其余消息保持原样。
+    /// 模型视图：`!!` 不产生消息，`!` 带上命令来源，代理消息包上来源标签，
+    /// 其余消息保持原样。
     pub fn context_message(&self) -> Option<crate::Message> {
-        self.in_context().then(|| match &self.bash {
+        if !self.in_context() {
+            return None;
+        }
+        if let Some(agent) = &self.agent {
+            return Some(crate::Message::user_text(format!(
+                "<agent-message from=\"{}\" id=\"{}\">\n{}\n</agent-message>",
+                agent.from_title,
+                agent.from_id,
+                self.message.text()
+            )));
+        }
+        Some(match &self.bash {
             Some(bash) => bash.context_message(&self.message),
             None => self.message.clone(),
         })

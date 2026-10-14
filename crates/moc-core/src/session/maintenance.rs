@@ -333,6 +333,7 @@ mod tests {
                 message: moc_llm::Message::user_text(format!("保留 {}", kept.display())),
                 tool: None,
                 finish_reason: None,
+                agent: None,
             },
             header.id().into(),
             2,

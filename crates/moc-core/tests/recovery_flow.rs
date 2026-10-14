@@ -118,6 +118,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
                     text: "开始".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
     });
@@ -228,6 +229,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
                 text: "失败请求".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await;
     assert!(result.is_err());
@@ -466,6 +468,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
                     text: "开始".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
     });
@@ -1092,6 +1095,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
                     text: "压缩时取消".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
     });

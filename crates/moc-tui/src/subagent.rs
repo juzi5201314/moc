@@ -78,6 +78,7 @@ impl SubagentView {
                     diff: None,
                     duration_ms: None,
                     running: true,
+                    progress: None,
                 })));
                 self.tool_indices.insert(tool_call_id, index);
             }
@@ -105,6 +106,21 @@ impl SubagentView {
             }
             SessionUpdate::TodoChanged { phases } => {
                 self.blocks.push(Entry::new(Block::Todo { phases }));
+            }
+            SessionUpdate::AgentMessage { meta, body } => {
+                self.blocks
+                    .push(Entry::timed(Block::AgentMessage { meta, body }));
+            }
+            SessionUpdate::ToolProgress {
+                tool_call_id, rows, ..
+            } => {
+                if let Some(index) = self.tool_indices.get(&tool_call_id).copied()
+                    && let Some(entry) = self.blocks.get_mut(index)
+                    && let Block::Tool(tool) = &mut entry.block
+                {
+                    tool.progress = Some(rows);
+                    entry.touch();
+                }
             }
             SessionUpdate::ContextCompacted {
                 method,
@@ -199,15 +215,7 @@ impl SubagentView {
     }
 
     pub fn status_label(&self) -> &'static str {
-        use moc_protocol::methods::AgentStatus;
-        match self.info.status {
-            AgentStatus::Queued => "排队中",
-            AgentStatus::Running => "运行中",
-            AgentStatus::Completed => "已完成",
-            AgentStatus::Stopped => "已停止",
-            AgentStatus::Failed => "失败",
-            AgentStatus::Idle => "空闲",
-        }
+        crate::render::scrollback::agent_status_label(self.info.status)
     }
 
     pub fn set_status(
@@ -243,7 +251,8 @@ impl SubagentView {
 
 #[derive(Debug, Clone)]
 pub struct AgentOperationNotice {
-    pub agent_id: String,
+    /// 投递目标（代理 id、`parent` 或 `all`）。
+    pub target: String,
     pub message: String,
 }
 
@@ -275,5 +284,30 @@ mod tests {
         assert!(!view.running);
         assert_eq!(view.status_label(), "已完成");
         assert_eq!(view.info.last_message.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn agent_message_update_appends_card() {
+        let mut view = SubagentView::new(info());
+        view.apply(SessionUpdate::AgentMessage {
+            meta: moc_protocol::methods::AgentMessageMeta {
+                from_id: "ses_sibling".into(),
+                from_title: "兄弟".into(),
+                delivery: moc_protocol::methods::AgentMessageOutcome::Woken,
+            },
+            body: "同步一下进度".into(),
+        });
+        assert!(
+            matches!(
+                view.blocks.last().map(|entry| &entry.block),
+                Some(Block::AgentMessage { body, .. }) if body == "同步一下进度"
+            ),
+            "子代理视图必须显示收到的消息"
+        );
+        assert!(
+            view.blocks
+                .last()
+                .is_some_and(|entry| entry.at_ms.is_some())
+        );
     }
 }

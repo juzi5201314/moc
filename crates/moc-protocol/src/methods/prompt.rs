@@ -58,6 +58,9 @@ pub struct PromptParams {
     /// 调用）后不予持久化，也不推送 `ModeChanged`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<SessionMode>,
+    /// 本条输入是代理间消息：携带来源元信息，落库为 `Entry::Message.agent`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_message: Option<super::agent::AgentMessageMeta>,
 }
 
 /// 一段用户输入。
@@ -141,6 +144,7 @@ mod tests {
                 text: "看一下 README".into(),
             }],
             mode: None,
+            agent_message: None,
         };
         assert_eq!(
             serde_json::to_value(&params).expect("可序列化"),

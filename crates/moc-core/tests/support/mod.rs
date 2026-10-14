@@ -108,6 +108,7 @@ impl Harness {
                 session_id: id.into(),
                 input: vec![InputPart::Text { text: text.into() }],
                 mode: None,
+                agent_message: None,
             })
             .await
             .unwrap()

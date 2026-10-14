@@ -84,6 +84,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
                     text: "开始任务".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
             .unwrap()

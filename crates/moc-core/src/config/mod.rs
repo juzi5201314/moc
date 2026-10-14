@@ -700,7 +700,7 @@ max_output_tokens = 128000
                     moc_protocol::methods::SessionMode::Normal,
                     false,
                     config,
-                    true,
+                    crate::tools::ToolScope::top(),
                 )
                 .iter()
                 .any(|definition| definition.name == name)

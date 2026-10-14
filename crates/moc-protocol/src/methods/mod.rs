@@ -41,10 +41,10 @@ pub mod update;
 use serde::{Deserialize, Serialize};
 
 pub use agent::{
-    AgentInfo, AgentList, AgentListParams, AgentListResult, AgentSend, AgentSendParams,
-    AgentSendResult, AgentSpawn, AgentSpawnParams, AgentSpawnResult, AgentStatus, AgentSteer,
-    AgentSteerParams, AgentStop, AgentStopParams, AgentStopResult, AgentWait, AgentWaitParams,
-    AgentWaitResult,
+    AgentInfo, AgentList, AgentListParams, AgentListResult, AgentMessage, AgentMessageMeta,
+    AgentMessageOutcome, AgentMessageParams, AgentMessageReceipt, AgentMessageResult, AgentSpawn,
+    AgentSpawnParams, AgentSpawnResult, AgentStatus, AgentStop, AgentStopParams, AgentStopResult,
+    AgentWait, AgentWaitEntry, AgentWaitParams, AgentWaitResult, ToolProgressRow,
 };
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
 pub use bash::{BashCommand, BashParams, BashResult, SessionBash};
@@ -155,8 +155,7 @@ mod tests {
             (<ResourceComplete as Method>::NAME, "resource/complete"),
             (<AgentSpawn as Method>::NAME, "agent/spawn"),
             (<AgentList as Method>::NAME, "agent/list"),
-            (<AgentSend as Method>::NAME, "agent/send"),
-            (<AgentSteer as Method>::NAME, "agent/steer"),
+            (<AgentMessage as Method>::NAME, "agent/message"),
             (<AgentStop as Method>::NAME, "agent/stop"),
             (<AgentWait as Method>::NAME, "agent/wait"),
         ];
@@ -197,8 +196,7 @@ mod tests {
         client::<SessionPlanApprove>();
         client::<AgentSpawn>();
         client::<AgentList>();
-        client::<AgentSend>();
-        client::<AgentSteer>();
+        client::<AgentMessage>();
         client::<AgentStop>();
         client::<AgentWait>();
         client::<SessionCompact>();

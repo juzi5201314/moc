@@ -21,6 +21,9 @@ use crate::transcript::{Block, Entry, ToolCallBlock};
 /// 工具结果在展开态下最多显示的行数（超出折叠为提示）。
 const TOOL_RESULT_TAIL_ROWS: usize = 14;
 
+/// 接收侧 IRC 卡片折叠时保留的正文行数。
+const AGENT_MESSAGE_PREVIEW_ROWS: usize = 3;
+
 /// 滚动区渲染状态（与 `App::blocks` 长度保持同步）。
 #[derive(Default)]
 pub struct ScrollbackView {
@@ -309,8 +312,25 @@ fn estimate_entry_height(entry: &Entry, app: &App, width: u16) -> usize {
             }
         }
         Block::Tool(tool) => estimate_tool_height(tool, app, entry.folded, width),
+        Block::AgentMessage { body, .. } => {
+            // 与 `agent_message_block` 同源：折叠时是预览行数 + 省略行。
+            let rows = wrapped_rows(body, width.saturating_sub(TITLE_INDENT + 2));
+            let shown = if entry.folded {
+                rows.min(AGENT_MESSAGE_PREVIEW_ROWS)
+            } else {
+                rows
+            };
+            shown + usize::from(shown < rows) + 2
+        }
         Block::Todo { phases } => estimate_todo_height(phases, width),
     }
+}
+
+/// 多行文本按显示宽度折行：先按换行分行，再逐行折行（[`wrap_text`] 只折单行）。
+fn wrapped_text_rows(text: &str, width: usize) -> Vec<String> {
+    text.lines()
+        .flat_map(|line| wrap_text(line, width))
+        .collect()
 }
 
 /// 文本按显示宽度的折行行数（空文本也算一行）。
@@ -348,6 +368,24 @@ fn estimate_tool_height(tool: &ToolCallBlock, app: &App, folded: bool, width: us
         rows += tool.result.as_deref().map_or(0, |result| {
             clamped_rows(result, inner_width.saturating_sub(2), false).1
         });
+    } else if tool.name == "message_agent" {
+        let message = args
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        rows += clamped_rows(message, inner_width.saturating_sub(2), false).1;
+        rows += message_receipts(tool).map_or(0, |receipts| {
+            let expanded = receipts.len() > 1
+                || receipts.iter().any(|receipt| {
+                    receipt.outcome == moc_protocol::methods::AgentMessageOutcome::Failed
+                });
+            if expanded { receipts.len() } else { 0 }
+        });
+    } else if tool.name == "wait_agent" {
+        rows += match &tool.progress {
+            Some(progress) => progress.len(),
+            None => wait_result(tool).map_or(0, |result| result.agents.len()),
+        };
     } else {
         rows += tool
             .result
@@ -427,6 +465,9 @@ fn render_entry_single(entry: &Entry, app: &App, width: usize, first: bool) -> V
             duration_ms,
         } => thinking_block(text, *reasoning_tokens, *duration_ms, entry, app, width),
         Block::Tool(tool) => render_tool(tool, app, width, entry.folded),
+        Block::AgentMessage { meta, body } => {
+            agent_message_block(meta, body, width, theme, entry.folded)
+        }
         Block::Todo { phases } => render_todo(phases, app, width),
         Block::Note { text, error } => note_block(text, *error, width, theme),
     }
@@ -624,6 +665,55 @@ fn thinking_block(
     lines
 }
 
+/// 接收侧 IRC 卡片：标题行 + 正文预览（折叠时截断到预览行数）。
+fn agent_message_block(
+    meta: &moc_protocol::methods::AgentMessageMeta,
+    body: &str,
+    width: usize,
+    theme: &Theme,
+    folded: bool,
+) -> Vec<Line<'static>> {
+    let (word, color) = outcome_label(meta.delivery, theme);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+        Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_tool)),
+        Span::styled(
+            "IRC ".to_owned(),
+            Style::new()
+                .fg(theme.accent_tool)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("◀ ".to_owned(), Style::new().fg(theme.accent_tool)),
+        Span::styled(meta.from_title.clone(), Style::new().fg(theme.text_primary)),
+        Span::styled(format!(" · {word}"), Style::new().fg(color)),
+    ])];
+    let indent = " ".repeat(TITLE_INDENT + 2);
+    let rows = wrapped_text_rows(body, width.saturating_sub(TITLE_INDENT + 2));
+    let total = rows.len();
+    let shown = if folded {
+        total.min(AGENT_MESSAGE_PREVIEW_ROWS)
+    } else {
+        total
+    };
+    for row in rows.into_iter().take(shown) {
+        lines.push(Line::from(vec![
+            Span::styled(indent.clone(), Style::new()),
+            Span::styled(row, Style::new().fg(theme.text_primary)),
+        ]));
+    }
+    if shown < total {
+        lines.push(Line::from(vec![
+            Span::styled(indent, Style::new()),
+            Span::styled(
+                format!("⋯ 还有 {} 行", total - shown),
+                Style::new().fg(theme.gray_dim),
+            ),
+        ]));
+    }
+    lines.push(Line::from(String::new()));
+    lines
+}
+
 /// 系统提示：错误 `✘`、普通 `»`，缩进与块标题一致。
 fn note_block(text: &str, error: bool, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let (marker, color) = if error {
@@ -665,6 +755,43 @@ fn format_clock(at_ms: u64) -> Option<String> {
         .timestamp_millis_opt(millis)
         .single()
         .map(|at| at.format("%H:%M").to_string())
+}
+
+/// 代理状态的中文标签；TUI 各处共用一套措辞。
+pub(crate) fn agent_status_label(status: moc_protocol::methods::AgentStatus) -> &'static str {
+    use moc_protocol::methods::AgentStatus;
+    match status {
+        AgentStatus::Queued => "排队中",
+        AgentStatus::Running => "运行中",
+        AgentStatus::Completed => "已完成",
+        AgentStatus::Stopped => "已停止",
+        AgentStatus::Failed => "失败",
+        AgentStatus::Idle => "空闲",
+    }
+}
+
+/// 单条投递结果的措辞。
+pub(crate) fn outcome_word(outcome: moc_protocol::methods::AgentMessageOutcome) -> &'static str {
+    use moc_protocol::methods::AgentMessageOutcome;
+    match outcome {
+        AgentMessageOutcome::Injected => "已注入",
+        AgentMessageOutcome::Woken => "已唤醒",
+        AgentMessageOutcome::Failed => "失败",
+    }
+}
+
+/// 单条投递结果的措辞与颜色。
+fn outcome_label(
+    outcome: moc_protocol::methods::AgentMessageOutcome,
+    theme: &Theme,
+) -> (&'static str, ratatui::style::Color) {
+    use moc_protocol::methods::AgentMessageOutcome;
+    let color = match outcome {
+        AgentMessageOutcome::Injected => theme.accent_running,
+        AgentMessageOutcome::Woken => theme.accent_tool,
+        AgentMessageOutcome::Failed => theme.accent_error,
+    };
+    (outcome_word(outcome), color)
 }
 
 /// 耗时展示：毫秒级给 `ms`，不足一分钟给一位小数，再长给 `Xm Ys`。
@@ -720,10 +847,14 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
         (_, None) => ("◆", theme.accent_tool),
     };
     let summary = tool_summary(tool, &args);
-    let name = match args.get("exclude_from_context").and_then(Value::as_bool) {
-        Some(true) => "!! bash · 不进入上下文",
-        Some(false) => "! bash",
-        None => &tool.name,
+    let name = match tool.name.as_str() {
+        // 代理间消息沿用 `!! bash` 的自定义标题先例。
+        "message_agent" => "IRC",
+        _ => match args.get("exclude_from_context").and_then(Value::as_bool) {
+            Some(true) => "!! bash · 不进入上下文",
+            Some(false) => "! bash",
+            None => &tool.name,
+        },
     };
     lines.push(Line::from(vec![
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
@@ -798,6 +929,10 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
                 ))
             }));
         }
+    } else if tool.name == "message_agent" {
+        lines.extend(agent_message_tool_rows(tool, &args, inner_width, theme));
+    } else if tool.name == "wait_agent" {
+        lines.extend(wait_agent_tool_rows(tool, inner_width, theme));
     } else if let Some(result) = &tool.result {
         let rows = clamp_rows(result, inner_width);
         lines.extend(rows.into_iter().map(|text| {
@@ -817,6 +952,110 @@ fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, folded: bool) -> V
     }
     lines.push(Line::from(String::new()));
     indent_tool_lines(lines, depth)
+}
+
+/// 解析 `message_agent` 的投递回执。
+fn message_receipts(tool: &ToolCallBlock) -> Option<Vec<moc_protocol::methods::AgentMessageReceipt>> {
+    let result = tool.result.as_deref()?;
+    serde_json::from_str::<moc_protocol::methods::AgentMessageResult>(result)
+        .ok()
+        .map(|result| result.receipts)
+}
+
+/// 解析 `wait_agent` 的等待结果。
+fn wait_result(tool: &ToolCallBlock) -> Option<moc_protocol::methods::AgentWaitResult> {
+    let result = tool.result.as_deref()?;
+    serde_json::from_str::<moc_protocol::methods::AgentWaitResult>(result).ok()
+}
+
+/// 发送侧 IRC 卡片正文：消息预览 + 收件人明细。
+///
+/// 明细只在「广播或有失败」时逐行展开：单目标成功时标题行的回执词已经说清结果，
+/// 再列一遍只是重复。
+fn agent_message_tool_rows(
+    tool: &ToolCallBlock,
+    args: &Value,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let message = args.get("message").and_then(Value::as_str).unwrap_or_default();
+    for row in clamp_rows(message, width.saturating_sub(2)) {
+        lines.push(Line::from(Span::styled(
+            format!("  {row}"),
+            Style::new().fg(theme.text_primary),
+        )));
+    }
+    let Some(receipts) = message_receipts(tool) else {
+        return lines;
+    };
+    let expanded = receipts.len() > 1
+        || receipts
+            .iter()
+            .any(|receipt| receipt.outcome == moc_protocol::methods::AgentMessageOutcome::Failed);
+    if !expanded {
+        return lines;
+    }
+    for receipt in receipts {
+        let (word, color) = outcome_label(receipt.outcome, theme);
+        let mut spans = vec![
+            Span::styled("  ".to_owned(), Style::new()),
+            Span::styled(format!("{} ", receipt.title), Style::new().fg(theme.text_secondary)),
+            Span::styled(word.to_owned(), Style::new().fg(color)),
+        ];
+        if let Some(error) = receipt.error {
+            spans.push(Span::styled(format!("：{error}"), Style::new().fg(color)));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// 等待卡片的行：优先实时进度，工具结束后回落到结果快照。
+fn wait_agent_tool_rows(tool: &ToolCallBlock, _width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    use moc_protocol::methods::AgentStatus;
+    let rows: Vec<(String, AgentStatus, u64)> = match &tool.progress {
+        Some(progress) => progress
+            .iter()
+            .map(|row| (row.title.clone(), row.status, row.elapsed_ms))
+            .collect(),
+        None => wait_result(tool).map_or_else(Vec::new, |result| {
+            result
+                .agents
+                .into_iter()
+                .map(|entry| (entry.title, entry.status, 0))
+                .collect()
+        }),
+    };
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::with_capacity(rows.len());
+    for (title, status, elapsed_ms) in rows {
+        let (glyph, color) = match status {
+            AgentStatus::Queued | AgentStatus::Running => ("▸", theme.accent_running),
+            AgentStatus::Completed => ("◆", theme.accent_tool),
+            AgentStatus::Stopped => ("◼", theme.gray_dim),
+            AgentStatus::Failed => ("✘", theme.accent_error),
+            AgentStatus::Idle => ("○", theme.gray_dim),
+        };
+        let mut spans = vec![
+            Span::styled(format!("  {glyph} "), Style::new().fg(color)),
+            Span::styled(title, Style::new().fg(theme.text_primary)),
+            Span::styled(
+                format!(" · {}", agent_status_label(status)),
+                Style::new().fg(color),
+            ),
+        ];
+        if elapsed_ms > 0 {
+            spans.push(Span::styled(
+                format!(" · {}", format_duration(elapsed_ms)),
+                Style::new().fg(theme.gray_dim),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
 }
 
 /// 标题行的参数摘要。
@@ -862,6 +1101,45 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             })
             .unwrap_or_default(),
         "todo" => "更新任务清单".to_owned(),
+        "message_agent" => {
+            use moc_protocol::methods::AgentMessageOutcome;
+            let target = args.get("target").and_then(Value::as_str).unwrap_or_default();
+            let mut summary = format!("▶ {target}");
+            if let Some(receipts) = message_receipts(tool) {
+                if target == "all" {
+                    summary.push_str(" · 广播");
+                }
+                let failed = receipts
+                    .iter()
+                    .filter(|receipt| receipt.outcome == AgentMessageOutcome::Failed)
+                    .count();
+                match receipts.as_slice() {
+                    [receipt] => {
+                        summary.push_str(&format!(" · {}", outcome_word(receipt.outcome)))
+                    }
+                    receipts => summary.push_str(&format!(" · {} 已送达", receipts.len() - failed)),
+                }
+                if failed > 0 {
+                    summary.push_str(&format!(" · {failed} 失败"));
+                }
+            }
+            summary
+        }
+        "wait_agent" => {
+            let mut summary = match args.get("agent_ids").and_then(Value::as_array) {
+                Some(ids) if !ids.is_empty() => format!("等待 {} 个代理", ids.len()),
+                _ => "等待全部运行中代理".to_owned(),
+            };
+            if let Some(result) = wait_result(tool) {
+                if result.messages_pending {
+                    summary.push_str(" · 有新消息");
+                }
+                if result.timed_out {
+                    summary.push_str(" · 超时");
+                }
+            }
+            summary
+        }
         "ask" => args
             .get("question")
             .and_then(Value::as_str)
@@ -1274,5 +1552,187 @@ mod tests {
         view.sync(&app, 80);
         assert_eq!(view.cache[0].key, (latest, app.blocks[0].folded, app.view_gen));
         assert_eq!(view.cache[1].key.0, latest);
+    }
+
+    /// 接收侧 IRC 卡片：标题措辞、折叠预览与估高同源。
+    #[test]
+    fn agent_message_card_renders_irc_header_and_preview() {
+        use moc_protocol::methods::{AgentMessageMeta, AgentMessageOutcome};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 60u16;
+        let body = (0..6)
+            .map(|index| format!("第 {index} 行消息"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.push_block(Block::AgentMessage {
+            meta: AgentMessageMeta {
+                from_id: "ses_child".into(),
+                from_title: "探查者".into(),
+                delivery: AgentMessageOutcome::Injected,
+            },
+            body,
+        });
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        app.blocks[0].toggle_fold();
+        let folded = render_entry(0, &app.blocks[0], &app, width, true);
+        let text = text_of(&folded);
+        assert!(text.contains("IRC ◀ 探查者"), "标题必须标明来源：{text}");
+        assert!(text.contains("已注入"), "标题必须标出投递结果：{text}");
+        assert!(text.contains("⋯ 还有 3 行"), "折叠只留预览行：{text}");
+        assert!(text.contains("第 0 行消息") && text.contains("第 2 行消息"));
+        assert!(!text.contains("第 3 行消息"));
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, width),
+            folded.len(),
+            "折叠态估算与渲染同源"
+        );
+
+        app.blocks[0].toggle_fold();
+        let expanded = render_entry(0, &app.blocks[0], &app, width, true);
+        let text = text_of(&expanded);
+        assert!(text.contains("第 5 行消息"));
+        assert!(!text.contains("还有"));
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, width),
+            expanded.len(),
+            "展开态估算与渲染同源"
+        );
+    }
+
+    /// 发送侧 IRC 卡片：广播回执逐行展开，摘要给出总量。
+    #[test]
+    fn message_agent_card_lists_receipt_rows() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 60u16;
+        app.start_tool_block("call_msg".into(), "message_agent".into());
+        app.tool_entry_mut("call_msg")
+            .expect("工具块")
+            .push_args(r#"{"target":"all","message":"请复查一下改动"}"#);
+        app.finish_tool_block(
+            "call_msg".into(),
+            ToolStatus::Completed,
+            ToolResult {
+                tool_call_id: "call_msg".into(),
+                content: serde_json::json!({
+                    "receipts": [
+                        {"agent_id": "ses_a", "title": "甲", "outcome": "injected"},
+                        {"agent_id": "ses_b", "title": "乙", "outcome": "failed", "error": "收件箱已满"}
+                    ]
+                })
+                .to_string(),
+                is_error: true,
+                images: Vec::new(),
+            },
+            Some(3),
+            None,
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("IRC"), "工具卡标题必须显示 IRC：{text}");
+        assert!(text.contains("▶ all"));
+        assert!(text.contains("广播"));
+        assert!(text.contains("1 已送达") && text.contains("1 失败"));
+        assert!(text.contains("请复查一下改动"), "正文必须带消息预览：{text}");
+        assert!(text.contains("甲 已注入"));
+        assert!(text.contains("乙 失败：收件箱已满"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+    }
+
+    /// 等待卡片：运行中显示进度行与耗时，结束后改用结果快照。
+    #[test]
+    fn wait_agent_renders_progress_rows() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::{AgentStatus, ToolProgressRow, ToolStatus};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 60u16;
+        app.start_tool_block("call_wait".into(), "wait_agent".into());
+        app.tool_entry_mut("call_wait")
+            .expect("工具块")
+            .push_args(r#"{"agent_ids":["ses_a","ses_b"]}"#);
+        app.set_tool_progress(
+            "call_wait",
+            vec![
+                ToolProgressRow {
+                    agent_id: "ses_a".into(),
+                    title: "甲".into(),
+                    status: AgentStatus::Running,
+                    elapsed_ms: 3_200,
+                },
+                ToolProgressRow {
+                    agent_id: "ses_b".into(),
+                    title: "乙".into(),
+                    status: AgentStatus::Completed,
+                    elapsed_ms: 0,
+                },
+            ],
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("等待 2 个代理"));
+        assert!(text.contains("▸ 甲 · 运行中 · 3.2s"), "运行行带耗时：{text}");
+        assert!(text.contains("◆ 乙 · 已完成"));
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, width),
+            lines.len(),
+            "进度态估算与渲染同源"
+        );
+
+        app.finish_tool_block(
+            "call_wait".into(),
+            ToolStatus::Completed,
+            ToolResult {
+                tool_call_id: "call_wait".into(),
+                content: serde_json::json!({
+                    "agents": [
+                        {"id": "ses_a", "title": "甲", "status": "completed"},
+                        {"id": "ses_b", "title": "乙", "status": "running"}
+                    ],
+                    "settled": true,
+                    "messages_pending": false,
+                    "timed_out": false
+                })
+                .to_string(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            Some(1_100),
+            None,
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("◆ 甲 · 已完成"), "结果行回落到快照：{text}");
+        assert!(text.contains("▸ 乙 · 运行中"));
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, width),
+            lines.len(),
+            "结果态估算与渲染同源"
+        );
     }
 }

@@ -28,9 +28,9 @@ use crate::error::{ProtocolError, RpcCallError, RpcError};
 use crate::message::Notification;
 use crate::method::Method;
 use crate::methods::{
-    AgentListParams, AgentListResult, AgentSendParams, AgentSendResult, AgentSpawnParams,
-    AgentSpawnResult, AgentSteerParams, AgentStopParams, AgentStopResult, AgentWaitParams,
-    AgentWaitResult, CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty,
+    AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentSpawnParams,
+    AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
+    CompactResult, ConfigGetParams, ConfigGetResult, ContextUsageResult, Empty,
     InitializeParams, InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult,
     OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
     OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
@@ -95,19 +95,11 @@ pub trait AgentService: Send + Sync + 'static {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
-    fn agent_send(
+    fn agent_message(
         &self,
         _ctx: RequestContext,
-        _params: AgentSendParams,
-    ) -> impl Future<Output = Result<AgentSendResult, RpcError>> + Send {
-        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
-    }
-
-    fn agent_steer(
-        &self,
-        _ctx: RequestContext,
-        _params: AgentSteerParams,
-    ) -> impl Future<Output = Result<crate::SteerResult, RpcError>> + Send {
+        _params: AgentMessageParams,
+    ) -> impl Future<Output = Result<AgentMessageResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

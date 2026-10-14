@@ -133,6 +133,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
                 text: "first".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("prompt with default model");
@@ -153,6 +154,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
                 text: "second".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("prompt with switched model");
@@ -185,6 +187,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
                 text: "third".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("prompt after resume");
@@ -629,6 +632,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
                 text: "Say hello".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("run model prompt");
@@ -806,6 +810,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
                 text: "Design the change".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("submit plan via model tool call");
@@ -904,6 +909,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
                 text: approved.auto_prompt.unwrap(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("start approved implementation");
@@ -1086,6 +1092,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
                 text: "Read and update target.txt".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("run read-edit-tool prompt");
@@ -1256,6 +1263,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
                 text: "Inspect without changing files".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("run read-only plan prompt");
@@ -1424,6 +1432,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
                 text: "看一下有没有遗留文件".into(),
             }],
             mode: Some(SessionMode::Ask),
+            agent_message: None,
         })
         .await
         .expect("run ask-once prompt");
@@ -1561,6 +1570,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
                 text: "Say hello".into(),
             }],
             mode: None,
+            agent_message: None,
         })
         .await
         .expect("run model prompt");
@@ -2158,6 +2168,7 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
                     text: "开始".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
     });

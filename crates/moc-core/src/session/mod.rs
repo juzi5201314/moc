@@ -173,6 +173,34 @@ impl SessionTable {
         self.store.list().await
     }
 
+    /// 已知会话：磁盘上的会话与内存中已加载的会话合并，内存记录优先。
+    ///
+    /// `list` 只覆盖磁盘，而 transcript 是首次 append 才落盘：`session/new` 与刚
+    /// spawn 的子代理在写入第一条记录前只存在于内存。代理关系解析必须看到它们。
+    pub async fn known(&self) -> Result<Vec<SessionInfo>, CoreError> {
+        let mut sessions: HashMap<String, SessionInfo> = self
+            .store
+            .list()
+            .await?
+            .into_iter()
+            .map(|info| (info.id.clone(), info))
+            .collect();
+        let records: Vec<Arc<SessionRecord>> =
+            self.records.read().values().cloned().collect();
+        for record in records {
+            let info = record.state.lock().await.session_info();
+            sessions.insert(info.id.clone(), info);
+        }
+        let mut sessions: Vec<SessionInfo> = sessions.into_values().collect();
+        // 稳定顺序：创建先后即子代理的解析顺序，避免等待快照随哈希顺序抖动。
+        sessions.sort_by(|left, right| {
+            left.created_at_ms
+                .cmp(&right.created_at_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(sessions)
+    }
+
     /// 加载消息投影；非 transcript entries 只更新状态，不进入 entries 列表。
     pub async fn load(
         &self,
@@ -250,6 +278,7 @@ impl SessionTable {
                 message,
                 tool: entry.tool.clone(),
                 bash: entry.bash.clone(),
+                agent: entry.agent.clone(),
             });
         }
         let ids: std::collections::HashSet<&str> = entries
@@ -307,12 +336,18 @@ impl SessionTable {
                     entry_id.as_str()
                 )));
             };
-            let Entry::Message { message, bash, .. } = &state.entries[target] else {
+            let Entry::Message {
+                message,
+                bash,
+                agent,
+                ..
+            } = &state.entries[target]
+            else {
                 return Err(CoreError::Session(
                     "INVALID_PARAMS: 回退目标不是 transcript 消息".into(),
                 ));
             };
-            let mut end = if message.role == Role::User && bash.is_none() {
+            let mut end = if message.role == Role::User && bash.is_none() && agent.is_none() {
                 target
             } else {
                 target + 1
@@ -427,6 +462,26 @@ impl SessionTable {
                 message,
                 tool,
                 finish_reason,
+                agent: None,
+            },
+        )
+        .await
+    }
+
+    /// 追加一条代理间消息 entry（带来源元信息）。
+    pub async fn append_agent_message(
+        &self,
+        session_id: &str,
+        message: Message,
+        agent: moc_protocol::methods::AgentMessageMeta,
+    ) -> Result<Entry, CoreError> {
+        self.append(
+            session_id,
+            EntryPayload::Message {
+                message,
+                tool: None,
+                finish_reason: None,
+                agent: Some(agent),
             },
         )
         .await

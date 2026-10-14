@@ -54,6 +54,9 @@ pub enum Entry {
         /// 手动命令的来源及上下文可见性；普通对话没有此字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bash: Option<moc_protocol::BashCommand>,
+        /// 代理间消息的来源元信息；普通输入没有此字段。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<moc_protocol::methods::AgentMessageMeta>,
     },
     /// 一次上下文压缩。
     Compaction {
@@ -162,6 +165,8 @@ pub enum EntryPayload {
         message: Message,
         tool: Option<ToolExecution>,
         finish_reason: Option<FinishReason>,
+        /// 代理间消息的来源元信息；普通输入为 `None`。
+        agent: Option<moc_protocol::methods::AgentMessageMeta>,
     },
     Bash {
         command: moc_protocol::BashCommand,
@@ -257,6 +262,7 @@ impl Entry {
                 message,
                 tool,
                 finish_reason,
+                agent,
             } => Self::Message {
                 id,
                 parent_id,
@@ -265,6 +271,7 @@ impl Entry {
                 tool,
                 finish_reason,
                 bash: None,
+                agent,
             },
             EntryPayload::Bash {
                 command,
@@ -278,6 +285,7 @@ impl Entry {
                 tool: Some(tool),
                 finish_reason: None,
                 bash: Some(command),
+                agent: None,
             },
             EntryPayload::Compaction {
                 method,
@@ -535,6 +543,7 @@ impl Entry {
                 message,
                 tool,
                 bash,
+                agent,
                 ..
             } => Some(TranscriptEntry {
                 id: id.clone(),
@@ -542,6 +551,7 @@ impl Entry {
                 message: message.clone(),
                 tool: tool.clone(),
                 bash: bash.clone(),
+                agent: agent.clone(),
             }),
             _ => None,
         }

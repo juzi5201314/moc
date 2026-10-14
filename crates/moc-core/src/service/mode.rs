@@ -286,10 +286,10 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "ask",
             "spawn_agent",
             "list_agents",
-            "send_agent",
-            "steer_agent",
+            "message_agent",
             "stop_agent",
             "wait_agent",
+            "yield",
             "skill",
             "clm_context",
             "run_code",
@@ -396,10 +396,10 @@ mod agent_mode_tests {
         let agents = [
             "spawn_agent",
             "list_agents",
-            "send_agent",
-            "steer_agent",
+            "message_agent",
             "stop_agent",
             "wait_agent",
+            "yield",
         ];
         for mode in [SessionMode::Normal, SessionMode::ClmExperimental] {
             let allowed = allowed_tools(mode);

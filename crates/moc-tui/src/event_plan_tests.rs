@@ -87,6 +87,7 @@ impl PlanHarness {
                     text: "设计方案".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
             .expect("计划轮次");

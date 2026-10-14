@@ -80,6 +80,22 @@ pub enum SessionUpdate {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_message: Option<String>,
     },
+    /// 其它代理向本会话投递了一条消息（已写入 transcript）。
+    AgentMessage {
+        /// 来源元信息。
+        meta: super::agent::AgentMessageMeta,
+        /// 消息正文。
+        body: String,
+    },
+    /// 运行中工具的进度快照（目前仅 `wait_agent` 推送）。
+    ToolProgress {
+        /// 提示 ID。
+        prompt_id: String,
+        /// 调用 ID，与 [`SessionUpdate::ToolFinished`] 配对。
+        tool_call_id: String,
+        /// 进度行。
+        rows: Vec<super::agent::ToolProgressRow>,
+    },
     /// 一批工具调用开始执行；前端可按工具名聚合展示。
     ToolBatchStarted {
         /// 提示 ID。
@@ -630,6 +646,48 @@ mod tests {
                     last_message: None,
                 },
                 json!({"type":"agent_status_changed","agent_id":"ses_child","status":"running"}),
+            ),
+            (
+                SessionUpdate::AgentMessage {
+                    meta: crate::methods::AgentMessageMeta {
+                        from_id: "ses_parent".into(),
+                        from_title: "主会话".into(),
+                        delivery: crate::methods::AgentMessageOutcome::Injected,
+                    },
+                    body: "继续处理".into(),
+                },
+                json!({
+                    "type": "agent_message",
+                    "meta": {
+                        "from_id": "ses_parent",
+                        "from_title": "主会话",
+                        "delivery": "injected"
+                    },
+                    "body": "继续处理"
+                }),
+            ),
+            (
+                SessionUpdate::ToolProgress {
+                    prompt_id: "prompt_1".into(),
+                    tool_call_id: "call_9".into(),
+                    rows: vec![crate::methods::ToolProgressRow {
+                        agent_id: "ses_child".into(),
+                        title: "子代理 A".into(),
+                        status: crate::methods::AgentStatus::Running,
+                        elapsed_ms: 1_200,
+                    }],
+                },
+                json!({
+                    "type": "tool_progress",
+                    "prompt_id": "prompt_1",
+                    "tool_call_id": "call_9",
+                    "rows": [{
+                        "agent_id": "ses_child",
+                        "title": "子代理 A",
+                        "status": "running",
+                        "elapsed_ms": 1200
+                    }]
+                }),
             ),
             (
                 SessionUpdate::Error {

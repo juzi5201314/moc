@@ -162,18 +162,16 @@ impl SessionState {
         self.session.updated_at_ms = self.session.updated_at_ms.max(entry.at_ms());
         match &entry {
             Entry::Header { .. } => {}
-            Entry::Message { message, bash, .. } => {
-                if message.role == Role::User && bash.is_none() {
+            Entry::Message {
+                message, bash, agent, ..
+            } => {
+                if message.role == Role::User && bash.is_none() && agent.is_none() {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
                 }
                 if let Some(projected) = entry.transcript_entry() {
-                    let tokens = if !projected.in_context() {
-                        0
-                    } else if let Some(bash) = &projected.bash {
-                        crate::compact::message_tokens(&bash.context_message(&projected.message))
-                    } else {
-                        crate::compact::message_tokens(&projected.message)
-                    };
+                    let tokens = projected
+                        .context_message()
+                        .map_or(0, |message| crate::compact::message_tokens(&message));
                     self.transcript_token_counts.push(tokens);
                     self.transcript.push(projected);
                 }
@@ -364,6 +362,7 @@ mod tests {
                 message: Message::user_text("你好"),
                 tool: None,
                 finish_reason: None,
+                agent: None,
             },
             header_id,
             11,
@@ -422,6 +421,7 @@ mod tests {
                 message: Message::user_text("run"),
                 tool: None,
                 finish_reason: None,
+                agent: None,
             },
             header.id().to_owned(),
             11,

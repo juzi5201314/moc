@@ -281,6 +281,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
                 duration_ms: Some(12),
             }),
             bash: None,
+            agent: None,
         })
         .collect()
 }
@@ -485,6 +486,7 @@ impl ScriptedService {
                     message: result.message.clone(),
                     tool: None,
                     bash: None,
+                    agent: None,
                 });
             }
         });
@@ -967,6 +969,8 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
     match update {
         SessionUpdate::AgentStarted { .. } => "agent_started",
         SessionUpdate::AgentStatusChanged { .. } => "agent_status_changed",
+        SessionUpdate::AgentMessage { .. } => "agent_message",
+        SessionUpdate::ToolProgress { .. } => "tool_progress",
         SessionUpdate::ToolBatchStarted { .. } => "tool_batch_started",
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::GenerationStarted { .. } => "generation_started",
@@ -1068,6 +1072,7 @@ pub fn prompt_params(session_id: &str, text: &str) -> PromptParams {
             text: text.to_owned(),
         }],
         mode: None,
+        agent_message: None,
     }
 }
 

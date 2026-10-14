@@ -251,7 +251,7 @@ fn load_subagents(app: &App, connection: &EmbeddedConnection) {
     tokio::spawn(async move {
         let result = client
             .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
-                parent_session_id,
+                session_id: parent_session_id,
             })
             .await
             .map(|result| result.agents)
@@ -272,12 +272,12 @@ fn open_subagents(app: &mut App, connection: &EmbeddedConnection) {
     load_subagents(app, connection);
 }
 
-fn send_agent_operation(
+/// 人类面的「给某个代理发消息」：运行中注入、空闲唤醒，同名于 omp 的表述。
+fn steer_agent_operation(
     app: &App,
     connection: &EmbeddedConnection,
-    agent_id: String,
+    target: String,
     message: String,
-    steer: bool,
 ) {
     let Some(parent_session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
@@ -285,36 +285,57 @@ fn send_agent_operation(
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
-        let result = if steer {
-            client
-                .call::<moc_protocol::methods::AgentSteer>(
-                    moc_protocol::methods::AgentSteerParams {
-                        parent_session_id,
-                        agent_id: agent_id.clone(),
-                        message,
-                    },
-                )
-                .await
-                .map(|result| crate::subagent::AgentOperationNotice {
-                    agent_id,
-                    message: format!("steer 已接受：{}", result.accepted),
-                })
-        } else {
-            client
-                .call::<moc_protocol::methods::AgentSend>(moc_protocol::methods::AgentSendParams {
-                    parent_session_id,
-                    agent_id: agent_id.clone(),
+        let result = client
+            .call::<moc_protocol::methods::AgentMessage>(
+                moc_protocol::methods::AgentMessageParams {
+                    session_id: parent_session_id,
+                    target: target.clone(),
                     message,
-                })
-                .await
-                .map(|result| crate::subagent::AgentOperationNotice {
-                    agent_id,
-                    message: format!("消息已提交：{}", result.accepted),
-                })
-        }
-        .map_err(anyhow::Error::from);
+                },
+            )
+            .await
+            .map(|result| crate::subagent::AgentOperationNotice {
+                target: target.clone(),
+                message: delivery_notice(&target, &result),
+            })
+            .map_err(anyhow::Error::from);
         let _ = events.send(AppEvent::SubagentOperation(result));
     });
+}
+
+/// 投递结果的用户可读文案。
+fn delivery_notice(
+    target: &str,
+    result: &moc_protocol::methods::AgentMessageResult,
+) -> String {
+    use moc_protocol::methods::AgentMessageOutcome;
+    let delivered = result
+        .receipts
+        .iter()
+        .filter(|receipt| receipt.outcome != AgentMessageOutcome::Failed)
+        .count();
+    let failure = result
+        .receipts
+        .iter()
+        .find(|receipt| receipt.outcome == AgentMessageOutcome::Failed);
+    if let Some(failed) = failure {
+        let reason = failed.error.as_deref().unwrap_or("未知原因");
+        if delivered == 0 {
+            return format!("投递失败：{target}（{reason}）");
+        }
+        return format!(
+            "投递完成：{delivered} 已送达，{} 失败（{}：{reason}）",
+            result.receipts.len() - delivered,
+            failed.title
+        );
+    }
+    match result.receipts.as_slice() {
+        [receipt] => {
+            let word = crate::render::scrollback::outcome_word(receipt.outcome);
+            format!("已投递：{target}（{word}）")
+        }
+        receipts => format!("已投递：{target}（{} 已送达）", receipts.len()),
+    }
 }
 
 fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, agent_id: String) {
@@ -326,13 +347,13 @@ fn stop_agent_operation(app: &App, connection: &EmbeddedConnection, agent_id: St
     tokio::spawn(async move {
         let result = client
             .call::<moc_protocol::methods::AgentStop>(moc_protocol::methods::AgentStopParams {
-                parent_session_id,
+                session_id: parent_session_id,
                 agent_id: agent_id.clone(),
                 reason: None,
             })
             .await
             .map(|result| crate::subagent::AgentOperationNotice {
-                agent_id,
+                target: agent_id,
                 message: format!("停止请求已处理：{}", result.stopped),
             })
             .map_err(anyhow::Error::from);
@@ -353,7 +374,7 @@ fn load_subagents_for_parent(
     tokio::spawn(async move {
         let result = client
             .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
-                parent_session_id,
+                session_id: parent_session_id,
             })
             .await
             .map(|result| result.agents)
@@ -417,7 +438,8 @@ fn apply_rewound(
             return;
         }
     };
-    let restore_user = selected.message.role == Role::User;
+    // 代理消息也是 user role，但不能当成用户输入回填到输入框。
+    let restore_user = selected.message.role == Role::User && selected.agent.is_none();
     let selected_message = selected.message;
     app.modal = None;
     app.switch_session(
@@ -2250,14 +2272,14 @@ fn handle_modal_key(
                                 Some(parent_session_id) => client
                                     .call::<moc_protocol::methods::AgentStop>(
                                         moc_protocol::methods::AgentStopParams {
-                                            parent_session_id,
+                                            session_id: parent_session_id,
                                             agent_id: agent_id.clone(),
                                             reason: None,
                                         },
                                     )
                                     .await
                                     .map(|result| crate::subagent::AgentOperationNotice {
-                                        agent_id,
+                                        target: agent_id,
                                         message: format!("停止请求已处理：{}", result.stopped),
                                     })
                                     .map_err(anyhow::Error::from),
@@ -2290,39 +2312,24 @@ fn handle_modal_key(
             (KeyCode::Enter, KeyModifiers::NONE) => {
                 let message = editor.text.trim().to_owned();
                 if !message.is_empty() {
-                    let running = app.subagents.get(agent_id).is_some_and(|view| view.running);
                     let parent_session_id = session_id.clone();
                     let target_agent_id = agent_id.clone();
                     let client = connection.client.clone();
                     let events = events.clone();
                     tokio::spawn(async move {
                         let result = match parent_session_id {
-                            Some(parent_session_id) if running => client
-                                .call::<moc_protocol::methods::AgentSteer>(
-                                    moc_protocol::methods::AgentSteerParams {
-                                        parent_session_id,
-                                        agent_id: target_agent_id.clone(),
-                                        message,
-                                    },
-                                )
-                                .await
-                                .map(|result| crate::subagent::AgentOperationNotice {
-                                    agent_id: target_agent_id,
-                                    message: format!("steer 已接受：{}", result.accepted),
-                                })
-                                .map_err(anyhow::Error::from),
                             Some(parent_session_id) => client
-                                .call::<moc_protocol::methods::AgentSend>(
-                                    moc_protocol::methods::AgentSendParams {
-                                        parent_session_id,
-                                        agent_id: target_agent_id.clone(),
+                                .call::<moc_protocol::methods::AgentMessage>(
+                                    moc_protocol::methods::AgentMessageParams {
+                                        session_id: parent_session_id,
+                                        target: target_agent_id.clone(),
                                         message,
                                     },
                                 )
                                 .await
                                 .map(|result| crate::subagent::AgentOperationNotice {
-                                    agent_id: target_agent_id,
-                                    message: format!("消息已提交：{}", result.accepted),
+                                    message: delivery_notice(&target_agent_id, &result),
+                                    target: target_agent_id,
                                 })
                                 .map_err(anyhow::Error::from),
                             None => Err(anyhow::anyhow!("当前没有活动会话")),
@@ -2342,14 +2349,14 @@ fn handle_modal_key(
                         Some(parent_session_id) => client
                             .call::<moc_protocol::methods::AgentStop>(
                                 moc_protocol::methods::AgentStopParams {
-                                    parent_session_id,
+                                    session_id: parent_session_id,
                                     agent_id: target_agent_id.clone(),
                                     reason: None,
                                 },
                             )
                             .await
                             .map(|result| crate::subagent::AgentOperationNotice {
-                                agent_id: target_agent_id,
+                                target: target_agent_id,
                                 message: format!("停止请求已处理：{}", result.stopped),
                             })
                             .map_err(anyhow::Error::from),
@@ -2706,6 +2713,21 @@ fn apply_update_and_refresh(
     {
         view.set_status(*status, last_message.clone());
         app.subagent_generation = app.subagent_generation.wrapping_add(1);
+        // 终态在主流里留一行：侧栏未必打开，用户仍要知道子代理已经结束。
+        if matches!(
+            status,
+            moc_protocol::methods::AgentStatus::Completed
+                | moc_protocol::methods::AgentStatus::Stopped
+                | moc_protocol::methods::AgentStatus::Failed
+        ) {
+            let title = app
+                .subagents
+                .get(agent_id)
+                .map_or(agent_id.as_str(), |view| view.info.title.as_str())
+                .to_owned();
+            let label = crate::render::scrollback::agent_status_label(*status);
+            app.push_note(format!("子代理「{title}」{label}"), false);
+        }
     }
     let prompt_started = matches!(
         &update,
@@ -2733,6 +2755,12 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
     use crate::transcript::Block;
     match update {
         SessionUpdate::AgentStarted { .. } | SessionUpdate::AgentStatusChanged { .. } => {}
+        SessionUpdate::AgentMessage { meta, body } => {
+            app.push_block(Block::AgentMessage { meta, body })
+        }
+        SessionUpdate::ToolProgress {
+            tool_call_id, rows, ..
+        } => app.set_tool_progress(&tool_call_id, rows),
         SessionUpdate::ToolBatchStarted {
             batch_id, calls, ..
         } => {
@@ -3069,7 +3097,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 let result = client
                     .call::<moc_protocol::methods::AgentSpawn>(
                         moc_protocol::methods::AgentSpawnParams {
-                            parent_session_id,
+                            session_id: parent_session_id,
                             task,
                             title: None,
                             model,
@@ -3077,7 +3105,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                     )
                     .await
                     .map(|result| crate::subagent::AgentOperationNotice {
-                        agent_id: result.agent.id,
+                        target: result.agent.id,
                         message: "子代理已创建".into(),
                     })
                     .map_err(anyhow::Error::from);
@@ -3086,22 +3114,16 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         }
         "/steer-agent" | "/stop-agent" => {
             let mut parts = rest.trim().splitn(2, ' ');
-            let Some(agent_id) = parts.next().filter(|value| !value.is_empty()) else {
-                app.set_notice("用法：/steer-agent <id> <message> 或 /stop-agent <id>");
+            let Some(target) = parts.next().filter(|value| !value.is_empty()) else {
+                app.set_notice("用法：/steer-agent <id|all|parent> <message> 或 /stop-agent <id>");
                 return;
             };
             if name == "/stop-agent" {
-                stop_agent_operation(app, connection, agent_id.to_owned());
+                stop_agent_operation(app, connection, target.to_owned());
             } else if let Some(message) = parts.next().filter(|value| !value.trim().is_empty()) {
-                send_agent_operation(
-                    app,
-                    connection,
-                    agent_id.to_owned(),
-                    message.to_owned(),
-                    true,
-                );
+                steer_agent_operation(app, connection, target.to_owned(), message.to_owned());
             } else {
-                app.set_notice("用法：/steer-agent <id> <message>");
+                app.set_notice("用法：/steer-agent <id|all|parent> <message>");
             }
         }
         "/config" | "/settings" => crate::settings::open(app, connection),
@@ -3859,6 +3881,7 @@ mod tests {
                     text: "你好".into(),
                 }],
                 mode: None,
+                agent_message: None,
             })
             .await
             .unwrap();
@@ -4031,6 +4054,7 @@ mod tests {
                         text: "你好".into(),
                     }],
                     mode: None,
+                    agent_message: None,
                 })
                 .await
                 .unwrap();
@@ -4301,6 +4325,62 @@ mod tests {
         app.prompt.insert_str_raw("/m");
         app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
         app
+    }
+
+    /// 接收侧 IRC 卡片与等待进度都必须落到主流。
+    #[test]
+    fn agent_message_update_reaches_current_transcript() {
+        use crate::transcript::Block;
+        use moc_protocol::methods::{
+            AgentMessageMeta, AgentMessageOutcome, AgentStatus, ToolProgressRow,
+        };
+
+        let mut app = app();
+        apply_update(
+            &mut app,
+            SessionUpdate::AgentMessage {
+                meta: AgentMessageMeta {
+                    from_id: "ses_child".into(),
+                    from_title: "探查者".into(),
+                    delivery: AgentMessageOutcome::Injected,
+                },
+                body: "子代理汇报".into(),
+            },
+        );
+        assert!(
+            matches!(
+                app.blocks.last().map(|entry| &entry.block),
+                Some(Block::AgentMessage { body, .. }) if body == "子代理汇报"
+            ),
+            "代理消息必须成为转写卡片"
+        );
+
+        app.start_tool_block("call_wait".into(), "wait_agent".into());
+        apply_update(
+            &mut app,
+            SessionUpdate::ToolProgress {
+                prompt_id: "prompt_1".into(),
+                tool_call_id: "call_wait".into(),
+                rows: vec![ToolProgressRow {
+                    agent_id: "ses_child".into(),
+                    title: "探查者".into(),
+                    status: AgentStatus::Running,
+                    elapsed_ms: 500,
+                }],
+            },
+        );
+        let tool = app
+            .tool_entry_mut("call_wait")
+            .map(|entry| match &entry.block {
+                Block::Tool(tool) => tool,
+                _ => panic!("等待块应是工具块"),
+            })
+            .expect("等待块存在");
+        assert_eq!(
+            tool.progress.as_ref().map(Vec::len),
+            Some(1),
+            "进度行必须写进工具块"
+        );
     }
 
     #[test]

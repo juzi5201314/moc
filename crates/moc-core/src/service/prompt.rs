@@ -33,13 +33,28 @@ pub async fn run_prompt(
     ctx: RequestContext,
     params: moc_protocol::methods::PromptParams,
 ) -> Result<PromptResult, RpcError> {
-    let session_id = params.session_id.clone();
     let record = inner
         .sessions
         .get(&params.session_id)
         .await
         .map_err(to_rpc)?;
-    let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+    let prompt = record.try_prompt_lock().map_err(to_rpc)?;
+    run_prompt_with_lock(inner, ctx, params, record, prompt).await
+}
+
+/// 复用调用方已取得的提示锁跑一次提示。
+///
+/// 代理唤醒在派发前先抢占提示锁：锁被占说明该会话仍有提示在收尾，调用方据此
+/// 改走收件箱而不是与收尾中的提示抢同一个会话。
+pub(crate) async fn run_prompt_with_lock(
+    inner: Arc<CoreInner>,
+    ctx: RequestContext,
+    params: moc_protocol::methods::PromptParams,
+    record: Arc<crate::session::SessionRecord>,
+    prompt: tokio::sync::OwnedMutexGuard<()>,
+) -> Result<PromptResult, RpcError> {
+    let session_id = params.session_id.clone();
+    let _prompt = prompt;
     let _epoch = inner.config_epoch.read().await;
     let mut file_lock = inner
         .sessions
@@ -62,14 +77,9 @@ pub async fn run_prompt(
     repair_pending_calls(&inner, &session_id, &record)
         .await
         .map_err(to_rpc)?;
-    inner
-        .runtime(&session_id)
-        .await
-        .steering
-        .lock()
-        .await
-        .accepting = true;
     let runtime = inner.runtime(&session_id).await;
+    runtime.steering.lock().await.accepting = true;
+    runtime.agent_inbox.lock().await.accepting = true;
     let cwd = record.state.lock().await.session.cwd.clone();
     let config = inner
         .project_config(std::path::Path::new(&cwd))
@@ -166,6 +176,10 @@ pub async fn run_prompt(
     super::management::drain_steering(&inner, &session_id, true)
         .await
         .map_err(to_rpc)?;
+    // 收尾阶段到达的代理消息仍然落库：模型看不见，但界面与下次唤醒必须看得到。
+    crate::agents::drain_inbox(&inner, &update, &session_id, true)
+        .await
+        .map_err(to_rpc)?;
     file_lock.take();
     let unlocked = update
         .emit(
@@ -238,13 +252,39 @@ async fn run_prompt_locked(
     if user_message.content.is_empty() {
         return Err(RpcError::of(RpcErrorCode::InvalidParams));
     }
-    let user_message =
-        apply_skill_invocation(&inner, user_message, &state_snapshot.session.cwd).await?;
-    inner
-        .sessions
-        .append_message(&params.session_id, user_message.clone(), None, None)
-        .await
-        .map_err(to_rpc)?;
+    // 代理消息按原样落库：技能调用改写的用户输入语义不适用于代理投递。
+    let agent_meta = params.agent_message.clone();
+    let user_message = if agent_meta.is_none() {
+        apply_skill_invocation(&inner, user_message, &state_snapshot.session.cwd).await?
+    } else {
+        user_message
+    };
+    match &agent_meta {
+        Some(meta) => {
+            inner
+                .sessions
+                .append_agent_message(&params.session_id, user_message.clone(), meta.clone())
+                .await
+                .map_err(to_rpc)?;
+            update
+                .emit(
+                    params.session_id.clone(),
+                    SessionUpdate::AgentMessage {
+                        meta: meta.clone(),
+                        body: user_message.text(),
+                    },
+                )
+                .await
+                .map_err(protocol_to_rpc)?;
+        }
+        None => {
+            inner
+                .sessions
+                .append_message(&params.session_id, user_message.clone(), None, None)
+                .await
+                .map_err(to_rpc)?;
+        }
+    }
     if project_config.openviking.capture
         && let Some(client) = inner
             .project_openviking(std::path::Path::new(&state_snapshot.session.cwd))
@@ -386,16 +426,21 @@ async fn run_prompt_locked(
         mode,
         inner.client_supports_ask(ctx.connection_id()),
         &project_config,
-        !ctx.is_subagent(),
+        crate::tools::ToolScope {
+            control_agents: !ctx.is_subagent(),
+            subagent: ctx.is_subagent(),
+        },
     );
     let mut last_message = Message::default();
     let mut final_reason = FinishReason::Stop;
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
+    let mut yield_reminders = 0usize;
     let mut stream_overflows = 0usize;
     let mut cycle_redirect = None;
     let summary = catalog.summary();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
+    let agent_roster = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let system = build(
         &project_config,
         &model,
@@ -403,6 +448,7 @@ async fn run_prompt_locked(
         &context_files,
         &skills,
         &summary,
+        agent_roster.as_deref(),
     );
 
     'turns: for turn in 0..project_config.limits.max_turns_per_prompt {
@@ -411,6 +457,9 @@ async fn run_prompt_locked(
             break;
         }
         super::management::drain_steering(&inner, &params.session_id, false)
+            .await
+            .map_err(to_rpc)?;
+        crate::agents::drain_inbox(&inner, &update, &params.session_id, false)
             .await
             .map_err(to_rpc)?;
         let mut reminder_messages = vec![mode_reminder(mode)];
@@ -961,6 +1010,29 @@ async fn run_prompt_locked(
                 tracing::warn!(session_id = %params.session_id, "模型连续输出达到长度上限");
             }
             if !interrupted {
+                // 子代理必须以 `yield` 交付结果；用纯文本结束回合只会让父侧拿到
+                // 一段没有交付语义的正文，因此先提醒若干次，仍缺才回退。
+                if ctx.is_subagent()
+                    && yield_reminders < crate::agents::MAX_YIELD_REMINDERS
+                    && !crate::agents::has_yielded(&inner, &params.session_id).await
+                {
+                    yield_reminders += 1;
+                    let reminder = format!(
+                        "Reminder {yield_reminders}/{}: you have not delivered a result yet. Call the `yield` tool with your complete report to finish the task; do not end the turn with a plain message.",
+                        crate::agents::MAX_YIELD_REMINDERS
+                    );
+                    inner
+                        .sessions
+                        .append_message(
+                            &params.session_id,
+                            Message::user_text(reminder),
+                            None,
+                            None,
+                        )
+                        .await
+                        .map_err(to_rpc)?;
+                    continue;
+                }
                 let mut steering = runtime.steering.lock().await;
                 if !steering.messages.is_empty() {
                     continue;
@@ -991,6 +1063,7 @@ async fn run_prompt_locked(
             mode,
             permission,
             allow_agents: !ctx.is_subagent(),
+            subagent: ctx.is_subagent(),
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
             openviking,

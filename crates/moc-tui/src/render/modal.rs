@@ -1371,6 +1371,9 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                             tool.name,
                             tool.result.as_deref().unwrap_or("运行中")
                         ),
+                        crate::transcript::Block::AgentMessage { meta, body } => {
+                            format!("IRC ◀ {}：{body}", meta.from_title)
+                        }
                         crate::transcript::Block::Todo { .. } => "Todo 已更新".into(),
                     };
                     lines.push(Line::from(ellipsize(&text, width)));

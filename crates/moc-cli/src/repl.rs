@@ -540,7 +540,7 @@ async fn run_command(
         "agents" => {
             let result = client
                 .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
-                    parent_session_id: session.id.clone(),
+                    session_id: session.id.clone(),
                 })
                 .await?;
             for agent in result.agents {
@@ -563,7 +563,7 @@ async fn run_command(
             let result = client
                 .call::<moc_protocol::methods::AgentSpawn>(
                     moc_protocol::methods::AgentSpawnParams {
-                        parent_session_id: session.id.clone(),
+                        session_id: session.id.clone(),
                         task: task.into(),
                         title: None,
                         model: (model != "inherit").then(|| model.into()),
@@ -573,19 +573,33 @@ async fn run_command(
             println!("子代理已创建：{}", result.agent.id);
         }
         "steer-agent" => {
-            let (agent_id, message) = argument
+            let (target, message) = argument
                 .split_once(' ')
-                .ok_or_else(|| anyhow::anyhow!("用法：/steer-agent <id> <消息>"))?;
+                .ok_or_else(|| anyhow::anyhow!("用法：/steer-agent <id|all|parent> <消息>"))?;
             let result = client
-                .call::<moc_protocol::methods::AgentSteer>(
-                    moc_protocol::methods::AgentSteerParams {
-                        parent_session_id: session.id.clone(),
-                        agent_id: agent_id.into(),
+                .call::<moc_protocol::methods::AgentMessage>(
+                    moc_protocol::methods::AgentMessageParams {
+                        session_id: session.id.clone(),
+                        target: target.trim().into(),
                         message: message.trim().into(),
                     },
                 )
                 .await?;
-            println!("steer 已接受：{}", result.accepted);
+            for receipt in result.receipts {
+                let outcome = match receipt.outcome {
+                    moc_protocol::methods::AgentMessageOutcome::Injected => "已注入",
+                    moc_protocol::methods::AgentMessageOutcome::Woken => "已唤醒",
+                    moc_protocol::methods::AgentMessageOutcome::Failed => "失败",
+                };
+                let error = receipt
+                    .error
+                    .map(|error| format!("：{error}"))
+                    .unwrap_or_default();
+                println!(
+                    "{}（{}）：{outcome}{error}",
+                    receipt.title, receipt.agent_id
+                );
+            }
         }
         "stop-agent" => {
             if argument.is_empty() {
@@ -593,7 +607,7 @@ async fn run_command(
             }
             let result = client
                 .call::<moc_protocol::methods::AgentStop>(moc_protocol::methods::AgentStopParams {
-                    parent_session_id: session.id.clone(),
+                    session_id: session.id.clone(),
                     agent_id: argument.into(),
                     reason: None,
                 })
@@ -643,7 +657,7 @@ const HELP_TEXT: &str = "\
 /approve <execute|compact|new|reject>  处理已提交的计划
 /agents                   列出当前会话的直接子代理
 /agent <role> <任务>      创建子代理（role: inherit|default|explore|plan）
-/steer-agent <id> <消息>  补充运行中子代理
+/steer-agent <id|all|parent> <消息>  向子代理/父代理/兄弟发送消息（运行中注入，空闲唤醒）
 /stop-agent <id>          停止运行中的子代理
 /compact                  压缩当前上下文
 /usage                    查看当前会话模型用量
@@ -715,6 +729,7 @@ async fn send_prompt(
         session_id: session_id.to_owned(),
         input: vec![InputPart::Text { text: prompt }],
         mode,
+        agent_message: None,
     });
     tokio::pin!(pending);
     tokio::select! {

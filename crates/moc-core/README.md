@@ -78,9 +78,13 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 子代理
 
-模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`send_agent`、`steer_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可递归创建其它子代理。
+模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可创建、停止或等待其它子代理。
 
-子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续 `send_agent`。TUI 按 `Ctrl+N` 或 `/agents` 打开当前会话的子代理列表，宽屏显示状态侧栏；`/agent [inherit|default|explore|plan] <task>` 创建任务，`/steer-agent <id> <message>` 与 `/stop-agent <id>` 快捷控制。REPL 提供 `/agents`、`/agent`、`/steer-agent`、`/stop-agent`。
+`message_agent` 是唯一的通信入口，`target` 接受代理 ID、`"parent"`（仅子代理）或 `"all"`（顶层是全部运行中的直接子代理，子代理是全部运行中的兄弟）；运行中的目标在下一次安全边界收到消息，空闲目标被唤醒新回合，工具为每个目标返回 `injected`／`woken`／`failed` 回执。`wait_agent` 支持批量：省略 `agent_ids` 即等待全部运行中的直接子代理，任一个进入终态、或消息到达、或窗口（默认 180 秒）到期即返回快照，运行期间以 `tool_progress` 推送进度行。
+
+子代理用 `yield {report}` 交付最终结果并结束本轮；缺失时最多提醒三次，仍未交付则回退到最后一条 assistant 消息。结果在子代理进入终态时自动作为 notice 投进父会话，父模型下一轮即可看到预览（正文上限 500 字符，超出提示用 `wait_agent` 取全文）。
+
+子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续用 `message_agent` 唤醒。TUI 按 `Ctrl+N` 或 `/agents` 打开当前会话的子代理列表，宽屏显示状态侧栏；`/agent [inherit|default|explore|plan] <task>` 创建任务，`/steer-agent <id|all|parent> <message>` 与 `/stop-agent <id>` 快捷控制。REPL 提供 `/agents`、`/agent`、`/steer-agent`、`/stop-agent`。
 
 ### Web 搜索
 

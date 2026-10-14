@@ -124,6 +124,9 @@ pub fn draw_detail(frame: &mut Frame, app: &App, area: Rect, agent_id: &str, scr
                 tool.name,
                 tool.result.as_deref().unwrap_or("运行中")
             ),
+            crate::transcript::Block::AgentMessage { meta, body } => {
+                format!("IRC ◀ {}：{body}", meta.from_title)
+            }
             crate::transcript::Block::Todo { .. } => "Todo 已更新".into(),
         };
         lines.push(Line::from(text));

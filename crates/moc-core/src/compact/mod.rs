@@ -126,12 +126,23 @@ pub(crate) async fn model_context(
     let skills = inner.project_skills(cwd)?;
     let summary = inner.mcp_summary(config).await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
-    let system = crate::system_prompt::build(config, model, cwd, &context_files, &skills, &summary);
+    let system = crate::system_prompt::build(
+        config,
+        model,
+        cwd,
+        &context_files,
+        &skills,
+        &summary,
+        None,
+    );
     let tools = inner.tools.definitions(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),
         config,
-        true,
+        crate::tools::ToolScope {
+            control_agents: state.session.parent_session_id.is_none(),
+            subagent: state.session.parent_session_id.is_some(),
+        },
     );
     let messages = replay::model_messages(state, None, Some(model));
     let mut measured = Vec::with_capacity(messages.len() + 1);
@@ -628,6 +639,7 @@ mod tests {
                 message: Message::user_text("hi"),
                 tool: None,
                 finish_reason: None,
+                agent: None,
             },
             header.id().to_owned(),
             2,

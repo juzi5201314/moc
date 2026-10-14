@@ -158,6 +158,7 @@ pub fn send_prompt(
                 session_id: session_id.clone(),
                 input: parts,
                 mode,
+                agent_message: None,
             })
             .await
             .map(|_| ())

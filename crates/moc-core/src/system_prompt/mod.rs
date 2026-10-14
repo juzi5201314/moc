@@ -30,6 +30,7 @@ pub fn build(
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
+    subagent: Option<&str>,
 ) -> Message {
     compose(&pieces(
         config,
@@ -38,6 +39,7 @@ pub fn build(
         context_files,
         skills,
         mcp_summary,
+        subagent,
     ))
 }
 
@@ -62,6 +64,7 @@ pub fn pieces(
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
+    subagent: Option<&str>,
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
     let intro = if config.system_prompt.override_text.trim().is_empty() {
@@ -131,6 +134,12 @@ pub fn pieces(
         sections.push(PromptPiece {
             title: "skills",
             text: catalog,
+        });
+    }
+    if let Some(subagent) = subagent {
+        sections.push(PromptPiece {
+            title: "project",
+            text: subagent.to_owned(),
         });
     }
     sections.push(PromptPiece {
@@ -228,6 +237,7 @@ mod tests {
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
+            None,
         );
         let text = message.text();
         assert!(text.starts_with(DEFAULT_INTRO));
@@ -258,6 +268,7 @@ mod tests {
                 &context_files,
                 &crate::skills::SkillIndex::empty(),
                 "",
+                None,
             )
             .text()
         };
@@ -286,7 +297,7 @@ mod tests {
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let message = build(&config, &model, &cwd, &context_files, &skills, "");
+        let message = build(&config, &model, &cwd, &context_files, &skills, "", None);
         assert!(message.text().contains("<skills>"));
         assert!(message.text().contains("- demo: demo skill"));
     }

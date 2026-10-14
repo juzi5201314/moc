@@ -458,6 +458,7 @@ impl App {
             diff: None,
             duration_ms: None,
             running: true,
+            progress: None,
         })));
         self.tool_indices.insert(tool_call_id, index);
     }
@@ -486,6 +487,7 @@ impl App {
                 diff,
                 duration_ms,
                 running: false,
+                progress: None,
             })));
             self.tool_indices.insert(tool_call_id, index);
         }
@@ -504,6 +506,21 @@ impl App {
     /// 追加一条系统提示。
     pub fn push_note(&mut self, text: String, error: bool) {
         self.blocks.push(Entry::new(Block::Note { text, error }));
+    }
+
+    /// 更新运行中工具的进度行（按 `tool_call_id` 定位）。
+    pub fn set_tool_progress(
+        &mut self,
+        tool_call_id: &str,
+        rows: Vec<moc_protocol::methods::ToolProgressRow>,
+    ) {
+        if let Some(entry) = self.tool_entry_mut(tool_call_id) {
+            let Block::Tool(tool) = &mut entry.block else {
+                return;
+            };
+            tool.progress = Some(rows);
+            entry.touch();
+        }
     }
 
     /// 追加一条用户消息。

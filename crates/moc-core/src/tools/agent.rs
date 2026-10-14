@@ -2,7 +2,7 @@
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use moc_protocol::methods::{AgentStatus, AgentWaitResult};
+use moc_protocol::methods::{AgentMessageOutcome, AgentMessageResult};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -26,8 +26,8 @@ struct SpawnArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AgentMessageArgs {
-    agent_id: String,
+struct MessageArgs {
+    target: String,
     message: String,
 }
 
@@ -41,16 +41,22 @@ struct StopArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitArgs {
-    agent_id: String,
+    agent_ids: Option<Vec<String>>,
     timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct YieldArgs {
+    report: String,
 }
 
 pub struct SpawnAgentTool;
 pub struct ListAgentsTool;
-pub struct SendAgentTool;
-pub struct SteerAgentTool;
+pub struct MessageAgentTool;
 pub struct StopAgentTool;
 pub struct WaitAgentTool;
+pub struct YieldTool;
 
 impl Tool for SpawnAgentTool {
     fn name(&self) -> &'static str {
@@ -107,7 +113,7 @@ impl Tool for SpawnAgentTool {
             Ok(ToolOutcome::success(
                 serde_json::json!({
                     "agent_id": result.agent.id,
-                    "status": status_name(result.agent.status),
+                    "status": crate::agents::status_word(result.agent.status),
                     "model": result.agent.model,
                 })
                 .to_string(),
@@ -121,7 +127,7 @@ impl Tool for ListAgentsTool {
         "list_agents"
     }
     fn description(&self) -> &'static str {
-        "List direct child agents of the current session."
+        "List peer agents you can message: direct child agents, or — inside a subagent — your siblings."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -151,12 +157,12 @@ impl Tool for ListAgentsTool {
     }
 }
 
-impl Tool for SendAgentTool {
+impl Tool for MessageAgentTool {
     fn name(&self) -> &'static str {
-        "send_agent"
+        "message_agent"
     }
     fn description(&self) -> &'static str {
-        "Send a new message to an idle child agent."
+        "Send a message to another agent. target accepts an agent id, \"parent\" (your parent agent), or \"all\" (every running direct child; inside a subagent, every running sibling). Running targets receive the message at their next safe boundary; idle targets start a new turn. Returns one delivery receipt per target."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -166,12 +172,12 @@ impl Tool for SendAgentTool {
     }
     fn def(&self) -> ToolDef {
         ToolDef::new(
-            "send_agent",
+            "message_agent",
             schema(
                 serde_json::json!({
-                    "agent_id":{"type":"string"}, "message":{"type":"string"}
+                    "target":{"type":"string"}, "message":{"type":"string"}
                 }),
-                &["agent_id", "message"],
+                &["target", "message"],
             ),
         )
     }
@@ -181,72 +187,33 @@ impl Tool for SendAgentTool {
         args: Value,
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
-            let args: AgentMessageArgs = serde_json::from_value(args)
+            let args: MessageArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let result = crate::agents::send(
+            let result = crate::agents::message(
                 std::sync::Arc::clone(&ctx.core),
                 ctx.request.clone(),
                 ctx.session_id.clone(),
-                text(&args.agent_id, "agent_id")?,
+                text(&args.target, "target")?,
                 text(&args.message, "message")?,
             )
             .await
             .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
-            Ok(ToolOutcome::success(
-                serde_json::json!({
-                    "accepted": result.accepted, "status": status_name(result.status)
-                })
-                .to_string(),
-            ))
+            let body = serde_json::to_string(&result).expect("AgentMessageResult 可序列化");
+            let mut outcome = ToolOutcome::success(body);
+            // 全败时标记为错误结果，内容保持回执原文，模型照旧拿到每个目标的失败原因。
+            outcome.is_error = all_failed(&result);
+            Ok(outcome)
         })
     }
 }
 
-impl Tool for SteerAgentTool {
-    fn name(&self) -> &'static str {
-        "steer_agent"
-    }
-    fn description(&self) -> &'static str {
-        "Steer a running child agent at its next safe boundary."
-    }
-    fn tier(&self) -> Tier {
-        Tier::Write
-    }
-    fn parallel_safe(&self) -> bool {
-        false
-    }
-    fn def(&self) -> ToolDef {
-        ToolDef::new(
-            "steer_agent",
-            schema(
-                serde_json::json!({
-                    "agent_id":{"type":"string"}, "message":{"type":"string"}
-                }),
-                &["agent_id", "message"],
-            ),
-        )
-    }
-    fn run<'a>(
-        &'a self,
-        ctx: &'a ToolCtx,
-        args: Value,
-    ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
-        Box::pin(async move {
-            let args: AgentMessageArgs = serde_json::from_value(args)
-                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let result = crate::agents::steer(
-                &ctx.core,
-                ctx.session_id.clone(),
-                text(&args.agent_id, "agent_id")?,
-                text(&args.message, "message")?,
-            )
-            .await
-            .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
-            Ok(ToolOutcome::success(
-                serde_json::json!({"accepted": result.accepted}).to_string(),
-            ))
-        })
-    }
+/// 全部目标都投递失败时按错误回灌：模型必须知道没人收到。
+fn all_failed(result: &AgentMessageResult) -> bool {
+    !result.receipts.is_empty()
+        && result
+            .receipts
+            .iter()
+            .all(|receipt| receipt.outcome == AgentMessageOutcome::Failed)
 }
 
 impl Tool for StopAgentTool {
@@ -291,7 +258,8 @@ impl Tool for StopAgentTool {
             .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
             Ok(ToolOutcome::success(
                 serde_json::json!({
-                    "stopped": result.stopped, "status": status_name(result.status)
+                    "stopped": result.stopped,
+                    "status": crate::agents::status_word(result.status),
                 })
                 .to_string(),
             ))
@@ -304,7 +272,7 @@ impl Tool for WaitAgentTool {
         "wait_agent"
     }
     fn description(&self) -> &'static str {
-        "Wait for a child agent and return its latest assistant message."
+        "Wait until one watched child agent settles, a child message arrives, or the window elapses (default 180s). agent_ids defaults to every running child agent. Returns a snapshot of all watched agents; settled agents carry their final message."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -317,9 +285,10 @@ impl Tool for WaitAgentTool {
             "wait_agent",
             schema(
                 serde_json::json!({
-                    "agent_id":{"type":"string"}, "timeout_secs":{"type":"integer","minimum":1}
+                    "agent_ids":{"type":"array","items":{"type":"string"}},
+                    "timeout_secs":{"type":"integer","minimum":1}
                 }),
-                &["agent_id"],
+                &[],
             ),
         )
     }
@@ -331,34 +300,67 @@ impl Tool for WaitAgentTool {
         Box::pin(async move {
             let args: WaitArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let result: AgentWaitResult = crate::agents::wait(
+            if args.timeout_secs == Some(0) {
+                return Err(ToolError::new("E_BAD_PAYLOAD", "timeout_secs 必须大于 0"));
+            }
+            let progress = crate::agents::WaitProgress {
+                updates: ctx.request.updates(),
+                session_id: ctx.session_id.clone(),
+                prompt_id: ctx.prompt_id.clone(),
+                tool_call_id: ctx.tool_call_id.clone(),
+            };
+            let result = crate::agents::wait(
                 &ctx.core,
-                ctx.session_id.clone(),
-                text(&args.agent_id, "agent_id")?,
-                args.timeout_secs
-                    .map(|seconds| seconds.saturating_mul(1000)),
+                &ctx.session_id,
+                args.agent_ids,
+                args.timeout_secs,
+                Some(&progress),
+                &ctx.cancel,
             )
             .await
             .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
-            Ok(ToolOutcome::success(
-                serde_json::json!({
-                    "completed": result.completed,
-                    "status": status_name(result.agent.status),
-                    "message": result.message.as_ref().map(moc_llm::Message::text),
-                })
-                .to_string(),
-            ))
+            let json = serde_json::to_value(&result).expect("AgentWaitResult 可序列化");
+            let mut outcome = ToolOutcome::success(json.to_string());
+            outcome.structured_content = Some(json);
+            Ok(outcome)
         })
     }
 }
 
-fn status_name(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Queued => "queued",
-        AgentStatus::Running => "running",
-        AgentStatus::Completed => "completed",
-        AgentStatus::Stopped => "stopped",
-        AgentStatus::Failed => "failed",
-        AgentStatus::Idle => "idle",
+impl Tool for YieldTool {
+    fn name(&self) -> &'static str {
+        "yield"
+    }
+    fn description(&self) -> &'static str {
+        "Deliver your final result to the parent agent and end this turn. Call it once when the task is complete, with the complete report the parent needs."
+    }
+    fn tier(&self) -> Tier {
+        Tier::Write
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    fn def(&self) -> ToolDef {
+        ToolDef::new(
+            "yield",
+            schema(serde_json::json!({"report":{"type":"string"}}), &["report"]),
+        )
+    }
+    fn run<'a>(
+        &'a self,
+        ctx: &'a ToolCtx,
+        args: Value,
+    ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
+        Box::pin(async move {
+            let args: YieldArgs = serde_json::from_value(args)
+                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            let report = text(&args.report, "report")?;
+            crate::agents::record_yield(&ctx.core, &ctx.session_id, report)
+                .await
+                .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
+            Ok(ToolOutcome::end_prompt(
+                "Final report delivered to the parent agent; this turn ends now.",
+            ))
+        })
     }
 }

@@ -34,7 +34,7 @@ use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
 use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
-    AgentList, AgentSend, AgentSpawn, AgentSteer, AgentStop, AgentWait, ClientInfo, ConfigGet,
+    AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet,
     ConfigManage, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite,
     Ping, PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel,
     SessionCancelResult, SessionCompact, SessionContext, SessionDelete, SessionList, SessionLoad,
@@ -711,21 +711,12 @@ impl<S: AgentService> ServerDispatch<S> {
                         .await?,
                 )
             }
-            <AgentSend as Method>::NAME => {
-                let params = params_from_value::<AgentSend>(params)?;
+            <AgentMessage as Method>::NAME => {
+                let params = params_from_value::<AgentMessage>(params)?;
                 value_from(
                     self.server
                         .service
-                        .agent_send(self.context(client, cancel), params)
-                        .await?,
-                )
-            }
-            <AgentSteer as Method>::NAME => {
-                let params = params_from_value::<AgentSteer>(params)?;
-                value_from(
-                    self.server
-                        .service
-                        .agent_steer(self.context(client, cancel), params)
+                        .agent_message(self.context(client, cancel), params)
                         .await?,
                 )
             }

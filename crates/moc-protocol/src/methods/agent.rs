@@ -1,4 +1,4 @@
-//! 子代理生命周期协议：创建、查询、消息控制与等待。
+//! 子代理协议：创建、查询、消息投递、等待与结果交付。
 
 use crate::method::{ClientRequest, Method};
 use crate::{FinishReason, Message};
@@ -32,6 +32,71 @@ pub struct AgentInfo {
     pub last_message: Option<String>,
 }
 
+/// 一次代理间消息投递的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageOutcome {
+    /// 目标正在运行，消息进入其收件箱，将在下一个轮边界注入。
+    Injected,
+    /// 目标空闲，已用消息唤醒一个新回合。
+    Woken,
+    /// 投递失败（收件箱已满、目标正在收尾等），`error` 说明原因。
+    Failed,
+}
+
+/// 一条代理间消息的来源元信息；随消息条目持久化。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageMeta {
+    pub from_id: String,
+    pub from_title: String,
+    /// 落库条目只可能是 `Injected` 或 `Woken`。
+    pub delivery: AgentMessageOutcome,
+}
+
+/// 单个目标的投递回执。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageReceipt {
+    pub agent_id: String,
+    pub title: String,
+    pub outcome: AgentMessageOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `agent/message`：向其它代理投递一条消息（运行中注入、空闲唤醒）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentMessage;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageParams {
+    /// 调用方会话 ID。
+    pub session_id: String,
+    /// 代理 ID、`"parent"`（仅子代理可用）或 `"all"`（全部运行中的平级代理）。
+    pub target: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageResult {
+    /// 每个目标一条，按解析顺序。
+    pub receipts: Vec<AgentMessageReceipt>,
+}
+
+/// 运行中 `wait_agent` 的进度行（`session/update` 的 `tool_progress` 使用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolProgressRow {
+    pub agent_id: String,
+    pub title: String,
+    pub status: AgentStatus,
+    /// 自进入当前运行起的毫秒数；非运行状态为 0（渲染时不显示）。
+    pub elapsed_ms: u64,
+}
+
 /// `agent/spawn`：创建并异步启动一个直接子代理。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentSpawn;
@@ -39,7 +104,8 @@ pub struct AgentSpawn;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpawnParams {
-    pub parent_session_id: String,
+    /// 调用方会话 ID。
+    pub session_id: String,
     pub task: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -54,51 +120,21 @@ pub struct AgentSpawnResult {
     pub agent: AgentInfo,
 }
 
-/// `agent/list`：列出当前父会话的直接子代理。
+/// `agent/list`：列出调用方可见的平级代理。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentList;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentListParams {
-    pub parent_session_id: String,
+    /// 调用方会话 ID。
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentListResult {
     pub agents: Vec<AgentInfo>,
-}
-
-/// `agent/send`：向非运行子代理启动下一次独立提示。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AgentSend;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentSendParams {
-    pub parent_session_id: String,
-    pub agent_id: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentSendResult {
-    pub accepted: bool,
-    pub status: AgentStatus,
-}
-
-/// `agent/steer`：向运行中的子代理写入下一安全边界消息。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct AgentSteer;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentSteerParams {
-    pub parent_session_id: String,
-    pub agent_id: String,
-    pub message: String,
 }
 
 /// `agent/stop`：请求取消运行中的子代理。
@@ -108,7 +144,8 @@ pub struct AgentStop;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentStopParams {
-    pub parent_session_id: String,
+    /// 调用方会话 ID。
+    pub session_id: String,
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -121,28 +158,47 @@ pub struct AgentStopResult {
     pub status: AgentStatus,
 }
 
-/// `agent/wait`：等待子代理进入终态。
+/// `agent/wait`：等待子代理进入终态或被消息唤醒。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentWait;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentWaitParams {
-    pub parent_session_id: String,
-    pub agent_id: String,
+    /// 调用方会话 ID。
+    pub session_id: String,
+    /// 省略或空 = 全部运行中的直接子代理。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
+    pub agent_ids: Option<Vec<String>>,
+    /// 无事件窗口；省略用默认 180 秒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+/// 单个被等待代理的快照。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentWaitEntry {
+    pub id: String,
+    pub title: String,
+    pub status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<FinishReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentWaitResult {
-    pub agent: AgentInfo,
-    pub completed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<Message>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finish_reason: Option<FinishReason>,
+    /// 本次等待覆盖的全部代理快照（按解析顺序）。
+    pub agents: Vec<AgentWaitEntry>,
+    /// 至少一个代理已进入终态。
+    pub settled: bool,
+    /// 有消息待投递（子代理消息或用户补充消息），将在下一轮输入中出现。
+    pub messages_pending: bool,
+    /// 窗口内无任何事件而返回。
+    pub timed_out: bool,
 }
 
 macro_rules! client_method {
@@ -163,12 +219,11 @@ client_method!(
     AgentSpawnResult
 );
 client_method!(AgentList, "agent/list", AgentListParams, AgentListResult);
-client_method!(AgentSend, "agent/send", AgentSendParams, AgentSendResult);
 client_method!(
-    AgentSteer,
-    "agent/steer",
-    AgentSteerParams,
-    crate::SteerResult
+    AgentMessage,
+    "agent/message",
+    AgentMessageParams,
+    AgentMessageResult
 );
 client_method!(AgentStop, "agent/stop", AgentStopParams, AgentStopResult);
 client_method!(AgentWait, "agent/wait", AgentWaitParams, AgentWaitResult);
@@ -185,7 +240,7 @@ mod tests {
             json!("running")
         );
         let params = AgentSpawnParams {
-            parent_session_id: "ses_parent".into(),
+            session_id: "ses_parent".into(),
             task: "返回 CHILD_OK".into(),
             title: None,
             model: Some("explore".into()),
@@ -193,13 +248,14 @@ mod tests {
         assert_eq!(serde_json::to_value(params).unwrap()["model"], "explore");
         assert!(
             serde_json::from_value::<AgentSpawnParams>(json!({
-                "parent_session_id": "ses_parent",
+                "session_id": "ses_parent",
                 "task": "x",
                 "unexpected": true
             }))
             .is_err()
         );
     }
+
     #[test]
     fn all_statuses_use_snake_case() {
         let values = [
@@ -216,5 +272,121 @@ mod tests {
                 format!("\"{expected}\"")
             );
         }
+    }
+
+    #[test]
+    fn message_receipts_and_meta_use_snake_case_outcomes() {
+        assert_eq!(
+            serde_json::to_value(AgentMessageOutcome::Injected).unwrap(),
+            json!("injected")
+        );
+        assert_eq!(
+            serde_json::to_value(AgentMessageOutcome::Woken).unwrap(),
+            json!("woken")
+        );
+        assert_eq!(
+            serde_json::to_value(AgentMessageOutcome::Failed).unwrap(),
+            json!("failed")
+        );
+        let meta = AgentMessageMeta {
+            from_id: "ses_child".into(),
+            from_title: "子代理 A".into(),
+            delivery: AgentMessageOutcome::Injected,
+        };
+        assert_eq!(
+            serde_json::to_value(&meta).unwrap(),
+            json!({
+                "from_id": "ses_child",
+                "from_title": "子代理 A",
+                "delivery": "injected"
+            })
+        );
+        let receipt = AgentMessageReceipt {
+            agent_id: "ses_child".into(),
+            title: "子代理 A".into(),
+            outcome: AgentMessageOutcome::Failed,
+            error: Some("收件箱已满".into()),
+        };
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap()["outcome"],
+            json!("failed")
+        );
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap()["error"],
+            json!("收件箱已满")
+        );
+        let bare = AgentMessageReceipt {
+            agent_id: "ses_child".into(),
+            title: "子代理 A".into(),
+            outcome: AgentMessageOutcome::Woken,
+            error: None,
+        };
+        assert!(serde_json::to_value(&bare).unwrap().get("error").is_none());
+        assert!(
+            serde_json::from_value::<AgentMessageMeta>(json!({
+                "from_id": "ses_child",
+                "delivery": "injected",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<AgentMessageParams>(json!({
+                "session_id": "ses_parent",
+                "target": "all",
+                "message": "hi",
+                "unexpected": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn wait_result_omits_empty_fields() {
+        let result = AgentWaitResult {
+            agents: vec![AgentWaitEntry {
+                id: "ses_child".into(),
+                title: "子代理 A".into(),
+                status: AgentStatus::Running,
+                message: None,
+                finish_reason: None,
+            }],
+            settled: false,
+            messages_pending: false,
+            timed_out: true,
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "agents": [{
+                    "id": "ses_child",
+                    "title": "子代理 A",
+                    "status": "running"
+                }],
+                "settled": false,
+                "messages_pending": false,
+                "timed_out": true
+            })
+        );
+        let params = AgentWaitParams {
+            session_id: "ses_parent".into(),
+            agent_ids: None,
+            timeout_secs: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"session_id": "ses_parent"})
+        );
+        assert!(
+            serde_json::from_value::<ToolProgressRow>(json!({
+                "agent_id": "ses_child",
+                "title": "子代理 A",
+                "status": "running",
+                "elapsed_ms": 1200,
+                "unexpected": true
+            }))
+            .is_err()
+        );
     }
 }
