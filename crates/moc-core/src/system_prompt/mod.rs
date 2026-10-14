@@ -15,7 +15,7 @@ const DEFAULT_INTRO: &str = "You are a precise software-engineering agent workin
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required.";
 /// 仅当 web_search/web_fetch 对模型可见时拼入工具政策。
 const WEB_SEARCH_POLICY: &str = "Use web_search for current web information and web_fetch to read specific URLs; cite the URLs you use.";
-const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. The current mode is supplied in a tail reminder.";
+const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. A non-normal mode restates its own contract in a tail reminder; no such reminder means normal.";
 /// 项目指令块的导语：标明这些文件的身份，避免与工具政策混读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
@@ -209,27 +209,29 @@ pub fn pieces(
     sections
 }
 
-pub fn mode_reminder(mode: SessionMode) -> Message {
+/// 当前模式的行为契约，`None` 表示普通模式不需要额外声明。
+///
+/// 契约只走尾部提醒：静态系统提示保持与模式无关（跨目录、跨会话复用缓存），
+/// 因此模式不能靠"当前是 X、去上面找规则"这种指针，必须自带该模式该做什么。
+/// 普通模式没有增量——工具面是完整的，静态政策也已写明它允许改工作区——不发声明
+/// 本身就是"当前是普通模式"的信号。
+pub fn mode_contract(mode: SessionMode) -> Option<Message> {
     let text = match mode {
-        SessionMode::Normal => {
-            "Current mode: normal. Workspace changes are allowed; follow the tool policies above."
-                .to_owned()
-        }
+        SessionMode::Normal => return None,
         SessionMode::Ask => {
-            "Current mode: ask. The workspace is read-only. Read and search are allowed; do not modify files. run_code inherits this restriction."
-                .to_owned()
+            "Ask mode is active. The workspace is read-only: read and search freely, but do not modify files. run_code inherits the read-only restriction."
         }
         SessionMode::Plan => {
-            "Current mode: plan. The workspace is read-only while exploring. When the plan is complete, call write_plan with its title and markdown to save it, then call exit_plan with an empty object to end this round and request review. run_code inherits this restriction."
-                .to_owned()
+            "Plan mode is active. The workspace is read-only while exploring. When the plan is complete, save it with write_plan and end the round with exit_plan to request review. run_code inherits the read-only restriction."
         }
         SessionMode::Ptc => {
-            "Current mode: ptc. Call tools through run_code only; direct native calls other than run_code are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
-                .to_owned()
+            "PTC mode is active. Call tools only through run_code; direct native calls other than run_code are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
         }
-        SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION.to_owned(),
+        SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
-    reminder_message(format!("<system-reminder>{text}</system-reminder>"))
+    Some(reminder_message(format!(
+        "<system-reminder>{text}</system-reminder>"
+    )))
 }
 
 /// Put volatile facts after replayed history so the stable prefix remains cacheable.
@@ -409,5 +411,45 @@ mod tests {
         let text = prompt.message.instruction_text();
         assert!(text.contains("<skills>"));
         assert!(text.contains("- demo: demo skill"));
+    }
+
+    /// 模式契约：普通模式不发声明，其余模式自带该模式该做什么（不是名字指针）。
+    #[test]
+    fn mode_contract_only_declares_non_normal_modes() {
+        assert!(
+            mode_contract(SessionMode::Normal).is_none(),
+            "普通模式没有任何增量，不发声明本身就是信号"
+        );
+        for (mode, needles) in [
+            (
+                SessionMode::Ask,
+                ["Ask mode is active", "read-only"].as_slice(),
+            ),
+            (
+                SessionMode::Plan,
+                ["Plan mode is active", "write_plan", "exit_plan"].as_slice(),
+            ),
+            (
+                SessionMode::Ptc,
+                ["PTC mode is active", "only through run_code"].as_slice(),
+            ),
+            (
+                SessionMode::ClmExperimental,
+                ["<clm-experimental>", "clm_context"].as_slice(),
+            ),
+        ] {
+            let text = mode_contract(mode).expect("非普通模式必须有契约").text();
+            assert!(
+                text.starts_with("<system-reminder>") && text.ends_with("</system-reminder>"),
+                "{mode:?}: {text}"
+            );
+            for needle in needles {
+                assert!(text.contains(needle), "{mode:?} 缺少「{needle}」：{text}");
+            }
+            assert!(
+                !text.contains("follow the tool policies above"),
+                "{mode:?} 不得只报模式名让模型自己去上面找规则：{text}"
+            );
+        }
     }
 }

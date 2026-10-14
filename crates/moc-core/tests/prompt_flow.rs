@@ -1457,9 +1457,9 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
         .expect("request messages");
     assert!(
         messages.iter().any(|message| {
-            content::content_text(&message["content"]).contains("Current mode: ask")
+            content::content_text(&message["content"]).contains("Ask mode is active")
         }),
-        "mode reminder missing from request messages"
+        "mode contract missing from request messages"
     );
 
     // 覆盖不落地：既没有 ModeChanged 通知，重载后会话模式仍是 Normal。
@@ -2320,7 +2320,8 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
         .mount(&upstream)
         .await;
     let h = Harness::new(&upstream.uri(), "anthropic_messages", "").await;
-    let id = h.session(SessionMode::Normal).await;
+    // 计划模式：本轮带模式契约（尾部提醒），断点必须避开它。
+    let id = h.session(SessionMode::Plan).await;
     h.prompt(&id, "缓存冒烟").await;
 
     let requests = upstream.received_requests().await.expect("请求记录");

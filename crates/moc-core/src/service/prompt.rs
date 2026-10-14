@@ -5,7 +5,7 @@ use crate::{
     compact::replay::model_messages,
     service::{CoreInner, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
-    system_prompt::{build, merge_reminders, mode_reminder, reminder_message},
+    system_prompt::{build, merge_reminders, mode_contract, reminder_message},
     tools::ToolCtx,
 };
 use moc_llm::{FinishReason, Message, Usage};
@@ -464,7 +464,10 @@ async fn run_prompt_locked(
         crate::agents::drain_inbox(&inner, &update, &params.session_id, false)
             .await
             .map_err(to_rpc)?;
-        let mut reminder_messages = vec![mode_reminder(mode)];
+        let mut reminder_messages = Vec::new();
+        if let Some(contract) = mode_contract(mode) {
+            reminder_messages.push(contract);
+        }
         if let Some(roster) = &roster {
             reminder_messages.push(reminder_message(format!(
                 "<system-reminder>{roster}</system-reminder>"
