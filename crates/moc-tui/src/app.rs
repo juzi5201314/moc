@@ -16,7 +16,7 @@ pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10)
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
 use crate::theme::Theme;
-use crate::transcript::{Block, Entry, ToolCallBlock};
+use crate::transcript::{Block, DetailLevel, Entry, ToolCallBlock};
 use crate::widgets::completion::CompletionState;
 use crate::widgets::prompt::PromptState;
 
@@ -76,11 +76,11 @@ pub struct App {
     pub scroll_max_offset: usize,
     /// Todo 清单（`TodoChanged` 最新快照）。
     pub todos: Vec<TodoPhase>,
-    /// 思考内容全局可见（ctrl+t 切换）。
-    pub show_thinking: bool,
-    /// 工具调用全局折叠（ctrl+o 切换）。
-    pub tools_collapsed: bool,
-    /// 视图版本：全局折叠开关等影响全部块渲染的因素变化时自增。
+    /// 思考块的显示档位（ctrl+t 循环）。
+    pub thinking_detail: DetailLevel,
+    /// 工具块的显示档位（ctrl+o 循环）。
+    pub tool_detail: DetailLevel,
+    /// 视图版本：全局档位等影响全部块渲染的因素变化时自增。
     pub view_gen: u64,
     /// 输入框状态（多行编辑、历史、chip）。
     pub prompt: PromptState,
@@ -254,8 +254,8 @@ impl App {
             history_load_requested: false,
             scroll_max_offset: 0,
             todos: Vec::new(),
-            show_thinking: true,
-            tools_collapsed: false,
+            thinking_detail: DetailLevel::default(),
+            tool_detail: DetailLevel::default(),
             view_gen: 0,
             prompt: PromptState::default(),
             completion: None,
@@ -644,16 +644,26 @@ impl App {
         }
     }
 
-    /// 切换思考可见性并使视图缓存失效。
-    pub fn toggle_thinking(&mut self) {
-        self.show_thinking = !self.show_thinking;
+    /// 思考块档位循环一档并使视图缓存失效。
+    pub fn cycle_thinking_detail(&mut self) {
+        self.thinking_detail = self.thinking_detail.next();
         self.view_gen += 1;
     }
 
-    /// 切换工具折叠并使视图缓存失效。
-    pub fn toggle_tools(&mut self) {
-        self.tools_collapsed = !self.tools_collapsed;
+    /// 工具块档位循环一档并使视图缓存失效。
+    pub fn cycle_tool_detail(&mut self) {
+        self.tool_detail = self.tool_detail.next();
         self.view_gen += 1;
+    }
+
+    /// 块的层档位：思考块看 `thinking_detail`、工具块看 `tool_detail`、
+    /// 其余块（IRC 卡片等）固定简略预览。
+    pub fn block_level(&self, block: &Block) -> DetailLevel {
+        match block {
+            Block::Thinking { .. } => self.thinking_detail,
+            Block::Tool(_) => self.tool_detail,
+            _ => DetailLevel::Brief,
+        }
     }
 
     /// Todo 快照更新：转写里替换最后一个 Todo 块（避免重复树），否则追加。

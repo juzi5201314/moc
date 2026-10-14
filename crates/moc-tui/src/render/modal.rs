@@ -644,7 +644,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }));
             }
             if let Some(diff) = &params.diff {
-                all_content.extend(crate::render::diff::render_diff(diff, width, theme));
+                all_content.extend(crate::render::diff::render_diff(diff, width, theme, usize::MAX));
             }
             let options_rows = params.options.len() + 2;
             let max_content_rows = max_lines.saturating_sub(options_rows).max(2);

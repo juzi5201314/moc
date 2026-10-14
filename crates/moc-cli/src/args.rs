@@ -38,9 +38,12 @@ pub struct CliArgs {
     /// 强制使用行式 REPL（默认进入 TUI；无 TTY 时自动降级 REPL）。
     #[arg(long = "repl")]
     pub repl: bool,
-    /// 不显示思维链增量。
+    /// 行式／`--print` 输出不打印思维链增量（TUI 用 `--detail`）。
     #[arg(long)]
     pub hide_thinking: bool,
+    /// 启动时的显示档位（思考与工具同时生效）。
+    #[arg(long, value_enum)]
+    pub detail: Option<DetailArg>,
     /// 覆盖会话存储目录。
     #[arg(long)]
     pub session_dir: Option<PathBuf>,
@@ -52,6 +55,24 @@ pub enum ModeArg {
     Plan,
     Ptc,
     ClmExperimental,
+}
+
+/// `--detail` 的三档取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DetailArg {
+    Hidden,
+    Brief,
+    Full,
+}
+
+impl From<DetailArg> for moc_tui::DetailLevel {
+    fn from(detail: DetailArg) -> Self {
+        match detail {
+            DetailArg::Hidden => Self::Hidden,
+            DetailArg::Brief => Self::Brief,
+            DetailArg::Full => Self::Full,
+        }
+    }
 }
 
 impl From<ModeArg> for SessionMode {

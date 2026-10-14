@@ -8,6 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::transcript::DetailLevel;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActiveSubmit {
@@ -19,8 +21,10 @@ pub enum ActiveSubmit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TuiConfig {
-    pub show_thinking: bool,
-    pub expand_tools: bool,
+    /// 思考块的显示档位（ctrl+t 循环，启动时生效）。
+    pub thinking_detail: DetailLevel,
+    /// 工具块的显示档位（ctrl+o 循环，启动时生效）。
+    pub tool_detail: DetailLevel,
     pub notify_complete: bool,
     pub notify_waiting: bool,
     pub active_submit: ActiveSubmit,
@@ -31,8 +35,8 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            show_thinking: true,
-            expand_tools: true,
+            thinking_detail: DetailLevel::default(),
+            tool_detail: DetailLevel::default(),
             notify_complete: true,
             notify_waiting: true,
             active_submit: ActiveSubmit::Steering,
@@ -58,8 +62,8 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
         ("newline", "插入换行", &["shift+enter", "alt+enter"]),
         ("cancel", "Stop current prompt / exit", &["ctrl+c"]),
         ("help", "帮助", &["ctrl+h"]),
-        ("thinking", "展开／折叠思考", &["ctrl+t"]),
-        ("tools", "展开／折叠工具输出", &["ctrl+o"]),
+        ("thinking", "切换思考显示档位", &["ctrl+t"]),
+        ("tools", "切换工具显示档位", &["ctrl+o"]),
         ("paste_image", "粘贴图片或文本", &["ctrl+v"]),
         ("model", "选择模型", &["ctrl+p"]),
         ("resume", "恢复会话", &["ctrl+r"]),
@@ -290,19 +294,28 @@ fn read_optional(path: &Path) -> anyhow::Result<String> {
     }
 }
 
+/// 三档显示的单选项（思考与工具共用同一组语义）。
+fn detail_options() -> Vec<ChoiceOption> {
+    vec![
+        ChoiceOption::new("hidden", "隐藏"),
+        ChoiceOption::new("brief", "简略"),
+        ChoiceOption::new("full", "完整"),
+    ]
+}
+
 pub fn fields() -> Vec<ConfigField> {
     let descriptions = [
         (
-            "show_thinking",
-            "默认展开思考",
-            "模型思考过程默认展开显示。",
-            FieldKind::Bool,
+            "thinking_detail",
+            "思考显示档位",
+            "启动时思考块的档位：隐藏只留耗时行，简略显示正文末尾预览，完整显示全部。",
+            FieldKind::Choice(detail_options()),
         ),
         (
-            "expand_tools",
-            "默认展开工具输出",
-            "工具运行结果默认展开显示。",
-            FieldKind::Bool,
+            "tool_detail",
+            "工具显示档位",
+            "启动时工具块的档位：隐藏只留摘要行，简略微量正文预览，完整显示全部输出。",
+            FieldKind::Choice(detail_options()),
         ),
         (
             "notify_complete",
@@ -418,12 +431,13 @@ mod tests {
         )
         .unwrap();
         let (mut store, mut preferences) = TuiStore::load(root.path()).unwrap();
-        preferences.show_thinking = false;
-        preferences.expand_tools = false;
+        preferences.thinking_detail = DetailLevel::Full;
+        preferences.tool_detail = DetailLevel::Hidden;
         preferences.active_submit = ActiveSubmit::Interrupt;
         store.save(&preferences).unwrap();
         let (_, reloaded) = TuiStore::load(root.path()).unwrap();
-        assert!(!reloaded.show_thinking && !reloaded.expand_tools);
+        assert_eq!(reloaded.thinking_detail, DetailLevel::Full);
+        assert_eq!(reloaded.tool_detail, DetailLevel::Hidden);
         assert_eq!(reloaded.active_submit, ActiveSubmit::Interrupt);
         assert_eq!(
             std::fs::read_to_string(root.path().join("config.toml")).unwrap(),

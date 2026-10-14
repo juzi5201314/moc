@@ -12,7 +12,7 @@ use super::highlight;
 use crate::theme::Theme;
 
 /// diff 内部渲染行数上限：超出的行不渲染（协议侧同样有截断，双保险）。
-const MAX_RENDERED_ROWS: usize = 4000;
+pub const MAX_RENDERED_ROWS: usize = 4000;
 
 /// diff 统计：删除/添加行数。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -38,13 +38,31 @@ pub fn stats(diff: &ToolDiff) -> DiffStats {
     stats
 }
 
-/// 渲染 diff 全部文件。
-pub fn render_diff(diff: &ToolDiff, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+/// 渲染 diff 全部文件；`limit` 是内容行上限（`usize::MAX` = 不限，
+/// 内部仍受 [`MAX_RENDERED_ROWS`] 约束），达到上限且还有内容时补一行省略提示。
+pub fn render_diff(diff: &ToolDiff, width: usize, theme: &Theme, limit: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for file in &diff.files {
         render_file(file, diff.truncated, width, theme, &mut lines);
+        if lines.len() >= limit {
+            break;
+        }
+    }
+    let rendered = rendered_row_count(diff, limit);
+    lines.truncate(rendered);
+    let omitted = row_count(diff).saturating_sub(rendered);
+    if omitted > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("⋯ 还有 {omitted} 行"),
+            Style::new().fg(theme.gray_dim),
+        )));
     }
     lines
+}
+
+/// [`render_diff`] 实际落在行数上限内的内容行数（不含省略提示行）。
+pub fn rendered_row_count(diff: &ToolDiff, limit: usize) -> usize {
+    row_count(diff).min(limit).min(MAX_RENDERED_ROWS)
 }
 
 /// diff 的展示行数（与 [`render_diff`] 同规则，但不做高亮）。
@@ -292,7 +310,7 @@ mod tests {
             truncated: false,
         };
 
-        let lines = render_diff(&diff, 80, &theme);
+        let lines = render_diff(&diff, 80, &theme, usize::MAX);
         assert_eq!(lines.len(), 4, "两行改动 + 一条 hunk 分隔 + 一行上下文");
         let text_of = |line: &Line<'static>| {
             line.spans

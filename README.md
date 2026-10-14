@@ -56,7 +56,8 @@ moc --resume <id>             # 恢复历史会话
 | 打开配置 | `Ctrl+G` 或 `/config` |
 | 切换模型 | `Ctrl+P` 或 `/model` |
 | 查看上下文占用 | `/context` |
-| 全局展开/收起思考 | `Ctrl+T` |
+| 切换思考显示档位 | `Ctrl+T` |
+| 切换工具显示档位 | `Ctrl+O` |
 | 复制选中文本 | `y`（OSC52） |
 | 计划模式 | `/mode plan` |
 

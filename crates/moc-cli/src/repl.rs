@@ -128,7 +128,7 @@ fn tui_options(args: &CliArgs) -> moc_tui::TuiOptions {
         mode: args.mode.into(),
         resume,
         initial_prompt: args.prompt.clone(),
-        hide_thinking: args.hide_thinking,
+        detail: args.detail.map(Into::into),
     }
 }
 

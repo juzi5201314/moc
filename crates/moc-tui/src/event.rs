@@ -31,6 +31,7 @@ use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_em
 use crate::render;
 use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
+use crate::transcript::DetailLevel;
 use crate::widgets::prompt::{clamp_cursor, cursor_next, cursor_prev};
 
 /// TUI 启动参数（从 CLI 参数翻译而来）。
@@ -46,7 +47,8 @@ pub struct TuiOptions {
     pub resume: Option<Option<String>>,
     /// 启动即发送的提示词（`moc "提示词"`）。
     pub initial_prompt: Option<String>,
-    pub hide_thinking: bool,
+    /// 启动覆盖显示档位（思考与工具同时生效）；`None` 用偏好设置。
+    pub detail: Option<DetailLevel>,
 }
 
 /// 运行 TUI 直到退出。
@@ -62,8 +64,12 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         .context("连接后台服务失败")?;
 
     let mut app = App::new(theme, events.clone());
-    app.show_thinking = preferences.show_thinking && !opts.hide_thinking;
-    app.tools_collapsed = !preferences.expand_tools;
+    app.thinking_detail = preferences.thinking_detail;
+    app.tool_detail = preferences.tool_detail;
+    if let Some(level) = opts.detail {
+        app.thinking_detail = level;
+        app.tool_detail = level;
+    }
     app.statusline_template = preferences.statusline.clone();
     app.keymap = crate::config::KeyMap::compile(&preferences)?;
     app.preferences = preferences;
@@ -1080,15 +1086,19 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) => {
             let clicked = app.pending_click.take() == Some(position);
             if clicked {
-                // 单击：命中折叠块标题则切换折叠
+                // 单击：命中折叠块标题则切换该块档位（完整 ↔ 收起形态）
                 if let Some(&(index, ..)) = app
                     .mouse_hits
                     .iter()
                     .find(|&&(_, start, _)| position.1 == start)
-                    && let Some(entry) = app.blocks.get_mut(index)
-                    && entry.block.foldable()
                 {
-                    entry.toggle_fold();
+                    let axis = app
+                        .blocks
+                        .get(index)
+                        .map_or(DetailLevel::Brief, |entry| app.block_level(&entry.block));
+                    if let Some(entry) = app.blocks.get_mut(index) {
+                        entry.toggle_level(axis);
+                    }
                 }
                 app.selection = None;
             } else if app.selection.is_some() {
@@ -1298,20 +1308,12 @@ fn handle_key(
         }
         (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help),
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
-            app.toggle_thinking();
-            app.set_notice(if app.show_thinking {
-                "思考内容：展开"
-            } else {
-                "思考内容：折叠"
-            });
+            app.cycle_thinking_detail();
+            app.set_notice(format!("思考显示：{}", app.thinking_detail.label()));
         }
         (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
-            app.toggle_tools();
-            app.set_notice(if app.tools_collapsed {
-                "工具调用：折叠"
-            } else {
-                "工具调用：展开"
-            });
+            app.cycle_tool_detail();
+            app.set_notice(format!("工具显示：{}", app.tool_detail.label()));
         }
         (KeyCode::Char('v'), KeyModifiers::CONTROL) => spawn_clipboard_paste(app.events.clone()),
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => app.open_model_picker(),
@@ -3507,7 +3509,7 @@ mod tests {
         let id = session.id.clone();
         let mut app = App::new(Theme::global(), events);
         app.session = Some(session);
-        app.tools_collapsed = false;
+        app.tool_detail = DetailLevel::Full;
         // 长粘贴经 chip 展开，再作为多行 Bash 脚本执行。
         app.prompt.insert_str_raw("!");
         app.prompt.insert_text("printf 'TUI_PUBLIC\\n'\nprintf 'TUI_SECOND\\n'\nprintf 'TUI_THIRD\\n'\nprintf 'TUI_FOURTH\\n'");

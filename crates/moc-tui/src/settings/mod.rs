@@ -379,8 +379,8 @@ impl SettingsPanel {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("界面设置存储尚未初始化"))?
             .save(&preferences)?;
-        app.show_thinking = preferences.show_thinking;
-        app.tools_collapsed = !preferences.expand_tools;
+        app.thinking_detail = preferences.thinking_detail;
+        app.tool_detail = preferences.tool_detail;
         app.statusline_template = preferences.statusline.clone();
         self.tui = serde_json::to_value(&preferences)?;
         app.preferences = preferences;

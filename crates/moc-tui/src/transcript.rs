@@ -6,6 +6,41 @@
 
 use moc_protocol::ToolResult;
 use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
+use serde::{Deserialize, Serialize};
+
+/// 转写内容的显示档位（ctrl+t 管思考、ctrl+o 管工具，逐档循环）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetailLevel {
+    /// 只留标题／摘要行。
+    Hidden,
+    /// 少量预览行：思考末尾 [`crate::render::scrollback::BRIEF_THINKING_ROWS`] 行、
+    /// 工具正文 [`crate::render::scrollback::BRIEF_BODY_ROWS`] 行。
+    #[default]
+    Brief,
+    /// 正文全文，不做截断。
+    Full,
+}
+
+impl DetailLevel {
+    /// 循环到下一档：隐藏 → 简略 → 完整 → 隐藏。
+    pub fn next(self) -> Self {
+        match self {
+            Self::Hidden => Self::Brief,
+            Self::Brief => Self::Full,
+            Self::Full => Self::Hidden,
+        }
+    }
+
+    /// 档位的中文名（切换提示用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hidden => "隐藏",
+            Self::Brief => "简略",
+            Self::Full => "完整",
+        }
+    }
+}
 
 /// 当前时刻的 UNIX 毫秒时间戳。
 pub fn now_ms() -> u64 {
@@ -21,8 +56,8 @@ pub fn now_ms() -> u64 {
 pub struct Entry {
     pub generation: u64,
     pub block: Block,
-    /// 单块折叠覆盖（与全局开关叠加：任一为真即折叠）。
-    pub folded: bool,
+    /// 单块档位覆盖；`None` 表示跟随所在层的全局档位。
+    pub level_override: Option<DetailLevel>,
     /// 块落地时刻（UNIX 毫秒）：用户消息与助手回复据此显示时间戳。
     /// `None` 表示无从得知（如从历史恢复的会话）。
     pub at_ms: Option<u64>,
@@ -36,7 +71,7 @@ impl Entry {
         Self {
             generation: 0,
             block,
-            folded: false,
+            level_override: None,
             at_ms: None,
             elapsed_ms: None,
         }
@@ -65,12 +100,27 @@ impl Entry {
         self.touch();
     }
 
-    /// 切换单块折叠。
-    pub fn toggle_fold(&mut self) {
-        if self.block.foldable() {
-            self.folded = !self.folded;
-            self.generation += 1;
+    /// 该块渲染用的档位：单块覆盖优先，否则用调用方给的层档位。
+    pub fn level(&self, axis: DetailLevel) -> DetailLevel {
+        self.level_override.unwrap_or(axis)
+    }
+
+    /// 切换单块档位：非完整 → 完整；完整 → 当前层的收起形态
+    /// （简略层回到简略，其余回到隐藏）。目标与层档位相同时不留覆盖。
+    pub fn toggle_level(&mut self, axis: DetailLevel) {
+        if !self.block.foldable() {
+            return;
         }
+        let collapsed = if axis == DetailLevel::Brief {
+            DetailLevel::Brief
+        } else {
+            DetailLevel::Hidden
+        };
+        self.level_override = match self.level(axis) {
+            DetailLevel::Full => (collapsed != axis).then_some(collapsed),
+            _ => Some(DetailLevel::Full),
+        };
+        self.generation += 1;
     }
 
     /// 续写流式文本（Assistant / Thinking）。
@@ -168,9 +218,38 @@ pub enum Block {
 impl Block {
     /// 块是否响应折叠切换。
     pub fn foldable(&self) -> bool {
-        matches!(
-            self,
-            Block::Tool(_) | Block::Thinking { .. } | Block::AgentMessage { .. }
-        )
+        match self {
+            Block::Thinking { .. } | Block::AgentMessage { .. } => true,
+            Block::Tool(tool) => tool.has_body(),
+            Block::User { .. } | Block::Assistant { .. } | Block::Todo { .. } | Block::Note { .. } => {
+                false
+            }
+        }
     }
+}
+
+impl ToolCallBlock {
+    /// 是否有值得展开的正文：无正文工具成功时只占一行；失败时正文是错误原因，仍可展开。
+    pub fn has_body(&self) -> bool {
+        tool_body_allowed(&self.name)
+            || self.status.is_some_and(|status| status != ToolStatus::Completed)
+    }
+}
+
+/// 正文策略：成功的「回显参数／致谢／模型向载荷」类工具不渲染正文。
+fn tool_body_allowed(name: &str) -> bool {
+    !matches!(
+        name,
+        "read"
+            | "find"
+            | "todo"
+            | "skill"
+            | "clm_context"
+            | "spawn_agent"
+            | "list_agents"
+            | "stop_agent"
+            | "yield"
+            | "write_plan"
+            | "exit_plan"
+    )
 }

@@ -29,6 +29,7 @@ pub mod transcript_restore;
 pub mod widgets;
 
 pub use event::{TuiOptions, run};
+pub use transcript::DetailLevel;
 
 /// 前端版本（与 crate 版本一致，握手时上报）。
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
