@@ -46,6 +46,7 @@ pub fn load_context_files(
             );
         }
     }
+    let project_files = files.len();
     if config.user {
         push_file(
             moc_home.join("AGENTS.md"),
@@ -55,7 +56,7 @@ pub fn load_context_files(
             &mut files,
         );
     }
-    deduplicate_and_bound(files, config.max_tokens)
+    deduplicate_and_bound(files, project_files, config.max_tokens)
 }
 
 fn canonical_or_owned(path: &Path) -> PathBuf {
@@ -240,7 +241,12 @@ fn resolve_import(source: &Path, import: &str, root: &Path) -> Option<PathBuf> {
     Some(canonical)
 }
 
-fn deduplicate_and_bound(files: Vec<ContextFile>, budget: u64) -> Vec<ContextFile> {
+fn deduplicate_and_bound(
+    files: Vec<ContextFile>,
+    project_files: usize,
+    budget: u64,
+) -> Vec<ContextFile> {
+    let files = drop_contained(files, project_files);
     let mut seen = HashSet::new();
     let mut result = Vec::new();
     let mut remaining = budget;
@@ -274,6 +280,51 @@ fn deduplicate_and_bound(files: Vec<ContextFile>, budget: u64) -> Vec<ContextFil
         ));
     }
     result
+}
+
+/// 段落包含去重：更接近工作目录的项目文件完整包含前面某个项目文件时，前面的副本
+/// 不再注入——更近的副本本身更醒目，重复注入只会挤占指令预算。用户级文件不参与，
+/// 它是全局指令，不因仓库内某个文件包含它就整体消失。
+///
+/// `files` 的项目部分按「仓库根 → 当前目录」排列，因此只比较项目文件内部。
+fn drop_contained(files: Vec<ContextFile>, project_files: usize) -> Vec<ContextFile> {
+    if project_files < 2 {
+        return files;
+    }
+    let paragraphs: Vec<Vec<String>> = files
+        .iter()
+        .map(|file| {
+            file.content
+                .split("\n\n")
+                .map(|paragraph| paragraph.trim().to_owned())
+                .filter(|paragraph| !paragraph.is_empty())
+                .collect()
+        })
+        .collect();
+    let mut keep = vec![true; files.len()];
+    for index in 0..project_files {
+        if paragraphs[index].is_empty() {
+            continue;
+        }
+        let contained = (index + 1..project_files)
+            .any(|later| contains_sequence(&paragraphs[later], &paragraphs[index]));
+        if contained {
+            keep[index] = false;
+        }
+    }
+    files
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, file)| keep[index].then_some(file))
+        .collect()
+}
+
+/// `needle` 是否作为连续片段出现在 `haystack` 中；空 `needle` 不算包含。
+fn contains_sequence(haystack: &[String], needle: &[String]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 #[cfg(test)]
@@ -322,6 +373,66 @@ mod tests {
         // 行内反引号标记与解析失败的标记都原样保留，不展开也不清除。
         assert!(files[0].content.contains("`@missing.md`"));
         assert!(files[0].content.contains("@absent.md"));
+    }
+
+    #[test]
+    fn nearer_file_containing_the_ancestor_replaces_it() {
+        let root = tempfile::tempdir().expect("临时项目");
+        let home = tempfile::tempdir().expect("临时 home");
+        fs::create_dir_all(root.path().join("sub")).expect("子目录");
+        fs::create_dir_all(root.path().join(".git")).expect("仓库标记");
+        fs::write(
+            root.path().join("AGENTS.md"),
+            "always run cargo fmt\n\nnever commit secrets\n",
+        )
+        .expect("根规则");
+        fs::write(
+            root.path().join("sub/AGENTS.md"),
+            "always run cargo fmt\n\nnever commit secrets\n\nsubdir uses pnpm\n",
+        )
+        .expect("子目录规则");
+        let files = load_context_files(
+            &root.path().join("sub"),
+            home.path(),
+            &crate::config::ContextFilesConfig::default(),
+        );
+        let paths = files
+            .iter()
+            .map(|file| file.path.display().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths.len(),
+            1,
+            "更近的副本完整包含祖先副本时只保留一份：{paths:?}"
+        );
+        assert!(paths[0].ends_with("sub/AGENTS.md"));
+        assert!(prompt_for(&root.path().join("sub"), home.path()).contains("subdir uses pnpm"));
+    }
+
+    #[test]
+    fn user_file_never_replaces_project_files_by_containment() {
+        let root = tempfile::tempdir().expect("临时项目");
+        let home = tempfile::tempdir().expect("临时 home");
+        fs::create_dir_all(root.path().join("sub")).expect("子目录");
+        fs::create_dir_all(root.path().join(".git")).expect("仓库标记");
+        fs::create_dir_all(home.path()).expect("home");
+        fs::write(root.path().join("AGENTS.md"), "project specific first\n").expect("根规则");
+        fs::write(
+            home.path().join("AGENTS.md"),
+            "user global header\n\nproject specific first\n",
+        )
+        .expect("用户规则");
+        let files = load_context_files(
+            &root.path().join("sub"),
+            home.path(),
+            &crate::config::ContextFilesConfig::default(),
+        );
+        assert_eq!(
+            files.len(),
+            2,
+            "用户级文件包含项目文件不得让项目文件消失：{:?}",
+            files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+        );
     }
 
     fn prompt_for(cwd: &Path, home: &Path) -> String {

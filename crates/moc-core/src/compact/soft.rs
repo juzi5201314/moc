@@ -26,6 +26,8 @@ pub(crate) struct SoftContext<'a> {
     pub config: &'a ResolvedConfig,
     pub model: &'a ResolvedModel,
     pub system: &'a Message,
+    /// 系统提示的静态前缀块数；摘要请求沿用主循环的缓存断点锚点。
+    pub cache_prefix_blocks: usize,
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
     pub budget: CompactionBudget,
@@ -41,6 +43,7 @@ pub(crate) async fn compact(
         config,
         model,
         system,
+        cache_prefix_blocks,
         tools,
         instructions,
         budget,
@@ -106,6 +109,11 @@ pub(crate) async fn compact(
         tools.to_vec(),
         None,
         &state.session.id,
+        crate::service::prompt::request::CacheAnchors {
+            system_blocks: cache_prefix_blocks,
+            // 摘要是本次请求特有的最后一条消息，不能落缓存断点。
+            trailing_reminders: 1,
+        },
     );
     if let Some(guard) = inner.runtime(&state.session.id).await.guard.lock().clone() {
         request.options.stream_guard.max_wire_bytes = Some(guard.remaining_bytes());

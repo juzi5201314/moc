@@ -5,7 +5,7 @@ pub mod reminder;
 
 use std::path::Path;
 
-use moc_llm::Message;
+use moc_llm::{ContentPart, Message, Role};
 use moc_protocol::methods::SessionMode;
 
 use crate::config::ResolvedConfig;
@@ -16,11 +16,32 @@ const TOOL_POLICY: &str = "Use read for files and directories, grep for content,
 /// 仅当 web_search/web_fetch 对模型可见时拼入工具政策。
 const WEB_SEARCH_POLICY: &str = "Use web_search for current web information and web_fetch to read specific URLs; cite the URLs you use.";
 const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. The current mode is supplied in a tail reminder.";
+/// 项目指令块的导语：标明这些文件的身份，避免与工具政策混读。
+const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
+
+/// 片段作用域：决定缓存断点落位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PieceScope {
+    /// 与工作目录无关的静态前缀：断点落在它的最后一块上，跨目录、跨会话共享缓存。
+    Static,
+    /// 工作目录或会话相关的内容：排在静态前缀之后，不参与静态缓存。
+    Project,
+}
 
 pub struct PromptPiece {
     /// Section category (`system`, `project`, or `skills`) for context accounting.
     pub title: &'static str,
+    /// 片段作用域。
+    pub scope: PieceScope,
     pub text: String,
+}
+
+/// 组装完成的系统提示。
+pub struct SystemPrompt {
+    /// 系统消息：每个片段一个内容块，顺序即线上顺序。
+    pub message: Message,
+    /// 静态前缀块数；缓存断点落在第 `cache_prefix_blocks - 1` 块。
+    pub cache_prefix_blocks: usize,
 }
 
 pub fn build(
@@ -31,8 +52,8 @@ pub fn build(
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
     subagent: Option<&str>,
-) -> Message {
-    compose(&pieces(
+) -> SystemPrompt {
+    compose(pieces(
         config,
         model,
         cwd,
@@ -43,17 +64,26 @@ pub fn build(
     ))
 }
 
-pub fn compose(pieces: &[PromptPiece]) -> Message {
-    let capacity = pieces.iter().map(|piece| piece.text.len()).sum::<usize>()
-        + pieces.len().saturating_sub(1) * 2;
-    let mut text = String::with_capacity(capacity);
-    for (index, piece) in pieces.iter().enumerate() {
-        if index > 0 {
-            text.push_str("\n\n");
-        }
-        text.push_str(&piece.text);
+/// 按片段拼装系统提示：每块一个内容块，静态前缀在最前。
+///
+/// 内容块边界只服务于本地缓存断点；线上拍平（Chat / Responses）与无断点时的
+/// 字符串形态（Anthropic）都由编码器补回块间空行，文本与单块形态逐字一致。
+pub fn compose(pieces: Vec<PromptPiece>) -> SystemPrompt {
+    let cache_prefix_blocks = pieces
+        .iter()
+        .take_while(|piece| piece.scope == PieceScope::Static)
+        .count();
+    let content = pieces
+        .into_iter()
+        .map(|piece| ContentPart::Text(piece.text))
+        .collect();
+    SystemPrompt {
+        message: Message {
+            role: Role::System,
+            content,
+        },
+        cache_prefix_blocks,
     }
-    Message::system(text)
 }
 
 /// Build the stable prefix. Time, jobs, workspace changes, MCP status, and mode belong in tail reminders.
@@ -74,6 +104,7 @@ pub fn pieces(
     };
     sections.push(PromptPiece {
         title: "system",
+        scope: PieceScope::Static,
         text: intro.to_owned(),
     });
     let mut tool_policy = String::with_capacity(
@@ -88,10 +119,12 @@ pub fn pieces(
     tool_policy.push_str(TOOL_POLICY_REST);
     sections.push(PromptPiece {
         title: "system",
+        scope: PieceScope::Static,
         text: tool_policy,
     });
     sections.push(PromptPiece {
         title: "system",
+        scope: PieceScope::Static,
         text: format!(
             "All modes support run_code. In PTC, it is the only native entry point; other modes may call built-in tools directly. Discover MCP tools only inside run_code: first `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`. Discovery does not grant permission.\n\nEach result has `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent and parse text-only JSON explicitly with `JSON.parse(r.content)`. Failures reject with serializable `code`, `message`, and `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls allow up to {}. Writes, bash approval, and session-state updates are barriers: await all calls before returning. Return only final information; intermediate results are not added to model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, and `state.keys()` persist session JSON; missing keys return undefined, writes commit immediately, and later failures do not roll them back. JavaScript globals do not persist. WASM has no file, network, process, or timer APIs; use host tools.",
             config.tools.max_concurrent_calls,
@@ -101,17 +134,13 @@ pub fn pieces(
     if !mcp_summary.is_empty() {
         sections.push(PromptPiece {
             title: "tools",
+            scope: PieceScope::Project,
             text: mcp_summary.to_owned(),
         });
     }
-    if !config.system_prompt.append.trim().is_empty() {
-        sections.push(PromptPiece {
-            title: "system",
-            text: config.system_prompt.append.trim().to_owned(),
-        });
-    }
     if !context_files.is_empty() {
-        let mut rules = String::from("<repo-rules>");
+        let mut rules = String::from("<repo-rules>\n");
+        rules.push_str(REPO_RULES_INTRO);
         for file in context_files {
             rules.push_str("\n<file path=\"");
             rules.push_str(&file.path.display().to_string());
@@ -125,6 +154,7 @@ pub fn pieces(
         rules.push_str("\n</repo-rules>");
         sections.push(PromptPiece {
             title: "project",
+            scope: PieceScope::Project,
             text: rules,
         });
     }
@@ -133,17 +163,20 @@ pub fn pieces(
     {
         sections.push(PromptPiece {
             title: "skills",
+            scope: PieceScope::Project,
             text: catalog,
         });
     }
     if let Some(subagent) = subagent {
         sections.push(PromptPiece {
             title: "project",
+            scope: PieceScope::Project,
             text: subagent.to_owned(),
         });
     }
     sections.push(PromptPiece {
         title: "system",
+        scope: PieceScope::Project,
         text: format!(
             "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
             cwd.display(),
@@ -152,6 +185,14 @@ pub fn pieces(
             model.id,
         ),
     });
+    // 追加指令放在最后：它是用户对本会话最直接的指令，权威顺序上最靠近模型。
+    if !config.system_prompt.append.trim().is_empty() {
+        sections.push(PromptPiece {
+            title: "system",
+            scope: PieceScope::Project,
+            text: config.system_prompt.append.trim().to_owned(),
+        });
+    }
     sections
 }
 
@@ -219,6 +260,19 @@ mod tests {
             .expect("resolve project")
     }
 
+    /// 系统提示的文本块，按线上顺序；测试据此断言块边界。
+    fn blocks(prompt: &SystemPrompt) -> Vec<String> {
+        prompt
+            .message
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::Text(text) => text.clone(),
+                other => panic!("系统提示只应包含文本块，收到 {other:?}"),
+            })
+            .collect()
+    }
+
     #[test]
     fn stable_prompt_has_rules_mode_model_and_code_contract() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -230,7 +284,7 @@ mod tests {
         let model = config.resolve_role("default").expect("resolve model");
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let message = build(
+        let prompt = build(
             &config,
             &model,
             &cwd,
@@ -239,15 +293,55 @@ mod tests {
             "<mcp-servers>\ngithub\n</mcp-servers>",
             None,
         );
-        let text = message.text();
+        let text = prompt.message.instruction_text();
         assert!(text.starts_with(DEFAULT_INTRO));
         assert!(text.contains("Follow local rule."));
+        assert!(text.contains(REPO_RULES_INTRO));
         assert!(text.contains("model: p/model"));
         assert!(text.contains("<mcp-servers>"));
         assert!(text.contains("structuredContent"));
         assert!(text.contains("state.store"));
         assert!(text.contains("Standard tool batches allow up to 16"));
         assert!(!text.contains("Current mode:"));
+        // 静态前缀只含与工作目录无关的模板块，工作目录相关内容全部在其后。
+        assert_eq!(prompt.cache_prefix_blocks, 3);
+        let blocks = blocks(&prompt);
+        assert!(blocks[0].starts_with(DEFAULT_INTRO));
+        assert!(blocks[1].starts_with(TOOL_POLICY));
+        assert!(blocks[2].contains("run_code"));
+        assert!(blocks[3].starts_with("<mcp-servers>"));
+        assert!(blocks[4].starts_with("<repo-rules>\n"));
+        assert!(
+            !blocks[..3]
+                .iter()
+                .any(|block| block.contains(&cwd.display().to_string()))
+        );
+    }
+
+    #[test]
+    fn append_text_lands_after_project_content() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).expect("create repo");
+        let mut config = resolved(&cwd, &home);
+        config.system_prompt.append = "Always answer in Chinese.".to_owned();
+        let model = config.resolve_role("default").expect("resolve model");
+        let prompt = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            None,
+        );
+        let blocks = blocks(&prompt);
+        assert_eq!(
+            blocks.last().map(String::as_str),
+            Some("Always answer in Chinese.")
+        );
+        assert_eq!(prompt.cache_prefix_blocks, 3);
     }
 
     #[test]
@@ -270,7 +364,8 @@ mod tests {
                 "",
                 None,
             )
-            .text()
+            .message
+            .instruction_text()
         };
         assert!(
             !prompt(&config).contains("web_search"),
@@ -297,8 +392,9 @@ mod tests {
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let message = build(&config, &model, &cwd, &context_files, &skills, "", None);
-        assert!(message.text().contains("<skills>"));
-        assert!(message.text().contains("- demo: demo skill"));
+        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", None);
+        let text = prompt.message.instruction_text();
+        assert!(text.contains("<skills>"));
+        assert!(text.contains("- demo: demo skill"));
     }
 }

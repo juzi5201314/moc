@@ -150,6 +150,18 @@ fn image_media_type(path: &str) -> Option<&'static str> {
     }
 }
 
+/// 缓存断点锚点：由提示编排方给出，编码器据此落位。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CacheAnchors {
+    /// 系统提示的静态前缀块数；`0` 表示没有静态前缀。
+    pub system_blocks: usize,
+    /// 追加在请求末尾、不进会话历史的提醒消息条数。
+    ///
+    /// 提醒下一轮不会出现在同样的位置，落在它上面的断点永远不会命中，因此尾部
+    /// 断点必须退回到最后一条会进入历史的 IR 消息。
+    pub trailing_reminders: usize,
+}
+
 pub(crate) fn build_request(
     model: &crate::ResolvedModel,
     config: &crate::ResolvedConfig,
@@ -157,6 +169,7 @@ pub(crate) fn build_request(
     tools: Vec<moc_llm::ToolDef>,
     native_input: Option<Vec<Value>>,
     session_id: &str,
+    anchors: CacheAnchors,
 ) -> ChatRequest {
     let echo_reasoning = if model.requires_reasoning_content_for_tool_calls
         || model.requires_reasoning_content_for_all_assistant_turns
@@ -200,7 +213,7 @@ pub(crate) fn build_request(
         parallel_tool_calls: Some(model.llm.wire.parallel_tool_calls),
         options: RequestOptions {
             echo_reasoning,
-            cache: cache_options(model, message_count, session_id),
+            cache: cache_options(model, message_count, anchors, session_id),
             stream_guard: config.limits.stream_guard(),
             ..RequestOptions::default()
         },
@@ -210,6 +223,7 @@ pub(crate) fn build_request(
 pub(crate) fn cache_options(
     model: &crate::ResolvedModel,
     message_count: usize,
+    anchors: CacheAnchors,
     session_id: &str,
 ) -> Option<CacheConfig> {
     use crate::config::model::CachePolicy;
@@ -217,20 +231,28 @@ pub(crate) fn cache_options(
     if model.cache == CachePolicy::Off || (!model.supports_prompt_cache_key && !anthropic) {
         return None;
     }
-    let breakpoints = if anthropic {
+    let (breakpoints, system_blocks) = if anthropic {
+        // 首块：整条系统提示；Anthropic 的最小缓存单元是「系统提示 + 工具定义」。
         let mut points = vec![0];
-        for index in message_count.saturating_sub(2)..message_count {
-            if index != 0 {
-                points.push(index);
-            }
+        // 尾块：最后一条会进入历史的 IR 消息；本轮提醒不落位，否则断点永远不命中。
+        let tail = message_count.saturating_sub(1 + anchors.trailing_reminders);
+        if tail != 0 && tail < message_count {
+            points.push(tail);
         }
-        points
+        // 静态前缀块：与工作目录无关的部分单独落位，跨目录、跨会话复用。
+        let blocks = if anchors.system_blocks > 0 {
+            vec![anchors.system_blocks - 1]
+        } else {
+            Vec::new()
+        };
+        (points, blocks)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     Some(CacheConfig {
         key: (!anthropic).then(|| session_id.to_owned()),
         breakpoints,
+        system_blocks,
         ttl: match (anthropic, model.cache) {
             (true, CachePolicy::Long) => Some(moc_llm::CacheTtl::OneHour),
             (true, CachePolicy::Short) => Some(moc_llm::CacheTtl::FiveMinutes),
@@ -333,5 +355,46 @@ mod tests {
         };
         assert_eq!(media_type, "image/png");
         assert_eq!(data, "cG5nLWJ5dGVz");
+    }
+
+    #[test]
+    fn anthropic_cache_breakpoints_skip_tail_reminders_and_lift_static_prefix() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(&cwd).expect("创建仓库");
+        std::fs::create_dir_all(&home).expect("创建 home");
+        std::fs::write(
+            home.join("config.toml"),
+            "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model'\n[providers.p]\napi='anthropic_messages'\nbase_url='https://example.invalid'\ncache='short'\n[providers.p.models.model]\n",
+        )
+        .expect("写配置");
+        let core = crate::CoreConfig {
+            home: home.clone(),
+            cwd: cwd.clone(),
+            overlays: Vec::new(),
+            session_dir: None,
+            client: moc_llm::Client::new(),
+        };
+        let config = crate::ResolvedConfig::load(&core)
+            .expect("载入配置")
+            .for_project(&cwd)
+            .expect("解析项目");
+        let model = config.resolve_role("default").expect("解析模型");
+        // 7 条消息，其中最后 1 条是本轮的尾部提醒：断点必须退回第 5 条。
+        let options = cache_options(
+            &model,
+            7,
+            CacheAnchors {
+                system_blocks: 3,
+                trailing_reminders: 1,
+            },
+            "session-1",
+        )
+        .expect("缓存配置");
+        assert_eq!(options.breakpoints, vec![0, 5]);
+        assert_eq!(options.system_blocks, vec![2]);
+        assert_eq!(options.key, None);
+        assert_eq!(options.ttl, Some(moc_llm::CacheTtl::FiveMinutes));
     }
 }

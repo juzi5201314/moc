@@ -287,13 +287,25 @@ fn encode_message_item(
         }
     };
     let mut blocks = Vec::with_capacity(message.content.len());
-    for part in &message.content {
-        match part {
-            ContentPart::Text(text) => blocks.push(json!({"type": text_type, "text": text})),
-            ContentPart::Image { source, detail } => {
-                blocks.push(encode_image(source, *detail)?);
+    if matches!(message.role, Role::System | Role::Developer) {
+        // 指令消息拍平成单块：块边界只是本地缓存断点的坐标，不是线上结构。
+        for part in &message.content {
+            if !matches!(part, ContentPart::Text(_)) {
+                return Err(unsupported_part(message.role, part));
             }
-            other => return Err(unsupported_part(message.role, other)),
+        }
+        if !message.content.is_empty() {
+            blocks.push(json!({"type": text_type, "text": message.instruction_text()}));
+        }
+    } else {
+        for part in &message.content {
+            match part {
+                ContentPart::Text(text) => blocks.push(json!({"type": text_type, "text": text})),
+                ContentPart::Image { source, detail } => {
+                    blocks.push(encode_image(source, *detail)?);
+                }
+                other => return Err(unsupported_part(message.role, other)),
+            }
         }
     }
     if breakpoint {
@@ -1334,6 +1346,29 @@ mod tests {
     }
 
     #[test]
+    fn multi_part_system_flattens_to_one_block() {
+        // 多块系统提示拍平成单个 input_text 块，文本与单块形态逐字一致。
+        let req = ChatRequest {
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: vec![
+                        ContentPart::Text("第一块".into()),
+                        ContentPart::Text("第二块".into()),
+                    ],
+                },
+                Message::user_text("hi"),
+            ],
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["input"][0]["content"],
+            json!([{"type": "input_text", "text": "第一块\n\n第二块"}])
+        );
+    }
+
+    #[test]
     fn cache_breakpoints_and_ttl_validation() {
         let req = ChatRequest {
             messages: vec![Message::system("系统"), Message::user_text("hi")],
@@ -1341,6 +1376,7 @@ mod tests {
                 cache: Some(CacheConfig {
                     key: Some("session-1".into()),
                     breakpoints: vec![0],
+                    system_blocks: Vec::new(),
                     ttl: Some(CacheTtl::ThirtyMinutes),
                 }),
                 ..Default::default()

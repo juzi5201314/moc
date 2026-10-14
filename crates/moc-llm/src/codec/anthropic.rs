@@ -130,8 +130,8 @@ fn encode_output_config(cfg: &LlmConfig, req: &ChatRequest) -> Map<String, Value
 
 /// 线上消息与断点落位。
 struct Normalized {
-    /// 顶层 `system` 的文本段，按出现顺序。
-    system_text: String,
+    /// 顶层 `system` 的文本块，按出现顺序。
+    system_parts: Vec<String>,
     /// 顶层 `system` 的内容块形态：写缓存断点时产生。
     system_override: Option<Value>,
     /// 线上消息。
@@ -165,30 +165,56 @@ impl Normalized {
     fn system_field(&self) -> Option<Value> {
         match &self.system_override {
             Some(value) => Some(value.clone()),
-            None if self.system_text.is_empty() => None,
-            None => Some(Value::String(self.system_text.clone())),
+            None if self.system_is_empty() => None,
+            None => Some(Value::String(self.system_parts.join("\n\n"))),
         }
     }
 
-    /// 把顶层 system 升级为内容块数组（写 `cache_control` 用）。
-    fn system_blocks(&self) -> Vec<Value> {
-        vec![json!({"type": "text", "text": self.system_text})]
+    /// 系统提示是否为空：全部文本块为空即视为没有系统提示。
+    fn system_is_empty(&self) -> bool {
+        self.system_parts.iter().all(String::is_empty)
     }
 
-    /// 把 `cache_control` 落到顶层 `system` 的最后一块。
+    /// 系统提示的内容块形态：每个文本块一个线上块，顺序不变。
+    fn system_blocks(&self) -> Vec<Value> {
+        self.system_parts
+            .iter()
+            .map(|text| json!({"type": "text", "text": text}))
+            .collect()
+    }
+
+    /// 把 `cache_control` 落到系统提示的第 `block` 块上；`None` 表示最后一块。
     ///
-    /// 这块之后即「系统提示 + 工具定义」的边界，是 Anthropic 官方推荐的最小
-    /// 缓存单元。调用方必须先确保 [`Normalized::system_text`] 非空：空系统提示
-    /// 没有可落位的块。
-    fn attach_system_breakpoint(&mut self, cache_control: &Value) {
-        let mut blocks = self.system_blocks();
-        blocks
-            .last_mut()
-            .expect("system_blocks 至少产出一个块")
+    /// 最后一块之后即「系统提示 + 工具定义」的边界，是 Anthropic 官方推荐的最小
+    /// 缓存单元；更靠前的块用于把与工作目录无关的静态前缀单独缓存。多次调用会累积
+    /// 到同一份块数组上，因此可以同时落多个块。
+    fn attach_system_breakpoint(
+        &mut self,
+        cache_control: &Value,
+        block: Option<usize>,
+    ) -> Result<(), LlmError> {
+        let mut blocks = match self.system_override.take() {
+            Some(Value::Array(blocks)) => blocks,
+            _ => self.system_blocks(),
+        };
+        if self.system_is_empty() {
+            return Err(LlmError::Encode(
+                "Anthropic 缓存断点需要非空系统提示才能落位（系统提示为空）".into(),
+            ));
+        }
+        let target = block.unwrap_or(blocks.len() - 1);
+        let Some(target_block) = blocks.get_mut(target) else {
+            return Err(LlmError::Encode(format!(
+                "系统提示只有 {} 个内容块，缓存断点块下标 {target} 越界",
+                blocks.len()
+            )));
+        };
+        target_block
             .as_object_mut()
             .expect("system 块由本模块构造成 JSON 对象")
             .insert("cache_control".into(), cache_control.clone());
         self.system_override = Some(Value::Array(blocks));
+        Ok(())
     }
 }
 
@@ -198,7 +224,7 @@ fn normalize(
     req: &ChatRequest,
     plan: ReasoningEchoPlan,
 ) -> Result<Normalized, LlmError> {
-    let mut system_parts: Vec<&str> = Vec::new();
+    let mut system_parts: Vec<String> = Vec::new();
     let mut messages: Vec<Value> = Vec::with_capacity(req.messages.len());
     let mut placements: Vec<Option<Placement>> = vec![None; req.messages.len()];
     // 正在合并的线上 user 消息下标（`Role::User` 与 `Role::Tool` 共用）。
@@ -211,7 +237,7 @@ fn normalize(
                 // 两侧 user 消息的合并。
                 for part in &message.content {
                     match part {
-                        ContentPart::Text(text) => system_parts.push(text),
+                        ContentPart::Text(text) => system_parts.push(text.clone()),
                         other => return Err(unsupported_part(message.role, other)),
                     }
                 }
@@ -267,7 +293,7 @@ fn normalize(
     }
 
     Ok(Normalized {
-        system_text: system_parts.join("\n\n"),
+        system_parts,
         system_override: None,
         messages,
         placements,
@@ -476,15 +502,10 @@ fn apply_cache(req: &ChatRequest, normalized: &mut Normalized) -> Result<CacheOu
     }
     let cache_control = Value::Object(cache_control);
 
-    if cache.breakpoints.is_empty() {
+    if cache.breakpoints.is_empty() && cache.system_blocks.is_empty() {
         // 未指定断点时缓存整个前缀：`system` 的最后一块之后即「系统提示 + 工具定义」
         // 的边界，这是 Anthropic 官方推荐的最小缓存单元。
-        if normalized.system_text.is_empty() {
-            return Err(LlmError::Encode(
-                "Anthropic 缓存未指定 breakpoints 时需要有系统提示才能落位".into(),
-            ));
-        }
-        normalized.attach_system_breakpoint(&cache_control);
+        normalized.attach_system_breakpoint(&cache_control, None)?;
     } else {
         // 多个断点可以落在同一条被上提的消息上（core 给出的首尾断点常常如此），
         // 顶层 system 因此只升级一次。
@@ -510,12 +531,11 @@ fn apply_cache(req: &ChatRequest, normalized: &mut Normalized) -> Result<CacheOu
             }
         }
         if system_breakpoint {
-            if normalized.system_text.is_empty() {
-                return Err(LlmError::Encode(
-                    "Anthropic 缓存断点落在系统提示上，但系统提示为空".into(),
-                ));
-            }
-            normalized.attach_system_breakpoint(&cache_control);
+            normalized.attach_system_breakpoint(&cache_control, None)?;
+        }
+        // 静态前缀块：与工作目录无关的部分单独落位，跨目录、跨会话复用。
+        for &block in &cache.system_blocks {
+            normalized.attach_system_breakpoint(&cache_control, Some(block))?;
         }
     }
     Ok(CacheOutcome {
@@ -1339,6 +1359,64 @@ mod tests {
     }
 
     #[test]
+    fn static_system_block_takes_its_own_cache_breakpoint() {
+        let system = Message {
+            role: Role::System,
+            content: vec![
+                ContentPart::Text("模板".into()),
+                ContentPart::Text("项目".into()),
+            ],
+        };
+        // 无断点：多块系统提示拍平成空行分隔的字符串，与单块形态逐字一致。
+        let plain = ChatRequest {
+            messages: vec![system.clone(), Message::user_text("hi")],
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &plain, false);
+        assert_eq!(body["system"], json!("模板\n\n项目"));
+
+        // 消息断点落在系统末块，静态块断点落在第 0 块，两者可以同时存在。
+        let req = ChatRequest {
+            messages: vec![system, Message::user_text("hi")],
+            options: RequestOptions {
+                cache: Some(CacheConfig {
+                    breakpoints: vec![0],
+                    system_blocks: vec![0],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["system"],
+            json!([
+                {"type": "text", "text": "模板", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": "项目", "cache_control": {"type": "ephemeral"}},
+            ])
+        );
+
+        // 越界的静态块下标报错，而不是静默丢断点。
+        let bad = ChatRequest {
+            messages: vec![Message::system("只有一块"), Message::user_text("hi")],
+            options: RequestOptions {
+                cache: Some(CacheConfig {
+                    system_blocks: vec![3],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let err = encode(&config(), &bad, false).unwrap_err();
+        assert!(err.to_string().contains("越界"), "{err}");
+    }
+
+    #[test]
     fn cache_control_top_level_and_breakpoints() {
         // 无断点：cache_control 落在顶层 system 的最后一块。
         let req = ChatRequest {
@@ -1435,7 +1513,7 @@ mod tests {
             ..Default::default()
         };
         let err = encode(&config(), &bad, false).unwrap_err();
-        assert!(err.to_string().contains("需要有系统提示"), "{err}");
+        assert!(err.to_string().contains("非空系统提示"), "{err}");
     }
 
     #[test]
@@ -1461,13 +1539,17 @@ mod tests {
             ..Default::default()
         };
         let body = encode_body(&config(), &req, false);
+        // 系统与开发者消息各自成块，断点按「系统边界」语义落在最后一块上。
         assert_eq!(
             body["system"],
-            json!([{
-                "type": "text",
-                "text": "系统提示\n\n补充规则",
-                "cache_control": {"type": "ephemeral", "ttl": "5m"},
-            }])
+            json!([
+                {"type": "text", "text": "系统提示"},
+                {
+                    "type": "text",
+                    "text": "补充规则",
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"},
+                }
+            ])
         );
         assert_eq!(
             body["messages"],

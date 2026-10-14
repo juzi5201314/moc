@@ -169,13 +169,13 @@ fn encode_instruction(
     message: &Message,
     breakpoint: bool,
 ) -> Result<Value, LlmError> {
-    let mut text = String::new();
     for part in &message.content {
-        match part {
-            ContentPart::Text(chunk) => text.push_str(chunk),
-            other => return Err(unsupported_part(message.role, other)),
+        if !matches!(part, ContentPart::Text(_)) {
+            return Err(unsupported_part(message.role, part));
         }
     }
+    // 指令消息拍平成单串：块边界只是本地缓存断点的坐标，不是线上结构。
+    let text = message.instruction_text();
     let role = if message.role == Role::Developer && cfg.wire.developer_role {
         "developer"
     } else {
@@ -1206,6 +1206,26 @@ mod tests {
     }
 
     #[test]
+    fn multi_part_system_flattens_with_blank_lines() {
+        // 多块系统提示与单块形态的线上文本必须逐字一致：块边界只服务本地断点。
+        let req = ChatRequest {
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: vec![
+                        ContentPart::Text("第一块".into()),
+                        ContentPart::Text("第二块".into()),
+                    ],
+                },
+                Message::user_text("hi"),
+            ],
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(body["messages"][0]["content"], json!("第一块\n\n第二块"));
+    }
+
+    #[test]
     fn cache_key_and_breakpoints() {
         let req = ChatRequest {
             messages: vec![Message::system("系统"), Message::user_text("hi")],
@@ -1213,6 +1233,7 @@ mod tests {
                 cache: Some(crate::config::CacheConfig {
                     key: Some("session-1".into()),
                     breakpoints: vec![0],
+                    system_blocks: Vec::new(),
                     ttl: Some(CacheTtl::ThirtyMinutes),
                 }),
                 ..Default::default()

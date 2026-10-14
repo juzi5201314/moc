@@ -103,6 +103,8 @@ fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
 pub(crate) struct ModelContext {
     /// 该模型下的系统提示（压缩摘要请求同样复用它）。
     pub system: Message,
+    /// 系统提示的静态前缀块数；摘要请求沿用同一份缓存断点锚点。
+    pub cache_prefix_blocks: usize,
     /// 该模型下注册的工具定义。
     pub tools: Vec<ToolDef>,
     /// 不带系统提示的模型回放消息。
@@ -126,15 +128,9 @@ pub(crate) async fn model_context(
     let skills = inner.project_skills(cwd)?;
     let summary = inner.mcp_summary(config).await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
-    let system = crate::system_prompt::build(
-        config,
-        model,
-        cwd,
-        &context_files,
-        &skills,
-        &summary,
-        None,
-    );
+    let prompt =
+        crate::system_prompt::build(config, model, cwd, &context_files, &skills, &summary, None);
+    let system = prompt.message;
     let tools = inner.tools.definitions(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),
@@ -153,6 +149,7 @@ pub(crate) async fn model_context(
         messages_tokens(std::slice::from_ref(&system)).saturating_add(tools_tokens(&tools));
     Ok(ModelContext {
         system,
+        cache_prefix_blocks: prompt.cache_prefix_blocks,
         tools,
         messages,
         fixed_tokens,
@@ -298,6 +295,7 @@ pub(crate) async fn compact(
             config: &config,
             model: &model,
             system: &measured.system,
+            cache_prefix_blocks: measured.cache_prefix_blocks,
             tools: &measured.tools,
             instructions,
             budget,
@@ -336,6 +334,7 @@ pub(crate) async fn compact(
                     config: &config,
                     model: &model,
                     system: &measured.system,
+                    cache_prefix_blocks: measured.cache_prefix_blocks,
                     tools: &measured.tools,
                     instructions,
                     budget,

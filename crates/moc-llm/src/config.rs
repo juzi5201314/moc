@@ -250,6 +250,11 @@ pub struct CacheConfig {
     pub key: Option<String>,
     /// 消息下标（0 基），在该消息末尾写缓存断点。
     pub breakpoints: Vec<usize>,
+    /// 系统提示内的内容块下标（0 基），断点落在这些块上。
+    ///
+    /// 空表示不按块落位。用于把与工作目录无关的静态前缀单独缓存：断点落在静态
+    /// 前缀的最后一块上，同一静态前缀在不同工作目录、不同会话之间共享缓存。
+    pub system_blocks: Vec<usize>,
     /// 缓存存活时长。
     pub ttl: Option<CacheTtl>,
 }

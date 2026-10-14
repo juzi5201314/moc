@@ -41,15 +41,18 @@ pub(crate) async fn compact(
     let context_files = inner
         .project_context_files(&state.session.id, std::path::Path::new(&state.session.cwd))
         .await;
-    full_messages.push(crate::system_prompt::build(
-        config,
-        model,
-        std::path::Path::new(&state.session.cwd),
-        &context_files,
-        &skills,
-        &summary,
-        None,
-    ));
+    full_messages.push(
+        crate::system_prompt::build(
+            config,
+            model,
+            std::path::Path::new(&state.session.cwd),
+            &context_files,
+            &skills,
+            &summary,
+            None,
+        )
+        .message,
+    );
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {
         messages: full_messages,

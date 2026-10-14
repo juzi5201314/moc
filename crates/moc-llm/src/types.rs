@@ -164,6 +164,25 @@ impl Message {
         }
         out
     }
+
+    /// 系统/开发者指令的文本形态：内容块之间以空行分隔。
+    ///
+    /// [`Message::text`] 按原样拼接；系统提示的块边界本身携带分隔语义，多块提示
+    /// 拍平成单串时必须补回空行，才能与单块形态逐字一致。
+    pub fn instruction_text(&self) -> String {
+        let mut out = String::new();
+        let mut first = true;
+        for part in &self.content {
+            if let ContentPart::Text(text) = part {
+                if !first {
+                    out.push_str("\n\n");
+                }
+                out.push_str(text);
+                first = false;
+            }
+        }
+        out
+    }
 }
 
 /// 消息内容块。

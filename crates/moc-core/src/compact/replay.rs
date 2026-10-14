@@ -6,6 +6,21 @@ use moc_protocol::methods::PlanStatus;
 use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
+/// 本地注入上下文消息的固定前缀：压缩摘要、活动计划、todo 快照。
+const INJECTED_PREFIXES: [&str; 3] = ["<compaction-summary", "<active-plan", "<active-todos"];
+
+/// 消息是否由 moc 注入而非用户输入。
+///
+/// 这些消息由本模块与计划流程生成并随 transcript 进入上下文；任何要再次引用
+/// 其内容的地方（例如子代理任务推导）都必须先跳过，避免整段复制进系统提示。
+pub(crate) fn is_injected_context(message: &Message) -> bool {
+    let text = message.text();
+    let trimmed = text.trim_start();
+    INJECTED_PREFIXES
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
 /// 构造 system、checkpoint、活动计划和 todo 等合成前缀，不复制 transcript。
 pub(crate) fn synthetic_messages(state: &SessionState, system: Option<Message>) -> Vec<Message> {
     let mut messages = Vec::new();

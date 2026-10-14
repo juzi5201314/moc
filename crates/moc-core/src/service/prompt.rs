@@ -23,7 +23,7 @@ pub(crate) mod tools;
 mod workspace;
 
 use guard::{CycleAction, PromptGuard, ToolCycles};
-use request::{build_request, project_input, upstream_mismatches};
+use request::{CacheAnchors, build_request, project_input, upstream_mismatches};
 use stream::forward_event;
 use tools::{execute_tool_batch, persist_tool_result, repair_pending_calls};
 use workspace::{WorkspaceScope, check_workspace};
@@ -440,7 +440,7 @@ async fn run_prompt_locked(
     let mut cycle_redirect = None;
     let summary = catalog.summary();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
-    let agent_roster = crate::agents::subagent_prompt(&inner, &params.session_id).await;
+    let subagent = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let system = build(
         &project_config,
         &model,
@@ -448,8 +448,10 @@ async fn run_prompt_locked(
         &context_files,
         &skills,
         &summary,
-        agent_roster.as_deref(),
+        subagent.as_ref().map(|prompt| prompt.block.as_str()),
     );
+    // 代理清单随兄弟状态变化：放在尾部提醒里，避免每次变化都让系统前缀缓存失效。
+    let roster = subagent.map(|prompt| prompt.roster);
 
     'turns: for turn in 0..project_config.limits.max_turns_per_prompt {
         if cancel.is_cancelled() {
@@ -463,6 +465,11 @@ async fn run_prompt_locked(
             .await
             .map_err(to_rpc)?;
         let mut reminder_messages = vec![mode_reminder(mode)];
+        if let Some(roster) = &roster {
+            reminder_messages.push(reminder_message(format!(
+                "<system-reminder>{roster}</system-reminder>"
+            )));
+        }
         if let Some(detail) = cycle_redirect.take() {
             reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}。不要再次执行相同的无进展动作；改用能获得新证据的操作，或总结现有结果并结束。再次形成无进展循环将终止本次提示。</system-interrupt>")));
         }
@@ -569,7 +576,7 @@ async fn run_prompt_locked(
             let state = record.state.lock().await;
             turn_inputs(
                 &state,
-                &system,
+                &system.message,
                 &model,
                 &tools_available,
                 compact::messages_tokens(&reminder_messages),
@@ -613,7 +620,7 @@ async fn run_prompt_locked(
                         let state = record.state.lock().await;
                         turn_inputs(
                             &state,
-                            &system,
+                            &system.message,
                             &model,
                             &tools_available,
                             compact::messages_tokens(&reminder_messages),
@@ -633,6 +640,10 @@ async fn run_prompt_locked(
             tools_available.clone(),
             inputs.native_input.clone(),
             &params.session_id,
+            CacheAnchors {
+                system_blocks: system.cache_prefix_blocks,
+                trailing_reminders: reminder_messages.len(),
+            },
         );
         let mut overflow_attempts = 0;
         let (mut stream, request_permit, request_started) = loop {
@@ -738,7 +749,7 @@ async fn run_prompt_locked(
                         let state = record.state.lock().await;
                         turn_inputs(
                             &state,
-                            &system,
+                            &system.message,
                             &model,
                             &tools_available,
                             compact::messages_tokens(&reminder_messages),
@@ -753,6 +764,10 @@ async fn run_prompt_locked(
                         tools_available.clone(),
                         inputs.native_input.clone(),
                         &params.session_id,
+                        CacheAnchors {
+                            system_blocks: system.cache_prefix_blocks,
+                            trailing_reminders: reminder_messages.len(),
+                        },
                     );
                 }
                 Err(error) => {
@@ -929,7 +944,7 @@ async fn run_prompt_locked(
             let native = Value::Array(vec![*item]);
             let native_tokens = serde_json::to_string(&native)
                 .map_or(0, |serialized| compact::estimate_tokens(&serialized));
-            let tokens_after = compact::messages_tokens(std::slice::from_ref(&system))
+            let tokens_after = compact::messages_tokens(std::slice::from_ref(&system.message))
                 .saturating_add(compact::tools_tokens(&tools_available))
                 .saturating_add(compact::messages_tokens(&reminder_messages))
                 .saturating_add(retained_tokens)

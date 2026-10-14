@@ -608,3 +608,63 @@ async fn unknown_target_and_self_target_are_rejected() {
     );
     harness.close().await;
 }
+
+/// 子代理系统块携带任务（权威顺序压过通用仓库规则），运行期清单只走尾部提醒，
+/// 免得兄弟状态一变就让系统前缀缓存失效。
+#[tokio::test]
+async fn child_system_carries_the_task_and_the_roster_rides_a_tail_reminder() {
+    let upstream = MockServer::start().await;
+    let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&bodies);
+    mount_router(&upstream, move |body| {
+        recorded.lock().push(body.clone());
+        if body.to_string().contains("CHILD_TASK") {
+            yield_call("call_yield", "CHILD_REPORT")
+        } else {
+            text_response("PARENT_OK")
+        }
+    })
+    .await;
+    let harness = harness(&upstream).await;
+    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    spawn_child(&harness, &parent_id, "CHILD_TASK").await;
+    wait_children(&harness, &parent_id, None, Some(5)).await;
+
+    let bodies = bodies.lock().clone();
+    let child = bodies
+        .iter()
+        .find(|body| body.to_string().contains("Task (authoritative"))
+        .expect("子代理请求已记录");
+    let messages = child["messages"].as_array().expect("消息数组");
+    let system = messages[0]["content"].as_str().expect("系统提示为字符串");
+    assert!(system.contains("<subagent>"), "{system}");
+    assert!(system.contains("Task (authoritative"), "{system}");
+    assert!(
+        system.contains("CHILD_TASK"),
+        "任务必须进入系统块：{system}"
+    );
+    assert!(
+        !system.contains("<agent-roster>"),
+        "运行期清单不得进入系统前缀：{system}"
+    );
+
+    let roster_index = messages
+        .iter()
+        .position(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("<agent-roster>"))
+        })
+        .expect("清单以尾部提醒注入");
+    assert_eq!(messages[roster_index]["role"], "user");
+    assert_eq!(
+        roster_index,
+        messages.len() - 1,
+        "清单必须是最后一条提醒：{messages:?}"
+    );
+    let roster = messages[roster_index]["content"]
+        .as_str()
+        .expect("清单文本");
+    assert!(roster.contains(&parent_id), "清单必须列出父代理：{roster}");
+    harness.close().await;
+}

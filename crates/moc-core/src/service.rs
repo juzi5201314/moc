@@ -1298,7 +1298,7 @@ impl AgentService for Core {
             .project_context_files(&params.session_id, &cwd)
             .await;
         let summary = self.inner.mcp_summary(&config).await.map_err(to_rpc)?;
-        let agent_roster = crate::agents::subagent_prompt(&self.inner, &params.session_id).await;
+        let subagent = crate::agents::subagent_prompt(&self.inner, &params.session_id).await;
         let pieces = crate::system_prompt::pieces(
             &config,
             &model,
@@ -1306,10 +1306,32 @@ impl AgentService for Core {
             &context_files,
             &skills,
             &summary,
-            agent_roster.as_deref(),
+            subagent.as_ref().map(|prompt| prompt.block.as_str()),
         );
-        let system = crate::system_prompt::compose(&pieces);
-        let synthetic = crate::compact::replay::synthetic_messages(&state, Some(system.clone()));
+        // 分块口径的 token 账必须在组装前算好：组装后片段不再单独存在。
+        let directory_tokens = pieces
+            .iter()
+            .filter(|piece| piece.title == "tools")
+            .map(|piece| crate::compact::estimate_tokens(&piece.text))
+            .sum::<u64>();
+        let mut project_tokens = 0u64;
+        let mut skills_tokens = 0u64;
+        for piece in &pieces {
+            match piece.title {
+                "project" => {
+                    project_tokens =
+                        project_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
+                }
+                "skills" => {
+                    skills_tokens =
+                        skills_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
+                }
+                _ => {}
+            }
+        }
+        let system = crate::system_prompt::compose(pieces);
+        let synthetic =
+            crate::compact::replay::synthetic_messages(&state, Some(system.message.clone()));
         let synthetic_tokens = crate::compact::messages_tokens(&synthetic[1..]);
         let visible_start = crate::compact::replay::visible_history_start(&state);
         let history_tokens = synthetic_tokens.saturating_add(
@@ -1327,31 +1349,11 @@ impl AgentService for Core {
                 subagent: state.session.parent_session_id.is_some(),
             },
         );
-        let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system));
-        let directory_tokens = pieces
-            .iter()
-            .filter(|piece| piece.title == "tools")
-            .map(|piece| crate::compact::estimate_tokens(&piece.text))
-            .sum::<u64>();
+        let system_tokens = crate::compact::messages_tokens(std::slice::from_ref(&system.message));
         let tool_tokens = crate::compact::tools_tokens(&tools).saturating_add(directory_tokens);
         let total_tokens = system_tokens
             .saturating_add(crate::compact::tools_tokens(&tools))
             .saturating_add(history_tokens);
-        let mut project_tokens = 0u64;
-        let mut skills_tokens = 0u64;
-        for piece in &pieces {
-            match piece.title {
-                "project" => {
-                    project_tokens =
-                        project_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
-                }
-                "skills" => {
-                    skills_tokens =
-                        skills_tokens.saturating_add(crate::compact::estimate_tokens(&piece.text));
-                }
-                _ => {}
-            }
-        }
         let system_base_tokens = system_tokens
             .saturating_sub(project_tokens)
             .saturating_sub(skills_tokens)

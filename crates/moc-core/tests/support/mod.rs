@@ -141,6 +141,32 @@ pub fn text_stream(text: &str) -> String {
     )
 }
 
+/// Anthropic Messages 的最简文本流：一个文本块，正常收尾。
+pub fn anthropic_text_stream(text: &str) -> String {
+    let frame = |name: &str, data: Value| format!("event: {name}\ndata: {data}\n\n");
+    [
+        frame(
+            "message_start",
+            json!({"type":"message_start","message":{"id":"msg_1","model":"gpt-test","usage":{"input_tokens":1,"output_tokens":1}}}),
+        ),
+        frame(
+            "content_block_start",
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        ),
+        frame(
+            "content_block_delta",
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+        ),
+        frame("content_block_stop", json!({"type":"content_block_stop","index":0})),
+        frame(
+            "message_delta",
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}),
+        ),
+        frame("message_stop", json!({"type":"message_stop"})),
+    ]
+    .concat()
+}
+
 pub fn tool_stream(calls: Vec<(&str, &str, Value)>) -> String {
     let calls: Vec<_> = calls.into_iter().enumerate().map(|(index, (id, name, args))| json!({
         "index":index,"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}

@@ -69,7 +69,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 ### 请求、进程与输出预算
 
 - `providers.<id>.max_concurrency`：同一供应商跨会话共享并发限额，`0` 表示不限；取消等待不会占用名额。模型生成和压缩请求使用同一限额。
-- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 缓存系统前缀及近期历史，OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
+- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 的断点落在静态前缀末块、系统提示边界与最后一条会进入历史的消息上——本轮追加的提醒不落位（它不进历史，落上去也永远不会命中），静态块断点让同一模板在不同工作目录间复用；OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
 - 模型的 `max_request_bytes` 控制单次 JSON 请求体，留空为 50 MiB。配置值原样生效（校验只要求大于 0）：设得比触发余量还小时图片会被全部淘汰。达到高水位后，core 只在请求副本中按旧到新淘汰图片，压缩和会话原始历史不被改写；图片 token 按固定视觉估算，不按 Base64 字节计量。
 - `tools.max_concurrent_calls`：标准模型工具批次中只读工具的同时执行上限；写入工具、bash、询问、计划、todo、skill 与 `run_code` 仍作为顺序屏障。默认 16。
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
@@ -78,7 +78,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 子代理
 
-模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可创建、停止或等待其它子代理。
+模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；任务原文同时写入其系统提示的 `<subagent>` 块（权威顺序高于通用仓库规则），可通信的父／兄弟名册则以尾部提醒注入、不进系统前缀。父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可创建、停止或等待其它子代理。
 
 `message_agent` 是唯一的通信入口，`target` 接受代理 ID、`"parent"`（仅子代理）或 `"all"`（顶层是全部运行中的直接子代理，子代理是全部运行中的兄弟）；运行中的目标在下一次安全边界收到消息，空闲目标被唤醒新回合，工具为每个目标返回 `injected`／`woken`／`failed` 回执。`wait_agent` 支持批量：省略 `agent_ids` 即等待全部运行中的直接子代理，任一个进入终态、或消息到达、或窗口（默认 180 秒）到期即返回快照，运行期间以 `tool_progress` 推送进度行。
 

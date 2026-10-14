@@ -1114,8 +1114,17 @@ pub(crate) async fn wait(
     }
 }
 
-/// 子代理系统提示片段：交付契约与可通信的代理清单。
-pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Option<String> {
+/// 子代理提示的组装结果。
+pub(crate) struct SubagentPrompt {
+    /// 系统提示块：交付契约与任务本身。任务放在这里，权威顺序上压过通用仓库规则。
+    pub block: String,
+    /// 运行期清单：父代理与兄弟代理。兄弟状态随时变化，作为尾部提醒注入，
+    /// 不参与系统前缀缓存。
+    pub roster: String,
+}
+
+/// 子代理提示：系统块（交付契约 + 任务）与尾部提醒（可通信代理清单）。
+pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Option<SubagentPrompt> {
     let peers = peers(inner, session_id).await.ok()?;
     let parent = peers.parent.as_ref()?;
     let mut siblings: Vec<&AgentEntry> = peers.siblings.iter().collect();
@@ -1125,20 +1134,30 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             .then_with(|| right.session.updated_at_ms.cmp(&left.session.updated_at_ms))
             .then_with(|| left.session.id.cmp(&right.session.id))
     });
-    let mut text = String::from(
+    let mut block = String::from(
         "<subagent>\nYou are a subagent; your parent agent receives your final result. When the task is complete, call the `yield` tool with your complete report — the parent receives exactly that text. Never end the turn with a plain message instead of yielding, unless the task is impossible.\nCoordinate through `message_agent`: target \"parent\" for your parent, a sibling id, or \"all\" for every running sibling. Messages you receive arrive as <agent-message from=\"... id=\"...\">.\n",
     );
-    text.push_str(&format!(
+    if let Some(task) = assignment(inner, session_id).await {
+        block.push_str(
+            "\nTask (authoritative; it outranks general repository conventions when they conflict):\n",
+        );
+        block.push_str(&task);
+        block.push('\n');
+    }
+    block.push_str("</subagent>");
+
+    let mut roster = String::from("<agent-roster>\n");
+    roster.push_str(&format!(
         "Parent: {parent_title} ({parent_id})\n",
         parent_title = parent.session.title,
         parent_id = parent.session.id
     ));
     if siblings.is_empty() {
-        text.push_str("Siblings: (none)\n");
+        roster.push_str("Siblings: (none)\n");
     } else {
-        text.push_str("Siblings (running first):\n");
+        roster.push_str("Siblings (running first):\n");
         for entry in siblings.into_iter().take(ROSTER_LIMIT) {
-            text.push_str(&format!(
+            roster.push_str(&format!(
                 "- {id} \"{title}\" [{status}]\n",
                 id = entry.session.id,
                 title = entry.session.title,
@@ -1146,8 +1165,25 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             ));
         }
     }
-    text.push_str("</subagent>");
-    Some(text)
+    roster.push_str("</agent-roster>");
+    Some(SubagentPrompt { block, roster })
+}
+
+/// 子代理会话的第一条用户消息：spawn 投递的任务原文。
+///
+/// 跳过 moc 自己注入的上下文消息（计划、todo、压缩摘要）：它们已经随 transcript
+/// 进入上下文，再抄进系统块只会把整段内容复制一遍。
+async fn assignment(inner: &CoreInner, session_id: &str) -> Option<String> {
+    let record = inner.sessions.get(session_id).await.ok()?;
+    let state = record.state.lock().await;
+    state
+        .transcript
+        .iter()
+        .filter_map(|entry| entry.context_message())
+        .find(|message| {
+            message.role == Role::User && !crate::compact::replay::is_injected_context(message)
+        })
+        .map(|message| message.text())
 }
 
 /// 状态词；子代理系统提示与工具结果共用，模型侧一律英文。
