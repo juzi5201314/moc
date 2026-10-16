@@ -153,18 +153,17 @@ impl Process {
                 }
             };
             drop(completion_group);
-            let (output_truncated, _input) = match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader)
-                .await
-            {
-                Ok(joined) => joined
-                    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
-                    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
-                Err(_) => {
-                    tracing::warn!("子进程退出后 stdout 仍被占用，停止继续读取输出");
-                    reader.abort();
-                    (false, ())
-                }
-            };
+            let (output_truncated, _input) =
+                match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader).await {
+                    Ok(joined) => joined
+                        .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
+                        .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
+                    Err(_) => {
+                        tracing::warn!("子进程退出后 stdout 仍被占用，停止继续读取输出");
+                        reader.abort();
+                        (false, ())
+                    }
+                };
             let status =
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
             log.finish()

@@ -21,8 +21,7 @@ pub(crate) struct WriteArgs {
 
 /// 解析 write 参数；授权与执行共用同一份解析。
 pub(crate) fn parse_args(args: Value) -> Result<WriteArgs, ToolError> {
-    serde_json::from_value(args)
-        .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))
+    serde_json::from_value(args).map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))
 }
 
 pub struct WriteTool;

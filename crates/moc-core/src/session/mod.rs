@@ -185,8 +185,7 @@ impl SessionTable {
             .into_iter()
             .map(|info| (info.id.clone(), info))
             .collect();
-        let records: Vec<Arc<SessionRecord>> =
-            self.records.read().values().cloned().collect();
+        let records: Vec<Arc<SessionRecord>> = self.records.read().values().cloned().collect();
         for record in records {
             let info = record.state.lock().await.session_info();
             sessions.insert(info.id.clone(), info);

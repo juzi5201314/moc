@@ -506,10 +506,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("导入不得阻塞启动");
         assert!(prompt.contains("small rules"), "普通文件应保留：{prompt}");
-        assert!(
-            !prompt.contains("OVERSIZED-MARKER"),
-            "超限文件不得进入提示"
-        );
+        assert!(!prompt.contains("OVERSIZED-MARKER"), "超限文件不得进入提示");
     }
 
     #[test]

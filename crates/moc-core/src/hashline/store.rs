@@ -234,11 +234,7 @@ impl UndoHistory {
         if empty {
             self.by_path.remove(path);
         }
-        if let Some(index) = self
-            .order
-            .iter()
-            .position(|entry| entry.as_path() == path)
-        {
+        if let Some(index) = self.order.iter().position(|entry| entry.as_path() == path) {
             self.order.remove(index);
         }
     }

@@ -134,7 +134,11 @@ fn project_config_sources_stays_opt_in() {
         ),
     )
     .unwrap();
-    std::fs::write(boot.home.join("config.toml"), "[tools.job]\nmax_running=3\n").unwrap();
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[tools.job]\nmax_running=3\n",
+    )
+    .unwrap();
     let resolved = ResolvedConfig::load(&boot)
         .unwrap()
         .for_project(&boot.cwd)

@@ -1181,7 +1181,9 @@ async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
     assert_eq!(loaded.message.text(), "已读取");
     let texts = support::tool_result_texts(&h.load(&id).await);
     assert!(
-        texts.iter().any(|text| text.contains(support::PRUNE_MARKER)),
+        texts
+            .iter()
+            .any(|text| text.contains(support::PRUNE_MARKER)),
         "会话必须先落下可剪枝的工具结果"
     );
     (h, id)
@@ -1207,11 +1209,15 @@ async fn shake_archives_the_full_pre_compaction_history() {
     // 整表 rewrite 之后会话里只剩剪枝结果。
     let texts = support::tool_result_texts(&h.load(&id).await);
     assert!(
-        texts.iter().all(|text| !text.contains(support::PRUNE_MARKER)),
+        texts
+            .iter()
+            .all(|text| !text.contains(support::PRUNE_MARKER)),
         "压缩后 transcript 不应保留原始长输出"
     );
     assert!(
-        texts.iter().any(|text| text.contains("[tool output pruned]")),
+        texts
+            .iter()
+            .any(|text| text.contains("[tool output pruned]")),
         "shake 必须真的剪枝"
     );
 
@@ -1325,8 +1331,7 @@ async fn shake_keeps_the_reused_remote_checkpoint_provenance() {
     Mock::given(method("POST"))
         .and(path("/v1/responses/compact"))
         .respond_with(
-            ResponseTemplate::new(500)
-                .set_body_json(json!({"error":{"message":"远端压缩不可用"}})),
+            ResponseTemplate::new(500).set_body_json(json!({"error":{"message":"远端压缩不可用"}})),
         )
         .mount(&upstream)
         .await;
@@ -1353,7 +1358,9 @@ async fn shake_keeps_the_reused_remote_checkpoint_provenance() {
     assert_eq!(methods, ["remote", "remote"]);
     let texts = support::tool_result_texts(&h.load(&id).await);
     assert!(
-        texts.iter().any(|text| text.contains("[tool output pruned]")),
+        texts
+            .iter()
+            .any(|text| text.contains("[tool output pruned]")),
         "shake 必须真的剪枝：{texts:?}"
     );
     h.close().await;
@@ -1366,7 +1373,8 @@ async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
          protect_recent_tool_tokens=0\n[compaction.shake]\nsoft_trim_chars=100\nhead_chars=10\n\
          tail_chars=10\nkeep_last_prompts=0\n",
         "",
-    ).await;
+    )
+    .await;
     // soft 以空摘要失败，但已经把本次调用计入 usage；随后的 shake 整表 rewrite 不得丢掉它。
     let compacted = h
         .client
@@ -1389,10 +1397,7 @@ async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
         .iter()
         .filter(|entry| matches!(entry, moc_core::session::entries::Entry::Usage { .. }))
         .count();
-    eprintln!(
-        "DBGUSAGE memory={} disk={disk_usage}",
-        usage.total.calls
-    );
+    eprintln!("DBGUSAGE memory={} disk={disk_usage}", usage.total.calls);
     // soft 的空摘要失败发生在记录用量之后：整表 rewrite 不得丢掉期间追加的用量 entry。
     assert!(
         usage.total.calls >= 2,

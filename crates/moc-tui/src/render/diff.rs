@@ -40,7 +40,12 @@ pub fn stats(diff: &ToolDiff) -> DiffStats {
 
 /// 渲染 diff 全部文件；`limit` 是内容行上限（`usize::MAX` = 不限，
 /// 内部仍受 [`MAX_RENDERED_ROWS`] 约束），达到上限且还有内容时补一行省略提示。
-pub fn render_diff(diff: &ToolDiff, width: usize, theme: &Theme, limit: usize) -> Vec<Line<'static>> {
+pub fn render_diff(
+    diff: &ToolDiff,
+    width: usize,
+    theme: &Theme,
+    limit: usize,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for file in &diff.files {
         render_file(file, diff.truncated, width, theme, &mut lines);
@@ -320,7 +325,10 @@ mod tests {
         };
         assert!(text_of(&lines[0]).contains("let value = 1;"));
         assert!(text_of(&lines[1]).contains("let value = 2;"));
-        assert!(text_of(&lines[2]).contains("行未变"), "hunk 之间给出未变行数");
+        assert!(
+            text_of(&lines[2]).contains("行未变"),
+            "hunk 之间给出未变行数"
+        );
         for (line, changed) in [(&lines[0], '1'), (&lines[1], '2')] {
             assert!(
                 line.spans.iter().any(|span| span.content.contains(changed)

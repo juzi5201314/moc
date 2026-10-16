@@ -129,9 +129,7 @@ pub fn verify_range(
         });
     };
     let Some(to_position) = find_served(served, snapshot, to_hash) else {
-        return Err(RangeError::Unserved {
-            kind: "end anchor",
-        });
+        return Err(RangeError::Unserved { kind: "end anchor" });
     };
     let (start, end, warning) = if from_position <= to_position {
         (from_position, to_position, None)
@@ -192,12 +190,7 @@ mod tests {
             &encode_anchor(snapshot.hashes[2]).unwrap(),
         )
         .expect_err("未服务尾部边界必须拒绝");
-        assert!(matches!(
-            error,
-            RangeError::Unserved {
-                kind: "end anchor"
-            }
-        ));
+        assert!(matches!(error, RangeError::Unserved { kind: "end anchor" }));
     }
 
     #[test]

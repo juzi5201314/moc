@@ -566,9 +566,7 @@ fn outside_workspace_targets(
     arguments: &Value,
 ) -> Result<Vec<std::path::PathBuf>, crate::tools::ToolError> {
     let targets: Vec<String> = if tool_name == "write" {
-        vec![
-            crate::tools::write::parse_args(arguments.clone())?.path,
-        ]
+        vec![crate::tools::write::parse_args(arguments.clone())?.path]
     } else {
         crate::tools::edit::parse_requests(arguments.clone())?
             .into_iter()
@@ -595,10 +593,8 @@ async fn authorize_write_tools(
     tool_name: &str,
     arguments: &Value,
 ) -> Result<Authorization, CoreError> {
-    let outside =
-        outside_workspace_targets(&ctx.cwd, tool_name, arguments).map_err(|error| {
-            CoreError::Tool(error.to_string())
-        })?;
+    let outside = outside_workspace_targets(&ctx.cwd, tool_name, arguments)
+        .map_err(|error| CoreError::Tool(error.to_string()))?;
     if outside.is_empty() {
         return Ok(Authorization::Allowed(ctx.permission));
     }
@@ -812,7 +808,10 @@ mod tests {
         let outside = directory.path().join("outside");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        (root.canonicalize().unwrap(), outside.canonicalize().unwrap())
+        (
+            root.canonicalize().unwrap(),
+            outside.canonicalize().unwrap(),
+        )
     }
 
     #[test]
@@ -886,8 +885,8 @@ mod tests {
     fn malformed_write_arguments_surface_the_tool_error() {
         let directory = tempfile::tempdir().unwrap();
         let (root, _) = workspace(&directory);
-        let error = outside_workspace_targets(&root, "edit", &serde_json::json!({"files":[]}))
-            .unwrap_err();
+        let error =
+            outside_workspace_targets(&root, "edit", &serde_json::json!({"files":[]})).unwrap_err();
         assert_eq!(error.code, "E_BAD_PAYLOAD");
     }
 }

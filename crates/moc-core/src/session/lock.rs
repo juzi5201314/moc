@@ -337,7 +337,10 @@ mod tests {
         fs::write(claim_path(&path), stale.pid.to_string()).expect("写认领文件");
         assert!(unlock(&path, true).expect("强制释放"));
         assert!(!path.exists());
-        assert!(!claim_path(&path).exists(), "force 解锁必须清理残留认领文件");
+        assert!(
+            !claim_path(&path).exists(),
+            "force 解锁必须清理残留认领文件"
+        );
     }
 
     #[test]

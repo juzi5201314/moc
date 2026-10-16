@@ -81,7 +81,10 @@ impl ScrollbackView {
         let eager_start = app.blocks.len().saturating_sub(EAGER_BLOCKS);
         fill_block_generations(&app.blocks, &mut self.generations);
         for (index, entry) in app.blocks.iter().enumerate() {
-            let key = (self.generations.get(index).copied().unwrap_or(0), app.view_gen);
+            let key = (
+                self.generations.get(index).copied().unwrap_or(0),
+                app.view_gen,
+            );
             if self
                 .cache
                 .get(index)
@@ -94,7 +97,11 @@ impl ScrollbackView {
                 let height = lines.len();
                 (lines, height, true)
             } else {
-                (Vec::new(), estimate_entry_height_at(app, index, width), false)
+                (
+                    Vec::new(),
+                    estimate_entry_height_at(app, index, width),
+                    false,
+                )
             };
             let cached = CachedEntry {
                 key,
@@ -145,7 +152,8 @@ impl ScrollbackView {
             for (index, cached) in self.cache.iter_mut().enumerate() {
                 let next = offset.saturating_add(cached.height);
                 if !cached.rendered && offset < end && next > window.skip_rows {
-                    let lines = render_entry(index, &app.blocks[index], app, self.width, index == 0);
+                    let lines =
+                        render_entry(index, &app.blocks[index], app, self.width, index == 0);
                     cached.height = lines.len();
                     cached.lines = lines;
                     cached.rendered = true;
@@ -236,7 +244,9 @@ fn fill_block_generations(blocks: &[Entry], generations: &mut Vec<u64>) {
         let Some((batch_id, name)) = tool_batch_key(entry) else {
             continue;
         };
-        let slot = batch_max.entry((batch_id, name)).or_insert(entry.generation);
+        let slot = batch_max
+            .entry((batch_id, name))
+            .or_insert(entry.generation);
         *slot = (*slot).max(entry.generation);
     }
     for (index, entry) in blocks.iter().enumerate() {
@@ -342,7 +352,10 @@ fn estimate_entry_height(entry: &Entry, level: DetailLevel, width: u16) -> usize
             let rows = wrapped_rows(body, width.saturating_sub(TITLE_INDENT + 2));
             let (shown, omitted) = match level {
                 DetailLevel::Hidden => (0, false),
-                DetailLevel::Brief => (rows.min(AGENT_MESSAGE_PREVIEW_ROWS), rows > AGENT_MESSAGE_PREVIEW_ROWS),
+                DetailLevel::Brief => (
+                    rows.min(AGENT_MESSAGE_PREVIEW_ROWS),
+                    rows > AGENT_MESSAGE_PREVIEW_ROWS,
+                ),
                 DetailLevel::Full => (rows, false),
             };
             shown + usize::from(omitted) + 2
@@ -369,7 +382,12 @@ fn wrapped_rows(text: &str, width: usize) -> usize {
 
 /// `message_agent` 的正文行数：消息预览行 + 展开时的逐条回执行，
 /// 与 [`message_agent_tool_rows`] 消耗同一份预算。
-fn message_agent_rows_count(tool: &ToolCallBlock, args: &Value, width: usize, limit: usize) -> (usize, usize) {
+fn message_agent_rows_count(
+    tool: &ToolCallBlock,
+    args: &Value,
+    width: usize,
+    limit: usize,
+) -> (usize, usize) {
     let message = args
         .get("message")
         .and_then(Value::as_str)
@@ -408,7 +426,9 @@ fn estimate_todo_height(phases: &[moc_protocol::methods::TodoPhase], width: usiz
         } else {
             "│   "
         };
-        let budget = width.saturating_sub(TITLE_INDENT + branch.len() + 2 + 4).max(8);
+        let budget = width
+            .saturating_sub(TITLE_INDENT + branch.len() + 2 + 4)
+            .max(8);
         rows += phase
             .items
             .iter()
@@ -479,9 +499,7 @@ fn render_entry_single(
             duration_ms,
         } => thinking_block(text, *reasoning_tokens, *duration_ms, app, width, level),
         Block::Tool(tool) => render_tool(tool, app, width, level),
-        Block::AgentMessage { meta, body } => {
-            agent_message_block(meta, body, width, theme, level)
-        }
+        Block::AgentMessage { meta, body } => agent_message_block(meta, body, width, theme, level),
         Block::Todo { phases } => render_todo(phases, app, width),
         Block::Note { text, error } => note_block(text, *error, width, theme),
     }
@@ -531,7 +549,13 @@ fn render_tool_batch(
             continue;
         }
         let indent = Span::raw(" ".repeat(BATCH_BODY_INDENT));
-        for line in tool_body(tool, &args, app, width.saturating_sub(BATCH_BODY_INDENT), limit) {
+        for line in tool_body(
+            tool,
+            &args,
+            app,
+            width.saturating_sub(BATCH_BODY_INDENT),
+            limit,
+        ) {
             let mut spans = vec![indent.clone()];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
@@ -885,7 +909,12 @@ fn indent_tool_lines(mut lines: Vec<Line<'static>>, depth: usize) -> Vec<Line<'s
 }
 
 /// 工具块：标题行 + 正文（隐藏档或无正文工具只留标题行）。
-fn render_tool(tool: &ToolCallBlock, app: &App, width: usize, level: DetailLevel) -> Vec<Line<'static>> {
+fn render_tool(
+    tool: &ToolCallBlock,
+    app: &App,
+    width: usize,
+    level: DetailLevel,
+) -> Vec<Line<'static>> {
     let theme = app.theme;
     let depth = tool_depth(app, &tool.id);
     let mut lines = Vec::new();
@@ -978,7 +1007,12 @@ fn tool_body(
         dropped += command_dropped;
         if let Some(result) = &tool.result {
             let budget = limit.saturating_sub(lines.len());
-            let rows = clamp_rows(result, inner_width.saturating_sub(2), budget, BodyEdge::Tail);
+            let rows = clamp_rows(
+                result,
+                inner_width.saturating_sub(2),
+                budget,
+                BodyEdge::Tail,
+            );
             dropped += rows.dropped;
             lines.extend(rows.rows.into_iter().map(|text| {
                 Line::from(Span::styled(
@@ -1033,12 +1067,7 @@ fn tool_body(
 }
 
 /// 工具正文的展示行数：与 [`tool_body`] 同规则（含省略提示行），懒渲染估高用。
-fn tool_body_rows(
-    tool: &ToolCallBlock,
-    args: &Value,
-    width: usize,
-    limit: usize,
-) -> usize {
+fn tool_body_rows(tool: &ToolCallBlock, args: &Value, width: usize, limit: usize) -> usize {
     let inner_width = width.saturating_sub(4);
     let mut rows = 0usize;
     let mut dropped = 0usize;
@@ -1089,7 +1118,9 @@ fn tool_body_rows(
 }
 
 /// 解析 `message_agent` 的投递回执。
-fn message_receipts(tool: &ToolCallBlock) -> Option<Vec<moc_protocol::methods::AgentMessageReceipt>> {
+fn message_receipts(
+    tool: &ToolCallBlock,
+) -> Option<Vec<moc_protocol::methods::AgentMessageReceipt>> {
     let result = tool.result.as_deref()?;
     serde_json::from_str::<moc_protocol::methods::AgentMessageResult>(result)
         .ok()
@@ -1289,7 +1320,10 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
         "todo" => "更新任务清单".to_owned(),
         "message_agent" => {
             use moc_protocol::methods::AgentMessageOutcome;
-            let target = args.get("target").and_then(Value::as_str).unwrap_or_default();
+            let target = args
+                .get("target")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let mut summary = format!("▶ {target}");
             if let Some(receipts) = message_receipts(tool) {
                 if target == "all" {
@@ -1300,9 +1334,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                     .filter(|receipt| receipt.outcome == AgentMessageOutcome::Failed)
                     .count();
                 match receipts.as_slice() {
-                    [receipt] => {
-                        summary.push_str(&format!(" · {}", outcome_word(receipt.outcome)))
-                    }
+                    [receipt] => summary.push_str(&format!(" · {}", outcome_word(receipt.outcome))),
                     receipts => summary.push_str(&format!(" · {} 已送达", receipts.len() - failed)),
                 }
                 if failed > 0 {
@@ -1735,7 +1767,11 @@ mod tests {
         }
         app.tool_detail = DetailLevel::Hidden;
         assert_eq!(estimate_entry_height_at(&app, 0, width), rendered(&app, 0));
-        assert_eq!(estimate_entry_height_at(&app, 0, width), 3, "隐藏档只剩标题、耗时与留白");
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, width),
+            3,
+            "隐藏档只剩标题、耗时与留白"
+        );
         app.tool_detail = DetailLevel::Brief;
         assert!(
             estimate_entry_height_at(&app, 0, width) < 30,
@@ -1760,9 +1796,7 @@ mod tests {
         app.start_batched_tool_block("call_c".into(), "read".into(), "batch".into());
         app.push_note("独立块".into(), false);
         // 只有第二个成员继续变化：同批成员的代次都应是这一批的最大值。
-        app.tool_entry_mut("call_b")
-            .expect("批次成员")
-            .touch();
+        app.tool_entry_mut("call_b").expect("批次成员").touch();
         let latest = app.blocks[1].generation;
         assert!(latest > app.blocks[0].generation, "成员各自推进");
 
@@ -1775,8 +1809,7 @@ mod tests {
             "同批成员共用最大代次"
         );
         assert_eq!(
-            generations[3],
-            app.blocks[3].generation,
+            generations[3], app.blocks[3].generation,
             "非批次块保留自身代次"
         );
 
@@ -1820,7 +1853,10 @@ mod tests {
         let brief = render_entry(0, &app.blocks[0], &app, width, true);
         assert_eq!(brief.len(), 2 + BRIEF_THINKING_ROWS, "简略档 = 末尾 4 行");
         let brief_text = text_of(&brief);
-        assert!(!brief_text.contains("思考第 0 行"), "简略档不含首行：{brief_text}");
+        assert!(
+            !brief_text.contains("思考第 0 行"),
+            "简略档不含首行：{brief_text}"
+        );
         assert_eq!(brief_text.matches("思考第").count(), BRIEF_THINKING_ROWS);
 
         app.thinking_detail = DetailLevel::Full;
@@ -1871,7 +1907,10 @@ mod tests {
         // 标题 + 命令行 1 + 结果尾 5 + 省略提示 1 + 耗时 1 + 留白 1
         assert_eq!(brief.len(), 10, "简略档行数固定");
         let brief_text = text_of(&brief);
-        assert!(brief_text.contains("⋯ 还有 195 行"), "略去行数按源行计：{brief_text}");
+        assert!(
+            brief_text.contains("⋯ 还有 195 行"),
+            "略去行数按源行计：{brief_text}"
+        );
         assert!(
             brief_text.contains("line-195") && brief_text.contains("line-199"),
             "bash 只留尾部最新几行：{brief_text}"
@@ -1888,7 +1927,11 @@ mod tests {
 
         app.tool_detail = DetailLevel::Full;
         let full = render_entry(0, &app.blocks[0], &app, width, true);
-        assert_eq!(full.len(), 200 + 4, "完整档 = 命令行 + 全部 200 行 + 耗时 + 留白");
+        assert_eq!(
+            full.len(),
+            200 + 4,
+            "完整档 = 命令行 + 全部 200 行 + 耗时 + 留白"
+        );
         assert!(!text_of(&full).contains("还有"), "完整档不出现省略提示");
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
@@ -1938,7 +1981,10 @@ mod tests {
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect::<String>();
-            assert!(text.contains("crates/moc-tui/src/app.rs:1-201"), "摘要带行号范围：{text}");
+            assert!(
+                text.contains("crates/moc-tui/src/app.rs:1-201"),
+                "摘要带行号范围：{text}"
+            );
             assert_eq!(estimate_entry_height_at(&app, 0, width), 1);
         }
 
@@ -1962,7 +2008,10 @@ mod tests {
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("读取失败：权限不足"), "失败原因必须可见：{text}");
+        assert!(
+            text.contains("读取失败：权限不足"),
+            "失败原因必须可见：{text}"
+        );
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
@@ -1982,7 +2031,10 @@ mod tests {
                     kind: DiffLineKind::Insert,
                     old_no: None,
                     new_no: Some(start + u32::try_from(offset).expect("测试行号不会溢出 u32")),
-                    text: format!("新增第 {} 行", start + u32::try_from(offset).expect("测试行号不会溢出 u32")),
+                    text: format!(
+                        "新增第 {} 行",
+                        start + u32::try_from(offset).expect("测试行号不会溢出 u32")
+                    ),
                 })
                 .collect(),
         };
@@ -2028,11 +2080,19 @@ mod tests {
             1,
             "省略提示只出现一次"
         );
-        assert!(text_of(&brief).contains("⋯ 还有 3 行"), "{}", text_of(&brief));
+        assert!(
+            text_of(&brief).contains("⋯ 还有 3 行"),
+            "{}",
+            text_of(&brief)
+        );
         assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
         app.tool_detail = DetailLevel::Full;
         let full = render_entry(0, &app.blocks[0], &app, width, true);
-        assert_eq!(full.len(), total + 3, "完整档 = 全部 diff 行 + 耗时 + 留白 + 标题");
+        assert_eq!(
+            full.len(),
+            total + 3,
+            "完整档 = 全部 diff 行 + 耗时 + 留白 + 标题"
+        );
         assert!(!text_of(&full).contains("还有"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
     }
@@ -2094,7 +2154,10 @@ mod tests {
 
         // 再点一次：回到当前层档位（简略），不留覆盖。
         app.blocks[0].toggle_level(axis());
-        assert_eq!(app.blocks[0].level_override, None, "目标与层档位相同时不留覆盖");
+        assert_eq!(
+            app.blocks[0].level_override, None,
+            "目标与层档位相同时不留覆盖"
+        );
         let back = render_entry(0, &app.blocks[0], &app, width, true);
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
@@ -2103,7 +2166,13 @@ mod tests {
         );
 
         // 隐藏档（IRC 卡片的层档位是简略，只能由覆盖或调用方给定）：只剩标题行。
-        let hidden = render_entry_single(&app.blocks[0], &app, usize::from(width), true, DetailLevel::Hidden);
+        let hidden = render_entry_single(
+            &app.blocks[0],
+            &app,
+            usize::from(width),
+            true,
+            DetailLevel::Hidden,
+        );
         assert_eq!(hidden.len(), 2, "隐藏档只剩标题行与尾随留白");
     }
 
@@ -2148,7 +2217,10 @@ mod tests {
         assert!(text.contains("▶ all"));
         assert!(text.contains("广播"));
         assert!(text.contains("1 已送达") && text.contains("1 失败"));
-        assert!(text.contains("请复查一下改动"), "正文必须带消息预览：{text}");
+        assert!(
+            text.contains("请复查一下改动"),
+            "正文必须带消息预览：{text}"
+        );
         assert!(text.contains("甲 已注入"));
         assert!(text.contains("乙 失败：收件箱已满"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
@@ -2191,7 +2263,10 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(text.contains("等待 2 个代理"));
-        assert!(text.contains("▸ 甲 · 运行中 · 3.2s"), "运行行带耗时：{text}");
+        assert!(
+            text.contains("▸ 甲 · 运行中 · 3.2s"),
+            "运行行带耗时：{text}"
+        );
         assert!(text.contains("◆ 乙 · 已完成"));
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
@@ -2233,5 +2308,38 @@ mod tests {
             lines.len(),
             "结果态估算与渲染同源"
         );
+    }
+
+    #[test]
+    fn tmp_repro_empty_bash_command() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        app.tool_detail = DetailLevel::Full;
+        let result = "\npub fn filtered_entries<'a>(entries: &'a [ModelEntry], query: &str) -> Vec<(usize, &'a ModelEntry)> {\n    let query = query.to_lowercase();\n    entries\n        .iter()\n        .enumerate()\n        .filter(|(_, entry)| {\n            query.is_empty()\n                || entry.label.to_lowercase().contains(&query)\n                || entry.display_name.to_lowercase().contains(&query)\n\n        .collect()\n}\n\npub fn filtered_sessions<'a>(\n";
+        app.start_tool_block("call_0_186028a48b407df4".into(), "bash".into());
+        app.tool_entry_mut("call_0_186028a48b407df4")
+            .expect("工具块")
+            .push_args(r#"{"command":"cd /home/soeur/project/moc && sed -n 760,774p crates/moc-tui/src/modal.rs"}"#);
+        app.finish_tool_block(
+            "call_0_186028a48b407df4".into(),
+            ToolStatus::Completed,
+            ToolResult {
+                tool_call_id: "call_0_186028a48b407df4".into(),
+                content: result.into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            Some(208),
+            None,
+        );
+        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            eprintln!("[{text}]");
+        }
     }
 }

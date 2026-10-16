@@ -278,7 +278,9 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let mut registry = Registry::default();
-        registry.bindings.push(binding(&root, "https://viking", "peer1"));
+        registry
+            .bindings
+            .push(binding(&root, "https://viking", "peer1"));
         save(home.path(), &registry).unwrap();
         let raw = std::fs::read_to_string(registry_path(home.path())).unwrap();
         assert!(raw.contains(&format!("\"path\": \"{}\"", root.display())));
@@ -296,7 +298,9 @@ mod tests {
         let root = root.canonicalize().unwrap();
         assert!(root.to_str().is_none(), "测试路径必须是非 UTF-8");
         let mut registry = Registry::default();
-        registry.bindings.push(binding(&root, "https://viking", "peer1"));
+        registry
+            .bindings
+            .push(binding(&root, "https://viking", "peer1"));
         save(home.path(), &registry).unwrap();
 
         let loaded = load(home.path()).unwrap();

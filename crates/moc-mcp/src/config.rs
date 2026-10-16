@@ -436,7 +436,12 @@ pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Vec<ServerConfig> {
 
     let mut configs = Vec::with_capacity(merged.len());
     for (name, (spec, _)) in merged {
-        match resolve_server(&name, &spec, toml.connect_timeout_secs, toml.call_timeout_secs) {
+        match resolve_server(
+            &name,
+            &spec,
+            toml.connect_timeout_secs,
+            toml.call_timeout_secs,
+        ) {
             Ok(config) => configs.push(config),
             // 单条非法配置只丢自己：其余 server 继续可用，不能整份 MCP 配置一起跳过。
             Err(error) => tracing::warn!("跳过非法的 MCP server `{name}`：{error}"),
@@ -700,7 +705,8 @@ mod tests {
         assert!(!McpDocument::default().project_config);
         let absent: McpDocument = serde_json::from_value(json!({"enabled": true})).unwrap();
         assert!(!absent.project_config, "缺省值不得自动信任项目 .mcp.json");
-        let explicit: McpDocument = serde_json::from_value(json!({"project_config": true})).unwrap();
+        let explicit: McpDocument =
+            serde_json::from_value(json!({"project_config": true})).unwrap();
         assert!(explicit.project_config);
     }
 }

@@ -34,13 +34,13 @@ use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
 use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
-    AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet,
-    ConfigManage, Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite,
-    Ping, PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel,
-    SessionCancelResult, SessionCompact, SessionContext, SessionContextContent, SessionDelete,
-    SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt,
-    SessionRename, SessionRewind, SessionSetMode, SessionSetModel, SessionSetPermission,
-    SessionSteer, SessionUnload, SessionUnlock, SessionUsage,
+    AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet, ConfigManage,
+    Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite, Ping,
+    PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel, SessionCancelResult,
+    SessionCompact, SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
+    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
+    SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
+    SessionUnlock, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};

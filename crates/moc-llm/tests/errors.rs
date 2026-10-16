@@ -271,7 +271,11 @@ async fn error_body_is_truncated_at_local_limit() {
     assert_eq!(api.status, Some(502));
     assert_eq!(api.kind, ApiErrorKind::ServerError);
     assert_eq!(api.raw_body.len(), 1024 * 1024);
-    assert!(api.raw_body.starts_with("<html>x"), "{}", &api.raw_body[..16]);
+    assert!(
+        api.raw_body.starts_with("<html>x"),
+        "{}",
+        &api.raw_body[..16]
+    );
     assert!(api.message.starts_with("<html>x"), "{}", api.message);
 }
 

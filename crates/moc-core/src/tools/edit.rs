@@ -5,7 +5,9 @@ use moc_llm::ToolDef;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, ToolOutput, resolve_tool_path};
+use super::{
+    Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, ToolOutput, resolve_tool_path,
+};
 use crate::hashline::apply::{EditError, EditOutput, EditRequest, apply_edit};
 use crate::resources::ResourceRouter;
 
@@ -384,11 +386,13 @@ mod tests {
         let diff = preview_requests(dir.path(), requests, &anchors, 32, 4096).expect("预览成功");
         assert_eq!(diff.files.len(), 1);
         assert_eq!(diff.files[0].path, path.display().to_string());
-        assert!(diff.files[0].hunks.iter().any(|hunk| hunk
-            .lines
-            .iter()
-            .any(|line| line.kind == moc_protocol::DiffLineKind::Insert
-                && line.text == "inserted")));
+        assert!(
+            diff.files[0].hunks.iter().any(|hunk| hunk
+                .lines
+                .iter()
+                .any(|line| line.kind == moc_protocol::DiffLineKind::Insert
+                    && line.text == "inserted"))
+        );
         // 未读取过的文件没有可预览的计划：整体放弃而不是给出误导性 diff。
         let missing = parse_requests(serde_json::json!({
             "path": "other.txt",

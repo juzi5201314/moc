@@ -451,7 +451,10 @@ mod tests {
         let outside = directory.path().join("outside");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        (root.canonicalize().unwrap(), outside.canonicalize().unwrap())
+        (
+            root.canonicalize().unwrap(),
+            outside.canonicalize().unwrap(),
+        )
     }
 
     #[test]
@@ -477,7 +480,11 @@ mod tests {
         // 按词法折叠判定，不能把带 `..` 的字面路径当作工作区内。
         for value in ["z/../../x", "y/deep/../../../../x"] {
             let escape = workspace_escape(&root, value).expect("尾段 `..` 必须判为越界");
-            assert!(!escape.starts_with(&root), "{value} -> {}", escape.display());
+            assert!(
+                !escape.starts_with(&root),
+                "{value} -> {}",
+                escape.display()
+            );
         }
         let absolute = root.join("z/../../x").display().to_string();
         let escape = workspace_escape(&root, &absolute).expect("绝对路径变体必须判为越界");
@@ -516,8 +523,12 @@ mod tests {
             ensure_workspace_write(&root, SessionPermission::Workspace, "src/new/deep.rs").is_ok()
         );
         assert!(
-            ensure_workspace_write(&root, SessionPermission::Workspace, root.join("src/main.rs"))
-                .is_ok()
+            ensure_workspace_write(
+                &root,
+                SessionPermission::Workspace,
+                root.join("src/main.rs")
+            )
+            .is_ok()
         );
         // OpenViking 写入是远程写入：工作区权限下按越界处理，需要一次性授权。
         for uri in ["viking://~/notes/memory.md", "ov://repo/notes.md"] {

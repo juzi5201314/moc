@@ -221,9 +221,10 @@ impl Block {
         match self {
             Block::Thinking { .. } | Block::AgentMessage { .. } => true,
             Block::Tool(tool) => tool.has_body(),
-            Block::User { .. } | Block::Assistant { .. } | Block::Todo { .. } | Block::Note { .. } => {
-                false
-            }
+            Block::User { .. }
+            | Block::Assistant { .. }
+            | Block::Todo { .. }
+            | Block::Note { .. } => false,
         }
     }
 }
@@ -232,7 +233,9 @@ impl ToolCallBlock {
     /// 是否有值得展开的正文：无正文工具成功时只占一行；失败时正文是错误原因，仍可展开。
     pub fn has_body(&self) -> bool {
         tool_body_allowed(&self.name)
-            || self.status.is_some_and(|status| status != ToolStatus::Completed)
+            || self
+                .status
+                .is_some_and(|status| status != ToolStatus::Completed)
     }
 }
 

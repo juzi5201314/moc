@@ -247,11 +247,13 @@ fn sed_escapes_workspace(args: &[String], cwd: &Path, workspace: &Path) -> bool 
     if scripts.iter().any(|script| escapes(script)) {
         return true;
     }
-    files.iter().any(|file| match readable_script(file, cwd, workspace) {
-        Some(text) => escapes(&text),
-        // 脚本文件在工作区外、不可读或过大时无从核实，按外部写入交给审批。
-        None => true,
-    })
+    files
+        .iter()
+        .any(|file| match readable_script(file, cwd, workspace) {
+            Some(text) => escapes(&text),
+            // 脚本文件在工作区外、不可读或过大时无从核实，按外部写入交给审批。
+            None => true,
+        })
 }
 
 /// 拆分 sed 参数为内联脚本与 `-f` 脚本文件：给了 `-e`/`-f` 后，位置参数是输入文件。
@@ -517,7 +519,10 @@ fn script_token(chars: &[char], start: usize) -> (String, usize) {
 
 fn skip_blanks(chars: &[char], start: usize) -> usize {
     let mut cursor = start;
-    while chars.get(cursor).is_some_and(|ch| *ch == ' ' || *ch == '\t') {
+    while chars
+        .get(cursor)
+        .is_some_and(|ch| *ch == ' ' || *ch == '\t')
+    {
         cursor += 1;
     }
     cursor

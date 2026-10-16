@@ -277,10 +277,7 @@ async fn activate(
     cancel: CancellationToken,
     wakeup: Wakeup,
 ) -> Result<(), CoreError> {
-    let Wakeup {
-        agent,
-        prompt_lock,
-    } = wakeup;
+    let Wakeup { agent, prompt_lock } = wakeup;
     let record = inner.sessions.get(&agent_id).await?;
     // 锁被占意味着该会话仍有提示在收尾，唤醒必须放弃（调用方据此改走收件箱）。
     let prompt_lock = match prompt_lock {

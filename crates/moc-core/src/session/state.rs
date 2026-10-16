@@ -163,7 +163,10 @@ impl SessionState {
         match &entry {
             Entry::Header { .. } => {}
             Entry::Message {
-                message, bash, agent, ..
+                message,
+                bash,
+                agent,
+                ..
             } => {
                 if message.role == Role::User && bash.is_none() && agent.is_none() {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);

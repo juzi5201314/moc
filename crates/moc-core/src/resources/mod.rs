@@ -297,9 +297,11 @@ impl ResourceRouter {
         let uri = InternalUri::parse(input)
             .map_err(|error| ResourceError::new(error.code, error.message))?;
         match scheme {
-            ResourceScheme::Artifact => ArtifactStore::new(context.session_id, context.paths.clone())
-                .resolve_uri(input)
-                .map(Some),
+            ResourceScheme::Artifact => {
+                ArtifactStore::new(context.session_id, context.paths.clone())
+                    .resolve_uri(input)
+                    .map(Some)
+            }
             ResourceScheme::Skill => resolve_skill(context, &uri, input).map(Some),
             ResourceScheme::Local => resolve_local(context, &uri, input).map(Some),
             ResourceScheme::History => resolve_history(context, &uri, input).map(Some),

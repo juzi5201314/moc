@@ -563,9 +563,13 @@ mod tests {
             "context_after": usize::MAX,
         }))
         .unwrap();
-        let output =
-            search_resource_text("skill://demo/SKILL.md", "first\nhit\nlast\n", &args, &config)
-                .unwrap();
+        let output = search_resource_text(
+            "skill://demo/SKILL.md",
+            "first\nhit\nlast\n",
+            &args,
+            &config,
+        )
+        .unwrap();
         assert_eq!(
             output,
             "skill://demo/SKILL.md-1-first\nskill://demo/SKILL.md:2:hit\nskill://demo/SKILL.md-3-last"
@@ -591,7 +595,11 @@ mod tests {
         std::fs::write(root.path().join(".env"), "hit\n").unwrap();
         std::fs::write(root.path().join("visible.txt"), "hit\n").unwrap();
         let config = crate::config::GrepConfig::default();
-        let default = run(root.path(), serde_json::json!({"pattern":"hit"}), config.clone());
+        let default = run(
+            root.path(),
+            serde_json::json!({"pattern":"hit"}),
+            config.clone(),
+        );
         assert!(default.contains("visible.txt:1:hit"));
         assert!(!default.contains(".env") && !default.contains(".git"));
         let included = run(
