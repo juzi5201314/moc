@@ -407,7 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_sends_expected_body_and_normalizes_response() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&captured);
         Mock::given(method("POST"))
@@ -457,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_sends_time_range_only_without_dates() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&captured);
         Mock::given(method("POST"))
@@ -492,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn auth_failure_maps_to_web_auth() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         Mock::given(method("POST"))
             .and(path("/search"))
             .respond_with(ResponseTemplate::new(401).set_body_raw(
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_carries_retry_after_hint() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         Mock::given(method("POST"))
             .and(path("/search"))
             .respond_with(
@@ -535,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn server_error_maps_to_web_http() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         Mock::given(method("POST"))
             .and(path("/search"))
             .respond_with(
@@ -555,7 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_request_maps_to_cancelled() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let cancel = CancellationToken::new();
         cancel.cancel();
         let error = provider(&server, 5)
@@ -567,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn extract_collects_results_and_failures() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&captured);
         Mock::given(method("POST"))
@@ -612,7 +612,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_result_search_with_time_filter_retries_once() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&captured);
         let calls = Arc::new(AtomicUsize::new(0));
@@ -663,7 +663,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_result_without_time_filter_does_not_retry() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
         Mock::given(method("POST"))

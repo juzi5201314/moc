@@ -663,7 +663,7 @@ mod wiremock_tests {
 
     #[tokio::test]
     async fn sends_envelope_headers_and_context_contract() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let config = OpenVikingConfig {
             url: server.uri(),
             api_key: Some("secret".into()),
@@ -682,7 +682,7 @@ mod wiremock_tests {
 
     #[tokio::test]
     async fn maps_server_envelope_error() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let client = OpenVikingClient::new(OpenVikingConfig {
             url: server.uri(),
             ..Default::default()
@@ -696,7 +696,7 @@ mod wiremock_tests {
     }
     #[tokio::test]
     async fn queues_failed_batch_and_replays_in_order() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let directory = tempfile::tempdir().expect("pending directory");
         let client = OpenVikingClient::new(OpenVikingConfig {
             url: server.uri(),
@@ -739,7 +739,7 @@ mod wiremock_tests {
 
     #[tokio::test]
     async fn batch_404_falls_back_to_single_message_endpoint() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let directory = tempfile::tempdir().expect("pending directory");
         let mut client = OpenVikingClient::new(OpenVikingConfig {
             url: server.uri(),
@@ -777,7 +777,7 @@ mod wiremock_tests {
 
     #[tokio::test]
     async fn fallback_failure_queues_unsent_messages() {
-        let server = MockServer::start().await;
+        let server = MockServer::builder().start().await;
         let directory = tempfile::tempdir().expect("pending directory");
         let mut client = OpenVikingClient::new(OpenVikingConfig {
             url: server.uri(),

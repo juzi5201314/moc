@@ -50,7 +50,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn hot_switch_persists_across_prompts_compaction_and_resume() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -216,7 +216,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
 /// 目标模型装不下当前上下文时，`ask` 只回报缺口：不切换、不压缩、不推送模型变化。
 #[tokio::test]
 async fn model_switch_asks_before_compacting_when_the_target_window_is_too_small() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -293,7 +293,7 @@ async fn model_switch_asks_before_compacting_when_the_target_window_is_too_small
 /// `compact` 动作先切换模型，再由新模型压缩上下文。
 #[tokio::test]
 async fn model_switch_compact_switches_first_and_compacts_with_the_target_model() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -363,7 +363,7 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
 /// 目标模型装得下当前上下文时不打扰用户，照常切换。
 #[tokio::test]
 async fn model_switch_reports_no_overflow_when_the_target_window_fits() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -422,7 +422,7 @@ async fn model_switch_reports_no_overflow_when_the_target_window_fits() {
 /// 压缩失败时保留已经完成的切换，只回报失败原因。
 #[tokio::test]
 async fn model_switch_keeps_the_switch_when_compaction_fails() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -487,7 +487,7 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
 /// `switch` 动作直接切换并回报缺口，交给后续请求的既有压缩逻辑。
 #[tokio::test]
 async fn model_switch_action_switch_reports_overflow_after_switching() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -548,7 +548,7 @@ async fn model_switch_action_switch_reports_overflow_after_switching() {
 
 #[tokio::test]
 async fn plain_text_turn_persists_authoritative_message_over_rpc() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200)
@@ -728,7 +728,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
     );
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &wiremock::Request| {
@@ -1012,7 +1012,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     ];
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &wiremock::Request| {
@@ -1185,7 +1185,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
     let responses = [response, final_response.to_owned()];
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &wiremock::Request| {
@@ -1367,7 +1367,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
     let responses = [response, follow_up.to_owned()];
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &wiremock::Request| {
@@ -1544,7 +1544,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
     let responses = [response, final_response.to_owned()];
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &wiremock::Request| {
@@ -1678,7 +1678,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
 
 #[tokio::test]
 async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
@@ -1800,7 +1800,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
 /// 进入计划模式切到 `plan` 角色模型，退出（含会话恢复后）恢复进入前的会话模型。
 #[tokio::test]
 async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -1930,7 +1930,7 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
 /// `plan = "none"`：进入与退出计划模式都不切换模型，也不推送模型变化。
 #[tokio::test]
 async fn plan_role_none_keeps_the_session_model_across_mode_changes() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(
@@ -2013,7 +2013,7 @@ async fn plan_approval_defaults_to_current_session_model() {
     ];
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(move |_request: &wiremock::Request| {
@@ -2092,7 +2092,7 @@ async fn plan_approval_defaults_to_current_session_model() {
 #[tokio::test]
 async fn plan_approval_uses_selected_execution_model_for_compaction_and_execution() {
     use serde_json::json;
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
@@ -2204,7 +2204,7 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
 #[tokio::test]
 async fn plan_new_session_uses_selected_execution_model() {
     use serde_json::json;
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
@@ -2279,7 +2279,7 @@ async fn plan_new_session_uses_selected_execution_model() {
 async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();
     Mock::given(method("POST"))
@@ -2337,7 +2337,7 @@ async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
 /// 在飞提示时 `session/unload` 必须拒绝，且不得摘除提示正在使用的运行态。
 #[tokio::test]
 async fn unload_is_refused_while_a_prompt_is_in_flight() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(
@@ -2408,7 +2408,7 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
 #[tokio::test]
 async fn tool_rounds_rebuild_the_request_projection_from_current_state() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
     Mock::given(method("POST"))
@@ -2456,7 +2456,7 @@ async fn tool_rounds_rebuild_the_request_projection_from_current_state() {
 /// 保存配置后既有会话必须重新读取指令文件，而不是沿用首次提示的缓存。
 #[tokio::test]
 async fn config_save_invalidates_the_session_instruction_cache() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|_: &wiremock::Request| {
@@ -2519,7 +2519,7 @@ async fn config_save_invalidates_the_session_instruction_cache() {
 /// 最后一条会进入历史的用户消息上，而本轮才出现的提醒块不得落位（它永远不命中）。
 #[tokio::test]
 async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_tail() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(|_: &wiremock::Request| {
@@ -2607,7 +2607,7 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
 /// 两条指令消息各带自己的缓存断点，正文与默认配置逐字相同。
 #[tokio::test]
 async fn user_role_instructions_ride_in_a_user_message_with_their_own_breakpoint() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(|_: &wiremock::Request| {

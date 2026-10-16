@@ -89,7 +89,7 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let harness = support::Harness::new(
         &upstream.uri(),
         "openai_chat",

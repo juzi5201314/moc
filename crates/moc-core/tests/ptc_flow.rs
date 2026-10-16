@@ -17,7 +17,7 @@ use wiremock::{
 
 #[tokio::test]
 async fn ptc_run_code_executes_real_guest_in_normal_mode() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
     Mock::given(method("POST"))

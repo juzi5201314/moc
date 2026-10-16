@@ -45,7 +45,7 @@ fn section<'a>(result: &'a ContextContentResult, name: &str) -> &'a ContextConte
 
 #[tokio::test]
 async fn fresh_session_shows_assembled_context_only() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
     let id = harness.session(SessionMode::Normal).await;
     let result = content(&harness, &id, None).await;
@@ -90,7 +90,7 @@ async fn fresh_session_shows_assembled_context_only() {
 
 #[tokio::test]
 async fn prompted_session_appends_message_blocks_after_context() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -125,7 +125,7 @@ async fn prompted_session_appends_message_blocks_after_context() {
 
 #[tokio::test]
 async fn long_blocks_are_cut_on_character_boundaries() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();

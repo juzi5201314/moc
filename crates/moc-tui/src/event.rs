@@ -4018,7 +4018,7 @@ mod tests {
             matchers::{method, path},
         };
 
-        let upstream = MockServer::start().await;
+        let upstream = MockServer::builder().start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_raw(
@@ -4107,7 +4107,7 @@ mod tests {
             matchers::{method, path},
         };
 
-        let upstream = MockServer::start().await;
+        let upstream = MockServer::builder().start().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .respond_with(|request: &wiremock::Request| {
@@ -4278,7 +4278,7 @@ mod tests {
                 matchers::{method, path},
             };
 
-            let upstream = MockServer::start().await;
+            let upstream = MockServer::builder().start().await;
             Mock::given(method("POST"))
                 .and(path("/v1/chat/completions"))
                 .respond_with(|request: &wiremock::Request| {

@@ -12,7 +12,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// 启动 mock 服务器。
 async fn start() -> MockServer {
-    MockServer::start().await
+    MockServer::builder().start().await
 }
 
 /// 指向 mock 服务器的配置；测试里默认不重试，重试行为由 errors.rs 专门验证。

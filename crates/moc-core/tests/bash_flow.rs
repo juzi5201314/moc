@@ -22,7 +22,7 @@ async fn bash(harness: &Harness, id: &str, input: &str) -> moc_protocol::BashRes
 
 #[tokio::test]
 async fn manual_bash_context_survives_resume_and_compaction_without_private_output() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -180,7 +180,7 @@ async fn empty_manual_commands_release_the_session_for_next_execution() {
 
 #[tokio::test]
 async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let streams = Arc::new(Mutex::new(Vec::<String>::new()));
     let recorder = Arc::clone(&streams);
     Mock::given(method("POST"))

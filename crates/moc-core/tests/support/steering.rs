@@ -133,7 +133,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
 
 #[tokio::test]
 async fn context_overflow_inside_sse_compacts_and_continues() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let counter = Arc::new(AtomicUsize::new(0));
     let seen = counter.clone();
     Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(move|request:&wiremock::Request|{

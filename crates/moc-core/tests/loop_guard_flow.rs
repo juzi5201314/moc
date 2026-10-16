@@ -17,7 +17,7 @@ use wiremock::{
 #[tokio::test]
 async fn loops_discard_failed_generation_release_lock_and_do_not_poison_next_prompt() {
     for field in ["content", "reasoning_content"] {
-        let upstream = MockServer::start().await;
+        let upstream = MockServer::builder().start().await;
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&requests);
         Mock::given(method("POST")).and(path("/v1/chat/completions"))
@@ -62,7 +62,7 @@ async fn loops_discard_failed_generation_release_lock_and_do_not_poison_next_pro
 
 #[tokio::test]
 async fn repeated_tools_redirect_once_then_terminate_without_another_request() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             tool_stream(vec![("read", "read", json!({"path":"sample.txt"}))]),
@@ -146,7 +146,7 @@ async fn response_and_prompt_budgets_are_not_model_length_continuations() {
 
 #[tokio::test]
 async fn guard_stop_reaps_background_processes_owned_by_the_failed_prompt() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let seen = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&seen);
     Mock::given(method("POST"))

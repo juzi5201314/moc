@@ -108,7 +108,7 @@ fn delayed(template: ResponseTemplate, milliseconds: u64) -> ResponseTemplate {
 
 #[tokio::test]
 async fn spawn_wait_returns_yield_report() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         if body.to_string().contains("CHILD_TASK") {
             yield_call("call_yield", "CHILD_REPORT")
@@ -164,7 +164,7 @@ async fn spawn_wait_returns_yield_report() {
 
 #[tokio::test]
 async fn failed_child_agent_reports_its_error_to_the_parent() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         if body.to_string().contains("CHILD_TASK") {
             return ResponseTemplate::new(500).set_body_json(serde_json::json!({
@@ -211,7 +211,7 @@ async fn failed_child_agent_reports_its_error_to_the_parent() {
 
 #[tokio::test]
 async fn missing_yield_reminds_three_times_then_falls_back() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         if body.to_string().contains("REFUSES_TASK") {
             // 纯文本收尾：既没有 yield，也不调用任何工具。
@@ -256,7 +256,7 @@ async fn missing_yield_reminds_three_times_then_falls_back() {
 
 #[tokio::test]
 async fn wait_returns_on_first_settle_with_snapshot() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         let text = body.to_string();
         if text.contains("FAST_TASK") {
@@ -297,7 +297,7 @@ async fn wait_returns_on_first_settle_with_snapshot() {
 
 #[tokio::test]
 async fn wait_times_out_without_events() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         if body.to_string().contains("SLOW_TASK") {
             return delayed(yield_call("call_yield", "SLOW_DONE"), 30_000);
@@ -324,7 +324,7 @@ async fn wait_times_out_without_events() {
 
 #[tokio::test]
 async fn wait_without_children_is_rejected() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_| text_response("PARENT_OK")).await;
     let harness = harness(&upstream).await;
     let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
@@ -347,7 +347,7 @@ async fn wait_without_children_is_rejected() {
 
 #[tokio::test]
 async fn message_routes_running_as_injected_and_idle_as_woken() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         let text = body.to_string();
         // 历史里会同时带着旧任务与旧注入消息，命中顺序必须先看最新一条。
@@ -428,7 +428,7 @@ async fn message_routes_running_as_injected_and_idle_as_woken() {
 
 #[tokio::test]
 async fn broadcast_reaches_running_and_skips_idle() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         let text = body.to_string();
         if text.contains("FAST_TASK") {
@@ -477,7 +477,7 @@ async fn broadcast_reaches_running_and_skips_idle() {
 
 #[tokio::test]
 async fn child_message_wakes_parent_wait() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         let text = body.to_string();
         if text.contains("PINGER_TASK") && text.contains("CHILD_PING") {
@@ -548,7 +548,7 @@ async fn child_message_wakes_parent_wait() {
 
 #[tokio::test]
 async fn completed_child_result_lands_in_parent_notices() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&bodies);
     mount_router(&upstream, move |body| {
@@ -580,7 +580,7 @@ async fn completed_child_result_lands_in_parent_notices() {
 
 #[tokio::test]
 async fn unknown_target_and_self_target_are_rejected() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_| text_response("PARENT_OK")).await;
     let harness = harness(&upstream).await;
     let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
@@ -613,7 +613,7 @@ async fn unknown_target_and_self_target_are_rejected() {
 /// 免得兄弟状态一变就让系统前缀缓存失效。
 #[tokio::test]
 async fn child_system_carries_the_task_and_the_roster_rides_a_tail_reminder() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&bodies);
     mount_router(&upstream, move |body| {

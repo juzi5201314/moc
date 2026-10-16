@@ -221,7 +221,7 @@ fn disabled_project_source_cannot_override_global_settings() {
 
 #[tokio::test]
 async fn anthropic_discovery_uses_auth_and_follows_opaque_ids() {
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     Mock::given(method("GET")).and(path("/v1/models")).and(header("x-api-key","test-key"))
         .and(header("anthropic-version","2023-06-01"))
         .respond_with(|request:&wiremock::Request|{
@@ -257,7 +257,7 @@ async fn anthropic_discovery_uses_auth_and_follows_opaque_ids() {
 #[tokio::test]
 async fn workspace_rename_preserves_identity_and_manual_cleanup_is_scoped() {
     let (_root, boot) = workspace();
-    let server = MockServer::start().await;
+    let server = MockServer::builder().start().await;
     std::fs::write(
         boot.home.join("config.toml"),
         format!("[openviking]\nurl='{}'\n", server.uri()),

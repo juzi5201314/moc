@@ -13,7 +13,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn start() -> MockServer {
-    MockServer::start().await
+    MockServer::builder().start().await
 }
 
 fn path_of(protocol: Protocol) -> &'static str {

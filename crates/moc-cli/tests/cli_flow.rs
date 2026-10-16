@@ -86,7 +86,7 @@ fn content_text(value: &Value) -> std::borrow::Cow<'_, str> {
 
 #[tokio::test]
 async fn print_runs_write_grep_read_edit_and_resume_without_notification_noise() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let counter = Arc::new(AtomicUsize::new(0));
     let seen = counter.clone();
     Mock::given(method("POST")).respond_with(move |request: &wiremock::Request| {
@@ -135,7 +135,7 @@ async fn print_runs_write_grep_read_edit_and_resume_without_notification_noise()
 
 #[tokio::test]
 async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let counter = Arc::new(AtomicUsize::new(0));
     let seen = counter.clone();
     Mock::given(method("POST")).respond_with(move |request: &wiremock::Request| {
@@ -180,7 +180,7 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
 
 #[tokio::test]
 async fn bang_commands_execute_locally_and_only_single_bang_enters_model_context() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(
             ResponseTemplate::new(200).set_body_raw(text("命令结果已收到"), "text/event-stream"),
@@ -220,7 +220,7 @@ async fn bang_commands_execute_locally_and_only_single_bang_enters_model_context
 /// 目标模型装不下当前上下文时，REPL 先询问；确认后用新模型压缩上下文。
 #[tokio::test]
 async fn repl_model_switch_confirms_before_compacting() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -271,7 +271,7 @@ async fn wait_file(path: &Path) {
 #[cfg(unix)]
 #[tokio::test]
 async fn sigint_cancels_a_running_shell_and_repl_still_accepts_quit() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             call(

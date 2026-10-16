@@ -184,4 +184,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-测试使用固定本地上游，真实执行协议连接、文件工具、子进程、PTY 和 CLI。真实供应商验收需要自行提供配置和凭据。
+测试使用固定本地上游，真实执行协议连接、文件工具、子进程、PTY 和 CLI。mock 上游用 `MockServer::builder().start()` 创建专属服务器，不要用走全局对象池的 `MockServer::start()`：并发用例共用池化实例会把 mock 串台。真实供应商验收需要自行提供配置和凭据。

@@ -17,7 +17,7 @@ use wiremock::{
 
 #[tokio::test]
 async fn strict_chat_provider_omits_unsupported_prompt_cache_key() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -40,7 +40,7 @@ async fn strict_chat_provider_omits_unsupported_prompt_cache_key() {
 
 #[tokio::test]
 async fn all_assistant_reasoning_constraint_repairs_text_only_history() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(
@@ -165,7 +165,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
 
 #[tokio::test]
 async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let counter = Arc::new(AtomicUsize::new(0));
     let seen = counter.clone();
     Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(move |request: &wiremock::Request| {
@@ -207,7 +207,7 @@ async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
 
 #[tokio::test]
 async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(400).set_body_json(
             json!({"error":{"message":"bad request from fixture","type":"invalid_request_error"}}),
@@ -247,7 +247,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
 
 #[tokio::test]
 async fn tool_batch_preserves_order_and_disabled_tools_are_not_executed() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     let seen = count.clone();
     Mock::given(method("POST"))
@@ -326,7 +326,7 @@ async fn tool_batch_preserves_order_and_disabled_tools_are_not_executed() {
 
 #[tokio::test]
 async fn execute_compacted_and_reject_keep_plan_state_consistent() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -499,7 +499,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
 
 #[tokio::test]
 async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     let seen = count.clone();
     Mock::given(method("POST"))
@@ -590,7 +590,7 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
 
 #[tokio::test]
 async fn todo_rejects_duplicates_atomically_and_blocks_without_a_reason() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     let seen = count.clone();
     Mock::given(method("POST"))
@@ -651,7 +651,7 @@ fn responses_stream(text: &str) -> String {
 
 #[tokio::test]
 async fn remote_compaction_replays_native_items_and_retained_messages_once() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(
@@ -719,7 +719,7 @@ async fn remote_compaction_replays_native_items_and_retained_messages_once() {
 
 #[tokio::test]
 async fn unsupported_server_compaction_is_disabled_for_the_session() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST")).and(path("/v1/responses")).respond_with(|request: &wiremock::Request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         if body.get("context_management").is_some() {
@@ -754,7 +754,7 @@ async fn unsupported_server_compaction_is_disabled_for_the_session() {
 
 #[tokio::test]
 async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(|request: &wiremock::Request| {
@@ -807,7 +807,7 @@ async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
 
 #[tokio::test]
 async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     let seen = count.clone();
     Mock::given(method("POST"))
@@ -855,7 +855,7 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
 
 #[tokio::test]
 async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
         let response = match count.fetch_add(1, Ordering::SeqCst) {
@@ -948,7 +948,7 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
 #[cfg(unix)]
 #[tokio::test]
 async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let count = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .respond_with(move |request: &wiremock::Request| {
@@ -1011,7 +1011,7 @@ async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() 
 
 #[tokio::test]
 async fn disabled_auto_continue_finishes_after_compaction_without_a_stream_request() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
@@ -1128,7 +1128,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
 
 #[tokio::test]
 async fn failed_manual_compaction_preserves_upstream_error_and_history() {
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(|request: &wiremock::Request| {
@@ -1173,7 +1173,7 @@ async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
     let long_file = workspace.path().join("long.txt");
     let content = format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800));
     std::fs::write(&long_file, &content).expect("写长文件");
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     support::mount_read_round(&upstream, &long_file, summary).await;
     let h = Harness::new(&upstream.uri(), "openai_chat", extra).await;
     let id = h.session(SessionMode::Normal).await;
@@ -1272,7 +1272,7 @@ async fn shake_keeps_the_reused_remote_checkpoint_provenance() {
         format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800)),
     )
     .expect("写长文件");
-    let upstream = MockServer::start().await;
+    let upstream = MockServer::builder().start().await;
     let read_path = long_file.to_string_lossy().into_owned();
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
