@@ -88,6 +88,8 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 子代理使用持久子会话 transcript；core 重启后历史条目状态显示为 `idle`，可继续用 `message_agent` 唤醒。TUI 的人类面只有一个子代理命令 `/agents`（等同 `Ctrl+N`）：名册里 `Enter` 把主 TUI 聚焦到该子代理的会话（转写与输入框都属于它，直接打字即可交流），`Esc` 或双击 `←` 返回主会话，`Ctrl+S` 停止选中的子代理；创建子代理由主模型决定。REPL 只提供 `/agents` 列表。
 
+"子代理"身份的唯一判据是会话头的 `parent_session_id`，而它只由 `spawn_agent` 写入。消息回退分叉与审批计划的新会话执行都不是子代理：它们是不带父链接的独立会话，只在会话头记 `forked_from`（纯用户侧出身，`/resume` 列表与回退提示里可见），模型侧与普通会话完全一致——没有 `<subagent>` 块、没有父／兄弟名册、没有 `yield`，也不继承源会话的循环保护状态。
+
 ### Web 搜索
 
 `web_search` 查询互联网并返回答案与编号来源；`web_fetch` 提取 1–20 个 URL 的正文（markdown）。两者都是只读工具，在标准、问答与计划模式可用，未配置密钥时对模型隐藏。`web_search` 的查询支持 `site:host`、`-site:host`、`after:YYYY-MM-DD`、`before:YYYY-MM-DD`、引号短语与 `-term`；带时间过滤的查询零结果时自动去掉时间过滤重试一次。每条来源摘要按 240 字符截断；`web_fetch` 传入 `query` 时每页只返回与查询相关的约 800 字符块，省略则返回整页。失败项随成功正文一同返回，全部失败仍算成功，便于模型更换地址重试。
@@ -146,7 +148,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 由 core 直接写入，边界按解析后的真实落点判定（展开符号链接、折叠新建路径里的 `..`）：越出工作区（含 `ov://` / `viking://` 写入）复用同一条一次性授权链，弹窗携带写入内容预览与 diff，授权只对本次调用有效；无法弹窗或拒绝则不写入，执行阶段还会按同源判定复校验一次。`read` / `find` / `grep` 是只读工具，不设读边界，能力与沙盒外只读挂载一致。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - 计划模式进入时应用 `models.roles.plan`（`none` 时沿用当前模型），手动退出时恢复进入前的模型；审批退出改用选定执行模型。`session/new` 直接以计划模式创建会话同样应用计划角色模型。
-- `write_plan` 只保存会话计划文件和 Submitted entry；`exit_plan({})` 触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，父会话仍保持计划模式，子会话以选定模型开始 Normal 执行。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
+- `write_plan` 只保存会话计划文件和 Submitted entry；`exit_plan({})` 触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话以选定模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。

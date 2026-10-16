@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use crate::error::CoreError;
 use crate::ids;
 
-use self::entries::{Entry, EntryPayload};
+use self::entries::{Entry, EntryPayload, SessionOrigin};
 use self::state::SessionState;
 use self::store::{SessionFile, SessionPaths, SessionStore, now_ms};
 
@@ -90,7 +90,7 @@ impl SessionTable {
         mode: SessionMode,
         permission: SessionPermission,
         title: Option<&str>,
-        parent_session_id: Option<String>,
+        origin: SessionOrigin,
     ) -> Result<SessionInfo, CoreError> {
         let cwd = cwd.as_ref();
         let session_id = ids::session_id();
@@ -105,7 +105,7 @@ impl SessionTable {
             model.to_owned(),
             mode,
             permission,
-            parent_session_id,
+            origin,
             title,
             created_at_ms,
         );
@@ -313,10 +313,14 @@ impl SessionTable {
             content_truncated,
         })
     }
-    /// 创建一个回退分支，并从目标消息重建该分支的上下文。
+    /// 创建一个回退分叉，并从目标消息重建该分叉的上下文。
     ///
-    /// 用户消息作为待重新编辑的起点，不写入回退分支；助手工具调用会连同
+    /// 用户消息作为待重新编辑的起点，不写入分叉；助手工具调用会连同
     /// 紧随其后的工具结果一并保留，避免留下不完整的工具历史。原会话保持不变。
+    ///
+    /// 分叉是**独立会话**：不建立父子链接，模型侧看不出与普通会话的区别，
+    /// 因此不会获得子代理契约、代理名册或 `yield`。来源会话只记在
+    /// [`SessionOrigin::forked`] 的 `forked_from` 里，供用户端展示出身。
     pub async fn rewind(
         &self,
         session_id: &str,
@@ -382,7 +386,7 @@ impl SessionTable {
                 source_info.mode,
                 source_info.permission,
                 Some(&child_title),
-                Some(source_info.id.clone()),
+                SessionOrigin::forked(source_info.id.clone()),
             )
             .await?;
         let child = self.get(&child_info.id).await?;
@@ -393,7 +397,7 @@ impl SessionTable {
             .entries
             .first()
             .cloned()
-            .ok_or_else(|| CoreError::Session("回退分支缺少会话头部".into()))?;
+            .ok_or_else(|| CoreError::Session("回退分叉缺少会话头部".into()))?;
         let mut child_entries = Vec::with_capacity(entries.len());
         child_entries.push(child_header);
         child_entries.extend(entries.into_iter().skip(1));
@@ -837,7 +841,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");
@@ -875,7 +879,7 @@ mod tests {
                 SessionMode::Ask,
                 SessionPermission::Full,
                 Some("  标题  "),
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");
@@ -934,7 +938,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");
@@ -988,7 +992,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");
@@ -1020,7 +1024,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .unwrap();
@@ -1088,7 +1092,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");
@@ -1148,7 +1152,7 @@ mod tests {
                         mode,
                         SessionPermission::Full,
                         None,
-                        None,
+                        SessionOrigin::root(),
                     )
                     .await
                     .expect("创建会话")
@@ -1207,7 +1211,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");
@@ -1257,6 +1261,22 @@ mod tests {
             Role::Tool
         );
         assert_ne!(rewound.session.id, info.id);
+        // 分叉是独立会话：不建立父链接，出身只落在 forked_from 上。
+        assert!(rewound.session.parent_session_id.is_none());
+        assert!(!rewound.session.is_subagent());
+        assert_eq!(
+            rewound.session.forked_from.as_deref(),
+            Some(info.id.as_str())
+        );
+        let reloaded = SessionTable::new(directory.path().join("sessions"), true)
+            .load(&rewound.session.id, None)
+            .await
+            .expect("从磁盘重新读取分叉");
+        assert!(reloaded.session.parent_session_id.is_none());
+        assert_eq!(
+            reloaded.session.forked_from.as_deref(),
+            Some(info.id.as_str())
+        );
         let original = table.load(&info.id, None).await.expect("读取原会话");
         assert_eq!(original.entries.len(), 4);
 
@@ -1278,7 +1298,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 None,
-                None,
+                SessionOrigin::root(),
             )
             .await
             .expect("创建会话");

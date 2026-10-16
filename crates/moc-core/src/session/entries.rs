@@ -37,7 +37,12 @@ pub enum Entry {
         mode: SessionMode,
         #[serde(default)]
         permission: SessionPermission,
+        /// `spawn_agent` 出来的子代理才有父会话；其余会话为 `null`。模型侧据此
+        /// 决定是否使用子代理契约与工具，因此不能借用它表达其它血缘。
         parent_session_id: Option<String>,
+        /// 消息回退分叉的来源会话；纯用户侧出身记录，模型侧完全不可见。旧记录缺省。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forked_from: Option<String>,
         title: String,
         created_at_ms: u64,
     },
@@ -224,19 +229,61 @@ pub enum EntryPayload {
     ResetBoundary,
 }
 
+/// 一条会话记录的出身。两个字段互斥：
+///
+/// - `parent_session_id`：`spawn_agent` 出来的子代理。模型侧据此获得 `<subagent>`
+///   契约、`yield` 与代理通信能力，因此只允许真实 spawn 写入。
+/// - `forked_from`：消息回退分叉出来的独立会话。分叉在模型侧与普通会话完全一致，
+///   这个字段只用于给用户标出出处，永不参与提示词、工具或名册判定。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionOrigin {
+    pub parent_session_id: Option<String>,
+    pub forked_from: Option<String>,
+}
+
+impl SessionOrigin {
+    /// 顶层会话：既不是子代理，也不是分叉。
+    pub fn root() -> Self {
+        Self::default()
+    }
+
+    /// 子代理：由 `parent_session_id` 会话 spawn。
+    pub fn spawned(parent_session_id: impl Into<String>) -> Self {
+        Self {
+            parent_session_id: Some(parent_session_id.into()),
+            forked_from: None,
+        }
+    }
+
+    /// 回退分叉：从 `source` 会话分叉出的独立会话。
+    pub fn forked(source: impl Into<String>) -> Self {
+        Self {
+            parent_session_id: None,
+            forked_from: Some(source.into()),
+        }
+    }
+}
+
 impl Entry {
     /// 创建 session JSONL 第一行。
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "header 的字段就是持久化格式本身，逐字段对应比包装结构更直白"
+    )]
     pub fn header(
         session_id: String,
         cwd: String,
         model: String,
         mode: SessionMode,
         permission: SessionPermission,
-        parent_session_id: Option<String>,
+        origin: SessionOrigin,
         title: String,
         created_at_ms: u64,
     ) -> Self {
+        debug_assert!(
+            !(origin.parent_session_id.is_some() && origin.forked_from.is_some()),
+            "会话出身互斥：子代理与回退分叉不能共存"
+        );
         Self::Header {
             id: ids::entry_id(),
             parent_id: None,
@@ -247,7 +294,8 @@ impl Entry {
             model,
             mode,
             permission,
-            parent_session_id,
+            parent_session_id: origin.parent_session_id,
+            forked_from: origin.forked_from,
             title,
             created_at_ms,
         }
@@ -565,6 +613,7 @@ impl Entry {
             mode,
             permission,
             parent_session_id,
+            forked_from,
             title,
             created_at_ms,
             at_ms,
@@ -580,6 +629,7 @@ impl Entry {
             permission: *permission,
             mode: *mode,
             parent_session_id: parent_session_id.clone(),
+            forked_from: forked_from.clone(),
             cwd: cwd.clone(),
             created_at_ms: *created_at_ms,
             updated_at_ms: *at_ms,

@@ -303,7 +303,6 @@ pub struct RequestContext {
     updates: UpdateSink,
     requester: Requester,
     cancel: CancellationToken,
-    subagent: bool,
 }
 
 impl RequestContext {
@@ -325,26 +324,10 @@ impl RequestContext {
                 cancel: cancel.clone(),
             },
             cancel,
-            subagent: false,
         }
     }
 
-    /// 复用连接流量但替换取消令牌；仅 core 内部用于脱离父请求的子代理。
-    pub fn as_subagent(&self, cancel: CancellationToken) -> Self {
-        Self {
-            connection_id: self.connection_id,
-            client: self.client.clone(),
-            updates: self.updates.clone(),
-            requester: Requester {
-                traffic: Arc::clone(&self.requester.traffic),
-                cancel: cancel.clone(),
-            },
-            cancel,
-            subagent: true,
-        }
-    }
-
-    /// 复用连接与前端信息，但替换当前操作取消令牌。
+    /// 复用连接与前端信息，但替换当前操作取消令牌；core 内部用于脱离父请求的子代理。
     pub fn with_cancel(&self, cancel: CancellationToken) -> Self {
         Self {
             connection_id: self.connection_id,
@@ -355,13 +338,7 @@ impl RequestContext {
                 cancel: cancel.clone(),
             },
             cancel,
-            subagent: self.subagent,
         }
-    }
-
-    /// 是否为内部子代理上下文。
-    pub fn is_subagent(&self) -> bool {
-        self.subagent
     }
 
     /// 连接号；用于日志关联（前端侧恒为 `0`）。

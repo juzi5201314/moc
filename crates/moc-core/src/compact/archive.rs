@@ -128,6 +128,8 @@ mod tests {
     use moc_protocol::methods::{SessionMode, SessionPermission};
     use tempfile::tempdir;
 
+    use crate::session::entries::SessionOrigin;
+
     #[tokio::test]
     async fn writes_index_and_segment_for_visible_history() {
         let root = tempdir().unwrap();
@@ -141,7 +143,7 @@ mod tests {
             "p/m".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "default".into(),
             1,
         );

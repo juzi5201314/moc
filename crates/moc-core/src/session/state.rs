@@ -75,7 +75,6 @@ pub struct SessionState {
     pub summary_model: Option<String>,
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
-    pub parent_session_id: Option<String>,
     pub prompt_sequence: u64,
     pub job_sequence: u64,
     pub notices: Vec<String>,
@@ -101,7 +100,6 @@ impl SessionState {
         };
         let Entry::Header {
             version,
-            parent_session_id,
             mode,
             permission,
             model,
@@ -135,7 +133,6 @@ impl SessionState {
             child_calls: Vec::new(),
             ptc_state: BTreeMap::new(),
             ptc_state_bytes: 0,
-            parent_session_id: parent_session_id.clone(),
             prompt_sequence: 0,
             job_sequence: 0,
             usage: Usage::default(),
@@ -351,7 +348,7 @@ mod tests {
     use moc_protocol::methods::{PlanStatus, SessionMode};
 
     use super::*;
-    use crate::session::entries::EntryPayload;
+    use crate::session::entries::{EntryPayload, SessionOrigin};
 
     #[test]
     fn replay_restores_metadata_todos_plans_and_transcript() {
@@ -361,7 +358,7 @@ mod tests {
             "p/model:high".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "标题".into(),
             10,
         );
@@ -421,7 +418,7 @@ mod tests {
             "p/model".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "标题".into(),
             10,
         );
@@ -471,7 +468,7 @@ mod tests {
             "p/model".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "标题".into(),
             10,
         );
@@ -523,7 +520,7 @@ mod tests {
             "p/model".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "标题".into(),
             10,
         );

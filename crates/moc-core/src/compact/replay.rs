@@ -178,7 +178,7 @@ mod tests {
     use moc_protocol::methods::{SessionMode, SessionPermission};
 
     use super::*;
-    use crate::session::entries::EntryPayload;
+    use crate::session::entries::{EntryPayload, SessionOrigin};
     use crate::session::state::SessionState;
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
             "p/m".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "title".into(),
             1,
         );
@@ -244,7 +244,7 @@ mod tests {
             "p/m".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "title".into(),
             1,
         );
@@ -282,7 +282,7 @@ mod tests {
                 "p/old".into(),
                 SessionMode::Normal,
                 SessionPermission::Full,
-                None,
+                SessionOrigin::root(),
                 "title".into(),
                 1,
             );
@@ -351,7 +351,7 @@ mod tests {
                 "p/old".into(),
                 SessionMode::Normal,
                 SessionPermission::Full,
-                None,
+                SessionOrigin::root(),
                 "title".into(),
                 1,
             );
@@ -410,7 +410,7 @@ mod tests {
             "p/old".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "title".into(),
             1,
         );
@@ -456,7 +456,7 @@ mod tests {
             "p/model".into(),
             SessionMode::ClmExperimental,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "clm".into(),
             1,
         );

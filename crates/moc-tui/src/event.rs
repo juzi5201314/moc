@@ -507,6 +507,12 @@ fn apply_rewound(
     // 代理消息也是 user role，但不能当成用户输入回填到输入框。
     let restore_user = selected.message.role == Role::User && selected.agent.is_none();
     let selected_message = selected.message;
+    // 分叉的出身只给用户看：新会话是独立会话，来源只出现在这条提示与 /resume 列表里。
+    let source_title = if loaded.session.forked_from.is_some() {
+        app.session.as_ref().map(|session| session.title.clone())
+    } else {
+        None
+    };
     app.modal = None;
     app.switch_session(
         loaded.session,
@@ -524,7 +530,10 @@ fn apply_rewound(
     app.focus = Focus::Prompt;
     app.usage = Default::default();
     app.usage_samples.clear();
-    app.set_notice("会话已回退");
+    app.set_notice(match source_title {
+        Some(title) => format!("已从「{title}」分叉出新会话"),
+        None => "会话已回退".to_owned(),
+    });
     refresh_context(app, connection, false);
     load_subagents_for_parent(
         app,

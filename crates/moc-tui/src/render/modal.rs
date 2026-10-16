@@ -1212,11 +1212,11 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     } else {
                         "  "
                     };
-                    let text = format!(
-                        "{marker}{}  {}",
-                        session.title,
-                        ellipsize(&session.cwd, width / 2),
-                    );
+                    let mut text = format!("{marker}{}", session.title);
+                    if let Some(source) = crate::modal::fork_source_label(sessions, session) {
+                        text.push_str(&format!("  ← {source}"));
+                    }
+                    text.push_str(&format!("  {}", ellipsize(&session.cwd, width / 2),));
                     lines.push(Line::from(Span::styled(
                         ellipsize(&text, width),
                         if actual == picker.selected {
@@ -1582,7 +1582,8 @@ mod tests {
         theme::Theme,
     };
     use moc_protocol::methods::{
-        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection,
+        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection, SessionInfo,
+        SessionMode, SessionPermission,
     };
     use ratatui::style::Color;
     use ratatui::text::Line;
@@ -1654,6 +1655,59 @@ mod tests {
         assert_eq!(row.spans[2].style.fg, Some(theme.accent_user));
         assert_eq!(row.spans[3].style.fg, Some(theme.accent_model));
         assert!(!text.contains("上下文"));
+    }
+
+    /// 恢复会话列表：分叉会话标注来源，来源已不在列表时退回短 id，普通会话不带标注。
+    #[test]
+    fn session_picker_marks_fork_provenance() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let session = |id: &str, title: &str, forked_from: Option<&str>| SessionInfo {
+            id: id.into(),
+            title: title.into(),
+            model: "p/model".into(),
+            permission: SessionPermission::Full,
+            mode: SessionMode::Normal,
+            parent_session_id: None,
+            forked_from: forked_from.map(str::to_owned),
+            cwd: "/tmp/project".into(),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            lock: None,
+        };
+        let modal = Modal::Sessions {
+            sessions: vec![
+                session("ses_plain0000001", "原会话", None),
+                session("ses_fork00000001", "回退：原会话", Some("ses_plain0000001")),
+                session("ses_orphan0000001", "孤儿分叉", Some("ses_gone00000001")),
+            ],
+            picker: PickerState::default(),
+        };
+
+        let rows: Vec<String> = modal_lines(&app, &modal, 80, 20)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        let row = |needle: &str| {
+            rows.iter()
+                .find(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("缺少 {needle} 行：{rows:?}"))
+                .clone()
+        };
+        assert_eq!(
+            row("回退：原会话"),
+            "  回退：原会话  ← 原会话  /tmp/project"
+        );
+        assert_eq!(
+            row("孤儿分叉"),
+            "  孤儿分叉  ← ses_gone00000001  /tmp/project"
+        );
+        assert_eq!(row("原会话"), "❯ 原会话  /tmp/project");
     }
 
     /// 上下文窗：分块名用英文、数值统一为 k，色标与色条同色，色条按窗口定标。

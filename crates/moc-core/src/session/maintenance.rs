@@ -293,7 +293,7 @@ impl SessionTable {
 mod tests {
     use super::*;
     use crate::session::{
-        entries::{Entry, EntryPayload},
+        entries::{Entry, EntryPayload, SessionOrigin},
         store::{SessionFile, SessionStore},
     };
     use moc_protocol::{SessionMode, SessionPermission};
@@ -309,7 +309,7 @@ mod tests {
             "p/model:off".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "归档测试".into(),
             1,
         );

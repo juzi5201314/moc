@@ -61,8 +61,8 @@ pub(crate) async fn compact(
             inner.client_supports_ask(ctx.connection_id()),
             config,
             crate::tools::ToolScope {
-                control_agents: state.session.parent_session_id.is_none(),
-                subagent: state.session.parent_session_id.is_some(),
+                control_agents: !state.session.is_subagent(),
+                subagent: state.session.is_subagent(),
             },
         ),
         native_input: None,
@@ -258,7 +258,7 @@ mod tests {
     use moc_protocol::methods::{SessionMode, SessionPermission};
 
     use super::*;
-    use crate::session::entries::{Entry, EntryPayload};
+    use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
     use crate::session::state::SessionState;
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
             "gpt-x".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "t".into(),
             1,
         );

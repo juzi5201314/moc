@@ -280,7 +280,7 @@ mod tests {
     use moc_protocol::methods::{PlanStatus, SessionMode, SessionPermission};
 
     use super::*;
-    use crate::session::entries::{Entry, EntryPayload};
+    use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
 
     #[test]
     fn summary_input_carries_checkpoint_plan_instructions_and_required_sections() {
@@ -290,7 +290,7 @@ mod tests {
             "p/m".into(),
             SessionMode::Plan,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "plan".into(),
             1,
         );

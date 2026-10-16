@@ -136,8 +136,8 @@ pub(crate) async fn model_context(
         inner.client_supports_ask(ctx.connection_id()),
         config,
         crate::tools::ToolScope {
-            control_agents: state.session.parent_session_id.is_none(),
-            subagent: state.session.parent_session_id.is_some(),
+            control_agents: !state.session.is_subagent(),
+            subagent: state.session.is_subagent(),
         },
     );
     let messages = replay::model_messages(state, None, Some(model));
@@ -513,7 +513,7 @@ async fn append_runtime_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::entries::{Entry, EntryPayload};
+    use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
     use crate::session::state::SessionState;
     use moc_protocol::methods::{SessionMode, SessionPermission};
 
@@ -625,7 +625,7 @@ mod tests {
             "gpt-x".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "t".into(),
             1,
         )

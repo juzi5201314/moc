@@ -9,7 +9,7 @@ use moc_protocol::{RequestContext, RpcError, RpcErrorCode};
 use super::{CoreInner, protocol_to_rpc, to_rpc};
 use crate::compact;
 use crate::error::CoreError;
-use crate::session::entries::EntryPayload;
+use crate::session::entries::{EntryPayload, SessionOrigin};
 
 /// 计划模式切换时的会话模型同步：进入计划模式应用 `plan` 角色模型，退出时恢复
 /// 进入前的会话模型。
@@ -143,7 +143,7 @@ pub async fn approve_plan(
     }
 
     if params.action == PlanAction::ExecuteNewSession {
-        let child = inner
+        let fork = inner
             .sessions
             .create(
                 &state.session.cwd,
@@ -151,27 +151,27 @@ pub async fn approve_plan(
                 SessionMode::Normal,
                 state.permission,
                 Some(&plan.title),
-                Some(params.session_id.clone()),
+                SessionOrigin::forked(params.session_id.clone()),
             )
             .await
             .map_err(to_rpc)?;
-        let child_record = inner.sessions.get(&child.id).await.map_err(to_rpc)?;
-        let child_path = child_record
+        let fork_record = inner.sessions.get(&fork.id).await.map_err(to_rpc)?;
+        let fork_path = fork_record
             .paths
             .plans()
             .join(format!("{}.md", plan.plan_id));
-        tokio::fs::create_dir_all(child_record.paths.plans())
+        tokio::fs::create_dir_all(fork_record.paths.plans())
             .await
             .map_err(CoreError::Io)
             .map_err(to_rpc)?;
-        tokio::fs::write(&child_path, &plan.markdown)
+        tokio::fs::write(&fork_path, &plan.markdown)
             .await
             .map_err(CoreError::Io)
             .map_err(to_rpc)?;
         inner
             .sessions
             .append(
-                &child.id,
+                &fork.id,
                 EntryPayload::Plan {
                     plan_id: plan.plan_id.clone(),
                     title: plan.title.clone(),
@@ -185,7 +185,7 @@ pub async fn approve_plan(
         inner
             .sessions
             .append_message(
-                &child.id,
+                &fork.id,
                 moc_llm::Message::user_text(format!(
                     "<active-plan id=\"{}\">\n{}\n</active-plan>",
                     plan.plan_id, plan.markdown
@@ -210,7 +210,7 @@ pub async fn approve_plan(
             .await
             .map_err(to_rpc)?;
         return Ok(SessionPlanApproveResult {
-            session_id: child.id,
+            session_id: fork.id,
             mode: SessionMode::Normal,
             auto_prompt: Some("Execute the approved plan.".into()),
             plan_markdown: Some(plan.markdown),

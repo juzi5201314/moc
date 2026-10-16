@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use moc_protocol::methods::{
     AgentList, AgentListParams, AgentMessage, AgentMessageOutcome, AgentMessageParams, AgentSpawn,
     AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, SessionLoad, SessionLoadParams,
+    SessionRewind, SessionRewindParams,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -666,5 +667,111 @@ async fn child_system_carries_the_task_and_the_roster_rides_a_tail_reminder() {
         .as_str()
         .expect("清单文本");
     assert!(roster.contains(&parent_id), "清单必须列出父代理：{roster}");
+    harness.close().await;
+}
+
+/// 请求体里的工具名，保持上游顺序。
+fn tool_names(body: &Value) -> Vec<&str> {
+    body["tools"].as_array().map_or_else(Vec::new, |tools| {
+        tools
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect()
+    })
+}
+
+/// 回退分叉是完全独立的会话：既没有父链接，也没有任何子代理效果。
+///
+/// 身份、系统提示与工具表都必须与普通顶层会话逐字一致；出身只落在会话头的
+/// `forked_from` 上，供用户端展示，模型侧永远看不到。
+#[tokio::test]
+async fn rewind_fork_matches_a_plain_session_and_keeps_no_parent_link() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |_body| text_response("收到")).await;
+    let harness = harness(&upstream).await;
+    let source = harness.session(moc_protocol::SessionMode::Normal).await;
+    harness.prompt(&source, "第一轮").await;
+
+    let entries = harness.load(&source).await.entries;
+    let target = entries
+        .iter()
+        .find(|entry| entry.message.role == moc_protocol::Role::User && entry.agent.is_none())
+        .expect("回退目标为首条用户消息");
+    let fork = harness
+        .client
+        .call::<SessionRewind>(SessionRewindParams {
+            session_id: source.clone(),
+            entry_id: target.id.clone(),
+        })
+        .await
+        .expect("回退成功")
+        .session;
+    assert_eq!(fork.forked_from.as_deref(), Some(source.as_str()));
+    assert!(
+        !fork.is_subagent(),
+        "分叉不得建立父链接：{:?}",
+        fork.parent_session_id
+    );
+
+    harness.prompt(&fork.id, "分叉后的第一轮").await;
+    let requests = upstream.received_requests().await.expect("上游请求");
+    assert_eq!(requests.len(), 2, "两轮提示各一条请求");
+    let plain: Value = serde_json::from_slice(&requests[0].body).expect("普通会话请求");
+    let forked: Value = serde_json::from_slice(&requests[1].body).expect("分叉请求");
+    let fork_tools = tool_names(&forked);
+    assert_eq!(
+        forked["messages"][0], plain["messages"][0],
+        "分叉的系统提示必须与普通会话一致"
+    );
+    assert_eq!(
+        fork_tools,
+        tool_names(&plain),
+        "分叉的工具表必须与普通会话一致"
+    );
+    assert!(
+        !fork_tools.contains(&"yield"),
+        "分叉不得拿到 yield：{fork_tools:?}"
+    );
+    let rendered = forked.to_string();
+    assert!(
+        !rendered.contains("<subagent>") && !rendered.contains("<agent-roster>"),
+        "分叉不得携带子代理契约或名册：{forked}"
+    );
+    harness.close().await;
+}
+
+/// 会话身份只由会话头决定，与请求来自谁无关：用户聚焦子代理会话直接提问时，
+/// 系统提示与工具表仍必须是子代理那一套——有 `yield`、没有派发工具。
+#[tokio::test]
+async fn focused_child_session_keeps_subagent_contract_for_user_prompts() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if body.to_string().contains("CHILD_TASK") {
+            yield_call("call_yield", "CHILD_REPORT")
+        } else {
+            text_response("OK")
+        }
+    })
+    .await;
+    let harness = harness(&upstream).await;
+    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
+    wait_children(&harness, &parent_id, None, Some(5)).await;
+
+    harness.prompt(&child_id, "用户直接跟进").await;
+    let requests = upstream.received_requests().await.expect("上游请求");
+    let body: Value =
+        serde_json::from_slice(&requests.last().expect("最后一次请求").body).expect("请求 JSON");
+    let system = body["messages"][0]["content"].as_str().expect("系统提示");
+    assert!(system.contains("<subagent>"), "{system}");
+    let tools = tool_names(&body);
+    assert!(
+        tools.contains(&"yield"),
+        "子代理会话必须拿到 yield：{tools:?}"
+    );
+    assert!(
+        !tools.contains(&"spawn_agent"),
+        "子代理不得拿到派发工具：{tools:?}"
+    );
     harness.close().await;
 }

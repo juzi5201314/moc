@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::CoreError;
 use crate::service::CoreInner;
+use crate::session::entries::SessionOrigin;
 use crate::session::store::now_ms;
 
 pub(crate) struct AgentRuntime {
@@ -225,7 +226,7 @@ pub(crate) async fn spawn(
             moc_protocol::SessionMode::Normal,
             parent.permission,
             title.as_deref(),
-            Some(session_id.clone()),
+            SessionOrigin::spawned(session_id.clone()),
         )
         .await?;
     let info = info_from_session(&session, AgentStatus::Queued);
@@ -304,7 +305,7 @@ async fn activate(
             },
         )
         .await;
-    let child_request = request.as_subagent(cancel.clone());
+    let child_request = request.with_cancel(cancel.clone());
     let task_inner = Arc::clone(&inner);
     let task_request = request.clone();
     let mut tasks = inner.agent_tasks.lock().await;
@@ -1226,6 +1227,7 @@ mod tests {
         SessionInfo {
             id: id.into(),
             parent_session_id: Some("ses_parent0001".into()),
+            forked_from: None,
             title: "子代理".into(),
             model: "p/m".into(),
             cwd: "/tmp/project".into(),

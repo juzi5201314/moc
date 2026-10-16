@@ -278,9 +278,13 @@ pub struct SessionInfo {
     /// 当前工作模式。
     #[serde(default)]
     pub mode: SessionMode,
-    /// 父会话 ID；根会话为 `None`。
+    /// 父会话 ID：只有 `spawn_agent` 出来的子代理会话有，其余会话为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
+    /// 消息回退分叉的来源会话 ID。**纯用户侧出身信息**：分叉在模型侧与普通会话
+    /// 完全一致，模型永远不会看到它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<String>,
     /// 工作目录。
     pub cwd: String,
     /// 创建时间的 UNIX 毫秒时间戳。
@@ -290,6 +294,16 @@ pub struct SessionInfo {
     /// 锁投影；`None` 表示当前没有其它进程在该会话里跑提示。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lock: Option<SessionLockInfo>,
+}
+
+impl SessionInfo {
+    /// 是否为子代理会话：唯一判据是父会话存在。回退分叉不是子代理。
+    ///
+    /// 提示词身份、工具可见性与代理名册都必须走这一个判据，避免出现
+    /// 「系统提示说我是子代理、工具表却不给 yield」这类自相矛盾。
+    pub fn is_subagent(&self) -> bool {
+        self.parent_session_id.is_some()
+    }
 }
 
 /// 会话锁的投影。
@@ -788,6 +802,7 @@ mod tests {
             model: "m".into(),
             permission: SessionPermission::Full,
             parent_session_id: None,
+            forked_from: None,
             cwd: "/tmp".into(),
             created_at_ms: 1,
             mode: SessionMode::Plan,

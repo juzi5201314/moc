@@ -1285,6 +1285,7 @@ mod tests {
             permission: moc_protocol::SessionPermission::Full,
             mode: SessionMode::Normal,
             parent_session_id: None,
+            forked_from: None,
             cwd: "/tmp".into(),
             created_at_ms: 0,
             updated_at_ms: 0,

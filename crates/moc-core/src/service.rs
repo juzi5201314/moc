@@ -30,6 +30,7 @@ use crate::CoreConfig;
 use crate::compact;
 use crate::config::{ResolvedConfig, resolve_models};
 use crate::error::CoreError;
+use crate::session::entries::SessionOrigin;
 use crate::session::{SessionTable, TranscriptEntryId};
 use crate::tools::{JobManager, ToolRegistry};
 use crate::workspace::watch::WorkspaceSnapshot;
@@ -871,7 +872,7 @@ impl AgentService for Core {
                 params.mode,
                 SessionPermission::Full,
                 params.title.as_deref(),
-                None,
+                SessionOrigin::root(),
             )
             .await
             .map_err(to_rpc)?;

@@ -410,13 +410,16 @@ async fn run_prompt_locked(
     let skills = inner
         .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
         .map_err(to_rpc)?;
+    // 会话身份只有一个来源：会话头。提示词、工具可见性与名册都必须走它，
+    // 否则「系统提示说我是子代理、工具表却不给 yield」这类矛盾会重新出现。
+    let subagent = state_snapshot.session.is_subagent();
     let tools_available = inner.tools.definitions(
         mode,
         inner.client_supports_ask(ctx.connection_id()),
         &project_config,
         crate::tools::ToolScope {
-            control_agents: !ctx.is_subagent(),
-            subagent: ctx.is_subagent(),
+            control_agents: !subagent,
+            subagent,
         },
     );
     let mut last_message = Message::default();
@@ -429,7 +432,7 @@ async fn run_prompt_locked(
     let mut cycle_redirect = None;
     let summary = catalog.summary();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
-    let subagent = crate::agents::subagent_prompt(&inner, &params.session_id).await;
+    let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let system = build(
         &project_config,
         &model,
@@ -437,10 +440,10 @@ async fn run_prompt_locked(
         &context_files,
         &skills,
         &summary,
-        subagent.as_ref().map(|prompt| prompt.block.as_str()),
+        subagent_prompt.as_ref().map(|prompt| prompt.block.as_str()),
     );
     // 代理清单随兄弟状态变化：放在尾部提醒里，避免每次变化都让系统前缀缓存失效。
-    let roster = subagent.map(|prompt| prompt.roster);
+    let roster = subagent_prompt.map(|prompt| prompt.roster);
 
     let mut is_first_turn = true;
     'turns: loop {
@@ -589,7 +592,8 @@ async fn run_prompt_locked(
                 reminder_messages.push(reminder_message(rendered));
             }
             let mut reminder_state = runtime.reminders.lock().await;
-            if let Some(reminder) = reminder_state.render(&crate::system_prompt::reminder::local_time())
+            if let Some(reminder) =
+                reminder_state.render(&crate::system_prompt::reminder::local_time())
             {
                 reminder_messages.push(reminder_message(reminder));
             }
@@ -1060,7 +1064,7 @@ async fn run_prompt_locked(
             if !interrupted {
                 // 子代理必须以 `yield` 交付结果；用纯文本结束回合只会让父侧拿到
                 // 一段没有交付语义的正文，因此先提醒若干次，仍缺才回退。
-                if ctx.is_subagent()
+                if subagent
                     && yield_reminders < crate::agents::MAX_YIELD_REMINDERS
                     && !crate::agents::has_yielded(&inner, &params.session_id).await
                 {
@@ -1110,8 +1114,8 @@ async fn run_prompt_locked(
             catalog: Arc::clone(&catalog),
             mode,
             permission,
-            allow_agents: !ctx.is_subagent(),
-            subagent: ctx.is_subagent(),
+            allow_agents: !subagent,
+            subagent,
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
             openviking,

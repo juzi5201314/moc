@@ -553,6 +553,7 @@ mod tests {
     use moc_protocol::methods::{SessionMode, SessionPermission};
 
     use super::*;
+    use crate::session::entries::SessionOrigin;
 
     #[test]
     fn cwd_and_timestamp_paths_are_stable() {
@@ -578,7 +579,7 @@ mod tests {
             "p/old".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "旧标题".into(),
             1_728_000_000_123,
         );
@@ -659,7 +660,7 @@ mod tests {
             "p/m".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "健康".into(),
             1,
         );
@@ -686,7 +687,7 @@ mod tests {
             "p/m".into(),
             SessionMode::Normal,
             SessionPermission::Full,
-            None,
+            SessionOrigin::root(),
             "原始标题".into(),
             3,
         );

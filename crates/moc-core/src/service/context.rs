@@ -305,8 +305,8 @@ async fn snapshot(
         inner.client_supports_ask(ctx.connection_id()),
         &config,
         crate::tools::ToolScope {
-            control_agents: state.session.parent_session_id.is_none(),
-            subagent: state.session.parent_session_id.is_some(),
+            control_agents: !state.session.is_subagent(),
+            subagent: state.session.is_subagent(),
         },
     );
     let (injected, transcript) = messages(&state, &model);
