@@ -90,12 +90,7 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let upstream = MockServer::builder().start().await;
-    let harness = support::Harness::new(
-        &upstream.uri(),
-        "openai_chat",
-        "[limits]\nmax_turns_per_prompt=4\n",
-    )
-    .await;
+    let harness = support::Harness::new(&upstream.uri(), "openai_chat", "").await;
     let session_id = harness.session(moc_protocol::SessionMode::Normal).await;
     let workspace_dir =
         harness

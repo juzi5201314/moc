@@ -578,8 +578,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -757,8 +756,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -1039,8 +1037,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -1210,8 +1207,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=true\nmax_scan_entries=1000\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -1392,8 +1388,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=true\nmax_scan_entries=1000\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -1569,8 +1564,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=true\nmax_scan_entries=1000\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),
@@ -1707,8 +1701,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
              [session]\ndir={:?}\n\
              [workspace]\nwatch=false\n\
              [context_files]\nenabled=false\n\
-             [compaction]\nenabled=false\n\
-             [limits]\nmax_turns_per_prompt=4\n",
+             [compaction]\nenabled=false\n",
             upstream.uri(),
             sessions.to_string_lossy(),
         ),

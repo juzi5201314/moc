@@ -533,9 +533,6 @@ pub(crate) async fn record_model_usage(
     usage: moc_llm::Usage,
     active_ms: u64,
 ) -> Result<(), CoreError> {
-    if let Some(guard) = inner.runtime(session_id).await.guard.lock().clone() {
-        guard.tokens(usage.output_tokens);
-    }
     inner
         .sessions
         .append(

@@ -9,17 +9,15 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use bytes::Bytes;
 use futures_core::Stream;
-use tokio::time::Sleep;
 
 use crate::codec::StreamDecoder;
 use crate::codec::sse::SseDecoder;
 use crate::config::{LlmConfig, Protocol};
 use crate::error::LlmError;
-use crate::guard::{GuardViolation, StreamGuard};
+use crate::guard::StreamGuard;
 use crate::types::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, Message, ReasoningBlock, Role,
     StreamEvent, ToolCall, Usage,
@@ -350,13 +348,7 @@ pub struct ChatStream {
     finished: bool,
     /// 协议，决定中断时的修剪规则。
     protocol: Protocol,
-    /// 空闲超时：两次字节到达之间的最长间隔。
-    idle_timeout: Option<Duration>,
-    /// 空闲计时器。
-    idle: Option<Pin<Box<Sleep>>>,
     guard: StreamGuard,
-    wire_bytes: usize,
-    deadline: Pin<Box<Sleep>>,
 }
 
 impl ChatStream {
@@ -366,7 +358,7 @@ impl ChatStream {
         cfg: &LlmConfig,
         req: &ChatRequest,
     ) -> ChatStream {
-        let mut stream = ChatStream {
+        ChatStream {
             body,
             sse: SseDecoder::new(),
             decoder: crate::codec::stream_decoder(cfg, req),
@@ -376,21 +368,8 @@ impl ChatStream {
             error: None,
             finished: false,
             protocol: cfg.protocol,
-            idle_timeout: cfg.timeout_secs.map(Duration::from_secs_f64),
-            idle: None,
             guard: StreamGuard::new(req.options.stream_guard),
-            wire_bytes: 0,
-            deadline: Box::pin(tokio::time::sleep(Duration::from_secs(
-                req.options.stream_guard.max_response_duration_secs,
-            ))),
-        };
-        // 从响应头到达开始计时：首个字节同样受空闲上限约束。
-        stream.reset_idle();
-        stream
-    }
-
-    pub(crate) fn set_deadline(&mut self, deadline: tokio::time::Instant) {
-        self.deadline.as_mut().reset(deadline);
+        }
     }
 
     /// 取出下一个事件；流结束或出错后返回 `None`。
@@ -419,9 +398,8 @@ impl ChatStream {
     /// | 丢弃编码器不接受的思维链形态 | 例如 Anthropic 会话里的 Responses reasoning item，否则落库后整条会话再发不出请求 |
     /// | 文本与已累积的思维链文本保留 | 用户看到的内容不丢 |
     pub fn interrupt(self) -> ChatResponse {
-        if let Some(LlmError::Guard(violation)) = &self.error {
-            let reason = violation.finish_reason();
-            return self.discard(reason);
+        if matches!(&self.error, Some(LlmError::Guard(_))) {
+            return self.discard(FinishReason::LoopDetected);
         }
         self.accumulator.fold(self.protocol, true)
     }
@@ -440,41 +418,13 @@ impl ChatStream {
         }
     }
 
-    /// 本次实际接收的响应体字节，包含 SSE 开销和心跳。
-    pub fn received_bytes(&self) -> usize {
-        self.wire_bytes
-    }
-
     /// 读一块字节并把解出的事件推入队列；返回 `Pending` 表示网络暂无数据。
     fn pump(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         match self.body.as_mut().poll_next(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(chunk))) => {
-                self.wire_bytes = self.wire_bytes.saturating_add(chunk.len());
-                // SSE 转义和协议字段也占客户端资源；硬上限与模型 token 声明独立。
-                let limit = self.guard.config.max_response_bytes.saturating_mul(16);
-                let limit = self
-                    .guard
-                    .config
-                    .max_wire_bytes
-                    .map_or(limit, |remaining| remaining.min(limit));
-                if self.wire_bytes > limit {
-                    self.stop_with(
-                        GuardViolation::Resource("单次响应体超过本地字节上限".into()).into(),
-                    );
-                    return Poll::Ready(());
-                }
                 self.sse.push(&chunk);
-                self.reset_idle();
                 self.drain_frames();
-                if !self.finished
-                    && self.sse.pending_bytes()
-                        > self.guard.config.max_response_bytes.saturating_mul(2)
-                {
-                    self.stop_with(
-                        GuardViolation::Resource("未完成的 SSE 帧超过本地字节上限".into()).into(),
-                    );
-                }
                 Poll::Ready(())
             }
             Poll::Ready(Some(Err(err))) => {
@@ -532,9 +482,7 @@ impl ChatStream {
         // 立即释放上游；即使调用方保留 ChatStream 也不继续下载。
         self.body = Box::pin(crate::stream::EmptyBody);
         if matches!(self.error, Some(LlmError::Guard(_))) {
-            if let Some(LlmError::Guard(violation)) = &self.error {
-                self.accumulator.finish_reason = Some(violation.finish_reason());
-            }
+            self.accumulator.finish_reason = Some(FinishReason::LoopDetected);
             self.accumulator.blocks.clear();
             self.accumulator.slots.clear();
             self.accumulator.compaction = None;
@@ -542,21 +490,6 @@ impl ChatStream {
             self.sse = SseDecoder::new();
         }
         self.queue.push_back(Err(error));
-    }
-
-    /// 重新开始空闲计时。
-    ///
-    /// 计时器对象只创建一次，之后原地 `reset`：每收到一块字节就新建一个 `Sleep`
-    /// 会让流式热路径带上逐块分配。
-    fn reset_idle(&mut self) {
-        let Some(timeout) = self.idle_timeout else {
-            return;
-        };
-        let deadline = tokio::time::Instant::now() + timeout;
-        match self.idle.as_mut() {
-            Some(idle) => idle.as_mut().reset(deadline),
-            None => self.idle = Some(Box::pin(tokio::time::sleep_until(deadline))),
-        }
     }
 }
 
@@ -566,24 +499,11 @@ impl Stream for ChatStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
         loop {
-            if !this.finished && this.deadline.as_mut().poll(cx).is_ready() {
-                this.stop_with(GuardViolation::Resource("单次生成超过本地时限".into()).into());
-            }
             if let Some(event) = this.queue.pop_front() {
                 return Poll::Ready(Some(event));
             }
             if this.finished {
                 return Poll::Ready(None);
-            }
-            // 空闲超时：长时间收不到任何字节就报错，而不是无限等待。
-            if let Some(idle) = this.idle.as_mut()
-                && idle.as_mut().poll(cx).is_ready()
-            {
-                this.stop_with(LlmError::Stream(format!(
-                    "流空闲超过 {:?}",
-                    this.idle_timeout.unwrap_or_default()
-                )));
-                continue;
             }
             if this.pump(cx).is_pending() {
                 return Poll::Pending;
@@ -1341,31 +1261,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_timeout_errors_instead_of_hanging() {
-        let cfg = LlmConfig {
-            timeout_secs: Some(0.05),
-            ..config(Protocol::OpenAiChat)
-        };
-        let req = request();
-        let mut stream = stream_from_chunks(
-            &cfg,
-            &req,
-            vec![
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":null}]}\n\n",
-            ],
-        );
-        let mut error = None;
-        while let Some(event) = stream.next_event().await {
-            if let Err(err) = event {
-                error = Some(err);
-                break;
-            }
-        }
-        let error = error.expect("空闲超时应当以错误结束流");
-        assert!(error.to_string().contains("流空闲超过"), "{error}");
-    }
-
-    #[tokio::test]
     async fn interrupt_returns_partial_response_without_await() {
         let cfg = config(Protocol::AnthropicMessages);
         let req = request();
@@ -1482,56 +1377,10 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, Err(LlmError::Guard(GuardViolation::Loop { .. }))))
+                .any(|event| matches!(event, Err(LlmError::Guard(_))))
         );
         let partial = stream.interrupt();
         assert!(partial.message.content.is_empty());
         assert_eq!(partial.finish_reason, FinishReason::LoopDetected);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn response_hard_deadline_is_independent_of_idle_and_released_upstream() {
-        let mut req = request();
-        req.options.stream_guard.max_response_duration_secs = 1;
-        let cfg = config(Protocol::OpenAiChat);
-        let mut stream = stream_from_chunks(&cfg, &req, vec![]);
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(matches!(
-            stream.next_event().await,
-            Some(Err(LlmError::Guard(GuardViolation::Resource(_))))
-        ));
-        assert!(stream.next_event().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn unterminated_frames_hit_memory_budget_without_waiting_for_delimiter() {
-        let mut req = request();
-        req.options.stream_guard.max_response_bytes = 8;
-        let mut stream = stream_from_chunks(
-            &config(Protocol::OpenAiChat),
-            &req,
-            vec!["data: {unfinished unfinished unfinished"],
-        );
-        assert!(matches!(
-            stream.next_event().await,
-            Some(Err(LlmError::Guard(GuardViolation::Resource(_))))
-        ));
-        assert!(stream.next_event().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn heartbeat_only_stream_cannot_bypass_prompt_byte_budget() {
-        let mut req = request();
-        req.options.stream_guard.max_wire_bytes = Some(10);
-        let mut stream = stream_from_chunks(
-            &config(Protocol::OpenAiChat),
-            &req,
-            vec![": ping\n\n", ": ping\n\n"],
-        );
-        assert!(matches!(
-            stream.next_event().await,
-            Some(Err(LlmError::Guard(GuardViolation::Resource(_))))
-        ));
-        assert!(stream.next_event().await.is_none());
     }
 }

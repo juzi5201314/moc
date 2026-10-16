@@ -724,6 +724,57 @@ max_output_tokens = 128000
     }
 
     #[test]
+    fn limits_reject_removed_knobs_and_invalid_deadlines() {
+        // 已移除的轮数／字节／token／调用数上限必须被拒绝，避免旧配置静默失效。
+        for (snippet, expected) in [
+            ("max_turns_per_prompt=1\n", "max_turns_per_prompt"),
+            ("max_response_bytes=1\n", "max_response_bytes"),
+            (
+                "max_response_duration_secs=1\n",
+                "max_response_duration_secs",
+            ),
+            ("max_prompt_bytes=1\n", "max_prompt_bytes"),
+            ("max_prompt_output_tokens=1\n", "max_prompt_output_tokens"),
+            ("max_tool_calls_per_prompt=1\n", "max_tool_calls_per_prompt"),
+            ("max_prompt_duration_secs=1\n", "max_prompt_duration_secs"),
+            ("connect_deadline_secs=0\n", "必须大于 0"),
+            ("request_warn_secs=0\n", "必须大于 0"),
+            ("connect_deadline_secs=604801\n", "不得超过 7 天"),
+        ] {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let home = dir.path().join("home");
+            fs::create_dir_all(&home).expect("创建 home");
+            fs::write(
+                home.join("config.toml"),
+                format!("{}\n[limits]\n{snippet}", provider_config("literal")),
+            )
+            .expect("写配置");
+            let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+                Ok(_) => panic!("{snippet} 应被拒绝"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error for {snippet}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn limits_defaults_cover_loop_detection_and_deadlines() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::write(home.join("config.toml"), provider_config("literal")).expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
+        assert_eq!(config.limits.connect_deadline_secs, 900);
+        assert_eq!(config.limits.request_warn_secs, 900);
+        assert!(config.limits.loop_detection);
+        assert_eq!(config.limits.max_length_continues, 2);
+    }
+
+    #[test]
     fn rejects_invalid_web_search_settings() {
         for (snippet, expected) in [
             ("provider='google'\n", "web_search.provider"),

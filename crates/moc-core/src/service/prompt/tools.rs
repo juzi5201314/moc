@@ -227,7 +227,6 @@ pub(super) async fn execute_tool_batch(
                 format!("[E_ARTIFACT] Tool ran, but its output could not be delivered: {error}")
             }
         };
-        tool_ctx.guard.bytes(content.len());
         let status = outcome.status.unwrap_or(if outcome.is_error {
             ToolStatus::Error
         } else {
@@ -348,7 +347,7 @@ async fn execute_tool(
     mode: moc_protocol::methods::SessionMode,
     call: &moc_llm::ToolCall,
 ) -> Result<ToolOutcome, CoreError> {
-    if !ctx.guard.tool_call() || ctx.cancel.is_cancelled() {
+    if ctx.cancel.is_cancelled() {
         return Ok(cancelled_outcome());
     }
     let name = call.name.as_str();

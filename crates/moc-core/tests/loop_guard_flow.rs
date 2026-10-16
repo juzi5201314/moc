@@ -111,37 +111,42 @@ async fn repeated_tools_redirect_once_then_terminate_without_another_request() {
 }
 
 #[tokio::test]
-async fn response_and_prompt_budgets_are_not_model_length_continuations() {
-    for extra in [
-        "max_response_bytes=32",
-        "max_prompt_bytes=32",
-        "max_turns_per_prompt=1",
-    ] {
-        let upstream = MockServer::start().await;
-        let stream = if extra.starts_with("max_turns") {
-            tool_stream(vec![("read", "read", json!({"path":"sample.txt"}))])
-        } else {
-            text_stream("这是正常文本而非循环，字节预算依然必须独立生效，不能视为供应商长度截断。")
-        };
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(stream, "text/event-stream"))
-            .mount(&upstream)
-            .await;
-        let h = Harness::new(
-            &upstream.uri(),
-            "openai_chat",
-            &format!("[compaction]\nenabled=false\n[limits]\n{extra}"),
+async fn slow_request_only_warns_and_still_finishes() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(1100))
+                .set_body_raw(text_stream("慢请求正常完成"), "text/event-stream"),
         )
+        .mount(&upstream)
         .await;
-        std::fs::write(h.root.path().join("work/sample.txt"), "固定证据").unwrap();
-        let id = h.session(SessionMode::Normal).await;
-        assert_eq!(
-            h.prompt(&id, "执行预算场景").await.finish_reason,
-            FinishReason::ResourceLimit
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false\n[limits]\nrequest_warn_secs=1",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    let result = h.prompt(&id, "执行慢请求场景").await;
+    assert_eq!(result.message.text(), "慢请求正常完成");
+    assert_eq!(result.finish_reason, FinishReason::Stop);
+    {
+        let notices = h.updates.lock();
+        assert!(
+            notices.iter().any(|update| matches!(
+                update,
+                SessionUpdate::GuardNotice {
+                    terminal: false,
+                    message,
+                    ..
+                } if message.contains("耗时超过 1 秒")
+            )),
+            "慢请求只应发出一次非终止警告：{notices:?}"
         );
-        assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
-        h.close().await;
     }
+    assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
+    h.close().await;
 }
 
 #[tokio::test]

@@ -2,51 +2,34 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{FinishReason, StreamEvent};
+use crate::StreamEvent;
 mod prose;
 use prose::Prose;
 
-/// 本地流保护配置，不发送给供应商；关闭循环识别不会关闭资源限制。
+/// 本地流保护配置，不发送给供应商。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StreamGuardConfig {
-    pub enabled: bool,
-    pub max_response_bytes: usize,
-    pub max_response_duration_secs: u64,
-    /// 提示剩余额度对响应体的额外约束；包含没有内容事件的心跳。
-    pub max_wire_bytes: Option<usize>,
+    /// 是否识别思考、正文与工具参数里的重复内容。
+    pub loop_detection: bool,
 }
 
 impl Default for StreamGuardConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            max_response_bytes: 8 * 1024 * 1024,
-            max_response_duration_secs: 900,
-            max_wire_bytes: None,
+            loop_detection: true,
         }
     }
 }
 
-/// 保护停止与传输错误分开分类，禁止被网络重试重新启动。
+/// 重复内容检测命中；提示落地由调用方决定，传输层不得按失败重试。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum GuardViolation {
-    #[error("检测到{channel}循环：{detail}")]
-    Loop {
-        channel: &'static str,
-        detail: String,
-    },
-    #[error("达到资源限制：{0}")]
-    Resource(String),
-}
-
-impl GuardViolation {
-    pub fn finish_reason(&self) -> FinishReason {
-        match self {
-            Self::Loop { .. } => FinishReason::LoopDetected,
-            Self::Resource(_) => FinishReason::ResourceLimit,
-        }
-    }
+#[error("检测到{channel}循环：{detail}")]
+pub struct LoopViolation {
+    /// 命中的通道：正文、思考或工具参数。
+    pub channel: &'static str,
+    /// 命中描述，用于终止通知。
+    pub detail: String,
 }
 
 const TAIL: usize = 4096;
@@ -54,8 +37,6 @@ const MAX_PERIOD: usize = 1024;
 const STRIDE: usize = 128;
 const SEGMENT_CHARS: usize = 768;
 const SEGMENT_WINDOW: usize = 12;
-const MAX_BLOCKS: usize = 256;
-const MAX_ARGUMENT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Channel {
@@ -76,7 +57,6 @@ impl Channel {
 
 pub(crate) struct StreamGuard {
     pub(crate) config: StreamGuardConfig,
-    pub(crate) output_bytes: usize,
     blocks: Vec<(Channel, usize, Detector)>,
 }
 
@@ -84,12 +64,11 @@ impl StreamGuard {
     pub(crate) fn new(config: StreamGuardConfig) -> Self {
         Self {
             config,
-            output_bytes: 0,
             blocks: Vec::new(),
         }
     }
 
-    pub(crate) fn observe(&mut self, event: &StreamEvent) -> Result<(), GuardViolation> {
+    pub(crate) fn observe(&mut self, event: &StreamEvent) -> Result<(), LoopViolation> {
         let (channel, index, text) = match event {
             StreamEvent::TextDelta { index, text } => (Channel::Text, *index, text.as_str()),
             StreamEvent::ReasoningDelta { index, text } => {
@@ -98,24 +77,21 @@ impl StreamGuard {
             StreamEvent::ToolCallArgumentsDelta { index, json } => {
                 (Channel::Arguments, *index, json.as_str())
             }
-            StreamEvent::ReasoningSignature { index, signature } => {
-                self.account(signature.len())?;
+            // 以下事件没有可检测文本，只保证对应块已经建立。
+            StreamEvent::ReasoningSignature { index, .. } => {
                 return self.observe_delta(Channel::Reasoning, *index, "");
             }
-            StreamEvent::ToolCallStart { index, id, name } => {
-                self.account(id.len().saturating_add(name.len()))?;
+            StreamEvent::ToolCallStart { index, .. } => {
                 return self.observe_delta(Channel::Arguments, *index, "");
             }
-            StreamEvent::ReasoningItem { index, item } => {
-                self.account(json_bytes(item))?;
+            StreamEvent::ReasoningItem { index, .. } => {
                 return self.observe_delta(Channel::Reasoning, *index, "");
             }
-            StreamEvent::CompactionItem { item } => return self.account(json_bytes(item)),
             StreamEvent::Done { .. } => {
-                if self.config.enabled {
+                if self.config.loop_detection {
                     for (channel, _, detector) in &mut self.blocks {
                         if let Some(detail) = detector.flush() {
-                            return Err(GuardViolation::Loop {
+                            return Err(LoopViolation {
                                 channel: channel.label(),
                                 detail,
                             });
@@ -135,8 +111,7 @@ impl StreamGuard {
         channel: Channel,
         index: usize,
         text: &str,
-    ) -> Result<(), GuardViolation> {
-        self.account(text.len())?;
+    ) -> Result<(), LoopViolation> {
         let slot = match self
             .blocks
             .iter()
@@ -144,23 +119,14 @@ impl StreamGuard {
         {
             Some(slot) => slot,
             None => {
-                if self.blocks.len() == MAX_BLOCKS {
-                    return Err(GuardViolation::Resource("单次响应内容块超过 256 个".into()));
-                }
                 self.blocks.push((channel, index, Detector::new(channel)));
                 self.blocks.len() - 1
             }
         };
-        debug_assert!(self.blocks.len() <= MAX_BLOCKS);
-        let detector = &mut self.blocks[slot].2;
-        detector.bytes = detector.bytes.saturating_add(text.len());
-        if channel == Channel::Arguments && detector.bytes > MAX_ARGUMENT_BYTES {
-            return Err(GuardViolation::Resource("单个工具参数超过 1 MiB".into()));
-        }
-        if self.config.enabled
-            && let Some(detail) = detector.push(text)
+        if self.config.loop_detection
+            && let Some(detail) = self.blocks[slot].2.push(text)
         {
-            return Err(GuardViolation::Loop {
+            return Err(LoopViolation {
                 channel: channel.label(),
                 detail,
             });
@@ -171,7 +137,7 @@ impl StreamGuard {
     pub(crate) fn check_response(
         &mut self,
         response: &crate::ChatResponse,
-    ) -> Result<(), GuardViolation> {
+    ) -> Result<(), LoopViolation> {
         for (index, part) in response.message.content.iter().enumerate() {
             match part {
                 crate::ContentPart::Text(text) => self.observe_delta(Channel::Text, index, text)?,
@@ -188,22 +154,10 @@ impl StreamGuard {
             finish_reason: response.finish_reason.clone(),
         })
     }
-
-    fn account(&mut self, bytes: usize) -> Result<(), GuardViolation> {
-        self.output_bytes = self.output_bytes.saturating_add(bytes);
-        if self.output_bytes > self.config.max_response_bytes {
-            return Err(GuardViolation::Resource(format!(
-                "单次生成内容超过 {} 字节",
-                self.config.max_response_bytes
-            )));
-        }
-        Ok(())
-    }
 }
 
 struct Detector {
     channel: Channel,
-    bytes: usize,
     exact: ExactCycle,
     prose: Prose,
     json: JsonScope,
@@ -213,7 +167,6 @@ impl Detector {
     fn new(channel: Channel) -> Self {
         Self {
             channel,
-            bytes: 0,
             exact: ExactCycle::default(),
             prose: Prose::new(channel == Channel::Reasoning),
             json: JsonScope::default(),
@@ -226,7 +179,7 @@ impl Detector {
             if self.channel == Channel::Arguments {
                 self.json.push(ch);
                 // 合法 JSON 的数组元素和字符串（包括待写代码）可以任意重复。
-                // 只把多个顶层值拼接成的周期当成参数循环，其余异常由硬上限终止。
+                // 只把多个顶层值拼接成的周期当成参数循环。
                 if self.json.extra_root
                     && self.exact.ready()
                     && let Some(hit) = self.exact.detect(false)
@@ -390,22 +343,6 @@ impl JsonScope {
     }
 }
 
-fn json_bytes(value: &serde_json::Value) -> usize {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
-    serde_json::to_writer(&mut counter, value).expect("JSON Value 可序列化");
-    counter.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,17 +419,17 @@ mod tests {
                     .unwrap();
             }
         }
-        let mut guard = StreamGuard::new(StreamGuardConfig {
-            enabled: false,
-            max_response_bytes: 100,
-            ..Default::default()
+        let repeated = "反复检查现有情况，然后再次确认当前结果。".repeat(150);
+        let mut disabled = StreamGuard::new(StreamGuardConfig {
+            loop_detection: false,
         });
-        assert!(matches!(
-            guard.observe(&StreamEvent::TextDelta {
-                index: 0,
-                text: "x".repeat(101)
-            }),
-            Err(GuardViolation::Resource(_))
-        ));
+        assert!(
+            disabled
+                .observe(&StreamEvent::TextDelta {
+                    index: 0,
+                    text: repeated,
+                })
+                .is_ok()
+        );
     }
 }

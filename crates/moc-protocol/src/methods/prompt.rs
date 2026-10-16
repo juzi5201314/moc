@@ -14,10 +14,11 @@
 //! 外层改称 `Task`/`Run`。moc 的外层因此另名 `prompt`——与 `session/prompt` 同词根。
 //!
 //! 一次提示可包含任意多轮，每一轮都会重新请求模型并把工具结果回灌，直到模型不再发起
-//! 工具调用（或控制类工具要求收尾）为止——这就是「代理主动停止」。`length` 截断不结束
-//! 提示，而是在同一次提示内自动续写（见 `max_length_continues`）。因此**提示**是模式、
+//! 工具调用（或控制类工具要求收尾）为止——这就是「代理主动停止」。轮数没有上限：
+//! `length` 截断不结束提示，而是在同一次提示内自动续写（见 `max_length_continues`）；
+//! 只有本地重复内容检测（`loop_detected`）会强制结束提示。因此**提示**是模式、
 //! 取消、只读约束、计时与上下文压缩的作用域单位：`PromptStarted` / `PromptFinished`
-//! 各只发一次，[`PromptResult::finish_reason`] 是提示级终态（可能取 `Other("max_turns")`、
+//! 各只发一次，[`PromptResult::finish_reason`] 是提示级终态（可能取
 //! `Other("compacted")` 这类非上游取值）。
 //!
 //! `session/prompt` 是**长请求**：它挂到本次提示结束才返回 [`PromptResult`]，过程中的

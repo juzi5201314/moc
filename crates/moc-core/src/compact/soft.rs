@@ -101,7 +101,7 @@ pub(crate) async fn compact(
     messages.extend_from_slice(system);
     messages.extend(selected_history);
     messages.push(Message::user_text(prompt));
-    let mut request = crate::service::prompt::request::build_request(
+    let request = crate::service::prompt::request::build_request(
         model,
         config,
         messages,
@@ -114,9 +114,6 @@ pub(crate) async fn compact(
             trailing_reminders: 1,
         },
     );
-    if let Some(guard) = inner.runtime(&state.session.id).await.guard.lock().clone() {
-        request.options.stream_guard.max_wire_bytes = Some(guard.remaining_bytes());
-    }
     let cancel = ctx.cancel();
     let request_started = Instant::now();
     let response = tokio::select! {
@@ -140,25 +137,6 @@ pub(crate) async fn compact(
         request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
     )
     .await?;
-    if let Some(guard) = inner.runtime(&state.session.id).await.guard.lock().clone() {
-        guard.bytes(
-            response
-                .message
-                .content
-                .iter()
-                .map(|part| match part {
-                    moc_llm::ContentPart::Text(text) => text.len(),
-                    moc_llm::ContentPart::Reasoning(moc_llm::ReasoningBlock::Text {
-                        text, ..
-                    }) => text.len(),
-                    _ => 0,
-                })
-                .sum(),
-        );
-        if guard.violation().is_some() {
-            return Err(CoreError::Cancelled);
-        }
-    }
     let summary = response.message.text().trim().to_owned();
     if summary.is_empty() {
         return Err(CoreError::ContextOverflow(

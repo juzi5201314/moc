@@ -221,12 +221,8 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 | "catalog_budget_min_tokens"
                 | "description_max_chars"
                 | "line_max_bytes"
-                | "max_response_bytes"
-                | "max_response_duration_secs"
-                | "max_prompt_bytes"
-                | "max_prompt_output_tokens"
-                | "max_tool_calls_per_prompt"
-                | "max_prompt_duration_secs"
+                | "connect_deadline_secs"
+                | "request_warn_secs"
         );
     let tab = if path.first().is_some_and(|part| part == "providers") {
         if path.get(2).is_some_and(|part| part == "models") {
@@ -539,40 +535,21 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "retained_message_tokens" => {
                 ("服务端压缩保留量", "压缩后仍保留的最近对话长度（token）。")
             }
-            "max_turns_per_prompt" => (
-                "单次提示轮数上限",
-                "一次提示最多连续执行多少轮（每轮是一次模型请求加其工具调用）。",
-            ),
             "max_length_continues" => (
                 "中断后继续次数",
                 "回复因长度上限中断后，自动接着生成的次数。",
             ),
             "loop_detection" => (
                 "循环检测",
-                "默认启用；检测思考、正文和无进展工具周期，关闭后仍保留资源硬限制。",
+                "默认启用；检测思考、正文和工具参数里完全重复的内容。",
             ),
-            "max_response_bytes" => (
-                "单次响应内容字节上限",
-                "限制生成内容；SSE 响应体另有 16 倍协议开销上限。",
+            "connect_deadline_secs" => (
+                "连接与重试时限（秒）",
+                "流式请求收到响应头之前、非流式请求整个请求的硬时限；模型生成阶段不受限制。",
             ),
-            "max_response_duration_secs" => {
-                ("单次生成时限（秒）", "持续输出和心跳也不会重置此硬时限。")
-            }
-            "max_prompt_bytes" => (
-                "单次提示累计字节上限",
-                "累计模型响应体和模型可见工具结果；续写与压缩不重置。",
-            ),
-            "max_prompt_output_tokens" => (
-                "单次提示累计输出 token 上限",
-                "累计上游实测输出，含压缩请求；未知用量仍受字节和时限约束。",
-            ),
-            "max_tool_calls_per_prompt" => (
-                "单次提示工具调用上限",
-                "包含 run_code 的嵌套工具调用，不因脚本或新一轮请求而重置。",
-            ),
-            "max_prompt_duration_secs" => (
-                "单次提示时限（秒）",
-                "整个提示的墙钟时限，包含等待、重试和压缩。",
+            "request_warn_secs" => (
+                "请求耗时警告（秒）",
+                "单次请求超过这么久仍未完成时发一条警告通知，不终止请求。",
             ),
             "override" => ("基础系统提示", "替换默认的身份与规则说明。"),
             "append" => ("附加系统提示", "在系统提示末尾追加自己的长期要求。"),

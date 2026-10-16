@@ -1,25 +1,20 @@
-//! 一次提示共享的资源预算与跨轮无进展检测；压缩、续写和 PTC 不重置预算。
+//! 一次提示内的循环保护状态与跨轮无进展检测；压缩、续写和 PTC 不重置。
 
 use std::io::Write;
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicU64, Ordering},
 };
 
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use xxhash_rust::xxh3::Xxh3;
 
-use crate::config::LimitsConfig;
 use crate::tools::{ToolCtx, ToolOutcome, ToolOutput};
-use moc_llm::{FinishReason, GuardViolation, ToolCall};
+use moc_llm::{FinishReason, LoopViolation, ToolCall};
 
 pub(crate) struct PromptGuard {
-    limits: LimitsConfig,
-    bytes: AtomicUsize,
-    tokens: AtomicU64,
-    calls: AtomicUsize,
-    violation: Mutex<Option<GuardViolation>>,
+    violation: Mutex<Option<LoopViolation>>,
     progress: AtomicU64,
     pub(crate) cancel: CancellationToken,
     /// 只由保护停止触发；用户取消仍保留已有后台任务的既定行为。
@@ -28,28 +23,10 @@ pub(crate) struct PromptGuard {
 }
 
 impl PromptGuard {
-    pub(crate) fn remaining_bytes(&self) -> usize {
-        let remaining = self
-            .limits
-            .max_prompt_bytes
-            .saturating_sub(self.bytes.load(Ordering::Relaxed));
-        self.parent
-            .as_ref()
-            .map_or(remaining, |parent| remaining.min(parent.remaining_bytes()))
-    }
-
-    pub(crate) fn new(
-        limits: &LimitsConfig,
-        cancel: CancellationToken,
-        parent: Option<Arc<Self>>,
-    ) -> Arc<Self> {
+    pub(crate) fn new(cancel: CancellationToken, parent: Option<Arc<Self>>) -> Arc<Self> {
         Arc::new(Self {
-            limits: limits.clone(),
-            bytes: AtomicUsize::new(0),
-            tokens: AtomicU64::new(0),
-            calls: AtomicUsize::new(0),
-            progress: AtomicU64::new(0),
             violation: Mutex::new(None),
+            progress: AtomicU64::new(0),
             stopped: parent
                 .as_ref()
                 .map_or_else(CancellationToken::new, |parent| {
@@ -60,22 +37,18 @@ impl PromptGuard {
         })
     }
 
-    pub(crate) fn stop(&self, violation: GuardViolation) {
-        let resource = matches!(violation, GuardViolation::Resource(_));
+    pub(crate) fn stop(&self, violation: LoopViolation) {
         {
             let mut reason = self.violation.lock();
             if reason.is_none() {
-                *reason = Some(violation.clone());
+                *reason = Some(violation);
             }
         }
         self.stopped.cancel();
         self.cancel.cancel();
-        if resource && let Some(parent) = &self.parent {
-            parent.stop(violation);
-        }
     }
 
-    pub(crate) fn violation(&self) -> Option<GuardViolation> {
+    pub(crate) fn violation(&self) -> Option<LoopViolation> {
         self.violation
             .lock()
             .clone()
@@ -84,26 +57,7 @@ impl PromptGuard {
 
     pub(crate) fn reason(&self) -> FinishReason {
         self.violation()
-            .map_or(FinishReason::Cancelled, |violation| {
-                violation.finish_reason()
-            })
-    }
-
-    pub(crate) fn bytes(&self, bytes: usize) {
-        if let Some(parent) = &self.parent {
-            parent.bytes(bytes);
-        }
-        if self
-            .bytes
-            .fetch_add(bytes, Ordering::Relaxed)
-            .saturating_add(bytes)
-            > self.limits.max_prompt_bytes
-        {
-            self.stop(GuardViolation::Resource(format!(
-                "本次提示累计接收内容超过 {} 字节",
-                self.limits.max_prompt_bytes
-            )));
-        }
+            .map_or(FinishReason::Cancelled, |_| FinishReason::LoopDetected)
     }
 
     pub(crate) fn progress(&self) -> u64 {
@@ -112,57 +66,6 @@ impl PromptGuard {
 
     pub(crate) fn record_change(&self) {
         self.progress.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn tokens(&self, tokens: u64) {
-        if let Some(parent) = &self.parent {
-            parent.tokens(tokens);
-        }
-        if self
-            .tokens
-            .fetch_add(tokens, Ordering::Relaxed)
-            .saturating_add(tokens)
-            >= self.limits.max_prompt_output_tokens
-        {
-            self.stop(GuardViolation::Resource(format!(
-                "本次提示累计输出达到 {} token",
-                self.limits.max_prompt_output_tokens
-            )));
-        }
-    }
-
-    /// 流内用量为累计快照，只检查投影值；响应收尾时再记账，避免重复累计。
-    pub(crate) fn check_tokens(&self, output_tokens: u64) {
-        if let Some(parent) = &self.parent {
-            parent.check_tokens(output_tokens);
-        }
-        if self
-            .tokens
-            .load(Ordering::Relaxed)
-            .saturating_add(output_tokens)
-            >= self.limits.max_prompt_output_tokens
-        {
-            self.stop(GuardViolation::Resource(
-                "本次提示累计输出达到 token 上限".into(),
-            ));
-        }
-    }
-
-    pub(crate) fn tool_call(&self) -> bool {
-        if let Some(parent) = &self.parent
-            && !parent.tool_call()
-        {
-            return false;
-        }
-        let calls = self.calls.fetch_add(1, Ordering::Relaxed);
-        if calls >= self.limits.max_tool_calls_per_prompt {
-            self.stop(GuardViolation::Resource(format!(
-                "本次提示工具调用超过 {} 次",
-                self.limits.max_tool_calls_per_prompt
-            )));
-            return false;
-        }
-        self.violation().is_none()
     }
 }
 
@@ -383,76 +286,45 @@ mod tests {
     }
 
     #[test]
-    fn all_prompt_work_shares_hard_budget_and_first_reason_wins() {
-        let limits = LimitsConfig {
-            max_prompt_bytes: 5,
-            max_tool_calls_per_prompt: 2,
-            ..Default::default()
-        };
-        let guard = PromptGuard::new(&limits, CancellationToken::new(), None);
-        guard.bytes(3);
-        guard.bytes(3);
-        assert_eq!(guard.reason(), FinishReason::ResourceLimit);
-        guard.stop(GuardViolation::Loop {
+    fn first_violation_wins_and_stop_cancels_both_tokens() {
+        let guard = PromptGuard::new(CancellationToken::new(), None);
+        assert_eq!(guard.reason(), FinishReason::Cancelled);
+        guard.stop(LoopViolation {
             channel: "工具",
             detail: "重复".into(),
         });
-        assert!(matches!(
-            guard.violation(),
-            Some(GuardViolation::Resource(_))
-        ));
-        let guard = PromptGuard::new(&limits, CancellationToken::new(), None);
-        assert!(guard.tool_call());
-        assert!(guard.tool_call());
-        assert!(!guard.tool_call());
+        assert!(guard.cancel.is_cancelled());
+        assert!(guard.stopped.is_cancelled());
+        assert_eq!(guard.reason(), FinishReason::LoopDetected);
+        guard.stop(LoopViolation {
+            channel: "正文",
+            detail: "后到".into(),
+        });
+        assert_eq!(
+            guard.violation().map(|violation| violation.channel),
+            Some("工具")
+        );
     }
 
     #[test]
-    fn descendants_cannot_reset_parent_budget_and_stream_usage_is_not_double_counted() {
-        let limits = LimitsConfig {
-            max_prompt_bytes: 5,
-            max_prompt_output_tokens: 10,
-            ..Default::default()
-        };
-        let parent = PromptGuard::new(&limits, CancellationToken::new(), None);
-        let first = PromptGuard::new(
-            &limits,
-            parent.cancel.child_token(),
-            Some(Arc::clone(&parent)),
-        );
-        let second = PromptGuard::new(
-            &limits,
-            parent.cancel.child_token(),
-            Some(Arc::clone(&parent)),
-        );
-        first.bytes(3);
-        second.bytes(3);
-        assert!(parent.cancel.is_cancelled());
-        assert_eq!(first.reason(), FinishReason::ResourceLimit);
-        let parent = PromptGuard::new(&limits, CancellationToken::new(), None);
-        parent.check_tokens(6);
-        parent.check_tokens(6);
-        assert_eq!(parent.violation(), None);
-        parent.tokens(6);
-        parent.check_tokens(4);
-        assert_eq!(parent.reason(), FinishReason::ResourceLimit);
+    fn parent_stop_reaches_descendants_and_supplies_their_reason() {
+        let parent = PromptGuard::new(CancellationToken::new(), None);
+        let child = PromptGuard::new(parent.cancel.child_token(), Some(Arc::clone(&parent)));
+        parent.stop(LoopViolation {
+            channel: "工具",
+            detail: "重复".into(),
+        });
+        assert!(child.cancel.is_cancelled());
+        assert!(child.stopped.is_cancelled());
+        assert_eq!(child.reason(), FinishReason::LoopDetected);
     }
 
     #[test]
-    fn descendants_share_the_same_tool_budget() {
-        let limits = LimitsConfig {
-            max_tool_calls_per_prompt: 2,
-            ..Default::default()
-        };
-        let parent = PromptGuard::new(&limits, CancellationToken::new(), None);
-        let child = PromptGuard::new(
-            &limits,
-            parent.cancel.child_token(),
-            Some(Arc::clone(&parent)),
-        );
-        assert!(child.tool_call());
-        assert!(child.tool_call());
-        assert!(!child.tool_call());
-        assert!(parent.violation().is_some());
+    fn recorded_changes_advance_progress() {
+        let guard = PromptGuard::new(CancellationToken::new(), None);
+        assert_eq!(guard.progress(), 0);
+        guard.record_change();
+        guard.record_change();
+        assert_eq!(guard.progress(), 2);
     }
 }

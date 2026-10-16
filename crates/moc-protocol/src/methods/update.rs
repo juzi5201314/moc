@@ -210,7 +210,7 @@ pub enum SessionUpdate {
         /// token 用量。
         usage: Usage,
     },
-    /// 本地循环纠偏或硬预算终止；终止时丢弃尚未提交的生成预览。
+    /// 本地循环纠偏、慢请求警告或循环终止；终止时丢弃尚未提交的生成预览。
     GuardNotice {
         prompt_id: String,
         message: String,

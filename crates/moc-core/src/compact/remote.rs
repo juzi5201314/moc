@@ -74,14 +74,11 @@ pub(crate) async fn compact(
     let cancel = ctx.cancel();
     let _permit = inner.provider_permit(model, &cancel).await?;
     let request_started = Instant::now();
-    let mut stream_guard = config.limits.stream_guard();
-    if let Some(guard) = inner.runtime(&state.session.id).await.guard.lock().clone() {
-        stream_guard.max_wire_bytes = Some(guard.remaining_bytes());
-    }
+    let deadline_secs = config.limits.connect_deadline_secs;
     let compacted = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-        result = inner.client.compact(&model.llm, &items, stream_guard) => result,
+        result = inner.client.compact(&model.llm, &items, deadline_secs) => result,
     };
     let response = match compacted {
         Ok(response) => response,
@@ -111,26 +108,6 @@ pub(crate) async fn compact(
         request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
     )
     .await?;
-    if let Some(guard) = inner.runtime(&state.session.id).await.guard.lock().clone() {
-        if let Some(raw) = &response.raw {
-            struct Counter(usize);
-            impl std::io::Write for Counter {
-                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                    self.0 += bytes.len();
-                    Ok(bytes.len())
-                }
-                fn flush(&mut self) -> std::io::Result<()> {
-                    Ok(())
-                }
-            }
-            let mut size = Counter(0);
-            serde_json::to_writer(&mut size, raw).expect("压缩 JSON 可序列化");
-            guard.bytes(size.0);
-        }
-        if guard.violation().is_some() {
-            return Err(CoreError::Cancelled);
-        }
-    }
     if response.items.is_empty() {
         return Err(CoreError::Tool(
             "the Responses compaction endpoint returned empty output".into(),

@@ -506,8 +506,6 @@ pub enum FinishReason {
     Interrupted,
     /// 本地检测到模型循环，当前提示不可自动继续。
     LoopDetected,
-    /// 本地资源硬预算耗尽，区别于供应商长度截断。
-    ResourceLimit,
     /// 其余线上取值，原样保留。
     Other(String),
 }
@@ -520,7 +518,7 @@ impl FinishReason {
 
     /// 本地保护已结束提示，不允许自动续写或重试。
     pub fn is_guard_stop(&self) -> bool {
-        matches!(self, Self::LoopDetected | Self::ResourceLimit)
+        matches!(self, Self::LoopDetected)
     }
 }
 
@@ -537,7 +535,6 @@ impl std::fmt::Display for FinishReason {
             FinishReason::Cancelled => "cancelled",
             FinishReason::Interrupted => "interrupted",
             FinishReason::LoopDetected => "loop_detected",
-            FinishReason::ResourceLimit => "resource_limit",
             FinishReason::Other(other) => other.as_str(),
         };
         f.write_str(name)
@@ -621,7 +618,7 @@ pub enum ReasoningEcho {
 }
 
 /// 单次请求的可选行为。
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestOptions {
     /// 思维链回传策略。
     pub echo_reasoning: ReasoningEcho,
@@ -633,11 +630,29 @@ pub struct RequestOptions {
     pub user_id: Option<String>,
     /// 是否把原始响应体存入 [`ChatResponse::raw`]。
     pub capture_raw: bool,
-    /// 本地流式保护，不改变线上请求字段。
+    /// 本地流式循环检测，不改变线上请求字段。
     #[serde(default)]
     pub stream_guard: crate::StreamGuardConfig,
+    /// 连接与重试时限（秒）：流式请求约束到响应头到达为止，非流式请求约束整个
+    /// 请求；模型生成阶段不受此限制，只由调用方按需发耗时警告。
+    pub connect_deadline_secs: u64,
     /// 覆盖 [`crate::LlmConfig::headers`] 中的同名请求头。
     pub headers: BTreeMap<String, String>,
+}
+
+impl Default for RequestOptions {
+    fn default() -> Self {
+        Self {
+            echo_reasoning: ReasoningEcho::default(),
+            store: None,
+            cache: None,
+            user_id: None,
+            capture_raw: false,
+            stream_guard: crate::StreamGuardConfig::default(),
+            connect_deadline_secs: 900,
+            headers: BTreeMap::new(),
+        }
+    }
 }
 
 /// 一次对话请求。

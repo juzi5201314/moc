@@ -85,7 +85,6 @@ async fn perform(
                 format!("[E_ARTIFACT] {err}")
             }
         };
-        ctx.guard.bytes(content.len());
         let duration_ms = Some(started.elapsed().as_millis() as u64);
         let status = status(&outcome);
         let audit = ctx

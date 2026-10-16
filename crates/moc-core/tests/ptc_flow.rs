@@ -29,8 +29,8 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
                     json!({"code":"return {sum: [1,2,3].reduce((a,b)=>a+b,0)};"}),
                 )]),
                 2 => support::tool_stream(vec![(
-                    "budget_run", "run_code",
-                    json!({"code":"await tools.write({path:'first.txt', content:'已提交'}); await tools.write({path:'second.txt', content:'不应执行'});"}),
+                    "nested_run", "run_code",
+                    json!({"code":"await tools.write({path:'first.txt', content:'已提交'}); await tools.write({path:'second.txt', content:'同样提交'});"}),
                 )]),
                 _ => support::text_stream("guest sum=6"),
             };
@@ -42,7 +42,7 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
     let harness = Harness::new(
         &upstream.uri(),
         "openai_chat",
-        "[tools.ptc]\ndefault_timeout_secs=30\nmax_timeout_secs=30\n[limits]\nmax_tool_calls_per_prompt=2\n",
+        "[tools.ptc]\ndefault_timeout_secs=30\nmax_timeout_secs=30\n",
     )
     .await;
     let session = harness
@@ -56,14 +56,17 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
     assert!(loaded.entries.iter().any(|entry| {
         matches!(entry, moc_protocol::methods::TranscriptEntry { message, .. } if message.text().contains("sum"))
     }));
-    // 同一真实 guest 验证嵌套调用共享预算，以及硬停止后已经提交的写入仍然保留。
-    let stopped = harness.prompt(&session, "执行嵌套工具预算场景").await;
-    assert_eq!(stopped.finish_reason, moc_llm::FinishReason::ResourceLimit);
+    // 嵌套调用不受提示级预算约束：同一脚本里的两次写入都执行并保留。
+    let nested = harness.prompt(&session, "执行嵌套工具场景").await;
+    assert_eq!(nested.finish_reason, moc_llm::FinishReason::Stop);
     assert_eq!(
         std::fs::read_to_string(harness.root.path().join("work/first.txt")).unwrap(),
         "已提交"
     );
-    assert!(!harness.root.path().join("work/second.txt").exists());
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        std::fs::read_to_string(harness.root.path().join("work/second.txt")).unwrap(),
+        "同样提交"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
     harness.close().await;
 }

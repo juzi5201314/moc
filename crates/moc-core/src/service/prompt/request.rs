@@ -216,6 +216,7 @@ pub(crate) fn build_request(
             echo_reasoning,
             cache: cache_options(model, message_count, anchors, session_id),
             stream_guard: config.limits.stream_guard(),
+            connect_deadline_secs: config.limits.connect_deadline_secs,
             ..RequestOptions::default()
         },
     }

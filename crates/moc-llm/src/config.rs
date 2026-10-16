@@ -289,12 +289,12 @@ pub struct LlmConfig {
     pub headers: BTreeMap<String, String>,
     /// 并入请求体顶层的厂商扩展字段；与标准字段同名时标准字段胜出。
     pub extra_body: serde_json::Map<String, serde_json::Value>,
-    /// 超时（秒）：非流式请求是整请求总时长，流式请求是两次字节到达之间的空闲上限。
+    /// 超时（秒）：非流式请求是整请求总时长，流式请求是等待响应头的上限。
     pub timeout_secs: Option<f64>,
     /// 连接建立（DNS/TCP/TLS）的时限，单位为秒；不包含等待模型响应头的时间。
     ///
     /// 同一时限共享连接池；未设置时沿用 [`crate::ClientBuilder::connect_timeout`]。
-    /// 非流式响应生成与流式首包等待受 `timeout_secs` 约束。
+    /// 非流式响应生成与流式首包等待受 `timeout_secs` 约束；模型生成阶段没有本地硬时限。
     pub connect_timeout_secs: Option<f64>,
     /// Responses 服务端压缩阈值；配置时请求体带 `context_management`。
     pub server_compaction_threshold: Option<u64>,

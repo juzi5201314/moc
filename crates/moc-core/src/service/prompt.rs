@@ -80,36 +80,23 @@ pub(crate) async fn run_prompt_with_lock(
     let runtime = inner.runtime(&session_id).await;
     runtime.steering.lock().await.accepting = true;
     runtime.agent_inbox.lock().await.accepting = true;
-    let cwd = record.state.lock().await.session.cwd.clone();
-    let config = inner
-        .project_config(std::path::Path::new(&cwd))
-        .map_err(to_rpc)?;
     let parent_id = record.state.lock().await.session.parent_session_id.clone();
     let parent_guard = match parent_id {
         Some(parent_id) => inner.runtime(&parent_id).await.guard.lock().clone(),
         None => None,
     };
-    let guard = PromptGuard::new(&config.limits, ctx.cancel().child_token(), parent_guard);
+    let guard = PromptGuard::new(ctx.cancel().child_token(), parent_guard);
     *runtime.guard.lock() = Some(Arc::clone(&guard));
     let scoped_ctx = ctx.with_cancel(guard.cancel.clone());
-    let timer_guard = Arc::clone(&guard);
-    let duration_secs = config.limits.max_prompt_duration_secs;
-    let timer = tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
-        timer_guard.stop(moc_llm::GuardViolation::Resource(format!(
-            "本次提示超过 {duration_secs} 秒时限"
-        )));
-    });
     let result =
         run_prompt_locked(Arc::clone(&inner), &scoped_ctx, params, Arc::clone(&record)).await;
-    timer.abort();
     let result = if let Some(violation) = guard.violation() {
         async {
             let prompt_id = match &result {
                 Ok(result) => result.prompt_id.clone(),
                 Err(_) => crate::ids::prompt_id(record.state.lock().await.prompt_sequence),
             };
-            let reason = violation.finish_reason();
+            let reason = FinishReason::LoopDetected;
             let message = Message::assistant_text(format!(
                 "已终止本次提示：{violation}。已提交的工具操作保留；没有自动重试。"
             ));
@@ -201,7 +188,7 @@ pub(crate) async fn run_prompt_with_lock(
 /// 一轮请求所需的会话状态投影。
 ///
 /// 只复制构建请求必需的内容，避免 `'turns` 循环每轮深拷贝整份 [`SessionState`]
-/// （默认 128 轮；长会话含 base64 图片时单次可达数十 MB）。
+/// （长会话含 base64 图片时单次可达数十 MB）。
 struct TurnInputs {
     messages: Vec<Message>,
     context_tokens: u64,
@@ -432,7 +419,8 @@ async fn run_prompt_locked(
         },
     );
     let mut last_message = Message::default();
-    let mut final_reason = FinishReason::Stop;
+    // 无界循环只在 break 前赋值：初值没有任何路径会读到。
+    let mut final_reason: FinishReason;
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
     let mut yield_reminders = 0usize;
@@ -454,7 +442,10 @@ async fn run_prompt_locked(
     // 代理清单随兄弟状态变化：放在尾部提醒里，避免每次变化都让系统前缀缓存失效。
     let roster = subagent.map(|prompt| prompt.roster);
 
-    'turns: for turn in 0..project_config.limits.max_turns_per_prompt {
+    let mut is_first_turn = true;
+    'turns: loop {
+        // 首轮才注入召回结果与本地提醒；同一提示内的 continue 不再算首轮。
+        let first_turn = std::mem::take(&mut is_first_turn);
         if cancel.is_cancelled() {
             final_reason = FinishReason::Cancelled;
             break;
@@ -477,7 +468,7 @@ async fn run_prompt_locked(
         if let Some(detail) = cycle_redirect.take() {
             reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}。不要再次执行相同的无进展动作；改用能获得新证据的操作，或总结现有结果并结束。再次形成无进展循环将终止本次提示。</system-interrupt>")));
         }
-        if turn == 0 {
+        if first_turn {
             if project_config.openviking.recall
                 && !project_config.openviking.url.trim().is_empty()
                 && let Some(client) = inner
@@ -591,7 +582,7 @@ async fn run_prompt_locked(
         if mode != moc_protocol::methods::SessionMode::ClmExperimental
             && project_config.compaction.enabled
             && project_config.compaction.auto
-            && (turn == 0 || project_config.compaction.mid_prompt)
+            && (first_turn || project_config.compaction.mid_prompt)
             && context_tokens > compact::threshold(&project_config, model.context_window)
         {
             match compact::compact(
@@ -650,6 +641,13 @@ async fn run_prompt_locked(
             },
         );
         let mut overflow_attempts = 0;
+        // 单次请求耗时只发一条警告，不设生成阶段硬时限。
+        let request_warning = RequestWarning::spawn(
+            &update,
+            &params.session_id,
+            &prompt_id,
+            project_config.limits.request_warn_secs,
+        );
         let (mut stream, request_permit, request_started) = loop {
             let mut llm_config = model.llm.clone();
             if project_config.compaction.enabled
@@ -671,7 +669,6 @@ async fn run_prompt_locked(
                 }
                 Err(error) => return Err(to_rpc(error)),
             };
-            request.options.stream_guard.max_wire_bytes = Some(guard.remaining_bytes());
             let request_started = Instant::now();
             let streamed = tokio::select! {
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
@@ -795,7 +792,6 @@ async fn run_prompt_locked(
         let mut call_ids = HashMap::<usize, String>::new();
         let mut interrupted = false;
         let mut connection_error = None;
-        let mut received_bytes = 0;
         let response = loop {
             tokio::select! {
                 biased;
@@ -804,10 +800,6 @@ async fn run_prompt_locked(
                     break Some(if guard.violation().is_some() { stream.discard(guard.reason()) } else { stream.interrupt() });
                 }
                 event = stream.next_event() => {
-                    let current_bytes = stream.received_bytes();
-                    if let Some(Ok(moc_llm::StreamEvent::Usage(usage))) = &event { guard.check_tokens(usage.output_tokens); }
-                    guard.bytes(current_bytes.saturating_sub(received_bytes));
-                    received_bytes = current_bytes;
                     if guard.violation().is_some() {
                         interrupted = true;
                         break Some(stream.discard(guard.reason()));
@@ -846,6 +838,7 @@ async fn run_prompt_locked(
                 }
             }
         };
+        drop(request_warning);
         drop(request_permit);
         let Some(response) = response else {
             stream_overflows += 1;
@@ -1113,7 +1106,7 @@ async fn run_prompt_locked(
                         .map_err(protocol_to_rpc)?;
                     cycle_redirect = Some(detail);
                 }
-                CycleAction::Stop(detail) => guard.stop(moc_llm::GuardViolation::Loop {
+                CycleAction::Stop(detail) => guard.stop(moc_llm::LoopViolation {
                     channel: "工具",
                     detail,
                 }),
@@ -1130,13 +1123,6 @@ async fn run_prompt_locked(
         if server_compacted && !project_config.compaction.auto_continue {
             final_reason = FinishReason::Other("compacted".into());
             break;
-        }
-        if turn + 1 == project_config.limits.max_turns_per_prompt {
-            guard.stop(moc_llm::GuardViolation::Resource(format!(
-                "本次提示达到 {} 轮上限",
-                project_config.limits.max_turns_per_prompt
-            )));
-            final_reason = FinishReason::Other("max_turns".into());
         }
     }
 
@@ -1266,6 +1252,43 @@ async fn emit_fatal(
         )
         .await
         .map_err(protocol_to_rpc)
+}
+
+/// 单次请求耗时警告：到点只推一条通知，请求结束即撤销计时器。
+struct RequestWarning(tokio::task::JoinHandle<()>);
+
+impl RequestWarning {
+    fn spawn(
+        update: &moc_protocol::UpdateSink,
+        session_id: &str,
+        prompt_id: &str,
+        warn_secs: u64,
+    ) -> Self {
+        let update = update.clone();
+        let session_id = session_id.to_owned();
+        let prompt_id = prompt_id.to_owned();
+        Self(tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(warn_secs)).await;
+            let _ = update
+                .emit(
+                    session_id,
+                    SessionUpdate::GuardNotice {
+                        prompt_id,
+                        message: format!(
+                            "单次请求已耗时超过 {warn_secs} 秒，仍在等待模型响应；不会自动终止"
+                        ),
+                        terminal: false,
+                    },
+                )
+                .await;
+        }))
+    }
+}
+
+impl Drop for RequestWarning {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// 解析用户输入中的 `/skill:<name> 参数` 显式调用。
