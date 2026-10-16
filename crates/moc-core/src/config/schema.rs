@@ -83,7 +83,7 @@ pub struct ToolsConfig {
     pub write: WriteConfig,
     pub grep: GrepConfig,
     pub find: FindConfig,
-    pub todo: FeatureConfig,
+    pub todo: TodoConfig,
     pub job: JobConfig,
     pub ptc: PtcConfig,
 }
@@ -103,6 +103,11 @@ pub(super) fn validate_tools(config: &ToolsConfig) -> Result<(), crate::error::C
     {
         return Err(crate::error::CoreError::Config(
             "tools.bash: monitored_timeout_secs、slow_warning_interval_secs、max_timeout_secs、max_output_bytes、persistent_log_bytes 必须大于 0，且 monitored_timeout_secs 不得超过 max_timeout_secs".into(),
+        ));
+    }
+    if config.todo.reminders_after == 0 || config.todo.reminders_max == 0 {
+        return Err(crate::error::CoreError::Config(
+            "tools.todo: reminders_after 与 reminders_max 必须大于 0".into(),
         ));
     }
     Ok(())
@@ -306,13 +311,24 @@ impl Default for FindConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct FeatureConfig {
+pub struct TodoConfig {
     pub enabled: bool,
+    /// 停滞提醒：距上次 todo 变更的工具调用数达到 `reminders_after` 时注入一次。
+    pub reminders: bool,
+    /// 触发提醒所需的工具调用数。
+    pub reminders_after: u32,
+    /// 单个提示内最多提醒次数，避免长任务被反复打断。
+    pub reminders_max: u32,
 }
 
-impl Default for FeatureConfig {
+impl Default for TodoConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            reminders: true,
+            reminders_after: 12,
+            reminders_max: 3,
+        }
     }
 }
 

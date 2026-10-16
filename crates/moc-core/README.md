@@ -73,6 +73,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 - `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 的断点落在最后一条含静态前缀的指令消息内的静态末块、指令边界（指令以 system 下发时上提为「系统提示 + 工具定义」的最小缓存单元）与最后一条会进入历史的消息上——本轮追加的提醒不落位（它不进历史，落上去也永远不会命中），静态块断点让同一模板在不同工作目录间复用；OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
 - 模型的 `max_request_bytes` 控制单次 JSON 请求体，留空为 50 MiB。配置值原样生效（校验只要求大于 0）：设得比触发余量还小时图片会被全部淘汰。达到高水位后，core 只在请求副本中按旧到新淘汰图片，压缩和会话原始历史不被改写；图片 token 按固定视觉估算，不按 Base64 字节计量。
 - `tools.max_concurrent_calls`：标准模型工具批次中只读工具的同时执行上限；写入工具、bash、询问、计划、todo、skill 与 `run_code` 仍作为顺序屏障。默认 16。
+- `tools.todo`：`reminders=true` 时，距上次 todo 变更累计 `reminders_after=12` 次工具调用、且仍有未完成项，就在下一轮注入一次提醒；前端以 `TodoReminder` 占位行展示，每个提示最多 `reminders_max=3` 次。`init` 同时收到 `list` 与 `items` 时以 `list` 为准，缺 `op` 的载荷按无歧义形态推断。
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。
 - `tools.output`：所有工具（包括 MCP）共用首尾输出预算（各 20 KiB）和读写文件容量上限（100 MiB），超出预算的完整文本自动归档；工具本身的分页、搜索和专项限制仍在各自分组。
 - `find` 与 `grep` 默认忽略隐藏项与 `.git/`：需要时显式传 `hidden=true`，两个工具语义一致。

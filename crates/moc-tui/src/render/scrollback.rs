@@ -1318,6 +1318,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             })
             .unwrap_or_default(),
         "todo" => "更新任务清单".to_owned(),
+        "TodoReminder" => "隐式提醒：同步待办进度".to_owned(),
         "message_agent" => {
             use moc_protocol::methods::AgentMessageOutcome;
             let target = args

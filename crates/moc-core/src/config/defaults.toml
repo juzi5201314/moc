@@ -82,6 +82,9 @@ timeout_ms = 5000
 
 [tools.todo]
 enabled = true
+reminders = true
+reminders_after = 12
+reminders_max = 3
 
 [tools.job]
 enabled = true

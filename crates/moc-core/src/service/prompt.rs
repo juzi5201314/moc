@@ -330,7 +330,8 @@ async fn run_prompt_locked(
         .clone()
         .expect("运行中的提示持有共享预算");
     let mut tool_cycles = ToolCycles::default();
-    let state = record.state.lock().await;
+    let mut state = record.state.lock().await;
+    state.todo_reminders_sent = 0;
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
     // CLM 是会话级模式；临时 `/ask` 不能覆盖已经启用的 CLM。
     let mode = if state_snapshot.mode == moc_protocol::methods::SessionMode::ClmExperimental {
@@ -456,6 +457,47 @@ async fn run_prompt_locked(
             .await
             .map_err(to_rpc)?;
         let mut reminder_messages = Vec::new();
+        // todo 停滞提醒：只在已有未完成项、且距上次 todo 变更累积了足够工具调用时注入一次。
+        // 每个提示最多 `reminders_max` 次；前端按工具样式展示占位行，提醒本身无参数与结果。
+        if project_config.tools.todo.enabled
+            && project_config.tools.todo.reminders
+            && mode != moc_protocol::methods::SessionMode::Plan
+            && tools_available.iter().any(|def| def.name == "todo")
+        {
+            let mut state = record.state.lock().await;
+            let open_items = state
+                .todos
+                .iter()
+                .flat_map(|phase| &phase.items)
+                .filter(|item| {
+                    matches!(
+                        item.status,
+                        moc_protocol::TodoStatus::Pending | moc_protocol::TodoStatus::InProgress
+                    )
+                })
+                .count();
+            let due = open_items > 0
+                && state.tool_calls_since_todo >= project_config.tools.todo.reminders_after
+                && state.todo_reminders_sent < project_config.tools.todo.reminders_max;
+            if due {
+                state.tool_calls_since_todo = 0;
+                state.todo_reminders_sent += 1;
+                drop(state);
+                reminder_messages.push(reminder_message(format!(
+                    "<system-reminder>{open_items} todo items still open. If you finished a task since the last todo update, mark it done now; otherwise keep working.</system-reminder>"
+                )));
+                update
+                    .emit(
+                        params.session_id.clone(),
+                        SessionUpdate::TodoReminder {
+                            prompt_id: prompt_id.clone(),
+                            open_items,
+                        },
+                    )
+                    .await
+                    .map_err(protocol_to_rpc)?;
+            }
+        }
         if let Some(contract) = mode_contract(mode) {
             reminder_messages.push(contract);
         }

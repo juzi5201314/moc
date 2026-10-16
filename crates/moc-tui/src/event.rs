@@ -3030,6 +3030,7 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::TodoChanged { phases } => app.update_todos(phases),
+        SessionUpdate::TodoReminder { .. } => app.push_todo_reminder(),
         SessionUpdate::PlanSubmitted {
             plan_id,
             title,

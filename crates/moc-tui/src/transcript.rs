@@ -273,6 +273,7 @@ fn tool_body_allowed(name: &str) -> bool {
         "read"
             | "find"
             | "todo"
+            | "TodoReminder"
             | "skill"
             | "clm_context"
             | "spawn_agent"

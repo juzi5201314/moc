@@ -982,6 +982,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::PermissionChanged { .. } => "permission_changed",
         SessionUpdate::ModelChanged { .. } => "model_changed",
         SessionUpdate::TodoChanged { .. } => "todo_changed",
+        SessionUpdate::TodoReminder { .. } => "todo_reminder",
         SessionUpdate::PlanSubmitted { .. } => "plan_submitted",
         SessionUpdate::ContextCompacted { .. } => "context_compacted",
         SessionUpdate::JobFinished { .. } => "job_finished",

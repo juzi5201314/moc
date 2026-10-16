@@ -155,6 +155,9 @@ impl Renderer {
                     .count();
                 let _ = writeln!(out, "\n[todo：{done}/{total} 项完成]");
             }
+            SessionUpdate::TodoReminder { open_items, .. } => {
+                let _ = writeln!(out, "\n[TodoReminder：{open_items} 项待办仍未关闭]");
+            }
             SessionUpdate::PlanSubmitted {
                 plan_id,
                 title,

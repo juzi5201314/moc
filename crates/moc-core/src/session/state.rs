@@ -62,6 +62,10 @@ pub struct SessionState {
     /// 会话恢复后依然有效；只在当前处于计划模式时有意义。
     plan_base_model: Option<String>,
     pub todos: Vec<TodoPhase>,
+    /// 自上次 todo 变更以来的工具调用数；停滞提醒的计数来源。
+    pub tool_calls_since_todo: u32,
+    /// 本次提示已发出的 todo 提醒数。
+    pub todo_reminders_sent: u32,
     pub plans: Vec<PlanInfo>,
     pub child_calls: Vec<moc_protocol::methods::session::TranscriptChildCall>,
     pub ptc_state: BTreeMap<String, Arc<serde_json::Value>>,
@@ -125,6 +129,8 @@ impl SessionState {
             // 以计划模式创建（含直接创建与会话恢复）时，header 记录的就是会话自身模型。
             plan_base_model: (*mode == SessionMode::Plan).then(|| model.clone()),
             todos: Vec::new(),
+            tool_calls_since_todo: 0,
+            todo_reminders_sent: 0,
             plans: Vec::new(),
             child_calls: Vec::new(),
             ptc_state: BTreeMap::new(),

@@ -289,6 +289,10 @@ pub(super) async fn execute_tool_batch(
             let message = serde_json::json!({"role":"tool","tool_call_id":call.id,"tool_name":call.name,"parts":[{"type":"text","text":tool_result.content.chars().take(4096).collect::<String>()}]});
             let _ = client.append_messages(&session, &[message], peer).await;
         }
+        // 停滞提醒的计数：todo 之外的每次工具调用都算一次进度。
+        if call.name != "todo" {
+            tool_ctx.state.lock().await.tool_calls_since_todo += 1;
+        }
         if let Err(error) = update
             .emit(
                 session_id.to_owned(),

@@ -540,6 +540,23 @@ impl App {
         self.blocks.push(Entry::new(Block::Note { text, error }));
     }
 
+    /// 隐式 todo 提醒：按工具样式插入一条占位块，让用户知道刚刚注入了一次提醒。
+    pub fn push_todo_reminder(&mut self) {
+        self.push_block(Block::Tool(ToolCallBlock {
+            id: format!("todo-reminder-{}", self.blocks.len()),
+            batch_id: None,
+            parent_id: None,
+            name: "TodoReminder".into(),
+            arguments: String::new(),
+            status: Some(moc_protocol::methods::ToolStatus::Completed),
+            result: None,
+            diff: None,
+            duration_ms: None,
+            running: false,
+            progress: None,
+        }));
+    }
+
     /// 更新运行中工具的进度行（按 `tool_call_id` 定位）。
     pub fn set_tool_progress(
         &mut self,

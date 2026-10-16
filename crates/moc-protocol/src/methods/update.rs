@@ -229,6 +229,13 @@ pub enum SessionUpdate {
     ModelChanged { model: String },
     /// Todo 清单变化。
     TodoChanged { phases: Vec<TodoPhase> },
+    /// 隐式注入了一次 todo 提醒；前端按工具样式展示占位行，提醒本身无参数与结果。
+    TodoReminder {
+        /// prompt ID。
+        prompt_id: String,
+        /// 仍未完成的待办数。
+        open_items: usize,
+    },
     /// 提交新计划。
     PlanSubmitted {
         plan_id: String,
@@ -556,6 +563,13 @@ mod tests {
             (
                 SessionUpdate::TodoChanged { phases: Vec::new() },
                 json!({ "type": "todo_changed", "phases": [] }),
+            ),
+            (
+                SessionUpdate::TodoReminder {
+                    prompt_id: "p1".into(),
+                    open_items: 3,
+                },
+                json!({ "type": "todo_reminder", "prompt_id": "p1", "open_items": 3 }),
             ),
             (
                 SessionUpdate::PlanSubmitted {
