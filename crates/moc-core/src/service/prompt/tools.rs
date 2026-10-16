@@ -388,7 +388,10 @@ async fn execute_tool(
         ));
     }
     if name == "yield" && !ctx.subagent {
-        return Ok(ToolOutcome::failure("E_MODE", "yield is available only to subagents"));
+        return Ok(ToolOutcome::failure(
+            "E_MODE",
+            "yield is available only to subagents",
+        ));
     }
     if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
         return Ok(ToolOutcome::failure(

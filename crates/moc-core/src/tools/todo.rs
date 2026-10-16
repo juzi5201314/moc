@@ -404,8 +404,8 @@ mod tests {
         assert_eq!(phases[0].items[0].task, "one");
 
         // 只有扁平 items 时合成单 phase，默认名 tasks。
-        let phases = init_phases(args(None, Some(vec!["a".into(), "b".into()]), None))
-            .expect("扁平 items");
+        let phases =
+            init_phases(args(None, Some(vec!["a".into(), "b".into()]), None)).expect("扁平 items");
         assert_eq!(phases[0].phase, DEFAULT_INIT_PHASE);
         assert_eq!(phases[0].items.len(), 2);
 
@@ -421,10 +421,19 @@ mod tests {
             infer_op(&args(Some(vec![one_phase("a", "one")]), None, None), true),
             Some("init")
         );
-        assert_eq!(infer_op(&args(None, items.clone(), Some("a")), true), Some("append"));
-        assert_eq!(infer_op(&args(None, items.clone(), None), false), Some("init"));
+        assert_eq!(
+            infer_op(&args(None, items.clone(), Some("a")), true),
+            Some("append")
+        );
+        assert_eq!(
+            infer_op(&args(None, items.clone(), None), false),
+            Some("init")
+        );
         assert_eq!(infer_op(&args(None, items, None), true), None);
-        assert_eq!(infer_op(&args(None, Some(Vec::new()), Some("a")), false), None);
+        assert_eq!(
+            infer_op(&args(None, Some(Vec::new()), Some("a")), false),
+            None
+        );
     }
 
     #[test]

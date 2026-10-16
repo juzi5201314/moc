@@ -22,10 +22,9 @@ mod schema;
 pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
-    EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig,
-    OutputConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig,
-    SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebSearchConfig, WorkspaceConfig,
-    WriteConfig,
+    EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig, OutputConfig,
+    ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig, SourcesConfig,
+    SystemPromptConfig, TodoConfig, ToolsConfig, WebSearchConfig, WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
