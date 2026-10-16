@@ -46,6 +46,7 @@ pub(crate) async fn compact(
             config,
             model,
             std::path::Path::new(&state.session.cwd),
+            &state.session.id,
             &context_files,
             &skills,
             &summary,

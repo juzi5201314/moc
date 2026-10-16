@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a local text file or directory. Read before editing to obtain current content and hashline anchors. Use grep for content and find for paths; do not use bash or cat as substitutes."
+        "Read a text file, a directory, or a session-internal URI (artifact://, local://, history://, skill://, viking://). Read before editing to obtain current content and hashline anchors. Use grep for content and find for paths; do not use bash or cat as substitutes."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -40,7 +40,7 @@ impl Tool for ReadTool {
             "read",
             schema(
                 serde_json::json!({
-                    "path": {"type":"string"},
+                    "path": {"type":"string","description":"File, directory, or session-internal URI"},
                     "offset": {"type":"integer","minimum":1,"description":"1-based starting line"},
                     "limit": {"type":"integer","minimum":1,"description":"Number of lines to read"}
                 }),

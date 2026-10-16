@@ -410,8 +410,7 @@ async fn execute_tool(
     };
     if name == "bash"
         && let Some(command) = args.get("command").and_then(Value::as_str)
-        && let Err(error) =
-            crate::tools::bash::reject_denied(&config.tools.bash.deny_patterns, command)
+        && let Err(error) = guard_bash_command(&config.tools.bash, command)
     {
         return Ok(error.into_outcome());
     }
@@ -473,6 +472,17 @@ async fn execute_tool(
             format!("Tool {name} panicked during execution"),
         )),
     }
+}
+
+/// 模型发起的 bash 命令在执行前先过静态规则：危险命令规则与内部 URI 误用。
+///
+/// 两者都只拦模型调用，用户在输入框直接敲的 `!` 命令按原样执行。
+fn guard_bash_command(
+    config: &crate::config::BashConfig,
+    command: &str,
+) -> Result<(), crate::tools::ToolError> {
+    crate::tools::bash::reject_denied(&config.deny_patterns, command)?;
+    crate::tools::bash::reject_resource_uri(command)
 }
 
 /// 执行继承提示权限的 PTC 子工具，不写入模型消息。

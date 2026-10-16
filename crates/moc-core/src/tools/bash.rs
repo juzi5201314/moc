@@ -184,13 +184,13 @@ impl Tool for BashTool {
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "Background {lifecycle:?} job {job_id} started; log: {uri}"
+                    "Background {lifecycle:?} job {job_id} started and reports its completion automatically; inspect it with `job` op=output; log: {uri}"
                 )));
             }
             let result = wait_foreground(
                 ctx,
                 process,
-                job_id,
+                job_id.clone(),
                 command,
                 output_path.clone(),
                 log,
@@ -203,7 +203,7 @@ impl Tool for BashTool {
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "Command exceeded the foreground threshold; monitored job continues in the background; inspect output or kill it; log: {uri}"
+                    "Command exceeded the foreground threshold; monitored job {job_id} continues in the background and reports its completion automatically; inspect it with `job` op=output; log: {uri}"
                 )));
             };
             Ok(exit_outcome(
@@ -374,6 +374,85 @@ pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), To
     Ok(())
 }
 
+/// 内部 URI 只能由 read/grep/find 解析：shell 里它只是普通文本，`tail
+/// artifact://…/jobs/job_1.log` 这类命令必然静默落空，因此在执行前拒绝。
+///
+/// 判定按 shell 词法取词，整个词（去掉一层成对引号）是资源 URI 即拒绝：把 URI
+/// 当路径是必然落空的误用，把 URI 当搜索模式也有 grep/find 工具这个正确出口，
+/// 两条路都指向同一个提示。`https://…` 与 `--flag=local://…` 这类词不是资源
+/// URI，按普通参数放行。
+pub(crate) fn reject_resource_uri(command: &str) -> Result<(), ToolError> {
+    let Some(uri) = shell_words(command)
+        .into_iter()
+        .map(unquote)
+        .find(|word| crate::resources::is_resource_uri(word))
+    else {
+        return Ok(());
+    };
+    Err(ToolError::new(
+        "E_RESOURCE_URI_IN_SHELL",
+        format!("`{uri}` is a session-internal URI, which a shell command cannot use"),
+    )
+    .with_hint(
+        "Resolve it with the owning tool instead: read opens it (offset/limit lines), grep searches it, find lists it; job logs also work through `job` op=output.",
+    ))
+}
+
+/// 按 shell 词法切分命令：引号与转义保留在词内，未加引号的空白、`;|&()<>`
+/// 与换行结束当前词。只服务于 URI 判定，不做展开、变量或重定向解析。
+fn shell_words(command: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some(active) => {
+                if ch == '\\' && active != '\'' {
+                    escaped = true;
+                } else if ch == active {
+                    quote = None;
+                }
+            }
+            None => {
+                if ch == '\\' {
+                    escaped = true;
+                    start.get_or_insert(index);
+                } else if matches!(ch, '\'' | '"') {
+                    quote = Some(ch);
+                    start.get_or_insert(index);
+                } else if ch.is_whitespace()
+                    || matches!(ch, ';' | '|' | '&' | '(' | ')' | '<' | '>')
+                {
+                    if let Some(word_start) = start.take() {
+                        words.push(&command[word_start..index]);
+                    }
+                } else {
+                    start.get_or_insert(index);
+                }
+            }
+        }
+    }
+    if let Some(word_start) = start {
+        words.push(&command[word_start..]);
+    }
+    words
+}
+
+/// 去掉 shell 词外层的一层成对引号；词内引号原样保留。
+fn unquote(word: &str) -> &str {
+    let bytes = word.as_bytes();
+    if bytes.len() >= 2 && matches!(bytes[0], b'\'' | b'"') && bytes[0] == bytes[bytes.len() - 1] {
+        &word[1..word.len() - 1]
+    } else {
+        word
+    }
+}
+
 pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBuf, ToolError> {
     let cwd = requested
         .map(Path::new)
@@ -477,6 +556,38 @@ mod tests {
         assert!(reject_denied(&patterns, "FORMAT C:").is_err());
         assert!(reject_denied(&patterns, "Remove-Item C:\\data -Recurse").is_err());
         assert!(reject_denied(&patterns, "printf safe").is_ok());
+    }
+
+    #[test]
+    fn resource_uris_are_rejected_as_shell_words() {
+        for command in [
+            "sleep 120; tail -5 artifact://ses_1/jobs/job_1.log 2>/dev/null || true",
+            "cd local://ses_1/plans && ls",
+            "cat \"skill://demo/SKILL.md\"",
+            "cat << 'EOF' > local://ses_1/plans/p.md",
+            "grep -n hit history://ses_1/transcript",
+            "wc -l viking://resources/p/a.md ov://repo/notes.md",
+            "rg -n \"artifact://\" crates/",
+        ] {
+            let error = reject_resource_uri(command).expect_err(command);
+            assert_eq!(error.code, "E_RESOURCE_URI_IN_SHELL", "{command}");
+        }
+    }
+
+    #[test]
+    fn shell_words_leave_ordinary_arguments_alone() {
+        for command in [
+            "cargo test --workspace",
+            "curl -sSL https://example.com/artifact://x",
+            "docker run --label=local://tag alpine",
+            "rg -n 'local:' crates/",
+        ] {
+            reject_resource_uri(command).expect(command);
+        }
+        assert_eq!(
+            shell_words("a 'b c' \"d\" e\\ f;g|h"),
+            ["a", "'b c'", "\"d\"", "e\\ f", "g", "h"]
+        );
     }
 
     #[test]

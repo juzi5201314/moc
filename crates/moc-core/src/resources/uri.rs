@@ -100,11 +100,17 @@ impl InternalUri {
         &self.segments
     }
 
-    pub fn two_segments(&self, code: &'static str) -> Result<[&str; 2], super::ResourceError> {
+    /// 取固定形状的两段路径；段数不符时把该 scheme 的完整形状写进错误，
+    /// 免得模型只能靠试错发现语法。
+    pub fn two_segments(
+        &self,
+        code: &'static str,
+        shape: &str,
+    ) -> Result<[&str; 2], super::ResourceError> {
         let [first, second] = self.segments.as_slice() else {
             return Err(super::ResourceError::new(
                 code,
-                "URI path must contain exactly two segments",
+                format!("URI path must be {shape}"),
             ));
         };
         Ok([first, second])

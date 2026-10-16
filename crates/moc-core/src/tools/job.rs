@@ -447,7 +447,7 @@ impl Tool for JobTool {
         "job"
     }
     fn description(&self) -> &'static str {
-        "Manage background shell jobs: list, output, kill, or wait."
+        "Manage background shell jobs: list, output (bounded log tail), kill, or wait (blocks up to timeout_secs). A finished job reports its completion notice automatically; inspect a running one with output instead of polling its log."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -461,9 +461,9 @@ impl Tool for JobTool {
             schema(
                 serde_json::json!({
                     "op":{"type":"string","enum":["list","output","kill","wait"]},
-                    "job_id":{"type":"string"},
-                    "tail_lines":{"type":"integer","minimum":1,"maximum":2000},
-                    "timeout_secs":{"type":"integer","minimum":1,"maximum":60}
+                    "job_id":{"type":"string","description":"Job id, from list or a background notice"},
+                    "tail_lines":{"type":"integer","minimum":1,"maximum":2000,"description":"Log lines to return; default 200"},
+                    "timeout_secs":{"type":"integer","minimum":1,"maximum":60,"description":"wait only: seconds to block; default 60"}
                 }),
                 &["op"],
             ),

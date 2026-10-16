@@ -63,6 +63,10 @@ pub struct ResourceContext<'ctx> {
     pub openviking_configured: bool,
 }
 
+/// artifact URI 的固定形状；错误信息直接带上它，并指明合法 URI 的来源，
+/// 模型据此一次改对，而不是靠试错收敛。
+const ARTIFACT_SHAPE: &str = "artifact://<session>/{jobs|artifacts}/<file> (copy artifact URIs from notices or `job` op=list)";
+
 /// artifact sidecar 的唯一 URI/路径映射实现。
 #[derive(Debug, Clone)]
 pub struct ArtifactStore {
@@ -121,14 +125,17 @@ impl ArtifactStore {
         if uri.authority() != self.session_id {
             return Err(ResourceError::new(
                 "E_ARTIFACT_SCOPE",
-                "artifact belongs to a different session",
+                format!(
+                    "artifact belongs to a different session; this session is {}. Copy artifact URIs from notices or `job` op=list",
+                    self.session_id
+                ),
             ));
         }
-        let [kind, name] = uri.two_segments("E_ARTIFACT_URI")?;
+        let [kind, name] = uri.two_segments("E_ARTIFACT_URI", ARTIFACT_SHAPE)?;
         if !matches!(kind, "jobs" | "artifacts") {
             return Err(ResourceError::new(
                 "E_ARTIFACT_URI",
-                "invalid artifact namespace",
+                format!("artifact kind must be jobs or artifacts: {ARTIFACT_SHAPE}"),
             ));
         }
         if name.starts_with('.') {
@@ -254,7 +261,7 @@ impl ResourceRouter {
             None | Some(ResourceScheme::OpenViking) => Ok(()),
             Some(_) => Err(ResourceError::new(
                 "E_URI_READ_ONLY",
-                "MOC internal URIs are read-only and cannot be write targets",
+                "MOC internal URIs are read-only and cannot be write targets; plans are written by write_plan, other resources are owned by the tool that produces them",
             )),
         }
     }
@@ -458,10 +465,26 @@ fn resolve_skill(
     uri: &InternalUri,
     input: &str,
 ) -> Result<ResolvedResource, ResourceError> {
-    let skill = context
-        .skills
-        .get(uri.authority())
-        .ok_or_else(|| ResourceError::new("E_SKILL_NOT_FOUND", "skill was not found"))?;
+    let skill = context.skills.get(uri.authority()).ok_or_else(|| {
+        // 名字猜错时直接给出可用的名字：让模型一次改对，而不是逐个试错。
+        let known = context
+            .skills
+            .list()
+            .take(12)
+            .map(|meta| meta.name.as_str())
+            .collect::<Vec<_>>();
+        ResourceError::new(
+            "E_SKILL_NOT_FOUND",
+            if known.is_empty() {
+                "skill was not found; this workspace discovers no skills".to_owned()
+            } else {
+                format!(
+                    "skill was not found; known skills read as skill://<name>/SKILL.md: {}",
+                    known.join(", ")
+                )
+            },
+        )
+    })?;
     let relative = if uri.path_segments().is_empty() {
         PathBuf::from("SKILL.md")
     } else {
@@ -497,14 +520,17 @@ fn resolve_local(
     if uri.authority() != context.session_id {
         return Err(ResourceError::new(
             "E_LOCAL_SCOPE",
-            "local resource belongs to a different session",
+            format!(
+                "local resource belongs to a different session; this session is {}",
+                context.session_id
+            ),
         ));
     }
-    let [namespace, name] = uri.two_segments("E_LOCAL_URI")?;
+    let [namespace, name] = uri.two_segments("E_LOCAL_URI", "local://<session>/plans/<id>.md")?;
     if namespace != "plans" || !name.ends_with(".md") {
         return Err(ResourceError::new(
             "E_LOCAL_URI",
-            "local supports only plans/*.md",
+            "local supports only local://<session>/plans/<id>.md",
         ));
     }
     let path = checked_child(
@@ -527,7 +553,10 @@ fn resolve_history(
     if uri.authority() != context.session_id {
         return Err(ResourceError::new(
             "E_HISTORY_SCOPE",
-            "history resource belongs to a different session",
+            format!(
+                "history resource belongs to a different session; this session is {}",
+                context.session_id
+            ),
         ));
     }
     let segments = uri.path_segments();
@@ -549,7 +578,7 @@ fn resolve_history(
     } else {
         return Err(ResourceError::new(
             "E_HISTORY_URI",
-            "history supports only transcript or compaction segments",
+            "history supports only history://<session>/transcript or history://<session>/compaction/INDEX.md",
         ));
     };
     Ok(ResolvedResource {
@@ -643,6 +672,25 @@ mod tests {
                 .code,
             "E_ARTIFACT_SCOPE"
         );
+        // 猜错形状时必须一次说清正确形状与当前会话，模型不能靠试错收敛。
+        let wrong_scope = store.resolve_uri("artifact://job_219.log").unwrap_err();
+        assert_eq!(wrong_scope.code, "E_ARTIFACT_SCOPE");
+        assert!(wrong_scope.message.contains("this session is ses_1"));
+        assert!(wrong_scope.message.contains("`job` op=list"));
+        let missing_file = store.resolve_uri("artifact://ses_1/artifacts").unwrap_err();
+        assert_eq!(missing_file.code, "E_ARTIFACT_URI");
+        assert!(
+            missing_file
+                .message
+                .contains("artifact://<session>/{jobs|artifacts}/<file>"),
+            "{}",
+            missing_file.message
+        );
+        let wrong_kind = store
+            .resolve_uri("artifact://ses_1/tmp/out.txt")
+            .unwrap_err();
+        assert_eq!(wrong_kind.code, "E_ARTIFACT_URI");
+        assert!(wrong_kind.message.contains("jobs or artifacts"));
     }
 
     #[test]
@@ -679,6 +727,52 @@ mod tests {
             local
                 .iter()
                 .any(|candidate| candidate.uri == "local://ses_1/plans/")
+        );
+    }
+
+    /// 名字猜错时错误里必须带上可用名字：模型一次改对，不再逐个试错。
+    #[test]
+    fn unknown_skill_error_lists_known_names() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let cwd = root.path().join("repo");
+        let home = root.path().join("home");
+        fs::create_dir_all(cwd.join(".agents/skills/demo")).expect("skill 目录");
+        fs::write(
+            cwd.join(".agents/skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: demo skill\n---\nbody",
+        )
+        .expect("skill 正文");
+        let skills =
+            crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &Default::default());
+        let paths = SessionPaths {
+            transcript: root.path().join("transcript.jsonl"),
+            sidecar: root.path().join("sidecar"),
+        };
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let context = ResourceContext {
+            session_id: "ses_1",
+            cwd: &cwd,
+            paths: &paths,
+            skills: &skills,
+            sessions: &sessions,
+            openviking_configured: false,
+        };
+
+        let error = ResourceRouter::resolve_context(
+            &context,
+            ResourceScheme::Skill,
+            "skill://missing/SKILL.md",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "E_SKILL_NOT_FOUND");
+        assert!(
+            error.message.contains("skill://<name>/SKILL.md") && error.message.contains("demo"),
+            "{}",
+            error.message
+        );
+        assert!(
+            ResourceRouter::resolve_context(&context, ResourceScheme::Skill, "skill://demo")
+                .is_ok()
         );
     }
 
