@@ -294,7 +294,6 @@ async fn snapshot(
         &config,
         &model,
         &cwd,
-        session_id,
         &context_files,
         &skills,
         &mcp_summary,

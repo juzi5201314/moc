@@ -84,8 +84,8 @@ impl Tool for GrepTool {
                     ResourceBacking::File(path) => {
                         search_resource_file(&resource.uri, &path, &args, &ctx.config.tools.grep)?
                     }
-                    ResourceBacking::Text(text) => {
-                        search_resource_text(&resource.uri, &text, &args, &ctx.config.tools.grep)?
+                    ResourceBacking::Namespace { entries, .. } => {
+                        search_resource_namespace(&entries, &args, &ctx.config.tools.grep)?
                     }
                 };
                 return Ok(ToolOutcome::success(output));
@@ -124,6 +124,113 @@ fn search_resource_file(
 }
 
 fn search_resource_text(
+    uri: &str,
+    text: &str,
+    args: &GrepArgs,
+    config: &crate::config::GrepConfig,
+) -> Result<String, ToolError> {
+    let matches = collect_resource_matches(uri, text, args, config)?;
+    Ok(if matches.is_empty() {
+        "No matches found".to_owned()
+    } else {
+        matches
+    })
+}
+
+/// 命名空间里的每个目录逐文件匹配：命中行前缀由（URI 前缀 + 相对路径）拼回，
+/// 模型看到与 read 一致的 URI，而不是农场或 sidecar 的真实路径。
+fn search_resource_namespace(
+    entries: &[(String, PathBuf)],
+    args: &GrepArgs,
+    config: &crate::config::GrepConfig,
+) -> Result<String, ToolError> {
+    /// 单次命名空间扫描的文件数上限：命名空间可以无界，工具输出必须有界。
+    const MAX_FILES: usize = 200;
+    let mut output = String::new();
+    let mut notices = Vec::new();
+    let mut scanned = 0usize;
+    let mut stopped = false;
+    'entries: for (prefix, directory) in entries {
+        for (relative, path) in directory_files(directory) {
+            if scanned >= MAX_FILES {
+                stopped = true;
+                break 'entries;
+            }
+            scanned += 1;
+            let uri = format!("{prefix}{relative}");
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > config.max_file_bytes {
+                notices.push(format!(
+                    "[skipped {uri}: {} B exceeds the search limit]",
+                    metadata.len()
+                ));
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let matches =
+                collect_resource_matches(&uri, &String::from_utf8_lossy(&bytes), args, config)?;
+            if matches.is_empty() {
+                continue;
+            }
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&matches);
+        }
+    }
+    if output.is_empty() {
+        output.push_str("No matches found");
+    }
+    for notice in notices {
+        output.push('\n');
+        output.push_str(&notice);
+    }
+    if stopped {
+        output.push_str(&format!(
+            "\n[namespace scan stopped after {MAX_FILES} files]"
+        ));
+    }
+    Ok(output)
+}
+
+/// 目录下的全部文件及其相对路径（`/` 分隔、按路径排序）；跳过点文件。
+fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
+    let mut files = Vec::new();
+    let mut stack = vec![(String::new(), directory.to_owned())];
+    while let Some((prefix, current)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let relative = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push((relative, entry.path()));
+            } else if file_type.is_file() {
+                files.push((relative, entry.path()));
+            }
+        }
+    }
+    files.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    files
+}
+
+/// 单份文本里的命中行；无命中返回空串，由调用方决定是报空还是继续拼下一份。
+fn collect_resource_matches(
     uri: &str,
     text: &str,
     args: &GrepArgs,
@@ -182,9 +289,6 @@ fn search_resource_text(
         use std::fmt::Write;
         writeln!(output, "{uri}{marker}{}{marker}{}", index + 1, lines[index])
             .expect("写入 String 不失败");
-    }
-    if output.is_empty() {
-        output.push_str("No matches found");
     }
     Ok(output.trim_end_matches('\n').to_owned())
 }
@@ -573,6 +677,60 @@ mod tests {
         assert_eq!(
             output,
             "skill://demo/SKILL.md-1-first\nskill://demo/SKILL.md:2:hit\nskill://demo/SKILL.md-3-last"
+        );
+    }
+
+    /// 命名空间扫描：命中行前缀必须是 read 里同一形状的 URI，而不是 sidecar 路径。
+    #[test]
+    fn namespace_scan_prefixes_rows_with_entry_uris() {
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("jobs");
+        std::fs::create_dir_all(jobs.join("nested")).unwrap();
+        std::fs::write(jobs.join("job_1.log"), "alpha\nbeta\nerror: boom\n").unwrap();
+        std::fs::write(jobs.join("job_2.log"), "fine\n").unwrap();
+        std::fs::write(jobs.join(".hidden.log"), "error: hidden\n").unwrap();
+        std::fs::write(jobs.join("nested/job_3.log"), "error: nested\n").unwrap();
+        let config = crate::config::GrepConfig::default();
+        let args: GrepArgs =
+            serde_json::from_value(serde_json::json!({"pattern":"error"})).unwrap();
+        let entries = vec![("artifact://jobs/".to_owned(), jobs.clone())];
+        let output = search_resource_namespace(&entries, &args, &config).unwrap();
+        // 默认上下文各一行：上下文行也带同一文件的 URI 前缀。
+        assert_eq!(
+            output,
+            "artifact://jobs/job_1.log-2-beta\nartifact://jobs/job_1.log:3:error: boom\nartifact://jobs/nested/job_3.log:1:error: nested"
+        );
+        assert_eq!(
+            search_resource_namespace(&[], &args, &config).unwrap(),
+            "No matches found"
+        );
+    }
+
+    /// 命名空间可以无界，扫描必须有界：超限文件跳过并说明，文件数超限即停。
+    #[test]
+    fn namespace_scan_is_bounded_and_reports_what_it_skipped() {
+        let root = tempfile::tempdir().unwrap();
+        let jobs = root.path().join("jobs");
+        std::fs::create_dir_all(&jobs).unwrap();
+        std::fs::write(jobs.join("big.log"), "error: too large\n").unwrap();
+        let args: GrepArgs =
+            serde_json::from_value(serde_json::json!({"pattern":"error"})).unwrap();
+        let small = crate::config::GrepConfig {
+            max_file_bytes: 4,
+            ..Default::default()
+        };
+        let entries = vec![("artifact://jobs/".to_owned(), jobs.clone())];
+        assert_eq!(
+            search_resource_namespace(&entries, &args, &small).unwrap(),
+            "No matches found\n[skipped artifact://jobs/big.log: 17 B exceeds the search limit]"
+        );
+        for index in 0..201 {
+            std::fs::write(jobs.join(format!("job_{index}.log")), "alpha\n").unwrap();
+        }
+        let output = search_resource_namespace(&entries, &args, &small).unwrap();
+        assert!(
+            output.ends_with("[namespace scan stopped after 200 files]"),
+            "{output}"
         );
     }
 

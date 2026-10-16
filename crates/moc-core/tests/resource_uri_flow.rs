@@ -58,22 +58,26 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
         .await
         .expect("local completion")
         .candidates;
-    assert!(local.iter().any(|candidate| {
-        candidate.uri == format!("local://{session_id}/plans/") && !candidate.append_space
-    }));
+    assert!(
+        local
+            .iter()
+            .any(|candidate| { candidate.uri == "local://" && !candidate.append_space })
+    );
 
     let artifacts = harness
         .client
         .call::<ResourceComplete>(ResourceCompleteParams {
             session_id: session_id.clone(),
-            prefix: format!("artifact://{session_id}/artifacts/"),
+            prefix: "artifact://artifacts/".into(),
         })
         .await
         .expect("artifact completion")
         .candidates;
-    assert!(artifacts.iter().any(|candidate| {
-        candidate.uri == format!("artifact://{session_id}/artifacts/output.txt")
-    }));
+    assert!(
+        artifacts
+            .iter()
+            .any(|candidate| { candidate.uri == "artifact://artifacts/output.txt" })
+    );
     assert!(artifacts.iter().all(|candidate| {
         !candidate.description.contains("/home/") && !candidate.description.contains("api_key")
     }));
@@ -104,7 +108,7 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
     std::fs::create_dir_all(sidecar.join("artifacts")).expect("artifacts 目录");
     let artifact = sidecar.join("artifacts").join("roundtrip.txt");
     std::fs::write(&artifact, "first line\nmiddle line\nlast line\n").expect("artifact");
-    let uri = format!("artifact://{session_id}/artifacts/roundtrip.txt");
+    let uri = "artifact://artifacts/roundtrip.txt".to_owned();
 
     let counter = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&counter);

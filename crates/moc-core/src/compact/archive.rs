@@ -16,7 +16,6 @@ const MAX_SEGMENT_BYTES: usize = 5 * 1024 * 1024;
 
 pub async fn write(
     paths: &SessionPaths,
-    session_id: &str,
     state: &SessionState,
 ) -> Result<Option<String>, CoreError> {
     let start = visible_history_start(state);
@@ -55,7 +54,7 @@ pub async fn write(
         )
         .await?;
     index.flush().await?;
-    Ok(Some(format!("history://{session_id}/compaction/INDEX.md")))
+    Ok(Some("history://compaction/INDEX.md".to_owned()))
 }
 
 async fn next_segment_number(directory: &Path) -> Result<usize, CoreError> {
@@ -157,11 +156,8 @@ mod tests {
             2,
         );
         let state = SessionState::from_entries(vec![header, message]).unwrap();
-        let uri = write(&paths, "ses_archive123", &state).await.unwrap();
-        assert_eq!(
-            uri.as_deref(),
-            Some("history://ses_archive123/compaction/INDEX.md")
-        );
+        let uri = write(&paths, &state).await.unwrap();
+        assert_eq!(uri.as_deref(), Some("history://compaction/INDEX.md"));
         let index = tokio::fs::read_to_string(paths.compaction().join("INDEX.md"))
             .await
             .unwrap();

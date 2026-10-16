@@ -2599,8 +2599,7 @@ fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
                 .ok_or_else(|| anyhow::anyhow!("当前会话没有已写入的待审计划"))?;
             anyhow::ensure!(
                 !plan.markdown.trim().is_empty()
-                    && plan.path
-                        == format!("local://{}/plans/{}.md", loaded.session.id, plan.plan_id),
+                    && plan.path == format!("local://{}.md", plan.plan_id),
                 "待审计划的正文或实体 URI 无效"
             );
             Ok(plan)
@@ -2624,7 +2623,7 @@ fn apply_plan_review(app: &mut App, result: anyhow::Result<moc_protocol::methods
         Ok(plan)
             if app.session.as_ref().is_some_and(|session| {
                 session.mode == SessionMode::Plan
-                    && plan.path == format!("local://{}/plans/{}.md", session.id, plan.plan_id)
+                    && plan.path == format!("local://{}.md", plan.plan_id)
             }) =>
         {
             open_plan_review(app, plan)

@@ -43,11 +43,13 @@ pub(super) async fn run(
         .map_err(protocol_to_rpc)?;
     let started = Instant::now();
     let cancel = ctx.cancel();
+    let skills = inner.project_skills(&cwd).map_err(to_rpc)?;
     let outcome = crate::tools::bash::run_manual(
         params.command.command.clone(),
         cwd,
         &record.paths,
         &record.state,
+        &skills,
         &config.tools.bash,
         &cancel,
     )
@@ -56,7 +58,7 @@ pub(super) async fn run(
     // 用户命令的工作区改动不能归因于下一次 agent 提示，重新采集其基线。
     *inner.runtime(session_id).await.workspace.lock().await = None;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let artifacts = crate::resources::ArtifactStore::new(session_id.clone(), record.paths.clone());
+    let artifacts = crate::resources::ArtifactStore::new(record.paths.clone());
     let mut is_error = outcome.is_error;
     let content = match crate::tools::output::prepare(
         outcome.content,

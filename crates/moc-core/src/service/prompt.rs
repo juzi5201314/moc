@@ -433,7 +433,6 @@ async fn run_prompt_locked(
         &project_config,
         &model,
         &cwd,
-        &params.session_id,
         &context_files,
         &skills,
         &summary,

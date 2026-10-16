@@ -185,24 +185,16 @@ mod tests {
         };
         let at_limit = "abcdefghijklmn";
         assert_eq!(
-            prepare(
-                at_limit.into(),
-                &config,
-                &ArtifactStore::new("ses_1", paths.clone())
-            )
-            .await
-            .expect("交付"),
+            prepare(at_limit.into(), &config, &ArtifactStore::new(paths.clone()))
+                .await
+                .expect("交付"),
             at_limit
         );
         assert!(!paths.artifacts().exists(), "阈值内不归档");
         let text = "前中后尾外后前中";
-        let result = prepare(
-            text.into(),
-            &config,
-            &ArtifactStore::new("ses_1", paths.clone()),
-        )
-        .await
-        .expect("归档");
+        let result = prepare(text.into(), &config, &ArtifactStore::new(paths.clone()))
+            .await
+            .expect("归档");
         assert!(result.starts_with("前中\n"));
         assert!(result.ends_with("前中"));
         assert!(!result.contains('\u{fffd}'));
@@ -242,25 +234,25 @@ mod tests {
                 suffix: "\n(exit 1)".into(),
             },
             &config,
-            &ArtifactStore::new("ses_1", paths.clone()),
+            &ArtifactStore::new(paths.clone()),
         )
         .await
         .expect("日志交付");
         assert!(result.starts_with("前中\n"));
         assert!(result.ends_with("前中\n(exit 1)"));
         assert!(!result.contains('\u{fffd}'));
-        assert!(result.contains("artifact://ses_1/jobs/job.log"));
+        assert!(result.contains("artifact://jobs/job.log"));
         let excerpt = prepare(
             ToolOutput::Excerpt {
                 text: text.into(),
                 path: path.clone(),
             },
             &config,
-            &ArtifactStore::new("ses_1", paths.clone()),
+            &ArtifactStore::new(paths.clone()),
         )
         .await
         .expect("片段交付");
-        assert!(excerpt.contains("artifact://ses_1/jobs/job.log"));
+        assert!(excerpt.contains("artifact://jobs/job.log"));
         assert!(!paths.artifacts().exists(), "已有输出不再复制归档");
         assert_eq!(tokio::fs::read_to_string(path).await.expect("原日志"), text);
     }

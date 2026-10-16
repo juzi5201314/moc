@@ -184,11 +184,8 @@ impl SessionTable {
                 .iter()
                 .flat_map(|file| {
                     let mut values = Vec::with_capacity(2);
-                    if let Ok(uri) = crate::resources::ArtifactStore::new(
-                        file.session.clone(),
-                        file.paths.clone(),
-                    )
-                    .uri_for_path(&file.path)
+                    if let Ok(uri) = crate::resources::ArtifactStore::new(file.paths.clone())
+                        .uri_for_path(&file.path)
                     {
                         values.push(uri);
                     }
@@ -255,12 +252,9 @@ impl SessionTable {
                 .push(candidate.path.to_string_lossy().into_owned());
         }
         for candidate in files {
-            let uri = crate::resources::ArtifactStore::new(
-                candidate.session.clone(),
-                candidate.paths.clone(),
-            )
-            .uri_for_path(&candidate.path)
-            .ok();
+            let uri = crate::resources::ArtifactStore::new(candidate.paths.clone())
+                .uri_for_path(&candidate.path)
+                .ok();
             if uri.as_deref().is_some_and(|uri| referenced.contains(uri))
                 || referenced.contains(&candidate.path.to_string_lossy().into_owned())
                 || self.records.read().contains_key(&candidate.session)

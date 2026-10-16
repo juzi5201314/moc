@@ -101,7 +101,7 @@ fn reject_resource_root(path: Option<&str>) -> Result<(), ToolError> {
     if path.is_some_and(crate::resources::is_resource_uri) {
         return Err(ToolError::new(
             "E_URI_UNSUPPORTED",
-            "resource URI cannot be a find root; use read or grep",
+            "resource URI cannot be a find root; search a namespace with grep (e.g. path artifact://jobs) or read its listing",
         ));
     }
     Ok(())
@@ -309,9 +309,9 @@ mod tests {
     fn resource_roots_are_rejected_only_for_registered_schemes() {
         for uri in [
             "skill://demo/SKILL.md",
-            "artifact://ses_1/jobs/job.log",
-            "local://ses_1/plans/plan.md",
-            "history://ses_1/transcript",
+            "artifact://jobs/job.log",
+            "local://plan_1.md",
+            "history://transcript",
             "viking://~/notes",
             "ov://repo",
         ] {

@@ -858,7 +858,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
         .iter()
         .find(|plan| plan.status == PlanStatus::Submitted)
         .expect("submitted plan projection");
-    assert!(plan.path.starts_with("local://"));
+    assert_eq!(plan.path, format!("local://{}.md", plan.plan_id));
     let paths = moc_core::session::store::SessionStore::new(&sessions).paths_for(
         std::path::Path::new(&parent.session.cwd),
         &session.id,
@@ -2245,10 +2245,7 @@ async fn plan_new_session_uses_selected_execution_model() {
     assert_eq!(child.session.mode, SessionMode::Normal);
     assert_eq!(child.session.model, "test/executor:off");
     assert_eq!(child.plans[0].status, PlanStatus::Approved);
-    assert_eq!(
-        child.plans[0].path,
-        format!("local://{}/plans/{}.md", child.session.id, plan.plan_id)
-    );
+    assert_eq!(child.plans[0].path, format!("local://{}.md", plan.plan_id));
     assert!(child.entries[0].message.text().contains("<active-plan"));
     let parent = h.load(&id).await;
     assert_eq!(parent.session.mode, SessionMode::Plan);

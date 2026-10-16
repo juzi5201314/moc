@@ -603,9 +603,9 @@ mod tests {
         let start = "前 ".len();
         let end = "前 local:/".len();
         prompt.cursor = end;
-        prompt.replace_range(start..end, "local://ses_1/plans/", false);
-        assert_eq!(prompt.text, "前 local://ses_1/plans/\n保留内容");
-        assert_eq!(prompt.cursor, start + "local://ses_1/plans/".len());
+        prompt.replace_range(start..end, "local://plan_1.md", false);
+        assert_eq!(prompt.text, "前 local://plan_1.md\n保留内容");
+        assert_eq!(prompt.cursor, start + "local://plan_1.md".len());
     }
 
     #[test]

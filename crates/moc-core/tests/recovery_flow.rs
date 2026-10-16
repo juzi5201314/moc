@@ -910,12 +910,9 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
         .split("log: ")
         .nth(1)
         .expect("job log URI");
-    assert!(original_uri.starts_with("artifact://"));
-    let (session_component, file_name) = original_uri
-        .strip_prefix("artifact://")
-        .expect("artifact scheme")
-        .split_once("/jobs/")
-        .expect("job namespace");
+    let file_name = original_uri
+        .strip_prefix("artifact://jobs/")
+        .expect("job log URI 形状");
     let original_log = h
         .root
         .path()
@@ -923,10 +920,10 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
         .read_dir()
         .expect("sessions")
         .filter_map(Result::ok)
-        .find(|entry| entry.path().join(session_component).is_dir())
+        .find(|entry| entry.path().join(&id).is_dir())
         .expect("session sidecar")
         .path()
-        .join(session_component)
+        .join(&id)
         .join("jobs")
         .join(file_name);
     let before = std::fs::read(&original_log).unwrap();

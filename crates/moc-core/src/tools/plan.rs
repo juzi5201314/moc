@@ -75,7 +75,7 @@ impl Tool for WritePlanTool {
             tokio::fs::write(&path, &args.markdown)
                 .await
                 .map_err(|error| ToolError::new("E_PLAN_WRITE", error.to_string()))?;
-            let path_text = format!("local://{}/plans/{}.md", ctx.session_id, plan_id);
+            let path_text = format!("local://{plan_id}.md");
             ctx.sessions
                 .append(
                     &ctx.session_id,

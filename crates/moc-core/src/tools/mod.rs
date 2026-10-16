@@ -195,7 +195,7 @@ impl ToolCtx {
     }
 
     pub fn artifact_store(&self) -> crate::resources::ArtifactStore {
-        crate::resources::ArtifactStore::new(self.session_id.clone(), self.paths.clone())
+        crate::resources::ArtifactStore::new(self.paths.clone())
     }
 }
 
@@ -540,7 +540,7 @@ mod tests {
             assert!(ensure_workspace_write(&root, SessionPermission::Full, uri).is_ok());
         }
         // 只读的 MOC 内部 URI 不在此列：写入由 ResourceRouter 直接拒绝。
-        assert!(workspace_escape(&root, "artifact://ses_1/artifacts/out.txt").is_none());
+        assert!(workspace_escape(&root, "artifact://artifacts/out.txt").is_none());
         assert!(workspace_escape(&root, "plain://dir/file").is_none());
     }
 

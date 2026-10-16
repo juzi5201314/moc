@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, a directory, or a session-internal URI (artifact://, local://, history://, skill://, viking://). Read before editing to obtain current content and hashline anchors. Use grep for content and find for paths; do not use bash or cat as substitutes."
+        "Read a text file, a directory, or a session-internal URI (artifact://, artifact://jobs, local://, history://, skill://, viking://; a namespace URI lists its files). Read before editing to obtain current content and hashline anchors. Use grep for content and find for paths; do not use bash or cat as substitutes."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -82,10 +82,10 @@ impl Tool for ReadTool {
             {
                 Some(resource) => match resource.backing {
                     ResourceBacking::File(path) => (path, resource.uri, true),
-                    ResourceBacking::Text(text) => {
+                    ResourceBacking::Namespace { listing, .. } => {
                         return Ok(ToolOutcome::success(render_text_resource(
                             &resource.uri,
-                            &text,
+                            &listing,
                             args.offset,
                             args.limit.unwrap_or(ctx.config.tools.read.default_limit),
                         )));

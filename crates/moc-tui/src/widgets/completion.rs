@@ -265,7 +265,7 @@ mod tests {
     fn resource_candidate_keeps_namespace_without_space() {
         let state = CompletionState::from_resources(
             vec![ResourceCandidate {
-                uri: "local://ses_1/plans/".into(),
+                uri: "local://".into(),
                 label: "plans/".into(),
                 description: "计划目录".into(),
                 kind: "namespace".into(),
@@ -274,7 +274,7 @@ mod tests {
             0..7,
         )
         .expect("资源候选");
-        assert_eq!(state.chosen().value, "local://ses_1/plans/");
+        assert_eq!(state.chosen().value, "local://");
         assert!(!state.chosen().append_space);
     }
 

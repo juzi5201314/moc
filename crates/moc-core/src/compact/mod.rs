@@ -128,16 +128,8 @@ pub(crate) async fn model_context(
     let skills = inner.project_skills(cwd)?;
     let summary = inner.mcp_summary(config).await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
-    let prompt = crate::system_prompt::build(
-        config,
-        model,
-        cwd,
-        &state.session.id,
-        &context_files,
-        &skills,
-        &summary,
-        None,
-    );
+    let prompt =
+        crate::system_prompt::build(config, model, cwd, &context_files, &skills, &summary, None);
     let system = prompt.messages;
     let tools = inner.tools.definitions(
         state.mode,
@@ -469,7 +461,7 @@ async fn append_runtime_checkpoint(
     let record = inner.sessions.get(session_id).await?;
     let state = record.state.lock().await.clone();
     let archive_uri = match archive {
-        HistoryArchive::Write => archive::write(&record.paths, session_id, &state).await?,
+        HistoryArchive::Write => archive::write(&record.paths, &state).await?,
         HistoryArchive::Precomputed(uri) => uri,
     };
     let jobs = inner.runtime(session_id).await.jobs.list().await;

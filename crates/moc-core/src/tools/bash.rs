@@ -19,6 +19,7 @@ pub(crate) use super::job_log::{JobLog, JobLogMode};
 pub(crate) use group::ProcessGroup;
 mod process;
 pub(crate) use process::{Process, ProcessExit};
+pub(crate) mod urlfs;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -221,12 +222,14 @@ pub(crate) async fn run_manual(
     cwd: PathBuf,
     paths: &crate::session::store::SessionPaths,
     state: &tokio::sync::Mutex<crate::session::state::SessionState>,
+    skills: &crate::skills::SkillIndex,
     config: &crate::config::BashConfig,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<ToolOutcome, ToolError> {
     if cancel.is_cancelled() {
         return Err(ToolError::new("E_CANCELLED", "命令已取消"));
     }
+    let command = urlfs::prepare(paths, skills, &command)?.unwrap_or(command);
     let job_id = next_job_id(paths, state).await?;
     let output_path = paths.jobs().join(format!("{job_id}.log"));
     let timeout = Duration::from_secs(config.monitored_timeout_secs.min(config.max_timeout_secs));
@@ -374,37 +377,24 @@ pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), To
     Ok(())
 }
 
-/// 内部 URI 只能由 read/grep/find 解析：shell 里它只是普通文本，`tail
-/// artifact://…/jobs/job_1.log` 这类命令必然静默落空，因此在执行前拒绝。
-///
-/// 判定按 shell 词法取词，整个词（去掉一层成对引号）是资源 URI 即拒绝：把 URI
-/// 当路径是必然落空的误用，把 URI 当搜索模式也有 grep/find 工具这个正确出口，
-/// 两条路都指向同一个提示。`https://…` 与 `--flag=local://…` 这类词不是资源
-/// URI，按普通参数放行。
-pub(crate) fn reject_resource_uri(command: &str) -> Result<(), ToolError> {
-    let Some(uri) = shell_words(command)
-        .into_iter()
-        .map(unquote)
-        .find(|word| crate::resources::is_resource_uri(word))
-    else {
-        return Ok(());
-    };
-    Err(ToolError::new(
-        "E_RESOURCE_URI_IN_SHELL",
-        format!("`{uri}` is a session-internal URI, which a shell command cannot use"),
-    )
-    .with_hint(
-        "Resolve it with the owning tool instead: read opens it (offset/limit lines), grep searches it, find lists it; job logs also work through `job` op=output.",
-    ))
+/// 命令里的一个词：`text` 是原样切片（引号与转义保留），`quoted` 记录该词是否
+/// 以引号开头，`start..end` 是在命令里的字节范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Word<'a> {
+    text: &'a str,
+    quoted: bool,
+    start: usize,
+    end: usize,
 }
 
 /// 按 shell 词法切分命令：引号与转义保留在词内，未加引号的空白、`;|&()<>`
-/// 与换行结束当前词。只服务于 URI 判定，不做展开、变量或重定向解析。
-fn shell_words(command: &str) -> Vec<&str> {
+/// 与换行结束当前词。只服务于 URI 改写，不做展开、变量或重定向解析。
+fn scan_words(command: &str) -> Vec<Word<'_>> {
     let mut words = Vec::new();
     let mut start = None;
     let mut quote = None;
     let mut escaped = false;
+    let mut quoted = false;
     for (index, ch) in command.char_indices() {
         if escaped {
             escaped = false;
@@ -421,36 +411,43 @@ fn shell_words(command: &str) -> Vec<&str> {
             None => {
                 if ch == '\\' {
                     escaped = true;
-                    start.get_or_insert(index);
+                    if start.is_none() {
+                        start = Some(index);
+                        quoted = false;
+                    }
                 } else if matches!(ch, '\'' | '"') {
                     quote = Some(ch);
-                    start.get_or_insert(index);
+                    if start.is_none() {
+                        start = Some(index);
+                        quoted = true;
+                    }
                 } else if ch.is_whitespace()
                     || matches!(ch, ';' | '|' | '&' | '(' | ')' | '<' | '>')
                 {
                     if let Some(word_start) = start.take() {
-                        words.push(&command[word_start..index]);
+                        words.push(Word {
+                            text: &command[word_start..index],
+                            quoted,
+                            start: word_start,
+                            end: index,
+                        });
                     }
-                } else {
-                    start.get_or_insert(index);
+                } else if start.is_none() {
+                    start = Some(index);
+                    quoted = false;
                 }
             }
         }
     }
     if let Some(word_start) = start {
-        words.push(&command[word_start..]);
+        words.push(Word {
+            text: &command[word_start..],
+            quoted,
+            start: word_start,
+            end: command.len(),
+        });
     }
     words
-}
-
-/// 去掉 shell 词外层的一层成对引号；词内引号原样保留。
-fn unquote(word: &str) -> &str {
-    let bytes = word.as_bytes();
-    if bytes.len() >= 2 && matches!(bytes[0], b'\'' | b'"') && bytes[0] == bytes[bytes.len() - 1] {
-        &word[1..word.len() - 1]
-    } else {
-        word
-    }
 }
 
 pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBuf, ToolError> {
@@ -559,34 +556,33 @@ mod tests {
     }
 
     #[test]
-    fn resource_uris_are_rejected_as_shell_words() {
-        for command in [
-            "sleep 120; tail -5 artifact://ses_1/jobs/job_1.log 2>/dev/null || true",
-            "cd local://ses_1/plans && ls",
-            "cat \"skill://demo/SKILL.md\"",
-            "cat << 'EOF' > local://ses_1/plans/p.md",
-            "grep -n hit history://ses_1/transcript",
-            "wc -l viking://resources/p/a.md ov://repo/notes.md",
-            "rg -n \"artifact://\" crates/",
-        ] {
-            let error = reject_resource_uri(command).expect_err(command);
-            assert_eq!(error.code, "E_RESOURCE_URI_IN_SHELL", "{command}");
-        }
-    }
-
-    #[test]
-    fn shell_words_leave_ordinary_arguments_alone() {
-        for command in [
-            "cargo test --workspace",
-            "curl -sSL https://example.com/artifact://x",
-            "docker run --label=local://tag alpine",
-            "rg -n 'local:' crates/",
-        ] {
-            reject_resource_uri(command).expect(command);
-        }
+    fn scan_words_keeps_quotes_escapes_and_byte_offsets() {
+        let command = "a 'b c' \"d\" e\\ f;g|h";
+        let words = scan_words(command);
         assert_eq!(
-            shell_words("a 'b c' \"d\" e\\ f;g|h"),
-            ["a", "'b c'", "\"d\"", "e\\ f", "g", "h"]
+            words
+                .iter()
+                .map(|word| (word.text, word.quoted))
+                .collect::<Vec<_>>(),
+            [
+                ("a", false),
+                ("'b c'", true),
+                ("\"d\"", true),
+                ("e\\ f", false),
+                ("g", false),
+                ("h", false),
+            ]
+        );
+        for word in words {
+            assert_eq!(&command[word.start..word.end], word.text);
+        }
+        // 重定向与 here-doc 定界符都不是词的一部分。
+        assert_eq!(
+            scan_words("tail -3 x.log 2>/dev/null")
+                .into_iter()
+                .map(|word| word.text)
+                .collect::<Vec<_>>(),
+            ["tail", "-3", "x.log", "2", "/dev/null"]
         );
     }
 

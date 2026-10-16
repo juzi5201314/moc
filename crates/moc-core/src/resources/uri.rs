@@ -96,24 +96,9 @@ impl InternalUri {
         &self.authority
     }
 
-    pub fn path_segments(&self) -> &[String] {
+    /// 路径段（不含 authority）；调用方按切片模式匹配固定形状。
+    pub fn segments(&self) -> &[String] {
         &self.segments
-    }
-
-    /// 取固定形状的两段路径；段数不符时把该 scheme 的完整形状写进错误，
-    /// 免得模型只能靠试错发现语法。
-    pub fn two_segments(
-        &self,
-        code: &'static str,
-        shape: &str,
-    ) -> Result<[&str; 2], super::ResourceError> {
-        let [first, second] = self.segments.as_slice() else {
-            return Err(super::ResourceError::new(
-                code,
-                format!("URI path must be {shape}"),
-            ));
-        };
-        Ok([first, second])
     }
 }
 
@@ -205,7 +190,7 @@ mod tests {
         assert_eq!(uri.scheme(), "skill");
         assert_eq!(uri.authority(), "demo");
         assert_eq!(
-            uri.path_segments(),
+            uri.segments(),
             &["references".to_owned(), "a b.md".to_owned()]
         );
     }

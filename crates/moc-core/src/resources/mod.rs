@@ -6,6 +6,7 @@ pub use uri::{InternalUri, ResourceScheme};
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::session::SessionTable;
 use crate::session::store::SessionPaths;
@@ -28,11 +29,16 @@ impl ResourceError {
     }
 }
 
-/// 资源的物理承载；`Text` 用于不应暴露物理路径的虚拟资源。
+/// 资源的物理承载；`Namespace` 是命名空间/根，自身没有单一路径。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceBacking {
     File(PathBuf),
-    Text(String),
+    /// 命名空间/根：`listing` 是 read 展示的列表正文；`entries` 是
+    /// （URI 前缀, 真实目录）对，grep 逐目录扫描后按前缀拼出条目 URI。
+    Namespace {
+        listing: String,
+        entries: Vec<(String, PathBuf)>,
+    },
 }
 
 /// 读取解析后的资源。
@@ -63,23 +69,21 @@ pub struct ResourceContext<'ctx> {
     pub openviking_configured: bool,
 }
 
-/// artifact URI 的固定形状；错误信息直接带上它，并指明合法 URI 的来源，
-/// 模型据此一次改对，而不是靠试错收敛。
-const ARTIFACT_SHAPE: &str = "artifact://<session>/{jobs|artifacts}/<file> (copy artifact URIs from notices or `job` op=list)";
+/// 命名空间列表里最多列出的条目数；超出部分只给计数。
+const LISTING_LIMIT: usize = 20;
+
+/// 空命名空间的正文；与 `read` 的空目录文案同形。
+const EMPTY_NAMESPACE: &str = "(empty namespace)";
 
 /// artifact sidecar 的唯一 URI/路径映射实现。
 #[derive(Debug, Clone)]
 pub struct ArtifactStore {
-    session_id: String,
     paths: SessionPaths,
 }
 
 impl ArtifactStore {
-    pub fn new(session_id: impl Into<String>, paths: SessionPaths) -> Self {
-        Self {
-            session_id: session_id.into(),
-            paths,
-        }
+    pub fn new(paths: SessionPaths) -> Self {
+        Self { paths }
     }
 
     pub fn uri_for_path(&self, path: &Path) -> Result<String, ResourceError> {
@@ -96,12 +100,7 @@ impl ArtifactStore {
                 && relative.components().count() == 1
                 && relative.file_name().is_some()
             {
-                return Ok(format!(
-                    "artifact://{}/{}/{}",
-                    self.session_id,
-                    kind,
-                    relative.to_string_lossy()
-                ));
+                return Ok(format!("artifact://{kind}/{}", relative.to_string_lossy()));
             }
         }
         Err(ResourceError::new(
@@ -114,46 +113,57 @@ impl ArtifactStore {
     }
 
     pub fn resolve_uri(&self, input: &str) -> Result<ResolvedResource, ResourceError> {
+        if input == "artifact://" {
+            let listing = [
+                ("artifact://jobs", self.paths.jobs()),
+                ("artifact://artifacts", self.paths.artifacts()),
+            ]
+            .into_iter()
+            .map(|(uri, directory)| format!("{uri}  {} files", file_count(&directory)))
+            .collect::<Vec<_>>()
+            .join("\n");
+            return Ok(ResolvedResource {
+                uri: input.to_owned(),
+                backing: ResourceBacking::Namespace {
+                    listing,
+                    entries: vec![
+                        ("artifact://jobs/".to_owned(), self.paths.jobs()),
+                        ("artifact://artifacts/".to_owned(), self.paths.artifacts()),
+                    ],
+                },
+            });
+        }
         let uri = InternalUri::parse(input)
             .map_err(|error| ResourceError::new("E_ARTIFACT_URI", error.message))?;
-        if uri.scheme() != "artifact" {
-            return Err(ResourceError::new(
-                "E_ARTIFACT_URI",
-                "scheme must be artifact",
-            ));
-        }
-        if uri.authority() != self.session_id {
-            return Err(ResourceError::new(
-                "E_ARTIFACT_SCOPE",
-                format!(
-                    "artifact belongs to a different session; this session is {}. Copy artifact URIs from notices or `job` op=list",
-                    self.session_id
-                ),
-            ));
-        }
-        let [kind, name] = uri.two_segments("E_ARTIFACT_URI", ARTIFACT_SHAPE)?;
-        if !matches!(kind, "jobs" | "artifacts") {
-            return Err(ResourceError::new(
-                "E_ARTIFACT_URI",
-                format!("artifact kind must be jobs or artifacts: {ARTIFACT_SHAPE}"),
-            ));
-        }
-        if name.starts_with('.') {
-            return Err(ResourceError::new(
-                "E_ARTIFACT_PATH",
-                "artifact hidden files are not allowed",
-            ));
-        }
-        let root = if kind == "jobs" {
-            self.paths.jobs()
-        } else {
-            self.paths.artifacts()
+        let (kind, root) = match uri.authority() {
+            "jobs" => ("jobs", self.paths.jobs()),
+            "artifacts" => ("artifacts", self.paths.artifacts()),
+            _ => return Err(ResourceError::new("E_ARTIFACT_URI", artifact_shape())),
         };
-        let path = checked_child(&root, name, "E_ARTIFACT_PATH", "E_ARTIFACT_NOT_FOUND")?;
-        Ok(ResolvedResource {
-            uri: input.to_owned(),
-            backing: ResourceBacking::File(path),
-        })
+        let prefix = format!("artifact://{kind}/");
+        match uri.segments() {
+            [] => Ok(ResolvedResource {
+                uri: input.to_owned(),
+                backing: ResourceBacking::Namespace {
+                    listing: render_listing(Vec::new(), directory_rows(&prefix, &root)),
+                    entries: vec![(prefix, root)],
+                },
+            }),
+            [name] => {
+                if name.starts_with('.') {
+                    return Err(ResourceError::new(
+                        "E_ARTIFACT_PATH",
+                        "artifact hidden files are not allowed",
+                    ));
+                }
+                let path = checked_child(&root, name, "E_ARTIFACT_PATH", "E_ARTIFACT_NOT_FOUND")?;
+                Ok(ResolvedResource {
+                    uri: input.to_owned(),
+                    backing: ResourceBacking::File(path),
+                })
+            }
+            _ => Err(ResourceError::new("E_ARTIFACT_URI", artifact_shape())),
+        }
     }
 
     pub async fn archive_text(&self, text: &str) -> Result<String, ResourceError> {
@@ -189,12 +199,7 @@ impl ArtifactStore {
                     .metadata()
                     .and_then(|metadata| metadata.modified())
                     .unwrap_or(std::time::UNIX_EPOCH);
-                let uri = format!(
-                    "artifact://{}/{}/{}",
-                    self.session_id,
-                    kind,
-                    entry.file_name().to_string_lossy()
-                );
+                let uri = format!("artifact://{kind}/{}", entry.file_name().to_string_lossy());
                 files.push((modified, uri));
             }
         }
@@ -301,17 +306,13 @@ impl ResourceRouter {
         scheme: ResourceScheme,
         input: &str,
     ) -> Result<Option<ResolvedResource>, ResourceError> {
-        let uri = InternalUri::parse(input)
-            .map_err(|error| ResourceError::new(error.code, error.message))?;
         match scheme {
-            ResourceScheme::Artifact => {
-                ArtifactStore::new(context.session_id, context.paths.clone())
-                    .resolve_uri(input)
-                    .map(Some)
-            }
-            ResourceScheme::Skill => resolve_skill(context, &uri, input).map(Some),
-            ResourceScheme::Local => resolve_local(context, &uri, input).map(Some),
-            ResourceScheme::History => resolve_history(context, &uri, input).map(Some),
+            ResourceScheme::Artifact => ArtifactStore::new(context.paths.clone())
+                .resolve_uri(input)
+                .map(Some),
+            ResourceScheme::Skill => resolve_skill(context, input).map(Some),
+            ResourceScheme::Local => resolve_local(context, input).map(Some),
+            ResourceScheme::History => resolve_history(context, input).map(Some),
             ResourceScheme::OpenViking => Ok(None),
         }
     }
@@ -364,12 +365,27 @@ fn context_artifact_candidates(
     context: &ResourceContext<'_>,
     prefix: &str,
 ) -> Vec<ResourceCandidate> {
-    let store = ArtifactStore::new(context.session_id, context.paths.clone());
-    store
-        .recent_candidates()
-        .into_iter()
-        .filter(|candidate| candidate.uri.starts_with(prefix))
-        .collect()
+    let mut values = Vec::new();
+    if prefix == "artifact://" {
+        values.push(namespace(
+            "artifact://jobs/",
+            "current session job logs",
+            "namespace",
+        ));
+        values.push(namespace(
+            "artifact://artifacts/",
+            "current session archived tool output",
+            "namespace",
+        ));
+    }
+    let store = ArtifactStore::new(context.paths.clone());
+    values.extend(
+        store
+            .recent_candidates()
+            .into_iter()
+            .filter(|candidate| candidate.uri.starts_with(prefix)),
+    );
+    values
 }
 
 fn skill_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<ResourceCandidate> {
@@ -402,55 +418,59 @@ fn skill_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resource
 }
 
 fn local_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<ResourceCandidate> {
-    let root = format!("local://{}/plans/", context.session_id);
-    if prefix == "local://" || prefix == root || root.starts_with(prefix) {
-        let mut values = vec![ResourceCandidate {
-            uri: root.clone(),
+    let root = "local://";
+    let mut values = Vec::new();
+    if root.starts_with(prefix) {
+        values.push(ResourceCandidate {
+            uri: root.to_owned(),
             label: "plans/".into(),
             description: "current session plan directory".into(),
             kind: "namespace".into(),
             append_space: false,
-        }];
-        if prefix == root
-            && let Ok(entries) = fs::read_dir(context.paths.plans())
-        {
-            values.extend(entries.flatten().filter_map(|entry| {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                (entry.file_type().ok()?.is_file() && name.ends_with(".md")).then(|| {
-                    let uri = format!("{root}{name}");
-                    ResourceCandidate {
-                        uri: uri.clone(),
-                        label: name,
-                        description: "read-only plan for the current session".into(),
-                        kind: "file".into(),
-                        append_space: true,
-                    }
-                })
-            }));
-        }
-        return values;
+        });
     }
-    Vec::new()
+    let Ok(entries) = fs::read_dir(context.paths.plans()) else {
+        return values;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || !name.ends_with(".md") {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
+            continue;
+        }
+        let uri = format!("local://{name}");
+        if !uri.starts_with(prefix) {
+            continue;
+        }
+        values.push(ResourceCandidate {
+            uri,
+            label: name,
+            description: "read-only plan for the current session".into(),
+            kind: "file".into(),
+            append_space: true,
+        });
+    }
+    values
 }
 
 fn history_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<ResourceCandidate> {
-    let transcript = format!("history://{}/transcript", context.session_id);
+    let transcript = "history://transcript";
     let mut values = Vec::new();
-    if transcript.starts_with(prefix) || prefix == "history://" {
+    if transcript.starts_with(prefix) {
         values.push(ResourceCandidate {
-            uri: transcript,
+            uri: transcript.into(),
             label: "transcript".into(),
             description: "current session JSONL transcript".into(),
             kind: "file".into(),
             append_space: true,
         });
     }
-    let index = format!("history://{}/compaction/INDEX.md", context.session_id);
-    if context.paths.compaction().join("INDEX.md").is_file()
-        && (index.starts_with(prefix) || prefix == "history://")
-    {
+    let index = "history://compaction/INDEX.md";
+    if context.paths.compaction().join("INDEX.md").is_file() && index.starts_with(prefix) {
         values.push(ResourceCandidate {
-            uri: index,
+            uri: index.into(),
             label: "compaction index".into(),
             description: "pre-compaction history segment index".into(),
             kind: "file".into(),
@@ -462,9 +482,25 @@ fn history_candidates(context: &ResourceContext<'_>, prefix: &str) -> Vec<Resour
 
 fn resolve_skill(
     context: &ResourceContext<'_>,
-    uri: &InternalUri,
     input: &str,
 ) -> Result<ResolvedResource, ResourceError> {
+    if input == "skill://" {
+        let mut entries = Vec::new();
+        let mut lines = Vec::new();
+        for skill in context.skills.list() {
+            entries.push((format!("skill://{}/", skill.name), skill.base_dir.clone()));
+            lines.push(format!("skill://{}  {}", skill.name, skill.description));
+        }
+        return Ok(ResolvedResource {
+            uri: input.into(),
+            backing: ResourceBacking::Namespace {
+                listing: render_listing(lines, Vec::new()),
+                entries,
+            },
+        });
+    }
+    let uri =
+        InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
     let skill = context.skills.get(uri.authority()).ok_or_else(|| {
         // 名字猜错时直接给出可用的名字：让模型一次改对，而不是逐个试错。
         let known = context
@@ -485,11 +521,11 @@ fn resolve_skill(
             },
         )
     })?;
-    let relative = if uri.path_segments().is_empty() {
+    let relative = if uri.segments().is_empty() {
         PathBuf::from("SKILL.md")
     } else {
         let mut path = PathBuf::new();
-        for segment in uri.path_segments() {
+        for segment in uri.segments() {
             if segment.starts_with('.') || segment == ".." {
                 return Err(ResourceError::new(
                     "E_SKILL_PATH",
@@ -514,31 +550,28 @@ fn resolve_skill(
 
 fn resolve_local(
     context: &ResourceContext<'_>,
-    uri: &InternalUri,
     input: &str,
 ) -> Result<ResolvedResource, ResourceError> {
-    if uri.authority() != context.session_id {
-        return Err(ResourceError::new(
-            "E_LOCAL_SCOPE",
-            format!(
-                "local resource belongs to a different session; this session is {}",
-                context.session_id
-            ),
-        ));
+    let directory = context.paths.plans();
+    if input == "local://" {
+        return Ok(ResolvedResource {
+            uri: input.into(),
+            backing: ResourceBacking::Namespace {
+                listing: render_listing(Vec::new(), directory_rows("local://", &directory)),
+                entries: vec![("local://".to_owned(), directory)],
+            },
+        });
     }
-    let [namespace, name] = uri.two_segments("E_LOCAL_URI", "local://<session>/plans/<id>.md")?;
-    if namespace != "plans" || !name.ends_with(".md") {
+    let uri =
+        InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
+    let name = uri.authority();
+    if !uri.segments().is_empty() || !name.ends_with(".md") {
         return Err(ResourceError::new(
             "E_LOCAL_URI",
-            "local supports only local://<session>/plans/<id>.md",
+            "local supports only local://<id>.md",
         ));
     }
-    let path = checked_child(
-        &context.paths.plans(),
-        name,
-        "E_LOCAL_URI",
-        "E_LOCAL_NOT_FOUND",
-    )?;
+    let path = checked_child(&directory, name, "E_LOCAL_URI", "E_LOCAL_NOT_FOUND")?;
     Ok(ResolvedResource {
         uri: input.into(),
         backing: ResourceBacking::File(path),
@@ -547,44 +580,130 @@ fn resolve_local(
 
 fn resolve_history(
     context: &ResourceContext<'_>,
-    uri: &InternalUri,
     input: &str,
 ) -> Result<ResolvedResource, ResourceError> {
-    if uri.authority() != context.session_id {
-        return Err(ResourceError::new(
-            "E_HISTORY_SCOPE",
-            format!(
-                "history resource belongs to a different session; this session is {}",
-                context.session_id
-            ),
-        ));
+    let compaction = context.paths.compaction();
+    if input == "history://" {
+        let lead = history_transcript_row(context).into_iter().collect();
+        return Ok(history_namespace(input, lead, &compaction));
     }
-    let segments = uri.path_segments();
-    let path = if segments.len() == 1 && segments[0] == "transcript" {
-        fs::canonicalize(&context.paths.transcript)
-            .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
-    } else if segments.len() == 2
-        && segments[0] == "compaction"
-        && (segments[1] == "INDEX.md" || segments[1].starts_with("segment-"))
-    {
-        let candidate = checked_child(
-            &context.paths.compaction(),
-            &segments[1],
-            "E_HISTORY_URI",
-            "E_HISTORY_NOT_FOUND",
-        )?;
-        fs::canonicalize(candidate)
-            .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
-    } else {
-        return Err(ResourceError::new(
-            "E_HISTORY_URI",
-            "history supports only history://<session>/transcript or history://<session>/compaction/INDEX.md",
-        ));
+    let uri =
+        InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
+    let path = match (uri.authority(), uri.segments()) {
+        ("transcript", []) => fs::canonicalize(&context.paths.transcript)
+            .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?,
+        ("compaction", []) => return Ok(history_namespace(input, Vec::new(), &compaction)),
+        ("compaction", [name]) if name == "INDEX.md" || name.starts_with("segment-") => {
+            let candidate =
+                checked_child(&compaction, name, "E_HISTORY_URI", "E_HISTORY_NOT_FOUND")?;
+            fs::canonicalize(candidate)
+                .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
+        }
+        _ => {
+            return Err(ResourceError::new(
+                "E_HISTORY_URI",
+                "history supports only history://transcript or history://compaction/INDEX.md",
+            ));
+        }
     };
     Ok(ResolvedResource {
         uri: input.into(),
         backing: ResourceBacking::File(path),
     })
+}
+
+/// `history://` 与 `history://compaction` 的命名空间视图；两者都扫 compaction 目录。
+fn history_namespace(uri: &str, lead: Vec<String>, compaction: &Path) -> ResolvedResource {
+    ResolvedResource {
+        uri: uri.to_owned(),
+        backing: ResourceBacking::Namespace {
+            listing: render_listing(lead, directory_rows("history://compaction/", compaction)),
+            entries: vec![("history://compaction/".to_owned(), compaction.to_owned())],
+        },
+    }
+}
+
+/// transcript 在列表里的行；文件尚未落盘时为 `None`。
+fn history_transcript_row(context: &ResourceContext<'_>) -> Option<String> {
+    let metadata = fs::metadata(&context.paths.transcript).ok()?;
+    Some(format!(
+        "history://transcript  {} B  {}s ago",
+        metadata.len(),
+        age_secs(metadata.modified().unwrap_or(UNIX_EPOCH))
+    ))
+}
+
+/// artifact URI 的合法形状；错误信息直接带上它，模型据此一次改对。
+fn artifact_shape() -> String {
+    "artifact URI must be artifact://jobs/<file> or artifact://artifacts/<file>; copy artifact URIs from notices or `job` op=list".to_owned()
+}
+
+/// 目录里可见文件的数量；目录缺失或不可读记 0。
+fn file_count(directory: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            !entry.file_name().to_string_lossy().starts_with('.')
+                && entry.metadata().is_ok_and(|metadata| metadata.is_file())
+        })
+        .count()
+}
+
+/// 目录里的文件条目：`{uri}  {size} B  {age}s ago`，按 mtime 降序、同名按 URI 升序。
+fn directory_rows(prefix: &str, directory: &Path) -> Vec<(SystemTime, String)> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+        rows.push((
+            modified,
+            format!(
+                "{prefix}{name}  {} B  {}s ago",
+                metadata.len(),
+                age_secs(modified)
+            ),
+        ));
+    }
+    rows.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    rows
+}
+
+/// 命名空间正文：`lead` 是固定行，其后接目录行；总条数超过上限只给计数。
+fn render_listing(lead: Vec<String>, rows: Vec<(SystemTime, String)>) -> String {
+    let total = lead.len() + rows.len();
+    if total == 0 {
+        return EMPTY_NAMESPACE.to_owned();
+    }
+    let mut lines = lead;
+    lines.extend(
+        rows.into_iter()
+            .take(LISTING_LIMIT.saturating_sub(lines.len()))
+            .map(|(_, line)| line),
+    );
+    let mut text = lines.join("\n");
+    if total > lines.len() {
+        text.push_str(&format!("\n[… {} more]", total - lines.len()));
+    }
+    text
+}
+
+fn age_secs(modified: SystemTime) -> u64 {
+    modified.elapsed().unwrap_or_default().as_secs()
 }
 
 fn checked_child(
@@ -647,69 +766,129 @@ fn list_skill_resources(base: &Path) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn test_paths(root: &Path) -> SessionPaths {
+        SessionPaths {
+            transcript: root.join("transcript.jsonl"),
+            sidecar: root.join("sidecar"),
+        }
+    }
+
+    fn context_of<'a>(
+        paths: &'a SessionPaths,
+        cwd: &'a Path,
+        skills: &'a SkillIndex,
+        sessions: &'a SessionTable,
+    ) -> ResourceContext<'a> {
+        ResourceContext {
+            session_id: "ses_1",
+            cwd,
+            paths,
+            skills,
+            sessions,
+            openviking_configured: false,
+        }
+    }
+
     #[test]
-    fn artifact_uri_is_session_scoped_and_canonical() {
+    fn artifact_uri_round_trips_without_a_session_segment() {
         let root = tempfile::tempdir().unwrap();
-        let paths = SessionPaths {
-            transcript: root.path().join("transcript.jsonl"),
-            sidecar: root.path().join("sidecar"),
-        };
+        let paths = test_paths(root.path());
         fs::create_dir_all(paths.jobs()).unwrap();
         fs::create_dir_all(paths.artifacts()).unwrap();
         let path = paths.artifacts().join("out.txt");
         fs::write(&path, "payload").unwrap();
-        let store = ArtifactStore::new("ses_1", paths.clone());
+        let store = ArtifactStore::new(paths.clone());
         let uri = store.uri_for_path(&path).unwrap();
-        assert_eq!(uri, "artifact://ses_1/artifacts/out.txt");
+        assert_eq!(uri, "artifact://artifacts/out.txt");
         assert_eq!(
             store.resolve_uri(&uri).unwrap().backing,
             ResourceBacking::File(path.canonicalize().unwrap())
         );
-        assert_eq!(
-            store
-                .resolve_uri("artifact://ses_2/artifacts/out.txt")
-                .unwrap_err()
-                .code,
-            "E_ARTIFACT_SCOPE"
-        );
-        // 猜错形状时必须一次说清正确形状与当前会话，模型不能靠试错收敛。
-        let wrong_scope = store.resolve_uri("artifact://job_219.log").unwrap_err();
-        assert_eq!(wrong_scope.code, "E_ARTIFACT_SCOPE");
-        assert!(wrong_scope.message.contains("this session is ses_1"));
-        assert!(wrong_scope.message.contains("`job` op=list"));
-        let missing_file = store.resolve_uri("artifact://ses_1/artifacts").unwrap_err();
-        assert_eq!(missing_file.code, "E_ARTIFACT_URI");
-        assert!(
-            missing_file
-                .message
-                .contains("artifact://<session>/{jobs|artifacts}/<file>"),
-            "{}",
-            missing_file.message
-        );
-        let wrong_kind = store
-            .resolve_uri("artifact://ses_1/tmp/out.txt")
-            .unwrap_err();
+        // 猜错形状时必须一次说清正确形状与 URI 的来源，模型不能靠试错收敛。
+        let wrong_kind = store.resolve_uri("artifact://tmp/out.txt").unwrap_err();
         assert_eq!(wrong_kind.code, "E_ARTIFACT_URI");
-        assert!(wrong_kind.message.contains("jobs or artifacts"));
+        assert!(wrong_kind.message.contains("artifact://jobs/<file>"));
+        assert!(wrong_kind.message.contains("`job` op=list"));
+        // 旧形状（会话段）同样落在这条错误上：一条消息就说明新形状。
+        let old_shape = store
+            .resolve_uri("artifact://ses_1/jobs/job_1.log")
+            .unwrap_err();
+        assert_eq!(old_shape.code, "E_ARTIFACT_URI");
+        assert!(old_shape.message.contains("artifact://jobs/<file>"));
+        let extra_segment = store.resolve_uri("artifact://jobs/a/b.log").unwrap_err();
+        assert_eq!(extra_segment.code, "E_ARTIFACT_URI");
+        let hidden = store.resolve_uri("artifact://jobs/.job_1.log").unwrap_err();
+        assert_eq!(hidden.code, "E_ARTIFACT_PATH");
+        let missing = store.resolve_uri("artifact://jobs/job_9.log").unwrap_err();
+        assert_eq!(missing.code, "E_ARTIFACT_NOT_FOUND");
+    }
+
+    /// 两个 kind 目录都能作为命名空间列出：列表给 read，entries 给 grep 扫描。
+    #[test]
+    fn artifact_namespaces_list_files_and_expose_scan_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.jobs()).unwrap();
+        fs::create_dir_all(paths.artifacts()).unwrap();
+        fs::write(paths.jobs().join("job_1.log"), "alpha\n").unwrap();
+        fs::write(paths.jobs().join(".hidden.log"), "noise\n").unwrap();
+        fs::write(paths.artifacts().join("out.txt"), "payload").unwrap();
+        let store = ArtifactStore::new(paths.clone());
+
+        let root_ns = store.resolve_uri("artifact://").unwrap();
+        let ResourceBacking::Namespace { listing, entries } = &root_ns.backing else {
+            panic!("artifact:// 必须是命名空间：{:?}", root_ns.backing);
+        };
+        assert_eq!(
+            listing,
+            "artifact://jobs  1 files\nartifact://artifacts  1 files"
+        );
+        assert_eq!(
+            entries,
+            &vec![
+                ("artifact://jobs/".to_owned(), paths.jobs()),
+                ("artifact://artifacts/".to_owned(), paths.artifacts()),
+            ]
+        );
+
+        let jobs = store.resolve_uri("artifact://jobs").unwrap();
+        let ResourceBacking::Namespace { listing, entries } = &jobs.backing else {
+            panic!("artifact://jobs 必须是命名空间：{:?}", jobs.backing);
+        };
+        assert!(
+            listing.starts_with("artifact://jobs/job_1.log  6 B  "),
+            "{listing}"
+        );
+        assert!(!listing.contains(".hidden.log"), "{listing}");
+        assert_eq!(
+            entries,
+            &vec![("artifact://jobs/".to_owned(), paths.jobs())]
+        );
+    }
+
+    /// 目录为空或不存在时列表必须自解释，而不是留一片空白。
+    #[test]
+    fn empty_artifact_namespace_reports_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = test_paths(root.path());
+        let store = ArtifactStore::new(paths.clone());
+        let empty = store.resolve_uri("artifact://artifacts").unwrap();
+        let ResourceBacking::Namespace { listing, .. } = &empty.backing else {
+            panic!("artifact://artifacts 必须是命名空间");
+        };
+        assert_eq!(listing, "(empty namespace)");
     }
 
     #[test]
     fn completion_exposes_only_registered_schemes_and_normalizes_local_prefix() {
         let root = tempfile::tempdir().expect("临时目录");
-        let paths = SessionPaths {
-            transcript: root.path().join("transcript.jsonl"),
-            sidecar: root.path().join("sidecar"),
-        };
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.jobs()).expect("jobs 目录");
+        fs::write(paths.jobs().join("job_1.log"), "alpha\n").expect("job 日志");
         let sessions = SessionTable::new(root.path().join("sessions"), false);
         let skills = SkillIndex::empty();
-        let context = ResourceContext {
-            session_id: "ses_1",
-            cwd: root.path(),
-            paths: &paths,
-            skills: &skills,
-            sessions: &sessions,
-            openviking_configured: false,
-        };
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
         let root_candidates = ResourceRouter::complete(&context, "//").expect("根候选");
         assert!(
             root_candidates
@@ -723,11 +902,147 @@ mod tests {
         );
         assert!(root_candidates.len() <= 20);
         let local = ResourceRouter::complete(&context, "local:/").expect("local 前缀");
+        assert!(local.iter().any(|candidate| candidate.uri == "local://"));
+        let artifacts = ResourceRouter::complete(&context, "artifact://").expect("artifact 前缀");
         assert!(
-            local
+            artifacts
                 .iter()
-                .any(|candidate| candidate.uri == "local://ses_1/plans/")
+                .any(|candidate| candidate.uri == "artifact://jobs/")
         );
+        assert!(
+            artifacts
+                .iter()
+                .any(|candidate| candidate.uri == "artifact://artifacts/")
+        );
+        assert!(
+            artifacts
+                .iter()
+                .any(|candidate| candidate.uri == "artifact://jobs/job_1.log")
+        );
+        let history = ResourceRouter::complete(&context, "history://").expect("history 前缀");
+        assert!(
+            history
+                .iter()
+                .any(|candidate| candidate.uri == "history://transcript")
+        );
+    }
+
+    /// 根 URI 直接列出内容：模型不抄 id、不猜形状，一次 read 就看到全部候选。
+    #[test]
+    fn local_root_lists_plans_and_plan_uri_resolves() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.plans()).expect("plans 目录");
+        fs::write(paths.plans().join("plan_1.md"), "# plan\n").expect("计划");
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let skills = SkillIndex::empty();
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
+        let listing = ResourceRouter::resolve_context(&context, ResourceScheme::Local, "local://")
+            .expect("local 根")
+            .expect("local 是资源");
+        let ResourceBacking::Namespace { listing, entries } = &listing.backing else {
+            panic!("local:// 必须是命名空间：{:?}", listing.backing);
+        };
+        assert!(listing.starts_with("local://plan_1.md  7 B  "), "{listing}");
+        assert_eq!(entries, &vec![("local://".to_owned(), paths.plans())]);
+
+        let file =
+            ResourceRouter::resolve_context(&context, ResourceScheme::Local, "local://plan_1.md")
+                .expect("计划 URI")
+                .expect("计划是资源");
+        assert_eq!(
+            file.backing,
+            ResourceBacking::File(paths.plans().join("plan_1.md").canonicalize().unwrap())
+        );
+
+        let wrong = ResourceRouter::resolve_context(
+            &context,
+            ResourceScheme::Local,
+            "local://ses_1/plans/plan_1.md",
+        )
+        .unwrap_err();
+        assert_eq!(wrong.code, "E_LOCAL_URI");
+        assert!(
+            wrong.message.contains("local://<id>.md"),
+            "{}",
+            wrong.message
+        );
+    }
+
+    #[test]
+    fn history_root_lists_transcript_and_compaction_segments() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.compaction()).expect("compaction 目录");
+        fs::write(&paths.transcript, "{}\n").expect("transcript");
+        fs::write(paths.compaction().join("INDEX.md"), "# index\n").expect("索引");
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let skills = SkillIndex::empty();
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
+        let history =
+            ResourceRouter::resolve_context(&context, ResourceScheme::History, "history://")
+                .expect("history 根")
+                .expect("history 是资源");
+        let ResourceBacking::Namespace { listing, entries } = &history.backing else {
+            panic!("history:// 必须是命名空间：{:?}", history.backing);
+        };
+        assert!(
+            listing.starts_with("history://transcript  3 B  "),
+            "{listing}"
+        );
+        assert!(
+            listing.contains("history://compaction/INDEX.md  8 B  "),
+            "{listing}"
+        );
+        assert_eq!(
+            entries,
+            &vec![("history://compaction/".to_owned(), paths.compaction())]
+        );
+
+        let transcript = ResourceRouter::resolve_context(
+            &context,
+            ResourceScheme::History,
+            "history://transcript",
+        )
+        .expect("transcript URI")
+        .expect("transcript 是资源");
+        assert_eq!(
+            transcript.backing,
+            ResourceBacking::File(paths.transcript.canonicalize().unwrap())
+        );
+
+        let wrong = ResourceRouter::resolve_context(
+            &context,
+            ResourceScheme::History,
+            "history://ses_1/transcript",
+        )
+        .unwrap_err();
+        assert_eq!(wrong.code, "E_HISTORY_URI");
+        assert!(
+            wrong.message.contains("history://transcript"),
+            "{}",
+            wrong.message
+        );
+    }
+
+    /// 列表超过上限时只给计数：正文保持有界，模型仍知道还有多少条。
+    #[test]
+    fn namespace_listing_truncates_and_counts_the_rest() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = test_paths(root.path());
+        fs::create_dir_all(paths.jobs()).expect("jobs 目录");
+        for index in 0..25 {
+            fs::write(paths.jobs().join(format!("job_{index}.log")), "x").expect("job 日志");
+        }
+        let store = ArtifactStore::new(paths.clone());
+        let jobs = store.resolve_uri("artifact://jobs").expect("jobs 命名空间");
+        let ResourceBacking::Namespace { listing, .. } = &jobs.backing else {
+            panic!("artifact://jobs 必须是命名空间");
+        };
+        assert_eq!(listing.lines().count(), 21, "{listing}");
+        assert!(listing.ends_with("[… 5 more]"), "{listing}");
     }
 
     /// 名字猜错时错误里必须带上可用名字：模型一次改对，不再逐个试错。
@@ -744,19 +1059,9 @@ mod tests {
         .expect("skill 正文");
         let skills =
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &Default::default());
-        let paths = SessionPaths {
-            transcript: root.path().join("transcript.jsonl"),
-            sidecar: root.path().join("sidecar"),
-        };
+        let paths = test_paths(root.path());
         let sessions = SessionTable::new(root.path().join("sessions"), false);
-        let context = ResourceContext {
-            session_id: "ses_1",
-            cwd: &cwd,
-            paths: &paths,
-            skills: &skills,
-            sessions: &sessions,
-            openviking_configured: false,
-        };
+        let context = context_of(&paths, &cwd, &skills, &sessions);
 
         let error = ResourceRouter::resolve_context(
             &context,
@@ -770,19 +1075,44 @@ mod tests {
             "{}",
             error.message
         );
-        assert!(
+
+        let root_listing =
+            ResourceRouter::resolve_context(&context, ResourceScheme::Skill, "skill://")
+                .expect("skill 根")
+                .expect("skill 是资源");
+        let ResourceBacking::Namespace { listing, entries } = &root_listing.backing else {
+            panic!("skill:// 必须是命名空间：{:?}", root_listing.backing);
+        };
+        assert_eq!(listing, "skill://demo  demo skill");
+        assert_eq!(
+            entries,
+            &vec![(
+                "skill://demo/".to_owned(),
+                cwd.join(".agents/skills/demo").canonicalize().unwrap()
+            )]
+        );
+
+        let skill =
             ResourceRouter::resolve_context(&context, ResourceScheme::Skill, "skill://demo")
-                .is_ok()
+                .expect("skill URI")
+                .expect("skill 是资源");
+        assert_eq!(
+            skill.backing,
+            ResourceBacking::File(
+                cwd.join(".agents/skills/demo/SKILL.md")
+                    .canonicalize()
+                    .unwrap()
+            )
         );
     }
 
     #[test]
     fn resource_uri_predicate_covers_registered_schemes_only() {
         for uri in [
-            "artifact://ses_1/jobs/job.log",
+            "artifact://jobs/job.log",
             "skill://demo/SKILL.md",
-            "local://ses_1/plans/plan.md",
-            "history://ses_1/transcript",
+            "local://plan_1.md",
+            "history://transcript",
             "viking://~/notes",
             "ov://repo",
         ] {
@@ -797,9 +1127,9 @@ mod tests {
     fn write_rejects_native_resources() {
         for input in [
             "skill://demo",
-            "artifact://ses_1/jobs/a.log",
-            "local://ses_1/plans/p.md",
-            "history://ses_1/transcript",
+            "artifact://jobs/a.log",
+            "local://plan_1.md",
+            "history://transcript",
         ] {
             assert_eq!(
                 ResourceRouter::write(input).unwrap_err().code,

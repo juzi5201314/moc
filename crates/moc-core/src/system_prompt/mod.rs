@@ -15,7 +15,7 @@ const DEFAULT_INTRO: &str = "You are a precise software-engineering agent workin
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required.";
 /// 仅当 web_search/web_fetch 对模型可见时拼入工具政策。
 const WEB_SEARCH_POLICY: &str = "Use web_search for current web information and web_fetch to read specific URLs; cite the URLs you use.";
-const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nSession-internal resources are read-only URIs resolved only by read, grep, and find, with this session id (see env) as the authority: `artifact://<session>/{jobs|artifacts}/<file>` (job logs and archived tool output; copy these URIs from notices or `job` op=list rather than composing them), `local://<session>/plans/<id>.md` (plan files), `history://<session>/transcript` (this session's JSONL transcript), `skill://<name>/SKILL.md` (a discovered skill), `viking://<path>` (remote OpenViking). Bash runs a real shell, where such a URI is plain text rather than a path, so a command that hands one to a program is rejected: read the resource with its owning tool instead.\n\nA backgrounded job reports its completion notice (output preview plus log URI) automatically as a reminder. Keep working while it runs; use `job` op=output for a bounded log tail and op=wait to block, never sleep, re-run, or poll a job log through bash.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. A non-normal mode restates its own contract in a tail reminder; no such reminder means normal.";
+const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nSession-internal resources are read-only URIs that only read, grep, find, and job touch. Their shapes: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (this session's job logs and archived tool output; copy them from notices or `job` op=list), `local://<id>.md` (a plan), `history://transcript` (the JSONL transcript), `skill://<name>/SKILL.md` (a discovered skill), `viking://<path>` (remote OpenViking). A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read, and read accepts every form. Never pass a resource URI to bash or to any other program: read the resource with its owning tool instead, and for a job log use `job` op=output.\n\nA backgrounded job reports its completion notice (output preview plus log URI) automatically as a reminder. Keep working while it runs; use `job` op=output for a bounded log tail and op=wait to block, never sleep, re-run, or poll a job log through bash.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. A non-normal mode restates its own contract in a tail reminder; no such reminder means normal.";
 /// 项目指令块的导语：标明这些文件的身份，避免与工具政策混读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
@@ -78,15 +78,10 @@ pub struct SystemPrompt {
     pub static_prefix: Vec<usize>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "提示片段是一批会话事实的整体输入，拆结构体只是把同一批参数换个位置"
-)]
 pub fn build(
     config: &ResolvedConfig,
     model: &ResolvedModel,
     cwd: &Path,
-    session_id: &str,
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
@@ -97,7 +92,6 @@ pub fn build(
             config,
             model,
             cwd,
-            session_id,
             context_files,
             skills,
             mcp_summary,
@@ -147,15 +141,10 @@ pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt 
 }
 
 /// Build the stable prefix. Time, jobs, workspace changes, MCP status, and mode belong in tail reminders.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "与 build 共用同一批会话事实，保持两个入口签名一致"
-)]
 pub fn pieces(
     config: &ResolvedConfig,
     model: &ResolvedModel,
     cwd: &Path,
-    session_id: &str,
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
@@ -251,9 +240,8 @@ pub fn pieces(
         name: PIECE_ENVIRONMENT,
         scope: PieceScope::Project,
         text: format!(
-            "<env>\ncwd: {}\nsession: {}\nplatform: {} {}\nmodel: {}\n</env>",
+            "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
             cwd.display(),
-            session_id,
             std::env::consts::OS,
             std::env::consts::ARCH,
             model.id,
@@ -382,7 +370,6 @@ mod tests {
             &config,
             &model,
             &cwd,
-            "ses_test",
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
@@ -416,7 +403,7 @@ mod tests {
     }
 
     /// 工具政策必须声明内部 URI 的归属工具与后台任务的结果投递：模型不再拿
-    /// bash 去 tail `artifact://…/jobs/job_1.log` 的依据只能来自这里。
+    /// bash 去 tail `artifact://jobs/job_1.log` 的依据只能来自这里。
     #[test]
     fn tool_policy_declares_internal_uris_and_job_delivery() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -428,7 +415,6 @@ mod tests {
             &config,
             &model,
             &cwd,
-            "ses_test",
             &[],
             &crate::skills::SkillIndex::empty(),
             "",
@@ -436,21 +422,24 @@ mod tests {
         );
         let text = prompt_text(&prompt);
         for uri in [
-            "artifact://<session>/{jobs|artifacts}/<file>",
-            "local://<session>/plans/<id>.md",
-            "history://<session>/transcript",
+            "artifact://jobs/<file>",
+            "artifact://artifacts/<file>",
+            "local://<id>.md",
+            "history://transcript",
             "skill://<name>/SKILL.md",
             "viking://<path>",
         ] {
             assert!(text.contains(uri), "工具政策缺少 {uri}：{text}");
         }
         assert!(
-            text.contains("session: ses_test"),
-            "env 必须给出本会话 id，模型才能自行拼出 URI：{text}"
+            text.contains("A bare scheme")
+                && text.contains("lists that namespace when read")
+                && text.contains("read accepts every form"),
+            "必须说明裸 scheme 是命名空间列表入口：{text}"
         );
         assert!(
-            text.contains("a command that hands one to a program is rejected"),
-            "必须说明 shell 里的 URI 会被拒绝：{text}"
+            text.contains("Never pass a resource URI to bash or to any other program"),
+            "必须禁止把 URI 交给 shell 或任何程序：{text}"
         );
         assert!(
             text.contains("reports its completion notice")
@@ -472,7 +461,6 @@ mod tests {
             &config,
             &model,
             &cwd,
-            "ses_test",
             &[],
             &crate::skills::SkillIndex::empty(),
             "",
@@ -503,7 +491,6 @@ mod tests {
             &config,
             &model,
             &cwd,
-            "ses_test",
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
@@ -533,7 +520,6 @@ mod tests {
             &plain_config,
             &plain_model,
             &cwd,
-            "ses_test",
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
@@ -589,7 +575,6 @@ mod tests {
                 config,
                 &model,
                 &cwd,
-                "ses_test",
                 &context_files,
                 &crate::skills::SkillIndex::empty(),
                 "",
@@ -621,16 +606,7 @@ mod tests {
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let prompt = build(
-            &config,
-            &model,
-            &cwd,
-            "ses_test",
-            &context_files,
-            &skills,
-            "",
-            None,
-        );
+        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", None);
         let text = prompt_text(&prompt);
         assert!(text.contains("<skills>"));
         assert!(text.contains("- demo: demo skill"));
