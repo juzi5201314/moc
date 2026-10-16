@@ -380,11 +380,11 @@ async fn execute_tool(
     if !ctx.allow_agents && matches!(name, "spawn_agent" | "stop_agent" | "wait_agent") {
         return Ok(ToolOutcome::failure(
             "E_MODE",
-            "子代理不能递归创建或控制其它子代理",
+            "Subagents cannot create or control other subagents",
         ));
     }
     if name == "yield" && !ctx.subagent {
-        return Ok(ToolOutcome::failure("E_MODE", "yield 仅子代理可用"));
+        return Ok(ToolOutcome::failure("E_MODE", "yield is available only to subagents"));
     }
     if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
         return Ok(ToolOutcome::failure(

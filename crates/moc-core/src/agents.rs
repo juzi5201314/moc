@@ -439,23 +439,23 @@ async fn deliver_result_notice(
     message: Option<&Message>,
 ) {
     let label = match status {
-        AgentStatus::Completed => "已完成",
-        AgentStatus::Stopped => "已停止",
-        AgentStatus::Failed => "失败",
+        AgentStatus::Completed => "completed",
+        AgentStatus::Stopped => "stopped",
+        AgentStatus::Failed => "failed",
         _ => return,
     };
     let Ok(parent) = inner.sessions.get(parent_id).await else {
         return;
     };
-    let mut notice = format!("子代理「{title}」({agent_id}) {label}");
+    let mut notice = format!("Subagent \"{title}\" ({agent_id}) {label}");
     if let Some(text) = message
         .map(Message::text)
         .filter(|text| !text.trim().is_empty())
     {
         let (preview, truncated) = preview_text(&text, RESULT_PREVIEW_CHARS);
-        notice.push_str(&format!("，结果预览：\n{preview}"));
+        notice.push_str(&format!(". Result preview:\n{preview}"));
         if truncated {
-            notice.push_str("\n（已截断；完整结果用 wait_agent 获取）");
+            notice.push_str("\n(truncated; wait_agent returns the full result)");
         }
     }
     parent.state.lock().await.notices.push(notice);
@@ -1132,11 +1132,11 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             .then_with(|| left.session.id.cmp(&right.session.id))
     });
     let mut block = String::from(
-        "<subagent>\nYou are a subagent; your parent agent receives your final result. When the task is complete, call the `yield` tool with your complete report — the parent receives exactly that text. Never end the turn with a plain message instead of yielding, unless the task is impossible.\nCoordinate through `message_agent`: target \"parent\" for your parent, a sibling id, or \"all\" for every running sibling. Messages you receive arrive as <agent-message from=\"... id=\"...\">.\n",
+        "<subagent>\nYou are a subagent. When the task is done, call `yield` with your complete report; the parent receives exactly that text. Never end with a plain message instead, unless the task is impossible.\nCoordinate via `message_agent`: target \"parent\", a sibling id, or \"all\" (running siblings). Incoming messages arrive as <agent-message from=\"...\" id=\"...\">.\n",
     );
     if let Some(task) = assignment(inner, session_id).await {
         block.push_str(
-            "\nTask (authoritative; it outranks general repository conventions when they conflict):\n",
+            "\nTask (authoritative; outranks general repository conventions on conflict):\n",
         );
         block.push_str(&task);
         block.push('\n');

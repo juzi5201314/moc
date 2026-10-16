@@ -28,7 +28,7 @@ impl Tool for WritePlanTool {
     }
 
     fn description(&self) -> &'static str {
-        "Save the completed plan for review. Do not modify workspace files in plan mode."
+        "Save the finished plan for review."
     }
 
     fn tier(&self) -> Tier {
@@ -90,7 +90,7 @@ impl Tool for WritePlanTool {
                 .await
                 .map_err(|error| ToolError::new("E_PLAN_WRITE", error.to_string()))?;
             Ok(ToolOutcome::success(format!(
-                "Plan {plan_id} saved at {path_text}. Call exit_plan with {{}} to end this plan round and request review."
+                "Plan {plan_id} saved at {path_text}; call exit_plan to request review."
             )))
         })
     }
@@ -104,7 +104,7 @@ impl Tool for ExitPlanTool {
     }
 
     fn description(&self) -> &'static str {
-        "End the current plan round and request review of the last saved plan."
+        "End the plan round and request review of the last saved plan."
     }
 
     fn tier(&self) -> Tier {
@@ -151,7 +151,7 @@ impl Tool for ExitPlanTool {
                 .await
                 .map_err(|error| ToolError::new("E_UPDATE", error.to_string()))?;
             Ok(ToolOutcome::end_prompt(format!(
-                "Plan {} is ready for review at {}. Do not continue this plan round.",
+                "Plan {} is ready for review at {}.",
                 plan.plan_id, plan.path
             )))
         })

@@ -53,7 +53,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &'static str {
-        "Edit existing files using the three-character hashline anchors returned by read. Use this for local changes; do not use bash, sed, perl, Python, redirection, or similar commands. The files form accepts multiple files and applies them in order. Each file contains edits as [from_anchor, to_anchor, replacement]; a non-empty replacement with identical anchors inserts after that line, and an empty replacement deletes it. move transfers a range between files using the original snapshot anchors."
+        "Edit files with the three-character anchors from read. Each edit is [from_anchor, to_anchor, replacement] replacing that inclusive range; identical anchors with non-empty replacement insert after that line; empty replacement deletes. `files` applies several files in order. move transfers a range to target_path (after target_anchor) using original snapshot anchors."
     }
 
     fn tier(&self) -> Tier {

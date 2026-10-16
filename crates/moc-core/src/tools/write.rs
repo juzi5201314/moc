@@ -36,7 +36,7 @@ impl Tool for WriteTool {
         "write"
     }
     fn description(&self) -> &'static str {
-        "Create a file or replace a complete file. For partial edits, read first and use edit; do not use bash redirection, tee, sed, perl, Python, or similar commands. If recent read output contains hashline anchors, use edit instead."
+        "Create a file or replace its complete content. For partial changes to a read file, use edit."
     }
     fn tier(&self) -> Tier {
         Tier::Write

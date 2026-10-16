@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, a directory, or a session-internal URI (artifact://, artifact://jobs, local://, history://, skill://, viking://; a namespace URI lists its files). Read before editing to obtain current content and hashline anchors. Use grep for content and find for paths; do not use bash or cat as substitutes."
+        "Read a text file, directory, or session resource URI; returns hashline anchors for edit."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -122,7 +122,7 @@ impl Tool for ReadTool {
             }
             if std::str::from_utf8(&snapshot.bytes).is_err() {
                 notices.push_str(
-                    "\n[Warning: file contains invalid UTF-8; invalid bytes were replaced with U+FFFD for display; editing rewrites it as UTF-8]",
+                    "\n[Invalid UTF-8 shown as U+FFFD; editing rewrites the file as UTF-8]",
                 );
             }
             let total = snapshot.lines.len();

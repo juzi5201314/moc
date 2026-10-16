@@ -53,7 +53,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web for current information. The query supports site:host, -site:host, after:YYYY-MM-DD, before:YYYY-MM-DD, quoted phrases, and -term. Use web_fetch to read known URLs; cite the URLs you use in the reply."
+        "Search the web for current information."
     }
 
     fn tier(&self) -> Tier {
@@ -71,18 +71,18 @@ impl Tool for WebSearchTool {
                 serde_json::json!({
                     "query": {
                         "type": "string",
-                        "description": "Search query; supports site:, -site:, after:, before:, quoted phrases, and -term."
+                        "description": "Supports site:host, -site:host, after:YYYY-MM-DD, before:YYYY-MM-DD, \"phrases\", and -term."
                     },
                     "recency": {
                         "type": "string",
                         "enum": ["day", "week", "month", "year"],
-                        "description": "Restrict results to a recent time window."
+                        "description": "Restrict to a recent window."
                     },
                     "limit": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 20,
-                        "description": "Maximum number of results (default 5)."
+                        "description": "Default 5."
                     }
                 }),
                 &["query"],
@@ -135,7 +135,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Extract the page text of 1-20 URLs as markdown. An optional query returns only the chunks most relevant to it (~800 chars each); omit query to get the full page text."
+        "Extract page text of URLs as markdown. With query, return only the most relevant ~800-char chunks per page."
     }
 
     fn tier(&self) -> Tier {
@@ -156,11 +156,11 @@ impl Tool for WebFetchTool {
                         "items": {"type": "string"},
                         "minItems": 1,
                         "maxItems": 20,
-                        "description": "Page URLs to extract (duplicates are requested once)."
+                        "description": "Duplicates are fetched once."
                     },
                     "query": {
                         "type": "string",
-                        "description": "Optional relevance query; returns only matching chunks per page."
+                        "description": "Relevance filter; omit for full page text."
                     }
                 }),
                 &["urls"],

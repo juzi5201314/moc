@@ -23,7 +23,7 @@ pub fn render(index: &SkillIndex, config: &SkillsConfig, context_window: u64) ->
         return None;
     }
     let mut lines = vec![
-        "Available skills. Before a task covered by a skill, call the skill tool to load its full instructions and follow them; never infer behavior from the name.".to_owned(),
+        "Available skills. Before a task a skill covers, load it with the skill tool and follow it; never infer behavior from the name.".to_owned(),
     ];
     let mut budget = config
         .catalog_budget_tokens(context_window)

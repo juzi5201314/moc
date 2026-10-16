@@ -41,9 +41,11 @@ impl BashCommand {
     }
 
     /// 转成带有用户执行来源的文本，不伪造 assistant 的工具调用。
+    ///
+    /// 文本进入模型上下文：遵循 moc-core `system_prompt` 模块的提示词编写规范（英文、紧凑）。
     pub fn context_message(&self, output: &crate::Message) -> crate::Message {
         crate::Message::user_text(format!(
-            "用户手动执行 Bash 命令（不是要求 agent 执行）：\n```bash\n{}\n```\n执行结果：\n{}",
+            "The user ran this command manually (not a request to you):\n```bash\n{}\n```\nOutput:\n{}",
             self.command,
             output.text()
         ))

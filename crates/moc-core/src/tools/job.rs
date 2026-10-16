@@ -228,7 +228,7 @@ impl JobManager {
                     };
                     let Some((elapsed, warning_count)) = warning_data else { return completion.await; };
                     let notice = format!(
-                        "Background job {id} has run for {elapsed}s (monitored, warning {warning_count}); it may be stuck or hitting a slow filesystem. Check output or kill it; do not repeat wait without diagnosis."
+                        "Background job {id} has run {elapsed}s (warning {warning_count}); it may be stuck. Check output or kill it instead of waiting again."
                     );
                     ctx.state.lock().await.notices.push(notice);
                     next_warning.as_mut().reset(tokio::time::Instant::now() + interval);
@@ -299,7 +299,7 @@ impl JobManager {
             .artifact_store()
             .uri_for_path(&log_path)
             .unwrap_or_else(|error| format!("[{}] {}", error.code, error.message));
-        ctx.state.lock().await.notices.push(format!("Background {lifecycle:?} job {id} finished ({exit_label}); output preview:\n{output}\nFull output: {log_uri}"));
+        ctx.state.lock().await.notices.push(format!("Background {lifecycle:?} job {id} finished ({exit_label}). Output tail:\n{output}\nFull output: {log_uri}"));
         let update = SessionUpdate::JobFinished {
             job_id: id.clone(),
             command,
@@ -447,7 +447,7 @@ impl Tool for JobTool {
         "job"
     }
     fn description(&self) -> &'static str {
-        "Manage background shell jobs: list, output (bounded log tail), kill, or wait (blocks up to timeout_secs). A finished job reports its completion notice automatically; inspect a running one with output instead of polling its log."
+        "Manage background shell jobs: list, output, kill, or wait (blocks up to timeout_secs)."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -461,7 +461,7 @@ impl Tool for JobTool {
             schema(
                 serde_json::json!({
                     "op":{"type":"string","enum":["list","output","kill","wait"]},
-                    "job_id":{"type":"string","description":"Job id, from list or a background notice"},
+                    "job_id":{"type":"string","description":"Job id from list or a notice"},
                     "tail_lines":{"type":"integer","minimum":1,"maximum":2000,"description":"Log lines to return; default 200"},
                     "timeout_secs":{"type":"integer","minimum":1,"maximum":60,"description":"wait only: seconds to block; default 60"}
                 }),

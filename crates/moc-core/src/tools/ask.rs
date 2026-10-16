@@ -40,7 +40,7 @@ impl Tool for AskTool {
         "ask"
     }
     fn description(&self) -> &'static str {
-        "Ask the user one or more decision questions. Use only when the answer materially affects the implementation. Options may include a preview: the frontend shows it beside the focused option for visual comparison of ASCII layouts, code, or configuration (single-select only)."
+        "Ask the user decision questions; use only when the answer changes the implementation. Options may carry a preview, a monospace frame shown beside the focused option for visual comparison (single-select only)."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -63,8 +63,8 @@ impl Tool for AskTool {
                             "recommended":{"type":"integer","minimum":0},
                             "options":{"type":"array","minItems":2,"items":{
                                 "type":"object","properties":{
-                                    "label":{"type":"string","description":"Display text, 1-5 words, briefly naming the choice"},
-                                    "description":{"type":"string","description":"Meaning or consequence of selecting this option"},
+                                    "label":{"type":"string","description":"Display text, 1-5 words"},
+                                    "description":{"type":"string","description":"What choosing this option means"},
                                     "preview":{"type":"string","description":"Markdown preview shown beside the focused option in a monospace frame: ASCII layout, code, or configuration to compare visually. Preserve multiline text; put alignment-sensitive ASCII art in a ``` code block. Supported only for single-select questions (multi=false or omitted)."}
                                 },"required":["label"],"additionalProperties":false
                             }}

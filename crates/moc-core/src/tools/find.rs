@@ -44,7 +44,7 @@ impl Tool for FindTool {
         "find"
     }
     fn description(&self) -> &'static str {
-        "Find local paths in parallel with glob patterns. Absolute paths are allowed; by default scanning does not cross mounts below the root, and cross_filesystems=true expands it. Timeout is cooperative, not a hard kill. Use this for filenames and paths, not bash, find, or ls."
+        "Find paths by glob. Does not cross mounts below the root unless cross_filesystems=true."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -58,12 +58,12 @@ impl Tool for FindTool {
             schema(
                 serde_json::json!({
                     "glob":{"type":"array","minItems":1,"items":{"type":"string"}},
-                    "path":{"type":"string","description":"Absolute or cwd-relative scan root"},
-                    "hidden":{"type":"boolean","description":"Include hidden entries such as dotfiles and .git; default false"},
+                    "path":{"type":"string","description":"Scan root; default cwd"},
+                    "hidden":{"type":"boolean","description":"Include dotfiles and .git; default false"},
                     "gitignore":{"type":"boolean"},
                     "limit":{"type":"integer","minimum":1,"maximum":200},
                     "sort":{"type":"string","enum":["mtime","path"]},
-                    "cross_filesystems":{"type":"boolean","description":"Cross filesystem mounts below the scan root; default false"}
+                    "cross_filesystems":{"type":"boolean","description":"Default false"}
                 }),
                 &["glob"],
             ),

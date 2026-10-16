@@ -19,7 +19,7 @@ impl Tool for RunCodeTool {
         "run_code"
     }
     fn description(&self) -> &str {
-        "Run JavaScript in an isolated QuickJS/WASM sandbox and call tools with await tools.<name>(args)."
+        "Run JavaScript in an isolated QuickJS/WASM sandbox; call tools with await tools.<name>(args)."
     }
     fn tier(&self) -> Tier {
         Tier::Exec

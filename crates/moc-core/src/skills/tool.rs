@@ -21,7 +21,7 @@ impl Tool for SkillTool {
         "skill"
     }
     fn description(&self) -> &str {
-        "Load a skill's full instructions. Choose it from the `<skills>` catalog; the result contains SKILL.md and its resource list. Follow the loaded instructions exactly."
+        "Load a skill named in the `<skills>` catalog; the result carries its SKILL.md body and resource list."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -34,7 +34,7 @@ impl Tool for SkillTool {
             "skill",
             schema(
                 serde_json::json!({
-                    "name": {"type": "string", "description": "Skill name from the <skills> catalog"}
+                    "name": {"type": "string", "description": "Name from the `<skills>` catalog"}
                 }),
                 &["name"],
             ),

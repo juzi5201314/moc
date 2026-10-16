@@ -112,8 +112,10 @@ impl ToolCycles {
             let repeated =
                 (period..period * 5).all(|offset| self.back(offset) == self.back(offset % period));
             if repeated {
-                let detail =
-                    format!("工具动作与完整结果形成 {period} 轮周期，连续重复 5 次且没有提交变更");
+                // detail 同时进入模型可见的 <system-interrupt>，按提示词规范用英文。
+                let detail = format!(
+                    "Tool calls and full results repeated a {period}-turn cycle 5 times without committed changes"
+                );
                 if self.redirected {
                     return CycleAction::Stop(detail);
                 }

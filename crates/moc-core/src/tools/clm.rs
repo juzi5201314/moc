@@ -79,7 +79,7 @@ impl Tool for ClmContextTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage the live working context in CLM experimental mode. Read it, replace it, or append to it; the immutable transcript remains available as the audit source."
+        "Read, replace, or append the live working context; the transcript always remains available."
     }
 
     fn tier(&self) -> Tier {
@@ -96,7 +96,7 @@ impl Tool for ClmContextTool {
             schema(
                 serde_json::json!({
                     "op": {"type": "string", "enum": ["read", "replace", "append"]},
-                    "content": {"type": "string", "description": "The complete replacement or text to append."}
+                    "content": {"type": "string", "description": "Replacement or appended text."}
                 }),
                 &["op"],
             ),

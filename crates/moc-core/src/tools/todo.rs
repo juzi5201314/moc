@@ -41,7 +41,7 @@ impl Tool for TodoTool {
         "todo"
     }
     fn description(&self) -> &'static str {
-        "Manage the current session's multi-step task list. Call init before starting a multi-step task, then call done immediately after each completed item. Each operation is atomic."
+        "Manage the session task list. Call init before multi-step work, then done as soon as each item finishes."
     }
     fn tier(&self) -> Tier {
         Tier::Read

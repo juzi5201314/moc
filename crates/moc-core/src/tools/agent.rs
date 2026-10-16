@@ -63,7 +63,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &'static str {
-        "Create a direct child agent. model accepts inherit, default, explore, or plan."
+        "Create a direct child agent."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -127,7 +127,7 @@ impl Tool for ListAgentsTool {
         "list_agents"
     }
     fn description(&self) -> &'static str {
-        "List peer agents you can message: direct child agents, or — inside a subagent — your siblings."
+        "List agents you can message: direct children, or siblings inside a subagent."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -162,7 +162,7 @@ impl Tool for MessageAgentTool {
         "message_agent"
     }
     fn description(&self) -> &'static str {
-        "Send a message to another agent. target accepts an agent id, \"parent\" (your parent agent), or \"all\" (every running direct child; inside a subagent, every running sibling). Running targets receive the message at their next safe boundary; idle targets start a new turn. Returns one delivery receipt per target."
+        "Message agents. target: an agent id, \"parent\", or \"all\" (running direct children; siblings inside a subagent). Running targets receive it at their next safe boundary; idle targets start a turn. Returns one receipt per target."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -221,7 +221,7 @@ impl Tool for StopAgentTool {
         "stop_agent"
     }
     fn description(&self) -> &'static str {
-        "Request cancellation of a running child agent."
+        "Cancel a running child agent."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -272,7 +272,7 @@ impl Tool for WaitAgentTool {
         "wait_agent"
     }
     fn description(&self) -> &'static str {
-        "Wait until one watched child agent settles, a child message arrives, or the window elapses (default 180s). agent_ids defaults to every running child agent. Returns a snapshot of all watched agents; settled agents carry their final message."
+        "Wait until a watched child settles, a child message arrives, or timeout_secs elapses (default 180). agent_ids defaults to all running children. Returns every watched agent's snapshot; settled ones include their final message."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -332,7 +332,7 @@ impl Tool for YieldTool {
         "yield"
     }
     fn description(&self) -> &'static str {
-        "Deliver your final result to the parent agent and end this turn. Call it once when the task is complete, with the complete report the parent needs."
+        "Deliver your complete final report to the parent and end the turn; call once when the task is done."
     }
     fn tier(&self) -> Tier {
         Tier::Write

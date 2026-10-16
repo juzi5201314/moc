@@ -203,6 +203,10 @@ impl ToolCtx {
 ///
 /// `name` / `description` 返回动态 `&str`：MCP 桥接工具的标识来自运行期
 /// 协商结果，不能是 `'static`；内置工具返回字面量即可自动兼容。
+///
+/// `description`、schema 字段说明与结果文本都是模型可见提示词，编写遵循
+/// [`crate::system_prompt`] 模块文档的「提示词编写规范」：只写该工具自己的用法，
+/// 不复述工具政策或 schema 已表达的约束。
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;

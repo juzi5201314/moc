@@ -90,7 +90,7 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &'static str {
-        "Run a shell command. Default lifecycle is monitored; use async=true,lifecycle=persistent for intentionally long-lived services. Persistent jobs never auto-complete. Use grep/find for file search."
+        "Run a shell command. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -103,7 +103,7 @@ impl Tool for BashTool {
             "bash",
             schema(
                 serde_json::json!({
-                    "command":{"type":"string","description":"Shell command; use grep/find for file search"},
+                    "command":{"type":"string"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
                     "timeout":{"type":"integer","minimum":1,"maximum":3600},
@@ -185,7 +185,7 @@ impl Tool for BashTool {
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "Background {lifecycle:?} job {job_id} started and reports its completion automatically; inspect it with `job` op=output; log: {uri}"
+                    "Background {lifecycle:?} job {job_id} started; completion is reported automatically; log: {uri}"
                 )));
             }
             let result = wait_foreground(
@@ -204,7 +204,7 @@ impl Tool for BashTool {
                     .uri_for_path(&output_path)
                     .map_err(|error| ToolError::new(error.code, error.message))?;
                 return Ok(ToolOutcome::success(format!(
-                    "Command exceeded the foreground threshold; monitored job {job_id} continues in the background and reports its completion automatically; inspect it with `job` op=output; log: {uri}"
+                    "Command exceeded the foreground threshold; monitored job {job_id} continues in the background; completion is reported automatically; log: {uri}"
                 )));
             };
             Ok(exit_outcome(

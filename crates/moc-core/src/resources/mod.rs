@@ -266,7 +266,7 @@ impl ResourceRouter {
             None | Some(ResourceScheme::OpenViking) => Ok(()),
             Some(_) => Err(ResourceError::new(
                 "E_URI_READ_ONLY",
-                "MOC internal URIs are read-only and cannot be write targets; plans are written by write_plan, other resources are owned by the tool that produces them",
+                "session resource URIs are read-only; plans are saved with write_plan",
             )),
         }
     }

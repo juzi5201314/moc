@@ -13,8 +13,9 @@ use crate::service::CoreInner;
 use crate::session::state::SessionState;
 
 use super::{CompactionBudget, estimate_tokens, messages_tokens, record_compaction};
-const SUMMARY_SYSTEM: &str = "You are compressing an agent conversation into a checkpoint. Output only the checkpoint text; do not call tools; do not mention this compression request. Use concise engineering English. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures and code fragments. Record user corrections verbatim.";
-const SUMMARY_SECTIONS: &str = "Summarize the older conversation as a checkpoint using these exact sections:\n\
+// 摘要请求也是模型可见提示词，遵循 `system_prompt` 模块的提示词编写规范。
+const SUMMARY_SYSTEM: &str = "You are compressing an agent conversation into a checkpoint. Output only the checkpoint; no tool calls, no mention of this request. Use concise engineering English. Preserve exact paths, commands, errors, identifiers, numbers, signatures, and code fragments; quote user corrections verbatim.";
+const SUMMARY_SECTIONS: &str = "Use exactly these sections:\n\
 ## Primary Request and Intent\n## Key Technical Concepts\n## Files and Code\n\
 ## Errors and Fixes\n## Pending Jobs\n## Current Work\n## Next Step\n\
 ## Critical Context\n\n";
@@ -247,7 +248,7 @@ fn summary_prompt(
     }
     if omitted_prompts > 0 {
         prompt.push_str(&format!(
-            "<older-history-omitted>{omitted_prompts} earlier full prompts omitted; read the history resource when exact details are needed.</older-history-omitted>\n"
+            "<older-history-omitted>{omitted_prompts} earlier prompts omitted; read history://transcript for exact details.</older-history-omitted>\n"
         ));
     }
     if let Some(instructions) = instructions {

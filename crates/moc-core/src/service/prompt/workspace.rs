@@ -40,7 +40,7 @@ pub(super) async fn check_workspace(
         .map_err(to_rpc)?;
     if after.truncated {
         let notice = format!(
-            "Workspace is large; the scan covered only part of it (limit {}); unscanned paths are not treated as deleted.",
+            "Workspace scan hit its {}-entry limit; unscanned paths are not treated as deleted.",
             config.workspace.max_scan_entries
         );
         let mut state = record.state.lock().await;
@@ -94,7 +94,7 @@ pub(super) async fn check_workspace(
         .collect::<Vec<_>>()
         .join(", ");
     record.state.lock().await.notices.push(if violation {
-        format!("You modified the workspace in read-only mode: {paths}. Stop modifying it and explain why to the user.")
+        format!("You modified the workspace in read-only mode: {paths}. Stop and explain why to the user.")
     } else {
         format!("The workspace changed outside this prompt: {paths}.")
     });

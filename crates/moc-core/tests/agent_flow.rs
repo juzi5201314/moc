@@ -571,7 +571,7 @@ async fn completed_child_result_lands_in_parent_notices() {
     let bodies = bodies.lock().clone();
     let body = bodies.last().expect("父会话至少发出一次请求").to_string();
     assert!(
-        body.contains("子代理「"),
+        body.contains("Subagent ") && body.contains("Result preview"),
         "父上下文必须包含子代理完成提示：{body}"
     );
     assert!(body.contains("CHILD_REPORT"), "提示必须带结果预览");

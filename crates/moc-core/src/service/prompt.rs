@@ -465,7 +465,7 @@ async fn run_prompt_locked(
             )));
         }
         if let Some(detail) = cycle_redirect.take() {
-            reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}。不要再次执行相同的无进展动作；改用能获得新证据的操作，或总结现有结果并结束。再次形成无进展循环将终止本次提示。</system-interrupt>")));
+            reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>")));
         }
         if first_turn {
             if project_config.openviking.recall
@@ -547,12 +547,8 @@ async fn run_prompt_locked(
                 reminder_messages.push(reminder_message(rendered));
             }
             let mut reminder_state = runtime.reminders.lock().await;
-            if let Some(reminder) = reminder_state.render(
-                &crate::system_prompt::reminder::local_time(),
-                &[],
-                &[],
-                false,
-            ) {
+            if let Some(reminder) = reminder_state.render(&crate::system_prompt::reminder::local_time())
+            {
                 reminder_messages.push(reminder_message(reminder));
             }
             let notices = std::mem::take(&mut record.state.lock().await.notices);
@@ -1008,7 +1004,7 @@ async fn run_prompt_locked(
                     .append_message(
                         &params.session_id,
                         Message::user_text(
-                            "The previous output hit the length limit. Continue from the interruption without repeating completed text",
+                            "Output hit the length limit. Continue from the cut without repeating text.",
                         ),
                         None,
                         None,
@@ -1028,7 +1024,7 @@ async fn run_prompt_locked(
                 {
                     yield_reminders += 1;
                     let reminder = format!(
-                        "Reminder {yield_reminders}/{}: you have not delivered a result yet. Call the `yield` tool with your complete report to finish the task; do not end the turn with a plain message.",
+                        "Reminder {yield_reminders}/{}: call `yield` with your complete report; do not end the turn with a plain message.",
                         crate::agents::MAX_YIELD_REMINDERS
                     );
                     inner
@@ -1316,10 +1312,10 @@ async fn apply_skill_invocation(
     let content = crate::skills::tool::render_for_invocation(&skills, name, &mut loaded)
         .map_err(crate::service::invalid_params)?;
     let mut injected = format!(
-        "<system-reminder>The following content was explicitly injected by the user via /skill:{name}; follow it now.</system-reminder>\n{content}"
+        "<system-reminder>The user injected this via /skill:{name}; follow it now.</system-reminder>\n{content}"
     );
     if !arguments.is_empty() {
-        injected.push_str(&format!("\n\nUser-provided instructions: {arguments}"));
+        injected.push_str(&format!("\n\nUser instructions: {arguments}"));
     }
     Ok(Message::user_text(injected))
 }

@@ -40,7 +40,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "Search local files with Rust regex in parallel. Absolute paths are allowed; by default scanning does not cross mounts below the root, and cross_filesystems=true expands it. Timeout is cooperative, not a hard kill. Use this for content, not bash, cat, rg, awk, or sed."
+        "Search file contents with Rust regex. Does not cross mounts below the root unless cross_filesystems=true."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -54,15 +54,15 @@ impl Tool for GrepTool {
             schema(
                 serde_json::json!({
                     "pattern":{"type":"string"},
-                    "path":{"type":"string","description":"Absolute or cwd-relative scan root"},
+                    "path":{"type":"string","description":"Scan root or resource URI; default cwd"},
                     "glob":{"type":"array","items":{"type":"string"}},
                     "case":{"type":"boolean"},
                     "gitignore":{"type":"boolean"},
-                    "hidden":{"type":"boolean","description":"Include hidden entries such as dotfiles and .git; default false"},
+                    "hidden":{"type":"boolean","description":"Include dotfiles and .git; default false"},
                     "context_before":{"type":"integer","minimum":0},
                     "context_after":{"type":"integer","minimum":0},
                     "skip":{"type":"integer","minimum":0},
-                    "cross_filesystems":{"type":"boolean","description":"Cross filesystem mounts below the scan root; default false"}
+                    "cross_filesystems":{"type":"boolean","description":"Default false"}
                 }),
                 &["pattern"],
             ),

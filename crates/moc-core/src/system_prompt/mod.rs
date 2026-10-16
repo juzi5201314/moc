@@ -1,4 +1,21 @@
 //! Stable system prefix and volatile tail reminders.
+//!
+//! # 提示词编写规范（修改任何模型可见文本前必读）
+//!
+//! 模型可见文本包括：本模块的静态片段与模式契约、各工具的 `description` 与 schema
+//! 字段说明、工具结果与错误文本、notice／尾部提醒、压缩请求与回放包装。它们每一轮
+//! 都按 token 计费，编写时遵守：
+//!
+//! 1. **一处一事实**：每条事实只在一个位置出现。工具的用法写在它自己的 description；
+//!    跨工具纪律（不用 bash 读写搜、内部 URI、后台任务投递）只写在工具政策；当前模式的
+//!    规则只写在 [`mode_contract`]；schema 已表达的枚举、默认值、范围不在 description 复述。
+//! 2. **只写模型能用的信息**：不写实现细节（并行扫描、超时协作语义等模型无法调节的东西），
+//!    不写礼貌语、动机解释、"请注意"类铺垫。
+//! 3. **紧凑祈使句**：短句、分号连接，优先动词开头；能用 `a/b/c` 列举就不展开成句。
+//! 4. **模型侧一律英文**：英文 token 密度更高；面向前端的文案（GuardNotice、RPC 错误）不受此限。
+//! 5. **测试锚点**：断言里的子串（如 `Ask mode is active`、`Standard tool batches allow up to`）
+//!    是行为契约的检验点；改写时保留语义并同步更新断言，不要为过测试回填废话。
+//! 6. 新增文本前先找是否已有同义表述；有就复用或合并，没有再加，且按上面的密度写。
 
 pub mod context_files;
 pub mod reminder;
@@ -12,10 +29,11 @@ use crate::config::ResolvedConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
-const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored local changes, write only for new or complete-file writes, and bash only when a shell is required.";
+// 下列政策是跨工具纪律的唯一出处；单个工具的用法写在工具 description，不在此复述。
+const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
 /// 仅当 web_search/web_fetch 对模型可见时拼入工具政策。
-const WEB_SEARCH_POLICY: &str = "Use web_search for current web information and web_fetch to read specific URLs; cite the URLs you use.";
-const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, redirection, or similar commands to read, search, or edit workspace files. Before editing, read the current file; edit uses the three-character anchors in read output, formatted as `ABC│line`. If anchors may be stale, read again.\n\nSession-internal resources are read-only URIs that only read, grep, find, and job touch. Their shapes: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (this session's job logs and archived tool output; copy them from notices or `job` op=list), `local://<id>.md` (a plan), `history://transcript` (the JSONL transcript), `skill://<name>/SKILL.md` (a discovered skill), `viking://<path>` (remote OpenViking). A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read, and read accepts every form. Never pass a resource URI to bash or to any other program: read the resource with its owning tool instead, and for a job log use `job` op=output.\n\nA backgrounded job reports its completion notice (output preview plus log URI) automatically as a reminder. Keep working while it runs; use `job` op=output for a bounded log tail and op=wait to block, never sleep, re-run, or poll a job log through bash.\n\nModes are enforced when tools execute: normal permits workspace changes; ask is read-only; plan is read-only, write_plan saves the plan and exit_plan ends the round for review; ptc permits direct run_code only. All modes permit session-only state and todo updates. A non-normal mode restates its own contract in a tail reminder; no such reminder means normal.";
+const WEB_SEARCH_POLICY: &str = "Use web_search for current information and web_fetch for known URLs; cite the URLs you use.";
+const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files. Read before editing; edit takes the three-character anchors from read output (`ABC│line`); re-read when they may be stale.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`, `viking://<path>` (OpenViking). A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nModes are enforced at execution; session state and todo updates are allowed in every mode. A non-normal mode states its contract in a tail reminder; no such reminder means normal mode, which permits workspace changes.";
 /// 项目指令块的导语：标明这些文件的身份，避免与工具政策混读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
@@ -183,7 +201,7 @@ pub fn pieces(
         name: PIECE_PTC_RUNTIME,
         scope: PieceScope::Static,
         text: format!(
-            "All modes support run_code. In PTC, it is the only native entry point; other modes may call built-in tools directly. Discover MCP tools only inside run_code: first `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`. Discovery does not grant permission.\n\nEach result has `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent and parse text-only JSON explicitly with `JSON.parse(r.content)`. Failures reject with serializable `code`, `message`, and `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls allow up to {}. Writes, bash approval, and session-state updates are barriers: await all calls before returning. Return only final information; intermediate results are not added to model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, and `state.keys()` persist session JSON; missing keys return undefined, writes commit immediately, and later failures do not roll them back. JavaScript globals do not persist. WASM has no file, network, process, or timer APIs; use host tools.",
+            "run_code works in every mode; in PTC mode it is the only native tool. MCP tools are reachable only inside run_code: `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`; discovery grants no permission.\n\nResults are `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent, else `JSON.parse(r.content)` for JSON text. Failures reject with serializable `code`, `message`, `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls up to {}. Writes, bash approval, and session-state updates are barriers. Await all calls before returning and return only final information; intermediate results never reach model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, `state.keys()` persist session JSON (missing key: undefined); writes commit immediately and later failures do not roll them back. JS globals do not persist. WASM has no file, network, process, or timer APIs; use host tools.",
             config.tools.max_concurrent_calls,
             config.tools.ptc.max_concurrent_calls,
         ),
@@ -269,13 +287,13 @@ pub fn mode_contract(mode: SessionMode) -> Option<Message> {
     let text = match mode {
         SessionMode::Normal => return None,
         SessionMode::Ask => {
-            "Ask mode is active. The workspace is read-only: read and search freely, but do not modify files. run_code inherits the read-only restriction."
+            "Ask mode is active: the workspace is read-only, including inside run_code; read and search freely."
         }
         SessionMode::Plan => {
-            "Plan mode is active. The workspace is read-only while exploring. When the plan is complete, save it with write_plan and end the round with exit_plan to request review. run_code inherits the read-only restriction."
+            "Plan mode is active: the workspace is read-only, including inside run_code. When the plan is complete, save it with write_plan, then call exit_plan to request review."
         }
         SessionMode::Ptc => {
-            "PTC mode is active. Call tools only through run_code; direct native calls other than run_code are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
+            "PTC mode is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
         }
         SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
@@ -432,9 +450,7 @@ mod tests {
             assert!(text.contains(uri), "工具政策缺少 {uri}：{text}");
         }
         assert!(
-            text.contains("A bare scheme")
-                && text.contains("lists that namespace when read")
-                && text.contains("read accepts every form"),
+            text.contains("A bare scheme") && text.contains("lists that namespace when read"),
             "必须说明裸 scheme 是命名空间列表入口：{text}"
         );
         assert!(
