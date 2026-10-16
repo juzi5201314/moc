@@ -6,6 +6,13 @@ explore = "inherit"
 plan = "inherit"
 
 [providers]
+# 供应商与模型字段在 /config 的供应商页维护；逐模型 compat 字段以 src/config/catalog.rs
+# 的模型模板为准。/config 字段说明会列出下列片段名，此处同步一份：
+# instruction_role 指定指令消息（工具政策、仓库规则等）的角色，默认 system；
+# instruction_system 列出指令角色为 user 时仍留在 system 消息里的片段，默认
+# ["intro", "mcp servers", "environment"]，留空表示整条指令都用 user。
+# 可用片段名：intro、tool policy、ptc runtime、mcp servers、repo rules、skills、
+# subagent、environment、append。
 
 [sources]
 # 项目级 .moc/config.toml 能改写全局设置并触发其中的 !命令，默认关闭。

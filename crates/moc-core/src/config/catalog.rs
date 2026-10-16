@@ -216,6 +216,15 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
     let key = path.last().map(String::as_str).unwrap_or_default();
     let joined = path.join(".");
     let (label, description) = describe(&joined, key);
+    // 片段名清单由规范名单生成：字段说明与加载期校验共用同一份来源，不会漂移。
+    let description = if key == "instruction_system" {
+        format!(
+            "{description}可用片段：{}。",
+            crate::system_prompt::PIECE_NAMES.join("、")
+        )
+    } else {
+        description.to_owned()
+    };
     let advanced = path
         .iter()
         .any(|part| matches!(part.as_str(), "compat" | "shake"))
@@ -732,6 +741,38 @@ mod tests {
         for option in &options {
             serde_json::from_value::<moc_llm::ReasoningEcho>(json!(option))
                 .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
+        }
+    }
+
+    #[test]
+    fn instruction_system_description_lists_every_piece_name() {
+        let fields = fields(&json!({"providers": {"p": {"models": {"m": model_template()}}}}));
+        let field = fields
+            .iter()
+            .find(|field| {
+                field
+                    .path
+                    .last()
+                    .is_some_and(|key| key == "instruction_system")
+            })
+            .expect("instruction_system 出现在配置目录");
+        for name in crate::system_prompt::PIECE_NAMES {
+            assert!(
+                field.description.contains(name),
+                "字段说明必须列出片段名 {name}：{}",
+                field.description
+            );
+        }
+    }
+
+    #[test]
+    fn defaults_comment_lists_every_piece_name() {
+        let defaults = include_str!("defaults.toml");
+        for name in crate::system_prompt::PIECE_NAMES {
+            assert!(
+                defaults.contains(name),
+                "defaults.toml 的说明必须列出片段名 {name}"
+            );
         }
     }
 
