@@ -1362,9 +1362,8 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
         "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
         "data: [DONE]\n\n",
     );
-    let response = format!(
-        "data: {named}\n\ndata: {with_id}\n\ndata: {finalized}\n\ndata: [DONE]\n\n"
-    );
+    let response =
+        format!("data: {named}\n\ndata: {with_id}\n\ndata: {finalized}\n\ndata: [DONE]\n\n");
     let responses = [response, follow_up.to_owned()];
     let response_index = Arc::new(AtomicUsize::new(0));
     let response_counter = Arc::clone(&response_index);
