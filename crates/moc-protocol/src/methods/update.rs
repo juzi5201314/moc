@@ -143,6 +143,8 @@ pub enum SessionUpdate {
         prompt_id: String,
         /// 调用 ID。
         tool_call_id: String,
+        /// 工具名；与 [`SessionUpdate::ToolStarted`] 同源，前端补建缺席的调用块时据此命名。
+        name: String,
         /// 终态。
         status: ToolStatus,
         /// 工具回灌给模型的结果原文。
@@ -167,6 +169,8 @@ pub enum SessionUpdate {
         prompt_id: String,
         parent_tool_call_id: String,
         tool_call_id: String,
+        /// 工具名；与 [`SessionUpdate::PtcChildStarted`] 同源。
+        name: String,
         status: ToolStatus,
         result: ToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,6 +471,7 @@ mod tests {
                 SessionUpdate::ToolFinished {
                     prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
+                    name: "bash".into(),
                     status: ToolStatus::Denied,
                     result: ToolResult {
                         tool_call_id: "call_9".into(),
@@ -478,12 +483,13 @@ mod tests {
                     duration_ms: None,
                     diff: None,
                 },
-                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
+                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "bash", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
             ),
             (
                 SessionUpdate::ToolFinished {
                     prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
+                    name: "edit".into(),
                     status: ToolStatus::Completed,
                     result: ToolResult {
                         tool_call_id: "call_9".into(),
@@ -509,7 +515,7 @@ mod tests {
                         truncated: false,
                     }),
                 },
-                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
+                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "edit", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
             ),
             (
                 SessionUpdate::PermissionRequested {

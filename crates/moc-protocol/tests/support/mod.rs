@@ -422,6 +422,7 @@ impl ScriptedService {
                 SessionUpdate::ToolFinished {
                     prompt_id: prompt_id.to_owned(),
                     tool_call_id: tool_call_id.to_owned(),
+                    name: "bash".to_owned(),
                     status,
                     result: ToolResult {
                         tool_call_id: tool_call_id.to_owned(),

@@ -136,13 +136,14 @@ impl Renderer {
             }
             SessionUpdate::PtcChildFinished {
                 tool_call_id,
+                name,
                 status,
                 result,
                 duration_ms,
                 ..
             } => {
                 let mut call = state.calls.remove(&tool_call_id).unwrap_or(ToolCallView {
-                    name: "ptc-child".into(),
+                    name,
                     arguments: String::new(),
                     announced: false,
                 });
@@ -164,13 +165,14 @@ impl Renderer {
             }
             SessionUpdate::ToolFinished {
                 tool_call_id,
+                name,
                 status,
                 result,
                 duration_ms,
                 ..
             } => {
                 let mut call = state.calls.remove(&tool_call_id).unwrap_or(ToolCallView {
-                    name: "tool".into(),
+                    name,
                     arguments: String::new(),
                     announced: false,
                 });

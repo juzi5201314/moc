@@ -514,9 +514,15 @@ impl App {
     }
 
     /// 工具执行结束：回填终态。
+    ///
+    /// `name` / `parent_id` 只在调用块缺席时用得上：批次中断或前端中途接入时更新里
+    /// 没有配对的 `ToolStarted`，这时用它们（以及本地已攒的参数与批次）补建一个与
+    /// 正常路径同形的终态块，而不是把结果丢掉。
     pub fn finish_tool_block(
         &mut self,
         tool_call_id: String,
+        name: String,
+        parent_id: Option<String>,
         status: ToolStatus,
         result: ToolResult,
         duration_ms: Option<u64>,
@@ -528,10 +534,10 @@ impl App {
             let index = self.blocks.len();
             self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
                 id: tool_call_id.clone(),
-                batch_id: None,
-                parent_id: None,
-                name: result.tool_call_id.clone(),
-                arguments: String::new(),
+                batch_id: self.tool_batches.remove(&tool_call_id),
+                parent_id,
+                name,
+                arguments: self.pending_args.remove(&tool_call_id).unwrap_or_default(),
                 status: Some(status),
                 result: Some(result.content),
                 diff,
@@ -866,6 +872,10 @@ impl App {
             self.set_notice("CLM 实验模式已启用：模型将维护实时上下文");
         }
         self.tool_indices.clear();
+        // 增量临时表只服务于当前视图的流：转写里已有参数与批次归属的完整形态，
+        // 换会话后旧的片段既无块可续、也可能被兜底补建误用。
+        self.tool_batches.clear();
+        self.pending_args.clear();
         for (index, entry) in self.blocks.iter().enumerate() {
             if let Block::Tool(tool) = &entry.block {
                 self.tool_indices.insert(tool.id.clone(), index);
@@ -1148,6 +1158,79 @@ mod streaming_budget_tests {
     }
 }
 
+/// 调用块的补建：`ToolFinished` / `PtcChildFinished` 自带工具名与父调用，
+/// 前端在缺席 `ToolStarted` 时据此补出与正常路径同形的终态块。
+#[cfg(test)]
+mod tool_recovery_tests {
+    use super::*;
+
+    fn result(tool_call_id: &str, content: &str) -> ToolResult {
+        ToolResult {
+            tool_call_id: tool_call_id.to_owned(),
+            content: content.to_owned(),
+            is_error: false,
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn orphan_tool_finish_recovers_name_arguments_and_batch() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.register_tool_batch("batch_1".to_owned(), ["call_1".to_owned()]);
+        // 参数增量先于调用开始到达：攒在本地，补建时一并恢复。
+        app.push_pending_args("call_1", r#"{"command":"cargo test"}"#.to_owned());
+        app.finish_tool_block(
+            "call_1".to_owned(),
+            "bash".to_owned(),
+            None,
+            ToolStatus::Completed,
+            result("call_1", "退出码 0"),
+            Some(7),
+            None,
+        );
+
+        let Block::Tool(tool) = &app.blocks[0].block else {
+            panic!("缺席调用开始时应当补建工具块");
+        };
+        assert_eq!(
+            tool.name, "bash",
+            "补建的块必须用更新里的工具名，而不是调用 ID"
+        );
+        assert_eq!(tool.arguments, r#"{"command":"cargo test"}"#);
+        assert_eq!(tool.batch_id.as_deref(), Some("batch_1"));
+        assert_eq!(tool.result.as_deref(), Some("退出码 0"));
+        assert_eq!(tool.status, Some(ToolStatus::Completed));
+        assert!(!tool.running);
+    }
+
+    #[test]
+    fn orphan_ptc_child_finish_keeps_parent_and_name() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.finish_tool_block(
+            "call_parent:1".to_owned(),
+            "read".to_owned(),
+            Some("call_parent".to_owned()),
+            ToolStatus::Error,
+            result("call_parent:1", "读取失败"),
+            Some(3),
+            None,
+        );
+
+        let Block::Tool(tool) = &app.blocks[0].block else {
+            panic!("缺席子调用开始时应当补建工具块");
+        };
+        assert_eq!(tool.name, "read");
+        assert_eq!(
+            tool.parent_id.as_deref(),
+            Some("call_parent"),
+            "子调用保持缩进归属"
+        );
+        assert_eq!(tool.status, Some(ToolStatus::Error));
+    }
+}
+
 /// 会话模式的展示名；CLM 以括号标识，保持实验状态始终可见。
 pub fn mode_label(mode: SessionMode) -> &'static str {
     match mode {
@@ -1247,6 +1330,8 @@ mod tests {
         app.inflight_prompts.insert("ses_a".into());
         app.inflight_session_ops.insert("ses_a".into());
         app.interrupt_pending.insert("ses_a".into());
+        app.register_tool_batch("batch_a".into(), ["call_a".into()]);
+        app.push_pending_args("call_a", r#"{"command":"run"}"#.into());
 
         // 切到一个空闲会话：本地状态清空，会话级记账仍留给原会话回收。
         app.switch_session(session("ses_b"), Vec::new());
@@ -1259,6 +1344,8 @@ mod tests {
         assert_eq!(app.usage, Usage::default());
         assert_eq!(app.cost_usd, 0.0);
         assert!(app.todos.is_empty());
+        assert!(app.tool_batches.is_empty(), "增量临时表不跨会话留存");
+        assert!(app.pending_args.is_empty());
         assert!(app.inflight_prompts.contains("ses_a"), "在飞记账按会话保留");
         assert!(app.inflight_session_ops.contains("ses_a"));
         assert!(app.interrupt_pending.contains("ses_a"));

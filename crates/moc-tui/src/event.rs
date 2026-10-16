@@ -2982,12 +2982,22 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::PtcChildFinished {
             tool_call_id,
+            parent_tool_call_id,
+            name,
             status,
             result,
             duration_ms,
             diff,
             ..
-        } => app.finish_tool_block(tool_call_id, status, result, duration_ms, diff),
+        } => app.finish_tool_block(
+            tool_call_id,
+            name,
+            Some(parent_tool_call_id),
+            status,
+            result,
+            duration_ms,
+            diff,
+        ),
         SessionUpdate::ToolStarted {
             tool_call_id, name, ..
         } => {
@@ -2996,12 +3006,13 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::ToolFinished {
             tool_call_id,
+            name,
             status,
             result,
             duration_ms,
             diff,
             ..
-        } => app.finish_tool_block(tool_call_id, status, result, duration_ms, diff),
+        } => app.finish_tool_block(tool_call_id, name, None, status, result, duration_ms, diff),
         SessionUpdate::PromptStarted { .. } => {
             app.prompt_running = true;
             app.ctrl_c_pending = None;

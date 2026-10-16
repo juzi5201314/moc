@@ -96,7 +96,7 @@ async fn perform(
                     call: TranscriptChildCall {
                         id: call_id.clone(),
                         parent_tool_call_id: ctx.tool_call_id.clone(),
-                        name,
+                        name: name.clone(),
                         arguments: call.arguments,
                         result: content.clone(),
                         status,
@@ -112,6 +112,7 @@ async fn perform(
                     prompt_id: ctx.prompt_id.clone(),
                     parent_tool_call_id: ctx.tool_call_id.clone(),
                     tool_call_id: call_id.clone(),
+                    name,
                     status,
                     result: moc_llm::ToolResult {
                         tool_call_id: call_id,

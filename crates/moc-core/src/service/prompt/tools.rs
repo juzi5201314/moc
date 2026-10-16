@@ -292,6 +292,7 @@ pub(super) async fn execute_tool_batch(
                 SessionUpdate::ToolFinished {
                     prompt_id: prompt_id.to_owned(),
                     tool_call_id: call.id.clone(),
+                    name: call.name.clone(),
                     status,
                     result: tool_result,
                     duration_ms: Some(duration_ms),

@@ -105,6 +105,7 @@ pub(super) async fn run(
             SessionUpdate::ToolFinished {
                 prompt_id: call_id.clone(),
                 tool_call_id: call_id,
+                name: "bash".to_owned(),
                 status,
                 result: result.clone(),
                 duration_ms: Some(duration_ms),

@@ -1653,6 +1653,8 @@ mod tests {
                 .push_args(r#"{"command":"run"}"#);
             app.finish_tool_block(
                 id.clone(),
+                "bash".into(),
+                None,
                 ToolStatus::Completed,
                 ToolResult {
                     tool_call_id: id,
@@ -1722,6 +1724,8 @@ mod tests {
             .push_args(r#"{"command":"print lines"}"#);
         app.finish_tool_block(
             "call_bash".into(),
+            "bash".into(),
+            None,
             ToolStatus::Completed,
             ToolResult {
                 tool_call_id: "call_bash".into(),
@@ -1884,6 +1888,8 @@ mod tests {
             .push_args(r#"{"command":"run"}"#);
         app.finish_tool_block(
             "call_bash".into(),
+            "bash".into(),
+            None,
             ToolStatus::Completed,
             ToolResult {
                 tool_call_id: "call_bash".into(),
@@ -1961,6 +1967,8 @@ mod tests {
             .push_args(r#"{"path":"crates/moc-tui/src/app.rs","offset":1,"limit":200}"#);
         app.finish_tool_block(
             "call_read".into(),
+            "read".into(),
+            None,
             ToolStatus::Completed,
             ToolResult {
                 tool_call_id: "call_read".into(),
@@ -1991,6 +1999,8 @@ mod tests {
         // 失败时正文是错误原因，仍可展开。
         app.finish_tool_block(
             "call_read".into(),
+            "read".into(),
+            None,
             ToolStatus::Error,
             ToolResult {
                 tool_call_id: "call_read".into(),
@@ -2053,6 +2063,8 @@ mod tests {
             .push_args(r#"{"path":"src/lib.rs"}"#);
         app.finish_tool_block(
             "call_edit".into(),
+            "edit".into(),
+            None,
             moc_protocol::methods::ToolStatus::Completed,
             moc_protocol::ToolResult {
                 tool_call_id: "call_edit".into(),
@@ -2191,6 +2203,8 @@ mod tests {
             .push_args(r#"{"target":"all","message":"请复查一下改动"}"#);
         app.finish_tool_block(
             "call_msg".into(),
+            "message_agent".into(),
+            None,
             ToolStatus::Completed,
             ToolResult {
                 tool_call_id: "call_msg".into(),
@@ -2276,6 +2290,8 @@ mod tests {
 
         app.finish_tool_block(
             "call_wait".into(),
+            "wait_agent".into(),
+            None,
             ToolStatus::Completed,
             ToolResult {
                 tool_call_id: "call_wait".into(),
