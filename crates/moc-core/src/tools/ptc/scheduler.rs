@@ -41,24 +41,28 @@ async fn perform(
     let id = request.id;
     if let Operation::Tool { name, arguments } = request.operation {
         let call_id = format!("{}:{id}", ctx.tool_call_id);
-        let call = moc_llm::ToolCall {
-            id: call_id.clone(),
-            name: name.clone(),
-            arguments: arguments.to_string(),
-        };
+        let arguments = arguments.to_string();
         let started = Instant::now();
         let update = ctx.request.updates();
+        // 沙盒内的嵌套调用与模型直发的调用走同一对更新：`parent_tool_call_id` 标明它挂在
+        // 发起它的 `run_code` 下，参数就是即将执行的那一份。
         let start_result = update
             .emit(
                 ctx.session_id.clone(),
-                SessionUpdate::PtcChildStarted {
+                SessionUpdate::ToolStarted {
                     prompt_id: ctx.prompt_id.clone(),
-                    parent_tool_call_id: ctx.tool_call_id.clone(),
                     tool_call_id: call_id.clone(),
                     name: name.clone(),
+                    parent_tool_call_id: Some(ctx.tool_call_id.clone()),
+                    arguments: arguments.clone(),
                 },
             )
             .await;
+        let call = moc_llm::ToolCall {
+            id: call_id.clone(),
+            name: name.clone(),
+            arguments,
+        };
         let mut outcome = if let Some(code) = cancelled {
             let mut outcome =
                 ToolOutcome::failure(code, "code execution terminated; this call was cancelled");
@@ -96,7 +100,7 @@ async fn perform(
                         id: call_id.clone(),
                         parent_tool_call_id: ctx.tool_call_id.clone(),
                         name: name.clone(),
-                        arguments: call.arguments,
+                        arguments: call.arguments.clone(),
                         result: content.clone(),
                         status,
                         duration_ms,
@@ -107,11 +111,12 @@ async fn perform(
         let sent = update
             .emit(
                 ctx.session_id.clone(),
-                SessionUpdate::PtcChildFinished {
+                SessionUpdate::ToolFinished {
                     prompt_id: ctx.prompt_id.clone(),
-                    parent_tool_call_id: ctx.tool_call_id.clone(),
                     tool_call_id: call_id.clone(),
                     name,
+                    parent_tool_call_id: Some(ctx.tool_call_id.clone()),
+                    arguments: call.arguments,
                     status,
                     result: moc_llm::ToolResult {
                         tool_call_id: call_id,

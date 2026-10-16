@@ -132,15 +132,6 @@ impl Entry {
         self.touch();
     }
 
-    /// 续写工具调用参数。
-    pub fn push_args(&mut self, delta: &str) {
-        let Block::Tool(tool) = &mut self.block else {
-            return;
-        };
-        tool.arguments.push_str(delta);
-        self.touch();
-    }
-
     /// 工具执行结束：回填终态。
     pub fn finish_tool(
         &mut self,
@@ -162,6 +153,42 @@ impl Entry {
     }
 }
 
+/// 一次工具调用的落地信息：`ToolStarted` 的四个字段，建块用。
+///
+/// 名字与参数都是字符串，按位置传参在调用点极易错位，因此用具名字段承载。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallStart {
+    /// 调用 ID。
+    pub id: String,
+    /// 工具名。
+    pub name: String,
+    /// 父调用 ID；`Some` 表示 `run_code` 沙盒里发起、以该调用为父的嵌套调用。
+    pub parent_id: Option<String>,
+    /// 参数 JSON 原文（core 实际执行的那一份）。
+    pub arguments: String,
+}
+
+/// 一次工具调用的终态：`ToolFinished` 去掉 `prompt_id` 后的字段，回填用。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCallFinish {
+    /// 调用 ID。
+    pub id: String,
+    /// 工具名；块缺席时用它命名。
+    pub name: String,
+    /// 父调用 ID；块缺席时用它建立嵌套关系。
+    pub parent_id: Option<String>,
+    /// 参数 JSON 原文；块缺席时用它填摘要。
+    pub arguments: String,
+    /// 终态。
+    pub status: ToolStatus,
+    /// 工具结果。
+    pub result: ToolResult,
+    /// 执行耗时。
+    pub duration_ms: Option<u64>,
+    /// 文件变更 diff。
+    pub diff: Option<ToolDiff>,
+}
+
 /// 一次工具调用在转写里的状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallBlock {
@@ -173,7 +200,7 @@ pub struct ToolCallBlock {
     pub parent_id: Option<String>,
     /// 工具名。
     pub name: String,
-    /// 流式累积的 JSON 参数。
+    /// 参数 JSON 原文（core 执行时下发的那一份）。
     pub arguments: String,
     /// 终态；运行中为 `None`。
     pub status: Option<ToolStatus>,

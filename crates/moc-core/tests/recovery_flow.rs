@@ -124,10 +124,12 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
     });
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
+            // 同一帧里的正文与工具调用由累加器一并消化，正文增量到达前端即代表
+            // 这次工具调用已经进入待修复集合。
             if matches!(
                 events.recv().await.unwrap(),
                 SessionUpdate::AssistantDelta {
-                    delta: AssistantDelta::ToolCallArgs { .. },
+                    delta: AssistantDelta::Text { .. },
                     ..
                 }
             ) {

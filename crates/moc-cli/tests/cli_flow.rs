@@ -171,6 +171,10 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     assert!(stdout.contains("执行完成"));
     assert!(stdout.contains("上下文压缩"));
     assert!(stdout.contains("模型 p/gpt-test:off：调用"), "{stdout}");
+    assert!(
+        stdout.contains("→ write_plan: {"),
+        "工具行必须带上参数摘要：{stdout}"
+    );
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
         stderr.contains("用法：/ask <问题>"),

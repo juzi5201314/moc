@@ -68,5 +68,51 @@ async fn ptc_run_code_executes_real_guest_in_normal_mode() {
         "同样提交"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 4);
+    // 沙盒里的嵌套调用与模型直发的调用同形：参数与父调用都在 `ToolStarted` /
+    // `ToolFinished` 里，前端因此能像普通调用一样渲染摘要。
+    let nested = harness
+        .updates
+        .lock()
+        .iter()
+        .filter_map(|update| match update {
+            moc_protocol::methods::SessionUpdate::ToolStarted {
+                tool_call_id,
+                name,
+                parent_tool_call_id: Some(parent),
+                arguments,
+                ..
+            }
+            | moc_protocol::methods::SessionUpdate::ToolFinished {
+                tool_call_id,
+                name,
+                parent_tool_call_id: Some(parent),
+                arguments,
+                ..
+            } => Some((
+                tool_call_id.clone(),
+                name.clone(),
+                parent.clone(),
+                arguments.clone(),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(nested.len(), 4, "两次嵌套写入各有起止两条更新：{nested:?}");
+    for (id, name, parent, arguments) in &nested {
+        assert_eq!(name, "write");
+        assert_eq!(parent, "nested_run", "父调用 ID 必须是发起它的 run_code");
+        assert!(
+            id.starts_with("nested_run:"),
+            "嵌套调用 ID 挂在父调用下：{id}"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(arguments).expect("嵌套调用的参数是完整 JSON");
+        assert!(
+            parsed["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with(".txt")),
+            "参数必须带上路径：{arguments}"
+        );
+    }
     harness.close().await;
 }

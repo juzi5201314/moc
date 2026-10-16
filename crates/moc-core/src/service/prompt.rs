@@ -14,7 +14,7 @@ use moc_protocol::{
     methods::{PromptResult, SessionUpdate, ToolStatus},
 };
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 pub(crate) mod guard;
 pub(crate) mod request;
@@ -788,7 +788,6 @@ async fn run_prompt_locked(
             )
             .await
             .map_err(protocol_to_rpc)?;
-        let mut call_ids = HashMap::<usize, String>::new();
         let mut interrupted = false;
         let mut connection_error = None;
         let response = loop {
@@ -805,7 +804,7 @@ async fn run_prompt_locked(
                     }
                     match event {
                         Some(Ok(event)) => {
-                            if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event, &mut call_ids).await {
+                            if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event).await {
                                 interrupted = true;
                                 connection_error = Some(protocol_to_rpc(error));
                                 break Some(stream.interrupt());

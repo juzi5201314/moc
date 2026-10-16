@@ -1448,38 +1448,20 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
     assert_eq!(result.message.text(), "done");
 
     let updates = updates.lock();
-    let mut deltas: Vec<&str> = Vec::new();
-    let mut empty_ids: Vec<String> = Vec::new();
-    for update in updates.iter() {
-        let SessionUpdate::AssistantDelta { delta, .. } = update else {
-            continue;
-        };
-        match delta {
-            moc_protocol::methods::AssistantDelta::ToolCallStarted { tool_call_id, .. } => {
-                if tool_call_id.is_empty() {
-                    empty_ids.push("ToolCallStarted".into());
-                }
-            }
-            moc_protocol::methods::AssistantDelta::ToolCallArgs {
-                tool_call_id,
-                delta,
-            } => {
-                if tool_call_id.is_empty() {
-                    empty_ids.push(format!("ToolCallArgs({delta})"));
-                }
-                deltas.push(delta);
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        empty_ids.is_empty(),
-        "工具增量不得落到空调用 ID 上：{empty_ids:?}"
-    );
-    assert_eq!(deltas.len(), 1, "参数增量数量：{deltas:?}");
-    let arguments = deltas.concat();
+    // 前端只从 `tool_started` 拿参数：名字与 ID 分片到达的网关下，
+    // 这里必须是真实参数，而不是空 ID 上攒下来的半截增量。
+    let (name, arguments) = updates
+        .iter()
+        .find_map(|update| match update {
+            SessionUpdate::ToolStarted {
+                name, arguments, ..
+            } => Some((name.clone(), arguments.clone())),
+            _ => None,
+        })
+        .expect("收到 tool_started");
+    assert_eq!(name, "bash");
     let arguments: serde_json::Value =
-        serde_json::from_str(&arguments).expect("参数增量拼接后是合法 JSON");
+        serde_json::from_str(&arguments).expect("启动更新里的参数是合法 JSON");
     assert_eq!(arguments["command"], "printf name-first");
     drop(updates);
 

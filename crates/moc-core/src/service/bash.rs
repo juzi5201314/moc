@@ -84,6 +84,7 @@ pub(super) async fn run(
         is_error,
         images: Vec::new(),
     };
+    let arguments = serde_json::to_string(&params.command).expect("Bash 命令参数可序列化");
     inner
         .sessions
         .append(
@@ -108,6 +109,8 @@ pub(super) async fn run(
                 prompt_id: call_id.clone(),
                 tool_call_id: call_id,
                 name: "bash".to_owned(),
+                parent_tool_call_id: None,
+                arguments,
                 status,
                 result: result.clone(),
                 duration_ms: Some(duration_ms),

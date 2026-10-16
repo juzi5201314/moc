@@ -1576,6 +1576,7 @@ fn render_todo(
 mod tests {
     use super::*;
     use crate::theme::ColorLevel;
+    use crate::transcript::{ToolCallFinish, ToolCallStart};
 
     /// 用户消息：使用 `>` 前缀，短消息时间戳右对齐，窄宽度时另起一行。
     #[test]
@@ -1605,14 +1606,19 @@ mod tests {
     fn groups_same_name_tools_from_one_batch() {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
-        app.start_batched_tool_block("call_a".into(), "read".into(), "batch".into());
-        app.start_batched_tool_block("call_b".into(), "read".into(), "batch".into());
-        app.tool_entry_mut("call_a")
-            .expect("第一个工具块")
-            .push_args(r#"{"path":"a.rs"}"#);
-        app.tool_entry_mut("call_b")
-            .expect("第二个工具块")
-            .push_args(r#"{"path":"b.rs"}"#);
+        app.register_tool_batch("batch".into(), ["call_a".to_owned(), "call_b".to_owned()]);
+        app.start_tool_block(ToolCallStart {
+            id: "call_a".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: r#"{"path":"a.rs"}"#.into(),
+        });
+        app.start_tool_block(ToolCallStart {
+            id: "call_b".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: r#"{"path":"b.rs"}"#.into(),
+        });
 
         let lines = render_entry(0, &app.blocks[0], &app, 80, true);
         let text = lines
@@ -1647,24 +1653,28 @@ mod tests {
         // 70 个工具块：只有末尾 64 块进 eager 渲染，前面几块只留估算高度。
         for index in 0..70 {
             let id = format!("call_{index}");
-            app.start_tool_block(id.clone(), "bash".into());
-            app.tool_entry_mut(&id)
-                .expect("工具块存在")
-                .push_args(r#"{"command":"run"}"#);
-            app.finish_tool_block(
-                id.clone(),
-                "bash".into(),
-                None,
-                ToolStatus::Completed,
-                ToolResult {
+            let arguments = r#"{"command":"run"}"#.to_owned();
+            app.start_tool_block(ToolCallStart {
+                id: id.clone(),
+                name: "bash".into(),
+                parent_id: None,
+                arguments: arguments.clone(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.clone(),
+                name: "bash".into(),
+                parent_id: None,
+                arguments,
+                status: ToolStatus::Completed,
+                result: ToolResult {
                     tool_call_id: id,
                     content: result.clone(),
                     is_error: false,
                     images: Vec::new(),
                 },
-                Some(1),
-                None,
-            );
+                duration_ms: Some(1),
+                diff: None,
+            });
         }
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
@@ -1716,26 +1726,40 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        app.start_tool_block("call_bash".into(), "bash".into());
-        app.start_batched_tool_block("call_a".into(), "read".into(), "batch".into());
-        app.start_batched_tool_block("call_b".into(), "read".into(), "batch".into());
-        app.tool_entry_mut("call_bash")
-            .expect("工具块")
-            .push_args(r#"{"command":"print lines"}"#);
-        app.finish_tool_block(
-            "call_bash".into(),
-            "bash".into(),
-            None,
-            ToolStatus::Completed,
-            ToolResult {
+        app.register_tool_batch("batch".into(), ["call_a".to_owned(), "call_b".to_owned()]);
+        app.start_tool_block(ToolCallStart {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: r#"{"command":"print lines"}"#.into(),
+        });
+        app.start_tool_block(ToolCallStart {
+            id: "call_a".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: r#"{"path":"a.rs"}"#.into(),
+        });
+        app.start_tool_block(ToolCallStart {
+            id: "call_b".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: r#"{"path":"b.rs"}"#.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: r#"{"command":"print lines"}"#.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
                 tool_call_id: "call_bash".into(),
                 content: long_result,
                 is_error: false,
                 images: Vec::new(),
             },
-            Some(42),
-            None,
-        );
+            duration_ms: Some(42),
+            diff: None,
+        });
         app.push_block(Block::Todo {
             phases: vec![TodoPhase {
                 phase: "阶段".into(),
@@ -1795,9 +1819,22 @@ mod tests {
     fn batch_members_share_one_generation_scan() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
-        app.start_batched_tool_block("call_a".into(), "read".into(), "batch".into());
-        app.start_batched_tool_block("call_b".into(), "read".into(), "batch".into());
-        app.start_batched_tool_block("call_c".into(), "read".into(), "batch".into());
+        app.register_tool_batch(
+            "batch".into(),
+            [
+                "call_a".to_owned(),
+                "call_b".to_owned(),
+                "call_c".to_owned(),
+            ],
+        );
+        for id in ["call_a", "call_b", "call_c"] {
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "read".into(),
+                parent_id: None,
+                arguments: r#"{"path":"a.rs"}"#.into(),
+            });
+        }
         app.push_note("独立块".into(), false);
         // 只有第二个成员继续变化：同批成员的代次都应是这一批的最大值。
         app.tool_entry_mut("call_b").expect("批次成员").touch();
@@ -1882,24 +1919,27 @@ mod tests {
             .map(|index| format!("line-{index}"))
             .collect::<Vec<_>>()
             .join("\n");
-        app.start_tool_block("call_bash".into(), "bash".into());
-        app.tool_entry_mut("call_bash")
-            .expect("工具块")
-            .push_args(r#"{"command":"run"}"#);
-        app.finish_tool_block(
-            "call_bash".into(),
-            "bash".into(),
-            None,
-            ToolStatus::Completed,
-            ToolResult {
+        app.start_tool_block(ToolCallStart {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: r#"{"command":"run"}"#.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: r#"{"command":"run"}"#.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
                 tool_call_id: "call_bash".into(),
                 content: result,
                 is_error: false,
                 images: Vec::new(),
             },
-            Some(10),
-            None,
-        );
+            duration_ms: Some(10),
+            diff: None,
+        });
         let text_of = |lines: &[Line<'static>]| {
             lines
                 .iter()
@@ -1961,24 +2001,28 @@ mod tests {
             .map(|index| format!("line-{index}"))
             .collect::<Vec<_>>()
             .join("\n");
-        app.start_tool_block("call_read".into(), "read".into());
-        app.tool_entry_mut("call_read")
-            .expect("工具块")
-            .push_args(r#"{"path":"crates/moc-tui/src/app.rs","offset":1,"limit":200}"#);
-        app.finish_tool_block(
-            "call_read".into(),
-            "read".into(),
-            None,
-            ToolStatus::Completed,
-            ToolResult {
+        let read_arguments = r#"{"path":"crates/moc-tui/src/app.rs","offset":1,"limit":200}"#;
+        app.start_tool_block(ToolCallStart {
+            id: "call_read".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: read_arguments.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_read".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: read_arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
                 tool_call_id: "call_read".into(),
                 content: result.clone(),
                 is_error: false,
                 images: Vec::new(),
             },
-            Some(5),
-            None,
-        );
+            duration_ms: Some(5),
+            diff: None,
+        });
 
         for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
@@ -1997,20 +2041,21 @@ mod tests {
         }
 
         // 失败时正文是错误原因，仍可展开。
-        app.finish_tool_block(
-            "call_read".into(),
-            "read".into(),
-            None,
-            ToolStatus::Error,
-            ToolResult {
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_read".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: String::new(),
+            status: ToolStatus::Error,
+            result: ToolResult {
                 tool_call_id: "call_read".into(),
                 content: "读取失败：权限不足".into(),
                 is_error: true,
                 images: Vec::new(),
             },
-            Some(5),
-            None,
-        );
+            duration_ms: Some(5),
+            diff: None,
+        });
         app.tool_detail = DetailLevel::Brief;
         let lines = render_entry(0, &app.blocks[0], &app, width, true);
         let text = lines
@@ -2023,6 +2068,36 @@ mod tests {
             "失败原因必须可见：{text}"
         );
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+    }
+
+    /// 嵌套调用与普通调用共用同一套块与摘要：参数进摘要，父调用决定缩进。
+    #[test]
+    fn nested_tool_call_renders_like_a_normal_one() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_tool_block(ToolCallStart {
+            id: "call_run".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments: r#"{"code":"await tools.grep({pattern:'artifact'})"}"#.into(),
+        });
+        app.start_tool_block(ToolCallStart {
+            id: "call_run:0".into(),
+            name: "grep".into(),
+            parent_id: Some("call_run".into()),
+            arguments: r#"{"pattern":"artifact","path":"artifact://ses_1/job.log"}"#.into(),
+        });
+
+        let text = render_entry(1, &app.blocks[1], &app, 80, true)
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            text.contains("grep artifact"),
+            "嵌套调用的摘要同样取参数里的模式：{text}"
+        );
+        assert!(text.starts_with("  "), "嵌套调用按父调用缩进：{text:?}");
     }
 
     /// diff 简略档停在 6 行并补省略提示；完整档给出行数。
@@ -2057,24 +2132,27 @@ mod tests {
         };
         let total = crate::render::diff::row_count(&diff);
         assert_eq!(total, 9, "3+3+1 行内容 + 2 条 hunk 分隔");
-        app.start_tool_block("call_edit".into(), "edit".into());
-        app.tool_entry_mut("call_edit")
-            .expect("工具块")
-            .push_args(r#"{"path":"src/lib.rs"}"#);
-        app.finish_tool_block(
-            "call_edit".into(),
-            "edit".into(),
-            None,
-            moc_protocol::methods::ToolStatus::Completed,
-            moc_protocol::ToolResult {
+        app.start_tool_block(ToolCallStart {
+            id: "call_edit".into(),
+            name: "edit".into(),
+            parent_id: None,
+            arguments: r#"{"path":"src/lib.rs"}"#.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_edit".into(),
+            name: "edit".into(),
+            parent_id: None,
+            arguments: r#"{"path":"src/lib.rs"}"#.into(),
+            status: moc_protocol::methods::ToolStatus::Completed,
+            result: moc_protocol::ToolResult {
                 tool_call_id: "call_edit".into(),
                 content: String::new(),
                 is_error: false,
                 images: Vec::new(),
             },
-            Some(1),
-            Some(diff),
-        );
+            duration_ms: Some(1),
+            diff: Some(diff),
+        });
         let text_of = |lines: &[Line<'static>]| {
             lines
                 .iter()
@@ -2197,16 +2275,20 @@ mod tests {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
         let width = 60u16;
-        app.start_tool_block("call_msg".into(), "message_agent".into());
-        app.tool_entry_mut("call_msg")
-            .expect("工具块")
-            .push_args(r#"{"target":"all","message":"请复查一下改动"}"#);
-        app.finish_tool_block(
-            "call_msg".into(),
-            "message_agent".into(),
-            None,
-            ToolStatus::Completed,
-            ToolResult {
+        let arguments = r#"{"target":"all","message":"请复查一下改动"}"#;
+        app.start_tool_block(ToolCallStart {
+            id: "call_msg".into(),
+            name: "message_agent".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_msg".into(),
+            name: "message_agent".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
                 tool_call_id: "call_msg".into(),
                 content: serde_json::json!({
                     "receipts": [
@@ -2218,9 +2300,9 @@ mod tests {
                 is_error: true,
                 images: Vec::new(),
             },
-            Some(3),
-            None,
-        );
+            duration_ms: Some(3),
+            diff: None,
+        });
         let lines = render_entry(0, &app.blocks[0], &app, width, true);
         let text = lines
             .iter()
@@ -2249,10 +2331,13 @@ mod tests {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
         let width = 60u16;
-        app.start_tool_block("call_wait".into(), "wait_agent".into());
-        app.tool_entry_mut("call_wait")
-            .expect("工具块")
-            .push_args(r#"{"agent_ids":["ses_a","ses_b"]}"#);
+        let arguments = r#"{"agent_ids":["ses_a","ses_b"]}"#;
+        app.start_tool_block(ToolCallStart {
+            id: "call_wait".into(),
+            name: "wait_agent".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+        });
         app.set_tool_progress(
             "call_wait",
             vec![
@@ -2288,12 +2373,13 @@ mod tests {
             "进度态估算与渲染同源"
         );
 
-        app.finish_tool_block(
-            "call_wait".into(),
-            "wait_agent".into(),
-            None,
-            ToolStatus::Completed,
-            ToolResult {
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_wait".into(),
+            name: "wait_agent".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
                 tool_call_id: "call_wait".into(),
                 content: serde_json::json!({
                     "agents": [
@@ -2308,9 +2394,9 @@ mod tests {
                 is_error: false,
                 images: Vec::new(),
             },
-            Some(1_100),
-            None,
-        );
+            duration_ms: Some(1_100),
+            diff: None,
+        });
         let lines = render_entry(0, &app.blocks[0], &app, width, true);
         let text = lines
             .iter()

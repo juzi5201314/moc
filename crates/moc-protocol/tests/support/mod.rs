@@ -325,28 +325,9 @@ impl ScriptedService {
             AssistantDelta::Reasoning {
                 delta: "先看 README".to_owned(),
             },
-            AssistantDelta::ToolCallStarted {
-                tool_call_id: tool_call_id.to_owned(),
-                name: "bash".to_owned(),
-            },
         ] {
             updates
                 .emit(session_id, SessionUpdate::delta(prompt_id, update))
-                .await
-                .map_err(emit_error)?;
-        }
-        for chunk in ["{\"cmd\":", "\"cargo test\"}"] {
-            updates
-                .emit(
-                    session_id,
-                    SessionUpdate::delta(
-                        prompt_id,
-                        AssistantDelta::ToolCallArgs {
-                            tool_call_id: tool_call_id.to_owned(),
-                            delta: chunk.to_owned(),
-                        },
-                    ),
-                )
                 .await
                 .map_err(emit_error)?;
         }
@@ -357,6 +338,8 @@ impl ScriptedService {
                     prompt_id: prompt_id.to_owned(),
                     tool_call_id: tool_call_id.to_owned(),
                     name: "bash".to_owned(),
+                    parent_tool_call_id: None,
+                    arguments: "{\"cmd\":\"cargo test\"}".to_owned(),
                 },
             )
             .await
@@ -423,6 +406,8 @@ impl ScriptedService {
                     prompt_id: prompt_id.to_owned(),
                     tool_call_id: tool_call_id.to_owned(),
                     name: "bash".to_owned(),
+                    parent_tool_call_id: None,
+                    arguments: "{\"cmd\":\"cargo test\"}".to_owned(),
                     status,
                     result: ToolResult {
                         tool_call_id: tool_call_id.to_owned(),
@@ -1001,8 +986,6 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::ContextCompacted { .. } => "context_compacted",
         SessionUpdate::JobFinished { .. } => "job_finished",
         SessionUpdate::WorkspaceChanged { .. } => "workspace_changed",
-        SessionUpdate::PtcChildStarted { .. } => "ptc_child_started",
-        SessionUpdate::PtcChildFinished { .. } => "ptc_child_finished",
         SessionUpdate::UpstreamMismatch { .. } => "upstream_mismatch",
         SessionUpdate::Error { .. } => "error",
     }

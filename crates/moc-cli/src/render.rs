@@ -69,24 +69,6 @@ impl Renderer {
                     let _ = write!(out, "\x1b[90m{delta}\x1b[0m");
                     let _ = out.flush();
                 }
-                AssistantDelta::ToolCallStarted { tool_call_id, name } => {
-                    state.calls.insert(
-                        tool_call_id,
-                        ToolCallView {
-                            name,
-                            arguments: String::new(),
-                            announced: false,
-                        },
-                    );
-                }
-                AssistantDelta::ToolCallArgs {
-                    tool_call_id,
-                    delta,
-                } => {
-                    if let Some(call) = state.calls.get_mut(&tool_call_id) {
-                        call.arguments.push_str(&delta);
-                    }
-                }
                 AssistantDelta::Reasoning { .. } | AssistantDelta::Usage { .. } => {}
             },
             SessionUpdate::BashStarted {
@@ -108,64 +90,24 @@ impl Renderer {
                     },
                 );
             }
-            SessionUpdate::PtcChildStarted {
-                tool_call_id, name, ..
-            } => {
-                let call = state
-                    .calls
-                    .entry(tool_call_id)
-                    .or_insert_with(|| ToolCallView {
-                        name,
-                        arguments: String::new(),
-                        announced: false,
-                    });
-                announce_call(&mut out, call);
-            }
             SessionUpdate::ToolStarted {
-                tool_call_id, name, ..
-            } => {
-                let call = state
-                    .calls
-                    .entry(tool_call_id)
-                    .or_insert_with(|| ToolCallView {
-                        name,
-                        arguments: String::new(),
-                        announced: false,
-                    });
-                announce_call(&mut out, call);
-            }
-            SessionUpdate::PtcChildFinished {
                 tool_call_id,
                 name,
-                status,
-                result,
-                duration_ms,
+                arguments,
                 ..
             } => {
-                let mut call = state.calls.remove(&tool_call_id).unwrap_or(ToolCallView {
+                let mut call = ToolCallView {
                     name,
-                    arguments: String::new(),
+                    arguments,
                     announced: false,
-                });
-                if !call.announced {
-                    announce_call(&mut out, &mut call);
-                }
-                let _ = writeln!(
-                    out,
-                    "  {}: {} ({status:?}, {} ms)",
-                    call.name,
-                    result
-                        .content
-                        .lines()
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    duration_ms.unwrap_or_default()
-                );
+                };
+                announce_call(&mut out, &mut call);
+                state.calls.insert(tool_call_id, call);
             }
             SessionUpdate::ToolFinished {
                 tool_call_id,
                 name,
+                arguments,
                 status,
                 result,
                 duration_ms,
@@ -173,7 +115,7 @@ impl Renderer {
             } => {
                 let mut call = state.calls.remove(&tool_call_id).unwrap_or(ToolCallView {
                     name,
-                    arguments: String::new(),
+                    arguments,
                     announced: false,
                 });
                 if !call.announced {

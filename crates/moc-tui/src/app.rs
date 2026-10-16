@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use moc_protocol::methods::{TodoPhase, ToolDiff, ToolStatus};
-use moc_protocol::{ContextUsageResult, ModelInfo, SessionInfo, SessionMode, ToolResult, Usage};
+use moc_protocol::methods::TodoPhase;
+use moc_protocol::{ContextUsageResult, ModelInfo, SessionInfo, SessionMode, Usage};
 
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
@@ -16,7 +16,7 @@ pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10)
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
 use crate::theme::Theme;
-use crate::transcript::{Block, DetailLevel, Entry, ToolCallBlock};
+use crate::transcript::{Block, DetailLevel, Entry, ToolCallBlock, ToolCallFinish, ToolCallStart};
 use crate::widgets::completion::CompletionState;
 use crate::widgets::prompt::PromptState;
 
@@ -193,10 +193,8 @@ pub struct App {
 
     /// 工具调用 ID 到批次 ID 的暂存映射，批次开始事件先于各个工具开始事件。
     tool_batches: HashMap<String, String>,
-    /// 工具调用 ID 到转写块下标的索引，工具参数增量走热路径。
+    /// 工具调用 ID 到转写块下标的索引，工具起止更新走热路径。
     tool_indices: HashMap<String, usize>,
-    /// 增量阶段累积的参数：`tool_call_id → JSON 片段拼接`（在工具块创建前到达）。
-    pending_args: HashMap<String, String>,
     generation_start: Option<usize>,
 }
 
@@ -323,7 +321,6 @@ impl App {
             prompt_stash: None,
             tool_batches: HashMap::new(),
             tool_indices: HashMap::new(),
-            pending_args: HashMap::new(),
         }
     }
 
@@ -452,10 +449,32 @@ impl App {
         }
     }
 
-    /// 工具执行开始：把增量阶段累积的信息落地成转写块。
-    pub fn start_tool_block(&mut self, tool_call_id: String, name: String) {
-        let batch_id = self.tool_batches.remove(&tool_call_id);
-        self.start_tool_block_with_parent(tool_call_id, name, None, batch_id);
+    /// 工具执行开始：把更新里的调用信息落地成转写块。
+    ///
+    /// 模型直发的调用与 `run_code` 沙盒里的嵌套调用共用这里，形状只差 `parent_id`
+    /// （嵌套调用据此在滚动区缩进）；批次归属在批次开始时就登记好了。
+    pub fn start_tool_block(&mut self, call: ToolCallStart) {
+        let ToolCallStart {
+            id,
+            name,
+            parent_id,
+            arguments,
+        } = call;
+        let index = self.blocks.len();
+        self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
+            batch_id: self.tool_batches.remove(&id),
+            id: id.clone(),
+            parent_id,
+            name,
+            arguments,
+            status: None,
+            result: None,
+            diff: None,
+            duration_ms: None,
+            running: true,
+            progress: None,
+        })));
+        self.tool_indices.insert(id, index);
     }
 
     /// 登记同一模型响应返回的工具批次。
@@ -468,76 +487,33 @@ impl App {
             self.tool_batches.insert(tool_call_id, batch_id.clone());
         }
     }
-    /// 普通工具批次中的调用开始。
-    pub fn start_batched_tool_block(
-        &mut self,
-        tool_call_id: String,
-        name: String,
-        batch_id: String,
-    ) {
-        self.start_tool_block_with_parent(tool_call_id, name, None, Some(batch_id));
-    }
-
-    /// PTC 子工具开始：保留父调用关系供滚动区缩进展示。
-    pub fn start_child_tool_block(
-        &mut self,
-        tool_call_id: String,
-        name: String,
-        parent_id: String,
-    ) {
-        self.start_tool_block_with_parent(tool_call_id, name, Some(parent_id), None);
-    }
-
-    fn start_tool_block_with_parent(
-        &mut self,
-        tool_call_id: String,
-        name: String,
-        parent_id: Option<String>,
-        batch_id: Option<String>,
-    ) {
-        let arguments = self.pending_args.remove(&tool_call_id).unwrap_or_default();
-        let index = self.blocks.len();
-        self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-            id: tool_call_id.clone(),
-            batch_id,
-            parent_id,
-            name,
-            arguments,
-            status: None,
-            result: None,
-            diff: None,
-            duration_ms: None,
-            running: true,
-            progress: None,
-        })));
-        self.tool_indices.insert(tool_call_id, index);
-    }
 
     /// 工具执行结束：回填终态。
     ///
-    /// `name` / `parent_id` 只在调用块缺席时用得上：批次中断或前端中途接入时更新里
-    /// 没有配对的 `ToolStarted`，这时用它们（以及本地已攒的参数与批次）补建一个与
-    /// 正常路径同形的终态块，而不是把结果丢掉。
-    pub fn finish_tool_block(
-        &mut self,
-        tool_call_id: String,
-        name: String,
-        parent_id: Option<String>,
-        status: ToolStatus,
-        result: ToolResult,
-        duration_ms: Option<u64>,
-        diff: Option<ToolDiff>,
-    ) {
-        if let Some(entry) = self.tool_entry_mut(&tool_call_id) {
+    /// `name` / `parent_id` / `arguments` 只在调用块缺席时用得上：批次中断或前端中途
+    /// 接入时更新里没有配对的 `ToolStarted`，这时用它们（以及本地已登记的批次）补建一个
+    /// 与正常路径同形的终态块，而不是把结果丢掉。
+    pub fn finish_tool_block(&mut self, finish: ToolCallFinish) {
+        let ToolCallFinish {
+            id,
+            name,
+            parent_id,
+            arguments,
+            status,
+            result,
+            duration_ms,
+            diff,
+        } = finish;
+        if let Some(entry) = self.tool_entry_mut(&id) {
             entry.finish_tool(status, result, duration_ms, diff);
         } else {
             let index = self.blocks.len();
             self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-                id: tool_call_id.clone(),
-                batch_id: self.tool_batches.remove(&tool_call_id),
+                batch_id: self.tool_batches.remove(&id),
+                id: id.clone(),
                 parent_id,
                 name,
-                arguments: self.pending_args.remove(&tool_call_id).unwrap_or_default(),
+                arguments,
                 status: Some(status),
                 result: Some(result.content),
                 diff,
@@ -545,7 +521,7 @@ impl App {
                 running: false,
                 progress: None,
             })));
-            self.tool_indices.insert(tool_call_id, index);
+            self.tool_indices.insert(id, index);
         }
     }
 
@@ -591,7 +567,6 @@ impl App {
 
     pub fn start_generation(&mut self) {
         self.generation_start = Some(self.blocks.len());
-        self.pending_args.clear();
     }
 
     pub fn commit_generation(&mut self) {
@@ -605,7 +580,6 @@ impl App {
         }
         self.tool_indices
             .retain(|_, index| *index < self.blocks.len());
-        self.pending_args.clear();
         self.thinking_started_at = None;
     }
     /// 结束当前思考块并记录实际思考时长。
@@ -872,10 +846,9 @@ impl App {
             self.set_notice("CLM 实验模式已启用：模型将维护实时上下文");
         }
         self.tool_indices.clear();
-        // 增量临时表只服务于当前视图的流：转写里已有参数与批次归属的完整形态，
-        // 换会话后旧的片段既无块可续、也可能被兜底补建误用。
+        // 批次暂存只服务于当前视图的流：转写里已有批次归属的完整形态，
+        // 换会话后旧的批次表中的调用既无块可续、也可能被兜底补建误用。
         self.tool_batches.clear();
-        self.pending_args.clear();
         for (index, entry) in self.blocks.iter().enumerate() {
             if let Block::Tool(tool) = &entry.block {
                 self.tool_indices.insert(tool.id.clone(), index);
@@ -989,14 +962,6 @@ impl App {
             text.push_str(&marker[..marker_bytes]);
         }
         entry.touch();
-    }
-
-    /// 累积「参数增量先于工具执行开始」到达的参数片段。
-    pub fn push_pending_args(&mut self, tool_call_id: &str, delta: String) {
-        self.pending_args
-            .entry(tool_call_id.to_owned())
-            .or_default()
-            .push_str(&delta);
     }
 
     // ---------- 输入框编辑（委托给 PromptState） ----------
@@ -1158,11 +1123,13 @@ mod streaming_budget_tests {
     }
 }
 
-/// 调用块的补建：`ToolFinished` / `PtcChildFinished` 自带工具名与父调用，
+/// 调用块的补建：`ToolFinished` 自带工具名、父调用与参数，
 /// 前端在缺席 `ToolStarted` 时据此补出与正常路径同形的终态块。
 #[cfg(test)]
 mod tool_recovery_tests {
     use super::*;
+    use moc_protocol::ToolResult;
+    use moc_protocol::methods::ToolStatus;
 
     fn result(tool_call_id: &str, content: &str) -> ToolResult {
         ToolResult {
@@ -1178,17 +1145,16 @@ mod tool_recovery_tests {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
         app.register_tool_batch("batch_1".to_owned(), ["call_1".to_owned()]);
-        // 参数增量先于调用开始到达：攒在本地，补建时一并恢复。
-        app.push_pending_args("call_1", r#"{"command":"cargo test"}"#.to_owned());
-        app.finish_tool_block(
-            "call_1".to_owned(),
-            "bash".to_owned(),
-            None,
-            ToolStatus::Completed,
-            result("call_1", "退出码 0"),
-            Some(7),
-            None,
-        );
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_1".to_owned(),
+            name: "bash".to_owned(),
+            parent_id: None,
+            arguments: r#"{"command":"cargo test"}"#.to_owned(),
+            status: ToolStatus::Completed,
+            result: result("call_1", "退出码 0"),
+            duration_ms: Some(7),
+            diff: None,
+        });
 
         let Block::Tool(tool) = &app.blocks[0].block else {
             panic!("缺席调用开始时应当补建工具块");
@@ -1208,15 +1174,16 @@ mod tool_recovery_tests {
     fn orphan_ptc_child_finish_keeps_parent_and_name() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
-        app.finish_tool_block(
-            "call_parent:1".to_owned(),
-            "read".to_owned(),
-            Some("call_parent".to_owned()),
-            ToolStatus::Error,
-            result("call_parent:1", "读取失败"),
-            Some(3),
-            None,
-        );
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_parent:1".to_owned(),
+            name: "read".to_owned(),
+            parent_id: Some("call_parent".to_owned()),
+            arguments: r#"{"path":"artifact://ses_1/a.txt"}"#.to_owned(),
+            status: ToolStatus::Error,
+            result: result("call_parent:1", "读取失败"),
+            duration_ms: Some(3),
+            diff: None,
+        });
 
         let Block::Tool(tool) = &app.blocks[0].block else {
             panic!("缺席子调用开始时应当补建工具块");
@@ -1227,6 +1194,7 @@ mod tool_recovery_tests {
             Some("call_parent"),
             "子调用保持缩进归属"
         );
+        assert_eq!(tool.arguments, r#"{"path":"artifact://ses_1/a.txt"}"#);
         assert_eq!(tool.status, Some(ToolStatus::Error));
     }
 }
@@ -1331,7 +1299,6 @@ mod tests {
         app.inflight_session_ops.insert("ses_a".into());
         app.interrupt_pending.insert("ses_a".into());
         app.register_tool_batch("batch_a".into(), ["call_a".into()]);
-        app.push_pending_args("call_a", r#"{"command":"run"}"#.into());
 
         // 切到一个空闲会话：本地状态清空，会话级记账仍留给原会话回收。
         app.switch_session(session("ses_b"), Vec::new());
@@ -1344,8 +1311,7 @@ mod tests {
         assert_eq!(app.usage, Usage::default());
         assert_eq!(app.cost_usd, 0.0);
         assert!(app.todos.is_empty());
-        assert!(app.tool_batches.is_empty(), "增量临时表不跨会话留存");
-        assert!(app.pending_args.is_empty());
+        assert!(app.tool_batches.is_empty(), "批次暂存不跨会话留存");
         assert!(app.inflight_prompts.contains("ses_a"), "在飞记账按会话保留");
         assert!(app.inflight_session_ops.contains("ses_a"));
         assert!(app.interrupt_pending.contains("ses_a"));

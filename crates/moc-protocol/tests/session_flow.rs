@@ -7,11 +7,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use moc_protocol::methods::{
-    AskAnswer, AskResult, AssistantDelta, ClientCapabilities, ConfigGet, ConfigGetParams,
-    PlanAction, ServerCapabilities, SessionCancel, SessionCancelParams, SessionCompact,
-    SessionCompactParams, SessionDelete, SessionDeleteParams, SessionList, SessionListParams,
-    SessionLoad, SessionLoadParams, SessionMode, SessionPlanApprove, SessionPlanApproveParams,
-    SessionPrompt, SessionRename, SessionRenameParams, SessionRequestAsk, SessionRequestPermission,
+    AskAnswer, AskResult, ClientCapabilities, ConfigGet, ConfigGetParams, PlanAction,
+    ServerCapabilities, SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams,
+    SessionDelete, SessionDeleteParams, SessionList, SessionListParams, SessionLoad,
+    SessionLoadParams, SessionMode, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt,
+    SessionRename, SessionRenameParams, SessionRequestAsk, SessionRequestPermission,
     SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams, SessionUnlock,
     SessionUnlockParams, SessionUpdate, SessionUpdateMethod, ToolStatus,
 };
@@ -177,9 +177,6 @@ async fn prompt_streams_updates_and_matches_result() {
             "prompt_started",
             "assistant_delta",
             "assistant_delta",
-            "assistant_delta",
-            "assistant_delta",
-            "assistant_delta",
             "tool_started",
             "permission_requested",
             "permission_resolved",
@@ -192,17 +189,14 @@ async fn prompt_streams_updates_and_matches_result() {
     // 拿到这次提示的全部更新后统一检查：先看顺序，再看内容
     let updates = log.take();
 
-    // 工具参数增量按 tool_call_id 归组，拼起来就是完整参数
-    let arguments: String = updates
+    // 工具参数随 `tool_started` 一次性给出，内容就是执行时用的那一份
+    let arguments = updates
         .iter()
-        .filter_map(|update| match update {
-            SessionUpdate::AssistantDelta {
-                delta: AssistantDelta::ToolCallArgs { delta, .. },
-                ..
-            } => Some(delta.as_str()),
+        .find_map(|update| match update {
+            SessionUpdate::ToolStarted { arguments, .. } => Some(arguments.as_str()),
             _ => None,
         })
-        .collect();
+        .expect("收到 tool_started");
     assert_eq!(arguments, "{\"cmd\":\"cargo test\"}");
 
     let finished = updates

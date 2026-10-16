@@ -2,8 +2,7 @@
 //!
 //! 通知**不透传** `moc_llm::StreamEvent`：那是供应商细节（内容块序号、签名、
 //! 上游响应 ID），前端既无法渲染也不需要。core 负责把它投影成 UI 友好的
-//! [`AssistantDelta`]，其中工具调用增量按 `tool_call_id` 归组，前端可以直接
-//! 「按 ID 追加参数文本」而不必维护序号映射。
+//! [`AssistantDelta`]，只保留前端能直接渲染的文本类内容。
 //!
 //! # `StreamEvent` → `AssistantDelta` 投影表
 //!
@@ -14,13 +13,18 @@
 //! | `ReasoningDelta { index, text }` | `Reasoning { delta: text }` |
 //! | `ReasoningSignature { index, signature }` | 丢弃（不透明，前端无法渲染；完整内容随 `prompt_finished.message` 给出） |
 //! | `ReasoningItem { index, item }` | 丢弃（同上） |
-//! | `ToolCallStart { index, id, name }` | `ToolCallStarted { tool_call_id: id, name }`，并记录 `index → id` |
-//! | `ToolCallArgumentsDelta { index, json }` | `ToolCallArgs { tool_call_id: index 映射到的 id, delta: json }`；查不到映射说明对端违约，丢弃并 `warn` |
+//! | `ToolCallStart { index, id, name }` | 丢弃（调用块由 [`SessionUpdate::ToolStarted`] 建立，名字随它给出） |
+//! | `ToolCallArgumentsDelta { index, json }` | 丢弃（参数随 [`SessionUpdate::ToolStarted`] 的 `arguments` 一次性给出） |
 //! | `Usage(usage)` | `Usage { usage }` |
 //!
-//! `index` 是同一响应内内容块的位置，只在一次流内有效，因此映射表随提示销毁。
-//! 若上游先发参数后发名字（无法建立映射），core 应丢弃该次参数增量并 `warn`，
-//! 而不是改协议形状——完整参数随 `prompt_finished.message` 一并给出。
+//! `index` 是同一响应内内容块的位置，只在一次流内有效。
+//!
+//! # 工具调用参数
+//!
+//! 参数**只**经 [`SessionUpdate::ToolStarted`] / [`SessionUpdate::ToolFinished`] 的
+//! `arguments` 下发，内容是 core 实际执行的那一份；前端不必自己拼接增量，也就不存在
+//! 「增量与执行分叉」的形态。模型直发的调用与 `run_code` 沙盒里的嵌套调用共用这两个
+//! 更新：嵌套调用的 `parent_tool_call_id` 指向发起它的 `run_code`，其余字段含义相同。
 //!
 //! # 兼容规则
 //!
@@ -128,7 +132,7 @@ pub enum SessionUpdate {
         tool_call_id: String,
         command: super::bash::BashCommand,
     },
-    /// 一次工具调用开始执行。
+    /// 一次工具调用开始执行（模型直发与 `run_code` 沙盒内的嵌套调用共用）。
     ToolStarted {
         /// prompt ID。
         prompt_id: String,
@@ -136,6 +140,11 @@ pub enum SessionUpdate {
         tool_call_id: String,
         /// 工具名。
         name: String,
+        /// 父调用 ID；`Some` 表示这是 `run_code` 沙盒里发起、以该调用为父的嵌套调用。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_call_id: Option<String>,
+        /// 参数 JSON 原文：core 实际执行的那一份，前端直接展示。
+        arguments: String,
     },
     /// 一次工具调用结束。
     ToolFinished {
@@ -145,6 +154,11 @@ pub enum SessionUpdate {
         tool_call_id: String,
         /// 工具名；与 [`SessionUpdate::ToolStarted`] 同源，前端补建缺席的调用块时据此命名。
         name: String,
+        /// 父调用 ID；与 [`SessionUpdate::ToolStarted`] 同源。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_call_id: Option<String>,
+        /// 参数 JSON 原文；与 [`SessionUpdate::ToolStarted`] 同源，供前端补建缺席的调用块。
+        arguments: String,
         /// 终态。
         status: ToolStatus,
         /// 工具回灌给模型的结果原文。
@@ -154,27 +168,6 @@ pub enum SessionUpdate {
         duration_ms: Option<u64>,
         /// 文件变更的结构化 diff；仅 `edit` / `write` 成功时由 core 给出，
         /// 授权弹窗与 transcript 的 diff 渲染都以此为准。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        diff: Option<ToolDiff>,
-    },
-    /// PTC JavaScript 发起的嵌套工具开始事件。
-    PtcChildStarted {
-        prompt_id: String,
-        parent_tool_call_id: String,
-        tool_call_id: String,
-        name: String,
-    },
-    /// PTC JavaScript 发起的嵌套工具结束事件。
-    PtcChildFinished {
-        prompt_id: String,
-        parent_tool_call_id: String,
-        tool_call_id: String,
-        /// 工具名；与 [`SessionUpdate::PtcChildStarted`] 同源。
-        name: String,
-        status: ToolStatus,
-        result: ToolResult,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        duration_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
     },
@@ -324,20 +317,6 @@ pub enum AssistantDelta {
         /// 增量文本。
         delta: String,
     },
-    /// 一次工具调用开始（名字此时才已知）。
-    ToolCallStarted {
-        /// 调用 ID；后续 [`AssistantDelta::ToolCallArgs`] 用它归组。
-        tool_call_id: String,
-        /// 工具名。
-        name: String,
-    },
-    /// 工具调用参数增量（JSON 片段，按序拼接后即完整参数）。
-    ToolCallArgs {
-        /// 调用 ID。
-        tool_call_id: String,
-        /// JSON 片段。
-        delta: String,
-    },
     /// token 用量刷新。
     Usage {
         /// 用量。
@@ -436,26 +415,6 @@ mod tests {
                 json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "reasoning", "delta": "想" } }),
             ),
             (
-                SessionUpdate::delta(
-                    "prompt_1",
-                    AssistantDelta::ToolCallStarted {
-                        tool_call_id: "call_9".into(),
-                        name: "bash".into(),
-                    },
-                ),
-                json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "tool_call_started", "tool_call_id": "call_9", "name": "bash" } }),
-            ),
-            (
-                SessionUpdate::delta(
-                    "prompt_1",
-                    AssistantDelta::ToolCallArgs {
-                        tool_call_id: "call_9".into(),
-                        delta: "{\"cmd\":".into(),
-                    },
-                ),
-                json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "tool_call_args", "tool_call_id": "call_9", "delta": "{\"cmd\":" } }),
-            ),
-            (
                 SessionUpdate::delta("prompt_1", AssistantDelta::Usage { usage: usage() }),
                 json!({ "type": "assistant_delta", "prompt_id": "prompt_1", "delta": { "type": "usage", "usage": { "input_tokens": 12, "output_tokens": 3, "total_tokens": null, "cached_input_tokens": null, "cache_creation_input_tokens": null, "reasoning_tokens": null } } }),
             ),
@@ -464,14 +423,28 @@ mod tests {
                     prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     name: "bash".into(),
+                    parent_tool_call_id: None,
+                    arguments: "{\"command\":\"ls\"}".into(),
                 },
-                json!({ "type": "tool_started", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "bash" }),
+                json!({ "type": "tool_started", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "bash", "arguments": "{\"command\":\"ls\"}" }),
+            ),
+            (
+                SessionUpdate::ToolStarted {
+                    prompt_id: "prompt_1".into(),
+                    tool_call_id: "call_0:1".into(),
+                    name: "read".into(),
+                    parent_tool_call_id: Some("call_0".into()),
+                    arguments: "{\"path\":\"a.rs\"}".into(),
+                },
+                json!({ "type": "tool_started", "prompt_id": "prompt_1", "tool_call_id": "call_0:1", "name": "read", "parent_tool_call_id": "call_0", "arguments": "{\"path\":\"a.rs\"}" }),
             ),
             (
                 SessionUpdate::ToolFinished {
                     prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     name: "bash".into(),
+                    parent_tool_call_id: None,
+                    arguments: "{\"command\":\"cargo test\"}".into(),
                     status: ToolStatus::Denied,
                     result: ToolResult {
                         tool_call_id: "call_9".into(),
@@ -483,13 +456,15 @@ mod tests {
                     duration_ms: None,
                     diff: None,
                 },
-                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "bash", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
+                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "bash", "arguments": "{\"command\":\"cargo test\"}", "status": "denied", "result": { "tool_call_id": "call_9", "content": "用户拒绝", "is_error": true } }),
             ),
             (
                 SessionUpdate::ToolFinished {
                     prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     name: "edit".into(),
+                    parent_tool_call_id: Some("call_8".into()),
+                    arguments: "{\"path\":\"/tmp/a.rs\"}".into(),
                     status: ToolStatus::Completed,
                     result: ToolResult {
                         tool_call_id: "call_9".into(),
@@ -515,7 +490,7 @@ mod tests {
                         truncated: false,
                     }),
                 },
-                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "edit", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
+                json!({ "type": "tool_finished", "prompt_id": "prompt_1", "tool_call_id": "call_9", "name": "edit", "parent_tool_call_id": "call_8", "arguments": "{\"path\":\"/tmp/a.rs\"}", "status": "completed", "result": { "tool_call_id": "call_9", "content": "已编辑", "is_error": false }, "duration_ms": 12, "diff": { "files": [{ "path": "/tmp/a.rs", "hunks": [{ "old_start": 1, "new_start": 1, "lines": [{ "kind": "delete", "old_no": 1, "text": "旧行" }] }] }], "truncated": false } }),
             ),
             (
                 SessionUpdate::PermissionRequested {

@@ -114,6 +114,8 @@ pub(super) async fn execute_tool_batch(
                     prompt_id: prompt_id.to_owned(),
                     tool_call_id: call.id.clone(),
                     name: call.name.clone(),
+                    parent_tool_call_id: None,
+                    arguments: call.arguments.clone(),
                 },
             )
             .await
@@ -174,6 +176,8 @@ pub(super) async fn execute_tool_batch(
                         prompt_id: prompt_id.to_owned(),
                         tool_call_id: call.id.clone(),
                         name: call.name.clone(),
+                        parent_tool_call_id: None,
+                        arguments: call.arguments.clone(),
                     },
                 )
                 .await
@@ -292,6 +296,8 @@ pub(super) async fn execute_tool_batch(
                     prompt_id: prompt_id.to_owned(),
                     tool_call_id: call.id.clone(),
                     name: call.name.clone(),
+                    parent_tool_call_id: None,
+                    arguments: call.arguments.clone(),
                     status,
                     result: tool_result,
                     duration_ms: Some(duration_ms),

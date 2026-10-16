@@ -32,7 +32,7 @@ use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_em
 use crate::render;
 use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
-use crate::transcript::DetailLevel;
+use crate::transcript::{DetailLevel, ToolCallFinish, ToolCallStart};
 use crate::widgets::prompt::{clamp_cursor, cursor_next, cursor_prev};
 
 /// TUI 启动参数（从 CLI 参数翻译而来）。
@@ -2948,70 +2948,52 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                     "\n\n[思考内容过长，已停止在界面展开]\n",
                 );
             }
-            moc_protocol::methods::AssistantDelta::ToolCallStarted {
-                tool_call_id: _,
-                name: _,
-            } => {}
-            moc_protocol::methods::AssistantDelta::ToolCallArgs {
-                tool_call_id,
-                delta,
-            } => {
-                if let Some(entry) = app.tool_entry_mut(&tool_call_id) {
-                    entry.push_args(&delta);
-                } else {
-                    app.push_pending_args(&tool_call_id, delta);
-                }
-            }
             moc_protocol::methods::AssistantDelta::Usage { usage } => app.apply_usage(usage),
         },
-        SessionUpdate::PtcChildStarted {
-            tool_call_id,
-            name,
-            parent_tool_call_id,
-            ..
-        } => app.start_child_tool_block(tool_call_id, name, parent_tool_call_id),
         SessionUpdate::BashStarted {
             tool_call_id,
             command,
-        } => {
-            app.start_tool_block(tool_call_id.clone(), "bash".into());
-            if let Some(entry) = app.tool_entry_mut(&tool_call_id) {
-                entry.push_args(&serde_json::to_string(&command).expect("Bash 参数可序列化"));
-            }
-        }
-        SessionUpdate::PtcChildFinished {
-            tool_call_id,
-            parent_tool_call_id,
-            name,
-            status,
-            result,
-            duration_ms,
-            diff,
-            ..
-        } => app.finish_tool_block(
-            tool_call_id,
-            name,
-            Some(parent_tool_call_id),
-            status,
-            result,
-            duration_ms,
-            diff,
-        ),
+        } => app.start_tool_block(ToolCallStart {
+            id: tool_call_id,
+            name: "bash".into(),
+            parent_id: None,
+            arguments: serde_json::to_string(&command).expect("Bash 参数可序列化"),
+        }),
         SessionUpdate::ToolStarted {
-            tool_call_id, name, ..
+            tool_call_id,
+            name,
+            parent_tool_call_id,
+            arguments,
+            prompt_id: _,
         } => {
             app.commit_generation();
-            app.start_tool_block(tool_call_id, name);
+            app.start_tool_block(ToolCallStart {
+                id: tool_call_id,
+                name,
+                parent_id: parent_tool_call_id,
+                arguments,
+            });
         }
         SessionUpdate::ToolFinished {
             tool_call_id,
             name,
+            parent_tool_call_id,
+            arguments,
             status,
             result,
             duration_ms,
             diff,
-            ..
-        } => app.finish_tool_block(tool_call_id, name, None, status, result, duration_ms, diff),
+            prompt_id: _,
+        } => app.finish_tool_block(ToolCallFinish {
+            id: tool_call_id,
+            name,
+            parent_id: parent_tool_call_id,
+            arguments,
+            status,
+            result,
+            duration_ms,
+            diff,
+        }),
         SessionUpdate::PromptStarted { .. } => {
             app.prompt_running = true;
             app.ctrl_c_pending = None;
@@ -4649,7 +4631,12 @@ mod tests {
             "代理消息必须成为转写卡片"
         );
 
-        app.start_tool_block("call_wait".into(), "wait_agent".into());
+        app.start_tool_block(ToolCallStart {
+            id: "call_wait".into(),
+            name: "wait_agent".into(),
+            parent_id: None,
+            arguments: "{}".into(),
+        });
         apply_update(
             &mut app,
             SessionUpdate::ToolProgress {
