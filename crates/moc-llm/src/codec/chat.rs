@@ -552,6 +552,15 @@ pub(crate) struct ChatStreamDecoder {
     /// 并行调用数（个位数），因此用 `Vec` 直接下标寻址，不做哈希；下标另由
     /// [`MAX_TOOL_CALL_SLOTS`] 兜底，超限即拒绝整条流。
     tool_ids: Vec<String>,
+    /// 工具调用 index → 已收到的名称片段拼接。
+    ///
+    /// `ToolCallStart` 必须携带最终 ID：网关可能把 `id` 拆到后续 chunk
+    /// （name 先到）。提前用空 ID 发射会让下游把该调用的参数增量落到空 ID 上，
+    /// 与消息累加器里锁存的真实 ID 分叉，参数就此丢失。
+    tool_names: Vec<String>,
+    /// 工具调用 index → `ToolCallStart` 是否已发射。每个 index 只发一次，
+    /// 名称分片的后续片段只累积不重发，避免下游为同一调用建重复块。
+    tool_started: Vec<bool>,
 }
 
 impl ChatStreamDecoder {
@@ -566,6 +575,8 @@ impl ChatStreamDecoder {
             finish_reason: None,
             reasoning_fields,
             tool_ids: Vec::new(),
+            tool_names: Vec::new(),
+            tool_started: Vec::new(),
         }
     }
 
@@ -634,20 +645,32 @@ impl ChatStreamDecoder {
 
         if self.tool_ids.len() <= index {
             self.tool_ids.resize(index + 1, String::new());
+            self.tool_names.resize(index + 1, String::new());
+            self.tool_started.resize(index + 1, false);
         }
         let id = call.get("id").and_then(Value::as_str).unwrap_or_default();
         if self.tool_ids[index].is_empty() && !id.is_empty() {
             self.tool_ids[index] = id.to_owned();
         }
-        let name = call
+        // 名称片段累积；少数网关把工具名拆到多个 chunk，此时拼接。
+        if let Some(fragment) = call
             .pointer("/function/name")
             .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !name.is_empty() {
+            .filter(|name| !name.is_empty())
+        {
+            self.tool_names[index].push_str(fragment);
+        }
+        // 每个 index 只发一次 `ToolCallStart`，且必须等到 ID 与名称都齐：
+        // 提前用空 ID 发射会让参数增量落到空 ID 上，与累加器锁存的真实 ID 分叉。
+        if !self.tool_started[index]
+            && !self.tool_ids[index].is_empty()
+            && !self.tool_names[index].is_empty()
+        {
+            self.tool_started[index] = true;
             out.push(Ok(StreamEvent::ToolCallStart {
                 index,
                 id: self.tool_ids[index].clone(),
-                name: name.to_owned(),
+                name: self.tool_names[index].clone(),
             }));
         }
         let arguments = call
@@ -1537,13 +1560,15 @@ mod tests {
     }
 
     #[test]
-    fn tool_name_fragments_concatenated() {
+    fn tool_name_fragments_concatenated_into_single_start() {
+        // 名称分片在同一 chunk 前只累积：Start 每调用只发一次，带当时拼出的名称；
+        // 之后的名称片段不再触发第二次 Start（第二次 Start 会让下游建重复块）。
         let mut decoder = ChatStreamDecoder::new(&config());
         let events = events(
             &mut decoder,
             &[
-                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_"}}]},"finish_reason":null}]}"#,
-                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"weather"}}]},"finish_reason":null}]}"#,
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get"}}]},"finish_reason":null}]}"#,
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"_weather"}}]},"finish_reason":null}]}"#,
                 r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}"#,
                 "[DONE]",
             ],
@@ -1559,16 +1584,53 @@ mod tests {
                 StreamEvent::ToolCallStart {
                     index: 0,
                     id: "call_1".into(),
-                    name: "get_".into(),
-                },
-                StreamEvent::ToolCallStart {
-                    index: 0,
-                    id: "call_1".into(),
-                    name: "weather".into(),
+                    name: "get".into(),
                 },
                 StreamEvent::ToolCallArgumentsDelta {
                     index: 0,
                     json: "{}".into(),
+                },
+                StreamEvent::Done {
+                    finish_reason: FinishReason::ToolCalls,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_call_start_waits_for_real_id() {
+        // 网关可能先发名称、后发 ID：Start 必须推迟到 ID 到位，并携带真实 ID；
+        // 若提前用空 ID 发射，下游会把该调用的参数增量落到空 ID 上（参数丢失）。
+        let mut decoder = ChatStreamDecoder::new(&config());
+        let events = events(
+            &mut decoder,
+            &[
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"bash"}}]},"finish_reason":null}]}"#,
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"arguments":"{\"command\":"}}]},"finish_reason":null}]}"#,
+                r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+                "[DONE]",
+            ],
+        );
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::Start {
+                    id: None,
+                    model: None,
+                    effort: None,
+                },
+                StreamEvent::ToolCallStart {
+                    index: 0,
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                },
+                StreamEvent::ToolCallArgumentsDelta {
+                    index: 0,
+                    json: "{\"command\":".into(),
+                },
+                StreamEvent::ToolCallArgumentsDelta {
+                    index: 0,
+                    json: "\"ls\"}".into(),
                 },
                 StreamEvent::Done {
                     finish_reason: FinishReason::ToolCalls,

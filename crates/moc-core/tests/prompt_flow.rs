@@ -1325,6 +1325,198 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
 }
 
 #[tokio::test]
+async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::json;
+
+    // 网关把工具名放进先到的 chunk、`id` 放到后续 chunk：参数增量必须归到真实
+    // 调用 ID 上；若 `ToolCallStart` 带着空 ID 提前发射，前端会把参数落到空 ID
+    // 上，工具块只剩动作没有命令。
+    let mut named = json!({
+        "id": "chatcmpl-name-first",
+        "model": "model",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [{
+            "index": 0,
+            "type": "function",
+            "function": {"name": "bash"},
+        }]}, "finish_reason": null}],
+    });
+    named["choices"][0]["delta"]["tool_calls"][0]
+        .as_object_mut()
+        .expect("tool call 是对象")
+        .remove("id");
+    let with_id = json!({
+        "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_name_first",
+            "type": "function",
+            "function": {"arguments": "{\"command\":\"printf name-first\"}"},
+        }]}, "finish_reason": null}],
+    });
+    let finalized = json!({
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    });
+    let follow_up = concat!(
+        "data: {\"id\":\"chatcmpl-name-first-done\",\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"done\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let response = format!(
+        "data: {named}\n\ndata: {with_id}\n\ndata: {finalized}\n\ndata: [DONE]\n\n"
+    );
+    let responses = [response, follow_up.to_owned()];
+    let response_index = Arc::new(AtomicUsize::new(0));
+    let response_counter = Arc::clone(&response_index);
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = response_counter.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_raw(responses[index].clone(), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+
+    let root = tempfile::tempdir().expect("temporary project root");
+    let home = root.path().join("home");
+    let cwd = root.path().join("workspace");
+    let sessions = root.path().join("sessions");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&cwd).expect("create workspace");
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[models.roles]\ndefault='test/model:off'\nexplore='test/model:off'\nplan='test/model:off'\n\
+             [providers.test]\napi='openai_chat'\nbase_url='{}/v1'\napi_key=''\n\
+             [providers.test.models.model]\ncontext_window=100000\nmax_output_tokens=4096\n\
+             [session]\ndir={:?}\n\
+             [workspace]\nwatch=true\nmax_scan_entries=1000\n\
+             [context_files]\nenabled=false\n\
+             [compaction]\nenabled=false\n\
+             [limits]\nmax_turns_per_prompt=4\n",
+            upstream.uri(),
+            sessions.to_string_lossy(),
+        ),
+    )
+    .expect("write config");
+
+    let core = Core::new(CoreConfig {
+        home,
+        cwd: cwd.clone(),
+        overlays: Vec::new(),
+        session_dir: None,
+        client: Client::new(),
+    })
+    .expect("construct core");
+    let (core_side, frontend_side) = transport::duplex(64 * 1024);
+    let server = Server::with_options((*core).clone(), ServerOptions::default());
+    let connection = server.spawn(core_side);
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let update_sink = Arc::clone(&updates);
+    let (client, _) = ClientBuilder::new(ClientInfo {
+        name: "moc-core-name-first-test".into(),
+        version: "0.1.0".into(),
+        frontend: "test".into(),
+    })
+    .capabilities(ClientCapabilities {
+        permission_requests: true,
+        ask_requests: true,
+    })
+    .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
+        update_sink.lock().push(params.update);
+        std::future::ready(())
+    })
+    .connect(frontend_side)
+    .await
+    .expect("connect embedded protocol client");
+
+    let session = client
+        .call::<SessionNew>(SessionNewParams {
+            cwd: None,
+            model: None,
+            title: None,
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("create session");
+    let result = client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: session.id.clone(),
+            input: vec![InputPart::Text {
+                text: "运行 name-first".into(),
+            }],
+            mode: None,
+            agent_message: None,
+        })
+        .await
+        .expect("run prompt");
+    assert_eq!(result.message.text(), "done");
+
+    let updates = updates.lock();
+    let mut deltas: Vec<&str> = Vec::new();
+    let mut empty_ids: Vec<String> = Vec::new();
+    for update in updates.iter() {
+        let SessionUpdate::AssistantDelta { delta, .. } = update else {
+            continue;
+        };
+        match delta {
+            moc_protocol::methods::AssistantDelta::ToolCallStarted { tool_call_id, .. } => {
+                if tool_call_id.is_empty() {
+                    empty_ids.push("ToolCallStarted".into());
+                }
+            }
+            moc_protocol::methods::AssistantDelta::ToolCallArgs {
+                tool_call_id,
+                delta,
+            } => {
+                if tool_call_id.is_empty() {
+                    empty_ids.push(format!("ToolCallArgs({delta})"));
+                }
+                deltas.push(delta);
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        empty_ids.is_empty(),
+        "工具增量不得落到空调用 ID 上：{empty_ids:?}"
+    );
+    assert_eq!(deltas.len(), 1, "参数增量数量：{deltas:?}");
+    let arguments = deltas.concat();
+    let arguments: serde_json::Value =
+        serde_json::from_str(&arguments).expect("参数增量拼接后是合法 JSON");
+    assert_eq!(arguments["command"], "printf name-first");
+    drop(updates);
+
+    let loaded = client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id: session.id,
+            max_entries: None,
+        })
+        .await
+        .expect("load session");
+    let persisted = loaded
+        .entries
+        .iter()
+        .find_map(|entry| {
+            entry
+                .message
+                .tool_calls()
+                .find(|call| call.id == "call_name_first")
+                .cloned()
+        })
+        .expect("持久化的工具调用");
+    assert_eq!(persisted.name, "bash");
+    assert_eq!(persisted.arguments, "{\"command\":\"printf name-first\"}");
+
+    core.shutdown().await;
+    drop(client);
+    drop(connection);
+    drop(server);
+}
+
+#[tokio::test]
 async fn transient_prompt_mode_is_read_only_and_not_persisted() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 

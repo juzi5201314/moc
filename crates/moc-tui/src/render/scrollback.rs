@@ -2309,37 +2309,4 @@ mod tests {
             "结果态估算与渲染同源"
         );
     }
-
-    #[test]
-    fn tmp_repro_empty_bash_command() {
-        use moc_protocol::ToolResult;
-        use moc_protocol::methods::ToolStatus;
-
-        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(crate::theme::Theme::global(), events);
-        let width = 80u16;
-        app.tool_detail = DetailLevel::Full;
-        let result = "\npub fn filtered_entries<'a>(entries: &'a [ModelEntry], query: &str) -> Vec<(usize, &'a ModelEntry)> {\n    let query = query.to_lowercase();\n    entries\n        .iter()\n        .enumerate()\n        .filter(|(_, entry)| {\n            query.is_empty()\n                || entry.label.to_lowercase().contains(&query)\n                || entry.display_name.to_lowercase().contains(&query)\n\n        .collect()\n}\n\npub fn filtered_sessions<'a>(\n";
-        app.start_tool_block("call_0_186028a48b407df4".into(), "bash".into());
-        app.tool_entry_mut("call_0_186028a48b407df4")
-            .expect("工具块")
-            .push_args(r#"{"command":"cd /home/soeur/project/moc && sed -n 760,774p crates/moc-tui/src/modal.rs"}"#);
-        app.finish_tool_block(
-            "call_0_186028a48b407df4".into(),
-            ToolStatus::Completed,
-            ToolResult {
-                tool_call_id: "call_0_186028a48b407df4".into(),
-                content: result.into(),
-                is_error: false,
-                images: Vec::new(),
-            },
-            Some(208),
-            None,
-        );
-        let lines = render_entry(0, &app.blocks[0], &app, width, true);
-        for line in &lines {
-            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            eprintln!("[{text}]");
-        }
-    }
 }
