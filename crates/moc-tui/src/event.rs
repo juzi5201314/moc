@@ -1661,10 +1661,13 @@ fn handle_modal_key(
     let mut focus_target: Option<String> = None;
     let mut return_memory_list = false;
     let mut return_plan_review = false;
+    // 模型角色字段选定的值：延迟到模态借用结束后写回配置。
+    let mut config_pick: Option<(Vec<String>, String, String)> = None;
     let plan_review_open = matches!(app.modal, Some(Modal::Plan { .. }));
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
+
     app.ctrl_c_pending = None;
     match modal {
         Modal::Permission {
@@ -1750,7 +1753,9 @@ fn handle_modal_key(
                             submit = true;
                         }
                         // 光标与删除一律按字符步进：正文是 UTF-8，按字节移动会切进多字节字符。
-                        (KeyCode::Left, _) => answer.cursor = cursor_prev(&answer.text, answer.cursor),
+                        (KeyCode::Left, _) => {
+                            answer.cursor = cursor_prev(&answer.text, answer.cursor)
+                        }
                         (KeyCode::Right, _) => {
                             answer.cursor = cursor_next(&answer.text, answer.cursor);
                         }
@@ -1916,21 +1921,46 @@ fn handle_modal_key(
             _ => {}
         },
         Modal::Model {
-            models,
+            entries,
             picker,
+            level,
             target,
             ..
         } => {
-            let filtered = crate::modal::filtered_models(models, &picker.query);
+            let filtered = crate::modal::filtered_entries(entries, &picker.query);
+            let highlighted = |picker: &crate::modal::PickerState| {
+                crate::modal::filtered_entries(entries, &picker.query)
+                    .get(picker.selected)
+                    .map(|(index, _)| *index)
+            };
+            let entry = filtered.get(picker.selected).map(|(_, entry)| *entry);
+            let levels: &[String] = entry.map_or(&[], |entry| entry.levels.as_slice());
+            let before = highlighted(picker);
             match (code, modifiers) {
-                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
-                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                (KeyCode::Up, _) => {
+                    level.focused = false;
+                    picker.move_selection(-1, filtered.len(), 8);
+                }
+                (KeyCode::Down | KeyCode::Char('j'), _) => {
+                    level.focused = false;
+                    picker.move_selection(1, filtered.len(), 8);
+                }
                 (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
                 (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                (KeyCode::Tab | KeyCode::BackTab, _) if !levels.is_empty() => {
+                    level.focused = !level.focused;
+                }
+                (KeyCode::Left | KeyCode::Char('h'), _) if level.focused => {
+                    level.move_level(levels, false);
+                }
+                (KeyCode::Right | KeyCode::Char('l'), _) if level.focused => {
+                    level.move_level(levels, true);
+                }
                 (KeyCode::Home, _) => {
                     picker.selected = 0;
                     picker.offset = 0;
                 }
+
                 (KeyCode::End, _) => {
                     picker.selected = filtered.len().saturating_sub(1);
                     picker.keep_visible(8, filtered.len());
@@ -1966,54 +1996,62 @@ fn handle_modal_key(
                     if picker.loading {
                         return;
                     }
-                    let Some((_, model)) = filtered.get(picker.selected) else {
+                    let Some((_, entry)) = filtered.get(picker.selected).copied() else {
                         return;
                     };
-                    if let crate::modal::ModelTarget::PlanReview(state) = target {
-                        state.execution_model = model.id.clone();
-                        return_plan_review = true;
-                    } else {
-                        let Some(session_id) = session_id.clone() else {
-                            picker.error = Some("当前没有活动会话".into());
-                            return;
-                        };
-                        picker.loading = true;
-                        picker.error = None;
-                        let client = connection.client.clone();
-                        let events = events.clone();
-                        let selector = model.id.clone();
-                        let request_selector = selector.clone();
-                        app.inflight_session_ops.insert(session_id.clone());
-                        tokio::spawn(async move {
-                            let outcome = client
-                                .call::<SessionSetModel>(SessionSetModelParams {
-                                    session_id: session_id.clone(),
-                                    selector: request_selector,
-                                    overflow: SessionModelOverflowAction::Ask,
-                                })
-                                .await;
-                            let _ = events.send(match outcome {
-                                Ok(result) => match result.overflow {
-                                    Some(overflow) => AppEvent::ModelSwitchConfirm {
-                                        session_id,
-                                        selector,
-                                        overflow,
+                    let selector = entry.selector_with(level.resolve(&entry.levels).as_deref());
+                    match target {
+                        crate::modal::ModelTarget::PlanReview(state) => {
+                            state.execution_model = selector;
+                            return_plan_review = true;
+                        }
+                        crate::modal::ModelTarget::Config { path, label } => {
+                            config_pick = Some((path.clone(), label.clone(), selector));
+                        }
+                        crate::modal::ModelTarget::Session => {
+                            let Some(session_id) = session_id.clone() else {
+                                picker.error = Some("当前没有活动会话".into());
+                                return;
+                            };
+                            picker.loading = true;
+                            picker.error = None;
+                            let client = connection.client.clone();
+                            let events = events.clone();
+                            let request_selector = selector.clone();
+
+                            app.inflight_session_ops.insert(session_id.clone());
+                            tokio::spawn(async move {
+                                let outcome = client
+                                    .call::<SessionSetModel>(SessionSetModelParams {
+                                        session_id: session_id.clone(),
+                                        selector: request_selector,
+                                        overflow: SessionModelOverflowAction::Ask,
+                                    })
+                                    .await;
+                                let _ = events.send(match outcome {
+                                    Ok(result) => match result.overflow {
+                                        Some(overflow) => AppEvent::ModelSwitchConfirm {
+                                            session_id,
+                                            selector,
+                                            overflow,
+                                        },
+                                        None => AppEvent::SessionControlSettled {
+                                            session_id,
+                                            notice: None,
+                                            result: Ok(result.compaction_error),
+                                        },
                                     },
-                                    None => AppEvent::SessionControlSettled {
+                                    Err(error) => AppEvent::SessionControlSettled {
                                         session_id,
                                         notice: None,
-                                        result: Ok(result.compaction_error),
+                                        result: Err(format!("切换模型失败：{error}")),
                                     },
-                                },
-                                Err(error) => AppEvent::SessionControlSettled {
-                                    session_id,
-                                    notice: None,
-                                    result: Err(format!("切换模型失败：{error}")),
-                                },
+                                });
                             });
-                        });
+                        }
                     }
                 }
+
                 (KeyCode::Esc, _) => {
                     if matches!(target, crate::modal::ModelTarget::PlanReview(_)) {
                         return_plan_review = true;
@@ -2023,7 +2061,13 @@ fn handle_modal_key(
                 }
                 _ => {}
             }
+            // 高亮条目变了（换行或过滤结果变化）就丢弃手动等级，回到该模型的最高等级。
+            if highlighted(picker) != before {
+                level.clear_manual();
+                level.focused = false;
+            }
         }
+
         Modal::SwitchModel {
             session_id: card_session,
             selector,
@@ -2446,10 +2490,14 @@ fn handle_modal_key(
             }
         }
     }
-    if let Some(agent_id) = focus_target {
+    if let Some((path, label, value)) = config_pick {
+        app.modal = None;
+        crate::settings::apply_model_role(app, connection, path, &label, value);
+    } else if let Some(agent_id) = focus_target {
         focus_agent(app, connection, agent_id);
         return;
     }
+
     if return_plan_review {
         if let Some(Modal::Model {
             target: crate::modal::ModelTarget::PlanReview(state),
@@ -3579,8 +3627,8 @@ fn slice_display_columns(text: &str, from: usize, to: usize) -> String {
 mod tests {
     use super::*;
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use moc_protocol::methods::{AskOption, AskParams, AskQuestion, AskResult};
     use moc_protocol::methods::UpstreamFieldMismatch;
+    use moc_protocol::methods::{AskOption, AskParams, AskQuestion, AskResult};
     use tokio::sync::mpsc::unbounded_channel;
 
     fn app() -> App {
@@ -5980,6 +6028,156 @@ mod tests {
         assert_eq!(view.info.last_message.as_deref(), Some("done"));
         assert!(!view.running);
 
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+}
+
+/// `/config` 的角色字段与 `Ctrl+P` 共用选择器：自成模块，避免与主测试模块的长夹具混在一起。
+#[cfg(test)]
+mod config_picker_tests {
+    use super::*;
+
+    /// `/config` 的模型角色字段与 `Ctrl+P` 共用选择器：候选取自 core（带思考等级），
+    /// 选中后写回该字段的配置值，不切换会话模型。
+
+    #[tokio::test]
+    async fn config_model_role_picker_shares_the_searchable_picker() {
+        use crate::settings::{History, RowKind, SettingsPanel, View};
+        use moc_core::{Core, CoreConfig};
+        use moc_protocol::ConfigScope;
+        use moc_protocol::methods::SettingsDocument;
+        use serde_json::{Value, json};
+        use std::collections::BTreeSet;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config.toml"),
+            "[models.roles]\ndefault='test/big:low'\n[providers.test]\napi='openai_chat'\nbase_url='http://127.0.0.1:9/v1'\n[providers.test.models.big]\nreasoning=true\nthinking_levels=['low','max']\n[providers.test.models.small]\nreasoning=true\nthinking_levels=['medium']\n[workspace]\nwatch=false\n[context_files]\nenabled=false\n[skills]\nenabled=false\n",
+        )
+        .unwrap();
+        let core = Core::new(CoreConfig {
+            home: root.path().to_owned(),
+            cwd: root.path().to_owned(),
+            overlays: Vec::new(),
+            session_dir: Some(root.path().join("sessions")),
+            client: Default::default(),
+        })
+        .unwrap();
+        let (events, _receiver) = unbounded_channel();
+        let connection = crate::protocol::connect_embedded(core.clone(), events.clone())
+            .await
+            .unwrap();
+        let mut app = App::new(Theme::global(), events);
+        app.models = connection
+            .client
+            .call::<ConfigGet>(ConfigGetParams {})
+            .await
+            .unwrap()
+            .models;
+
+        // 面板只放主模型字段：行由文档重建，选中该行后按 Enter。
+        let role = vec![
+            "models".to_owned(),
+            "roles".to_owned(),
+            "default".to_owned(),
+        ];
+        app.settings = Some(SettingsPanel {
+            id: 1,
+            cwd: "/tmp".into(),
+            scope: ConfigScope::Global,
+            data: Some(SettingsDocument {
+                path: "config.toml".into(),
+                revision: "0".into(),
+                document: json!({}),
+                effective: json!({}),
+                inherited: json!({
+                    "models": {"roles": {"default": "test/big:low"}},
+                    "providers": {"test": {"models": {"big": {}, "small": {}}}},
+                }),
+                defaults: json!({}),
+                fields: Vec::new(),
+                provider_template: json!({}),
+                model_template: json!({}),
+            }),
+            tui: Value::Null,
+            effective: Value::Null,
+            fields: Vec::new(),
+            rows: Vec::new(),
+            collapsed: BTreeSet::new(),
+            expanded: BTreeSet::new(),
+            tab: 0,
+            selected: 0,
+            offset: 0,
+            advanced: true,
+            filter: String::new(),
+            edit: None,
+            error: None,
+            message: None,
+            busy: false,
+            hits: Vec::new(),
+            pending: None,
+            view: View::Fields,
+            history: History::default(),
+            outcome: None,
+            restore: None,
+        });
+        {
+            let panel = app.settings.as_mut().expect("设置面板");
+            panel.rebuild();
+            let index = panel
+                .rows
+                .iter()
+                .position(|row| {
+                    matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == role)
+                })
+                .expect("主模型行");
+            panel.selected = index;
+        }
+
+        crate::settings::handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert!(
+            matches!(
+                &app.modal,
+                Some(Modal::Model {
+                    target: crate::modal::ModelTarget::Config { path, .. },
+                    ..
+                }) if *path == role
+            ),
+            "主模型字段按 Enter 打开共用选择器"
+        );
+        let choice = |app: &App| {
+            app.modal
+                .as_ref()
+                .and_then(Modal::model_choice)
+                .expect("选择器有高亮条目")
+                .1
+        };
+        assert_eq!(choice(&app), "test/big:low", "沿用配置里写明的等级");
+
+        // 高亮换到另一个模型：等级回到目标模型自己的最高等级。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
+        assert_eq!(choice(&app), "test/small:medium");
+
+        // 回到 big 时手动值已清空，用它的最高等级；再进等级条左右微调。
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
+        assert_eq!(choice(&app), "test/big:max");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(choice(&app), "test/big:low", "等级条左移一格");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+
+        assert!(app.modal.is_none(), "确认后关闭选择器");
+        let panel = app.settings.as_ref().expect("设置面板");
+        let document = &panel.data.as_ref().expect("设置文档").document;
+        assert_eq!(
+            document
+                .pointer("/models/roles/default")
+                .and_then(Value::as_str),
+            Some("test/big:max"),
+            "选中的 selector 写回配置"
+        );
         connection.shutdown().await;
         core.shutdown().await;
     }

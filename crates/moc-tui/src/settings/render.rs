@@ -736,12 +736,15 @@ fn draw_fields(
                 "（○ 使用系统默认值）"
             };
             let description = format!("{} {}", field.description, state);
+            // 模型角色字段由共用的模型选择器接管：Enter 打开搜索框，可同时挑思考等级。
+            let is_model_role = field.path.starts_with(&["models".into(), "roles".into()]);
             let is_choice = matches!(field.kind, FieldKind::Choice(_))
-                || field.path.starts_with(&["models".into(), "roles".into()])
                 || (field.path.last().is_some_and(|k| k == "input")
                     && field.path.iter().any(|p| p == "models"));
             let action_hint = if let FieldKind::Bool = field.kind {
                 "Space/Enter 切换开关"
+            } else if is_model_role {
+                "Space/Enter 打开模型选择器（可搜索、可选思考等级）"
             } else if is_choice {
                 "Space 快速轮换 · Enter 弹窗选择"
             } else {
@@ -752,6 +755,7 @@ fn draw_fields(
             );
             (description, hint)
         }
+
         None => (String::new(), "1-9/[] 切换标签 · / 搜索 · Esc 返回".into()),
     }
 }
@@ -770,6 +774,7 @@ fn group_description(group: &Group) -> String {
         Some("mcp") => format!("MCP 服务“{}”。", group.title),
         Some("session") => "会话的自动归档与清理策略。".into(),
         Some(_) => format!("“{}”相关的设置。", group.title),
+
         None => "会话使用的各类模型；候选来自已添加的模型。".into(),
     }
 }

@@ -695,7 +695,7 @@ impl App {
             .session
             .as_ref()
             .map_or_else(String::new, |session| session.model.clone());
-        self.open_model_picker_for(current, crate::modal::ModelTarget::Session);
+        self.open_model_picker_for(current, &[], crate::modal::ModelTarget::Session);
     }
 
     /// 选择计划执行模型，不修改当前会话模型。
@@ -714,34 +714,98 @@ impl App {
         self.plan_model_area = Rect::default();
         self.open_model_picker_for(
             state.execution_model.clone(),
+            &[],
             crate::modal::ModelTarget::PlanReview(state),
         );
     }
 
-    fn open_model_picker_for(&mut self, current: String, target: crate::modal::ModelTarget) {
+    /// 打开 `/config` 的模型角色选择器：与 `Ctrl+P` 共用候选、搜索与思考等级。
+    ///
+    /// `specials` 是角色伪值（沿用主模型 / 沿用当前会话模型），排在模型前面；
+    /// 调用方必须已经确认 `models` 非空，否则这个字段应当退回文本编辑。
+    pub fn open_config_model_picker(
+        &mut self,
+        path: Vec<String>,
+        label: String,
+        current: String,
+        specials: &[(&str, &str)],
+    ) {
+        self.open_model_picker_for(
+            current,
+            specials,
+            crate::modal::ModelTarget::Config { path, label },
+        );
+    }
+
+    fn open_model_picker_for(
+        &mut self,
+        current: String,
+        specials: &[(&str, &str)],
+        target: crate::modal::ModelTarget,
+    ) {
         if self.models.is_empty() {
             self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
+        let entries = Self::picker_entries(&self.models, specials);
+
         let current_id = current
             .rsplit_once(':')
             .map_or(current.as_str(), |(id, _)| id);
-        let selected = self
-            .models
+        let selected = entries
             .iter()
-            .position(|model| model.id == current_id)
+            .position(|entry| entry.selector == current_id)
             .unwrap_or(0);
+        let mut level = crate::modal::LevelState::default();
+        // 当前值已经写明等级、且该条目仍支持它时沿用；否则用高亮模型的最高等级。
+        if let Some((_, level_text)) = current.rsplit_once(':')
+            && let Some(entry) = entries.get(selected)
+            && entry.levels.iter().any(|candidate| candidate == level_text)
+        {
+            level.manual = Some(level_text.to_owned());
+        }
         let picker = crate::modal::PickerState {
             selected,
             offset: selected.saturating_sub(7),
             ..Default::default()
         };
         self.modal = Some(Modal::Model {
-            models: self.models.clone(),
+            entries,
             current,
             picker,
+            level,
             target,
         });
+    }
+
+    /// 选择器候选：角色伪值排在模型前面，模型带上各自的思考等级与上下文窗口。
+    fn picker_entries(
+        models: &[ModelInfo],
+        specials: &[(&str, &str)],
+    ) -> Vec<crate::modal::ModelEntry> {
+        let mut entries = Vec::with_capacity(models.len() + specials.len());
+        for (selector, label) in specials {
+            entries.push(crate::modal::ModelEntry {
+                selector: (*selector).to_owned(),
+                label: (*label).to_owned(),
+                display_name: String::new(),
+                levels: Vec::new(),
+                context_window: None,
+            });
+        }
+        entries.extend(models.iter().map(|model| crate::modal::ModelEntry {
+            selector: model.id.clone(),
+            label: model.id.clone(),
+            display_name: model.display_name.clone(),
+            levels: model.thinking_levels.clone().unwrap_or_else(|| {
+                crate::modal::DEFAULT_LEVELS
+                    .iter()
+                    .map(|level| (*level).to_owned())
+                    .collect()
+            }),
+            context_window: model.context_window,
+        }));
+        entries
     }
 
     /// 打开就地模式菜单：高亮当前模式，并让出可能叠在输入框上方的补全菜单。
@@ -750,6 +814,7 @@ impl App {
             self.set_notice("当前没有活动会话");
             return;
         }
+
         self.completion = None;
         let current = self.display_mode();
         self.mode_menu = Some(ModeMenu {
@@ -1139,7 +1204,7 @@ mod tests {
     #[test]
     fn switch_session_resets_local_prompt_state() {
         use super::{App, CtrlCPending};
-        use moc_protocol::methods::{TodoPhase, TodoStatus, TodoItem};
+        use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus};
         use moc_protocol::{SessionInfo, SessionMode, Usage};
         use tokio::sync::mpsc::unbounded_channel;
 

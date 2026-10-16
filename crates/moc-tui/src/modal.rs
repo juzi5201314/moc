@@ -8,9 +8,9 @@ use std::ops::Range;
 use moc_protocol::Role;
 use moc_protocol::methods::{
     AskParams, AskResult, ContextContentResult, ContextContentSection, ContextUsageResult,
-    ModelInfo, ModelSwitchOverflow, PermissionRequestParams, PermissionResult, SessionInfo,
-    TranscriptEntry,
+    ModelSwitchOverflow, PermissionRequestParams, PermissionResult, SessionInfo, TranscriptEntry,
 };
+
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
@@ -27,6 +27,86 @@ pub struct PickerState {
     pub loading: bool,
     /// 最近一次请求错误。
     pub error: Option<String>,
+}
+
+/// 选择器里的一行：真实模型，或模型角色字段的伪值（沿用主模型 / 沿用当前会话模型）。
+#[derive(Debug, Clone)]
+pub struct ModelEntry {
+    /// 写回配置或会话的 selector，不含思考等级；伪值就是 `inherit` / `none`。
+    pub selector: String,
+    /// 展示名：模型是 `供应商/模型`，伪值是中文标签。
+    pub label: String,
+    /// 搜索别名（模型的展示名），不参与展示；伪值为空。
+    pub display_name: String,
+    /// 该模型允许选择的思考等级；伪值没有等级，这里是空列表。
+    pub levels: Vec<String>,
+    /// 上下文窗口 token 数；未配置或伪值为 `None`。
+    pub context_window: Option<u64>,
+}
+
+impl ModelEntry {
+    /// 选中后写回的 selector；伪值原样返回。
+    pub fn selector_with(&self, level: Option<&str>) -> String {
+        match level.filter(|_| !self.levels.is_empty()) {
+            Some(level) => format!("{}:{level}", self.selector),
+            None => self.selector.clone(),
+        }
+    }
+}
+
+/// 模型未声明可选等级时前端使用的集合，与 core 的默认 `thinking_levels` 一致。
+pub const DEFAULT_LEVELS: [&str; 6] = ["off", "low", "medium", "high", "xhigh", "max"];
+
+/// 思考等级的强弱次序；名字不可识别时比 `off` 还弱，不会成为默认等级。
+fn level_rank(level: &str) -> usize {
+    DEFAULT_LEVELS
+        .iter()
+        .position(|known| *known == level)
+        .map_or(0, |index| index + 1)
+}
+
+/// 思考等级条的键盘状态：手动选中的等级与焦点位置。
+///
+/// `manual` 为空表示用高亮模型支持的最高等级；高亮换行时清空，回到「一律用最高等级」。
+#[derive(Debug, Clone, Default)]
+pub struct LevelState {
+    pub manual: Option<String>,
+    /// 焦点是否在等级条上；`Tab` 在列表与等级条之间切换。
+    pub focused: bool,
+}
+
+impl LevelState {
+    /// 高亮换行：等级回到该模型的最高等级。
+    pub fn clear_manual(&mut self) {
+        self.manual = None;
+    }
+
+    /// 当前生效的等级：手动值仍在候选内就用它，否则用候选里最高的等级。
+    pub fn resolve(&self, levels: &[String]) -> Option<String> {
+        if let Some(manual) = self.manual.as_ref()
+            && levels.contains(manual)
+        {
+            return Some(manual.clone());
+        }
+        levels.iter().max_by_key(|level| level_rank(level)).cloned()
+    }
+
+    /// 在等级条上左右移动；候选为空时不动。
+    pub fn move_level(&mut self, levels: &[String], forward: bool) {
+        if levels.is_empty() {
+            return;
+        }
+        let current = self
+            .resolve(levels)
+            .and_then(|level| levels.iter().position(|candidate| *candidate == level))
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % levels.len()
+        } else {
+            current.checked_sub(1).unwrap_or(levels.len() - 1)
+        };
+        self.manual = Some(levels[next].clone());
+    }
 }
 
 /// 计划审阅窗口的完整状态。
@@ -63,6 +143,12 @@ impl PlanReviewState {
 pub enum ModelTarget {
     Session,
     PlanReview(PlanReviewState),
+    /// `/config` 的模型角色字段：选中后写回该路径的配置值。
+    Config {
+        path: Vec<String>,
+        /// 字段标签，用作改动提示的前缀。
+        label: String,
+    },
 }
 
 impl PickerState {
@@ -420,9 +506,10 @@ pub enum Modal {
     },
     /// 模型选择（`session/set_model`）。
     Model {
-        models: Vec<ModelInfo>,
+        entries: Vec<ModelEntry>,
         current: String,
         picker: PickerState,
+        level: LevelState,
         target: ModelTarget,
     },
     /// OpenViking 工作区记忆目录。
@@ -524,7 +611,9 @@ impl Modal {
                 .get(*question)
                 .map(|question| question.options.len() + 1)
                 .unwrap_or(0),
-            Modal::Model { picker, models, .. } => filtered_models(models, &picker.query).len(),
+            Modal::Model {
+                picker, entries, ..
+            } => filtered_entries(entries, &picker.query).len(),
             Modal::Memories {
                 entries, picker, ..
             } => entries
@@ -614,6 +703,29 @@ impl Modal {
         }
     }
 
+    /// 模型选择器过滤后列表里当前高亮的条目。
+    pub fn highlighted_entry(&self) -> Option<&ModelEntry> {
+        let Modal::Model {
+            entries, picker, ..
+        } = self
+        else {
+            return None;
+        };
+        filtered_entries(entries, &picker.query)
+            .get(picker.selected)
+            .map(|(_, entry)| *entry)
+    }
+
+    /// 高亮条目的最终 selector（已含思考等级）；伪值原样返回。
+    pub fn model_choice(&self) -> Option<(&ModelEntry, String)> {
+        let entry = self.highlighted_entry()?;
+        let Modal::Model { level, .. } = self else {
+            return None;
+        };
+        let level = level.resolve(&entry.levels);
+        Some((entry, entry.selector_with(level.as_deref())))
+    }
+
     /// 把错误交给当前模态；模态没有显示位置（帮助、上下文占用等）时返回 `false`，
     /// 由调用方改成通知，避免错误被静默丢弃。
     pub fn set_error(&mut self, message: &str) -> bool {
@@ -640,15 +752,18 @@ impl Modal {
     }
 }
 
-pub fn filtered_models<'a>(models: &'a [ModelInfo], query: &str) -> Vec<(usize, &'a ModelInfo)> {
+pub fn filtered_entries<'a>(
+    entries: &'a [ModelEntry],
+    query: &str,
+) -> Vec<(usize, &'a ModelEntry)> {
     let query = query.to_lowercase();
-    models
+    entries
         .iter()
         .enumerate()
-        .filter(|(_, model)| {
+        .filter(|(_, entry)| {
             query.is_empty()
-                || model.id.to_lowercase().contains(&query)
-                || model.display_name.to_lowercase().contains(&query)
+                || entry.label.to_lowercase().contains(&query)
+                || entry.display_name.to_lowercase().contains(&query)
         })
         .collect()
 }
@@ -671,9 +786,109 @@ pub fn filtered_sessions<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{CustomAnswer, Modal, PickerState, RewindState};
+    use super::{
+        CustomAnswer, LevelState, Modal, ModelEntry, PickerState, RewindState, filtered_entries,
+    };
+
     use moc_protocol::methods::{AskOption, AskParams, AskQuestion, TranscriptEntry};
     use moc_protocol::{Message, Role};
+
+    /// 等级默认用候选里最高的那个；手动值仍在候选内时优先，掉了就回退最高。
+    #[test]
+    fn level_state_defaults_to_highest_and_keeps_supported_manual_choice() {
+        let levels = |list: &[&str]| {
+            list.iter()
+                .map(|level| (*level).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let full = levels(&["off", "low", "medium", "high", "xhigh", "max"]);
+        let narrow = levels(&["off", "low"]);
+
+        let mut state = LevelState::default();
+        assert_eq!(state.resolve(&full).as_deref(), Some("max"));
+        assert!(state.resolve(&[]).is_none(), "没有候选就没有等级");
+
+        // 手动选的等级在候选内就沿用：切到同样支持 max 的模型不会被降级。
+        state.manual = Some("max".into());
+        assert_eq!(state.resolve(&full).as_deref(), Some("max"));
+        // 目标模型装不下手动值时回退到它自己的最高等级。
+        assert_eq!(state.resolve(&narrow).as_deref(), Some("low"));
+
+        // 左右移动按候选顺序环绕，并把结果记为手动值。
+        state.manual = None;
+        state.move_level(&narrow, true);
+        assert_eq!(
+            state.manual.as_deref(),
+            Some("off"),
+            "最高等级再右移回到 off"
+        );
+        state.move_level(&narrow, false);
+        assert_eq!(state.manual.as_deref(), Some("low"), "左移按顺序回退");
+        state.move_level(&[], true);
+        assert_eq!(state.manual.as_deref(), Some("low"), "空候选不动手动值");
+
+        // 高亮换行清掉手动值，回到「用最高等级」。
+        state.clear_manual();
+        assert_eq!(state.resolve(&narrow).as_deref(), Some("low"));
+    }
+
+    /// 写回的 selector：模型带等级后缀，角色伪值原样。
+    #[test]
+    fn model_entry_appends_level_only_for_models() {
+        let model = ModelEntry {
+            selector: "p/m".into(),
+            label: "p/m".into(),
+            display_name: "模型".into(),
+            levels: vec!["off".into(), "high".into()],
+            context_window: Some(1000),
+        };
+        assert_eq!(model.selector_with(Some("high")), "p/m:high");
+        assert_eq!(model.selector_with(None), "p/m");
+
+        let inherit = ModelEntry {
+            selector: "inherit".into(),
+            label: "沿用主模型".into(),
+            display_name: String::new(),
+            levels: Vec::new(),
+            context_window: None,
+        };
+        assert_eq!(
+            inherit.selector_with(Some("max")),
+            "inherit",
+            "伪值不接等级"
+        );
+    }
+
+    /// 过滤同时匹配选择串与展示名，伪值也能被中文标签搜到。
+    #[test]
+    fn filtering_matches_selector_display_name_and_label() {
+        let entries = vec![
+            ModelEntry {
+                selector: "inherit".into(),
+                label: "沿用主模型".into(),
+                display_name: String::new(),
+                levels: Vec::new(),
+                context_window: None,
+            },
+            ModelEntry {
+                selector: "p/model".into(),
+                label: "p/model".into(),
+                display_name: "DeepSeek Flash".into(),
+                levels: vec!["off".into()],
+                context_window: None,
+            },
+        ];
+        let found = |query: &str| {
+            filtered_entries(&entries, query)
+                .into_iter()
+                .map(|(_, entry)| entry.selector.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(found(""), vec!["inherit", "p/model"], "空查询不过滤");
+        assert_eq!(found("model"), vec!["p/model"]);
+        assert_eq!(found("deepseek"), vec!["p/model"], "展示名参与匹配");
+        assert_eq!(found("主模型"), vec!["inherit"], "伪值按标签匹配");
+    }
 
     /// 预览判定：只认非空预览，且只作用于提问模态的当前问题。
     #[test]

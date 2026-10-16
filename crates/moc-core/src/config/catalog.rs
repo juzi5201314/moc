@@ -3,8 +3,6 @@
 use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
 use serde_json::{Value, json};
 
-use super::model::{ROLE_INHERIT, ROLE_NONE};
-
 pub fn provider_template() -> Value {
     json!({"api":"openai_chat", "base_url":"", "api_key":"", "headers":{}, "extra_body":{},
         "timeout_secs":null, "connect_timeout_secs":20.0, "max_concurrency":0, "cache":"auto",
@@ -76,23 +74,9 @@ pub fn complete_view(value: &mut Value) {
     }
 }
 
-fn available_models(root: &Value) -> Vec<String> {
-    let mut list = Vec::new();
-    if let Some(providers) = root.get("providers").and_then(Value::as_object) {
-        for (provider, value) in providers {
-            if let Some(models) = value.get("models").and_then(Value::as_object) {
-                for model in models.keys() {
-                    list.push(format!("{provider}/{model}"));
-                }
-            }
-        }
-    }
-    list
-}
-
 pub fn fields(effective: &Value) -> Vec<ConfigField> {
     let mut output = Vec::new();
-    walk(effective, effective, &mut Vec::new(), &mut output);
+    walk(effective, &mut Vec::new(), &mut output);
     output
 }
 
@@ -187,7 +171,7 @@ fn rank(key: &str) -> usize {
     }
 }
 
-fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
+fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
     let object_editor = path.last().is_some_and(|key| {
         matches!(
             key.as_str(),
@@ -208,7 +192,7 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
         keys.sort_by_key(|key| rank(key));
         for key in keys {
             path.push(key.clone());
-            walk(root, &values[key], path, output);
+            walk(&values[key], path, output);
             path.pop();
         }
         return;
@@ -310,33 +294,6 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
                 .map(|(value, label)| ChoiceOption::new(value, label))
                 .collect(),
         )
-    } else if path.as_slice() == ["models", "roles", "default"] {
-        let models = available_models(root);
-        if models.is_empty() {
-            FieldKind::Text
-        } else {
-            FieldKind::Choice(
-                models
-                    .into_iter()
-                    .map(|m| ChoiceOption::new(&m, &m))
-                    .collect(),
-            )
-        }
-    } else if path.as_slice() == ["models", "roles", "explore"] {
-        let mut choices = vec![ChoiceOption::new(ROLE_INHERIT, "沿用主模型")];
-        for m in available_models(root) {
-            choices.push(ChoiceOption::new(&m, &m));
-        }
-        FieldKind::Choice(choices)
-    } else if path.as_slice() == ["models", "roles", "plan"] {
-        let mut choices = vec![
-            ChoiceOption::new(ROLE_INHERIT, "沿用主模型"),
-            ChoiceOption::new(ROLE_NONE, "沿用当前会话模型"),
-        ];
-        for m in available_models(root) {
-            choices.push(ChoiceOption::new(&m, &m));
-        }
-        FieldKind::Choice(choices)
     } else if key == "input" && path.iter().any(|part| part == "models") {
         FieldKind::Choice(vec![
             ChoiceOption::new("text", "仅文本 (text)"),
@@ -379,14 +336,17 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
 
 fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
     match path {
-        "models.roles.default" => ("主模型", "日常对话使用的模型，格式为 供应商/模型。"),
+        "models.roles.default" => (
+            "主模型",
+            "日常对话使用的模型，格式为 供应商/模型[:等级]；省略等级时用模型的最高等级。",
+        ),
         "models.roles.explore" => (
             "探索子代理模型",
-            "供 agent/spawn 的 explore 角色使用；省略模型时子代理继承父会话当前模型。",
+            "供 agent/spawn 的 explore 角色使用；inherit 表示沿用主模型，省略等级时用模型的最高等级。",
         ),
         "models.roles.plan" => (
             "计划模型",
-            "制定计划时使用的模型；none 表示进入计划模式时不切换模型，沿用当前会话模型。",
+            "制定计划时使用的模型；none 表示沿用当前会话模型，inherit 表示沿用主模型，省略等级时用模型的最高等级。",
         ),
         "context_files.user" => ("用户指令", "加载用户目录下的 AGENTS.md。"),
         "context_files.project" => ("项目指令", "加载工作区中的 AGENTS.md 及其引用的文件。"),

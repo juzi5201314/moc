@@ -179,7 +179,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
                 .symbol()
         })
         .collect::<String>();
-    assert_eq!(rendered, original.model);
+    assert_eq!(rendered, crate::app::model_selector_label(&original.model));
     handle_mouse_with_connection(
         &mut h.app,
         &h.connection,
@@ -221,7 +221,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
     let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
         panic!("恢复审阅窗口")
     };
-    assert_eq!(state.execution_model, "test/executor");
+    assert_eq!(state.execution_model, "test/executor:off");
     assert_eq!(state.selected, 2);
     assert_eq!(state.scroll_offset, 1);
     assert_eq!(state.error.as_deref(), Some("保留错误状态"));
@@ -246,7 +246,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
     );
     h.key(KeyCode::Esc);
     assert!(
-        matches!(&h.app.modal, Some(Modal::Plan { state }) if state.execution_model == "test/executor" && state.scroll_offset == 1)
+        matches!(&h.app.modal, Some(Modal::Plan { state }) if state.execution_model == "test/executor:off" && state.scroll_offset == 1)
     );
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
         state.selected = 0;

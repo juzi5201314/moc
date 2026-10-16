@@ -914,7 +914,21 @@ impl SettingsPanel {
         };
         let field = self.fields[*index].clone();
         let value = self.value(&field.path).cloned().unwrap_or(Value::Null);
-        let kind = self.field_kind(&field, &value);
+        // 模型角色字段走共用的可搜索模型选择器（含思考等级）；一个候选都没有时
+        // 才退回就地文本编辑，让用户手写 selector。
+        if let Some(role) = model_role(&field.path)
+            && !app.models.is_empty()
+        {
+            app.open_config_model_picker(
+                field.path.clone(),
+                field.label.clone(),
+                forms::format_value(&value, &FieldKind::Text),
+                role_specials(role),
+            );
+            return;
+        }
+        let kind = self.field_kind(&field);
+
         if let FieldKind::Bool = kind {
             let current = value.as_bool().unwrap_or(false);
             let label = field.label.clone();
@@ -1001,7 +1015,7 @@ impl SettingsPanel {
             });
             return true;
         }
-        let kind = self.field_kind(&field, &value);
+        let kind = self.field_kind(&field);
         if let FieldKind::Choice(options) = kind {
             if options.is_empty() {
                 return false;
@@ -1028,8 +1042,8 @@ impl SettingsPanel {
         }
         false
     }
-    /// 字段的编辑类型：模型角色与输入模态改为候选列表。
-    fn field_kind(&self, field: &ConfigField, value: &Value) -> FieldKind {
+    /// 字段的编辑类型：输入模态改为候选列表；模型角色由共用的模型选择器接管。
+    fn field_kind(&self, field: &ConfigField) -> FieldKind {
         if field.path.last().is_some_and(|k| k == "input")
             && field.path.iter().any(|p| p == "models")
         {
@@ -1038,34 +1052,10 @@ impl SettingsPanel {
                 moc_protocol::ChoiceOption::new("text, image", "文本与图片 / 多模态 (text, image)"),
             ]);
         }
-        if !field.path.starts_with(&["models".into(), "roles".into()]) {
-            return field.kind.clone();
-        }
-        let mut choices = Vec::new();
-        let role = field.path.last().map_or("", String::as_str);
-        if role != "default" {
-            choices.push(moc_protocol::ChoiceOption::new("inherit", "沿用主模型"));
-        }
-        if role == "plan" {
-            choices.push(moc_protocol::ChoiceOption::new("none", "沿用当前会话模型"));
-        }
-        if let Some(providers) = self.effective.get("providers").and_then(Value::as_object) {
-            for (provider, value) in providers {
-                if let Some(models) = value.get("models").and_then(Value::as_object) {
-                    for model in models.keys() {
-                        let value = format!("{provider}/{model}");
-                        choices.push(moc_protocol::ChoiceOption::new(&value, &value));
-                    }
-                }
-            }
-        }
-        if let Some(current) = value.as_str().filter(|current| !current.is_empty())
-            && !choices.iter().any(|choice| choice.value == current)
-        {
-            choices.push(moc_protocol::ChoiceOption::new(current, current));
-        }
-        FieldKind::Choice(choices)
+
+        field.kind.clone()
     }
+
     /// 打开一个只有一行输入的弹窗（新增条目、搜索等）。
     fn begin_named(&mut self, target: EditTarget, title: &str, hint: &str, initial: &str) {
         self.edit = Some(EditState {
@@ -1182,6 +1172,26 @@ impl SettingsPanel {
             );
         }
         Ok(())
+    }
+}
+
+/// 模型角色字段（`models.roles.*`）的角色名；其余路径返回 `None`。
+fn model_role(path: &[String]) -> Option<&str> {
+    match path {
+        [root, roles, role] if root == "models" && roles == "roles" => Some(role),
+        _ => None,
+    }
+}
+
+/// 角色字段在模型选择器里的伪值：explore 可沿用主模型，plan 还可沿用当前会话模型。
+fn role_specials(role: &str) -> &'static [(&'static str, &'static str)] {
+    const INHERIT: [(&str, &str); 1] = [("inherit", "沿用主模型")];
+    const INHERIT_OR_NONE: [(&str, &str); 2] =
+        [("inherit", "沿用主模型"), ("none", "沿用当前会话模型")];
+    match role {
+        "explore" => &INHERIT,
+        "plan" => &INHERIT_OR_NONE,
+        _ => &[],
     }
 }
 
@@ -1361,6 +1371,26 @@ pub fn handle_key(
         crate::queue::dispatch(app, connection);
     }
 }
+
+/// 把共用模型选择器选中的角色值写回配置：与就地编辑同一条提交路径，撤回栈一并记录。
+pub fn apply_model_role(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    path: Vec<String>,
+    label: &str,
+    value: String,
+) {
+    let Some(mut panel) = app.settings.take() else {
+        return;
+    };
+    let target = path;
+    let _ = panel.commit(label, app, connection, |panel| {
+        panel.set_value(&target, json!(value));
+        Ok(Store::of(&target))
+    });
+    app.settings = Some(panel);
+}
+
 pub fn paste(app: &mut App, text: &str) {
     if let Some(panel) = &mut app.settings
         && let Some(edit) = &mut panel.edit
@@ -1756,6 +1786,33 @@ mod tests {
         assert_eq!(forms::parse_thinking_levels("关").unwrap(), json!(["off"]));
         assert_eq!(forms::parse_thinking_levels("  ").unwrap(), Value::Null);
         assert!(forms::parse_thinking_levels("unknown_level").is_err());
+    }
+
+    /// 模型角色字段的路径判定与伪值：主模型没有伪值，explore 只能沿用主模型，plan 两个都有。
+    #[test]
+    fn model_role_fields_carry_their_own_specials() {
+        let path = |segments: [&str; 3]| {
+            segments
+                .iter()
+                .map(|part| (*part).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(model_role(&path(["models", "roles", "plan"])), Some("plan"));
+        assert_eq!(
+            model_role(&path(["models", "roles", "default"])),
+            Some("default")
+        );
+        assert_eq!(
+            model_role(&path(["providers", "test", "models"])),
+            None,
+            "只有模型角色字段走共用选择器"
+        );
+        assert!(role_specials("default").is_empty());
+        assert_eq!(role_specials("explore"), [("inherit", "沿用主模型")]);
+        assert_eq!(
+            role_specials("plan"),
+            [("inherit", "沿用主模型"), ("none", "沿用当前会话模型")]
+        );
     }
 
     #[test]

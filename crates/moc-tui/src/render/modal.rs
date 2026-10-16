@@ -257,9 +257,11 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         let available = u16::try_from(content_width)
             .expect("正文宽度受终端 u16 宽度约束")
             .saturating_sub(prefix_width);
-        let model_width = u16::try_from(str_width(&state.execution_model))
-            .unwrap_or(u16::MAX)
-            .min(available);
+        let model_width = u16::try_from(str_width(crate::app::model_selector_label(
+            &state.execution_model,
+        )))
+        .unwrap_or(u16::MAX)
+        .min(available);
         app.plan_model_area = Rect::new(
             modal_area.x + 1 + prefix_width,
             modal_area.y + 1,
@@ -651,7 +653,12 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }));
             }
             if let Some(diff) = &params.diff {
-                all_content.extend(crate::render::diff::render_diff(diff, width, theme, usize::MAX));
+                all_content.extend(crate::render::diff::render_diff(
+                    diff,
+                    width,
+                    theme,
+                    usize::MAX,
+                ));
             }
             let options_rows = params.options.len() + 2;
             let max_content_rows = max_lines.saturating_sub(options_rows).max(2);
@@ -811,14 +818,18 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             lines
         }
         Modal::Model {
-            models,
+            entries,
             current,
             picker,
+            level,
             ..
         } => {
-            let filtered = crate::modal::filtered_models(models, &picker.query);
-            let visible = max_lines.saturating_sub(5).max(1);
+            let filtered = crate::modal::filtered_entries(entries, &picker.query);
+            let visible = max_lines.saturating_sub(6).max(1);
+
             let offset = picker.offset.min(filtered.len().saturating_sub(visible));
+            let highlighted = filtered.get(picker.selected).map(|(_, entry)| *entry);
+            let resolved = highlighted.and_then(|entry| level.resolve(&entry.levels));
             let mut lines = vec![
                 Line::from(Span::styled(
                     format!(
@@ -838,8 +849,16 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     ),
                     Style::new().fg(theme.accent_model),
                 )),
+                level_line(
+                    theme,
+                    highlighted,
+                    resolved.as_deref(),
+                    level.focused,
+                    width,
+                ),
                 Line::from(String::new()),
             ];
+
             if picker.loading {
                 lines.push(Line::from(Span::styled(
                     "正在切换模型…",
@@ -861,7 +880,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     Style::new().fg(theme.gray),
                 )));
             } else {
-                for (index, (_, model)) in filtered.iter().skip(offset).take(visible).enumerate() {
+                for (index, (_, entry)) in filtered.iter().skip(offset).take(visible).enumerate() {
                     let actual = offset + index;
                     let marker = if actual == picker.selected {
                         "❯ "
@@ -877,13 +896,13 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     } else {
                         Style::new().fg(theme.text_primary)
                     };
-                    let context = model
+                    let context = entry
                         .context_window
                         .map(|window| format!(" · Ctx {}", crate::render::tokens_k(window)));
                     let row_text = ellipsize(
                         &format!(
                             "{marker}{}{}",
-                            model.id,
+                            entry.label,
                             context.as_deref().unwrap_or_default()
                         ),
                         width,
@@ -919,7 +938,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }
             }
             lines.push(Line::from(Span::styled(
-                "↑↓ 移动 · PgUp/PgDn 翻页 · 输入搜索 · Enter 确认 · Esc 关闭",
+                "↑↓ 移动 · PgUp/PgDn 翻页 · Tab 思考等级 · 输入搜索 · Enter 确认 · Esc 关闭",
                 Style::new().fg(theme.gray_dim),
             )));
             lines
@@ -933,6 +952,8 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             ..
         } => {
             let window = crate::render::tokens_k(overflow.context_window);
+            // 思考关闭时省掉 `:off` 后缀，与其他位置的选择器写法一致。
+            let selector = crate::app::model_selector_label(selector);
             let leading = if overflow.tokens > overflow.context_window {
                 format!(
                     "当前上下文 {} 超过 {selector} 的窗口 {window}",
@@ -1221,7 +1242,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 Span::styled(prefix, Style::new().fg(theme.text_secondary)),
                 Span::styled(
                     ellipsize(
-                        &state.execution_model,
+                        crate::app::model_selector_label(&state.execution_model),
                         width.saturating_sub(str_width(prefix)),
                     ),
                     Style::new()
@@ -1358,6 +1379,64 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
     };
     lines.truncate(max_lines.max(1));
     lines
+}
+
+/// 思考等级条：候选并排，当前生效的高亮；焦点在条上时行首带 `❯` 并加粗选中项。
+///
+/// 条目没有可选等级（角色伪值）时显示占位，`Tab` 也不会把焦点移进来。
+fn level_line(
+    theme: &Theme,
+    entry: Option<&crate::modal::ModelEntry>,
+    resolved: Option<&str>,
+    focused: bool,
+    width: usize,
+) -> Line<'static> {
+    let label = if focused {
+        "❯ 思考等级："
+    } else {
+        "  思考等级："
+    };
+    let label_style = if focused {
+        Style::new()
+            .fg(theme.accent_model)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.text_secondary)
+    };
+    let mut spans = vec![Span::styled(label.to_owned(), label_style)];
+    let levels = entry.map_or(&[][..], |entry| entry.levels.as_slice());
+    if levels.is_empty() {
+        let text = if entry.is_some() {
+            "— 不适用"
+        } else {
+            "—"
+        };
+        spans.push(Span::styled(
+            text.to_owned(),
+            Style::new().fg(theme.gray_dim),
+        ));
+        return Line::from(spans);
+    }
+    let mut used = str_width(label);
+    for level in levels {
+        let chip = format!("{level}  ");
+        let selected = resolved == Some(level.as_str());
+        let style = match (selected, focused) {
+            (true, true) => Style::new()
+                .fg(theme.bg_dark)
+                .bg(theme.accent_model)
+                .add_modifier(Modifier::BOLD),
+            (true, false) => Style::new().fg(theme.bg_dark).bg(theme.gray_dim),
+            (false, true) => Style::new().fg(theme.accent_model),
+            (false, false) => Style::new().fg(theme.gray),
+        };
+        used += str_width(&chip);
+        if used > width {
+            break;
+        }
+        spans.push(Span::styled(chip, style));
+    }
+    Line::from(spans)
 }
 
 pub(crate) fn ellipsize(text: &str, width: usize) -> String {
@@ -1503,7 +1582,7 @@ mod tests {
         theme::Theme,
     };
     use moc_protocol::methods::{
-        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection, ModelInfo,
+        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection,
     };
     use ratatui::style::Color;
     use ratatui::text::Line;
@@ -1515,21 +1594,55 @@ mod tests {
         let app = App::new(Theme::global(), events);
         let theme = app.theme;
         let modal = Modal::Model {
-            models: vec![ModelInfo {
-                id: "p/model".into(),
+            entries: vec![crate::modal::ModelEntry {
+                selector: "p/model".into(),
+                label: "p/model".into(),
                 display_name: "Model".into(),
-                thinking_levels: None,
+                levels: vec!["off".into(), "high".into()],
                 context_window: Some(500_000),
-                max_output_tokens: None,
-                pricing: None,
             }],
-            current: "p/model".into(),
+            current: "p/model:high".into(),
             picker: PickerState::default(),
+            level: crate::modal::LevelState::default(),
             target: crate::modal::ModelTarget::Session,
         };
 
         let lines = modal_lines(&app, &modal, 80, 20);
-        let row = &lines[3];
+        let level_line = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.content.contains("思考等级："))
+            })
+            .expect("思考等级条");
+        assert_eq!(
+            level_line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "  思考等级：off  high  "
+        );
+        let chip = |name: &str| {
+            level_line
+                .spans
+                .iter()
+                .find(|span| span.content.contains(name))
+                .unwrap_or_else(|| panic!("{name} 出现在等级条"))
+        };
+        assert_eq!(chip("high").style.bg, Some(theme.gray_dim));
+        assert_eq!(chip("off").style.bg, None);
+        let row = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .starts_with("❯ ")
+            })
+            .expect("模型行");
         let text = row
             .spans
             .iter()
