@@ -99,6 +99,7 @@ impl SessionTable {
             .map(sanitize_title)
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| "新会话".into());
+        let origin_parent = origin.parent_session_id.clone();
         let header = Entry::header(
             session_id.clone(),
             cwd.to_string_lossy().into_owned(),
@@ -110,7 +111,15 @@ impl SessionTable {
             created_at_ms,
         );
         let state = SessionState::new(header.clone())?;
-        let paths = self.store.paths_for(cwd, &session_id, created_at_ms);
+        // 子代理落在父会话目录里：代理树就是目录树，删除父会话带走整棵子树。
+        let paths = match origin_parent.as_deref() {
+            Some(parent) => {
+                self.store
+                    .paths_for_child(cwd, parent, &session_id, created_at_ms)
+                    .await?
+            }
+            None => self.store.paths_for(cwd, &session_id, created_at_ms),
+        };
         let info = state.session_info();
         self.records.write().insert(
             session_id,
@@ -829,6 +838,68 @@ mod tests {
     use moc_protocol::methods::{SessionMode, SessionRenameParams, ToolStatus};
 
     use super::*;
+
+    /// 子代理会话整体落在父会话目录里：transcript 与父会话 sidecar 同目录、
+    /// 自己的 sidecar 是它的子目录；恢复后父链接与出身都在，删除父会话带走子树。
+    #[tokio::test]
+    async fn spawned_child_session_lives_inside_the_parent_directory() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let parent = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+            )
+            .await
+            .expect("创建父会话");
+        table
+            .append_message(&parent.id, Message::user_text("父"), None, None)
+            .await
+            .expect("追加父消息");
+        let child = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                Some("子任务"),
+                SessionOrigin::spawned(parent.id.clone()),
+            )
+            .await
+            .expect("创建子代理会话");
+        table
+            .append_message(&child.id, Message::user_text("子"), None, None)
+            .await
+            .expect("追加子消息");
+
+        let parent_paths = table.get(&parent.id).await.expect("父记录").paths.clone();
+        let child_paths = table.get(&child.id).await.expect("子记录").paths.clone();
+        assert_eq!(
+            child_paths.transcript.parent(),
+            Some(parent_paths.sidecar.as_path())
+        );
+        assert_eq!(child_paths.sidecar, parent_paths.sidecar.join(&child.id));
+        assert!(child_paths.transcript.exists(), "子代理日志已经落盘");
+
+        // 代理树由会话头恢复：列表同时收录两者，子代理仍带父链接。
+        let listed = table.list().await.expect("列出会话");
+        let child_info = listed
+            .iter()
+            .find(|info| info.id == child.id)
+            .expect("子代理在列表里");
+        assert_eq!(
+            child_info.parent_session_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+
+        table.delete(&parent.id).await.expect("删除父会话");
+        assert!(!parent_paths.sidecar.exists());
+        assert!(!child_paths.transcript.exists());
+    }
 
     #[tokio::test]
     async fn fresh_session_is_deferred_to_disk_until_first_entry() {

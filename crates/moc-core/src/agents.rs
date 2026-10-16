@@ -1133,7 +1133,7 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             .then_with(|| left.session.id.cmp(&right.session.id))
     });
     let mut block = String::from(
-        "<subagent>\nYou are a subagent. When the task is done, call `yield` with your complete report; the parent receives exactly that text. Never end with a plain message instead, unless the task is impossible.\nCoordinate via `message_agent`: target \"parent\", a sibling id, or \"all\" (running siblings). Incoming messages arrive as <agent-message from=\"...\" id=\"...\">.\n",
+        "<subagent>\nYou are a subagent. When the task is done, call `yield` with your complete report; the parent receives exactly that text. Never end with a plain message instead, unless the task is impossible.\nCoordinate via `message_agent`: target \"parent\", a sibling id, or \"all\" (running siblings). Incoming messages arrive as <agent-message from=\"...\" id=\"...\">. Message the parent only for questions, blockers, or decisions; progress and completion reports go through `yield`.\n",
     );
     if let Some(task) = assignment(inner, session_id).await {
         block.push_str(

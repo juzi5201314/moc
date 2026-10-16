@@ -245,7 +245,30 @@ impl SessionStore {
 
     /// 只计算 transcript 与 sidecar 的路径，不触碰磁盘。
     pub fn paths_for(&self, cwd: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
-        let directory = self.root.join(encode_cwd(cwd));
+        self.paths_in(&self.root.join(encode_cwd(cwd)), session_id, created_at_ms)
+    }
+
+    /// 子代理路径：transcript 与父会话的 transcript 同目录，父会话的 sidecar 目录
+    /// 就是它的容器。代理树因此与目录树同构，删除父会话一并带走整棵子树。
+    ///
+    /// 父会话在磁盘上缺失（从未落盘的父会话）时按顶层布局推导落点，保证子代理
+    /// 仍然写在自己的父目录里：sidecar 目录名恒等于会话 ID。
+    pub async fn paths_for_child(
+        &self,
+        cwd: &Path,
+        parent_session_id: &str,
+        session_id: &str,
+        created_at_ms: u64,
+    ) -> Result<SessionPaths, CoreError> {
+        let parent_sidecar = match self.find(parent_session_id).await? {
+            Some(paths) => paths.sidecar,
+            None => self.paths_for(cwd, parent_session_id, 0).sidecar,
+        };
+        Ok(self.paths_in(&parent_sidecar, session_id, created_at_ms))
+    }
+
+    /// 会话日志与 sidecar 的落点：`directory` 是它们的共同父目录。
+    fn paths_in(&self, directory: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
         SessionPaths {
             transcript: directory.join(format!(
                 "{}_{}.jsonl",
@@ -261,36 +284,52 @@ impl SessionStore {
         if let Some(paths) = self.index.read().get(session_id).cloned() {
             return Ok(Some(paths));
         }
-        let mut directories = match fs::read_dir(&self.root).await {
-            Ok(directories) => directories,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        while let Some(directory) = directories.next_entry().await? {
-            if !directory.file_type().await?.is_dir() {
-                continue;
-            }
-            let mut files = fs::read_dir(directory.path()).await?;
-            while let Some(file) = files.next_entry().await? {
-                let Some(path) = super::maintenance::journal_path(&file.path()) else {
-                    continue;
+        let suffix = format!("_{session_id}");
+        for path in self.journals().await? {
+            if path
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with(&suffix))
+            {
+                let paths = SessionPaths {
+                    transcript: path.clone(),
+                    sidecar: path.parent().unwrap_or(&self.root).join(session_id),
                 };
-                if path
-                    .file_stem()
-                    .is_some_and(|stem| stem.to_string_lossy().ends_with(&format!("_{session_id}")))
-                {
-                    let paths = SessionPaths {
-                        transcript: path,
-                        sidecar: file.path().parent().unwrap_or(&self.root).join(session_id),
-                    };
-                    self.index
-                        .write()
-                        .insert(session_id.to_owned(), paths.clone());
-                    return Ok(Some(paths));
-                }
+                self.index
+                    .write()
+                    .insert(session_id.to_owned(), paths.clone());
+                return Ok(Some(paths));
             }
         }
         Ok(None)
+    }
+
+    /// 全部会话日志，按目录树遍历：第一层是工作目录桶，更深只进会话目录。
+    ///
+    /// 子代理日志落在父会话目录里，所以「更深一层」等价于「代理树的一层」；
+    /// 只进 `ses_` 目录同时把 jobs／artifacts／plans／compaction 等同级目录挡在外面。
+    async fn journals(&self) -> Result<Vec<PathBuf>, CoreError> {
+        let mut found = Vec::new();
+        let mut pending = vec![(self.root.clone(), 0usize)];
+        while let Some((directory, depth)) = pending.pop() {
+            let mut entries = match fs::read_dir(&directory).await {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if entry.file_type().await?.is_dir() {
+                    if depth == 0 || is_session_directory(&path) {
+                        pending.push((path, depth + 1));
+                    }
+                    continue;
+                }
+                if let Some(journal) = super::maintenance::journal_path(&path) {
+                    found.push(journal);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// 打开 transcript 用于追加。
@@ -333,42 +372,23 @@ impl SessionStore {
     /// 只有 header、从未产生任何 entry 的空会话不出现在列表中。
     pub async fn list(&self) -> Result<Vec<moc_protocol::methods::SessionInfo>, CoreError> {
         let mut result = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut directories = match fs::read_dir(&self.root).await {
-            Ok(directories) => directories,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
-            Err(error) => return Err(error.into()),
-        };
-        while let Some(directory) = directories.next_entry().await? {
-            if !directory.file_type().await?.is_dir() {
+        for path in self.journals().await? {
+            let Some(mut info) = listed_session(&path).await else {
                 continue;
-            }
-            let mut files = fs::read_dir(directory.path()).await?;
-            while let Some(file) = files.next_entry().await? {
-                let Some(path) = super::maintenance::journal_path(&file.path()) else {
-                    continue;
-                };
-                if !seen.insert(path.clone()) {
-                    continue;
-                }
-                let Some(mut info) = listed_session(&path).await else {
-                    continue;
-                };
-
-                info.lock = super::lock::read(
-                    path.parent()
-                        .unwrap_or(&self.root)
-                        .join(format!("{}.lock", info.id)),
-                );
-                self.index.write().insert(
-                    info.id.clone(),
-                    SessionPaths {
-                        transcript: path.clone(),
-                        sidecar: path.parent().unwrap_or(&self.root).join(&info.id),
-                    },
-                );
-                result.push(info);
-            }
+            };
+            info.lock = super::lock::read(
+                path.parent()
+                    .unwrap_or(&self.root)
+                    .join(format!("{}.lock", info.id)),
+            );
+            self.index.write().insert(
+                info.id.clone(),
+                SessionPaths {
+                    transcript: path.clone(),
+                    sidecar: path.parent().unwrap_or(&self.root).join(&info.id),
+                },
+            );
+            result.push(info);
         }
         result.sort_by(|left, right| {
             right
@@ -380,6 +400,9 @@ impl SessionStore {
     }
 
     /// 删除 transcript 与 sidecar；锁文件由调用方先按语义释放。
+    ///
+    /// sidecar 目录同时是子代理 transcript 的容器，所以删除父会话会一并删除
+    /// 它的整棵子代理子树（与代理树、目录树同构）。
     pub async fn delete(&self, session_id: &str, paths: &SessionPaths) -> Result<(), CoreError> {
         match fs::remove_file(&paths.transcript).await {
             Ok(()) => {}
@@ -394,6 +417,14 @@ impl SessionStore {
         self.index.write().remove(session_id);
         Ok(())
     }
+}
+
+/// 会话目录：目录名就是会话 ID。子代理按父会话目录归档，因此判别它就是判别
+/// 代理树的下一层。
+fn is_session_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(crate::ids::SESSION_PREFIX))
 }
 
 /// 列表用的会话元信息；单条损坏记录只跳过该文件并告警，不让整个列表不可用。
@@ -722,5 +753,102 @@ mod tests {
         assert_eq!(broken.title, "损坏行之后的标题");
         assert_eq!(broken.updated_at_ms, 4);
         assert!(listed.iter().any(|info| info.id == "ses_healthy0001"));
+    }
+
+    /// 写一份最小可列出的会话日志：header 加一条消息。
+    async fn write_session(paths: &SessionPaths, id: &str) {
+        let header = Entry::header(
+            id.into(),
+            "/tmp/project".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            id.into(),
+            10,
+        );
+        let file = SessionFile::create_with_header(&paths.transcript, &header)
+            .await
+            .expect("创建会话文件");
+        let message = Entry::from_payload(
+            crate::session::entries::EntryPayload::Message {
+                message: moc_llm::Message::user_text("内容"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            header.id().into(),
+            11,
+        );
+        file.append(&message, None).await.expect("追加消息");
+    }
+
+    /// 子代理落在父会话目录里：代理树与目录树同构，列表与查找都要穿过会话目录
+    /// 发现它，删除父会话带走整棵子树；非会话目录里的日志一律不算会话。
+    #[tokio::test]
+    async fn child_transcripts_nest_under_the_parent_session_directory() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let store = SessionStore::new(directory.path().join("sessions"));
+        let cwd = Path::new("/tmp/project");
+        let parent = "ses_parent000001";
+        let child = "ses_child0000001";
+
+        let parent_paths = store.paths_for(cwd, parent, 10);
+        write_session(&parent_paths, parent).await;
+        let child_paths = store
+            .paths_for_child(cwd, parent, child, 20)
+            .await
+            .expect("子代理路径");
+        assert_eq!(
+            child_paths.transcript.parent(),
+            Some(parent_paths.sidecar.as_path()),
+            "transcript 与父会话 sidecar 同目录才能让 urlfs 的相对链接继续成立"
+        );
+        assert_eq!(child_paths.sidecar, parent_paths.sidecar.join(child));
+        write_session(&child_paths, child).await;
+        // 同一目录下的 jobs 不是会话目录：里面的日志不算会话。
+        tokio::fs::create_dir_all(parent_paths.jobs())
+            .await
+            .expect("jobs 目录");
+        write_session(
+            &store.paths_in(&parent_paths.jobs(), "ses_fake00000001", 30),
+            "ses_fake00000001",
+        )
+        .await;
+
+        let listed = store.list().await.expect("列出会话");
+        let mut ids: Vec<&str> = listed.iter().map(|info| info.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [child, parent], "只有会话目录里的日志会被列出");
+        assert_eq!(
+            store
+                .find(child)
+                .await
+                .expect("查找子代理")
+                .expect("子代理存在")
+                .transcript,
+            child_paths.transcript
+        );
+
+        // 父会话尚未落盘时仍按父目录归档：sidecar 目录名恒等于会话 ID。
+        let pending = store
+            .paths_for_child(cwd, "ses_pending00001", "ses_pendingchild1", 40)
+            .await
+            .expect("未落盘父会话的落点");
+        assert_eq!(
+            pending.sidecar,
+            store
+                .paths_for(cwd, "ses_pending00001", 0)
+                .sidecar
+                .join("ses_pendingchild1")
+        );
+
+        store
+            .delete(parent, &parent_paths)
+            .await
+            .expect("删除父会话");
+        assert!(!parent_paths.sidecar.exists());
+        assert!(!child_paths.transcript.exists());
+        assert!(!child_paths.sidecar.exists());
     }
 }

@@ -2,10 +2,13 @@
 
 use uuid::Uuid;
 
+/// 会话 ID 前缀；会话目录的识别也以它为准（子代理 transcript 按父会话目录归档）。
+pub const SESSION_PREFIX: &str = "ses_";
+
 /// UUIDv7 的前缀仅包含时间；会话取随机尾部以避免同毫秒覆盖。
 pub fn session_id() -> String {
     let raw = Uuid::now_v7().simple().to_string();
-    format!("ses_{}", &raw[20..])
+    format!("{SESSION_PREFIX}{}", &raw[20..])
 }
 
 /// 创建 8 位十六进制 entry 标识。
@@ -45,7 +48,7 @@ mod tests {
     #[test]
     fn generated_ids_have_stable_protocol_shapes() {
         let session = session_id();
-        assert!(session.starts_with("ses_"));
+        assert!(session.starts_with(SESSION_PREFIX));
         assert_eq!(session.len(), 16);
         assert!(session[4..].bytes().all(|byte| byte.is_ascii_hexdigit()));
         for id in [entry_id(), plan_id().trim_start_matches("plan_").to_owned()] {
