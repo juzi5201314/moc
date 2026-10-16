@@ -35,13 +35,13 @@ pub(crate) async fn compact(
             "Responses native compaction is not supported for this model".into(),
         ));
     }
-    let mut full_messages = Vec::with_capacity(messages.len() + 1);
+    let mut full_messages = Vec::with_capacity(messages.len() + 2);
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
     let summary = inner.mcp_summary(config).await?;
     let context_files = inner
         .project_context_files(&state.session.id, std::path::Path::new(&state.session.cwd))
         .await;
-    full_messages.push(
+    full_messages.extend(
         crate::system_prompt::build(
             config,
             model,
@@ -51,7 +51,7 @@ pub(crate) async fn compact(
             &summary,
             None,
         )
-        .message,
+        .messages,
     );
     full_messages.extend_from_slice(messages);
     let request = ChatRequest {

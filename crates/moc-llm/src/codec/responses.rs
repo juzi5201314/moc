@@ -1376,7 +1376,7 @@ mod tests {
                 cache: Some(CacheConfig {
                     key: Some("session-1".into()),
                     breakpoints: vec![0],
-                    system_blocks: Vec::new(),
+                    instruction_blocks: Vec::new(),
                     ttl: Some(CacheTtl::ThirtyMinutes),
                 }),
                 ..Default::default()

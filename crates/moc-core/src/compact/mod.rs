@@ -99,12 +99,12 @@ fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
         .map_or(0, |serialized| estimate_tokens(&serialized))
 }
 
-/// 提示路径口径的上下文基准：给定模型的系统提示、工具定义与完整估算。
+/// 提示路径口径的上下文基准：给定模型的指令消息、工具定义与完整估算。
 pub(crate) struct ModelContext {
-    /// 该模型下的系统提示（压缩摘要请求同样复用它）。
-    pub system: Message,
-    /// 系统提示的静态前缀块数；摘要请求沿用同一份缓存断点锚点。
-    pub cache_prefix_blocks: usize,
+    /// 该模型下的指令消息（压缩摘要请求同样复用它）。
+    pub system: Vec<Message>,
+    /// 指令消息的静态前缀块数；摘要请求沿用同一份缓存断点锚点。
+    pub static_prefix: Vec<usize>,
     /// 该模型下注册的工具定义。
     pub tools: Vec<ToolDef>,
     /// 不带系统提示的模型回放消息。
@@ -130,7 +130,7 @@ pub(crate) async fn model_context(
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
     let prompt =
         crate::system_prompt::build(config, model, cwd, &context_files, &skills, &summary, None);
-    let system = prompt.message;
+    let system = prompt.messages;
     let tools = inner.tools.definitions(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),
@@ -141,15 +141,14 @@ pub(crate) async fn model_context(
         },
     );
     let messages = replay::model_messages(state, None, Some(model));
-    let mut measured = Vec::with_capacity(messages.len() + 1);
-    measured.push(system.clone());
+    let mut measured = Vec::with_capacity(system.len() + messages.len());
+    measured.extend(system.iter().cloned());
     measured.extend(messages.iter().cloned());
     let tokens = context_tokens_with_additional(state, &measured, &tools, additional_tokens);
-    let fixed_tokens =
-        messages_tokens(std::slice::from_ref(&system)).saturating_add(tools_tokens(&tools));
+    let fixed_tokens = messages_tokens(&system).saturating_add(tools_tokens(&tools));
     Ok(ModelContext {
         system,
-        cache_prefix_blocks: prompt.cache_prefix_blocks,
+        static_prefix: prompt.static_prefix,
         tools,
         messages,
         fixed_tokens,
@@ -295,7 +294,7 @@ pub(crate) async fn compact(
             config: &config,
             model: &model,
             system: &measured.system,
-            cache_prefix_blocks: measured.cache_prefix_blocks,
+            static_prefix: &measured.static_prefix,
             tools: &measured.tools,
             instructions,
             budget,
@@ -334,7 +333,7 @@ pub(crate) async fn compact(
                     config: &config,
                     model: &model,
                     system: &measured.system,
-                    cache_prefix_blocks: measured.cache_prefix_blocks,
+                    static_prefix: &measured.static_prefix,
                     tools: &measured.tools,
                     instructions,
                     budget,

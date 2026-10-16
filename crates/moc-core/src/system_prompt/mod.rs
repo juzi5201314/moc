@@ -19,6 +19,34 @@ const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, a
 /// 项目指令块的导语：标明这些文件的身份，避免与工具政策混读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
+/// 指令片段名：正文窗用它作标题，模型配置也按它指定角色归属。
+pub const PIECE_INTRO: &str = "intro";
+pub const PIECE_TOOL_POLICY: &str = "tool policy";
+pub const PIECE_PTC_RUNTIME: &str = "ptc runtime";
+pub const PIECE_MCP_SERVERS: &str = "mcp servers";
+pub const PIECE_REPO_RULES: &str = "repo rules";
+pub const PIECE_SKILLS: &str = "skills";
+pub const PIECE_SUBAGENT: &str = "subagent";
+pub const PIECE_ENVIRONMENT: &str = "environment";
+pub const PIECE_APPEND: &str = "append";
+/// 全部片段名；配置校验与角色归属都以它为准。
+pub const PIECE_NAMES: [&str; 9] = [
+    PIECE_INTRO,
+    PIECE_TOOL_POLICY,
+    PIECE_PTC_RUNTIME,
+    PIECE_MCP_SERVERS,
+    PIECE_REPO_RULES,
+    PIECE_SKILLS,
+    PIECE_SUBAGENT,
+    PIECE_ENVIRONMENT,
+    PIECE_APPEND,
+];
+
+/// 配置里的片段名 → 规范名；未知名字返回 `None`，配置加载据此报错。
+pub fn canonical_piece_name(name: &str) -> Option<&'static str> {
+    PIECE_NAMES.into_iter().find(|candidate| *candidate == name)
+}
+
 /// 片段作用域：决定缓存断点落位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PieceScope {
@@ -40,12 +68,14 @@ pub struct PromptPiece {
     pub text: String,
 }
 
-/// 组装完成的系统提示。
+/// 组装完成的指令消息序列。
 pub struct SystemPrompt {
-    /// 系统消息：每个片段一个内容块，顺序即线上顺序。
-    pub message: Message,
-    /// 静态前缀块数；缓存断点落在第 `cache_prefix_blocks - 1` 块。
-    pub cache_prefix_blocks: usize,
+    /// 指令消息：保持 system 的片段组成首条消息，其余片段组成随后的 user 消息；
+    /// 默认配置（指令角色为 system）下只有一条 system 消息。
+    pub messages: Vec<Message>,
+    /// 每条指令消息的静态前缀块数，与 `messages` 一一对应；缓存断点落在
+    /// `messages[i]` 的第 `static_prefix[i] - 1` 块上。
+    pub static_prefix: Vec<usize>,
 }
 
 pub fn build(
@@ -57,36 +87,56 @@ pub fn build(
     mcp_summary: &str,
     subagent: Option<&str>,
 ) -> SystemPrompt {
-    compose(pieces(
-        config,
+    compose(
+        pieces(
+            config,
+            model,
+            cwd,
+            context_files,
+            skills,
+            mcp_summary,
+            subagent,
+        ),
         model,
-        cwd,
-        context_files,
-        skills,
-        mcp_summary,
-        subagent,
-    ))
+    )
 }
 
-/// 按片段拼装系统提示：每块一个内容块，静态前缀在最前。
+/// 按片段拼装指令消息：system 组在前、user 组在后，组内保持片段顺序。
 ///
-/// 内容块边界只服务于本地缓存断点；线上拍平（Chat / Responses）与无断点时的
-/// 字符串形态（Anthropic）都由编码器补回块间空行，文本与单块形态逐字一致。
-pub fn compose(pieces: Vec<PromptPiece>) -> SystemPrompt {
-    let cache_prefix_blocks = pieces
-        .iter()
-        .take_while(|piece| piece.scope == PieceScope::Static)
-        .count();
-    let content = pieces
-        .into_iter()
-        .map(|piece| ContentPart::Text(piece.text))
-        .collect();
+/// 角色分组只影响消息边界与角色，片段正文逐字不变；默认配置（指令角色为
+/// system）下所有片段都留在 system，只有一条消息，与单条形态完全一致。内容块
+/// 边界只服务于本地缓存断点：线上拍平（Chat / Responses）与无断点时的字符串
+/// 形态（Anthropic）都由编码器补回块间空行，文本与单块形态逐字一致。
+pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt {
+    let mut groups: [Vec<PromptPiece>; 2] = [Vec::new(), Vec::new()];
+    for piece in pieces {
+        let group = usize::from(!model.piece_keeps_system(piece.name));
+        groups[group].push(piece);
+    }
+    let roles = [Role::System, model.instruction_role.role()];
+    let mut messages = Vec::with_capacity(2);
+    let mut static_prefix = Vec::with_capacity(2);
+    for (group, role) in groups.into_iter().zip(roles) {
+        if group.is_empty() {
+            continue;
+        }
+        static_prefix.push(
+            group
+                .iter()
+                .take_while(|piece| piece.scope == PieceScope::Static)
+                .count(),
+        );
+        messages.push(Message {
+            role,
+            content: group
+                .into_iter()
+                .map(|piece| ContentPart::Text(piece.text))
+                .collect(),
+        });
+    }
     SystemPrompt {
-        message: Message {
-            role: Role::System,
-            content,
-        },
-        cache_prefix_blocks,
+        messages,
+        static_prefix,
     }
 }
 
@@ -108,7 +158,7 @@ pub fn pieces(
     };
     sections.push(PromptPiece {
         title: "system",
-        name: "intro",
+        name: PIECE_INTRO,
         scope: PieceScope::Static,
         text: intro.to_owned(),
     });
@@ -124,13 +174,13 @@ pub fn pieces(
     tool_policy.push_str(TOOL_POLICY_REST);
     sections.push(PromptPiece {
         title: "system",
-        name: "tool policy",
+        name: PIECE_TOOL_POLICY,
         scope: PieceScope::Static,
         text: tool_policy,
     });
     sections.push(PromptPiece {
         title: "system",
-        name: "ptc runtime",
+        name: PIECE_PTC_RUNTIME,
         scope: PieceScope::Static,
         text: format!(
             "All modes support run_code. In PTC, it is the only native entry point; other modes may call built-in tools directly. Discover MCP tools only inside run_code: first `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`. Discovery does not grant permission.\n\nEach result has `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent and parse text-only JSON explicitly with `JSON.parse(r.content)`. Failures reject with serializable `code`, `message`, and `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls allow up to {}. Writes, bash approval, and session-state updates are barriers: await all calls before returning. Return only final information; intermediate results are not added to model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, and `state.keys()` persist session JSON; missing keys return undefined, writes commit immediately, and later failures do not roll them back. JavaScript globals do not persist. WASM has no file, network, process, or timer APIs; use host tools.",
@@ -141,7 +191,7 @@ pub fn pieces(
     if !mcp_summary.is_empty() {
         sections.push(PromptPiece {
             title: "tools",
-            name: "mcp servers",
+            name: PIECE_MCP_SERVERS,
             scope: PieceScope::Project,
             text: mcp_summary.to_owned(),
         });
@@ -162,7 +212,7 @@ pub fn pieces(
         rules.push_str("\n</repo-rules>");
         sections.push(PromptPiece {
             title: "project",
-            name: "repo rules",
+            name: PIECE_REPO_RULES,
             scope: PieceScope::Project,
             text: rules,
         });
@@ -172,7 +222,7 @@ pub fn pieces(
     {
         sections.push(PromptPiece {
             title: "skills",
-            name: "skills",
+            name: PIECE_SKILLS,
             scope: PieceScope::Project,
             text: catalog,
         });
@@ -180,14 +230,14 @@ pub fn pieces(
     if let Some(subagent) = subagent {
         sections.push(PromptPiece {
             title: "project",
-            name: "subagent",
+            name: PIECE_SUBAGENT,
             scope: PieceScope::Project,
             text: subagent.to_owned(),
         });
     }
     sections.push(PromptPiece {
         title: "system",
-        name: "environment",
+        name: PIECE_ENVIRONMENT,
         scope: PieceScope::Project,
         text: format!(
             "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
@@ -201,7 +251,7 @@ pub fn pieces(
     if !config.system_prompt.append.trim().is_empty() {
         sections.push(PromptPiece {
             title: "system",
-            name: "append",
+            name: PIECE_APPEND,
             scope: PieceScope::Project,
             text: config.system_prompt.append.trim().to_owned(),
         });
@@ -259,7 +309,14 @@ mod tests {
     use std::fs;
 
     fn resolved(cwd: &Path, home: &Path) -> ResolvedConfig {
-        let raw = "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n";
+        resolved_with_compat(cwd, home, "")
+    }
+
+    /// 带 compat 覆写的配置：用于覆盖指令角色等逐模型开关。
+    fn resolved_with_compat(cwd: &Path, home: &Path, compat: &str) -> ResolvedConfig {
+        let raw = format!(
+            "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n[providers.p.models.model.compat]\n{compat}\n"
+        );
         fs::create_dir_all(home).expect("create home");
         fs::write(home.join("config.toml"), raw).expect("write config");
         let core = CoreConfig {
@@ -275,17 +332,27 @@ mod tests {
             .expect("resolve project")
     }
 
-    /// 系统提示的文本块，按线上顺序；测试据此断言块边界。
+    /// 指令消息的文本块，按线上顺序；测试据此断言块边界。
     fn blocks(prompt: &SystemPrompt) -> Vec<String> {
         prompt
-            .message
-            .content
+            .messages
             .iter()
+            .flat_map(|message| &message.content)
             .map(|part| match part {
                 ContentPart::Text(text) => text.clone(),
-                other => panic!("系统提示只应包含文本块，收到 {other:?}"),
+                other => panic!("指令消息只应包含文本块，收到 {other:?}"),
             })
             .collect()
+    }
+
+    /// 指令消息的纯文本形态，按线上顺序拼接。
+    fn prompt_text(prompt: &SystemPrompt) -> String {
+        prompt
+            .messages
+            .iter()
+            .map(Message::instruction_text)
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     #[test]
@@ -308,7 +375,7 @@ mod tests {
             "<mcp-servers>\ngithub\n</mcp-servers>",
             None,
         );
-        let text = prompt.message.instruction_text();
+        let text = prompt_text(&prompt);
         assert!(text.starts_with(DEFAULT_INTRO));
         assert!(text.contains("Follow local rule."));
         assert!(text.contains(REPO_RULES_INTRO));
@@ -318,8 +385,10 @@ mod tests {
         assert!(text.contains("state.store"));
         assert!(text.contains("Standard tool batches allow up to 16"));
         assert!(!text.contains("Current mode:"));
-        // 静态前缀只含与工作目录无关的模板块，工作目录相关内容全部在其后。
-        assert_eq!(prompt.cache_prefix_blocks, 3);
+        // 默认配置下所有片段留在 system：只有一条消息，静态前缀即前三块。
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(prompt.messages[0].role, Role::System);
+        assert_eq!(prompt.static_prefix, vec![3]);
         let blocks = blocks(&prompt);
         assert!(blocks[0].starts_with(DEFAULT_INTRO));
         assert!(blocks[1].starts_with(TOOL_POLICY));
@@ -356,7 +425,93 @@ mod tests {
             blocks.last().map(String::as_str),
             Some("Always answer in Chinese.")
         );
-        assert_eq!(prompt.cache_prefix_blocks, 3);
+        assert_eq!(prompt.static_prefix, vec![3]);
+    }
+
+    /// 指令角色切到 user：规定性片段改走 user 消息，描述性片段留在 system，
+    /// 片段正文逐字不变，只是分组与排列顺序不同。
+    #[test]
+    fn instruction_role_user_splits_pieces_without_rewriting_them() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).expect("create repo");
+        fs::write(cwd.join("AGENTS.md"), "Follow local rule.\n").expect("write rule");
+        let config = resolved_with_compat(&cwd, &home, "instruction_role = \"user\"");
+        let model = config.resolve_role("default").expect("resolve model");
+        let context_files =
+            context_files::load_context_files(&cwd, &config.home, &config.context_files);
+        let prompt = build(
+            &config,
+            &model,
+            &cwd,
+            &context_files,
+            &crate::skills::SkillIndex::empty(),
+            "<mcp-servers>\ngithub\n</mcp-servers>",
+            None,
+        );
+        // 两条消息：system 组承载描述性片段，user 组承载规定性片段。
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[0].role, Role::System);
+        assert_eq!(prompt.messages[1].role, Role::User);
+        assert_eq!(prompt.static_prefix, vec![1, 2]);
+        let system = prompt.messages[0].text();
+        assert!(system.starts_with(DEFAULT_INTRO));
+        assert!(system.contains("<mcp-servers>"));
+        assert!(system.contains("model: p/model"));
+        assert!(!system.contains(TOOL_POLICY), "工具政策不得留在 system 组");
+        let user = prompt.messages[1].text();
+        assert!(user.starts_with(TOOL_POLICY));
+        assert!(user.contains("structuredContent"));
+        assert!(user.contains(REPO_RULES_INTRO));
+        assert!(user.contains("Follow local rule."));
+        assert!(!user.contains("<env>"), "环境事实不得混进 user 组");
+
+        // 与默认配置相比：片段正文逐字相同，只有分组与顺序不同。
+        let plain_config = resolved(&cwd, &home);
+        let plain_model = plain_config.resolve_role("default").expect("resolve model");
+        let plain = build(
+            &plain_config,
+            &plain_model,
+            &cwd,
+            &context_files,
+            &crate::skills::SkillIndex::empty(),
+            "<mcp-servers>\ngithub\n</mcp-servers>",
+            None,
+        );
+        assert_eq!(plain.messages.len(), 1);
+        let mut split = blocks(&prompt);
+        let mut single = blocks(&plain);
+        split.sort();
+        single.sort();
+        assert_eq!(split, single);
+    }
+
+    /// 未知片段名在配置加载期报错，而不是静默退化成整条 user。
+    #[test]
+    fn unknown_keep_system_piece_name_fails_config_load() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).expect("create repo");
+        let raw = format!(
+            "[models.roles]\ndefault='p/model'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model.compat]\ninstruction_system=[\"{}\"]\n",
+            "tool polcy"
+        );
+        fs::create_dir_all(&home).expect("create home");
+        fs::write(home.join("config.toml"), raw).expect("write config");
+        let core = CoreConfig {
+            home: home.to_owned(),
+            cwd: cwd.to_owned(),
+            overlays: Vec::new(),
+            session_dir: None,
+            client: moc_llm::Client::new(),
+        };
+        let error = ResolvedConfig::load(&core)
+            .and_then(|config| config.for_project(&cwd))
+            .err()
+            .expect("未知片段名必须报错");
+        assert!(error.to_string().contains("tool polcy"), "{error}");
     }
 
     #[test]
@@ -370,7 +525,7 @@ mod tests {
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = |config: &ResolvedConfig| {
-            build(
+            prompt_text(&build(
                 config,
                 &model,
                 &cwd,
@@ -378,9 +533,7 @@ mod tests {
                 &crate::skills::SkillIndex::empty(),
                 "",
                 None,
-            )
-            .message
-            .instruction_text()
+            ))
         };
         assert!(
             !prompt(&config).contains("web_search"),
@@ -408,7 +561,7 @@ mod tests {
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
         let prompt = build(&config, &model, &cwd, &context_files, &skills, "", None);
-        let text = prompt.message.instruction_text();
+        let text = prompt_text(&prompt);
         assert!(text.contains("<skills>"));
         assert!(text.contains("- demo: demo skill"));
     }

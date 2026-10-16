@@ -80,7 +80,7 @@ impl Snapshot {
         }
         let tools = &self.tools;
         let history_tokens = self.history_tokens();
-        let system_tokens = compact::messages_tokens(std::slice::from_ref(&self.system.message));
+        let system_tokens = compact::messages_tokens(&self.system.messages);
         let tool_tokens = compact::tools_tokens(tools).saturating_add(directory_tokens);
         let total_tokens = system_tokens
             .saturating_add(compact::tools_tokens(tools))
@@ -299,7 +299,7 @@ async fn snapshot(
         &mcp_summary,
         subagent.as_ref().map(|prompt| prompt.block.as_str()),
     );
-    let system = crate::system_prompt::compose(pieces.clone());
+    let system = crate::system_prompt::compose(pieces.clone(), &model);
     let tools = inner.tools.definitions(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),

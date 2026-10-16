@@ -5,7 +5,7 @@ use std::process::Command;
 
 use moc_llm::{
     Auth, Effort, EndpointStyle, LlmConfig, MaxTokensField, Protocol, ReasoningEcho,
-    ResponseFormatDialect, RetryPolicy, ThinkingWire, ToolChoiceDialect, WireConfig,
+    ResponseFormatDialect, RetryPolicy, Role, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
 use serde::Deserialize;
 
@@ -20,6 +20,26 @@ pub enum CachePolicy {
     Short,
     Long,
     Off,
+}
+
+/// 指令消息的角色：默认整条指令以 system 下发；`user` 用于对 system 遵循度不足的
+/// 上游，把规定性片段（工具政策、仓库规则等）放到 user 消息里。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstructionRole {
+    #[default]
+    System,
+    User,
+}
+
+impl InstructionRole {
+    /// 指令消息的线上角色。
+    pub fn role(self) -> Role {
+        match self {
+            Self::System => Role::System,
+            Self::User => Role::User,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -175,6 +195,10 @@ pub(super) struct ModelCompat {
     pub tool_choice_dialect: ToolChoiceDialect,
     pub parallel_tool_calls: bool,
     pub developer_role: bool,
+    /// 指令消息的角色。
+    pub instruction_role: InstructionRole,
+    /// 指令角色为 `user` 时仍留在 system 消息里的片段名。
+    pub instruction_system: Vec<String>,
     pub response_format_dialect: ResponseFormatDialect,
     pub echo_reasoning: ReasoningEcho,
     pub requires_reasoning_content_for_tool_calls: bool,
@@ -195,6 +219,8 @@ impl Default for ModelCompat {
             tool_choice_dialect: ToolChoiceDialect::default(),
             parallel_tool_calls: true,
             developer_role: false,
+            instruction_role: InstructionRole::System,
+            instruction_system: default_instruction_system(),
             response_format_dialect: ResponseFormatDialect::default(),
             echo_reasoning: ReasoningEcho::default(),
             requires_reasoning_content_for_tool_calls: false,
@@ -204,6 +230,16 @@ impl Default for ModelCompat {
             extra_body: serde_json::Map::new(),
         }
     }
+}
+
+/// 指令角色为 `user` 时默认留在 system 的片段：身份、MCP 清单与信任声明、环境。
+/// 规定性片段（工具政策、仓库规则等）全部交给 user 消息。
+fn default_instruction_system() -> Vec<String> {
+    vec![
+        crate::system_prompt::PIECE_INTRO.into(),
+        crate::system_prompt::PIECE_MCP_SERVERS.into(),
+        crate::system_prompt::PIECE_ENVIRONMENT.into(),
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -306,6 +342,10 @@ pub struct ResolvedModel {
     pub llm: LlmConfig,
     pub max_concurrency: usize,
     pub cache: CachePolicy,
+    /// 指令消息的角色。
+    pub instruction_role: InstructionRole,
+    /// 指令角色为 `user` 时仍留在 system 消息里的片段名（已按规范名单校验）。
+    pub instruction_system: Vec<&'static str>,
     /// 默认思维链回传策略。
     pub echo_reasoning: ReasoningEcho,
     /// Chat/Responses 上游是否接受提示_cache_key。
@@ -316,6 +356,13 @@ pub struct ResolvedModel {
     pub requires_reasoning_content_for_all_assistant_turns: bool,
     /// 工具调用回传 assistant content 的上游约束。
     pub requires_assistant_content_for_tool_calls: bool,
+}
+
+impl ResolvedModel {
+    /// 该指令片段在此模型下是否留在 system 消息里。
+    pub fn piece_keeps_system(&self, name: &str) -> bool {
+        self.instruction_role == InstructionRole::System || self.instruction_system.contains(&name)
+    }
 }
 
 #[derive(Clone)]
@@ -380,6 +427,14 @@ impl ResolvedProvider {
                 return Err(CoreError::Config(format!(
                     "providers.{id}.models.{model_id}.remote_compaction 仅支持 openai_responses"
                 )));
+            }
+            for name in &model.compat.instruction_system {
+                if crate::system_prompt::canonical_piece_name(name).is_none() {
+                    return Err(CoreError::Config(format!(
+                        "providers.{id}.models.{model_id}.compat.instruction_system 含未知指令片段名 {name:?}；可用：{}",
+                        crate::system_prompt::PIECE_NAMES.join("、")
+                    )));
+                }
             }
         }
 
@@ -480,6 +535,13 @@ impl ResolvedProvider {
             llm,
             max_concurrency: self.max_concurrency,
             cache: self.cache,
+            instruction_role: model.compat.instruction_role,
+            instruction_system: model
+                .compat
+                .instruction_system
+                .iter()
+                .filter_map(|name| crate::system_prompt::canonical_piece_name(name))
+                .collect(),
             echo_reasoning: model.compat.echo_reasoning,
             supports_prompt_cache_key: model.compat.supports_prompt_cache_key,
             requires_reasoning_content_for_tool_calls: model

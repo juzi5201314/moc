@@ -19,7 +19,7 @@ pub mod editor;
 pub mod model;
 mod schema;
 
-pub use model::{ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
+pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FeatureConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig,

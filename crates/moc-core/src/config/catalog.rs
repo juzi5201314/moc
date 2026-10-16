@@ -18,7 +18,8 @@ pub fn model_template() -> Value {
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
             "reasoning_field_aliases":["reasoning_content","reasoning"],"tool_choice_dialect":"standard",
-            "parallel_tool_calls":true,"developer_role":false,"response_format_dialect":"standard",
+            "parallel_tool_calls":true,"developer_role":false,"instruction_role":"system",
+            "instruction_system":["intro","mcp servers","environment"],"response_format_dialect":"standard",
             "echo_reasoning":"protocol","requires_reasoning_content_for_tool_calls":false,
             "requires_reasoning_content_for_all_assistant_turns":false,"requires_assistant_content_for_tool_calls":false,
             "thinking":{"toggle_field":"thinking","enabled_value":"enabled","disabled_value":"disabled",
@@ -279,6 +280,7 @@ fn walk(root: &Value, value: &Value, path: &mut Vec<String>, output: &mut Vec<Co
             ("unsupported", "不发送"),
         ],
         "response_format_dialect" => &[("standard", "标准"), ("unsupported", "不发送")],
+        "instruction_role" => &[("system", "system 角色"), ("user", "user 角色")],
         "echo_reasoning" => &[
             ("protocol", "按协议默认"),
             ("always", "总是"),
@@ -665,6 +667,14 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "支持 developer 角色",
                 "关闭后 developer 消息会转成 system 发送。",
             ),
+            "instruction_role" => (
+                "指令角色",
+                "工具政策、仓库规则等指令消息以哪个角色下发；user 用于对 system 遵循度不足的上游。",
+            ),
+            "instruction_system" => (
+                "保持 system 的片段",
+                "指令角色为 user 时仍留在 system 消息里的片段名，逐行填写；留空表示整条指令都用 user。",
+            ),
             "response_format_dialect" => ("结构化输出", "上游不支持时选择不发送。"),
             "echo_reasoning" => ("回传历史思考", "按协议默认、总是或从不回传历史思考内容。"),
             "requires_reasoning_content_for_tool_calls" => (
@@ -692,18 +702,18 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
 mod tests {
     use super::*;
 
-    fn echo_options(value: &Value) -> Vec<String> {
+    fn choice_options(value: &Value, key: &str) -> Vec<String> {
         let fields = fields(value);
         let field = fields
             .iter()
             .find(|field| {
                 field.path.len() >= 2
                     && field.path[field.path.len() - 2] == "compat"
-                    && field.path.last().is_some_and(|key| key == "echo_reasoning")
+                    && field.path.last().is_some_and(|name| name == key)
             })
-            .expect("echo_reasoning 出现在配置目录");
+            .unwrap_or_else(|| panic!("{key} 出现在配置目录"));
         let FieldKind::Choice(options) = &field.kind else {
-            panic!("echo_reasoning 应为候选列表");
+            panic!("{key} 应为候选列表");
         };
         options.iter().map(|option| option.value.clone()).collect()
     }
@@ -714,10 +724,43 @@ mod tests {
         let value = template["compat"]["echo_reasoning"].clone();
         serde_json::from_value::<moc_llm::ReasoningEcho>(value)
             .expect("模型模板写出的 echo_reasoning 必须是合法枚举值");
-        let options = echo_options(&json!({"providers": {"p": {"models": {"m": template}}}}));
+        let options = choice_options(
+            &json!({"providers": {"p": {"models": {"m": template}}}}),
+            "echo_reasoning",
+        );
         assert!(!options.is_empty(), "候选列表不得为空");
         for option in &options {
             serde_json::from_value::<moc_llm::ReasoningEcho>(json!(option))
+                .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
+        }
+    }
+
+    #[test]
+    fn instruction_role_template_and_choices_stay_inside_the_schema() {
+        use crate::config::model::InstructionRole;
+
+        let template = model_template();
+        // 模板写出的默认名单必须是规范片段名，否则配置加载会直接报错。
+        for name in template["compat"]["instruction_system"]
+            .as_array()
+            .expect("instruction_system 是数组")
+        {
+            let name = name.as_str().expect("片段名是字符串");
+            assert!(
+                crate::system_prompt::canonical_piece_name(name).is_some(),
+                "模板里的指令片段名 {name} 不在规范名单内"
+            );
+        }
+        let role = template["compat"]["instruction_role"].clone();
+        serde_json::from_value::<InstructionRole>(role)
+            .expect("模型模板写出的 instruction_role 必须是合法枚举值");
+        let options = choice_options(
+            &json!({"providers": {"p": {"models": {"m": template}}}}),
+            "instruction_role",
+        );
+        assert!(!options.is_empty(), "候选列表不得为空");
+        for option in &options {
+            serde_json::from_value::<InstructionRole>(json!(option))
                 .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
         }
     }

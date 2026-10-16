@@ -31,11 +31,11 @@ pub(crate) fn injected_name(message: &Message) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// 构造 system、checkpoint、活动计划和 todo 等合成前缀，不复制 transcript。
-pub(crate) fn synthetic_messages(state: &SessionState, system: Option<Message>) -> Vec<Message> {
+/// 构造指令消息、checkpoint、活动计划和 todo 等合成前缀，不复制 transcript。
+pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]>) -> Vec<Message> {
     let mut messages = Vec::new();
     if let Some(system) = system {
-        messages.push(system);
+        messages.extend_from_slice(system);
     }
     let start = visible_history_start(state);
     if let Some((method, summary)) = &state.summary
@@ -84,12 +84,12 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<Message>) 
 /// 从追加式日志重建模型消息；transcript 消息只在真正请求模型时复制。
 pub fn model_messages(
     state: &SessionState,
-    system: Option<Message>,
+    system: Option<&[Message]>,
     model: Option<&crate::ResolvedModel>,
 ) -> Vec<Message> {
     let mut messages = Vec::with_capacity(2);
     if let Some(system) = system {
-        messages.push(system);
+        messages.extend_from_slice(system);
     }
     if state.mode == moc_protocol::methods::SessionMode::ClmExperimental
         && let Some(context) = &state.clm_context
@@ -342,11 +342,9 @@ mod tests {
 
     #[test]
     fn model_change_keeps_a_checkpoint_produced_for_the_target_model() {
-        for (checkpoint_model, retained) in [
-            (Some("p/new"), true),
-            (Some("p/old"), false),
-            (None, false),
-        ] {
+        for (checkpoint_model, retained) in
+            [(Some("p/new"), true), (Some("p/old"), false), (None, false)]
+        {
             let header = Entry::header(
                 "ses_123456789abc".into(),
                 "/tmp".into(),
@@ -480,7 +478,7 @@ mod tests {
             3,
         );
         let state = SessionState::from_entries(vec![header, user, context]).unwrap();
-        let messages = model_messages(&state, Some(Message::system("system")), None);
+        let messages = model_messages(&state, Some(&[Message::system("system")]), None);
 
         assert_eq!(state.transcript.len(), 1);
         assert_eq!(messages.len(), 2);

@@ -38,10 +38,10 @@ use std::sync::Arc;
 use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
-    ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope, InputPart,
-    PlanAction, PlanStatus, PromptParams, SessionCompact, SessionCompactParams, SessionLoad,
-    SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
+    ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope,
+    InputPart, PlanAction, PlanStatus, PromptParams, SessionCompact, SessionCompactParams,
+    SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew,
+    SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
     SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
     SessionUnloadParams, SessionUpdate, SessionUpdateMethod, UpstreamField,
 };
@@ -2156,7 +2156,12 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
         )
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
     let id = h.session(SessionMode::Normal).await;
     let client = h.client.clone();
     let request_id = id.clone();
@@ -2174,7 +2179,12 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
     });
     // 上游已收到请求且响应被延迟：提示锁与运行态都在飞。
     let mut waited = 0;
-    while upstream.received_requests().await.map_or(0, |requests| requests.len()) == 0 {
+    while upstream
+        .received_requests()
+        .await
+        .map_or(0, |requests| requests.len())
+        == 0
+    {
         assert!(waited < 200, "上游必须收到提示请求");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         waited += 1;
@@ -2226,7 +2236,12 @@ async fn tool_rounds_rebuild_the_request_projection_from_current_state() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
     let id = h.session(SessionMode::Normal).await;
     assert_eq!(h.prompt(&id, "执行两轮").await.message.text(), "收尾完成");
     let requests = upstream.received_requests().await.expect("请求记录");
@@ -2258,7 +2273,12 @@ async fn config_save_invalidates_the_session_instruction_cache() {
         })
         .mount(&upstream)
         .await;
-    let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nenabled=false").await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
     std::fs::write(
         h.root.path().join("work/AGENTS.md"),
         "配置后指令：始终使用中文回答\n",
@@ -2389,5 +2409,97 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
         content[1].get("cache_control").is_none(),
         "提醒不会进入历史，断点落在它上面永远不会命中"
     );
+    h.close().await;
+}
+
+/// 指令角色切到 user：规定性片段作为首条 user 消息下发，描述性片段留在顶层 system；
+/// 两条指令消息各带自己的缓存断点，正文与默认配置逐字相同。
+#[tokio::test]
+async fn user_role_instructions_ride_in_a_user_message_with_their_own_breakpoint() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_raw(
+                support::anthropic_text_stream("切换完成"),
+                "text/event-stream",
+            )
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "anthropic_messages",
+        "[providers.test.models.gpt-test.compat]\ninstruction_role='user'",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "切换冒烟").await;
+
+    let requests = upstream.received_requests().await.expect("请求记录");
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("请求 JSON");
+
+    // 顶层 system 只剩描述性片段：身份与环境；工具政策不得留在其中。
+    let system = body["system"].as_array().expect("系统提示为内容块数组");
+    assert!(
+        system[0]["text"]
+            .as_str()
+            .expect("首块文本")
+            .starts_with("You are a precise software-engineering agent"),
+        "{system:?}"
+    );
+    assert!(
+        system
+            .last()
+            .and_then(|block| block["text"].as_str())
+            .expect("系统末块")
+            .starts_with("<env>"),
+        "{system:?}"
+    );
+    assert!(
+        system
+            .last()
+            .expect("系统末块")
+            .get("cache_control")
+            .is_some(),
+        "系统边界断点仍落在顶层 system 的末块上：{system:?}"
+    );
+
+    // 首条 user 消息承载工具政策与 PTC 运行时，静态前缀断点落在 PTC 块上；本轮的真实
+    // 用户消息与它合并成同一条线上消息，并带走尾部断点。
+    let messages = body["messages"].as_array().expect("线上消息");
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"].as_array().expect("消息内容块");
+    let texts: Vec<&str> = content
+        .iter()
+        .map(|block| block["text"].as_str().expect("文本块"))
+        .collect();
+    let policy = texts[0];
+    assert!(
+        policy.starts_with("Use read for files and directories"),
+        "{policy}"
+    );
+    assert!(policy.contains("Do not use bash"), "{policy}");
+    assert!(texts[1].contains("run_code"), "{texts:?}");
+    assert!(
+        content[1].get("cache_control").is_some(),
+        "user 组静态前缀断点落在 PTC 块上：{content:?}"
+    );
+    let task = texts
+        .iter()
+        .position(|text| *text == "切换冒烟")
+        .expect("本轮用户消息与指令合并成同一条线上消息");
+    assert!(
+        content[task].get("cache_control").is_some(),
+        "尾断点落在最后一条会持久化的消息上：{content:?}"
+    );
+    for extra in &content[task + 1..] {
+        assert!(
+            extra.get("cache_control").is_none(),
+            "本轮提醒不落断点：{content:?}"
+        );
+    }
     h.close().await;
 }

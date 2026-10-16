@@ -147,11 +147,18 @@ enum Placement {
     Block {
         /// 线上消息下标。
         message: usize,
-        /// 该消息内的内容块下标。
-        block: usize,
+        /// 该 IR 消息首块在线上消息内的内容块下标。
+        first_block: usize,
+        /// 该 IR 消息自身的内容块数。
+        blocks: usize,
     },
     /// 消息被上提到顶层 `system` 字段：断点落在 `system` 边界的最后一块上。
-    System,
+    System {
+        /// 该 IR 消息首块在 `system` 块数组中的下标。
+        first_block: usize,
+        /// 该 IR 消息自身的内容块数。
+        blocks: usize,
+    },
 }
 
 /// 缓存落位结果。
@@ -181,6 +188,63 @@ impl Normalized {
             .iter()
             .map(|text| json!({"type": "text", "text": text}))
             .collect()
+    }
+
+    /// 把 `cache_control` 落到指定线上消息的第 `block` 个内容块上。
+    fn attach_message_block(
+        &mut self,
+        cache_control: &Value,
+        message: usize,
+        block: usize,
+    ) -> Result<(), LlmError> {
+        let content = self.messages[message]
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .expect("线上消息由本模块构造成内容块数组");
+        let len = content.len();
+        let Some(target) = content.get_mut(block) else {
+            return Err(LlmError::Encode(format!(
+                "线上消息只有 {len} 个内容块，缓存断点块下标 {block} 越界"
+            )));
+        };
+        target
+            .as_object_mut()
+            .expect("内容块由本模块构造成 JSON 对象")
+            .insert("cache_control".into(), cache_control.clone());
+        Ok(())
+    }
+
+    /// 把 `cache_control` 落到 IR 第 `message` 条指令消息的第 `block` 块（`None` 表示最后一块）。
+    ///
+    /// 指令消息以 system / developer 角色下发时被上提到顶层 `system`，块下标换算到
+    /// 该系统数组内；以 user 角色下发时它留在 `messages` 里，块边界与 IR 内容块一一对应。
+    fn attach_instruction_block(
+        &mut self,
+        cache_control: &Value,
+        message: usize,
+        block: Option<usize>,
+    ) -> Result<(), LlmError> {
+        match self.placements.get(message).copied().flatten() {
+            Some(Placement::System {
+                first_block,
+                blocks,
+            }) => self.attach_system_breakpoint(
+                cache_control,
+                Some(first_block + block.unwrap_or(blocks - 1)),
+            ),
+            Some(Placement::Block {
+                message: line,
+                first_block,
+                blocks,
+            }) => self.attach_message_block(
+                cache_control,
+                line,
+                first_block + block.unwrap_or(blocks - 1),
+            ),
+            None => Err(LlmError::Encode(format!(
+                "缓存断点下标 {message} 没有对应的指令消息"
+            ))),
+        }
     }
 
     /// 把 `cache_control` 落到系统提示的第 `block` 块上；`None` 表示最后一块。
@@ -235,15 +299,19 @@ fn normalize(
             Role::System | Role::Developer => {
                 // system 被上提到顶层，不出现在 messages 里，因此不打断
                 // 两侧 user 消息的合并。
+                let first_block = system_parts.len();
                 for part in &message.content {
                     match part {
                         ContentPart::Text(text) => system_parts.push(text.clone()),
                         other => return Err(unsupported_part(message.role, other)),
                     }
                 }
-                // 断点可以落在系统提示上（core 恒定给出下标 0）：记下这个落点，
-                // 由 `apply_cache` 折到顶层 system 的最后一块。
-                placements[index] = Some(Placement::System);
+                // 断点可以落在系统提示上（core 恒定给出下标 0）：记下落点与自身块数，
+                // 由 `apply_cache` 折到顶层 system 的对应块上。
+                placements[index] = Some(Placement::System {
+                    first_block,
+                    blocks: system_parts.len() - first_block,
+                });
             }
             Role::Assistant => {
                 let blocks = encode_assistant_blocks(plan, message)?;
@@ -254,11 +322,12 @@ fn normalize(
                     continue;
                 }
                 open_user = None;
-                let block_index = blocks.len() - 1;
+                let blocks_len = blocks.len();
                 messages.push(json!({"role": "assistant", "content": blocks}));
                 placements[index] = Some(Placement::Block {
                     message: messages.len() - 1,
-                    block: block_index,
+                    first_block: 0,
+                    blocks: blocks_len,
                 });
             }
             Role::User | Role::Tool => {
@@ -266,17 +335,19 @@ fn normalize(
                 if blocks.is_empty() {
                     continue;
                 }
-                let block_index = blocks.len() - 1;
+                let blocks_len = blocks.len();
                 match open_user {
                     Some(position) => {
                         let content = messages[position]
                             .get_mut("content")
                             .and_then(Value::as_array_mut)
                             .expect("线上消息由本模块构造成内容块数组");
+                        let first_block = content.len();
                         content.extend(blocks);
                         placements[index] = Some(Placement::Block {
                             message: position,
-                            block: content.len() - 1,
+                            first_block,
+                            blocks: blocks_len,
                         });
                     }
                     None => {
@@ -284,7 +355,8 @@ fn normalize(
                         open_user = Some(messages.len() - 1);
                         placements[index] = Some(Placement::Block {
                             message: messages.len() - 1,
-                            block: block_index,
+                            first_block: 0,
+                            blocks: blocks_len,
                         });
                     }
                 }
@@ -502,27 +574,33 @@ fn apply_cache(req: &ChatRequest, normalized: &mut Normalized) -> Result<CacheOu
     }
     let cache_control = Value::Object(cache_control);
 
-    if cache.breakpoints.is_empty() && cache.system_blocks.is_empty() {
+    if cache.breakpoints.is_empty() && cache.instruction_blocks.is_empty() {
         // 未指定断点时缓存整个前缀：`system` 的最后一块之后即「系统提示 + 工具定义」
-        // 的边界，这是 Anthropic 官方推荐的最小缓存单元。
-        normalized.attach_system_breakpoint(&cache_control, None)?;
+        // 的边界，这是 Anthropic 官方推荐的最小缓存单元；指令消息以 user 角色下发
+        // 且没有系统提示时，退到首条指令消息的最后一块。
+        if normalized.system_is_empty() {
+            normalized.attach_instruction_block(&cache_control, 0, None)?;
+        } else {
+            normalized.attach_system_breakpoint(&cache_control, None)?;
+        }
     } else {
         // 多个断点可以落在同一条被上提的消息上（core 给出的首尾断点常常如此），
         // 顶层 system 因此只升级一次。
         let mut system_breakpoint = false;
         for &index in &cache.breakpoints {
             match normalized.placements.get(index).copied().flatten() {
-                Some(Placement::Block { message, block }) => {
-                    let content = normalized.messages[message]
-                        .get_mut("content")
-                        .and_then(Value::as_array_mut)
-                        .expect("线上消息由本模块构造成内容块数组");
-                    content[block]
-                        .as_object_mut()
-                        .expect("内容块由本模块构造成 JSON 对象")
-                        .insert("cache_control".into(), cache_control.clone());
+                Some(Placement::Block {
+                    message,
+                    first_block,
+                    blocks,
+                }) => {
+                    normalized.attach_message_block(
+                        &cache_control,
+                        message,
+                        first_block + blocks - 1,
+                    )?;
                 }
-                Some(Placement::System) => system_breakpoint = true,
+                Some(Placement::System { .. }) => system_breakpoint = true,
                 None => {
                     return Err(LlmError::Encode(format!(
                         "缓存断点下标 {index} 没有对应的线上内容块"
@@ -534,8 +612,12 @@ fn apply_cache(req: &ChatRequest, normalized: &mut Normalized) -> Result<CacheOu
             normalized.attach_system_breakpoint(&cache_control, None)?;
         }
         // 静态前缀块：与工作目录无关的部分单独落位，跨目录、跨会话复用。
-        for &block in &cache.system_blocks {
-            normalized.attach_system_breakpoint(&cache_control, Some(block))?;
+        for point in &cache.instruction_blocks {
+            normalized.attach_instruction_block(
+                &cache_control,
+                point.message,
+                Some(point.block),
+            )?;
         }
     }
     Ok(CacheOutcome {
@@ -912,7 +994,9 @@ fn optional_string_at(value: &Value, pointer: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CacheConfig, Protocol, ResponseFormatDialect, WireConfig};
+    use crate::config::{
+        CacheConfig, InstructionBlock, Protocol, ResponseFormatDialect, WireConfig,
+    };
     use crate::types::{Effort, RequestOptions, ToolResult};
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -1382,7 +1466,10 @@ mod tests {
             options: RequestOptions {
                 cache: Some(CacheConfig {
                     breakpoints: vec![0],
-                    system_blocks: vec![0],
+                    instruction_blocks: vec![InstructionBlock {
+                        message: 0,
+                        block: 0,
+                    }],
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1404,7 +1491,10 @@ mod tests {
             messages: vec![Message::system("只有一块"), Message::user_text("hi")],
             options: RequestOptions {
                 cache: Some(CacheConfig {
-                    system_blocks: vec![3],
+                    instruction_blocks: vec![InstructionBlock {
+                        message: 0,
+                        block: 3,
+                    }],
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1414,6 +1504,108 @@ mod tests {
         };
         let err = encode(&config(), &bad, false).unwrap_err();
         assert!(err.to_string().contains("越界"), "{err}");
+    }
+
+    #[test]
+    fn user_role_instruction_blocks_land_on_their_own_message() {
+        // 指令消息以 user 角色下发（上游对 system 遵循度不足时的模型配置）：它留在
+        // `messages` 里，块断点按块下标落在该消息上，而不是要求非空系统提示。
+        let req = ChatRequest {
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentPart::Text("工具政策".into()),
+                        ContentPart::Text("仓库规则".into()),
+                    ],
+                },
+                Message::user_text("hi"),
+            ],
+            options: RequestOptions {
+                cache: Some(CacheConfig {
+                    breakpoints: vec![0],
+                    instruction_blocks: vec![InstructionBlock {
+                        message: 0,
+                        block: 0,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        // 相邻 user 消息合并：静态前缀断点落在第 0 块，消息断点落在指令末块上。
+        assert!(body.get("system").is_none());
+        assert_eq!(
+            body["messages"],
+            json!([{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "工具政策", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "仓库规则", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "hi"},
+                ],
+            }])
+        );
+    }
+
+    #[test]
+    fn split_instruction_messages_keep_their_own_breakpoints() {
+        // 指令拆成 system 组与 user 组两条消息：系统侧的边界断点落在顶层 `system`，
+        // user 组的块断点落在它自己的消息块上，互不干扰。
+        let req = ChatRequest {
+            messages: vec![
+                Message {
+                    role: Role::System,
+                    content: vec![
+                        ContentPart::Text("身份".into()),
+                        ContentPart::Text("环境".into()),
+                    ],
+                },
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentPart::Text("工具政策".into()),
+                        ContentPart::Text("仓库规则".into()),
+                    ],
+                },
+                Message::user_text("hi"),
+            ],
+            options: RequestOptions {
+                cache: Some(CacheConfig {
+                    breakpoints: vec![0, 2],
+                    instruction_blocks: vec![InstructionBlock {
+                        message: 1,
+                        block: 0,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["system"],
+            json!([
+                {"type": "text", "text": "身份"},
+                {"type": "text", "text": "环境", "cache_control": {"type": "ephemeral"}},
+            ])
+        );
+        assert_eq!(
+            body["messages"],
+            json!([{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "工具政策", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "仓库规则"},
+                    {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}},
+                ],
+            }])
+        );
     }
 
     #[test]
@@ -1502,8 +1694,8 @@ mod tests {
         let err = encode(&config(), &bad, false).unwrap_err();
         assert!(err.to_string().contains("没有对应的线上内容块"), "{err}");
 
-        // 无系统提示且无断点：无法落位，报错而不是静默丢弃。
-        let bad = ChatRequest {
+        // 无系统提示且无断点：退到首条消息的最后一块，而不是报错。
+        let plain = ChatRequest {
             messages: vec![Message::user_text("hi")],
             options: RequestOptions {
                 cache: Some(CacheConfig::default()),
@@ -1512,8 +1704,38 @@ mod tests {
             max_output_tokens: Some(1024),
             ..Default::default()
         };
+        let body = encode_body(&config(), &plain, false);
+        assert!(body.get("system").is_none());
+        assert_eq!(
+            body["messages"],
+            json!([{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "hi",
+                    "cache_control": {"type": "ephemeral"},
+                }],
+            }])
+        );
+
+        // 指令块断点指向不存在的指令消息时报错，而不是静默丢弃断点。
+        let bad = ChatRequest {
+            messages: vec![Message::user_text("hi")],
+            options: RequestOptions {
+                cache: Some(CacheConfig {
+                    instruction_blocks: vec![InstructionBlock {
+                        message: 5,
+                        block: 0,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            max_output_tokens: Some(1024),
+            ..Default::default()
+        };
         let err = encode(&config(), &bad, false).unwrap_err();
-        assert!(err.to_string().contains("非空系统提示"), "{err}");
+        assert!(err.to_string().contains("没有对应的指令消息"), "{err}");
     }
 
     #[test]

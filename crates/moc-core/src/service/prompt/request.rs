@@ -152,9 +152,10 @@ fn image_media_type(path: &str) -> Option<&'static str> {
 
 /// 缓存断点锚点：由提示编排方给出，编码器据此落位。
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct CacheAnchors {
-    /// 系统提示的静态前缀块数；`0` 表示没有静态前缀。
-    pub system_blocks: usize,
+pub(crate) struct CacheAnchors<'a> {
+    /// 每条指令消息的静态前缀块数；请求开头的消息即指令消息，下标一一对应。
+    /// `0` 表示该指令消息没有静态前缀。
+    pub instruction_static: &'a [usize],
     /// 追加在请求末尾、不进会话历史的提醒消息条数。
     ///
     /// 提醒下一轮不会出现在同样的位置，落在它上面的断点永远不会命中，因此尾部
@@ -169,7 +170,7 @@ pub(crate) fn build_request(
     tools: Vec<moc_llm::ToolDef>,
     native_input: Option<Vec<Value>>,
     session_id: &str,
-    anchors: CacheAnchors,
+    anchors: CacheAnchors<'_>,
 ) -> ChatRequest {
     let echo_reasoning = if model.requires_reasoning_content_for_tool_calls
         || model.requires_reasoning_content_for_all_assistant_turns
@@ -231,20 +232,30 @@ pub(crate) fn cache_options(
     if model.cache == CachePolicy::Off || (!model.supports_prompt_cache_key && !anthropic) {
         return None;
     }
-    let (breakpoints, system_blocks) = if anthropic {
-        // 首块：整条系统提示；Anthropic 的最小缓存单元是「系统提示 + 工具定义」。
+    let (breakpoints, instruction_blocks) = if anthropic {
+        // 首块：整条指令；Anthropic 的最小缓存单元是「系统提示 + 工具定义」。
         let mut points = vec![0];
         // 尾块：最后一条会进入历史的 IR 消息；本轮提醒不落位，否则断点永远不命中。
         let tail = message_count.saturating_sub(1 + anchors.trailing_reminders);
         if tail != 0 && tail < message_count {
             points.push(tail);
         }
-        // 静态前缀块：与工作目录无关的部分单独落位，跨目录、跨会话复用。
-        let blocks = if anchors.system_blocks > 0 {
-            vec![anchors.system_blocks - 1]
-        } else {
-            Vec::new()
-        };
+        // 静态前缀块：与工作目录无关的部分单独落位，跨目录、跨会话复用。只落最后
+        // 一条含静态前缀的指令消息——指令拆成 system 与 user 两组时前缀不再连续，
+        // 多段落点收益递减，而 Anthropic 每次请求至多 4 个断点。
+        let blocks = anchors
+            .instruction_static
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, count)| **count > 0)
+            .map(|(message, count)| {
+                vec![moc_llm::InstructionBlock {
+                    message,
+                    block: *count - 1,
+                }]
+            })
+            .unwrap_or_default();
         (points, blocks)
     } else {
         (Vec::new(), Vec::new())
@@ -252,7 +263,7 @@ pub(crate) fn cache_options(
     Some(CacheConfig {
         key: (!anthropic).then(|| session_id.to_owned()),
         breakpoints,
-        system_blocks,
+        instruction_blocks,
         ttl: match (anthropic, model.cache) {
             (true, CachePolicy::Long) => Some(moc_llm::CacheTtl::OneHour),
             (true, CachePolicy::Short) => Some(moc_llm::CacheTtl::FiveMinutes),
@@ -386,15 +397,66 @@ mod tests {
             &model,
             7,
             CacheAnchors {
-                system_blocks: 3,
+                instruction_static: &[3],
                 trailing_reminders: 1,
             },
             "session-1",
         )
         .expect("缓存配置");
         assert_eq!(options.breakpoints, vec![0, 5]);
-        assert_eq!(options.system_blocks, vec![2]);
+        assert_eq!(
+            options.instruction_blocks,
+            vec![moc_llm::InstructionBlock {
+                message: 0,
+                block: 2
+            }]
+        );
         assert_eq!(options.key, None);
         assert_eq!(options.ttl, Some(moc_llm::CacheTtl::FiveMinutes));
+    }
+
+    #[test]
+    fn static_prefix_anchor_follows_the_last_split_instruction_message() {
+        // 指令拆成 system 与 user 两组时，静态前缀断点落在最后一条含静态前缀的
+        // 指令消息上（此处是第 1 条 user 组消息的第 1 块），首尾断点不变。
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        std::fs::create_dir_all(&home).expect("创建 home");
+        std::fs::write(
+            home.join("config.toml"),
+            "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model'\n[providers.p]\napi='anthropic_messages'\nbase_url='https://example.invalid'\n[providers.p.models.model]\n",
+        )
+        .expect("写配置");
+        let core = crate::CoreConfig {
+            home: home.clone(),
+            cwd: cwd.clone(),
+            overlays: Vec::new(),
+            session_dir: None,
+            client: moc_llm::Client::new(),
+        };
+        let config = crate::ResolvedConfig::load(&core)
+            .expect("载入配置")
+            .for_project(&cwd)
+            .expect("解析项目");
+        let model = config.resolve_role("default").expect("解析模型");
+        let options = cache_options(
+            &model,
+            9,
+            CacheAnchors {
+                instruction_static: &[1, 2],
+                trailing_reminders: 1,
+            },
+            "session-1",
+        )
+        .expect("缓存配置");
+        assert_eq!(options.breakpoints, vec![0, 7]);
+        assert_eq!(
+            options.instruction_blocks,
+            vec![moc_llm::InstructionBlock {
+                message: 1,
+                block: 1
+            }]
+        );
     }
 }

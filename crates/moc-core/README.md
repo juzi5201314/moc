@@ -53,6 +53,7 @@ allow_patterns = ["^mkdir\\s+-p\\s+[^/]+$", "^git\\s+(add|commit)\\b.*$"]
 - `supports_prompt_cache_key = false`：Chat/Responses 请求不发送缓存键及相关缓存选项，适用于拒绝扩展字段的上游；不关闭 Anthropic 的消息缓存断点。默认 `true`。
 - `requires_reasoning_content_for_all_assistant_turns = true`：回传所有 assistant 思维链，并为缺失的历史补显式空块；不只针对工具调用。默认 `false`。
 - `requires_reasoning_content_for_tool_calls` 与 `requires_assistant_content_for_tool_calls`：分别补齐工具调用历史中的推理字段和正文；显式空字符串不会被编码器转换成缺失字段。
+- `instruction_role = "user"`：把规定性指令片段（工具政策、PTC 运行时、仓库规则、技能目录、子代理契约与追加指令）改以 user 角色下发，供对 system 角色遵循度不足的上游使用；默认 `"system"`，行为与不配置完全一致。配套的 `instruction_system`（默认 `["intro", "mcp servers", "environment"]`）列出仍留在 system 消息里的描述性片段，留空表示整条指令都用 user。分组只改变消息边界与角色：片段正文、顺序与 token 占用不变，Anthropic 下 user 组会与首条用户消息合并。
 
 供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连，默认 20 秒。`timeout_secs` 默认不设置，不限制首包等待或流式空闲；仅用户显式设置时才限制非流式整请求以及流式首包等待和后续空闲。
 
@@ -69,7 +70,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 ### 请求、进程与输出预算
 
 - `providers.<id>.max_concurrency`：同一供应商跨会话共享并发限额，`0` 表示不限；取消等待不会占用名额。模型生成和压缩请求使用同一限额。
-- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 的断点落在静态前缀末块、系统提示边界与最后一条会进入历史的消息上——本轮追加的提醒不落位（它不进历史，落上去也永远不会命中），静态块断点让同一模板在不同工作目录间复用；OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
+- `providers.<id>.cache`：`auto`（默认）、`short`、`long`、`off`。自动模式按协议使用缓存，不发额外预热请求；Anthropic 的断点落在最后一条含静态前缀的指令消息内的静态末块、指令边界（指令以 system 下发时上提为「系统提示 + 工具定义」的最小缓存单元）与最后一条会进入历史的消息上——本轮追加的提醒不落位（它不进历史，落上去也永远不会命中），静态块断点让同一模板在不同工作目录间复用；OpenAI 兼容协议使用稳定会话路由键而不强塞缓存断点。长保留需要上游支持：Anthropic 为一小时，OpenAI 为 `24h`。`supports_prompt_cache_key=false` 可关闭不兼容的 OpenAI 扩展字段。上下文压缩固定使用当前会话模型；`explore` 角色已供子代理任务选模。
 - 模型的 `max_request_bytes` 控制单次 JSON 请求体，留空为 50 MiB。配置值原样生效（校验只要求大于 0）：设得比触发余量还小时图片会被全部淘汰。达到高水位后，core 只在请求副本中按旧到新淘汰图片，压缩和会话原始历史不被改写；图片 token 按固定视觉估算，不按 Base64 字节计量。
 - `tools.max_concurrent_calls`：标准模型工具批次中只读工具的同时执行上限；写入工具、bash、询问、计划、todo、skill 与 `run_code` 仍作为顺序屏障。默认 16。
 - `tools.job.max_running=4`：限制后台进程数量；`overflow="error"` 默认直接向模型返回超限错误，`"wait"` 等待空闲名额，可取消。前台命令不占后台名额。

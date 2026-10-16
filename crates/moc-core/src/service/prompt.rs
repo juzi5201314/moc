@@ -212,12 +212,12 @@ struct TurnInputs {
 /// 在调用方持有的会话状态锁内构建一轮投影；锁不跨越任何 await。
 fn turn_inputs(
     state: &crate::session::state::SessionState,
-    system: &Message,
+    system: &[Message],
     model: &crate::ResolvedModel,
     tools: &[moc_llm::ToolDef],
     additional_tokens: u64,
 ) -> TurnInputs {
-    let messages = model_messages(state, Some(system.clone()), Some(model));
+    let messages = model_messages(state, Some(system), Some(model));
     let context_tokens =
         compact::context_tokens_with_additional(state, &messages, tools, additional_tokens);
     TurnInputs {
@@ -579,7 +579,7 @@ async fn run_prompt_locked(
             let state = record.state.lock().await;
             turn_inputs(
                 &state,
-                &system.message,
+                &system.messages,
                 &model,
                 &tools_available,
                 compact::messages_tokens(&reminder_messages),
@@ -623,7 +623,7 @@ async fn run_prompt_locked(
                         let state = record.state.lock().await;
                         turn_inputs(
                             &state,
-                            &system.message,
+                            &system.messages,
                             &model,
                             &tools_available,
                             compact::messages_tokens(&reminder_messages),
@@ -644,7 +644,7 @@ async fn run_prompt_locked(
             inputs.native_input.clone(),
             &params.session_id,
             CacheAnchors {
-                system_blocks: system.cache_prefix_blocks,
+                instruction_static: &system.static_prefix,
                 trailing_reminders: reminder_messages.len(),
             },
         );
@@ -752,7 +752,7 @@ async fn run_prompt_locked(
                         let state = record.state.lock().await;
                         turn_inputs(
                             &state,
-                            &system.message,
+                            &system.messages,
                             &model,
                             &tools_available,
                             compact::messages_tokens(&reminder_messages),
@@ -768,7 +768,7 @@ async fn run_prompt_locked(
                         inputs.native_input.clone(),
                         &params.session_id,
                         CacheAnchors {
-                            system_blocks: system.cache_prefix_blocks,
+                            instruction_static: &system.static_prefix,
                             trailing_reminders: reminder_messages.len(),
                         },
                     );
@@ -947,7 +947,7 @@ async fn run_prompt_locked(
             let native = Value::Array(vec![*item]);
             let native_tokens = serde_json::to_string(&native)
                 .map_or(0, |serialized| compact::estimate_tokens(&serialized));
-            let tokens_after = compact::messages_tokens(std::slice::from_ref(&system.message))
+            let tokens_after = compact::messages_tokens(&system.messages)
                 .saturating_add(compact::tools_tokens(&tools_available))
                 .saturating_add(compact::messages_tokens(&reminder_messages))
                 .saturating_add(retained_tokens)

@@ -25,9 +25,9 @@ pub(crate) struct SoftContext<'a> {
     pub state: &'a SessionState,
     pub config: &'a ResolvedConfig,
     pub model: &'a ResolvedModel,
-    pub system: &'a Message,
-    /// 系统提示的静态前缀块数；摘要请求沿用主循环的缓存断点锚点。
-    pub cache_prefix_blocks: usize,
+    pub system: &'a [Message],
+    /// 指令消息的静态前缀块数；摘要请求沿用主循环的缓存断点锚点。
+    pub static_prefix: &'a [usize],
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
     pub budget: CompactionBudget,
@@ -43,7 +43,7 @@ pub(crate) async fn compact(
         config,
         model,
         system,
-        cache_prefix_blocks,
+        static_prefix,
         tools,
         instructions,
         budget,
@@ -88,8 +88,7 @@ pub(crate) async fn compact(
     }
     let retained = messages_tokens(&history[start..]);
     let prompt = summary_prompt(state, instructions, 0);
-    let fixed_summary_tokens =
-        messages_tokens(std::slice::from_ref(system)).saturating_add(super::tools_tokens(tools));
+    let fixed_summary_tokens = messages_tokens(system).saturating_add(super::tools_tokens(tools));
     let prompt_tokens = estimate_tokens(&prompt);
     let input_budget = model
         .context_window
@@ -98,8 +97,8 @@ pub(crate) async fn compact(
         .saturating_sub(prompt_tokens);
     let (selected_history, omitted_prompts) = fit_summary_history(&history[..start], input_budget);
     let prompt = summary_prompt(state, instructions, omitted_prompts);
-    let mut messages = Vec::with_capacity(selected_history.len() + 2);
-    messages.push(system.clone());
+    let mut messages = Vec::with_capacity(system.len() + selected_history.len() + 1);
+    messages.extend_from_slice(system);
     messages.extend(selected_history);
     messages.push(Message::user_text(prompt));
     let mut request = crate::service::prompt::request::build_request(
@@ -110,7 +109,7 @@ pub(crate) async fn compact(
         None,
         &state.session.id,
         crate::service::prompt::request::CacheAnchors {
-            system_blocks: cache_prefix_blocks,
+            instruction_static: static_prefix,
             // 摘要是本次请求特有的最后一条消息，不能落缓存断点。
             trailing_reminders: 1,
         },
