@@ -10,12 +10,14 @@ use moc_llm::{ContentPart, Message, Role};
 
 /// 合格的 checkpoint 至少要有这么多字符。
 pub(crate) const MIN_CHECKPOINT_CHARS: usize = 600;
-/// 关键锚点的目标覆盖率；低于它触发一次带缺口清单的重试。
-pub(crate) const MIN_ANCHOR_COVERAGE: f64 = 0.85;
-/// 重试全部失败时，仍可接受的锚点覆盖率下限；再低就改用确定性兜底。
-pub(crate) const ACCEPTABLE_ANCHOR_COVERAGE: f64 = 0.75;
-/// 锚点总量上限：超长会话里只校验最先出现的这些，避免校验本身变成负担。
+/// 锚点总量上限：超长会话里按等距抽样保留这些，避免校验本身变成负担。
 const MAX_ANCHORS: usize = 240;
+/// 达标所需的锚点命中数下限与上限。
+///
+/// 小输入按 85% 要求；大输入封顶到固定条数——几十万 token 的历史压成几千 token
+/// 的 checkpoint 不可能覆盖 85% 的锚点，否则重试与兜底会误伤正常结果。
+const MIN_REQUIRED_ANCHOR_HITS: usize = 8;
+const MAX_REQUIRED_ANCHOR_HITS: usize = 64;
 /// 一次修复提示里最多列出的缺失锚点。
 pub(crate) const MAX_REPORTED_MISSING: usize = 24;
 
@@ -27,8 +29,12 @@ pub(crate) enum Verdict {
     Short(usize),
     /// 缺少的必需段落标题。
     Sections(Vec<String>),
-    /// 锚点覆盖不足：覆盖率与缺失清单。
-    Coverage(f64, Vec<String>),
+    /// 锚点命中不足：命中数、达标线与缺失清单。
+    Coverage {
+        hits: usize,
+        required: usize,
+        missing: Vec<String>,
+    },
 }
 
 impl Verdict {
@@ -43,9 +49,8 @@ impl Verdict {
                 "your reply is missing these required sections: {}",
                 missing.join(", ")
             ),
-            Self::Coverage(coverage, _) => format!(
-                "your reply omits too many concrete facts (anchor coverage {:.0}%)",
-                coverage * 100.0
+            Self::Coverage { hits, required, .. } => format!(
+                "your reply preserves only {hits} of the {required} required concrete facts (paths, identifiers, numbers)"
             ),
         }
     }
@@ -54,6 +59,24 @@ impl Verdict {
     pub(crate) fn is_structural(&self) -> bool {
         matches!(self, Self::Short(_) | Self::Sections(_))
     }
+}
+
+/// 达标所需的锚点命中数。
+pub(crate) fn required_hits(total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let scaled = total.saturating_mul(85).div_ceil(100);
+    scaled.clamp(
+        MIN_REQUIRED_ANCHOR_HITS.min(total),
+        MAX_REQUIRED_ANCHOR_HITS.min(total),
+    )
+}
+
+/// 重试全部失败时仍值得保留的命中数：达标线的四分之三。
+pub(crate) fn acceptable_hits(total: usize) -> usize {
+    let required = required_hits(total);
+    required.saturating_sub(required / 4).max(1)
 }
 
 /// 剥掉模型常加的外壳：开头 `<analysis>` 草稿、`<summary>` 标签与代码围栏。
@@ -168,23 +191,31 @@ pub(crate) fn salient_anchors<'a>(
                 _ => {}
             }
         }
-        if anchors.len() >= MAX_ANCHORS {
-            break;
-        }
     }
+    sample_even(&mut anchors);
     anchors
 }
 
-/// 锚点在文本里的出现比例。
-pub(crate) fn coverage(anchors: &[String], text: &str) -> f64 {
-    if anchors.is_empty() {
-        return 1.0;
+/// 锚点过多时按等距抽样：超长会话里必须让开头、中段和结尾都有代表，
+/// 只留最先出现的 240 个会让校验偏向会话早期。
+fn sample_even(anchors: &mut Vec<String>) {
+    let len = anchors.len();
+    if len <= MAX_ANCHORS {
+        return;
     }
-    let hits = anchors
+    let mut sampled = Vec::with_capacity(MAX_ANCHORS);
+    for index in 0..MAX_ANCHORS {
+        sampled.push(anchors[index * len / MAX_ANCHORS].clone());
+    }
+    *anchors = sampled;
+}
+
+/// 文本命中的锚点数。
+pub(crate) fn matching(anchors: &[String], text: &str) -> usize {
+    anchors
         .iter()
         .filter(|anchor| text.contains(*anchor))
-        .count();
-    hits as f64 / anchors.len() as f64
+        .count()
 }
 
 /// 文本里缺失的锚点，最多 `MAX_REPORTED_MISSING` 个。
@@ -207,9 +238,14 @@ pub(crate) fn evaluate(text: &str, anchors: &[String], sections: &[&str]) -> Ver
     if !missing.is_empty() {
         return Verdict::Sections(missing);
     }
-    let coverage = coverage(anchors, text);
-    if coverage < MIN_ANCHOR_COVERAGE {
-        return Verdict::Coverage(coverage, missing_anchors(anchors, text));
+    let hits = matching(anchors, text);
+    let required = required_hits(anchors.len());
+    if hits < required {
+        return Verdict::Coverage {
+            hits,
+            required,
+            missing: missing_anchors(anchors, text),
+        };
     }
     Verdict::Ok
 }
@@ -237,9 +273,6 @@ fn scan(text: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>) {
         let token = text[start..index].trim_matches(['.', ',', ';', ':', '+', '%']);
         if !classify(token) {
             continue;
-        }
-        if anchors.len() >= MAX_ANCHORS {
-            return;
         }
         if seen.insert(token.to_owned()) {
             anchors.push(token.to_owned());
@@ -397,19 +430,47 @@ mod tests {
         let sections = sections_text();
         assert!(matches!(
             evaluate(&sections, &anchors, SECTIONS),
-            Verdict::Coverage(_, _)
+            Verdict::Coverage { .. }
         ));
         let good = format!("{sections}\n45_000 rotate_windows");
         assert_eq!(evaluate(&good, &anchors, SECTIONS), Verdict::Ok);
     }
 
     #[test]
-    fn coverage_reports_missing_anchors() {
+    fn matching_counts_anchors_and_reports_missing() {
         let anchors = vec!["a_b".to_owned(), "c_d".to_owned()];
-        assert_eq!(coverage(&anchors, "a_b here"), 0.5);
+        assert_eq!(matching(&anchors, "a_b here"), 1);
         assert_eq!(
             missing_anchors(&anchors, "a_b here"),
             vec!["c_d".to_owned()]
+        );
+    }
+
+    #[test]
+    fn required_hits_scale_with_a_cap() {
+        assert_eq!(required_hits(0), 0);
+        assert_eq!(required_hits(2), 2);
+        assert_eq!(required_hits(10), 9);
+        assert_eq!(required_hits(100), 64, "大输入封顶而不是要求 85%");
+        assert_eq!(required_hits(240), 64);
+        assert!(acceptable_hits(240) < required_hits(240));
+    }
+
+    #[test]
+    fn long_histories_sample_anchors_evenly() {
+        // 3000 个互不相同的锚点必须抽样到 240，且首尾都要有代表。
+        let mut messages = Vec::new();
+        for index in 0..3000 {
+            messages.push(Message::user_text(format!(
+                "crates/ingest/src/module_{index}.rs 的第 {index} 步"
+            )));
+        }
+        let anchors = salient_anchors(messages.iter(), None);
+        assert_eq!(anchors.len(), MAX_ANCHORS);
+        assert!(anchors.iter().any(|anchor| anchor.contains("module_0.rs")));
+        assert!(
+            anchors.iter().any(|anchor| anchor.contains("module_2")),
+            "抽样必须覆盖后半段"
         );
     }
 }

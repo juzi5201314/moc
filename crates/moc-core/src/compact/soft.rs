@@ -12,7 +12,7 @@
 
 use std::time::Instant;
 
-use moc_llm::{Message, ToolDef};
+use moc_llm::{ContentPart, Message, ToolDef};
 use moc_protocol::RequestContext;
 
 use super::replay::visible_history_start;
@@ -49,6 +49,9 @@ const SUMMARY_SECTIONS: &[&str] = &[
 const SOFT_MAX_ATTEMPTS: u32 = 3;
 /// 重试提示词比首轮更长，预算里先留出余量，避免修复轮超窗。
 const REPAIR_RESERVE_TOKENS: u64 = 512;
+/// 校验锚点只看被丢弃历史的最后这么多个字符（约 6k token）：再往前的细节
+/// 允许被压缩掉，模型可以用 `history://transcript` 回查。
+const ANCHOR_WINDOW_CHARS: usize = 24_000;
 
 pub(crate) struct SoftContext<'a> {
     pub inner: &'a CoreInner,
@@ -193,13 +196,14 @@ pub(crate) async fn compact(
         .saturating_sub(estimate_tokens(&base_prompt))
         .saturating_sub(REPAIR_RESERVE_TOKENS);
     let (selected_history, omitted_prompts) = fit_summary_history(&history[..start], input_budget);
-    // 锚点取自"被丢弃的历史"与上一版 checkpoint：这些事实一旦丢失就永久丢失。
-    // 手动命令输出不入锚点（那是原样文本，不是工程事实）；预算裁掉的更早轮次仍计入，
-    // 提示词里的 `<older-history-omitted>` 指向 `history://transcript`，模型可以回查。
+    // 锚点只取"被丢弃历史"的最近一段：checkpoint 的契约是记录当前状态，
+    // 要求它复述几十万 token 之前的具体标识符不现实（实测：最近 20 条消息覆盖率
+    // 90%，最近 1000 条约 13%）。上一版 checkpoint 的锚点单独全量参与校验。
+    let anchor_start = anchor_window_start(&history[..start], ANCHOR_WINDOW_CHARS);
     let anchors = guard::salient_anchors(
-        history[..start]
+        history[anchor_start..start]
             .iter()
-            .zip(&bash_flags[..start])
+            .zip(&bash_flags[anchor_start..start])
             .filter(|(_, is_bash)| !**is_bash)
             .map(|(message, _)| message),
         previous_summary,
@@ -213,7 +217,7 @@ pub(crate) async fn compact(
         static_prefix,
         tools,
     };
-    let mut best: Option<(String, f64)> = None;
+    let mut best: Option<(String, usize)> = None;
     let mut repair: Option<Repair> = None;
     let mut accepted: Option<String> = None;
     for attempt in 1..=SOFT_MAX_ATTEMPTS {
@@ -236,13 +240,13 @@ pub(crate) async fn compact(
             break;
         }
         if !verdict.is_structural() {
-            let coverage = guard::coverage(&anchors, &cleaned);
+            let hits = guard::matching(&anchors, &cleaned);
             let better = match &best {
                 None => true,
-                Some((_, current)) => coverage > *current,
+                Some((_, current)) => hits > *current,
             };
             if better {
-                best = Some((cleaned, coverage));
+                best = Some((cleaned, hits));
             }
         }
         tracing::debug!(
@@ -252,7 +256,7 @@ pub(crate) async fn compact(
             "summary checkpoint rejected"
         );
         let missing = match &verdict {
-            guard::Verdict::Coverage(_, missing) => missing.clone(),
+            guard::Verdict::Coverage { missing, .. } => missing.clone(),
             _ => Vec::new(),
         };
         repair = Some(Repair {
@@ -263,7 +267,7 @@ pub(crate) async fn compact(
     let summary = match accepted {
         Some(summary) => summary,
         None => match best {
-            Some((summary, coverage)) if coverage >= guard::ACCEPTABLE_ANCHOR_COVERAGE => summary,
+            Some((summary, hits)) if hits >= guard::acceptable_hits(anchors.len()) => summary,
             _ => {
                 tracing::warn!(
                     session = %state.session.id,
@@ -302,6 +306,35 @@ pub(crate) async fn compact(
         },
     )
     .await
+}
+
+/// 从末尾向前累计字符，返回最近 `budget` 字符窗口的起始下标。
+fn anchor_window_start(history: &[Message], budget: usize) -> usize {
+    let mut total = 0usize;
+    let mut start = history.len();
+    while start > 0 {
+        let chars = message_chars(&history[start - 1]);
+        if start < history.len() && total.saturating_add(chars) > budget {
+            break;
+        }
+        total = total.saturating_add(chars);
+        start -= 1;
+    }
+    start
+}
+
+/// 估算一条消息的字符量，不额外分配字符串。
+fn message_chars(message: &Message) -> usize {
+    message
+        .content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text(text) => text.len(),
+            ContentPart::ToolCall(call) => call.arguments.len(),
+            ContentPart::ToolResult(result) => result.content.len(),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// 选取能放进 `budget` 的完整轮次后缀；最近一轮自身超预算时退化为有界摘录。
@@ -551,13 +584,31 @@ mod tests {
     #[test]
     fn repair_block_lists_missing_anchors() {
         let block = repair_block(&Repair {
-            reason: "your reply omits too many concrete facts (anchor coverage 40%)".into(),
+            reason: "your reply preserves only 12 of the 40 required concrete facts".into(),
             missing: vec!["45_000".into(), "crates/ingest/src/window.rs".into()],
         });
         assert!(block.starts_with("<previous-attempt-rejected>"));
         assert!(block.contains("- 45_000"));
         assert!(block.contains("- crates/ingest/src/window.rs"));
         assert!(block.ends_with("</previous-attempt-rejected>\n"));
+    }
+
+    #[test]
+    fn anchor_window_keeps_only_the_recent_tail() {
+        let history: Vec<Message> = (0..10)
+            .map(|index| Message::user_text(format!("{index:0>100}")))
+            .collect();
+        assert_eq!(anchor_window_start(&history, 350), 7);
+        assert_eq!(anchor_window_start(&history, 10_000), 0);
+    }
+
+    #[test]
+    fn anchor_window_keeps_the_newest_message_even_if_oversized() {
+        let history = vec![
+            Message::user_text("old"),
+            Message::user_text("x".repeat(5_000)),
+        ];
+        assert_eq!(anchor_window_start(&history, 100), 1);
     }
 
     #[test]
