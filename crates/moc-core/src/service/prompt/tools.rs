@@ -852,10 +852,8 @@ mod tests {
             );
         }
         let edit = serde_json::json!({
-            "files": [
-                {"path":"src/main.rs","edits":[["AAA","AAA","change"]]},
-                {"path":root.join("other.rs").display().to_string(),"edits":[["BBB","BBB","change"]]}
-            ]
+            "path":"src/main.rs",
+            "edits":[["1aa","1aa","change"]]
         });
         assert!(
             outside_workspace_targets(&root, "edit", &edit)

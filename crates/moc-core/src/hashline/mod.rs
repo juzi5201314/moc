@@ -6,7 +6,7 @@ pub mod served;
 pub mod store;
 
 pub use anchor::{
-    ANCHOR_SPACE, AnchorError, HASH_PROBE_STRIDE, assign_hashes, canon, canon_hash, decode_anchor,
-    encode_anchor, idx_of, map_stable_hashes,
+    AnchorParse, ID_ALPHABET, ID_SEED_LINE_LIMIT, ID_SPACE, REBASE_WINDOW, anchor_line, anchor_of,
+    anchor_token, id_of, id_str, parse_anchor,
 };
 pub use store::{AnchorStore, FileSnapshot, LineEnding, ServedFile, SnapshotId};

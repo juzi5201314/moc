@@ -1,292 +1,163 @@
-//! Hashline 锚点空间、规范化与稳定映射。
+//! 行号加短哈希锚点。
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use thiserror::Error;
 use xxhash_rust::xxh32::Xxh32;
 
-/// 三字符 base-62 锚点空间。
-pub const ANCHOR_SPACE: u32 = 62 * 62 * 62;
-/// 与锚点空间互质的确定性冲突探测步长。
-pub const HASH_PROBE_STRIDE: u32 = 3907;
-const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-const BITSET_WORDS: usize = ANCHOR_SPACE.div_ceil(32) as usize;
+/// 重定位搜索允许的最大行号距离。
+pub const REBASE_WINDOW: usize = 5;
+/// 锚点后缀使用的小写字母表。
+pub const ID_ALPHABET: [u8; 26] = *b"abcdefghijklmnopqrstuvwxyz";
+/// 两字母后缀实际使用的哈希空间。
+pub const ID_SPACE: u32 = 647;
+/// 纯符号行使用行号作为种子的上限。
+pub const ID_SEED_LINE_LIMIT: usize = 40_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum AnchorError {
-    #[error("E_ANCHOR_SPACE_EXHAUSTED")]
-    Exhausted,
-    #[error("E_BAD_ANCHOR")]
-    BadAnchor,
-    #[error("锚点索引超出固定空间")]
-    InvalidIndex,
-    #[error("旧行与旧锚点数量不匹配")]
-    LengthMismatch,
+/// 根据 1 基行号和行文本计算两字母锚点后缀。
+pub fn id_of(line_no: usize, text: &str) -> [u8; 2] {
+    let significant = text.chars().any(char::is_alphanumeric);
+    let seed = if significant {
+        0
+    } else {
+        u32::try_from(line_no.min(ID_SEED_LINE_LIMIT)).expect("ID_SEED_LINE_LIMIT must fit in u32")
+    };
+    let trimmed = text.trim_end_matches(['\r', '\n', ' ', '\t']);
+    let mut hasher = Xxh32::new(seed);
+    hasher.update(trimmed.as_bytes());
+    let index = hasher.digest() % ID_SPACE;
+    let high = usize::try_from(index / 26).expect("ID index must fit in usize");
+    let low = usize::try_from(index % 26).expect("ID index must fit in usize");
+    [ID_ALPHABET[high], ID_ALPHABET[low]]
 }
 
-/// 删除 ASCII 空白，但保留所有非 ASCII Unicode 字符。
-pub fn canon(line: &str) -> String {
-    if !line
-        .bytes()
-        .any(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+/// 将两字母后缀转为字符串。
+pub fn id_str(id: [u8; 2]) -> String {
+    String::from_utf8_lossy(&id).into_owned()
+}
+
+/// 返回不带行文本的锚点 token。
+pub fn anchor_token(line_no: usize, text: &str) -> String {
+    format!("{line_no}{}", id_str(id_of(line_no, text)))
+}
+
+/// 返回 read/diff 使用的完整锚点行。
+pub fn anchor_line(line_no: usize, text: &str) -> String {
+    format!("{}│{text}", anchor_token(line_no, text))
+}
+
+/// 解析后的锚点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorParse {
+    pub line: usize,
+    pub id: [u8; 2],
+    /// 输入带有整行、diff 前缀或空白装饰时，提供清洗后的裸 token。
+    pub trimmed: Option<String>,
+}
+
+/// 解析模型可能从 read/diff 复制的锚点。
+///
+/// 失败时返回收到的原文，供调用方在错误载荷中回显。
+pub fn parse_anchor(raw: &str) -> Result<AnchorParse, String> {
+    let mut value = raw;
+    if let Some((prefix, _)) = value.split_once('│') {
+        value = prefix;
+    }
+    value = value.trim_start_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '+' | '-' | '>')
+    });
+    value = value.trim();
+    if let Some((token, _)) = value.split_once(char::is_whitespace) {
+        value = token;
+    }
+
+    let changed = value != raw;
+    let bytes = value.as_bytes();
+    if bytes.len() < 3 {
+        return Err(raw.to_owned());
+    }
+    let split = bytes.len() - 2;
+    if bytes.first() == Some(&b'0')
+        || !bytes[..split].iter().all(u8::is_ascii_digit)
+        || !bytes[split..].iter().all(u8::is_ascii_lowercase)
     {
-        return line.to_owned();
+        return Err(raw.to_owned());
     }
-    line.chars()
-        .filter(|character| !matches!(character, ' ' | '\t' | '\r' | '\n'))
-        .collect()
+    let line = value[..split]
+        .parse::<usize>()
+        .map_err(|_| raw.to_owned())?;
+    if line == 0 {
+        return Err(raw.to_owned());
+    }
+    Ok(AnchorParse {
+        line,
+        id: [bytes[split], bytes[split + 1]],
+        trimmed: changed.then(|| value.to_owned()),
+    })
 }
 
-/// 无额外分配计算 `xxh32(canon(line))`。
-pub fn canon_hash(line: &str) -> u32 {
-    let bytes = line.as_bytes();
-    let mut hasher = Xxh32::new(0);
-    let mut start = 0;
-    for (index, byte) in bytes.iter().enumerate() {
-        if matches!(byte, b' ' | b'\t' | b'\r' | b'\n') {
-            if start < index {
-                hasher.update(&bytes[start..index]);
-            }
-            start = index + 1;
-        }
-    }
-    if start < bytes.len() {
-        hasher.update(&bytes[start..]);
-    }
-    hasher.digest()
-}
-
-/// 将 canon 的 XXH32 投影到有限锚点空间。
-pub fn idx_of(canon: &str) -> u32 {
-    idx_of_hash(xxhash_rust::xxh32::xxh32(canon.as_bytes(), 0))
-}
-
-fn idx_of_hash(hash: u32) -> u32 {
-    (hash >> 14) % ANCHOR_SPACE
-}
-
-pub fn encode_anchor(index: u32) -> Result<String, AnchorError> {
-    if index >= ANCHOR_SPACE {
-        return Err(AnchorError::InvalidIndex);
-    }
-    let high = index / 3844;
-    let middle = (index / 62) % 62;
-    let low = index % 62;
-    Ok(String::from_utf8(vec![
-        ALPHABET[high as usize],
-        ALPHABET[middle as usize],
-        ALPHABET[low as usize],
-    ])
-    .expect("base-62 alphabet is ASCII"))
-}
-
-pub fn decode_anchor(anchor: &str) -> Result<u32, AnchorError> {
-    let bytes = anchor.as_bytes();
-    if bytes.len() != 3 {
-        return Err(AnchorError::BadAnchor);
-    }
-    let mut index = 0u32;
-    for byte in bytes {
-        let digit = ALPHABET
-            .iter()
-            .position(|candidate| candidate == byte)
-            .ok_or(AnchorError::BadAnchor)? as u32;
-        index = index * 62 + digit;
-    }
-    Ok(index)
-}
-
-/// 238328 个状态组成的固定 u32 位图仅在一次分配期间驻留。
-pub fn assign_hashes(lines: &[String], reserved: &[u32]) -> Result<Vec<u32>, AnchorError> {
-    assign_hashes_iter(lines.iter().map(String::as_str), reserved)
-}
-
-fn assign_hashes_iter<'a>(
-    lines: impl ExactSizeIterator<Item = &'a str>,
-    reserved: &[u32],
-) -> Result<Vec<u32>, AnchorError> {
-    debug_assert_eq!(BITSET_WORDS, 7448);
-    let mut used = vec![0u32; BITSET_WORDS];
-    for &index in reserved {
-        debug_assert!(index < ANCHOR_SPACE, "reserved 锚点必须属于有限空间");
-        if index >= ANCHOR_SPACE {
-            return Err(AnchorError::InvalidIndex);
-        }
-        mark_used(&mut used, index);
-    }
-    let mut result = Vec::with_capacity(lines.len());
-    for line in lines {
-        result.push(probe(&mut used, idx_of_hash(canon_hash(line)))?);
-    }
-    Ok(result)
-}
-
-/// 保持内容未变行的锚点稳定；删除行的锚点在本次 epoch 保留。
-pub fn map_stable_hashes(
-    old_lines: &[String],
-    old_hashes: &[Option<u32>],
-    new_lines: &[String],
-    removed: &[usize],
-) -> Result<Vec<u32>, AnchorError> {
-    map_stable_hashes_reserved(old_lines, old_hashes, new_lines, removed, &[])
-}
-
-pub(crate) fn map_stable_hashes_reserved(
-    old_lines: &[String],
-    old_hashes: &[Option<u32>],
-    new_lines: &[String],
-    removed: &[usize],
-    retired: &[u32],
-) -> Result<Vec<u32>, AnchorError> {
-    if old_lines.len() != old_hashes.len() {
-        return Err(AnchorError::LengthMismatch);
-    }
-    let removed: BTreeSet<usize> = removed.iter().copied().collect();
-    let mut candidates = BTreeMap::<String, BTreeSet<usize>>::new();
-    let mut reserved = Vec::with_capacity(old_hashes.len() + retired.len());
-    for (position, (line, hash)) in old_lines.iter().zip(old_hashes).enumerate() {
-        if let Some(hash) = hash {
-            debug_assert!(*hash < ANCHOR_SPACE, "旧锚点必须属于固定空间");
-            reserved.push(*hash);
-            if !removed.contains(&position) {
-                candidates.entry(canon(line)).or_default().insert(position);
-            }
-        }
-    }
-    reserved.extend_from_slice(retired);
-
-    let mut result = vec![None; new_lines.len()];
-    let mut used_stable = vec![0u32; BITSET_WORDS];
-    for &index in retired {
-        debug_assert!(index < ANCHOR_SPACE, "retired 锚点必须属于固定空间");
-        if index < ANCHOR_SPACE {
-            mark_used(&mut used_stable, index);
-        }
-    }
-    for (new_position, line) in new_lines.iter().enumerate() {
-        let Some(positions) = candidates.get_mut(&canon(line)) else {
-            continue;
-        };
-        let Some(old_position) = nearest_position(positions, new_position) else {
-            continue;
-        };
-        let Some(hash) = old_hashes[old_position] else {
-            continue;
-        };
-        if !is_used(&used_stable, hash) {
-            mark_used(&mut used_stable, hash);
-            result[new_position] = Some(hash);
-        }
-        positions.remove(&old_position);
-    }
-
-    let fresh_positions: Vec<usize> = result
-        .iter()
-        .enumerate()
-        .filter_map(|(position, hash)| hash.is_none().then_some(position))
-        .collect();
-    let fresh = assign_hashes_iter(
-        fresh_positions
-            .iter()
-            .map(|position| new_lines[*position].as_str()),
-        &reserved,
-    )?;
-    for (position, hash) in fresh_positions.into_iter().zip(fresh) {
-        result[position] = Some(hash);
-    }
-    Ok(result.into_iter().map(Option::unwrap).collect())
-}
-
-fn nearest_position(candidates: &BTreeSet<usize>, position: usize) -> Option<usize> {
-    let lower = candidates.range(..=position).next_back().copied();
-    let upper = candidates.range(position..).next().copied();
-    match (lower, upper) {
-        (Some(left), Some(right)) if position.abs_diff(left) <= right.abs_diff(position) => {
-            Some(left)
-        }
-        (Some(_), Some(right)) => Some(right),
-        (Some(left), None) => Some(left),
-        (None, Some(right)) => Some(right),
-        (None, None) => None,
-    }
-}
-
-fn probe(used: &mut [u32], start: u32) -> Result<u32, AnchorError> {
-    debug_assert!(start < ANCHOR_SPACE);
-    let mut candidate = start;
-    for _ in 0..ANCHOR_SPACE {
-        if !is_used(used, candidate) {
-            mark_used(used, candidate);
-            return Ok(candidate);
-        }
-        candidate = (candidate + HASH_PROBE_STRIDE) % ANCHOR_SPACE;
-    }
-    Err(AnchorError::Exhausted)
-}
-
-#[inline]
-fn is_used(used: &[u32], index: u32) -> bool {
-    debug_assert!(index < ANCHOR_SPACE);
-    used[index as usize / 32] & (1 << (index % 32)) != 0
-}
-
-#[inline]
-fn mark_used(used: &mut [u32], index: u32) {
-    debug_assert!(index < ANCHOR_SPACE);
-    used[index as usize / 32] |= 1 << (index % 32);
+/// 统一生成锚点展示文本；路径参数保留给调用方的统一入口语义。
+pub fn anchor_of(_path: &std::path::Path, line_no: usize, text: &str) -> String {
+    anchor_line(line_no, text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
-    fn lines(values: &[&str]) -> Vec<String> {
-        values.iter().map(|line| (*line).to_owned()).collect()
+    #[test]
+    fn content_ids_are_independent_of_line_number() {
+        assert_eq!(id_of(1, "fn main() {}"), id_of(99, "fn main() {}"));
     }
 
     #[test]
-    fn canonicalization_and_wire_anchor_encoding_are_stable() {
-        assert_eq!(canon("  a\t中\r\n"), "a中");
-        assert_eq!(canon_hash(" a\tb "), canon_hash("ab"));
-        assert_eq!(encode_anchor(0).unwrap(), "AAA");
-        assert_eq!(encode_anchor(ANCHOR_SPACE - 1).unwrap(), "999");
-        for index in [0, 1, 61, 62, 3843, ANCHOR_SPACE - 1] {
-            assert_eq!(
-                decode_anchor(&encode_anchor(index).unwrap()).unwrap(),
-                index
-            );
+    fn punctuation_ids_use_line_number_but_cap_the_seed() {
+        assert_ne!(id_of(1, "}"), id_of(2, "}"));
+        assert_eq!(id_of(40_000, "}"), id_of(40_001, "}"));
+        assert_eq!(id_of(40_001, "}"), id_of(80_000, "}"));
+    }
+
+    #[test]
+    fn parses_bare_and_decorated_anchors() {
+        let bare = parse_anchor("42sr").expect("bare anchor should parse");
+        assert_eq!(bare.line, 42);
+        assert_eq!(bare.id, *b"sr");
+        assert_eq!(bare.trimmed, None);
+        assert_eq!(
+            parse_anchor("42sr│pub fn main() {}")
+                .expect("full anchor line should parse")
+                .trimmed,
+            Some("42sr".into())
+        );
+        assert_eq!(
+            parse_anchor("+ 13cd│text")
+                .expect("diff anchor line should parse")
+                .trimmed,
+            Some("13cd".into())
+        );
+        assert_eq!(
+            parse_anchor("- 9zs│text")
+                .expect("deleted anchor line should parse")
+                .trimmed,
+            Some("9zs".into())
+        );
+        assert_eq!(
+            parse_anchor(" 42sr extra")
+                .expect("whitespace-decorated anchor should parse")
+                .trimmed,
+            Some("42sr".into())
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_anchor_parts() {
+        for raw in [
+            "sr",
+            "pub fn main() {}",
+            "0sr",
+            "42s",
+            "42SR",
+            "42srx",
+            "42",
+        ] {
+            assert!(parse_anchor(raw).is_err(), "{raw}");
         }
-        assert!(decode_anchor("A?A").is_err());
-    }
-
-    #[test]
-    fn allocations_are_unique_and_stable_rows_keep_their_hashes() {
-        let old = lines(&["dup", "before", "dup", "after"]);
-        let old_hashes = assign_hashes(&old, &[]).unwrap();
-        let new = lines(&["inserted", "dup", "before", "after"]);
-        let mapped = map_stable_hashes(
-            &old,
-            &old_hashes.iter().copied().map(Some).collect::<Vec<_>>(),
-            &new,
-            &[2],
-        )
-        .unwrap();
-        assert_eq!(mapped[2], old_hashes[1]);
-        assert_eq!(mapped[3], old_hashes[3]);
-        assert!(!old_hashes.contains(&mapped[0]));
-        assert_eq!(
-            mapped.iter().copied().collect::<BTreeSet<_>>().len(),
-            mapped.len()
-        );
-    }
-
-    #[test]
-    fn exhausted_space_returns_an_error() {
-        let reserved: Vec<u32> = (0..ANCHOR_SPACE).collect();
-        assert_eq!(
-            assign_hashes(&lines(&["one"]), &reserved),
-            Err(AnchorError::Exhausted)
-        );
     }
 }

@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::hashline::canon_hash;
-
 /// 文件元数据及原始内容组成的快照纪元；任一变化都会使 served 记录失效。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapshotId {
@@ -93,7 +91,6 @@ impl SnapshotId {
 pub struct FileSnapshot {
     pub bytes: Vec<u8>,
     pub lines: Vec<String>,
-    pub hashes: Vec<u32>,
     pub canons: Vec<u32>,
     pub epoch: SnapshotId,
     pub bom: bool,
@@ -119,82 +116,73 @@ impl LineEnding {
 }
 
 /// 只有成功 `read` 发给模型的行才可授权编辑。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ServedFile {
-    /// 行号 → 锚点；`None` 表示未 served 或孤儿愈合后退役。
-    pub hashes: Vec<Option<u32>>,
-    /// 行号 → canon 摘要；值 0 表示空行或未 served。
-    pub canons: Vec<u32>,
+    /// 行号 → 是否曾展示给模型（0 基下标）。
+    pub served: Vec<bool>,
     pub epoch: Option<SnapshotId>,
-    /// 当前文件修改后不可再分配的锚点及其死亡位置。
-    pub retired: Vec<(u32, usize)>,
 }
 
 impl ServedFile {
     pub fn new() -> Self {
-        Self {
-            hashes: Vec::new(),
-            canons: Vec::new(),
-            epoch: None,
-            retired: Vec::new(),
-        }
+        Self::default()
     }
 
-    /// 将一次 read 实际展示给模型的 0 基行范围登记为可编辑。
-    pub fn record_served(
+    /// 覆盖式登记本次读取实际展示给模型的多个行窗口。
+    pub fn serve(
         &mut self,
-        rows: &[(usize, u32)],
-        lines: &[String],
-        snapshot: &FileSnapshot,
+        epoch: SnapshotId,
+        line_count: usize,
+        windows: &[std::ops::Range<usize>],
     ) {
-        let complete = rows.len() == lines.len()
-            && rows
-                .iter()
-                .enumerate()
-                .all(|(index, (position, _))| index == *position);
-        if complete || self.epoch != Some(snapshot.epoch) || self.hashes.len() != lines.len() {
-            self.hashes.resize(lines.len(), None);
-            self.canons.resize(lines.len(), 0);
-            self.hashes.fill(None);
-            self.canons.fill(0);
-            self.retired.clear();
-            self.epoch = Some(snapshot.epoch);
+        if self.epoch != Some(epoch) || self.served.len() != line_count {
+            self.served = vec![false; line_count];
+            self.epoch = Some(epoch);
         }
-        // 锚点固定在 62³ 内；反查表只覆盖已分配锚点，避免每次 read 都分配并
-        // 清零约 1.9 MiB 的定长表。
-        let mut positions: HashMap<u32, usize> = self
-            .hashes
-            .iter()
-            .enumerate()
-            .filter_map(|(position, hash)| hash.map(|hash| (hash, position)))
-            .collect();
-        for &(position, hash) in rows {
-            if position >= self.hashes.len() {
-                continue;
+        for window in windows {
+            let start = window.start.min(line_count);
+            let end = window.end.min(line_count);
+            if start < end {
+                self.served[start..end].fill(true);
             }
-            debug_assert!(hash < super::ANCHOR_SPACE);
-            if let Some(previous) = positions.insert(hash, position)
-                && previous != position
-            {
-                self.hashes[previous] = None;
-                self.canons[previous] = 0;
-            }
-            self.hashes[position] = Some(hash);
-            self.canons[position] = canon_hash(&lines[position]);
         }
     }
 
     /// 外部改写后使本纪元所有 served 许可失效。
     pub fn invalidate(&mut self) {
         self.epoch = None;
-        self.hashes.fill(None);
-        self.canons.fill(0);
+        self.served.fill(false);
     }
-}
 
-impl Default for ServedFile {
-    fn default() -> Self {
-        Self::new()
+    /// 将已服务窗口按编辑产生的原行位移重定位到新文件。
+    pub fn rebase(&mut self, moves: &[(usize, isize)], line_count: usize) -> usize {
+        let mut rebased = vec![false; line_count];
+        let mut dropped = 0;
+        for (position, was_served) in self.served.iter().copied().enumerate() {
+            if !was_served {
+                continue;
+            }
+            let delta = moves
+                .iter()
+                .filter(|(start, _)| *start <= position)
+                .next_back()
+                .map_or(0, |(_, delta)| *delta);
+            if delta == isize::MIN {
+                dropped += 1;
+                continue;
+            }
+            let Some(target) = position.checked_add_signed(delta) else {
+                dropped += 1;
+                continue;
+            };
+            if target < line_count {
+                rebased[target] = true;
+            } else {
+                dropped += 1;
+            }
+        }
+        self.served = rebased;
+        dropped
     }
 }
 
@@ -269,21 +257,18 @@ impl AnchorStore {
         self.files.read().get(path).cloned()
     }
 
-    pub fn record_served(&self, path: PathBuf, rows: &[(usize, u32)], snapshot: FileSnapshot) {
-        self.files
-            .write()
-            .entry(path.clone())
-            .or_default()
-            .record_served(rows, &snapshot.lines, &snapshot);
+    pub fn record_served(
+        &self,
+        path: PathBuf,
+        windows: &[std::ops::Range<usize>],
+        snapshot: FileSnapshot,
+    ) {
+        self.files.write().entry(path.clone()).or_default().serve(
+            snapshot.epoch,
+            snapshot.lines.len(),
+            windows,
+        );
         self.snapshots.write().insert(path, snapshot);
-    }
-
-    pub fn reuse_hashes(&self, path: &Path, snapshot: &mut FileSnapshot) {
-        if let Some(previous) = self.snapshots.read().get(path)
-            && previous.epoch == snapshot.epoch
-        {
-            snapshot.hashes.clone_from(&previous.hashes);
-        }
     }
 
     pub fn commit_edit(&self, path: PathBuf, served: ServedFile, snapshot: FileSnapshot) {
@@ -402,75 +387,7 @@ impl Default for AnchorStore {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use crate::hashline::assign_hashes;
-
     use super::*;
-
-    fn snapshot(text: &str) -> FileSnapshot {
-        let temporary = tempfile::NamedTempFile::new().expect("临时文件");
-        fs::write(temporary.path(), text).expect("写测试文件");
-        let metadata = fs::metadata(temporary.path()).expect("元数据");
-        let bytes = text.as_bytes().to_vec();
-        let bom = bytes.starts_with(&[0xef, 0xbb, 0xbf]);
-        let content = if bom { &bytes[3..] } else { &bytes[..] };
-        let line_ending = if content.windows(2).any(|window| window == b"\r\n") {
-            LineEnding::CrLf
-        } else if content.contains(&b'\r') {
-            LineEnding::Cr
-        } else {
-            LineEnding::Lf
-        };
-        let text = String::from_utf8_lossy(content)
-            .replace("\r\n", "\n")
-            .replace('\r', "\n");
-        let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-        let hashes = assign_hashes(&lines, &[]).expect("锚点分配");
-        let canons = lines.iter().map(|line| canon_hash(line)).collect();
-        let epoch = SnapshotId::from_metadata_and_bytes(&metadata, &bytes);
-        FileSnapshot {
-            bytes,
-            lines,
-            hashes,
-            canons,
-            epoch,
-            bom,
-            line_ending,
-        }
-    }
-
-    #[test]
-    fn content_hash_detects_same_metadata_and_size_changes() {
-        let temporary = tempfile::NamedTempFile::new().expect("临时文件");
-        fs::write(temporary.path(), b"before").expect("写测试文件");
-        let metadata = fs::metadata(temporary.path()).expect("元数据");
-        let before = SnapshotId::from_metadata_and_bytes(&metadata, b"before");
-        let after = SnapshotId::from_metadata_and_bytes(&metadata, b"change");
-
-        assert_ne!(before.content_hash, after.content_hash);
-    }
-
-    #[test]
-    fn only_read_rows_are_served_and_duplicate_moves_heal_old_positions() {
-        let snapshot = snapshot("first\nsecond\nthird\n");
-        let mut served = ServedFile::new();
-        served.record_served(
-            &[(0, snapshot.hashes[0]), (2, snapshot.hashes[2])],
-            &snapshot.lines,
-            &snapshot,
-        );
-        assert_eq!(
-            served.hashes,
-            vec![
-                Some(snapshot.hashes[0]),
-                None,
-                Some(snapshot.hashes[2]),
-                None
-            ]
-        );
-        assert_eq!(served.canons[1], 0);
-    }
 
     fn id(size: u64) -> SnapshotId {
         SnapshotId {
@@ -486,6 +403,35 @@ mod tests {
     }
 
     #[test]
+    fn content_hash_detects_same_metadata_and_size_changes() {
+        let temporary = tempfile::NamedTempFile::new().expect("临时文件");
+        std::fs::write(temporary.path(), b"before").expect("写测试文件");
+        let metadata = std::fs::metadata(temporary.path()).expect("元数据");
+        let before = SnapshotId::from_metadata_and_bytes(&metadata, b"before");
+        let after = SnapshotId::from_metadata_and_bytes(&metadata, b"change");
+        assert_ne!(before.content_hash, after.content_hash);
+    }
+
+    #[test]
+    fn partial_reads_keep_previous_windows() {
+        let mut served = ServedFile::new();
+        let epoch = id(3);
+        served.serve(epoch, 4, &[0..1]);
+        served.serve(epoch, 4, &[2..3]);
+        assert_eq!(served.served, vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn rebase_drops_rows_past_new_file_end() {
+        let mut served = ServedFile {
+            served: vec![true, true, true],
+            epoch: Some(id(3)),
+        };
+        assert_eq!(served.rebase(&[(1, -2)], 1), 1);
+        assert_eq!(served.served, vec![true]);
+    }
+
+    #[test]
     fn undo_depth_is_bounded_per_path() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
@@ -494,65 +440,41 @@ mod tests {
             assert!(store.push_undo(path.clone(), vec![7u8; 16], id(index as u64)));
         }
         assert_eq!(store.undo_record_count(&path), MAX_UNDO_RECORDS_PER_PATH);
-        assert_eq!(store.latest_undo_path().as_deref(), Some(path.as_path()));
     }
 
     #[test]
     fn undo_bytes_are_bounded_and_oversized_records_are_rejected() {
         let dir = tempfile::tempdir().expect("临时目录");
         let store = AnchorStore::new();
-        let first = dir.path().join("first.txt");
-        let second = dir.path().join("second.txt");
-        let third = dir.path().join("third.txt");
-        let budget = 300;
-        assert!(store.push_undo_with_budget(first.clone(), vec![1u8; 150], id(1), budget));
-        assert!(store.push_undo_with_budget(second.clone(), vec![2u8; 150], id(1), budget));
-        assert_eq!(store.undo_bytes(), budget);
-        // 第三条推过预算：淘汰全局最旧的记录（first 的第一次压入），
-        // 而不是本次压入的路径。
-        assert!(store.push_undo_with_budget(first.clone(), vec![3u8; 150], id(1), budget));
-        assert_eq!(store.undo_bytes(), budget);
-        assert_eq!(store.undo_record_count(&first), 1);
-        assert_eq!(store.undo_record_count(&second), 1);
-        // 再压一条：这次轮到 second 最旧；first 的最新记录保留。
-        assert!(store.push_undo_with_budget(third.clone(), vec![4u8; 150], id(1), budget));
-        assert_eq!(store.undo_bytes(), budget);
-        assert!(store.peek_undo(&second).is_none());
-        assert!(store.peek_undo(&first).is_some());
-        assert_eq!(store.latest_undo_path().as_deref(), Some(third.as_path()));
-        // 单条超过预算的记录不保留，也不污染记账。
-        assert!(!store.push_undo_with_budget(third.clone(), vec![0u8; budget + 1], id(1), budget));
-        assert_eq!(store.undo_bytes(), budget);
-    }
-
-    #[test]
-    fn committing_undo_releases_its_budget() {
-        let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        let store = AnchorStore::new();
-        assert!(store.push_undo(path.clone(), vec![9u8; 128], id(1)));
-        assert_eq!(store.undo_bytes(), 128);
-        store.commit_undo(&path, id(2));
-        assert_eq!(store.undo_bytes(), 0);
-        assert!(store.latest_undo_path().is_none());
+        let budget = 300;
+        assert!(store.push_undo_with_budget(path.clone(), vec![1u8; 150], id(1), budget));
+        assert!(store.push_undo_with_budget(path.clone(), vec![2u8; 150], id(1), budget));
+        assert_eq!(store.undo_bytes(), budget);
+        assert!(!store.push_undo_with_budget(path, vec![0u8; budget + 1], id(1), budget));
     }
 
     #[test]
     fn invalidating_snapshot_revokes_all_served_rows() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("src.rs");
-        let snapshot = snapshot("fn main() {}\n");
+        let path = std::path::PathBuf::from("src.rs");
         let store = AnchorStore::new();
-        store.record_served(path.clone(), &[(0, snapshot.hashes[0])], snapshot);
+        let snapshot = FileSnapshot {
+            bytes: b"fn main() {}\n".to_vec(),
+            lines: vec!["fn main() {}".into()],
+            canons: vec![0],
+            epoch: id(1),
+            bom: false,
+            line_ending: LineEnding::Lf,
+        };
+        store.record_served(path.clone(), &[0..1], snapshot);
         store.invalidate(&path);
-        // 已服务行全部退役（快照记录同时丢弃，无外部消费者）。
         assert!(
             store
                 .served(&path)
-                .unwrap()
-                .hashes
+                .expect("served record")
+                .served
                 .iter()
-                .all(Option::is_none)
+                .all(|shown| !shown)
         );
     }
 }

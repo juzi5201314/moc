@@ -969,15 +969,13 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
 async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use moc_core::hashline::{assign_hashes, encode_anchor};
+    use moc_core::hashline::anchor_token;
     use serde_json::{Value, json};
 
     let first_line = "old value".to_owned();
     let second_line = "second value".to_owned();
-    let anchors = assign_hashes(&[first_line.clone(), second_line.clone()], &[])
-        .expect("allocate stable test anchors");
-    let from = encode_anchor(anchors[0]).expect("encode first anchor");
-    let to = encode_anchor(anchors[1]).expect("encode second anchor");
+    let from = anchor_token(1, &first_line);
+    let to = anchor_token(2, &second_line);
     let read_arguments = json!({"path": "target.txt"});
     let edit_arguments = json!({
         "path": "target.txt",

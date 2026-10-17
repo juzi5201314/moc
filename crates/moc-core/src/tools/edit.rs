@@ -2,7 +2,6 @@
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
@@ -15,34 +14,139 @@ fn reject_resource_path(path: &str) -> Result<(), ToolError> {
     ResourceRouter::write(path).map_err(|error| ToolError::new(error.code, error.message))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum EditPayload {
-    Single(EditRequest),
-    Batch { files: Vec<EditRequest> },
-}
-
-impl EditPayload {
-    fn into_requests(self) -> Vec<EditRequest> {
-        match self {
-            Self::Single(request) => vec![request],
-            Self::Batch { files } => files,
-        }
-    }
-}
-
-/// 解析 edit 参数；授权（含工作区边界与预览）与执行共用同一份解析。
+/// 将兼容载荷归一为单文件编辑请求；授权预览与执行共用此入口。
 pub(crate) fn parse_requests(args: Value) -> Result<Vec<EditRequest>, ToolError> {
-    let requests = serde_json::from_value::<EditPayload>(args)
-        .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?
-        .into_requests();
-    if requests.is_empty() {
+    let (path, edits, move_lines) = normalize_args(args)?;
+    Ok(vec![EditRequest {
+        path,
+        edits,
+        move_lines,
+    }])
+}
+
+fn normalize_args(
+    args: Value,
+) -> Result<
+    (
+        String,
+        Vec<[String; 3]>,
+        Option<crate::hashline::apply::MoveRequest>,
+    ),
+    ToolError,
+> {
+    let Value::Object(mut object) = args else {
         return Err(ToolError::new(
             "E_BAD_PAYLOAD",
-            "files must contain at least one file",
+            "edit arguments must be an object",
+        ));
+    };
+    if object.contains_key("files") {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "unexpected field \"files\" (this tool takes one file per call).",
         ));
     }
-    Ok(requests)
+    let path = object
+        .remove("path")
+        .or_else(|| object.remove("file"))
+        .or_else(|| object.remove("file_path"))
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "path must be a string"))?;
+    let edits_value = object
+        .remove("edits")
+        .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "edits must be a non-empty array"))?;
+    let Value::Array(items) = edits_value else {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "edits must be a non-empty array",
+        ));
+    };
+    if items.is_empty() {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "edits must contain at least one item.",
+        ));
+    }
+    let mut edits = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        edits.push(normalize_edit_item(index, item)?);
+    }
+    let move_lines = object
+        .remove("move")
+        .map(|value| {
+            serde_json::from_value(value)
+                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))
+        })
+        .transpose()?;
+    if let Some((key, _)) = object.into_iter().next() {
+        let message = if key == "files" {
+            format!("unexpected field \"{key}\" (this tool takes one file per call).")
+        } else {
+            format!("unexpected field \"{key}\".")
+        };
+        return Err(ToolError::new("E_BAD_PAYLOAD", message));
+    }
+    Ok((path, edits, move_lines))
+}
+
+fn normalize_edit_item(index: usize, item: Value) -> Result<[String; 3], ToolError> {
+    match item {
+        Value::Array(values) if values.len() == 2 || values.len() == 3 => {
+            let strings: Result<Vec<_>, _> = values
+                .iter()
+                .map(|value| value.as_str().map(str::to_owned).ok_or(()))
+                .collect();
+            let strings = strings.map_err(|_| {
+                ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    format!("edits[{index}] must contain string items"),
+                )
+            })?;
+            if strings.len() == 2 {
+                Ok([strings[0].clone(), strings[0].clone(), strings[1].clone()])
+            } else {
+                Ok([strings[0].clone(), strings[1].clone(), strings[2].clone()])
+            }
+        }
+        Value::Object(mut object) => {
+            let from = take_string(&mut object, &["from", "remove_from"], index)?;
+            let to = take_string(&mut object, &["to", "remove_to"], index)?;
+            let replace = take_string(&mut object, &["replace", "replacement_text"], index)?;
+            Ok([from, to, replace])
+        }
+        Value::Array(values) => Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            format!(
+                "edits[{index}] received {} items; expected 2 or 3",
+                values.len()
+            ),
+        )),
+        Value::String(_) => Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            format!("edits[{index}] received a string"),
+        )),
+        _ => Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            format!("edits[{index}] received an unsupported shape"),
+        )),
+    }
+}
+
+fn take_string(
+    object: &mut serde_json::Map<String, Value>,
+    names: &[&str],
+    index: usize,
+) -> Result<String, ToolError> {
+    names
+        .iter()
+        .find_map(|name| object.remove(*name))
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or_else(|| {
+            ToolError::new(
+                "E_BAD_PAYLOAD",
+                format!("edits[{index}] object fields must be strings"),
+            )
+        })
 }
 
 pub struct EditTool;
@@ -53,7 +157,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &'static str {
-        "Edit files with the three-character anchors from read. Each edit is [from_anchor, to_anchor, replacement] replacing that inclusive range; identical anchors with non-empty replacement insert after that line; empty replacement deletes. `files` applies several files in order. move transfers a range to target_path (after target_anchor) using original snapshot anchors."
+        "Edit files with line-number plus two-letter anchors from read. Each edit is [from_anchor, to_anchor, replacement] replacing that inclusive range; identical anchors with non-empty replacement insert after that line; empty replacement deletes."
     }
 
     fn tier(&self) -> Tier {
@@ -208,55 +312,28 @@ fn preview_requests(
 }
 
 fn edit_schema() -> Value {
-    let properties = edit_file_properties();
-    let required = ["path", "edits"];
     serde_json::json!({
-        "oneOf": [
-            {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": false
+        "type": "object",
+        "properties": {
+            "path": {"type":"string","description":"File to edit; the same path you read."},
+            "edits": {
+                "type":"array","minItems":1,
+                "description":"Ordered edits; applied together, and the whole call is rejected if any one fails.",
+                "items": {"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"},"description":"[from, to, replace]. `from` and `to` are inclusive anchors copied verbatim from read output (line number + two-letter id, e.g. \"42sr\"). `replace` is the replacement text with \\n as the line separator. Empty `replace` deletes the inclusive range. Equal `from` and `to` with non-empty `replace` inserts the text AFTER that line."}
             },
-            {
-                "type": "object",
+            "move": {
+                "type":"object","additionalProperties":false,
                 "properties": {
-                    "files": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": edit_file_properties(),
-                            "required": required,
-                            "additionalProperties": false
-                        }
-                    }
+                    "from": {"type":"string","description":"First line of the block to move, inclusive, as a bare anchor copied verbatim from read output (line number + two-letter id, e.g. \"42sr\")."},
+                    "to": {"type":"string","description":"Last line of the block to move, inclusive, same anchor form as `from`."},
+                    "target_path": {"type":"string","description":"Destination file; it must have been read in this session."},
+                    "target_anchor": {"type":"string","description":"Insert the moved block AFTER this anchor in the destination; omit to append at the end of the destination."}
                 },
-                "required": ["files"],
-                "additionalProperties": false
+                "required":["from","to","target_path"]
             }
-        ]
-    })
-}
-
-fn edit_file_properties() -> Value {
-    serde_json::json!({
-        "path": {"type":"string"},
-        "edits": {
-            "type":"array", "minItems":1,
-            "items":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"}}
         },
-        "move": {
-            "type":"object",
-            "properties": {
-                "from":{"type":"string"},
-                "to":{"type":"string"},
-                "target_path":{"type":"string"},
-                "target_anchor":{"type":"string"}
-            },
-            "required":["from","to","target_path"],
-            "additionalProperties":false
-        }
+        "required":["path","edits"],
+        "additionalProperties": false
     })
 }
 
@@ -296,26 +373,44 @@ async fn apply_one(
     {
         Ok(output) => Ok(Ok(output)),
         Err(EditError::Tool(mut content)) => {
-            if ["E_UNSERVED_RANGE", "E_STALE_RANGE", "E_STALE_ANCHOR"]
-                .iter()
-                .any(|code| content.contains(code))
-            {
-                for path in std::iter::once(&source_path).chain(target_path.iter()) {
-                    let fresh = super::read::ReadTool
-                        .run(ctx, serde_json::json!({"path":path}))
-                        .await?;
-                    let super::ToolOutput::Text(text) = fresh.content else {
-                        unreachable!("read returned a paginated text result");
-                    };
-                    content.push_str(&format!("\nFresh anchors for the current content:\n{text}"));
-                }
-            }
             let error_code = content
                 .split_once(']')
                 .and_then(|(prefix, _)| prefix.strip_prefix('['))
                 .filter(|code| code.starts_with("E_"))
                 .unwrap_or("E_TOOL")
                 .to_owned();
+            if [
+                "E_UNSERVED_RANGE",
+                "E_STALE_ANCHOR",
+                "E_STALE_RANGE",
+                "E_BAD_ANCHOR",
+                "E_BAD_PAYLOAD",
+                "E_OVERLAP",
+                "E_NOOP_LOOP",
+            ]
+            .contains(&error_code.as_str())
+            {
+                let snapshot = crate::hashline::served::read_snapshot(
+                    &source_path,
+                    ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
+                )
+                .map_err(|error| ToolError::new("E_READ", error.to_string()))?;
+                if let Some(served) = ctx.anchors.served(&source_path) {
+                    let mut block = String::new();
+                    for (position, shown) in served.served.iter().copied().enumerate() {
+                        if shown {
+                            block.push_str(&format!(
+                                "  {}\n",
+                                crate::hashline::anchor_line(
+                                    position + 1,
+                                    &snapshot.lines[position]
+                                )
+                            ));
+                        }
+                    }
+                    content.push_str(&format!("\n\nCurrent anchors for {}:\n{}\nUse the anchors above directly; no re-read is needed unless these lines changed.", source_path.display(), block));
+                }
+            }
             Ok(Err(ToolOutcome {
                 content: content.into(),
                 is_error: true,
@@ -335,83 +430,45 @@ async fn apply_one(
 mod tests {
     use super::*;
 
-    fn diff(path: &str) -> moc_protocol::ToolDiff {
-        moc_protocol::ToolDiff {
-            files: vec![moc_protocol::ToolFileDiff {
-                path: path.into(),
-                hunks: Vec::new(),
-            }],
-            truncated: false,
-        }
-    }
-
     #[test]
-    fn batch_failure_keeps_applied_files_and_their_diff() {
-        let mut report = BatchReport::default();
-        report.record(EditOutput {
-            content: "[a.rs]\n- AA1│old\n+ AA1│new".into(),
-            diff: Some(diff("a.rs")),
-        });
-        let outcome = report.finish_failure(ToolOutcome::failure(
-            "E_STALE_RANGE",
-            "b.rs changed externally after read",
-        ));
-        assert!(outcome.is_error);
-        let ToolOutput::Text(text) = outcome.content else {
-            panic!("失败结果是文本");
-        };
-        assert!(text.contains("Already applied before the failure:"));
-        assert!(text.contains("[a.rs]"));
-        assert!(text.contains("E_STALE_RANGE"));
-        let applied = outcome.diff.expect("失败结果保留已应用 diff");
-        assert_eq!(applied.files.len(), 1);
-        assert_eq!(applied.files[0].path, "a.rs");
-    }
-
-    #[test]
-    fn preview_reports_the_diff_the_approval_flow_shows() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("file.txt");
-        std::fs::write(&path, "alpha\nbeta\n").unwrap();
-        let snapshot = crate::hashline::served::read_snapshot(&path, 4096).unwrap();
-        let anchors = crate::hashline::AnchorStore::new();
-        let rows: Vec<_> = snapshot.hashes.iter().copied().enumerate().collect();
-        anchors.record_served(path.clone(), &rows, snapshot.clone());
-        let anchor = crate::hashline::encode_anchor(snapshot.hashes[0]).unwrap();
+    fn normalizes_two_item_edits_as_insertions() {
         let requests = parse_requests(serde_json::json!({
             "path": "file.txt",
-            "edits": [[anchor.clone(), anchor, "inserted"]],
+            "edits": [["42sr", "inserted"]],
         }))
-        .unwrap();
-        let diff = preview_requests(dir.path(), requests, &anchors, 32, 4096).expect("预览成功");
-        assert_eq!(diff.files.len(), 1);
-        assert_eq!(diff.files[0].path, path.display().to_string());
-        assert!(
-            diff.files[0].hunks.iter().any(|hunk| hunk
-                .lines
-                .iter()
-                .any(|line| line.kind == moc_protocol::DiffLineKind::Insert
-                    && line.text == "inserted"))
+        .expect("二元组应归一化");
+        assert_eq!(
+            requests[0].edits,
+            vec![["42sr".to_owned(), "42sr".to_owned(), "inserted".to_owned()]]
         );
-        // 未读取过的文件没有可预览的计划：整体放弃而不是给出误导性 diff。
-        let missing = parse_requests(serde_json::json!({
-            "path": "other.txt",
-            "edits": [["AAA", "AAA", "inserted"]],
-        }))
-        .unwrap();
-        assert!(preview_requests(dir.path(), missing, &anchors, 32, 4096).is_none());
     }
 
     #[test]
-    fn failure_without_applied_files_keeps_the_original_error() {
-        let outcome = BatchReport::default().finish_failure(ToolOutcome::failure(
-            "E_BAD_PAYLOAD",
-            "edits must contain at least one item",
-        ));
-        let ToolOutput::Text(text) = outcome.content else {
-            panic!("失败结果是文本");
-        };
-        assert_eq!(text, "[E_BAD_PAYLOAD] edits must contain at least one item");
-        assert!(outcome.diff.is_none());
+    fn folds_file_alias_and_rejects_files_field() {
+        let request = parse_requests(serde_json::json!({
+            "file": "file.txt",
+            "edits": [["42sr", "42sr", "replacement"]],
+        }))
+        .expect("file 别名应折叠");
+        assert_eq!(request[0].path, "file.txt");
+        let error = parse_requests(serde_json::json!({"files": []})).expect_err("files 应拒绝");
+        assert!(error.message.contains("takes one file per call"));
+    }
+
+    #[test]
+    fn normalizes_object_edit_shape() {
+        let requests = parse_requests(serde_json::json!({
+            "path": "file.txt",
+            "edits": [{"from":"1aa", "to":"2bb", "replace":"new"}],
+        }))
+        .expect("对象编辑应归一化");
+        assert_eq!(requests[0].edits[0], ["1aa", "2bb", "new"]);
+    }
+
+    #[test]
+    fn rejects_empty_edits_early() {
+        let error = parse_requests(serde_json::json!({"path":"file.txt", "edits":[]}))
+            .expect_err("空编辑应拒绝");
+        assert!(error.message.contains("at least one item"));
     }
 }

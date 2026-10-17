@@ -196,27 +196,31 @@ fn reject_served_hash_echo(
     let Some(served) = anchors.served(path) else {
         return Ok(());
     };
+    let snapshot = crate::hashline::served::read_snapshot(path, u64::MAX)
+        .map_err(|error| ToolError::new("E_WRITE_HASH_ECHO", error.to_string()))?;
     let expected: std::collections::BTreeSet<String> = served
-        .hashes
+        .served
         .iter()
-        .flatten()
-        .filter_map(|hash| crate::hashline::encode_anchor(*hash).ok())
+        .enumerate()
+        .filter_map(|(position, is_served)| {
+            (*is_served)
+                .then(|| crate::hashline::anchor_token(position + 1, &snapshot.lines[position]))
+        })
         .collect();
     let echoes = content
         .lines()
         .filter(|line| {
-            let Some((hash, _)) = line.split_once('│') else {
+            let Some((raw, _)) = line.split_once('│') else {
                 return false;
             };
-            hash.len() == 3
-                && hash.bytes().all(|byte| byte.is_ascii_alphanumeric())
-                && expected.contains(hash)
+            let token = raw.trim_start_matches(['+', '-', '>', ' ']).trim();
+            crate::hashline::parse_anchor(token).is_ok() && expected.contains(token)
         })
         .count();
     if echoes >= threshold && threshold > 0 {
         return Err(ToolError::new(
             "E_WRITE_HASH_ECHO",
-            format!("content echoes {echoes} served anchor lines; use edit to modify them"),
+            "content appears to echo anchored read output; use only the intended file text",
         ));
     }
     Ok(())
@@ -321,32 +325,24 @@ async fn stage(path: &Path, content: &[u8]) -> Result<PathBuf, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashline::{AnchorStore, assign_hashes, served::read_snapshot};
+    use crate::hashline::{AnchorStore, anchor_token, served::read_snapshot};
     use std::fs;
 
     #[test]
     fn write_hash_echo_is_rejected_only_for_served_anchors() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.rs");
-        fs::write(&path, "fn main() {}\nfn other() {}\n").unwrap();
-        let snapshot = read_snapshot(&path, 1024).unwrap();
+        fs::write(&path, "fn main() {}\nfn other() {}\n").expect("写文件");
+        let snapshot = read_snapshot(&path, 1024).expect("读取快照");
         let anchors = AnchorStore::new();
-        anchors.record_served(
-            path.clone(),
-            &[(0, snapshot.hashes[0]), (1, snapshot.hashes[1])],
-            snapshot.clone(),
-        );
+        anchors.record_served(path.clone(), &[0..2], snapshot.clone());
         let content = format!(
             "{}│one\n{}│two",
-            crate::hashline::encode_anchor(snapshot.hashes[0]).unwrap(),
-            crate::hashline::encode_anchor(snapshot.hashes[1]).unwrap()
+            anchor_token(1, &snapshot.lines[0]),
+            anchor_token(2, &snapshot.lines[1])
         );
         assert!(reject_served_hash_echo(&path, &content, &anchors, 2).is_err());
-        let unserved = assign_hashes(&["new".to_owned()], &[]).unwrap()[0];
-        let content = format!(
-            "{}│not previously served",
-            crate::hashline::encode_anchor(unserved).unwrap()
-        );
+        let content = format!("{}│not previously served", anchor_token(3, "new"));
         assert!(reject_served_hash_echo(&path, &content, &anchors, 2).is_ok());
     }
 

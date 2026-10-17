@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
-use crate::hashline::{encode_anchor, served::read_snapshot};
+use crate::hashline::{anchor_line, served::read_snapshot};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
 #[derive(Debug, Deserialize)]
@@ -101,11 +101,8 @@ impl Tool for ReadTool {
                 return Ok(ToolOutcome::success(list_directory(&path, &ctx.cwd)?));
             }
             let max_bytes = ctx.config.tools.output.max_file_bytes;
-            let mut snapshot =
+            let snapshot =
                 read_snapshot(&path, max_bytes).map_err(|error| map_read_error(&display, error))?;
-            if !immutable {
-                ctx.anchors.reuse_hashes(&path, &mut snapshot);
-            }
             let offset = args.offset.unwrap_or(1).max(1);
             let limit = args
                 .limit
@@ -141,32 +138,43 @@ impl Tool for ReadTool {
                 .line_max_bytes
                 .min(page_budget.saturating_sub(7));
             let mut selected = Vec::new();
-            let mut served_rows = Vec::new();
+            let mut windows = Vec::new();
             let mut rendered_bytes = 0usize;
+            let mut has_uneditable_shown = false;
+            let mut window_start = None;
+            let mut last_served = None;
             for position in start..end {
                 let line = &snapshot.lines[position];
                 let rendered = if line.len() > max_line_bytes {
+                    has_uneditable_shown |= !immutable;
                     format!(
-                        "[Line {} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
+                        "  {}│[Line {} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
+                        position + 1,
                         position + 1,
                         line.len().div_ceil(1024)
                     )
                 } else if immutable {
                     line.clone()
                 } else {
-                    let anchor = encode_anchor(snapshot.hashes[position]).map_err(|error| {
-                        ToolError::new("E_ANCHOR_SPACE_EXHAUSTED", error.to_string())
-                    })?;
-                    format!("{anchor}│{line}")
+                    anchor_line(position + 1, line)
                 };
                 if rendered_bytes.saturating_add(rendered.len() + 1) > page_budget {
                     break;
                 }
                 rendered_bytes += rendered.len() + 1;
                 if !immutable && line.len() <= max_line_bytes {
-                    served_rows.push((position, snapshot.hashes[position]));
+                    if window_start.is_none() {
+                        window_start = Some(position);
+                    }
+                    last_served = Some(position + 1);
+                } else if let Some(start_window) = window_start.take() {
+                    windows.push(start_window..last_served.expect("served window has an end"));
+                    last_served = None;
                 }
                 selected.push(rendered);
+            }
+            if let Some(start_window) = window_start {
+                windows.push(start_window..last_served.expect("served window has an end"));
             }
             if selected.is_empty() && snapshot.lines.is_empty() {
                 output.push_str("(empty file)");
@@ -176,8 +184,11 @@ impl Tool for ReadTool {
             let shown_end = start + selected.len();
             output.push_str(&page_footer(start + 1, shown_end, total));
             output.push_str(&notices);
+            if has_uneditable_shown {
+                output.push_str("\nLines shown with a row-number prefix instead of an anchor are not editable; read them with a smaller limit or use bash.");
+            }
             if !immutable && snapshot.bytes.len() <= 4 * 1024 * 1024 {
-                ctx.anchors.record_served(path, &served_rows, snapshot);
+                ctx.anchors.record_served(path, &windows, snapshot);
             } else if !immutable {
                 ctx.anchors.invalidate(&path);
             }
