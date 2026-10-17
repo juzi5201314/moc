@@ -117,4 +117,4 @@ statusline = "{model} * {mode} -> {workdir}"
 
 edit / write 执行时由 core 生成结构化 diff（LCS 对齐、上下文 3 行、超限截断标记），经 `ToolFinished` 携带到前端；越出工作区的写入在授权弹窗里再给一次预览：`edit` 是待应用 diff（无法完整预览时不带），`write` 另附最多 40 行 / 4 KiB 的内容摘录，超出以 `[...]` 截断，确认后才落盘。
 
-`edit` 接受单文件 `{path, edits}` 载荷；每次调用只编辑一个文件，每个锚点仍必须先由 `read` 提供。批量多文件调用会以 `E_BAD_PAYLOAD` 拒绝。
+`edit` 接受单文件 `{path, edits}` 载荷，`edits` 只作用于一个源文件；`move` 可把源文件的行块搬到 `target_path`，因此一次调用可能同时写入两个文件（两侧都仍需先 `read`）。锚点在 read/diff 展示时分配，行位移后保持不变；同一行被重新展示时以最新锚点为准。批量多文件 `files` 载荷会以 `E_BAD_PAYLOAD` 拒绝。

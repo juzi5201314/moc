@@ -590,16 +590,14 @@ fn outside_workspace_targets(
     let targets: Vec<String> = if tool_name == "write" {
         vec![crate::tools::write::parse_args(arguments.clone())?.path]
     } else {
-        crate::tools::edit::parse_requests(arguments.clone())?
-            .into_iter()
-            .flat_map(|request| {
-                std::iter::once(request.path).chain(
-                    request
-                        .move_lines
-                        .into_iter()
-                        .map(|movement| movement.target_path),
-                )
-            })
+        let request = crate::tools::edit::parse_requests(arguments.clone())?;
+        std::iter::once(request.path)
+            .chain(
+                request
+                    .move_lines
+                    .into_iter()
+                    .map(|movement| movement.target_path),
+            )
             .collect()
     };
     Ok(targets
@@ -877,8 +875,8 @@ mod tests {
         // move 的 target_path 与源文件同批授权，跨出工作区的目标必须被发现。
         let edit = serde_json::json!({
             "path": "src/main.rs",
-            "edits": [["AAA","AAA","change"]],
-            "move": {"from":"AAA","to":"AAA","target_path": outside.join("moved.txt").display().to_string()}
+            "edits": [["1aa","1aa","change"]],
+            "move": {"from":"1aa","to":"1aa","target_path": outside.join("moved.txt").display().to_string()}
         });
         assert_eq!(
             outside_workspace_targets(&root, "edit", &edit).unwrap(),

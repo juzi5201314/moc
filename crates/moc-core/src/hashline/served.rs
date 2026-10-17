@@ -1,11 +1,10 @@
-//! 已服务窗口到当前文件内容的安全校验。
+//! 已服务锚点令牌到当前文件内容的安全校验。
 
 use std::path::Path;
 
 use thiserror::Error;
-use xxhash_rust::xxh32::xxh32;
 
-use crate::hashline::{AnchorParse, FileSnapshot, LineEnding, REBASE_WINDOW, ServedFile, id_of};
+use crate::hashline::{AnchorParse, FileSnapshot, LineEnding, ServedFile, id_str};
 
 /// 验证 edit range 的机器可读错误。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -17,19 +16,15 @@ pub enum RangeError {
         field: &'static str,
         received: String,
     },
-    #[error("{field} \"{anchor}\" no longer matches any served line within the rebase window")]
+    #[error("{field} \"{anchor}\" no longer matches any served line")]
     Stale { field: &'static str, anchor: String },
-    #[error("{kind} was not shown by read")]
-    Unserved {
-        kind: &'static str,
-        line_no: usize,
-        unserved: Vec<usize>,
-    },
+    #[error("{kind} {line_no} was not shown by read")]
+    Unserved { kind: &'static str, line_no: usize },
     #[error("one anchored range may contain at most 100000 lines")]
     TooLarge,
 }
 
-/// 当前磁盘文件的 UTF-8 视图、行尾、BOM、行摘要以及文件 epoch。
+/// 当前磁盘文件的 UTF-8 视图、行尾、BOM 以及文件 epoch。
 pub fn read_snapshot(path: &Path, max_file_bytes: u64) -> Result<FileSnapshot, std::io::Error> {
     use std::io::ErrorKind;
     use std::io::Read;
@@ -74,11 +69,9 @@ pub fn read_snapshot(path: &Path, max_file_bytes: u64) -> Result<FileSnapshot, s
     let utf8 = String::from_utf8_lossy(content);
     let normalized = utf8.replace("\r\n", "\n").replace('\r', "\n");
     let lines = split_file_lines(&normalized);
-    let canons = lines.iter().map(|line| xxh32(line.as_bytes(), 0)).collect();
     Ok(FileSnapshot {
         bytes,
         lines,
-        canons,
         epoch: identity,
         bom,
         line_ending,
@@ -104,68 +97,44 @@ pub struct Located {
     pub delta: isize,
 }
 
-/// 将锚点定位到当前文件行，并允许会话内编辑造成的小范围位移。
+/// 将锚点定位到当前文件行。
+///
+/// 锚点是会话内稳定的完整令牌（展示行号 + id）：按令牌精确查找，行号位移
+/// 不影响匹配；同一 token 出现多次（理论上被分配逻辑禁止）时报 Stale，
+/// 绝不静默选一行。
 pub fn locate(
     served: &ServedFile,
     snapshot: &FileSnapshot,
     parsed: &AnchorParse,
 ) -> Result<Located, RangeError> {
-    let position = parsed.line - 1;
-    if position >= snapshot.lines.len() {
-        return Err(RangeError::Stale {
-            field: "anchor",
-            anchor: format!("{}{}", parsed.line, String::from_utf8_lossy(&parsed.id)),
-        });
-    }
-    if served.served.get(position).copied().unwrap_or(false)
-        && id_of(parsed.line, &snapshot.lines[position]) == parsed.id
-    {
-        return Ok(Located {
-            position,
-            moved: false,
-            delta: 0,
-        });
-    }
-
-    let first = parsed.line.saturating_sub(REBASE_WINDOW).max(1);
-    let last = parsed
-        .line
-        .saturating_add(REBASE_WINDOW)
-        .min(snapshot.lines.len());
-    let mut candidates = Vec::new();
-    for candidate in first..=last {
-        let index = candidate - 1;
-        if id_of(candidate, &snapshot.lines[index]) == parsed.id {
-            candidates.push((
-                candidate,
-                served.served.get(index).copied().unwrap_or(false),
-            ));
+    let mut found = None;
+    for (position, entry) in served.entries.iter().enumerate() {
+        if let Some(token) = entry
+            && token.line == parsed.line
+            && token.id == parsed.id
+        {
+            if found.is_some() {
+                return Err(stale_error(parsed));
+            }
+            found = Some(position);
         }
     }
-    if let [(candidate, true)] = candidates.as_slice() {
-        let candidate = *candidate;
-        let delta = isize::try_from(candidate).expect("line count must fit in isize")
-            - isize::try_from(parsed.line).expect("line count must fit in isize");
-        return Ok(Located {
-            position: candidate - 1,
-            moved: true,
-            delta,
-        });
-    }
-    let unserved: Vec<usize> = candidates
-        .iter()
-        .filter_map(|(candidate, is_served)| (!*is_served).then_some(*candidate))
-        .collect();
-    if candidates.iter().all(|(_, is_served)| !*is_served) && !unserved.is_empty() {
-        return Err(RangeError::Unserved {
-            kind: "anchor line",
-            line_no: parsed.line,
-            unserved,
-        });
-    }
-    Err(RangeError::Stale {
-        field: "anchor",
-        anchor: format!("{}{}", parsed.line, String::from_utf8_lossy(&parsed.id)),
+    let Some(position) = found else {
+        if parsed.line <= snapshot.lines.len() && !served.is_served(parsed.line - 1) {
+            return Err(RangeError::Unserved {
+                kind: "anchor line",
+                line_no: parsed.line,
+            });
+        }
+        return Err(stale_error(parsed));
+    };
+    let current_line = position + 1;
+    let delta = isize::try_from(current_line).expect("line count must fit in isize")
+        - isize::try_from(parsed.line).expect("line count must fit in isize");
+    Ok(Located {
+        position,
+        moved: current_line != parsed.line,
+        delta,
     })
 }
 
@@ -199,23 +168,26 @@ pub fn verify_range(
     if end_position.saturating_sub(start_position) >= 100_000 {
         return Err(RangeError::TooLarge);
     }
-    let unserved: Vec<usize> = (start_position..=end_position)
-        .filter_map(|position| {
-            (!served.served.get(position).copied().unwrap_or(false)).then_some(position + 1)
-        })
-        .collect();
-    if !unserved.is_empty() {
+    if let Some(position) =
+        (start_position..=end_position).find(|position| !served.is_served(*position))
+    {
         return Err(RangeError::Unserved {
             kind: "range line",
-            line_no: unserved[0],
-            unserved,
+            line_no: position + 1,
         });
     }
     Ok((start_position, end_position, warning))
 }
 
+fn stale_error(parsed: &AnchorParse) -> RangeError {
+    RangeError::Stale {
+        field: "anchor",
+        anchor: format!("{}{}", parsed.line, id_str(parsed.id)),
+    }
+}
+
 fn parse_or_error(field: &'static str, raw: &str) -> Result<AnchorParse, RangeError> {
-    parse_anchor(raw).map_err(|received| RangeError::BadAnchor { field, received })
+    crate::hashline::parse_anchor(raw).map_err(|received| RangeError::BadAnchor { field, received })
 }
 
 fn with_field(error: RangeError, field: &'static str, raw: &str) -> RangeError {
@@ -224,58 +196,46 @@ fn with_field(error: RangeError, field: &'static str, raw: &str) -> RangeError {
             field,
             anchor: raw.to_owned(),
         },
-        RangeError::Unserved {
-            kind,
-            line_no,
-            unserved,
-        } => RangeError::Unserved {
-            kind,
-            line_no,
-            unserved,
-        },
         other => other,
     }
 }
-
-use crate::hashline::parse_anchor;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hashline::{ServedFile, anchor_token};
 
+    fn snapshot(path: &Path, text: &[u8]) -> FileSnapshot {
+        std::fs::write(path, text).expect("写文件");
+        read_snapshot(path, 4096).expect("读取文件")
+    }
+
     #[test]
     fn preserves_line_endings_and_rejects_unserved_ranges() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, b"one\r\ntwo\r\nthree\r\n").expect("写文件");
-        let snapshot = read_snapshot(&path, 1024).expect("读取文件");
+        let snapshot = snapshot(&path, b"one\r\ntwo\r\nthree\r\n");
         assert_eq!(snapshot.lines, ["one", "two", "three"]);
         assert_eq!(snapshot.line_ending, LineEnding::CrLf);
         let mut served = ServedFile::new();
-        served.serve(snapshot.epoch, snapshot.lines.len(), &[0..1]);
+        served.serve(snapshot.epoch, &snapshot.lines, &[0..1, 2..3]);
         let error = verify_range(
             &served,
             &snapshot,
             &anchor_token(1, &snapshot.lines[0]),
             &anchor_token(3, &snapshot.lines[2]),
         )
-        .expect_err("未服务尾部边界必须拒绝");
-        assert!(matches!(error, RangeError::Unserved { .. }));
+        .expect_err("未服务中间行必须拒绝");
+        assert!(matches!(error, RangeError::Unserved { line_no: 2, .. }));
     }
 
     #[test]
     fn full_served_range_accepts_reverse_order_and_warns() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        std::fs::write(&path, b"one\ntwo\nthree").expect("写文件");
-        let snapshot = read_snapshot(&path, 1024).expect("读取文件");
+        let snapshot = snapshot(&path, b"one\ntwo\nthree");
         let mut served = ServedFile::new();
-        served.serve(
-            snapshot.epoch,
-            snapshot.lines.len(),
-            &[0..snapshot.lines.len()],
-        );
+        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
         let (start, end, warning) = verify_range(
             &served,
             &snapshot,
@@ -289,5 +249,45 @@ mod tests {
                 .expect("逆序应有警告")
                 .contains("E_REVERSED_ANCHORS")
         );
+    }
+
+    #[test]
+    fn duplicate_lines_resolve_by_stable_token_after_any_shift() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("file.txt");
+        let snapshot = snapshot(&path, b"end\nend\ntail\n");
+        let mut served = ServedFile::new();
+        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
+        let second = served.token(1).expect("第二行令牌");
+        assert_eq!(second.line, 2);
+        // 在文件顶部插入一行：第二行移到第 3 行。
+        served.rebase(&[(0, 0), (0, 1), (3, 1)], 4);
+        let shifted = FileSnapshot {
+            bytes: b"new\nend\nend\ntail\n".to_vec(),
+            lines: ["new", "end", "end", "tail"].map(str::to_owned).to_vec(),
+            epoch: snapshot.epoch,
+            bom: false,
+            line_ending: LineEnding::Lf,
+        };
+        let (start, end, _) = verify_range(&served, &shifted, &second.text(), &second.text())
+            .expect("重复行按令牌定位");
+        assert_eq!((start, end), (2, 2), "第二行现在位于 index 2");
+    }
+
+    #[test]
+    fn token_from_another_epoch_is_stale() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("file.txt");
+        let snapshot = snapshot(&path, b"one\ntwo\n");
+        let mut served = ServedFile::new();
+        served.serve(snapshot.epoch, &snapshot.lines, &[0..2]);
+        let old = served.token(0).expect("旧令牌");
+        let mut next_epoch = snapshot.epoch;
+        next_epoch.size += 1;
+        let changed = ["other", "two"].map(str::to_owned).to_vec();
+        served.serve(next_epoch, &changed, &[0..2]);
+        let parsed = crate::hashline::parse_anchor(&old.text()).expect("解析旧令牌");
+        let error = locate(&served, &snapshot, &parsed).expect_err("旧 epoch 令牌必须失效");
+        assert!(matches!(error, RangeError::Stale { .. }));
     }
 }

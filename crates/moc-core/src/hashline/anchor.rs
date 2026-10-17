@@ -1,17 +1,38 @@
 //! 行号加短哈希锚点。
+//!
+//! 锚点由「展示行号 + 两字母 id」组成，是一枚会话内稳定的令牌：
+//! 行被首次展示时分配，之后随行移动而保留；行被重新展示时令牌行号更新到
+//! 当前位置。解析按完整令牌精确匹配，不依赖当前行号重算，因此重复内容行、
+//! 纯符号行在位移后仍能定位到原行。
 
 use xxhash_rust::xxh32::Xxh32;
 
-/// 重定位搜索允许的最大行号距离。
-pub const REBASE_WINDOW: usize = 5;
 /// 锚点后缀使用的小写字母表。
 pub const ID_ALPHABET: [u8; 26] = *b"abcdefghijklmnopqrstuvwxyz";
-/// 两字母后缀实际使用的哈希空间。
+/// 两字母后缀的哈希空间基数（用质数压缩模偏置）。
 pub const ID_SPACE: u32 = 647;
+/// 两字母 id 的全部可用数量；令牌探测与行内去重使用完整空间。
+pub const ID_TOTAL: u16 = 26 * 26;
 /// 纯符号行使用行号作为种子的上限。
 pub const ID_SEED_LINE_LIMIT: usize = 40_000;
 
-/// 根据 1 基行号和行文本计算两字母锚点后缀。
+/// 会话内稳定的展示令牌：行号是最近一次展示时的位置，id 是行的稳定身份。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AnchorToken {
+    pub line: usize,
+    pub id: [u8; 2],
+}
+
+impl AnchorToken {
+    /// 令牌的裸文本，例如 `42sr`。
+    pub fn text(&self) -> String {
+        format!("{}{}", self.line, id_str(self.id))
+    }
+}
+
+/// 根据 1 基行号和行文本计算首选的两字母后缀。
+///
+/// 首选值只在首次展示时使用；之后 id 由 [`AnchorToken`] 保存，不再随行号重算。
 pub fn id_of(line_no: usize, text: &str) -> [u8; 2] {
     let significant = text.chars().any(char::is_alphanumeric);
     let seed = if significant {
@@ -23,9 +44,7 @@ pub fn id_of(line_no: usize, text: &str) -> [u8; 2] {
     let mut hasher = Xxh32::new(seed);
     hasher.update(trimmed.as_bytes());
     let index = hasher.digest() % ID_SPACE;
-    let high = usize::try_from(index / 26).expect("ID index must fit in usize");
-    let low = usize::try_from(index % 26).expect("ID index must fit in usize");
-    [ID_ALPHABET[high], ID_ALPHABET[low]]
+    id_from_index(index)
 }
 
 /// 将两字母后缀转为字符串。
@@ -33,14 +52,42 @@ pub fn id_str(id: [u8; 2]) -> String {
     String::from_utf8_lossy(&id).into_owned()
 }
 
-/// 返回不带行文本的锚点 token。
-pub fn anchor_token(line_no: usize, text: &str) -> String {
-    format!("{line_no}{}", id_str(id_of(line_no, text)))
+/// 两字母 id 在完整空间中的下标。
+pub fn id_index(id: [u8; 2]) -> u16 {
+    u16::from(id[0] - b'a') * 26 + u16::from(id[1] - b'a')
 }
 
-/// 返回 read/diff 使用的完整锚点行。
-pub fn anchor_line(line_no: usize, text: &str) -> String {
-    format!("{}│{text}", anchor_token(line_no, text))
+/// 从完整空间下标还原两字母 id。
+pub fn id_from_index(index: u32) -> [u8; 2] {
+    let index = u16::try_from(index).expect("id index must fit in u16");
+    assert!(
+        index < ID_TOTAL,
+        "id index must be within the two-letter space"
+    );
+    [
+        ID_ALPHABET[usize::from(index / 26)],
+        ID_ALPHABET[usize::from(index % 26)],
+    ]
+}
+
+/// 令牌在「行号 + id」空间中的紧凑键，用于会话内去重。
+pub fn token_key(token: AnchorToken) -> u64 {
+    u64::try_from(token.line).expect("line number must fit in u64") * u64::from(ID_TOTAL)
+        + u64::from(id_index(token.id))
+}
+
+/// 返回不带行文本的锚点 token（首次展示时的首选值）。
+pub fn anchor_token(line_no: usize, text: &str) -> String {
+    AnchorToken {
+        line: line_no,
+        id: id_of(line_no, text),
+    }
+    .text()
+}
+
+/// 使用已有令牌渲染锚点行。
+pub fn anchor_line_token(token: AnchorToken, text: &str) -> String {
+    format!("{}│{text}", token.text())
 }
 
 /// 解析后的锚点。
@@ -50,6 +97,15 @@ pub struct AnchorParse {
     pub id: [u8; 2],
     /// 输入带有整行、diff 前缀或空白装饰时，提供清洗后的裸 token。
     pub trimmed: Option<String>,
+}
+
+impl AnchorParse {
+    pub fn token(&self) -> AnchorToken {
+        AnchorToken {
+            line: self.line,
+            id: self.id,
+        }
+    }
 }
 
 /// 解析模型可能从 read/diff 复制的锚点。
@@ -91,11 +147,6 @@ pub fn parse_anchor(raw: &str) -> Result<AnchorParse, String> {
         id: [bytes[split], bytes[split + 1]],
         trimmed: changed.then(|| value.to_owned()),
     })
-}
-
-/// 统一生成锚点展示文本；路径参数保留给调用方的统一入口语义。
-pub fn anchor_of(_path: &std::path::Path, line_no: usize, text: &str) -> String {
-    anchor_line(line_no, text)
 }
 
 #[cfg(test)]
@@ -159,5 +210,27 @@ mod tests {
         ] {
             assert!(parse_anchor(raw).is_err(), "{raw}");
         }
+    }
+
+    #[test]
+    fn id_index_round_trips_the_full_two_letter_space() {
+        for index in 0..ID_TOTAL {
+            let id = id_from_index(u32::from(index));
+            assert_eq!(id_index(id), index);
+        }
+    }
+
+    #[test]
+    fn token_keys_are_unique_across_lines_with_the_same_id() {
+        let token = AnchorToken {
+            line: 7,
+            id: *b"zz",
+        };
+        let other = AnchorToken {
+            line: 8,
+            id: *b"zz",
+        };
+        assert_ne!(token_key(token), token_key(other));
+        assert_eq!(token.text(), "7zz");
     }
 }

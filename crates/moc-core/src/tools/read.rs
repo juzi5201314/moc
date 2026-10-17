@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
-use crate::hashline::{anchor_line, served::read_snapshot};
+use crate::hashline::{anchor_line_token, served::read_snapshot};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
 #[derive(Debug, Deserialize)]
@@ -137,63 +137,120 @@ impl Tool for ReadTool {
                 .read
                 .line_max_bytes
                 .min(page_budget.saturating_sub(7));
+            let anchored = !immutable && snapshot.bytes.len() <= 4 * 1024 * 1024;
             let mut selected = Vec::new();
-            let mut windows = Vec::new();
+            let mut modes = Vec::new();
             let mut rendered_bytes = 0usize;
             let mut has_uneditable_shown = false;
-            let mut window_start = None;
-            let mut last_served = None;
-            for position in start..end {
-                let line = &snapshot.lines[position];
-                let rendered = if line.len() > max_line_bytes {
-                    has_uneditable_shown |= !immutable;
-                    format!(
-                        "  {}│[Line {} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
-                        position + 1,
-                        position + 1,
-                        line.len().div_ceil(1024)
-                    )
-                } else if immutable {
-                    line.clone()
+            for (offset, line) in snapshot.lines[start..end].iter().enumerate() {
+                let position = start + offset;
+                let (mode, rendered_len) = if line.len() > max_line_bytes {
+                    let placeholder = placeholder_line(position + 1, line.len(), anchored);
+                    let mode = if anchored {
+                        LineMode::AnchorPlaceholder
+                    } else {
+                        LineMode::PlainPlaceholder
+                    };
+                    (mode, placeholder.len())
+                } else if anchored {
+                    let digits = digits_of(position + 1);
+                    (LineMode::Anchor, digits + 3 + line.len())
                 } else {
-                    anchor_line(position + 1, line)
+                    (LineMode::Plain, line.len())
                 };
-                if rendered_bytes.saturating_add(rendered.len() + 1) > page_budget {
+                if rendered_bytes.saturating_add(rendered_len + 1) > page_budget {
                     break;
                 }
-                rendered_bytes += rendered.len() + 1;
-                if !immutable && line.len() <= max_line_bytes {
+                rendered_bytes += rendered_len + 1;
+                has_uneditable_shown |= mode == LineMode::AnchorPlaceholder;
+                selected.push(position);
+                modes.push(mode);
+            }
+
+            let mut windows = Vec::new();
+            let mut window_start = None;
+            let mut last_served = None;
+            for (position, mode) in selected.iter().zip(&modes) {
+                if *mode == LineMode::Anchor {
                     if window_start.is_none() {
-                        window_start = Some(position);
+                        window_start = Some(*position);
                     }
                     last_served = Some(position + 1);
                 } else if let Some(start_window) = window_start.take() {
                     windows.push(start_window..last_served.expect("served window has an end"));
                     last_served = None;
                 }
-                selected.push(rendered);
             }
             if let Some(start_window) = window_start {
                 windows.push(start_window..last_served.expect("served window has an end"));
             }
-            if selected.is_empty() && snapshot.lines.is_empty() {
+
+            let tokens = if anchored {
+                ctx.anchors.record_served(path.clone(), &snapshot, &windows)
+            } else {
+                Vec::new()
+            };
+            let mut token_iter = tokens.into_iter();
+            let mut rendered = Vec::with_capacity(selected.len());
+            for (position, mode) in selected.iter().copied().zip(modes.iter().copied()) {
+                let line = &snapshot.lines[position];
+                let text = match mode {
+                    LineMode::Anchor => {
+                        let (token_position, token) =
+                            token_iter.next().expect("锚点行必须已登记令牌");
+                        debug_assert_eq!(token_position, position);
+                        anchor_line_token(token, line)
+                    }
+                    LineMode::AnchorPlaceholder => placeholder_line(position + 1, line.len(), true),
+                    LineMode::Plain => line.clone(),
+                    LineMode::PlainPlaceholder => placeholder_line(position + 1, line.len(), false),
+                };
+                rendered.push(text);
+            }
+            if rendered.is_empty() && snapshot.lines.is_empty() {
                 output.push_str("(empty file)");
             } else {
-                output.push_str(&selected.join("\n"));
+                output.push_str(&rendered.join("\n"));
             }
-            let shown_end = start + selected.len();
+            let shown_end = start + rendered.len();
             output.push_str(&page_footer(start + 1, shown_end, total));
             output.push_str(&notices);
             if has_uneditable_shown {
-                output.push_str("\nLines shown with a row-number prefix instead of an anchor are not editable; read them with a smaller limit or use bash.");
+                output.push_str("\nLines shown as a size notice instead of an anchor are not editable; inspect them with bash or rewrite the file with write.");
             }
-            if !immutable && snapshot.bytes.len() <= 4 * 1024 * 1024 {
-                ctx.anchors.record_served(path, &windows, snapshot);
-            } else if !immutable {
+            if !anchored && !immutable {
                 ctx.anchors.invalidate(&path);
             }
             Ok(ToolOutcome::success(output))
         })
+    }
+}
+
+/// 单行渲染模式；只有 `Anchor` 行会被登记为可编辑。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineMode {
+    Plain,
+    Anchor,
+    AnchorPlaceholder,
+    PlainPlaceholder,
+}
+
+fn digits_of(value: usize) -> usize {
+    value.checked_ilog10().map_or(1, |digits| {
+        usize::try_from(digits).expect("digits fit in usize") + 1
+    })
+}
+
+/// 超长行的占位文本；可编辑模式带 `N│` 前缀，其余模式不带锚点形状。
+fn placeholder_line(line_no: usize, bytes: usize, anchored: bool) -> String {
+    let notice = format!(
+        "[Line {line_no} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
+        bytes.div_ceil(1024)
+    );
+    if anchored {
+        format!("  {line_no}│{notice}")
+    } else {
+        notice
     }
 }
 

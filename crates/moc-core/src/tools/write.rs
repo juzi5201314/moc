@@ -187,6 +187,10 @@ pub(crate) async fn preview_arguments(ctx: &ToolCtx, args: &WriteArgs) -> Option
     write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES)
 }
 
+/// 拒绝把 read/diff 的锚点行原样写回文件。
+///
+/// 直接使用会话内已登记的稳定令牌，不再为校验重读磁盘：既避免旧位图与新
+/// 内容混用，也不会在大文件上无界分配。
 fn reject_served_hash_echo(
     path: &Path,
     content: &str,
@@ -196,17 +200,15 @@ fn reject_served_hash_echo(
     let Some(served) = anchors.served(path) else {
         return Ok(());
     };
-    let snapshot = crate::hashline::served::read_snapshot(path, u64::MAX)
-        .map_err(|error| ToolError::new("E_WRITE_HASH_ECHO", error.to_string()))?;
-    let expected: std::collections::BTreeSet<String> = served
-        .served
+    let expected: std::collections::BTreeSet<u64> = served
+        .entries
         .iter()
-        .enumerate()
-        .filter_map(|(position, is_served)| {
-            (*is_served)
-                .then(|| crate::hashline::anchor_token(position + 1, &snapshot.lines[position]))
-        })
+        .flatten()
+        .map(|token| crate::hashline::token_key(*token))
         .collect();
+    if expected.is_empty() {
+        return Ok(());
+    }
     let echoes = content
         .lines()
         .filter(|line| {
@@ -214,7 +216,8 @@ fn reject_served_hash_echo(
                 return false;
             };
             let token = raw.trim_start_matches(['+', '-', '>', ' ']).trim();
-            crate::hashline::parse_anchor(token).is_ok() && expected.contains(token)
+            crate::hashline::parse_anchor(token)
+                .is_ok_and(|parsed| expected.contains(&crate::hashline::token_key(parsed.token())))
         })
         .count();
     if echoes >= threshold && threshold > 0 {
@@ -335,7 +338,7 @@ mod tests {
         fs::write(&path, "fn main() {}\nfn other() {}\n").expect("写文件");
         let snapshot = read_snapshot(&path, 1024).expect("读取快照");
         let anchors = AnchorStore::new();
-        anchors.record_served(path.clone(), &[0..2], snapshot.clone());
+        anchors.record_served(path.clone(), &snapshot, &[0..2]);
         let content = format!(
             "{}│one\n{}│two",
             anchor_token(1, &snapshot.lines[0]),

@@ -4,36 +4,44 @@ use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
 use serde_json::Value;
 
-use super::{
-    Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, ToolOutput, resolve_tool_path,
-};
+use super::{Tier, Tool, ToolControl, ToolCtx, ToolError, ToolOutcome, resolve_tool_path};
 use crate::hashline::apply::{EditError, EditOutput, EditRequest, apply_edit};
+use crate::hashline::{anchor_line_token, parse_anchor};
 use crate::resources::ResourceRouter;
+
+/// 需要回灌当前锚点的错误码；其余错误保持原样。
+const ANCHOR_ERRORS: [&str; 6] = [
+    "E_UNSERVED_RANGE",
+    "E_STALE_ANCHOR",
+    "E_STALE_RANGE",
+    "E_BAD_ANCHOR",
+    "E_BAD_PAYLOAD",
+    "E_OVERLAP",
+];
+/// 回灌最多展示的行数，避免错误输出绕过 read 的分页预算。
+const FEEDBACK_MAX_LINES: usize = 200;
 
 fn reject_resource_path(path: &str) -> Result<(), ToolError> {
     ResourceRouter::write(path).map_err(|error| ToolError::new(error.code, error.message))
 }
 
 /// 将兼容载荷归一为单文件编辑请求；授权预览与执行共用此入口。
-pub(crate) fn parse_requests(args: Value) -> Result<Vec<EditRequest>, ToolError> {
+pub(crate) fn parse_requests(args: Value) -> Result<EditRequest, ToolError> {
     let (path, edits, move_lines) = normalize_args(args)?;
-    Ok(vec![EditRequest {
+    Ok(EditRequest {
         path,
         edits,
         move_lines,
-    }])
+    })
 }
 
-fn normalize_args(
-    args: Value,
-) -> Result<
-    (
-        String,
-        Vec<[String; 3]>,
-        Option<crate::hashline::apply::MoveRequest>,
-    ),
-    ToolError,
-> {
+type NormalizedArgs = (
+    String,
+    Vec<[String; 3]>,
+    Option<crate::hashline::apply::MoveRequest>,
+);
+
+fn normalize_args(args: Value) -> Result<NormalizedArgs, ToolError> {
     let Value::Object(mut object) = args else {
         return Err(ToolError::new(
             "E_BAD_PAYLOAD",
@@ -48,8 +56,6 @@ fn normalize_args(
     }
     let path = object
         .remove("path")
-        .or_else(|| object.remove("file"))
-        .or_else(|| object.remove("file_path"))
         .and_then(|value| value.as_str().map(str::to_owned))
         .ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "path must be a string"))?;
     let edits_value = object
@@ -79,12 +85,10 @@ fn normalize_args(
         })
         .transpose()?;
     if let Some((key, _)) = object.into_iter().next() {
-        let message = if key == "files" {
-            format!("unexpected field \"{key}\" (this tool takes one file per call).")
-        } else {
-            format!("unexpected field \"{key}\".")
-        };
-        return Err(ToolError::new("E_BAD_PAYLOAD", message));
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            format!("unexpected field \"{key}\"."),
+        ));
     }
     Ok((path, edits, move_lines))
 }
@@ -109,9 +113,15 @@ fn normalize_edit_item(index: usize, item: Value) -> Result<[String; 3], ToolErr
             }
         }
         Value::Object(mut object) => {
-            let from = take_string(&mut object, &["from", "remove_from"], index)?;
-            let to = take_string(&mut object, &["to", "remove_to"], index)?;
-            let replace = take_string(&mut object, &["replace", "replacement_text"], index)?;
+            let from = take_string(&mut object, "from", index)?;
+            let to = take_string(&mut object, "to", index)?;
+            let replace = take_string(&mut object, "replace", index)?;
+            if let Some((key, _)) = object.into_iter().next() {
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    format!("edits[{index}] has unexpected field \"{key}\""),
+                ));
+            }
             Ok([from, to, replace])
         }
         Value::Array(values) => Err(ToolError::new(
@@ -134,17 +144,16 @@ fn normalize_edit_item(index: usize, item: Value) -> Result<[String; 3], ToolErr
 
 fn take_string(
     object: &mut serde_json::Map<String, Value>,
-    names: &[&str],
+    name: &str,
     index: usize,
 ) -> Result<String, ToolError> {
-    names
-        .iter()
-        .find_map(|name| object.remove(*name))
+    object
+        .remove(name)
         .and_then(|value| value.as_str().map(str::to_owned))
         .ok_or_else(|| {
             ToolError::new(
                 "E_BAD_PAYLOAD",
-                format!("edits[{index}] object fields must be strings"),
+                format!("edits[{index}].{name} must be a string"),
             )
         })
 }
@@ -179,17 +188,15 @@ impl Tool for EditTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let payload = args.to_string();
-            let requests = parse_requests(args)?;
-
-            let mut report = BatchReport::default();
-            for request in requests {
-                match apply_one(ctx, request).await? {
-                    Ok(output) => report.record(output),
-                    Err(outcome) => return Ok(report.finish_failure(outcome)),
+            let request = parse_requests(args)?;
+            let (content, diff, changed) = match apply_one(ctx, request).await? {
+                Ok(output) => {
+                    let changed = output.content != "No changes made.";
+                    (output.content, output.diff, changed)
                 }
-            }
-
-            let count = ctx.anchors.observe_edit(payload, report.changed);
+                Err(outcome) => return Ok(outcome),
+            };
+            let count = ctx.anchors.observe_edit(payload, changed);
             if count >= ctx.config.tools.edit.noop_loop_threshold {
                 return Err(ToolError::new(
                     "E_NOOP_LOOP",
@@ -197,63 +204,16 @@ impl Tool for EditTool {
                 ));
             }
             Ok(ToolOutcome {
-                content: report.content.into(),
+                content: content.into(),
                 is_error: false,
                 structured_content: None,
                 error_code: None,
                 images: Vec::new(),
                 control: ToolControl::Continue,
                 status: None,
-                diff: (!report.files.is_empty()).then_some(moc_protocol::ToolDiff {
-                    files: report.files,
-                    truncated: report.truncated,
-                }),
+                diff,
             })
         })
-    }
-}
-
-/// 多文件 edit 的累计输出；中途失败时保留此前已提交文件的摘要与 diff。
-#[derive(Default)]
-struct BatchReport {
-    content: String,
-    files: Vec<moc_protocol::ToolFileDiff>,
-    truncated: bool,
-    changed: bool,
-}
-
-impl BatchReport {
-    fn record(&mut self, output: EditOutput) {
-        if !self.content.is_empty() {
-            self.content.push('\n');
-        }
-        self.changed |= output.content != "No changes made.";
-        self.content.push_str(&output.content);
-        if let Some(diff) = output.diff {
-            self.truncated |= diff.truncated;
-            self.files.extend(diff.files);
-        }
-    }
-
-    /// 失败结果补上已应用的内容与 diff：前端与模型都要知道哪些文件已经改过。
-    fn finish_failure(self, mut outcome: ToolOutcome) -> ToolOutcome {
-        if let ToolOutput::Text(failed) = outcome.content {
-            let mut report = String::new();
-            if !self.content.is_empty() {
-                report.push_str("Already applied before the failure:\n");
-                report.push_str(&self.content);
-                report.push_str("\n\n");
-            }
-            report.push_str(&failed);
-            outcome.content = report.into();
-        }
-        if !self.files.is_empty() {
-            outcome.diff = Some(moc_protocol::ToolDiff {
-                files: self.files,
-                truncated: self.truncated,
-            });
-        }
-        outcome
     }
 }
 
@@ -262,53 +222,30 @@ impl BatchReport {
 /// 任一文件无法预览（如 E_UNSERVED_RANGE）时整体放弃：宁可没有预览，也不给
 /// 出一份与实际执行无关的 diff。
 pub(crate) fn preview_arguments(ctx: &ToolCtx, args: &Value) -> Option<moc_protocol::ToolDiff> {
-    let requests = parse_requests(args.clone()).ok()?;
-    preview_requests(
+    let request = parse_requests(args.clone()).ok()?;
+    reject_resource_path(&request.path).ok()?;
+    let source_path = resolve_tool_path(&ctx.cwd, &request.path).ok()?;
+    let target_path = request
+        .move_lines
+        .as_ref()
+        .map(|movement| resolve_tool_path(&ctx.cwd, &movement.target_path))
+        .transpose()
+        .ok()?;
+    let served = ctx.anchors.served(&source_path).unwrap_or_default();
+    let target_served = target_path
+        .as_ref()
+        .and_then(|path| ctx.anchors.served(path));
+    let mut resolved = request;
+    resolved.path = source_path.to_string_lossy().into_owned();
+    crate::hashline::apply::preview_edit(
         &ctx.cwd,
-        requests,
-        &ctx.anchors,
+        &resolved,
+        &served,
+        target_served.as_ref(),
         ctx.config.tools.edit.max_edits,
         ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
     )
-}
-
-/// 预览主体：与 [`apply_one`] 相同的解析、快照与计划计算，只是不落盘。
-fn preview_requests(
-    cwd: &std::path::Path,
-    requests: Vec<EditRequest>,
-    anchors: &crate::hashline::AnchorStore,
-    max_edits: usize,
-    max_file_bytes: u64,
-) -> Option<moc_protocol::ToolDiff> {
-    let mut files = Vec::new();
-    let mut truncated = false;
-    for request in requests {
-        reject_resource_path(&request.path).ok()?;
-        let source_path = resolve_tool_path(cwd, &request.path).ok()?;
-        let target_path = request
-            .move_lines
-            .as_ref()
-            .map(|movement| resolve_tool_path(cwd, &movement.target_path))
-            .transpose()
-            .ok()?;
-        let served = anchors.served(&source_path).unwrap_or_default();
-        let target_served = target_path.as_ref().and_then(|path| anchors.served(path));
-        let mut resolved = request;
-        resolved.path = source_path.to_string_lossy().into_owned();
-        let diff = crate::hashline::apply::preview_edit(
-            cwd,
-            &resolved,
-            &served,
-            target_served.as_ref(),
-            anchors,
-            max_edits,
-            max_file_bytes,
-        )
-        .ok()?;
-        truncated |= diff.truncated;
-        files.extend(diff.files);
-    }
-    Some(moc_protocol::ToolDiff { files, truncated })
+    .ok()
 }
 
 fn edit_schema() -> Value {
@@ -319,7 +256,13 @@ fn edit_schema() -> Value {
             "edits": {
                 "type":"array","minItems":1,
                 "description":"Ordered edits; applied together, and the whole call is rejected if any one fails.",
-                "items": {"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"},"description":"[from, to, replace]. `from` and `to` are inclusive anchors copied verbatim from read output (line number + two-letter id, e.g. \"42sr\"). `replace` is the replacement text with \\n as the line separator. Empty `replace` deletes the inclusive range. Equal `from` and `to` with non-empty `replace` inserts the text AFTER that line."}
+                "items": {
+                    "anyOf": [
+                        {"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"},"description":"[from, to, replace] with inclusive anchors."},
+                        {"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"},"description":"[anchor, text] inserts text after that line."},
+                        {"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"},"replace":{"type":"string"}},"required":["from","to","replace"],"additionalProperties":false,"description":"Object form of [from, to, replace]."}
+                    ]
+                }
             },
             "move": {
                 "type":"object","additionalProperties":false,
@@ -356,15 +299,15 @@ async fn apply_one(
             Ok(path)
         })
         .transpose()?;
-    let mut source_served = ctx.anchors.served(&source_path).unwrap_or_default();
-    let mut target_served = target_path
+    let source_served = ctx.anchors.served(&source_path).unwrap_or_default();
+    let target_served = target_path
         .as_ref()
         .and_then(|path| ctx.anchors.served(path));
     match apply_edit(
         &ctx.cwd,
         &request,
-        &mut source_served,
-        target_served.as_mut(),
+        &source_served,
+        target_served.as_ref(),
         &ctx.anchors,
         ctx.config.tools.edit.max_edits,
         ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
@@ -379,37 +322,14 @@ async fn apply_one(
                 .filter(|code| code.starts_with("E_"))
                 .unwrap_or("E_TOOL")
                 .to_owned();
-            if [
-                "E_UNSERVED_RANGE",
-                "E_STALE_ANCHOR",
-                "E_STALE_RANGE",
-                "E_BAD_ANCHOR",
-                "E_BAD_PAYLOAD",
-                "E_OVERLAP",
-                "E_NOOP_LOOP",
-            ]
-            .contains(&error_code.as_str())
-            {
-                let snapshot = crate::hashline::served::read_snapshot(
+            if ANCHOR_ERRORS.contains(&error_code.as_str()) {
+                append_anchor_feedback(
+                    ctx,
+                    &request,
                     &source_path,
-                    ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024),
-                )
-                .map_err(|error| ToolError::new("E_READ", error.to_string()))?;
-                if let Some(served) = ctx.anchors.served(&source_path) {
-                    let mut block = String::new();
-                    for (position, shown) in served.served.iter().copied().enumerate() {
-                        if shown {
-                            block.push_str(&format!(
-                                "  {}\n",
-                                crate::hashline::anchor_line(
-                                    position + 1,
-                                    &snapshot.lines[position]
-                                )
-                            ));
-                        }
-                    }
-                    content.push_str(&format!("\n\nCurrent anchors for {}:\n{}\nUse the anchors above directly; no re-read is needed unless these lines changed.", source_path.display(), block));
-                }
+                    target_path.as_deref(),
+                    &mut content,
+                );
             }
             Ok(Err(ToolOutcome {
                 content: content.into(),
@@ -426,43 +346,144 @@ async fn apply_one(
     }
 }
 
+/// 锚点错误后回灌当前令牌。
+///
+/// 只在 epoch 与行数一致时刷新；否则保留原错误并提示重读。输出限制在失败
+/// 锚点附近最多 [`FEEDBACK_MAX_LINES`] 行，避免绕过 read 的分页预算。
+fn append_anchor_feedback(
+    ctx: &ToolCtx,
+    request: &EditRequest,
+    source_path: &std::path::Path,
+    target_path: Option<&std::path::Path>,
+    content: &mut String,
+) {
+    let mut paths = vec![(source_path, source_hints(request))];
+    if let Some(target) = target_path {
+        paths.push((target, target_hints(request)));
+    }
+    let max_bytes = ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024);
+    for (path, hints) in paths {
+        let shown = ctx
+            .anchors
+            .served(path)
+            .is_some_and(|record| record.entries.iter().any(Option::is_some));
+        if !shown {
+            content.push_str(&format!(
+                "\n\n{} has no shown lines yet; read it before editing.",
+                path.display()
+            ));
+            continue;
+        }
+        let snapshot = match crate::hashline::served::read_snapshot(path, max_bytes) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                content.push_str(&format!(
+                    "\n\nCould not re-read {}; read the file again to get current anchors.",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let Some(tokens) = ctx
+            .anchors
+            .refresh_nearest(path, &snapshot, &hints, FEEDBACK_MAX_LINES)
+        else {
+            content.push_str(&format!(
+                "\n\n{} changed since it was shown; read it again to get current anchors.",
+                path.display()
+            ));
+            continue;
+        };
+        if tokens.is_empty() {
+            content.push_str(&format!(
+                "\n\nNo lines of {} are currently editable; read the file again.",
+                path.display()
+            ));
+            continue;
+        }
+        let mut block = String::new();
+        for (position, token) in tokens {
+            block.push_str(&format!(
+                "  {}\n",
+                anchor_line_token(token, &snapshot.lines[position])
+            ));
+        }
+        content.push_str(&format!(
+            "\n\nCurrent anchors for {} (nearest to the failed anchors, up to {FEEDBACK_MAX_LINES} lines):\n{block}Use these anchors directly; re-read the file if the line you need is not shown.",
+            path.display()
+        ));
+    }
+}
+
+/// 源文件回灌的参考行号：编辑锚点与 move 源锚点。
+fn source_hints(request: &EditRequest) -> Vec<usize> {
+    let mut hints = Vec::new();
+    for [from, to, _] in &request.edits {
+        for raw in [from, to] {
+            if let Ok(parsed) = parse_anchor(raw) {
+                hints.push(parsed.line);
+            }
+        }
+    }
+    if let Some(movement) = &request.move_lines {
+        for raw in [&movement.from, &movement.to] {
+            if let Ok(parsed) = parse_anchor(raw) {
+                hints.push(parsed.line);
+            }
+        }
+    }
+    hints
+}
+
+/// 目标文件回灌的参考行号：move 的插入锚点。
+fn target_hints(request: &EditRequest) -> Vec<usize> {
+    request
+        .move_lines
+        .as_ref()
+        .and_then(|movement| movement.target_anchor.as_deref())
+        .and_then(|raw| parse_anchor(raw).ok())
+        .map(|parsed| vec![parsed.line])
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn normalizes_two_item_edits_as_insertions() {
-        let requests = parse_requests(serde_json::json!({
+        let request = parse_requests(serde_json::json!({
             "path": "file.txt",
             "edits": [["42sr", "inserted"]],
         }))
         .expect("二元组应归一化");
         assert_eq!(
-            requests[0].edits,
+            request.edits,
             vec![["42sr".to_owned(), "42sr".to_owned(), "inserted".to_owned()]]
         );
     }
 
     #[test]
-    fn folds_file_alias_and_rejects_files_field() {
-        let request = parse_requests(serde_json::json!({
-            "file": "file.txt",
-            "edits": [["42sr", "42sr", "replacement"]],
-        }))
-        .expect("file 别名应折叠");
-        assert_eq!(request[0].path, "file.txt");
+    fn rejects_files_field_and_unknown_fields() {
         let error = parse_requests(serde_json::json!({"files": []})).expect_err("files 应拒绝");
         assert!(error.message.contains("takes one file per call"));
+        let error = parse_requests(serde_json::json!({
+            "path": "file.txt",
+            "edits": [["42sr", "42sr", "replacement"]],
+            "file": "other.txt",
+        }))
+        .expect_err("未声明字段应拒绝");
+        assert!(error.message.contains("unexpected field"));
     }
 
     #[test]
     fn normalizes_object_edit_shape() {
-        let requests = parse_requests(serde_json::json!({
+        let request = parse_requests(serde_json::json!({
             "path": "file.txt",
             "edits": [{"from":"1aa", "to":"2bb", "replace":"new"}],
         }))
         .expect("对象编辑应归一化");
-        assert_eq!(requests[0].edits[0], ["1aa", "2bb", "new"]);
+        assert_eq!(request.edits[0], ["1aa", "2bb", "new"]);
     }
 
     #[test]
