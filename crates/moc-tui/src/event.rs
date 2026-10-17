@@ -25,7 +25,7 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, CtrlCPending, Focus, MODES};
+use crate::app::{App, ChartHit, CtrlCPending, Focus, MODES};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
@@ -65,6 +65,8 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         .context("连接后台服务失败")?;
 
     let mut app = App::new(theme, events.clone());
+    // 图形能力只探测一次：必须早于输入线程启动（探测要直接读 fd 0 的应答）
+    app.graphics = crate::render::graphics::probe();
     app.thinking_detail = preferences.thinking_detail;
     app.tool_detail = preferences.tool_detail;
     if let Some(level) = opts.detail {
@@ -591,6 +593,8 @@ async fn event_loop(
             next_frame = tokio::time::Instant::now() + FRAME_BUDGET;
             dirty = false;
             draw_result?;
+            // 位图只能画在帧之后：先让 ratatui 把文本与底色写完，再按格坐标贴图
+            crate::render::graphics::emit(app, &mut std::io::stdout())?;
             if app.history_load_requested {
                 request_history_page(app, connection);
             }
@@ -1182,6 +1186,12 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
         MouseEventKind::Up(MouseButton::Left) => {
             let clicked = app.pending_click.take() == Some(position);
             if clicked {
+                // 表格入口优先：它独占一行，若同时命中块标题会点出两件事
+                if let Some(hit) = chart_hit_at(app, position) {
+                    app.toggle_table_chart(hit.entry, hit.table);
+                    app.selection = None;
+                    return;
+                }
                 // 单击：命中折叠块标题则切换该块档位（完整 ↔ 收起形态）
                 if let Some(&(index, ..)) = app
                     .mouse_hits
@@ -1201,8 +1211,19 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 app.set_notice("按 y 复制选中内容");
             }
         }
+        MouseEventKind::Moved => {
+            // 悬停只做视觉反馈：命中的入口整行提亮
+            app.hover_chart = chart_hit_at(app, position).map(|hit| (hit.entry, hit.table));
+        }
         _ => {}
     }
+}
+
+/// 坐标命中的表格入口（列区间限定在按钮文字上，行号必须完全一致）。
+fn chart_hit_at(app: &App, position: (u16, u16)) -> Option<ChartHit> {
+    app.chart_hits.iter().copied().find(|hit| {
+        hit.row == position.1 && position.0 >= hit.x && position.0 < hit.x.saturating_add(hit.w)
+    })
 }
 
 /// 滚动视口：`delta > 0` 向历史方向推进（更早的行），`delta < 0` 回到尾部。
@@ -4926,6 +4947,93 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// 表格入口：点中切换图表形态，再点还原；列在按钮外不触发。
+    #[test]
+    fn clicking_the_table_entry_toggles_the_chart() {
+        use crate::app::ChartHit;
+        use crate::transcript::Block;
+
+        let mut app = app();
+        let text =
+            "| 项 | 耗时 | 内存 |\n|---|---|---|\n| a | 10 ms | 2 MiB |\n| b | 20 ms | 4 MiB |";
+        app.push_block(Block::Assistant { text: text.into() });
+        app.scrollback_area = ratatui::layout::Rect::new(3, 0, 80, 24);
+        // 命中表由绘制填充；这里直接给出按钮所在行与列区间
+        app.chart_hits = vec![ChartHit {
+            entry: 0,
+            table: 0,
+            row: 12,
+            x: 60,
+            w: 12,
+        }];
+
+        let click = |app: &mut App, column: u16| {
+            handle_mouse(
+                app,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column,
+                    row: 12,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+            handle_mouse(
+                app,
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column,
+                    row: 12,
+                    modifiers: KeyModifiers::NONE,
+                },
+            );
+        };
+
+        // 列落在按钮之外：既不切换，也不动档位
+        let generation = app.blocks[0].generation;
+        click(&mut app, 59);
+        assert!(
+            app.blocks[0].table_chart(0).is_none(),
+            "按钮外点击不该展开图表"
+        );
+        assert_eq!(app.blocks[0].generation, generation);
+
+        // 点中按钮：展开图表（渲染缓存失效）
+        click(&mut app, 66);
+        let state = app.blocks[0].table_chart(0).expect("应当展开图表");
+        assert_eq!(state.image_id, 1, "首张图分配 1 号图像 ID");
+        assert!(state.payload.is_none(), "载荷在贴图时才生成");
+        assert!(app.blocks[0].generation > generation, "展开必须让缓存失效");
+
+        // 再点一次：还原成表格
+        click(&mut app, 66);
+        assert!(app.blocks[0].table_chart(0).is_none(), "二次点击应还原");
+    }
+
+    /// 悬停命中：移动进按钮区间才置位，移出即清除。
+    #[test]
+    fn hover_follows_the_table_entry() {
+        use crate::app::ChartHit;
+
+        let mut app = app();
+        app.chart_hits = vec![ChartHit {
+            entry: 0,
+            table: 1,
+            row: 5,
+            x: 10,
+            w: 12,
+        }];
+        let moved = |column: u16, row: u16| MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_mouse(&mut app, moved(11, 5));
+        assert_eq!(app.hover_chart, Some((0, 1)));
+        handle_mouse(&mut app, moved(11, 6));
+        assert_eq!(app.hover_chart, None, "换行即离开按钮");
     }
 
     #[test]

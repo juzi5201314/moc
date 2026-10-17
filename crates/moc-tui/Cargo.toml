@@ -26,7 +26,16 @@ serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
 tracing.workspace = true
+ttf-parser.workspace = true
+fontdue.workspace = true
+fontdb.workspace = true
+flate2.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+
+# 终端图形能力探测要直接读 fd 0（`#![forbid(unsafe_code)]` 下不能调 libc）：
+# `rustix` 提供安全封装的 poll/read，非 unix 平台不引入。
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

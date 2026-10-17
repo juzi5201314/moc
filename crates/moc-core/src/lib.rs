@@ -4,6 +4,7 @@
 //! 本 crate 负责会话状态、工具与上下文生命周期。
 
 pub(crate) mod agents;
+pub mod chart;
 pub mod clm;
 pub mod compact;
 mod concurrency;

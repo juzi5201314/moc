@@ -64,6 +64,11 @@ pub struct Entry {
     /// 该块所在提示的耗时（毫秒）：提示结束时回填到助手块，
     /// 渲染为 `Worked for` 尾注。
     pub elapsed_ms: Option<u64>,
+    /// 正文里每张顶层表格的图表视图态（下标 = 表格序号）。
+    ///
+    /// 纯进程内视图态：不进会话文件、不随历史恢复回填；`push_text`
+    /// 追加正文时整表清空——表格内容变了，旧的图表数据立刻作废。
+    pub charts: Vec<Option<TableChartState>>,
 }
 
 impl Entry {
@@ -74,6 +79,7 @@ impl Entry {
             level_override: None,
             at_ms: None,
             elapsed_ms: None,
+            charts: Vec::new(),
         }
     }
 
@@ -83,6 +89,25 @@ impl Entry {
             at_ms: Some(now_ms()),
             ..Self::new(block)
         }
+    }
+
+    /// 该块第 `table` 张顶层表格的图表态。
+    pub fn table_chart(&self, table: usize) -> Option<&TableChartState> {
+        self.charts.get(table).and_then(Option::as_ref)
+    }
+
+    /// 同上，可变访问：贴图时回填已编码的载荷。
+    pub fn table_chart_mut(&mut self, table: usize) -> Option<&mut TableChartState> {
+        self.charts.get_mut(table).and_then(Option::as_mut)
+    }
+
+    /// 设置/清除某张表格的图表态，并让渲染缓存失效。
+    pub fn set_table_chart(&mut self, table: usize, state: Option<TableChartState>) {
+        if self.charts.len() <= table {
+            self.charts.resize_with(table + 1, || None);
+        }
+        self.charts[table] = state;
+        self.touch();
     }
 
     /// 内容变化时统一走这里，保证缓存失效。
@@ -124,11 +149,15 @@ impl Entry {
     }
 
     /// 续写流式文本（Assistant / Thinking）。
+    ///
+    /// 追加正文会让表格序号与内容漂移，已展开的图表必须整表作废（回到表格形态），
+    /// 否则用户看到的是上一轮 token 的旧图。
     pub fn push_text(&mut self, delta: &str) {
         match &mut self.block {
             Block::Assistant { text } | Block::Thinking { text, .. } => text.push_str(delta),
             _ => return,
         }
+        self.charts.clear();
         self.touch();
     }
 
@@ -166,6 +195,22 @@ pub struct ToolCallStart {
     pub parent_id: Option<String>,
     /// 参数 JSON 原文（core 实际执行的那一份）。
     pub arguments: String,
+}
+
+/// 一张表格的图表视图态。
+///
+/// 存活期等于「块存在且正文没变」：`push_text` 会整表清空。载荷按像素尺寸
+/// 缓存，终端尺寸变了（`px` 不同）就重新栅格化——绝不缩放已有的图。
+#[derive(Debug, Clone)]
+pub struct TableChartState {
+    /// 图表数据（类别、系列、单位、极性）。
+    pub spec: moc_core::chart::ChartSpec,
+    /// 已编码的图形载荷；`None` = 尚未贴过图。
+    pub payload: Option<std::sync::Arc<crate::render::chart::encode::Payload>>,
+    /// 载荷对应的像素尺寸；与当前布局不一致即失效。
+    pub px: (u32, u32),
+    /// kitty 图像 ID（进程内唯一，放置/删除都靠它对齐）。
+    pub image_id: u32,
 }
 
 /// 一次工具调用的终态：`ToolFinished` 去掉 `prompt_id` 后的字段，回填用。

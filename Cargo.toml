@@ -37,3 +37,9 @@ futures-util = "0.3"
 rayon = "1"
 tempfile = "3"
 shell-words = "1.1.1"
+# 表格图表：字体解析/光栅化、系统字体回退、PNG 压缩、终端能力探测
+ttf-parser = "0.25"
+fontdue = "0.9"
+fontdb = "0.24"
+flate2 = "1"
+rustix = { version = "1", features = ["event"] }

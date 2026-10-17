@@ -11,10 +11,12 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use super::diff;
-use super::markdown::render_markdown;
+use super::markdown::{
+    ButtonSpan, ChartPlacement, TableViews, render_markdown, render_markdown_with,
+};
 use super::wrap::{str_width, wrap_text};
 use super::{PROSE_INDENT, TITLE_INDENT};
-use crate::app::App;
+use crate::app::{App, ChartHit, ChartSlot};
 use crate::theme::Theme;
 use crate::transcript::{Block, DetailLevel, Entry, ToolCallBlock};
 
@@ -50,6 +52,35 @@ struct CachedEntry {
     height: usize,
     lines: Vec<Line<'static>>,
     rendered: bool,
+    /// 表格入口与图表占位（行号是块内局部行）。
+    tables: Vec<LocalTable>,
+}
+
+/// 一张顶层表格在块内的落位（局部行号，尚未加屏幕原点与正文缩进）。
+#[derive(Debug, Clone, Copy)]
+struct LocalTable {
+    table: usize,
+    button: Option<ButtonSpan>,
+    chart: Option<ChartPlacement>,
+}
+
+/// 单块的渲染结果：行 + 表格落位。
+///
+/// 行与落位必须同源产出：命中区与位图槽位都靠局部行号换算屏幕坐标，
+/// 任何一处单独变化都会让点击落到错误的位置。
+struct EntryLines {
+    lines: Vec<Line<'static>>,
+    tables: Vec<LocalTable>,
+}
+
+impl EntryLines {
+    /// 无表格的块：只有行。
+    fn plain(lines: Vec<Line<'static>>) -> Self {
+        Self {
+            lines,
+            tables: Vec::new(),
+        }
+    }
 }
 
 /// 绘制窗口：从内容顶部跳过的行数、距尾部的滚动量与最大滚动量。
@@ -92,12 +123,13 @@ impl ScrollbackView {
             {
                 continue;
             }
-            let (lines, height, rendered) = if index >= eager_start {
-                let lines = render_entry(index, entry, app, width, index == 0);
-                let height = lines.len();
-                (lines, height, true)
+            let (lines, tables, height, rendered) = if index >= eager_start {
+                let rendered = render_entry(index, entry, app, width, index == 0);
+                let height = rendered.lines.len();
+                (rendered.lines, rendered.tables, height, true)
             } else {
                 (
+                    Vec::new(),
                     Vec::new(),
                     estimate_entry_height_at(app, index, width),
                     false,
@@ -108,6 +140,7 @@ impl ScrollbackView {
                 height,
                 lines,
                 rendered,
+                tables,
             };
             if index < self.cache.len() {
                 self.cache[index] = cached;
@@ -126,6 +159,7 @@ impl ScrollbackView {
             let next = offset.saturating_add(cached.height);
             if next <= skip_rows || offset >= end {
                 cached.lines.clear();
+                cached.tables.clear();
                 cached.rendered = false;
             }
             offset = next;
@@ -146,22 +180,23 @@ impl ScrollbackView {
     ) -> RowWindow {
         let mut window = self.row_window(viewport, scroll_offset);
         for _ in 0..=self.cache.len() {
-            let mut rendered = false;
+            let mut rendered_count = 0usize;
             let end = window.skip_rows.saturating_add(viewport);
             let mut offset = 0usize;
             for (index, cached) in self.cache.iter_mut().enumerate() {
                 let next = offset.saturating_add(cached.height);
                 if !cached.rendered && offset < end && next > window.skip_rows {
-                    let lines =
+                    let rendered =
                         render_entry(index, &app.blocks[index], app, self.width, index == 0);
-                    cached.height = lines.len();
-                    cached.lines = lines;
+                    cached.height = rendered.lines.len();
+                    cached.lines = rendered.lines;
+                    cached.tables = rendered.tables;
                     cached.rendered = true;
-                    rendered = true;
+                    rendered_count += 1;
                 }
                 offset = offset.saturating_add(cached.height);
             }
-            if !rendered {
+            if rendered_count == 0 {
                 break;
             }
             window = self.row_window(viewport, scroll_offset);
@@ -185,16 +220,30 @@ impl ScrollbackView {
         self.cache.iter().map(|cached| cached.height).sum()
     }
 
-    /// 从第 `skip_rows` 行开始把内容画进视口，并登记命中表与行文本。
+    /// 从第 `skip_rows` 行开始把内容画进视口，并登记命中表、位图槽位与行文本。
+    ///
+    /// 位图槽位只在**完整落在视口内**时登记：图像按格坐标一次性贴上，半截
+    /// 图像会盖住顶部信息条或输入框；半截可见时宁可不贴，占位行留白。
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "绘制上下文（buffer/区域/起点/行收集/主题/悬停/登记目标）一次传完，拆结构体反而每次多一次装箱"
+    )]
     pub fn paint(
         &self,
         buffer: &mut Buffer,
         area: Rect,
         skip_rows: usize,
         collect_lines: bool,
-        hits: &mut Vec<(usize, u16, u16)>,
-        lines: &mut Vec<(u16, String)>,
+        theme: &Theme,
+        hover: Option<(usize, usize)>,
+        sinks: PaintSinks<'_>,
     ) {
+        let PaintSinks {
+            hits,
+            charts,
+            slots,
+            lines,
+        } = sinks;
         let mut offset = skip_rows;
         let mut y = area.y;
         let bottom = area.y.saturating_add(area.height);
@@ -205,7 +254,7 @@ impl ScrollbackView {
             }
             let has_title = offset == 0;
             let row_start = y;
-            for line in &cached.lines[offset..] {
+            for line in cached.lines.iter().skip(offset) {
                 if y >= bottom {
                     break;
                 }
@@ -219,6 +268,49 @@ impl ScrollbackView {
                 }
                 y += 1;
             }
+            let origin = row_start;
+            for table in &cached.tables {
+                if let Some(button) = table.button
+                    && button.row >= offset
+                {
+                    let row = origin + u16::try_from(button.row - offset).unwrap_or(u16::MAX);
+                    if row < bottom {
+                        if hover == Some((index, table.table)) {
+                            buffer.set_style(
+                                Rect::new(area.x, row, area.width, 1),
+                                Style::new().bg(theme.bg_hover),
+                            );
+                        }
+                        charts.push(ChartHit {
+                            entry: index,
+                            table: table.table,
+                            row,
+                            x: area.x + PROSE_INDENT as u16 + button.x,
+                            w: button.w,
+                        });
+                    }
+                }
+                if let Some(chart) = table.chart
+                    && chart.row >= offset
+                {
+                    let row = origin + u16::try_from(chart.row - offset).unwrap_or(u16::MAX);
+                    let end = row.saturating_add(chart.rows);
+                    if row >= area.y && end <= bottom {
+                        let from = chart.row;
+                        let to = from + usize::from(chart.rows);
+                        slots.push(ChartSlot {
+                            entry: index,
+                            table: table.table,
+                            x: area.x + PROSE_INDENT as u16,
+                            y: row,
+                            cols: chart.cols,
+                            rows: chart.rows,
+                            px: chart.px,
+                            hash: line_hash(&cached.lines[from..to]),
+                        });
+                    }
+                }
+            }
             if has_title {
                 hits.push((index, row_start, y));
             }
@@ -228,6 +320,33 @@ impl ScrollbackView {
             }
         }
     }
+}
+
+/// 绘制时的登记目标：标题命中、表格入口、位图槽位与行文本。
+///
+/// 打包成结构体传参：四个 `&mut Vec` 平铺在签名里既难读，也容易传错顺序。
+pub struct PaintSinks<'a> {
+    /// 块标题行命中（点击折叠）。
+    pub hits: &'a mut Vec<(usize, u16, u16)>,
+    /// 表格入口命中（点击切换图表）。
+    pub charts: &'a mut Vec<ChartHit>,
+    /// 本帧要贴的位图。
+    pub slots: &'a mut Vec<ChartSlot>,
+    /// 行文本快照（拖选复制）。
+    pub lines: &'a mut Vec<(u16, String)>,
+}
+
+/// 一段行的内容指纹：位图只在指纹变化时重发。
+fn line_hash(lines: &[Line<'static>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for line in lines {
+        for span in &line.spans {
+            span.content.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
 }
 
 /// 计算块内容代次：批次成员的代次归并到同批最大值。
@@ -271,6 +390,15 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     let Some(entry) = app.blocks.get(index) else {
         return 0;
     };
+    // 含表格的正文不能用折行近似：表格列宽收缩、入口按钮、图表占位行都是
+    // 渲染期才算出来的，估错会让滚动范围与懒渲染的可见区间一起失真。
+    if let Block::Assistant { text } = &entry.block
+        && may_contain_table(text)
+    {
+        return render_entry(index, entry, app, width, index == 0)
+            .lines
+            .len();
+    }
     let level = entry.level(app.block_level(&entry.block));
     let Some((batch_id, name)) = tool_batch_key(entry) else {
         return estimate_entry_height(entry, level, width);
@@ -362,6 +490,20 @@ fn estimate_entry_height(entry: &Entry, level: DetailLevel, width: u16) -> usize
         }
         Block::Todo { phases } => estimate_todo_height(phases, width),
     }
+}
+
+/// 正文里是否可能出现 GFM 表格：分隔行（只有 `|`、`-`、`:`、空白且含 `-`）。
+///
+/// 只做廉价预筛，宁可多算（走一次真实渲染），不能漏判——漏判会破坏
+/// 「估算高度 == 渲染高度」这条被测试钉住的不变量。
+fn may_contain_table(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.contains('-')
+            && trimmed
+                .chars()
+                .all(|ch| matches!(ch, '|' | '-' | ':' | ' ' | '\t'))
+    })
 }
 
 /// 多行文本按显示宽度折行：先按换行分行，再逐行折行（[`wrap_text`] 只折单行）。
@@ -457,17 +599,11 @@ fn estimate_tool_height(tool: &ToolCallBlock, level: DetailLevel, width: usize) 
 
 /// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
 /// 折叠状态由全局开关与块类型共同决定。
-fn render_entry(
-    index: usize,
-    entry: &Entry,
-    app: &App,
-    width: u16,
-    first: bool,
-) -> Vec<Line<'static>> {
+fn render_entry(index: usize, entry: &Entry, app: &App, width: u16, first: bool) -> EntryLines {
     let level = entry.level(app.block_level(&entry.block));
     if let Some((batch_id, name)) = tool_batch_key(entry) {
         if batch_group_start(app, index, batch_id, name) != index {
-            return Vec::new();
+            return EntryLines::plain(Vec::new());
         }
         let tools: Vec<_> = app
             .blocks
@@ -477,7 +613,13 @@ fn render_entry(
                 _ => None,
             })
             .collect();
-        return render_tool_batch(app, &tools, usize::from(width), first, level);
+        return EntryLines::plain(render_tool_batch(
+            app,
+            &tools,
+            usize::from(width),
+            first,
+            level,
+        ));
     }
     render_entry_single(entry, app, usize::from(width), first, level)
 }
@@ -488,20 +630,31 @@ fn render_entry_single(
     width: usize,
     first: bool,
     level: DetailLevel,
-) -> Vec<Line<'static>> {
+) -> EntryLines {
     let theme = app.theme;
     match &entry.block {
-        Block::User { text } => user_message(text, entry.at_ms, first, width, theme),
-        Block::Assistant { text } => assistant_message(text, entry, width, theme),
+        Block::User { text } => {
+            EntryLines::plain(user_message(text, entry.at_ms, first, width, theme))
+        }
+        Block::Assistant { text } => assistant_message(text, entry, app, width),
         Block::Thinking {
             text,
             reasoning_tokens,
             duration_ms,
-        } => thinking_block(text, *reasoning_tokens, *duration_ms, app, width, level),
-        Block::Tool(tool) => render_tool(tool, app, width, level),
-        Block::AgentMessage { meta, body } => agent_message_block(meta, body, width, theme, level),
-        Block::Todo { phases } => render_todo(phases, app, width),
-        Block::Note { text, error } => note_block(text, *error, width, theme),
+        } => EntryLines::plain(thinking_block(
+            text,
+            *reasoning_tokens,
+            *duration_ms,
+            app,
+            width,
+            level,
+        )),
+        Block::Tool(tool) => EntryLines::plain(render_tool(tool, app, width, level)),
+        Block::AgentMessage { meta, body } => {
+            EntryLines::plain(agent_message_block(meta, body, width, theme, level))
+        }
+        Block::Todo { phases } => EntryLines::plain(render_todo(phases, app, width)),
+        Block::Note { text, error } => EntryLines::plain(note_block(text, *error, width, theme)),
     }
 }
 /// 批次成员正文相对批次标题行的缩进（`├─ ` 分支宽度）。
@@ -637,17 +790,39 @@ fn user_message(
 }
 
 /// 助手回复：正文按 [`PROSE_INDENT`] 悬挂缩进，尾注行给耗时与本地时间。
-fn assistant_message(text: &str, entry: &Entry, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> =
-        render_markdown(text, width.saturating_sub(PROSE_INDENT).max(8), theme)
-            .into_iter()
-            .map(indent_prose)
-            .collect();
+///
+/// 正文交给带表格视图态的渲染器：已切换成图表的表格会变成占位行，其余表格
+/// 下方挂入口按钮；返回的落位信息（局部行号）供命中表与位图槽位登记。
+fn assistant_message(text: &str, entry: &Entry, app: &App, width: usize) -> EntryLines {
+    let theme = app.theme;
+    let rendered = render_markdown_with(
+        text,
+        width.saturating_sub(PROSE_INDENT).max(8),
+        theme,
+        TableViews {
+            charts: &entry.charts,
+            graphics: app.graphics,
+            // 提示还没收尾时，末尾表格的入口等最终 token 落地再出现
+            streaming: app.prompt_running && entry.elapsed_ms.is_none(),
+        },
+    );
+    let mut lines: Vec<Line<'static>> = rendered.lines.into_iter().map(indent_prose).collect();
     if let Some(footer) = prompt_footer(entry, width, theme) {
         lines.push(footer);
     }
     lines.push(Line::from(String::new()));
-    lines
+    EntryLines {
+        lines,
+        tables: rendered
+            .tables
+            .into_iter()
+            .map(|slot| LocalTable {
+                table: slot.table,
+                button: slot.button,
+                chart: slot.chart,
+            })
+            .collect(),
+    }
 }
 
 /// 助手回复尾注：左侧 `耗时`、右侧本地时间；提示未结束（或耗时未知）时不占行。
@@ -1621,7 +1796,7 @@ mod tests {
             arguments: r#"{"path":"b.rs"}"#.into(),
         });
 
-        let lines = render_entry(0, &app.blocks[0], &app, 80, true);
+        let lines = render_entry(0, &app.blocks[0], &app, 80, true).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -1630,7 +1805,10 @@ mod tests {
         assert!(text.contains("read (2)"));
         assert!(text.contains("a.rs"));
         assert!(text.contains("b.rs"));
-        assert_eq!(render_entry(1, &app.blocks[1], &app, 80, false).len(), 0);
+        assert_eq!(
+            render_entry(1, &app.blocks[1], &app, 80, false).lines.len(),
+            0
+        );
     }
 
     /// C6：懒渲染与绘制共用同一份渲染后高度累计。
@@ -1710,6 +1888,115 @@ mod tests {
         assert!(covered > 0, "视口应落在至少一个块上");
     }
 
+    /// 含表格的正文：估算高度必须等于真实渲染高度，切换成图表后依然成立。
+    ///
+    /// 表格列宽收缩、入口按钮、图表占位行都只在渲染期算得出来，任何一处
+    /// 走「折行近似」都会让滚动范围与懒渲染窗口一起失真。
+    #[test]
+    fn table_blocks_estimate_exactly_like_render() {
+        use crate::render::graphics::{CellPixels, GraphicsProto, GraphicsSupport};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        app.scrollback_area = ratatui::layout::Rect::new(3, 0, 80, 24);
+        let text = "结论如下：\n\n| 项 | 耗时 | 内存 |\n|---|---|---|\n| a | 10 ms | 2 MiB |\n| b | 20 ms | 4 MiB |\n\n仅供参考。";
+        app.push_block(Block::Assistant { text: text.into() });
+
+        let heights = |app: &App| {
+            (
+                estimate_entry_height_at(app, 0, width),
+                render_entry(0, &app.blocks[0], app, width, true)
+                    .lines
+                    .len(),
+            )
+        };
+        let (estimate, rendered) = heights(&app);
+        assert_eq!(estimate, rendered, "表格块：估算与渲染必须同源");
+        assert!(
+            rendered > wrapped_rows(text, usize::from(width)),
+            "表格实际比折行近似更高（边框行）"
+        );
+
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        });
+        let (estimate, rendered) = heights(&app);
+        assert_eq!(estimate, rendered, "支持图形时（多出入侵按钮行）也必须同源");
+
+        app.toggle_table_chart(0, 0);
+        assert!(app.blocks[0].table_chart(0).is_some());
+        let (estimate, rendered) = heights(&app);
+        assert_eq!(estimate, rendered, "切换成图表后（占位行）也必须同源");
+    }
+
+    /// 绘制登记：表格入口的列区间等于按钮宽度；切换后占位区落在正文列上。
+    #[test]
+    fn paint_registers_entry_hits_and_chart_slots() {
+        use crate::render::graphics::{CellPixels, GraphicsProto, GraphicsSupport};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        });
+        app.push_block(Block::Assistant {
+            // 两个同量纲、同单位的测量列 → 分组条形图（图例 + 2 类别 × 2 系列 + 轴）
+            text: "| 项 | 读 | 写 |\n|---|---|---|\n| a | 10 | 20 |\n| b | 30 | 40 |".into(),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .expect("首帧绘制成功");
+
+        let hit = *app.chart_hits.first().expect("表格下应有入口命中");
+        assert_eq!(hit.entry, 0);
+        assert_eq!(hit.table, 0);
+        assert_eq!(hit.w as usize, str_width("▸ 可视化图表"));
+        assert!(
+            hit.x >= app.scrollback_area.x + super::PROSE_INDENT as u16,
+            "按钮在正文列上"
+        );
+        assert!(app.chart_slots.is_empty(), "表格形态没有位图槽位");
+
+        app.toggle_table_chart(0, 0);
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .expect("切换后绘制成功");
+        assert!(
+            app.chart_hits
+                .iter()
+                .all(|hit| hit.w as usize == str_width("▾ 还原表格")),
+            "按钮变成还原"
+        );
+        let slot = *app.chart_slots.first().expect("图表应登记位图槽位");
+        let kind = app.blocks[0]
+            .table_chart(0)
+            .map(|state| state.spec.kind)
+            .expect("图表态仍在");
+        assert_eq!(
+            slot.cols,
+            app.scrollback_area.width - super::PROSE_INDENT as u16
+        );
+        assert_eq!(slot.x, app.scrollback_area.x + super::PROSE_INDENT as u16);
+        assert_eq!(
+            kind,
+            moc_core::chart::ChartKind::Grouped,
+            "两个同量纲测量列应画成分组条形图"
+        );
+        assert_eq!(slot.rows, 6, "图例 + 2 类别 × 2 系列 + 轴");
+        assert!(
+            slot.y + slot.rows <= app.scrollback_area.y + app.scrollback_area.height,
+            "槽位必须整块落在视口内"
+        );
+    }
+
     /// M25：懒块的估算高度与渲染同规则。
     ///
     /// 估算按全文计高（工具结果 2000 行即 2000 行、折叠态也按展开算）时，滚动范围、
@@ -1773,7 +2060,9 @@ mod tests {
         });
 
         let rendered = |app: &App, index: usize| {
-            render_entry(index, &app.blocks[index], app, width, index == 0).len()
+            render_entry(index, &app.blocks[index], app, width, index == 0)
+                .lines
+                .len()
         };
         for index in 0..app.blocks.len() {
             assert_eq!(
@@ -1886,13 +2175,13 @@ mod tests {
         };
 
         app.thinking_detail = DetailLevel::Hidden;
-        let hidden = render_entry(0, &app.blocks[0], &app, width, true);
+        let hidden = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(hidden.len(), 2, "隐藏档 = 标题行 + 留白");
         assert!(text_of(&hidden).contains("ctrl+t 展开"));
         assert!(!text_of(&hidden).contains("思考第"));
 
         app.thinking_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true);
+        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(brief.len(), 2 + BRIEF_THINKING_ROWS, "简略档 = 末尾 4 行");
         let brief_text = text_of(&brief);
         assert!(
@@ -1902,7 +2191,7 @@ mod tests {
         assert_eq!(brief_text.matches("思考第").count(), BRIEF_THINKING_ROWS);
 
         app.thinking_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true);
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(full.len(), 2 + 12, "完整档 = 全部正文");
         assert!(text_of(&full).contains("思考第 0 行"));
     }
@@ -1950,7 +2239,7 @@ mod tests {
         };
 
         app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true);
+        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
         // 标题 + 命令行 1 + 结果尾 5 + 省略提示 1 + 耗时 1 + 留白 1
         assert_eq!(brief.len(), 10, "简略档行数固定");
         let brief_text = text_of(&brief);
@@ -1973,7 +2262,7 @@ mod tests {
         );
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true);
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(
             full.len(),
             200 + 4,
@@ -1983,7 +2272,7 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
         app.tool_detail = DetailLevel::Hidden;
-        let hidden = render_entry(0, &app.blocks[0], &app, width, true);
+        let hidden = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
         assert!(!text_of(&hidden).contains("line-"), "隐藏档无正文");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
@@ -2027,7 +2316,7 @@ mod tests {
 
         for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
             app.tool_detail = level;
-            let lines = render_entry(0, &app.blocks[0], &app, width, true);
+            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
             assert_eq!(lines.len(), 1, "{level:?} 档 read 只占一行");
             let text = lines[0]
                 .spans
@@ -2058,7 +2347,7 @@ mod tests {
             diff: None,
         });
         app.tool_detail = DetailLevel::Brief;
-        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -2090,6 +2379,7 @@ mod tests {
         });
 
         let text = render_entry(1, &app.blocks[1], &app, 80, true)
+            .lines
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
@@ -2163,7 +2453,7 @@ mod tests {
         };
 
         app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true);
+        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
         // 标题 + 6 行 diff + 省略提示 + 耗时 + 留白
         assert_eq!(brief.len(), 10, "简略档 diff 限 6 行");
         assert_eq!(
@@ -2178,7 +2468,7 @@ mod tests {
         );
         assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true);
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(
             full.len(),
             total + 3,
@@ -2218,7 +2508,7 @@ mod tests {
         let axis = || DetailLevel::Brief;
 
         // 默认档位（简略）：预览 3 行 + 省略提示。
-        let preview = render_entry(0, &app.blocks[0], &app, width, true);
+        let preview = render_entry(0, &app.blocks[0], &app, width, true).lines;
         let text = text_of(&preview);
         assert!(text.contains("IRC ◀ 探查者"), "标题必须标明来源：{text}");
         assert!(text.contains("已注入"), "标题必须标出投递结果：{text}");
@@ -2233,7 +2523,7 @@ mod tests {
 
         // 点一次到完整：全文，无省略提示。
         app.blocks[0].toggle_level(axis());
-        let expanded = render_entry(0, &app.blocks[0], &app, width, true);
+        let expanded = render_entry(0, &app.blocks[0], &app, width, true).lines;
         let text = text_of(&expanded);
         assert!(text.contains("第 5 行消息"));
         assert!(!text.contains("还有"));
@@ -2249,7 +2539,7 @@ mod tests {
             app.blocks[0].level_override, None,
             "目标与层档位相同时不留覆盖"
         );
-        let back = render_entry(0, &app.blocks[0], &app, width, true);
+        let back = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
             back.len(),
@@ -2264,7 +2554,7 @@ mod tests {
             true,
             DetailLevel::Hidden,
         );
-        assert_eq!(hidden.len(), 2, "隐藏档只剩标题行与尾随留白");
+        assert_eq!(hidden.lines.len(), 2, "隐藏档只剩标题行与尾随留白");
     }
 
     /// 发送侧 IRC 卡片：广播回执逐行展开，摘要给出总量。
@@ -2304,7 +2594,7 @@ mod tests {
             duration_ms: Some(3),
             diff: None,
         });
-        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -2356,7 +2646,7 @@ mod tests {
                 },
             ],
         );
-        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -2398,7 +2688,7 @@ mod tests {
             duration_ms: Some(1_100),
             diff: None,
         });
-        let lines = render_entry(0, &app.blocks[0], &app, width, true);
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())

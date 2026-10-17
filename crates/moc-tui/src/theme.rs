@@ -113,6 +113,47 @@ pub struct Theme {
     pub chart_8: Color,
 }
 
+/// 图表位图用的原始 RGB 调色板。
+///
+/// 图片永远是 24 位真彩色（终端不对像素做调色板量化），因此它**不能**从
+/// [`Theme`] 里量化后的 `Color` 反推——256 色/16 色终端下 RGB 已经丢了。
+/// 两个视图来自同一份字面量（[`define_theme!`] 一次展开两遍），改主题只需
+/// 改一处，不会漂移。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawPalette {
+    /// 图表系列配色，与 [`Theme::chart`] 同序。
+    pub chart: [[u8; 3]; Theme::CHART_LEN],
+    /// 画布底色（与内容区底色一致，图片边界隐形）。
+    pub bg_base: [u8; 3],
+    /// 面板底色（进度轨道、热力图空格）。
+    pub bg_panel: [u8; 3],
+    pub text_primary: [u8; 3],
+    pub text_secondary: [u8; 3],
+    pub gray_dim: [u8; 3],
+    pub border_subtle: [u8; 3],
+    pub accent_success: [u8; 3],
+    pub accent_warning: [u8; 3],
+    pub accent_error: [u8; 3],
+}
+
+impl RawPalette {
+    /// 全零初始值：`define_theme!` 展开时按字段名逐项填充。
+    const fn empty() -> Self {
+        Self {
+            chart: [[0; 3]; Theme::CHART_LEN],
+            bg_base: [0; 3],
+            bg_panel: [0; 3],
+            text_primary: [0; 3],
+            text_secondary: [0; 3],
+            gray_dim: [0; 3],
+            border_subtle: [0; 3],
+            accent_success: [0; 3],
+            accent_warning: [0; 3],
+            accent_error: [0; 3],
+        }
+    }
+}
+
 macro_rules! define_theme {
     (
         $( $field:ident : ($r:expr, $g:expr, $b:expr) , )+
@@ -124,7 +165,77 @@ macro_rules! define_theme {
                     $( $field: rgb_to_color(rgb($r, $g, $b), level), )+
                 }
             }
+
+            /// 图表位图用的真彩色调色板（与 `resolved` 同源字面量）。
+            pub fn raw(&self) -> &'static RawPalette {
+                &RAW_PALETTE
+            }
         }
+
+        /// 真彩色调色板：`define_theme!` 的字段表展开成同名赋值。
+        const RAW_PALETTE: RawPalette = {
+            let mut raw = RawPalette::empty();
+            $( raw_palette_field!(raw, $field, ($r, $g, $b)); )+
+            raw
+        };
+    };
+}
+
+/// 把 `define_theme!` 里的一个槽位写进 [`RawPalette`]：图片用不到的槽位直接丢弃。
+macro_rules! raw_palette_field {
+    ($raw:ident, bg_base, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.bg_base = [$r, $g, $b];
+    };
+    ($raw:ident, bg_panel, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.bg_panel = [$r, $g, $b];
+    };
+    ($raw:ident, text_primary, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.text_primary = [$r, $g, $b];
+    };
+    ($raw:ident, text_secondary, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.text_secondary = [$r, $g, $b];
+    };
+    ($raw:ident, gray_dim, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.gray_dim = [$r, $g, $b];
+    };
+    ($raw:ident, border_subtle, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.border_subtle = [$r, $g, $b];
+    };
+    ($raw:ident, accent_success, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.accent_success = [$r, $g, $b];
+    };
+    ($raw:ident, accent_warning, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.accent_warning = [$r, $g, $b];
+    };
+    ($raw:ident, accent_error, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.accent_error = [$r, $g, $b];
+    };
+    ($raw:ident, chart_1, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[0] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_2, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[1] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_3, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[2] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_4, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[3] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_5, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[4] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_6, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[5] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_7, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[6] = [$r, $g, $b];
+    };
+    ($raw:ident, chart_8, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.chart[7] = [$r, $g, $b];
+    };
+    ($raw:ident, $other:ident, ($r:expr, $g:expr, $b:expr)) => {
+        let _ = ($r, $g, $b);
     };
 }
 
@@ -347,5 +458,27 @@ mod tests {
     fn gray_is_quantized_to_grayscale_ramp() {
         let gray = nearest_indexed(rgb(0x6c, 0x6c, 0x6c));
         assert!((232..=255).contains(&gray), "中性灰应落在 24 级灰阶段");
+    }
+
+    /// 图表用的真彩色调色板与主题字面量同源：抽查关键槽位，并钉住系列色互不相同
+    /// （图例与分组图只靠颜色区分系列，撞色就等于丢掉一条系列）。
+    #[test]
+    fn raw_palette_tracks_theme_literals() {
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let raw = theme.raw();
+        assert_eq!(raw.bg_base, [0x14, 0x14, 0x14], "画布底色 = 内容区底色");
+        assert_eq!(raw.chart[0], [0x7a, 0xa2, 0xf7]);
+        assert_eq!(raw.chart[7], [0xff, 0x9e, 0x64]);
+        assert_eq!(raw.text_primary, [0xe1, 0xe1, 0xe1]);
+        assert_eq!(raw.accent_success, [0x9e, 0xce, 0x6a]);
+        // 真彩色下两套视图必须同值（raw 只是同一批字面量的另一份展开）
+        assert_eq!(theme.chart(3), Color::Rgb(0x9e, 0xce, 0x6a));
+        let mut seen = raw.chart;
+        seen.sort();
+        assert!(
+            seen.windows(2).all(|pair| pair[0] != pair[1]),
+            "8 个系列色必须互不相同：{:?}",
+            raw.chart
+        );
     }
 }

@@ -2,20 +2,101 @@
 //!
 //! inline 内容在缓冲区里以「片段序列（文本 + 已合成样式）」积累，段落 /
 //! 标题结束时统一按显示宽度换行产出（续行悬挂缩进）；代码块整块交给
-//! syntect 高亮；表格按内容宽度画全边框盒。样式全部来自主题槽位。
+//! syntect 高亮；表格按内容宽度画全边框盒。
+//!
+//! 顶层表格下方会挂一个可点击入口（`▸ 可视化图表`）：点击后该表格就地换成
+//! 像素图占位行（真正的位图由 `render::graphics` 在帧后贴上），再点
+//! `▾ 还原表格` 换回。入口只在终端支持图形协议时出现。
+
+use moc_core::chart::{self, RawTable};
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::graphics::GraphicsSupport;
 use super::highlight;
 use super::wrap::str_width;
 use crate::theme::Theme;
+use crate::transcript::TableChartState;
 
-/// 渲染 markdown 文本为终端行。
+/// 表格入口的两种形态：展开成图表 / 还原成表格。
+const ENTRY_CHART: &str = "▸ 可视化图表";
+const ENTRY_TABLE: &str = "▾ 还原表格";
+
+/// 渲染 markdown 文本为终端行（无表格视图态：表格永远画成表格）。
 pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    render_markdown_with(
+        source,
+        width,
+        theme,
+        TableViews {
+            charts: &[],
+            graphics: None,
+            streaming: false,
+        },
+    )
+    .lines
+}
+
+/// 表格视图态：由转写层注入（进程内视图态），渲染层只读。
+pub struct TableViews<'a> {
+    /// 每张顶层表格的图表态（已切换则 `Some`），下标与渲染顺序一致。
+    pub charts: &'a [Option<TableChartState>],
+    /// 终端图形能力；`None` 时表格下不出入口（不支持的终端不该看到死按钮）。
+    pub graphics: Option<GraphicsSupport>,
+    /// 该块是否仍在流式接收：末尾表格的入口等它落地再出现。
+    pub streaming: bool,
+}
+
+/// 一张顶层表格在渲染结果里的落位信息（命中表与图像槽位登记用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableSlot {
+    /// 顶层表格序号（从 0 起，与 [`RawTable`] 顺序一致）。
+    pub table: usize,
+    /// 入口按钮所在行与列区间。
+    pub button: Option<ButtonSpan>,
+    /// 已切换成图表时的占位行区间。
+    pub chart: Option<ChartPlacement>,
+}
+
+/// 入口按钮的行与列区间（屏幕坐标由转写层补上滚动区原点和正文缩进）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonSpan {
+    pub row: usize,
+    pub x: u16,
+    pub w: u16,
+}
+
+/// 图表占位区：终端里留出 `rows` 行空白，位图按 `cols × cell` 贴在上面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChartPlacement {
+    pub row: usize,
+    pub cols: u16,
+    pub rows: u16,
+    /// 位图像素尺寸，供编码器与命中判定对齐。
+    pub px: (u32, u32),
+}
+
+/// 一次渲染的完整结果。
+pub struct Rendered {
+    pub lines: Vec<Line<'static>>,
+    /// 顶层表格的落位信息（顺序与 [`Rendered::raw`] 一致）。
+    pub tables: Vec<TableSlot>,
+    /// 顶层表格的纯文本快照：供「点击入口时就地分析」复用同一份解析结果。
+    pub raw: Vec<RawTable>,
+}
+
+/// 渲染 markdown 文本，并带上表格视图态。
+pub fn render_markdown_with(
+    source: &str,
+    width: usize,
+    theme: &Theme,
+    views: TableViews<'_>,
+) -> Rendered {
     let mut renderer = MdRenderer {
         theme,
+        views,
         width: width.max(8),
         out: Vec::new(),
         inline: Vec::new(),
@@ -35,15 +116,18 @@ pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'s
         table_cell: Vec::new(),
         in_table_head: false,
         in_table_cell: false,
+        table_index: 0,
+        buttons: Vec::new(),
+        tails: false,
+        slots: Vec::new(),
+        raw: Vec::new(),
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     for event in Parser::new_ext(source, options) {
         renderer.handle(event);
     }
-    // 流式渲染时未闭合的段落兜底 flush
-    renderer.flush_inline();
-    renderer.out
+    renderer.finish()
 }
 
 /// inline 片段：文本 + 已合成的样式。
@@ -67,6 +151,7 @@ struct TableAcc {
 
 struct MdRenderer<'a> {
     theme: &'a Theme,
+    views: TableViews<'a>,
     width: usize,
     out: Vec<Line<'static>>,
     inline: Vec<Run>,
@@ -88,6 +173,16 @@ struct MdRenderer<'a> {
     table_cell: Vec<Run>,
     in_table_head: bool,
     in_table_cell: bool,
+    /// 顶层表格序号（引用块 / 列表内嵌表格不计数，与渲染顺序一致）。
+    table_index: usize,
+    /// 待落定的入口按钮：`(表格序号, 插入前行号, 是否为图表态)`。
+    buttons: Vec<(usize, usize, bool)>,
+    /// 最后一张表格之后是否已经出现别的块（流式尾部判定）。
+    tails: bool,
+    /// 表格落位信息（顺序与表格序号一致）。
+    slots: Vec<TableSlot>,
+    /// 表格纯文本快照，供点击入口时就地分析。
+    raw: Vec<RawTable>,
 }
 
 impl<'a> MdRenderer<'a> {
@@ -155,24 +250,28 @@ impl<'a> MdRenderer<'a> {
         match tag {
             Tag::Paragraph => {
                 self.flush_inline();
+                self.block_boundary();
                 if self.list_stack.is_empty() && self.quote_depth == 0 {
                     self.ensure_block_gap();
                 }
             }
             Tag::Heading { level, .. } => {
                 self.flush_inline();
+                self.block_boundary();
                 self.ensure_block_gap();
                 self.heading = Some(level);
             }
             Tag::BlockQuote(_) => {
                 self.flush_inline();
                 if self.quote_depth == 0 {
+                    self.block_boundary();
                     self.ensure_block_gap();
                 }
                 self.quote_depth += 1;
             }
             Tag::CodeBlock(kind) => {
                 self.flush_inline();
+                self.block_boundary();
                 self.ensure_block_gap();
                 // 缩进代码块没有 info 串，代码块判定必须与 info 分开记。
                 self.in_code = true;
@@ -185,6 +284,7 @@ impl<'a> MdRenderer<'a> {
             Tag::List(start) => {
                 self.flush_inline();
                 if self.list_stack.is_empty() {
+                    self.block_boundary();
                     self.ensure_block_gap();
                 }
                 self.list_stack.push(ListFrame {
@@ -209,6 +309,7 @@ impl<'a> MdRenderer<'a> {
             }
             Tag::Table(_) => {
                 self.flush_inline();
+                self.block_boundary();
                 self.ensure_block_gap();
                 self.table = Some(TableAcc::default());
             }
@@ -271,7 +372,7 @@ impl<'a> MdRenderer<'a> {
             TagEnd::Table => {
                 self.flush_inline();
                 if let Some(table) = self.table.take() {
-                    self.render_table(table);
+                    self.finish_table(table);
                 }
             }
             TagEnd::TableHead => self.in_table_head = false,
@@ -398,6 +499,147 @@ impl<'a> MdRenderer<'a> {
             return;
         }
         runs.push(run);
+    }
+
+    /// 块级事件分界：最后一张表格之后出现了别的内容，它的入口就可以落定了。
+    fn block_boundary(&mut self) {
+        if !self.buttons.is_empty() {
+            self.tails = true;
+        }
+    }
+
+    /// 正文可用列数（转写层已扣掉正文缩进）。
+    fn cols(&self) -> u16 {
+        u16::try_from(self.width).unwrap_or(u16::MAX)
+    }
+
+    /// 表格收尾：顶层表格可能已被切换成图表，其余照常画成表格并挂入口。
+    fn finish_table(&mut self, table: TableAcc) {
+        if table.header.is_empty() {
+            return;
+        }
+        if self.quote_depth > 0 || !self.list_stack.is_empty() {
+            // 引用块 / 列表内嵌表格不参与图表化：它们没有独立的命中区，
+            // 序号也不与顶层表格对齐。
+            self.render_table(table);
+            return;
+        }
+        let index = self.table_index;
+        self.table_index += 1;
+        // 这张表成了新的「最后一张表格」：它后面还没有别的内容
+        self.tails = false;
+        let raw = raw_table(&table);
+        let charted = self
+            .views
+            .charts
+            .get(index)
+            .and_then(|state| state.as_ref());
+        let layout = charted
+            .zip(self.views.graphics)
+            .and_then(|(state, graphics)| {
+                crate::render::chart::layout(&state.spec, self.cols(), graphics.cell)
+            });
+        if let Some(layout) = layout {
+            let row = self.out.len();
+            let blank = " ".repeat(self.width);
+            self.out.extend(std::iter::repeat_n(
+                Line::from(blank),
+                usize::from(layout.rows),
+            ));
+            self.slots.push(TableSlot {
+                table: index,
+                button: None,
+                chart: Some(ChartPlacement {
+                    row,
+                    cols: layout.cols,
+                    rows: layout.rows,
+                    px: layout.px,
+                }),
+            });
+            self.buttons.push((index, self.out.len(), true));
+            self.raw.push(raw);
+            return;
+        }
+        self.render_table(table);
+        self.slots.push(TableSlot {
+            table: index,
+            button: None,
+            chart: None,
+        });
+        // 入口只在「终端能画像素图 + 格子放得下字 + 这张表确实能图表化」时出现；
+        // 已经切换过图表的表格必须保留还原入口，哪怕当前画不出图。
+        let fits = self.width >= usize::from(crate::render::chart::MIN_COLS)
+            && self
+                .views
+                .graphics
+                .is_some_and(|graphics| crate::render::chart::cell_supported(graphics.cell));
+        let plannable = fits
+            && chart::plan(&chart::analyze(&raw)).is_some_and(|plan| {
+                crate::render::chart::rows_needed(plan.kind, raw.rows.len(), plan.series.len())
+                    <= crate::render::chart::MAX_ROWS
+            });
+        let offers = charted.is_some() || plannable;
+        if offers {
+            // 用户可能马上点入口：后台先把字体解析好，别让第一张图卡在解析上
+            crate::render::chart::warm_fonts();
+            self.buttons
+                .push((index, self.out.len(), charted.is_some()));
+        }
+        self.raw.push(raw);
+    }
+
+    /// 收尾：落定入口按钮并交出渲染结果。
+    ///
+    /// 流式接收期间，末尾表格的入口先不出现——它随时可能被后续 token 顶长，
+    /// 提前落定会让用户点到只画了一半的表格。已经切换成图表的入口不受影响
+    /// （那是用户主动打开的东西，必须随时能关掉）。
+    fn finish(mut self) -> Rendered {
+        self.flush_inline();
+        let open_tail = self.views.streaming
+            && !self.tails
+            && self.buttons.last().is_some_and(|(_, _, chart)| !chart);
+        if open_tail {
+            self.buttons.pop();
+        }
+        let kept: Vec<(usize, usize, bool)> = std::mem::take(&mut self.buttons);
+        // 落定第 k 个入口会让它之后的每一行下移一行：插入行号与图表占位行都按
+        // 同一份偏移修正，绘制与命中才不会错位。
+        for (order, (table, row, chart)) in kept.iter().enumerate() {
+            let label = if *chart { ENTRY_TABLE } else { ENTRY_CHART };
+            let label_width = str_width(label);
+            let x = self.width.saturating_sub(label_width);
+            let line = Line::from(vec![
+                Span::styled(" ".repeat(x), Style::new()),
+                Span::styled(
+                    (*label).to_owned(),
+                    Style::new()
+                        .fg(self.theme.link)
+                        .add_modifier(Modifier::UNDERLINED),
+                ),
+            ]);
+            let row = row + order;
+            self.out.insert(row, line);
+            if let Some(slot) = self.slots.get_mut(*table) {
+                slot.button = Some(ButtonSpan {
+                    row,
+                    x: u16::try_from(x).unwrap_or(u16::MAX),
+                    w: u16::try_from(label_width).unwrap_or(u16::MAX),
+                });
+            }
+        }
+        for slot in &mut self.slots {
+            if let Some(chart) = slot.chart.as_mut() {
+                chart.row += kept
+                    .iter()
+                    .take_while(|(table, _, _)| *table < slot.table)
+                    .count();
+            }
+        }
+        Rendered {
+            lines: self.out,
+            tables: self.slots,
+            raw: self.raw,
+        }
     }
 
     /// 块级内容之间保留一行视觉间距，避免标题和段落连成一块。
@@ -661,22 +903,97 @@ impl<'a> MdRenderer<'a> {
     }
 }
 
+/// 累积表格 → 纯文本快照。
+///
+/// 走的是同一份去装饰结果（`**x**`、`` `x` ``、链接文字都已还原成可见文本），
+/// 所以「点击入口时做的分析」与「屏幕上看到的表格」永远一致；行内单元格数量
+/// 不足时补空串，列数以表头与最宽行为准。
+fn raw_table(table: &TableAcc) -> RawTable {
+    let column_count = table
+        .header
+        .len()
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    let cell = |runs: &[Run]| -> String {
+        runs.iter()
+            .map(|run| run.text.as_str())
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    };
+    let row = |cells: &[Vec<Run>]| -> Vec<String> {
+        (0..column_count)
+            .map(|index| cells.get(index).map_or_else(String::new, |runs| cell(runs)))
+            .collect()
+    };
+    RawTable {
+        header: row(&table.header),
+        rows: table.rows.iter().map(|cells| row(cells)).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::render::graphics::{CellPixels, GraphicsProto};
     use crate::theme::{ColorLevel, Theme};
 
-    fn lines(source: &str, width: usize) -> Vec<String> {
+    /// 一张能图表化的表：两行测量值 → 分组条形图（6 行 + 入口）。
+    const NUMERIC_TABLE: &str =
+        "| 项 | 耗时 | 内存 |\n|---|---|---|\n| a | 10 ms | 2 MiB |\n| b | 20 ms | 4 MiB |";
+
+    fn graphics() -> Option<GraphicsSupport> {
+        Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        })
+    }
+
+    fn render(source: &str, width: usize, views: TableViews<'_>) -> Rendered {
         let theme = Theme::resolved(ColorLevel::TrueColor);
-        render_markdown(source, width, &theme)
+        render_markdown_with(source, width, &theme, views)
+    }
+
+    fn text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
             .iter()
             .map(|line| {
                 line.spans
                     .iter()
-                    .map(|span| span.content.to_string())
-                    .collect::<String>()
+                    .map(|span| span.content.as_ref())
+                    .collect()
             })
             .collect()
+    }
+
+    /// 图表视图态：按当前渲染出的纯文本快照就地分析。
+    fn chart_state(source: &str, table: usize, image_id: u32) -> TableChartState {
+        let rendered = render(
+            source,
+            77,
+            TableViews {
+                charts: &[],
+                graphics: None,
+                streaming: false,
+            },
+        );
+        let raw = &rendered.raw[table];
+        let analysis = chart::analyze(raw);
+        let plan = chart::plan(&analysis).expect("数值表必须能规划出图型");
+        TableChartState {
+            spec: chart::build(&analysis, &plan),
+            payload: None,
+            px: (0, 0),
+            image_id,
+        }
+    }
+
+    fn lines(source: &str, width: usize) -> Vec<String> {
+        text(&render_markdown(
+            source,
+            width,
+            &Theme::resolved(ColorLevel::TrueColor),
+        ))
     }
 
     #[test]
@@ -783,5 +1100,156 @@ mod tests {
             vec!["工具用途", " bash 执行 shell 命令"]
         );
         assert_eq!(lines("前缀`bash`后缀", 40), vec!["前缀 bash 后缀"]);
+    }
+
+    /// 入口只在支持图形协议时出现；按钮右对齐且命中区间等于文字宽度。
+    #[test]
+    fn table_entry_appears_only_with_graphics_support() {
+        let with = render(
+            NUMERIC_TABLE,
+            80,
+            TableViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+            },
+        );
+        assert_eq!(with.tables.len(), 1, "一张顶层表格");
+        let slot = with.tables[0];
+        let button = slot.button.expect("支持图形时应有入口");
+        let width = str_width(ENTRY_CHART);
+        assert_eq!(button.w as usize, width);
+        assert_eq!(button.x as usize, 80 - width, "右对齐");
+        assert_eq!(
+            text(&with.lines)[button.row],
+            format!("{}▸ 可视化图表", " ".repeat(80 - width)),
+        );
+
+        let without = render(
+            NUMERIC_TABLE,
+            80,
+            TableViews {
+                charts: &[],
+                graphics: None,
+                streaming: false,
+            },
+        );
+        assert!(without.tables[0].button.is_none(), "无图形能力时不出入口");
+        assert!(
+            text(&without.lines).iter().any(|line| line.contains('┌')),
+            "表格照常画"
+        );
+    }
+
+    /// 流式尾部：末尾表格先不落定入口，其后已有正文的表格照常落定。
+    #[test]
+    fn streaming_tail_table_defers_its_entry() {
+        let source = format!("{NUMERIC_TABLE}\n\n正文\n\n{NUMERIC_TABLE}");
+        let streamed = render(
+            &source,
+            80,
+            TableViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: true,
+            },
+        );
+        assert_eq!(streamed.tables.len(), 2);
+        assert!(streamed.tables[0].button.is_some(), "后面的表格已落地");
+        assert!(
+            streamed.tables[1].button.is_none(),
+            "末尾表格还在长，入口等收尾"
+        );
+
+        let settled = render(
+            &source,
+            80,
+            TableViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+            },
+        );
+        assert!(settled.tables[1].button.is_some(), "收尾后入口出现");
+    }
+
+    /// 已切换成图表：表格被占位行取代，入口变成还原，占位区落在按钮之前。
+    #[test]
+    fn chart_state_replaces_table_with_placeholder_rows() {
+        let state = chart_state(NUMERIC_TABLE, 0, 7);
+        let charts = [Some(state)];
+        let rendered = render(
+            NUMERIC_TABLE,
+            80,
+            TableViews {
+                charts: &charts,
+                graphics: graphics(),
+                streaming: false,
+            },
+        );
+        let out = text(&rendered.lines);
+        assert!(
+            !out.iter().any(|line| line.contains('┌')),
+            "不应再画表格边框：{out:?}"
+        );
+        let slot = rendered.tables[0];
+        let chart = slot.chart.expect("应有图表占位区");
+        let button = slot.button.expect("应有还原入口");
+        assert_eq!(chart.cols, 80, "占满正文宽度");
+        assert_eq!(chart.px, (80 * 8, u32::from(chart.rows) * 18));
+        assert_eq!(
+            button.row,
+            chart.row + usize::from(chart.rows),
+            "按钮紧跟占位区"
+        );
+        assert!(
+            out[usize::from(chart.rows)].contains("▾ 还原表格"),
+            "占位区之后是还原入口：{out:?}"
+        );
+        assert!(
+            out[chart.row..chart.row + usize::from(chart.rows)]
+                .iter()
+                .all(|line| line.trim().is_empty()),
+            "占位行必须是空白"
+        );
+    }
+
+    /// 纯文本快照与屏幕上的单元格一致：装饰标记不会漏进分析（`**7648**` → `7648`）。
+    #[test]
+    fn raw_snapshot_matches_visible_cells() {
+        let source = "| 项 | 值 |\n|---|---|\n| **a** | `7648` |\n| [b](https://x) | 12 |";
+        let rendered = render(
+            source,
+            80,
+            TableViews {
+                charts: &[],
+                graphics: None,
+                streaming: false,
+            },
+        );
+        let raw = &rendered.raw[0];
+        assert_eq!(raw.header, vec!["项".to_owned(), "值".to_owned()]);
+        assert_eq!(raw.rows[0], vec!["a".to_owned(), "7648".to_owned()]);
+        assert_eq!(raw.rows[1], vec!["b".to_owned(), "12".to_owned()]);
+    }
+
+    /// 引用块 / 列表内嵌的表格不参与图表化：不进序号、不出入口，也不影响顶层序号。
+    #[test]
+    fn nested_tables_stay_out_of_the_chart_index() {
+        let source =
+            format!("> | 项 | 值 |\n> |---|---|---|\n> | a | 1 |\n> | b | 2 |\n\n{NUMERIC_TABLE}");
+        let rendered = render(
+            &source,
+            80,
+            TableViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+            },
+        );
+        assert_eq!(rendered.raw.len(), 1, "只有顶层表格进入快照");
+        assert_eq!(rendered.tables.len(), 1);
+        assert_eq!(rendered.tables[0].table, 0, "顶层序号从 0 起");
+        assert!(rendered.tables[0].button.is_some());
     }
 }

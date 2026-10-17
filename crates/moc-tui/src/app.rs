@@ -16,7 +16,9 @@ pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10)
 use crate::modal::Modal;
 use crate::protocol::AppEvent;
 use crate::theme::Theme;
-use crate::transcript::{Block, DetailLevel, Entry, ToolCallBlock, ToolCallFinish, ToolCallStart};
+use crate::transcript::{
+    Block, DetailLevel, Entry, TableChartState, ToolCallBlock, ToolCallFinish, ToolCallStart,
+};
 use crate::widgets::completion::CompletionState;
 use crate::widgets::prompt::PromptState;
 
@@ -135,6 +137,23 @@ pub struct App {
     pub mouse_hits: Vec<(usize, u16, u16)>,
     /// 视口行文本（`(行, 文本)`，选择复制用）。
     pub paint_lines: Vec<(u16, String)>,
+    /// 终端图形能力（启动探测一次）；`None` = 本终端不出图表入口。
+    pub graphics: Option<crate::render::graphics::GraphicsSupport>,
+    /// 本帧要贴的位图槽位（`ScrollbackView::paint` 填充，帧后由
+    /// [`crate::render::graphics::emit`] 消费）。
+    pub chart_slots: Vec<ChartSlot>,
+    /// 本帧可点击的表格入口（`paint` 填充，命中判定读它）。
+    pub chart_hits: Vec<ChartHit>,
+    /// 已贴到终端上的位图（kitty 依靠它删旧放置，其余协议靠它跳过多余重发）。
+    pub chart_placed: Vec<Placed>,
+    /// 上一帧是否被浮层覆盖：切换瞬间整批重放，避免残影或盖住浮层。
+    pub chart_covered: bool,
+    /// 浮层结束后需要整批重放（浮层期间图像被覆盖或擦除，位置指纹已不可信）。
+    pub chart_resume: bool,
+    /// 鼠标悬停的表格入口 `(块下标, 表格序号)`。
+    pub hover_chart: Option<(usize, usize)>,
+    /// 下一个 kitty 图像 ID（进程内自增，永不复用）。
+    pub next_image_id: u32,
     /// 鼠标拖选区（屏幕坐标 (列, 行) 起点 / 终点）。
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
@@ -205,6 +224,49 @@ pub struct ConfigWrite {
     pub document: serde_json::Value,
     /// 上一次成功写入后的文件版本；写入回执会刷新它。
     pub revision: String,
+}
+
+/// 一帧里要贴的一张位图：屏幕格坐标 + 内容指纹。
+///
+/// `hash` 覆盖占位行文本与视图版本：行内容或全局视图变了就重发，
+/// 纯粹的光标移动/滚动不改指纹，靠 `x`/`y` 变化触发重贴。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChartSlot {
+    /// 所在转写块下标。
+    pub entry: usize,
+    /// 该块内的顶层表格序号。
+    pub table: usize,
+    /// 屏幕列（滚动区原点 + 正文缩进）。
+    pub x: u16,
+    /// 屏幕行。
+    pub y: u16,
+    pub cols: u16,
+    pub rows: u16,
+    /// 位图像素尺寸。
+    pub px: (u32, u32),
+    pub hash: u64,
+}
+
+/// 一个可点击的表格入口：整行命中，列区间限定在按钮文字上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChartHit {
+    pub entry: usize,
+    pub table: usize,
+    pub row: u16,
+    pub x: u16,
+    pub w: u16,
+}
+
+/// 已经贴到终端上的位图。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    pub image_id: u32,
+    pub x: u16,
+    pub y: u16,
+    pub cols: u16,
+    pub rows: u16,
+    pub hash: u64,
+    pub proto: crate::render::graphics::GraphicsProto,
 }
 
 /// 聚焦中的子代理：主 TUI 整体切到它的会话。
@@ -281,6 +343,14 @@ impl App {
             scrollback_area: Rect::default(),
             mouse_hits: Vec::new(),
             paint_lines: Vec::new(),
+            graphics: None,
+            chart_slots: Vec::new(),
+            chart_hits: Vec::new(),
+            chart_placed: Vec::new(),
+            chart_covered: false,
+            chart_resume: false,
+            hover_chart: None,
+            next_image_id: 1,
             selection: None,
             pending_click: None,
             ctrl_c_pending: None,
@@ -580,6 +650,74 @@ impl App {
     /// 追加一条实时块（助手正文 / 思维链 / 工具调用）：带落地时刻。
     pub fn push_block(&mut self, block: Block) {
         self.blocks.push(Entry::timed(block));
+    }
+
+    /// 切换一张表格的图表形态：已展开则还原成表格，否则就地分析后展开。
+    ///
+    /// 分析与渲染共用同一次 markdown 解析（`render_markdown_with` 交出的纯文本
+    /// 快照），因此「屏幕上的表格」与「图表吃到的数据」不会出现两套口径。
+    /// 只处理助手正文的**顶层表格**：引用块 / 列表内嵌表格没有独立命中区。
+    pub fn toggle_table_chart(&mut self, entry: usize, table: usize) {
+        let Some(block) = self.blocks.get(entry) else {
+            return;
+        };
+        if block.table_chart(table).is_some() {
+            if let Some(block) = self.blocks.get_mut(entry) {
+                block.set_table_chart(table, None);
+            }
+            return;
+        }
+        let theme = self.theme;
+        let width = usize::from(self.scrollback_area.width)
+            .saturating_sub(crate::render::PROSE_INDENT)
+            .max(8);
+        let prepared: Result<moc_core::chart::ChartSpec, &'static str> = {
+            let Some(entry_block) = self.blocks.get(entry) else {
+                return;
+            };
+            let Block::Assistant { text } = &entry_block.block else {
+                return;
+            };
+            let rendered = crate::render::markdown::render_markdown_with(
+                text,
+                width,
+                theme,
+                crate::render::markdown::TableViews {
+                    charts: &[],
+                    graphics: None,
+                    streaming: false,
+                },
+            );
+            match rendered.raw.get(table) {
+                None => Err("表格内容已变化，请重试"),
+                Some(raw) => {
+                    let analysis = moc_core::chart::analyze(raw);
+                    moc_core::chart::plan(&analysis)
+                        .map(|plan| moc_core::chart::build(&analysis, &plan))
+                        .ok_or("这张表无法图表化")
+                }
+            }
+        };
+        let spec = match prepared {
+            Ok(spec) => spec,
+            Err(text) => {
+                self.set_notice(text);
+                return;
+            }
+        };
+        let image_id = self.next_image_id;
+        self.next_image_id = self.next_image_id.wrapping_add(1);
+        if let Some(block) = self.blocks.get_mut(entry) {
+            block.set_table_chart(
+                table,
+                Some(TableChartState {
+                    spec,
+                    payload: None,
+                    px: (0, 0),
+                    image_id,
+                }),
+            );
+        }
     }
 
     pub fn start_generation(&mut self) {

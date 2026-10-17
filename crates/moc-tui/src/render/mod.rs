@@ -4,7 +4,9 @@
 //! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝帮助键提示，右＝模型 · 模式）。
 //! 整帧先铺主题底色，滚动区由 [`ScrollbackView`] 按行缓存直写 buffer。
 
+pub mod chart;
 pub mod diff;
+pub mod graphics;
 pub mod highlight;
 pub mod markdown;
 pub mod modal;
@@ -148,15 +150,24 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.scroll_max_offset = window.max_offset;
     app.scroll_offset = window.scroll_offset;
     app.mouse_hits.clear();
+    app.chart_hits.clear();
+    app.chart_slots.clear();
     app.paint_lines.clear();
     let collect_lines = app.selection.is_some() || app.pending_click.is_some();
+    let hover = app.hover_chart;
     view.paint(
         frame.buffer_mut(),
         scroll_area,
         window.skip_rows,
         collect_lines,
-        &mut app.mouse_hits,
-        &mut app.paint_lines,
+        theme,
+        hover,
+        scrollback::PaintSinks {
+            hits: &mut app.mouse_hits,
+            charts: &mut app.chart_hits,
+            slots: &mut app.chart_slots,
+            lines: &mut app.paint_lines,
+        },
     );
     view.trim_outside(window.skip_rows, viewport);
     highlight_selection(frame, app, scroll_area);
@@ -389,7 +400,8 @@ fn prompt_scroll_offset(visual_row: usize, total_rows: usize, visible_rows: usiz
     }
 }
 
-fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
+/// 输入框光标的屏幕坐标（贴图后把光标送回这里）。
+pub(crate) fn prompt_cursor_position(app: &App, area: Rect) -> (u16, u16) {
     let text_width = usize::from(area.width)
         .saturating_sub(2 + PROMPT_PAD + PROMPT_MARKER)
         .max(4);

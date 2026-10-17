@@ -82,6 +82,8 @@ impl TerminalGuard {
             return;
         }
         self.restored = true;
+        // 贴过的位图独立于文本层，必须在离开备用屏之前显式删掉
+        crate::render::graphics::cleanup(&mut std::io::stdout());
         let _ = crossterm::execute!(
             self.terminal.backend_mut(),
             PopKeyboardEnhancementFlags,
