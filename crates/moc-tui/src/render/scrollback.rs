@@ -1903,6 +1903,14 @@ mod tests {
         let text = "结论如下：\n\n| 项 | 耗时 | 内存 |\n|---|---|---|\n| a | 10 ms | 2 MiB |\n| b | 20 ms | 4 MiB |\n\n仅供参考。";
         app.push_block(Block::Assistant { text: text.into() });
 
+        let rendered = render_entry(0, &app.blocks[0], &app, width, true);
+        assert!(
+            rendered
+                .lines
+                .iter()
+                .all(|line| line.width() <= usize::from(width)),
+            "表格行不得超出转写区宽度"
+        );
         let heights = |app: &App| {
             (
                 estimate_entry_height_at(app, 0, width),

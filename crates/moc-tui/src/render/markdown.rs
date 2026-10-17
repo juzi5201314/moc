@@ -2,7 +2,7 @@
 //!
 //! inline 内容在缓冲区里以「片段序列（文本 + 已合成样式）」积累，段落 /
 //! 标题结束时统一按显示宽度换行产出（续行悬挂缩进）；代码块整块交给
-//! syntect 高亮；表格按内容宽度画全边框盒。
+//! syntect 高亮；表格按内容定列宽，单元格折行，表头/行之间用细线分隔。
 //!
 //! 顶层表格下方会挂一个可点击入口（`▸ 可视化图表`）：点击后该表格就地换成
 //! 像素图占位行（真正的位图由 `render::graphics` 在帧后贴上），再点
@@ -16,13 +16,29 @@ use ratatui::text::{Line, Span};
 
 use super::graphics::GraphicsSupport;
 use super::highlight;
-use super::wrap::str_width;
+use super::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
 use crate::transcript::TableChartState;
 
 /// 表格入口的两种形态：展开成图表 / 还原成表格。
 const ENTRY_CHART: &str = "▸ 可视化图表";
 const ENTRY_TABLE: &str = "▾ 还原表格";
+
+/// 表格列间距（格）。
+const TABLE_COLUMN_GAP: usize = 2;
+
+/// 列宽收缩时的可读下限（格）。
+const TABLE_COLUMN_FLOOR: usize = 4;
+
+/// 不可断词宽度的上限（格）：超长 token 允许硬折行，不能独占整列。
+const TABLE_COLUMN_TOKEN_MAX: usize = 12;
+
+/// 单列宽度上限：正文宽度的 30%，对齐 DSH Web 的 30vw。
+const TABLE_COLUMN_CAP_PERCENT: usize = 30;
+
+/// 单列宽度上限的下限与上限（格）。
+const TABLE_COLUMN_CAP_FLOOR: usize = 12;
+const TABLE_COLUMN_CAP_CEILING: usize = 40;
 
 /// 渲染 markdown 文本为终端行（无表格视图态：表格永远画成表格）。
 pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -771,7 +787,10 @@ impl<'a> MdRenderer<'a> {
         self.out.push(Line::from(String::new()));
     }
 
-    /// 表格：内容宽度定列宽（整体不超过可用宽度），画全边框盒。
+    /// 表格：内容定列宽，单元格按列折行；表头与行之间用细线分隔。
+    ///
+    /// 超宽时优先把列压到可读下限再折行；连两格一列都放不下时，退化为
+    /// 逐字段列表，保证任何宽度下都不丢单元格内容。
     fn render_table(&mut self, table: TableAcc) {
         if table.header.is_empty() {
             return;
@@ -783,124 +802,236 @@ impl<'a> MdRenderer<'a> {
         if column_count == 0 {
             return;
         }
-        let mut widths = vec![0usize; column_count];
-        let measure = |cells: &[Vec<Run>], widths: &mut [usize]| {
-            for (index, cell) in cells.iter().enumerate() {
-                let text: String = cell.iter().map(|run| run.text.as_str()).collect();
-                widths[index] = widths[index].max(str_width(&text));
-            }
+        let (natural, longest_word, has_wide) = table_metrics(&table, column_count);
+        let Some((widths, gap)) = table_widths(self.width, &natural, &longest_word, &has_wide)
+        else {
+            self.out
+                .extend(stacked_table_lines(&table, self.width, self.theme));
+            return;
         };
-        measure(&table.header, &mut widths);
+        let table_width: usize =
+            widths.iter().sum::<usize>() + gap.saturating_mul(column_count - 1);
+        self.out.extend(table_row_lines(
+            &table.header,
+            &widths,
+            gap,
+            self.theme,
+            true,
+        ));
+        self.out.push(table_rule(table_width, self.theme));
         for row in &table.rows {
-            measure(row, &mut widths);
+            self.out
+                .extend(table_row_lines(row, &widths, gap, self.theme, false));
+            self.out.push(table_rule(table_width, self.theme));
         }
-        // 整体超宽时按比例收缩；边框占用的列数必须从总宽度中完整扣除。
-        let border_width = column_count.saturating_mul(5).saturating_add(1);
-        let available = self.width.saturating_sub(border_width);
-        let total: usize = widths.iter().sum();
-        if total > available {
-            let original = widths.clone();
-            let minimum = usize::from(available >= column_count);
-            let remaining = available.saturating_sub(minimum * column_count);
-            for (index, width) in original.iter().enumerate() {
-                widths[index] = minimum + remaining.saturating_mul(*width) / total.max(1);
-            }
-            let assigned: usize = widths.iter().sum();
-            for index in 0..available.saturating_sub(assigned) {
-                widths[index % column_count] += 1;
-            }
-        }
-        let truncate = |text: &str, max: usize| -> String {
-            let full_width = str_width(text);
-            if full_width <= max {
-                return text.to_owned();
-            }
-            if max == 0 {
-                return String::new();
-            }
-            let mut out = String::new();
-            let mut used = 0usize;
-            for ch in text.chars() {
-                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if used + ch_width + 1 > max {
-                    break;
-                }
-                out.push(ch);
-                used += ch_width;
-            }
-            out.push('…');
-            out
-        };
-        let cell_text = |cells: &[Vec<Run>], index: usize| -> String {
-            cells
-                .get(index)
-                .map(|cell| cell.iter().map(|run| run.text.as_str()).collect())
-                .unwrap_or_default()
-        };
-        let render_cell = |text: &str, width: usize, bold: bool| -> Vec<Span<'static>> {
-            let shown = truncate(text, width);
-            let shown_width = str_width(&shown);
-            let mut style = Style::new().fg(self.theme.text_primary);
-            if bold {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            vec![
-                Span::styled("  ".to_owned(), style),
-                Span::styled(shown, style),
-                Span::styled(" ".repeat(width.saturating_sub(shown_width) + 2), style),
-            ]
-        };
-        let render_row = |cells: &[Vec<Run>], bold: bool| -> Line<'static> {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            for (index, width) in widths.iter().enumerate() {
-                spans.push(Span::styled(
-                    "│".to_owned(),
-                    Style::new().fg(self.theme.border_subtle),
-                ));
-                spans.extend(render_cell(&cell_text(cells, index), *width, bold));
-            }
-            spans.push(Span::styled(
-                "│".to_owned(),
-                Style::new().fg(self.theme.border_subtle),
-            ));
-            Line::from(spans)
-        };
-        let border_line = |position: &str| -> Line<'static> {
-            let mut spans = Vec::new();
-            for (index, width) in widths.iter().enumerate() {
-                let (head, cross) = match position {
-                    "top" => ("┌", "┬"),
-                    "mid" => ("├", "┼"),
-                    _ => ("└", "┴"),
-                };
-                spans.push(Span::styled(
-                    format!(
-                        "{}{}",
-                        if index == 0 { head } else { cross },
-                        "─".repeat(width + 4)
-                    ),
-                    Style::new().fg(self.theme.border_subtle),
-                ));
-            }
-            let tail = match position {
-                "top" => "┐",
-                "mid" => "┤",
-                _ => "┘",
-            };
-            spans.push(Span::styled(
-                tail.to_owned(),
-                Style::new().fg(self.theme.border_subtle),
-            ));
-            Line::from(spans)
-        };
-        self.out.push(border_line("top"));
-        self.out.push(render_row(&table.header, true));
-        self.out.push(border_line("mid"));
-        for row in &table.rows {
-            self.out.push(render_row(row, false));
-        }
-        self.out.push(border_line("bottom"));
     }
+}
+
+/// 表格单元格的纯文本：与 [`raw_table`] 用同一份去装饰结果。
+fn table_cell_text(cells: &[Vec<Run>], index: usize) -> String {
+    cells
+        .get(index)
+        .map(|cell| cell.iter().map(|run| run.text.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// 每列的自然宽度、不可断词宽度与是否含宽字符。
+fn table_metrics(table: &TableAcc, columns: usize) -> (Vec<usize>, Vec<usize>, Vec<bool>) {
+    let mut natural = vec![1usize; columns];
+    let mut longest_word = vec![1usize; columns];
+    let mut has_wide = vec![false; columns];
+    for cells in std::iter::once(&table.header).chain(table.rows.iter()) {
+        for (index, cell) in cells.iter().enumerate().take(columns) {
+            let text: String = cell.iter().map(|run| run.text.as_str()).collect();
+            natural[index] = natural[index].max(str_width(&text));
+            let word = text.split_whitespace().map(str_width).max().unwrap_or(1);
+            longest_word[index] = longest_word[index].max(word);
+            has_wide[index] |= text
+                .chars()
+                .any(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) > 1);
+        }
+    }
+    (natural, longest_word, has_wide)
+}
+
+/// 计算可见列宽：先封顶，再在可用宽度内均衡拉伸；放不下时按可读下限
+/// 收缩，最后退到硬下限。`None` 表示连两格一列都放不下。
+fn table_widths(
+    available: usize,
+    natural: &[usize],
+    longest_word: &[usize],
+    has_wide: &[bool],
+) -> Option<(Vec<usize>, usize)> {
+    let columns = natural.len();
+    if columns == 0 {
+        return None;
+    }
+    let two_cell_min = columns.saturating_mul(2);
+    let gap = if available >= two_cell_min + 2 * (columns - 1) {
+        TABLE_COLUMN_GAP
+    } else if available >= two_cell_min + (columns - 1) {
+        1
+    } else {
+        return None;
+    };
+    let usable = available.saturating_sub(gap.saturating_mul(columns - 1));
+    let cap = (available * TABLE_COLUMN_CAP_PERCENT / 100)
+        .clamp(TABLE_COLUMN_CAP_FLOOR, TABLE_COLUMN_CAP_CEILING);
+    let mut widths: Vec<usize> = natural.iter().map(|width| (*width).clamp(1, cap)).collect();
+    let mut total: usize = widths.iter().sum();
+    if total > usable {
+        let mut floors: Vec<usize> = (0..columns)
+            .map(|index| {
+                let token_floor =
+                    longest_word[index].clamp(TABLE_COLUMN_FLOOR, TABLE_COLUMN_TOKEN_MAX);
+                let mut floor = natural[index].min(token_floor);
+                if has_wide[index] {
+                    floor = floor.max(2);
+                }
+                floor.clamp(1, widths[index])
+            })
+            .collect();
+        shrink_widths(&mut widths, &floors, usable);
+        total = widths.iter().sum();
+        if total > usable {
+            for (index, floor) in floors.iter_mut().enumerate() {
+                *floor = (if has_wide[index] { 2 } else { 1 }).min(widths[index]);
+            }
+            shrink_widths(&mut widths, &floors, usable);
+            total = widths.iter().sum();
+        }
+    }
+    if total < usable {
+        fill_widths(&mut widths, cap, usable);
+    }
+    Some((widths, gap))
+}
+
+/// 把总宽压到 `target`：每次从“超下限最多”的列减一格，保持列宽均衡。
+fn shrink_widths(widths: &mut [usize], floors: &[usize], target: usize) {
+    let mut total: usize = widths.iter().sum();
+    while total > target {
+        let mut best: Option<(usize, usize)> = None;
+        for (index, width) in widths.iter().enumerate() {
+            let slack = width.saturating_sub(floors[index]);
+            if slack > 0 && best.is_none_or(|(_, current)| slack > current) {
+                best = Some((index, slack));
+            }
+        }
+        let Some((index, _)) = best else {
+            break;
+        };
+        widths[index] -= 1;
+        total -= 1;
+    }
+}
+
+/// 把总宽拉向 `target`：每次给“离上限最远”的列加一格，封顶后停止。
+fn fill_widths(widths: &mut [usize], cap: usize, target: usize) {
+    let mut total: usize = widths.iter().sum();
+    while total < target {
+        let mut best: Option<(usize, usize)> = None;
+        for (index, width) in widths.iter().enumerate() {
+            let headroom = cap.saturating_sub(*width);
+            if headroom > 0 && best.is_none_or(|(_, current)| headroom > current) {
+                best = Some((index, headroom));
+            }
+        }
+        let Some((index, _)) = best else {
+            break;
+        };
+        widths[index] += 1;
+        total += 1;
+    }
+}
+
+/// 单行表格：每个单元格按列宽折行，行高取该行最多的行数。
+fn table_row_lines(
+    cells: &[Vec<Run>],
+    widths: &[usize],
+    gap: usize,
+    theme: &Theme,
+    header: bool,
+) -> Vec<Line<'static>> {
+    let wrapped: Vec<Vec<String>> = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let text = table_cell_text(cells, index);
+            wrap_text(&text, (*width).max(1))
+        })
+        .collect();
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+    let style = if header {
+        Style::new()
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.text_primary)
+    };
+    let gap = " ".repeat(gap);
+    let mut lines = Vec::with_capacity(height);
+    for line_index in 0..height {
+        let mut spans = Vec::with_capacity(widths.len().saturating_mul(2));
+        for (index, width) in widths.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(gap.clone(), style));
+            }
+            let text = wrapped[index].get(line_index).map_or("", String::as_str);
+            let used = str_width(text);
+            spans.push(Span::styled(text.to_owned(), style));
+            if used < *width {
+                spans.push(Span::styled(" ".repeat(width - used), style));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// 表头与行之间、行与行之间的细线。
+fn table_rule(width: usize, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        "─".repeat(width),
+        Style::new().fg(theme.border_subtle),
+    ))
+}
+
+/// 极窄终端：逐字段列出，保证不丢内容。
+fn stacked_table_lines(table: &TableAcc, available: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let available = available.max(1);
+    let style = Style::new().fg(theme.text_primary);
+    let columns = table
+        .header
+        .len()
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    let header: Vec<String> = (0..columns)
+        .map(|index| table_cell_text(&table.header, index).trim().to_owned())
+        .collect();
+    let mut lines = Vec::new();
+    if table.rows.is_empty() {
+        for line in wrap_text(&header.join("  "), available) {
+            lines.push(Line::from(Span::styled(line, style)));
+        }
+        return lines;
+    }
+    for (row_index, row) in table.rows.iter().enumerate() {
+        for (index, label) in header.iter().enumerate() {
+            let value = table_cell_text(row, index);
+            let text = match (label.is_empty(), value.is_empty()) {
+                (true, _) => value,
+                (false, true) => label.clone(),
+                (false, false) => format!("{label}: {value}"),
+            };
+            for line in wrap_text(&text, available) {
+                lines.push(Line::from(Span::styled(line, style)));
+            }
+        }
+        if row_index + 1 < table.rows.len() {
+            lines.push(table_rule(available, theme));
+        }
+    }
+    lines
 }
 
 /// 累积表格 → 纯文本快照。
@@ -1061,11 +1192,18 @@ mod tests {
     }
 
     #[test]
-    fn tables_render_box_borders_and_keep_cell_content_in_order() {
+    fn tables_render_light_rules_and_keep_cell_content_in_order() {
         let single = lines("| 尝试 | 结果 |\n|---|---|\n| a | b |", 40);
-        let joined = single.join("\n");
-        assert!(joined.contains('┌') && joined.contains('┐'), "{single:?}");
-        assert!(joined.contains('├') && joined.contains('┼'), "{single:?}");
+        assert!(
+            !single
+                .iter()
+                .any(|line| line.contains('┌') || line.contains('│')),
+            "表格不再画全边框盒：{single:?}"
+        );
+        assert!(
+            single.iter().any(|line| line.starts_with('─')),
+            "表头/行之间应有细线：{single:?}"
+        );
         assert!(
             single.iter().any(|line| line.contains("尝试")),
             "{single:?}"
@@ -1081,6 +1219,60 @@ mod tests {
         assert!(read_row < bash_row, "表格行顺序错误：{out:?}");
         assert!(out.iter().any(|line| line.contains("读取文件")), "{out:?}");
         assert!(out.iter().any(|line| line.contains("执行命令")), "{out:?}");
+    }
+
+    /// 超宽表格按列折行，内容完整，线宽不超过正文宽度。
+    #[test]
+    fn wide_tables_wrap_instead_of_truncating() {
+        let source = "| Harness | 请求体硬上限 | 发请求前的字节预算 | 单图目标 | 图片数量上限 | 超限行为 |\n|---|---|---|---|---|---|\n| moc | 无 | 全量序列化字节 50 MiB，高水位 -3 个槽位 | raw 3.75 MiB | 600 | 按旧→新淘汰图片，正文超限交上游 |\n| Codex | 无 | 无（纯 token 窗口 + compaction） | 2000px、base64 ≤5 MiB | 90 | 交上游处理 |\n| DSH | 无 | inline-image-byte-budget 24,000 字节 | 2 MiB / 4096px | 600 | 直接报 IMAGE_OFFLOAD_REQUIRED |";
+        let out = lines(source, 120);
+        for needle in [
+            "Harness",
+            "超限行为",
+            "全量序列化字节",
+            "inline-image-byte-budget",
+            "按旧→新淘汰图片",
+            "IMAGE_OFFLOAD",
+        ] {
+            assert!(
+                out.iter().any(|line| line.contains(needle)),
+                "缺内容 {needle}：{out:?}"
+            );
+        }
+        assert!(
+            !out.iter().any(|line| line.contains('…')),
+            "表格不得截断：{out:?}"
+        );
+        assert!(
+            out.iter().all(|line| str_width(line) <= 120),
+            "表格行不得超宽：{out:?}"
+        );
+    }
+
+    /// CJK 单元格按显示列折行，不按字节/字符数。
+    #[test]
+    fn cjk_cells_wrap_by_display_width() {
+        let out = lines("| 一 | 二 |\n|---|---|\n| 中文中文中文 | 值 |", 30);
+        assert!(
+            out.iter().any(|line| line.contains("中文中文中文")),
+            "中文内容不得被切断：{out:?}"
+        );
+        assert!(
+            out.iter().all(|line| str_width(line) <= 30),
+            "表格行不得超宽：{out:?}"
+        );
+    }
+
+    /// 连两格一列都放不下时，退化为逐字段列表，内容仍然完整。
+    #[test]
+    fn extremely_narrow_tables_list_fields_instead_of_dropping_content() {
+        let out = lines(
+            "| a | b | c | d | e |\n|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 |",
+            8,
+        );
+        assert!(out.iter().any(|line| line.contains("a: 1")), "{out:?}");
+        assert!(out.iter().any(|line| line.contains("e: 5")), "{out:?}");
+        assert!(!out.iter().any(|line| line.contains('…')), "{out:?}");
     }
 
     #[test]
@@ -1136,7 +1328,9 @@ mod tests {
         );
         assert!(without.tables[0].button.is_none(), "无图形能力时不出入口");
         assert!(
-            text(&without.lines).iter().any(|line| line.contains('┌')),
+            text(&without.lines)
+                .iter()
+                .any(|line| line.contains("耗时")),
             "表格照常画"
         );
     }
@@ -1189,8 +1383,8 @@ mod tests {
         );
         let out = text(&rendered.lines);
         assert!(
-            !out.iter().any(|line| line.contains('┌')),
-            "不应再画表格边框：{out:?}"
+            !out.iter().any(|line| line.contains("耗时")),
+            "不应再画表格：{out:?}"
         );
         let slot = rendered.tables[0];
         let chart = slot.chart.expect("应有图表占位区");
