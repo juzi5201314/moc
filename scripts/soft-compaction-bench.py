@@ -4,8 +4,8 @@
 同一份真实会话（固定剧本 + 真实模型 + 真实工具）分别用不同的 soft 摘要实现压缩，
 然后测量「压缩后还记得多少」与「是否像没压缩过」：
 
-  - 事实保真：14 个预埋事实在最终 checkpoint 里的命中数；
-  - 探针正确率：14 道单选题，答案唯一；
+  - 事实保真：18 个预埋事实在最终 checkpoint 里的命中数；
+  - 探针正确率：18 道单选题（含两条被否决方案、两段长粘贴里的数字），答案唯一；
   - 连贯性：当前进度、下一步、第 4/5 步是否与既定计划一致（0-4）；
   - 检索回填：回答探针时被迫回查 history:// 或磁盘的工具调用数；
   - 体积：每代 checkpoint 字符数、tokens_before/after；
@@ -15,16 +15,25 @@
     scripts/soft-compaction-bench.py --model <provider>/<model> --methods moc,grok_build
     scripts/soft-compaction-bench.py --methods moc --generations 1
     scripts/soft-compaction-bench.py --model p/m --methods grok_build --keep
+    scripts/soft-compaction-bench.py --session ~/.omp/agent/sessions/<项目>/<时间>_<id>.jsonl --methods moc
 
 依赖：Python 3.8+、仓库根已构建的 `target/debug/moc`，以及可用的 `~/.moc/config.toml`
 （模型与供应商配置只读复制到临时 HOME，脚本不会写你的会话目录）。
 
 默认 `--generations 2`：连续压缩两次，专门抓「第二次压缩把上下文丢成一句话」这类问题。
+
+`--session` 导入真实 omp 会话（只读，源文件不动）：把 omp 的 message 条目按 1:1 转成 moc
+会话，cwd 指向临时目录、权限固定为 workspace（bash 走 bwrap，模型无法改到真实仓库）。
+出题只取「压缩后会被丢弃」的那段历史：头部 24 条正文考长程记忆，最后一条用户指令之前的
+24 条考当前状态；文件召回取成功 edit/write 的路径。报告默认只给命中率，加 `--show-anchors`
+才打印锚点原文。真实的 300k 级会话需要 `--max-output-tokens 32768` 之类的输出上限，
+否则压缩输入预算装不下全部历史。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -44,10 +53,8 @@ MIN_CHECKPOINT_CHARS = 600
 # ---------------------------------------------------------------------------
 
 SCENARIO: dict[str, str] = {
-    "Cargo.toml": """[workspace]
-members = ["crates/ingest"]
-resolver = "2"
-""",
+    # 故意不放 Cargo.toml：模型若自作主张跑 cargo，会在毫秒级报“找不到清单”，
+    # 不会下载依赖、也不会真的编译。
     "crates/ingest/src/lib.rs": """//! ingest：上游事件聚合与窗口管理。
 
 pub mod legacy;
@@ -345,6 +352,142 @@ fn rotation_reports_reclaimed_count() {}
 """,
 }
 
+AUDIT_FILES = (
+    "crates/ingest/src/window.rs",
+    "crates/ingest/src/legacy.rs",
+    "crates/ingest/src/metrics.rs",
+    "crates/ingest/src/lib.rs",
+)
+
+AUDIT_TEMPLATES = (
+    "阈值 {value} 未引用常量，建议改为引用符号",
+    "注释缺少单位说明（毫秒与秒混用）",
+    "热路径出现 clone()，建议改为借用",
+    "错误分支只打日志、没有返回 Err",
+    "缺少 debug_assert! 校验不变量",
+    "锁粒度偏大：整个遍历期间持锁",
+    "减法未用 saturating_sub，存在下溢风险",
+    "输出依赖 HashMap 迭代顺序，不可复现",
+)
+
+
+def audit_report() -> str:
+    """ci/audit.sh 的产物：300 条告警，只有一条 error。
+
+    确定性生成，保证同一份脚本每次得到同一份历史；warn 的阈值都落在 1k–21k，
+    不会和 error 那条的 12_500 或题面里的 30k/45k/60k 混淆。
+    """
+    lines = [
+        "# ingest 配置审计报告（ci/audit.sh 生成，勿手改）",
+        "",
+        "范围：crates/ingest/src 全部文件；规则集 aud-v3。",
+        "结论：300 条告警，其中 1 条 error、299 条 warn。error 必须修，warn 按季度清理。",
+        "",
+    ]
+    for index in range(1, 301):
+        line_no = (index * 7) % 400 + 8
+        path = AUDIT_FILES[index % len(AUDIT_FILES)]
+        level = "error" if index == 137 else "warn"
+        if index == 137:
+            message = "硬编码阈值 12_500 未引用常量（WINDOW_TTL_MS）"
+        else:
+            value = 500 * (index % 40 + 2)
+            message = AUDIT_TEMPLATES[index % len(AUDIT_TEMPLATES)].format(value=f"{value:_}")
+        lines.append(f"- AUD-{index:04d} [{level}] {path}:{line_no} {message}")
+    return "\n".join(lines)
+
+
+def incident_review() -> str:
+    """线上故障的时间线与复盘，含一条被否决的跨进程方案。"""
+    lines = [
+        "# 故障复盘：ingest 窗口回收误判（07-16）",
+        "",
+        "状态：已恢复；影响时段 21:40–22:07（27 分钟）。编写：值班组。",
+        "",
+        "## 时间线",
+        "",
+        "- 21:38 上游连接数从 8 升到 12，超过 MAX_WINDOWS 设计值，开始排队。",
+        "- 21:39 轮转线程最后一次正常回收，日志 `rotate done reclaimed=0`。",
+        "- 21:40 首个超时告警；`flush` 单次耗时 300ms 以上。",
+    ]
+    for step in range(64):
+        minute = 21 * 60 + 41 + step // 2
+        clock = f"{minute // 60:02d}:{minute % 60:02d}"
+        rps = 22_150 - step * 200 if step < 32 else 15_760 + (step - 32) * 130
+        p99 = 9 + step if step < 33 else 42 - (step - 33)
+        lines.append(
+            f"- {clock} rps={rps} p99={p99}ms 存活窗口={4 + step % 9} pinned={step % 5} "
+            f"轮转耗时={step * 3 % 47}ms flush 耗时={8 + step % 23}ms"
+        )
+    lines += [
+        "- 22:02 定位到两处独立缺陷，临时把轮转线程的回收动作摘除，服务恢复。",
+        "- 22:07 下游审计表补齐三个批次，告警解除。",
+        "",
+        "## 现象",
+        "",
+        "上游仍在正常心跳，连接也没有断开，但窗口数量持续上涨，很快超过了设计上限 4。",
+        "值班先怀疑上游重连风暴，抓包后发现连接是复用的，排除了这个方向。",
+        "随后监控显示 `flush` 的调用次数没变、耗时却从 1ms 级涨到 300ms 级，",
+        "而轮转线程的回收计数从那之后再没有增长，说明回收根本没有发生。",
+        "",
+        "## 排查过程",
+        "",
+        "1. 先看日志：轮转线程每 5 秒打一次 `rotate done`，故障期间这些日志只剩心跳，",
+        "   回收数一直是 0。日志里没有 panic，也没有 io 错误，说明它是在等锁。",
+        "2. 再看锁：`flush` 与轮转线程用的是同一把 `Mutex<WindowState>`，`flush` 在持锁期间",
+        "   遍历全部窗口并逐条写盘，窗口越多持锁越久，形成正反馈。",
+        "3. 然后看淘汰条件：`flush` 里只判断 `idle_ms > WINDOW_TTL_MS`，没有排除 pinned，",
+        "   而 pinned 正是承载未落盘审计批次的窗口。这个缺陷在正常时被 TTL 掩盖，",
+        "   一旦积压超过 45 秒就会集中爆发。",
+        "4. 最后看计数：`rotate_windows` 与 `flush` 各自 `fetch_add`，"
+        "`rotated_total` 被重复累加，告警阈值因此偏低，掩盖了前 3 分钟的问题。",
+        "5. 复现方式：把 TTL 临时调到 3 秒、并发写 12 条流，2 分钟内必现；"
+        "单独跑 `window_rotation` 的三个用例全是空壳，所以单元测试完全没有拦住。",
+        "",
+        "## 为什么没被测试拦住",
+        "",
+        "`crates/ingest/tests/window_rotation.rs` 里的三个用例只有函数名、没有断言，",
+        "跑起来一律通过。集成测试只验证了「窗口能开、能 touch」，没有覆盖回收与 pinned 交互。",
+        "复盘结论：骨架用例必须先补断言再合入，否则等于没有测试。",
+        "",
+        "## 根因",
+        "",
+        "1. `flush` 与轮转线程共用同一把 `Mutex<WindowState>`，持锁遍历全部窗口，",
+        "   轮转线程长期拿不到锁，过期窗口越积越多。",
+        "2. 到期判定只看 `idle_ms`，没有排除 pinned 窗口，`flush` 把它们当成可回收，",
+        "   审计批次因此在落盘前被清掉。",
+        "3. `rotate_windows` 与 `flush` 各自计数，`rotated_total` 被加了两次，告警阈值失真。",
+        "",
+        "## 影响",
+        "",
+        "- 丢弃事件 1_204 条，集中在 21:41–21:44。",
+        "- p99 峰值 42ms；吞吐从 22_150 行/秒掉到 15_760 行/秒。",
+        "- 下游审计表缺 3 个批次，已手工补录并核对。",
+        "",
+        "## 候选方案与结论",
+        "",
+        "| 方案 | 结论 | 理由 |",
+        "| --- | --- | --- |",
+        "| 把窗口状态迁到 Redis，多进程共享 | 否决 | 跨进程一致性与 RTT 都不可接受 |",
+        "| 缩小锁粒度，flush 按分片持锁 | 采纳 | 改动局限于 window.rs，不需要新依赖 |",
+        "| 轮转线程独占回收职责 | 采纳 | 与第 3 步计划一致：计数收敛到 rotate_windows |",
+        "| 增大 TTL 掩盖问题 | 否决 | 内存上限固定，TTL 已是上限 |",
+        "",
+        "## 后续动作",
+        "",
+        "1. 回收职责只保留在 `rotate_windows`，`flush` 不再判过期。",
+        "2. pinned 窗口在两条路径上都要跳过，并补用例覆盖。",
+        "3. 指标归属收敛后，告警阈值按新口径重算。",
+        "4. 轮转路径补 `tracing` 日志，带上窗口 id 与空闲时长。",
+    ]
+    return "\n".join(lines)
+
+
+# 长文放进工作区当文件读：REPL 逐行喂输入，多行粘贴会被拆成几百条 prompt。
+SCENARIO["bench/audit-report.md"] = audit_report()
+SCENARIO["bench/incident-review.md"] = incident_review()
+
+
 TRANSCRIPT: list[str] = [
     "先熟悉代码。读 crates/ingest/src/window.rs 的 1-80 行，然后用一行告诉我 WINDOW_TTL_MS 现在的取值（带下划线原样）。",
     "把 TTL 从 30 秒改成 45 秒：常量写成 45_000，行内注释写「上游心跳 15 秒，留 3 倍余量」。只改 crates/ingest/src/window.rs 一个文件，绝对不要碰 crates/ingest/src/legacy.rs，那里跑着线上老路径。改完只回一句确认。",
@@ -352,8 +495,12 @@ TRANSCRIPT: list[str] = [
     "错误处理统一 thiserror：在 crates/ingest/src/lib.rs 里保留 IngestError::Expired { id: u64, age_ms: u64 }，不要引入 anyhow。然后把 rotate_windows 的骨架写进 window.rs：按 now_ms 回收空闲超过 TTL 的非 pinned 窗口，返回回收数；先不要接进 flush()。写完回一句确认。",
     "补充背景，这是一次设计评审的结论，请记住：我们否决了用 lru crate 的 LRU 缓存来管理窗口，原因是 pinned 窗口会违反淘汰顺序；容器只用 SmallVec。另外进程内存上限是 512MB，所以 TTL 45 秒就是上限，不能再往上加。收尾计划共 5 步：第 1 步改 TTL 常量，第 2 步加 rotate_windows 骨架，第 3 步把 metrics 计数移到 rotate_windows 内部，第 4 步更新 docs/ingest.md 的 TTL 表，第 5 步给轮转路径加 tracing 日志。回一句「已记住」。",
     "读 bench/results.md 全文，用两行分别回答：优化前和优化后的吞吐（行/秒，带下划线原样），以及优化前和优化后的 p99。不要展开。",
+    "读 bench/audit-report.md 全文，读完只回一行：唯一一条 error 级规则的编号，以及它报出的硬编码阈值。",
     "再读 crates/ingest/src/metrics.rs 和 crates/ingest/tests/window_rotation.rs，然后回答：flush 耗时指标记录在哪个结构里？一行；pinned 窗口为什么不能回收？一行。",
+    "读 bench/incident-review.md 全文，然后回答三点：根因第一条、一共丢弃多少条事件、p99 峰值是多少。",
+    "顺带问个和任务无关的：nvme 的队列深度怎么看？给一行命令就行，不要执行。",
     "团队纪律记一下：全量测试预算 1 分钟，禁止在测试里做 bench；提交信息用 conventional commit，scope 写 ingest；注释和文档用中文。回一句收到。",
+    "另外确认一下：CI 缓存是每次都重建吗？只回「会」或「不会」。",
     "用 bash 跑 wc -l crates/ingest/src/window.rs，把行数告诉我。",
     "先停在这里，等我下一步指令。",
 ]
@@ -362,44 +509,71 @@ MCQ_MARK = "下面是一组关于本次 ingest 任务的单选题"
 CONTINUITY_MARK = "继续推进这个任务"
 ACTION_MARK = "把第 4 步现在做完"
 
+# 单选题：题干 + 正确项。顺序即题号，新增题目直接往后追加。
+MCQ_QUESTIONS: list[tuple[str, str]] = [
+    ("窗口 TTL 常量 WINDOW_TTL_MS 现在是多少？A) 30_000 B) 45_000 C) 60_000 D) 15_000。", "B"),
+    (
+        "为什么 TTL 取这个值？A) 上游心跳 5 秒，留 6 倍余量 B) 上游心跳 15 秒，留 3 倍余量 "
+        "C) 上游心跳 30 秒，留 1.5 倍余量 D) 没有依据，随便取的。",
+        "B",
+    ),
+    ("新增的窗口回收函数叫什么？A) rotate_windows B) sweep_windows C) evict_windows D) refresh_windows。", "A"),
+    (
+        "rotate_windows 返回什么？A) 空 B) 本轮回收的窗口数（usize） C) 被回收的窗口列表 "
+        "D) bool 表示是否还有窗口。",
+        "B",
+    ),
+    (
+        "窗口容器最终用哪种结构？A) HashMap<u64, Window> B) BTreeMap<u64, Window> "
+        "C) SmallVec<[Window; 4]> D) VecDeque<Window>。",
+        "C",
+    ),
+    (
+        "错误类型怎么定义？A) anyhow::Error B) thiserror 的 IngestError::Expired { id, age_ms } "
+        "C) 直接 panic D) std::io::Error。",
+        "B",
+    ),
+    (
+        "哪个文件绝对不要改？A) crates/ingest/src/window.rs B) crates/ingest/src/legacy.rs "
+        "C) docs/ingest.md D) crates/ingest/tests/window_rotation.rs。",
+        "B",
+    ),
+    ("哪个方案被否决了？A) 用 lru crate 的 LRU 缓存 B) 用 SmallVec C) 用 thiserror D) 新增 rotate_windows。", "A"),
+    ("否决它的核心理由？A) 性能不够 B) pinned 窗口会违反淘汰顺序 C) 依赖太多 D) 不支持 no_std。", "B"),
+    ("进程内存上限是多少？A) 128MB B) 512MB C) 1GB D) 2GB。", "B"),
+    ("优化后的吞吐是多少？A) 18_240 行/秒 B) 24_910 行/秒 C) 31_500 行/秒 D) 9_870 行/秒。", "B"),
+    ("优化后的 p99 延迟是多少？A) 8.7ms B) 3.2ms C) 1.4ms D) 12.0ms。", "B"),
+    (
+        "收尾计划第 3 步是什么？A) 把 rotate_windows 接进 flush() B) 把 metrics 计数移到 "
+        "rotate_windows 内部 C) 更新 docs/ingest.md 的 TTL 表 D) 加 tracing 日志。",
+        "B",
+    ),
+    ("全量测试的时间预算是多少？A) 1 分钟 B) 5 分钟 C) 10 分钟 D) 不限制。", "A"),
+    ("审计报告里唯一一条 error 级规则报出的硬编码阈值是多少？A) 12_500 B) 30_000 C) 45_000 D) 60_000。", "A"),
+    ("那次故障一共丢弃了多少条事件？A) 120 B) 1_204 C) 4_512 D) 12_500。", "B"),
+    ("故障期间 p99 峰值是多少？A) 8.7ms B) 12.4ms C) 42ms D) 118ms。", "C"),
+    (
+        "复盘里被否决的跨进程方案是哪个？A) 把窗口状态迁到 Redis B) 用 SmallVec 取代 HashMap "
+        "C) 用 thiserror 统一错误 D) 新增 rotate_windows。",
+        "A",
+    ),
+]
+
+MCQ_KEY = {
+    f"P{index}": answer
+    for index, (_, answer) in enumerate(MCQ_QUESTIONS, 1)
+}
+
 PROBES: list[str] = [
-    "下面是一组关于本次 ingest 任务的单选题。只回答，不要解释，输出 14 行，每行格式严格为 `P<编号>: <字母>`。"
-    "P1. 窗口 TTL 常量 WINDOW_TTL_MS 现在是多少？A) 30_000 B) 45_000 C) 60_000 D) 15_000。"
-    "P2. 为什么 TTL 取这个值？A) 上游心跳 5 秒，留 6 倍余量 B) 上游心跳 15 秒，留 3 倍余量 C) 上游心跳 30 秒，留 1.5 倍余量 D) 没有依据，随便取的。"
-    "P3. 新增的窗口回收函数叫什么？A) rotate_windows B) sweep_windows C) evict_windows D) refresh_windows。"
-    "P4. rotate_windows 返回什么？A) 空 B) 本轮回收的窗口数（usize） C) 被回收的窗口列表 D) bool 表示是否还有窗口。"
-    "P5. 窗口容器最终用哪种结构？A) HashMap<u64, Window> B) BTreeMap<u64, Window> C) SmallVec<[Window; 4]> D) VecDeque<Window>。"
-    "P6. 错误类型怎么定义？A) anyhow::Error B) thiserror 的 IngestError::Expired { id, age_ms } C) 直接 panic D) std::io::Error。"
-    "P7. 哪个文件绝对不要改？A) crates/ingest/src/window.rs B) crates/ingest/src/legacy.rs C) docs/ingest.md D) crates/ingest/tests/window_rotation.rs。"
-    "P8. 哪个方案被否决了？A) 用 lru crate 的 LRU 缓存 B) 用 SmallVec C) 用 thiserror D) 新增 rotate_windows。"
-    "P9. 否决它的核心理由？A) 性能不够 B) pinned 窗口会违反淘汰顺序 C) 依赖太多 D) 不支持 no_std。"
-    "P10. 进程内存上限是多少？A) 128MB B) 512MB C) 1GB D) 2GB。"
-    "P11. 优化后的吞吐是多少？A) 18_240 行/秒 B) 24_910 行/秒 C) 31_500 行/秒 D) 9_870 行/秒。"
-    "P12. 优化后的 p99 延迟是多少？A) 8.7ms B) 3.2ms C) 1.4ms D) 12.0ms。"
-    "P13. 收尾计划第 3 步是什么？A) 把 rotate_windows 接进 flush() B) 把 metrics 计数移到 rotate_windows 内部 C) 更新 docs/ingest.md 的 TTL 表 D) 加 tracing 日志。"
-    "P14. 全量测试的时间预算是多少？A) 1 分钟 B) 5 分钟 C) 10 分钟 D) 不限制。",
+    f"{MCQ_MARK}。只回答，不要解释，输出 {len(MCQ_KEY)} 行，每行格式严格为 `P<编号>: <字母>`。"
+    + "".join(
+        f"P{index}. {question}" for index, (question, _) in enumerate(MCQ_QUESTIONS, 1)
+    ),
     "继续推进这个任务。用 3 句话回答：现在进行到哪一步、下一步的具体动作（点名函数或文件）、以及之后第 4 步和第 5 步。",
     "把第 4 步现在做完。",
 ]
 
-MCQ_KEY = {
-    "P1": "B",
-    "P2": "B",
-    "P3": "A",
-    "P4": "B",
-    "P5": "C",
-    "P6": "B",
-    "P7": "B",
-    "P8": "A",
-    "P9": "B",
-    "P10": "B",
-    "P11": "B",
-    "P12": "B",
-    "P13": "B",
-    "P14": "A",
-}
-
-# 14 个预埋事实；正则按 checkpoint 里可能出现的写法放宽。
+# 18 个预埋事实；正则按 checkpoint 里可能出现的写法放宽。
 FACT_CHECKS: list[tuple[str, str]] = [
     ("TTL=45_000", r"45[_ ,]?000|45\s*秒|45s"),
     ("心跳15s×3", r"15\s*(?:秒|s|seconds?)[^\n]{0,60}(?:3|三)\s*(?:倍|x|times)"),
@@ -415,6 +589,10 @@ FACT_CHECKS: list[tuple[str, str]] = [
     ("p99 3.2ms", r"3\.2\s*[/、,]\s*3\.9|3\.2\s*ms"),
     ("第3步metrics", r"metrics"),
     ("测试1分钟", r"1\s*(?:分钟|minute|min\b)|60\s*(?:秒|s\b)"),
+    ("错误阈值12_500", r"12[_ ,]?500"),
+    ("丢事件1_204", r"1[_ ,]?204"),
+    ("故障p99 42ms", r"42\s*ms"),
+    ("否决Redis", r"[Rr]edis"),
 ]
 
 # 第 4 步是否真正落地，与连贯性同权计分。
@@ -650,12 +828,397 @@ def run_method(
     }
 
 
+IMPORT_PROBES = [
+    "这段历史最早的阶段在做什么？请点名至少 3 个具体对象（文件、函数或类型名），2 句话以内，不要执行工具，不要只给概要。",
+    "这段历史里已经修改过哪些文件？逐行列出路径；没有改过就写「无」。",
+    "在最后一条用户指令之前，任务进行到哪一步、当时在改什么？请点名至少 3 个具体的文件或函数，3 句话以内，不要执行工具。",
+]
+# 每个探针最多核对多少个锚点，避免长会话的召回率被噪声稀释。
+IMPORT_ANCHOR_LIMIT = 40
+_TOKEN = re.compile(r"[A-Za-z0-9_.:/~@+%-]+")
+# 工具调用的 JSON 字段名不是工程事实，出题时排除。
+_STOP = {
+    "new_string",
+    "old_string",
+    "path",
+    "content",
+    "command",
+    "arguments",
+    "file_path",
+    "replace_all",
+    "edits",
+    "oldText",
+    "newText",
+    "true",
+    "false",
+    "null",
+}
+
+
+def salient(text: str, numbers: bool = True) -> list[str]:
+    """给导入会话出题用的锚点抽取：路径、标识符，可选数字。
+
+    真实会话里的裸数字经常是行号、会话 id 或 artifact 编号，召回价值低，
+    导入模式的出题默认关闭数字，只考文件/函数/类型这类可验证的记忆。
+    """
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for raw in _TOKEN.findall(text):
+        token = raw.strip(".,;:+%")
+        if len(token) < 3 or token in seen or token in _STOP:
+            continue
+        digits = sum(character.isdigit() for character in token)
+        number = all(character.isdigit() or character in "_.," for character in token)
+        numeric = numbers and number and (digits >= 3 or ("." in token and digits >= 2))
+        named = token[0].isalpha() and (
+            "_" in token
+            or any(a.islower() and b.isupper() for a, b in zip(token, token[1:]))
+        )
+        path = token[0].isalpha() and "/" in token and ("." in token or token.count("/") >= 2)
+        if not (numeric or named or path):
+            continue
+        seen.add(token)
+        anchors.append(token)
+        if len(anchors) >= IMPORT_ANCHOR_LIMIT:
+            break
+    return anchors
+
+
+def recall(answer: str, anchors: list[str]) -> tuple[int, int]:
+    if not anchors:
+        return 0, 0
+    return sum(1 for anchor in anchors if anchor in answer), len(anchors)
+
+
+def file_recall(answer: str, files: list[str]) -> tuple[int, int]:
+    if not files:
+        return 0, 0
+    hits = 0
+    for path in files:
+        tail = "/".join(path.split("/")[-2:])
+        name = path.rsplit("/", 1)[-1]
+        if path in answer or tail in answer or (len(name) >= 6 and name in answer):
+            hits += 1
+    return hits, len(files)
+
+
+def import_omp_session(path: Path, root: Path, selector: str, max_tokens: int) -> tuple[Path, str, dict]:
+    """把 omp 会话的 message 条目转成 moc 的会话文件；只读原文件。"""
+    raw = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    session_id = "ses_" + hashlib.sha1(str(path).encode()).hexdigest()[:12]
+    out: list[dict] = []
+    parent: str | None = None
+
+    def push(payload: dict) -> None:
+        nonlocal parent
+        entry = {"id": f"{len(out) + 1:08x}", "parent_id": parent, "at_ms": len(out) * 1000}
+        entry.update(payload)
+        out.append(entry)
+        parent = entry["id"]
+
+    push(
+        {
+            "type": "header",
+            "version": 1,
+            "session_id": session_id,
+            "cwd": str(work),
+            "model": selector,
+            "mode": "normal",
+            # 导入真实会话只做问答：workspace 权限下写入被拒、bash 走 bwrap 沙箱。
+            "permission": "workspace",
+            "parent_session_id": None,
+            "title": "omp import",
+            "created_at_ms": 0,
+        }
+    )
+    converted: list[dict] = []
+    for item in raw:
+        if item.get("type") != "message":
+            continue
+        message = item.get("message") or {}
+        role = message.get("role")
+        text = "".join(
+            block.get("text", "")
+            for block in message.get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if role == "toolResult":
+            converted.append(
+                {
+                    "role": "Tool",
+                    "text": text,
+                    "parts": [
+                        {
+                            "ToolResult": {
+                                "tool_call_id": message.get("toolCallId", ""),
+                                "content": text,
+                                "is_error": bool(message.get("isError")),
+                            }
+                        }
+                    ],
+                    "calls": [],
+                    "result": (message.get("toolCallId", ""), bool(message.get("isError"))),
+                    "chars": len(text),
+                }
+            )
+        elif role in ("user", "developer", "assistant"):
+            parts = []
+            call_rows = []
+            for block in message.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text"):
+                    parts.append({"Text": block["text"]})
+                elif block.get("type") == "toolCall" and role == "assistant":
+                    arguments = block.get("arguments") or {}
+                    if isinstance(arguments, dict):
+                        arguments = json.dumps(arguments, ensure_ascii=False)
+                    parts.append(
+                        {
+                            "ToolCall": {
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "arguments": arguments,
+                            }
+                        }
+                    )
+                    call_rows.append(
+                        (block.get("id", ""), block.get("name", ""), block.get("arguments") or {})
+                    )
+            if not parts:
+                continue
+            moc_role = {"user": "User", "developer": "Developer", "assistant": "Assistant"}[role]
+            converted.append(
+                {
+                    "role": moc_role,
+                    "text": text,
+                    "parts": parts,
+                    "calls": call_rows,
+                    "result": None,
+                    "chars": len(text) + sum(len(part.get("ToolCall", {}).get("arguments", "")) for part in parts),
+                }
+            )
+        else:
+            continue
+
+    # 只保留最近 max_tokens 估算内的消息；开头不能是孤立工具结果。
+    budget = max_tokens * 3.5 if max_tokens > 0 else float("inf")
+    total = 0
+    start = len(converted)
+    while start > 0 and total + converted[start - 1]["chars"] <= budget:
+        start -= 1
+        total += converted[start]["chars"]
+    while start < len(converted) and converted[start]["role"] == "Tool":
+        start += 1
+    kept = converted[start:]
+    # 工具结果必须紧跟持有对应调用的 assistant 消息：omp 的流里结果可能乱序、
+    # 也可能来自被截断的更早调用。这里按"调用 → 结果"重新配对，孤儿结果丢弃，
+    # 无结果的调用从消息里移除，保证 moc 的请求校验能通过。
+    results_by_id = {
+        record["result"][0]: record for record in kept if record["role"] == "Tool"
+    }
+    emitted_results: list[tuple[str, bool]] = []
+    emitted_calls: list[tuple[str, str, dict]] = []
+    for record in kept:
+        if record["role"] == "Tool":
+            continue
+        parts = [part for part in record["parts"] if "ToolCall" not in part]
+        paired = [call for call in record["calls"] if call[0] in results_by_id]
+        for call in paired:
+            arguments = call[2]
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            parts.append(
+                {
+                    "ToolCall": {
+                        "id": call[0],
+                        "name": call[1],
+                        "arguments": arguments,
+                    }
+                }
+            )
+            emitted_calls.append(call)
+        if not parts:
+            continue
+        push({"type": "message", "message": {"role": record["role"], "content": parts}})
+        for call in paired:
+            result = results_by_id.pop(call[0])
+            emitted_results.append(result["result"])
+            push(
+                {
+                    "type": "message",
+                    "message": {"role": "Tool", "content": result["parts"]},
+                }
+            )
+
+    user_texts = [record["text"] for record in kept if record["role"] == "User"]
+    # moc 压缩后会保留最后一条用户指令及其回复，因此"必须靠摘要记住"的是它之前的部分。
+    # 出题只看丢弃区：头部 12 条正文衡量长程记忆，尾部 12 条衡量当前状态。
+    # 工具调用参数是 JSON 字段与片段，不代表"记住了什么"，不参与出题。
+    last_user = max(
+        (index for index, record in enumerate(kept) if record["role"] == "User"),
+        default=len(kept),
+    )
+    discarded = kept[:last_user] if last_user > 0 else kept
+    dialog_blobs = [
+        record["text"]
+        for record in discarded
+        if record["role"] in ("User", "Assistant") and record["text"].strip()
+    ]
+    calls = emitted_calls
+    results = emitted_results
+    successful = {call_id for call_id, is_error in results if not is_error}
+    files = sorted(
+        {
+            arguments.get("path")
+            for call_id, name, arguments in calls
+            if name in ("edit", "write") and call_id in successful and arguments.get("path")
+        }
+    )
+    truth = {
+        "early": salient(" ".join(dialog_blobs[:24]), numbers=False),
+        "near": salient(" ".join(dialog_blobs[-24:]), numbers=False),
+        "files": files,
+        "kept": len(kept),
+        "discarded": len(discarded),
+        "tokens": round(total / 3.5),
+        "user_turns": len(user_texts),
+    }
+    session_dir = root / "sessions-import"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    target = session_dir / f"{len(out)}_{session_id}.jsonl"
+    target.write_text(
+        "\n".join(json.dumps(entry, ensure_ascii=False) for entry in out) + "\n",
+        encoding="utf-8",
+    )
+    return session_dir, session_id, truth
+
+
+def run_import_method(
+    name: str,
+    binary: Path,
+    root: Path,
+    home: Path,
+    work: Path,
+    imported_dir: Path,
+    base_id: str,
+    overlay_template: str,
+    generations: int,
+    timeout: int,
+    truth: dict,
+) -> dict:
+    sessions = root / f"sessions-{name}"
+    if sessions.exists():
+        shutil.rmtree(sessions)
+    shutil.copytree(imported_dir, sessions)
+    overlay = root / f"overlay-{name}.toml"
+    overlay.write_text(overlay_template.replace("{method}", name), encoding="utf-8")
+    script = "/compact\n" * generations + "\n".join(IMPORT_PROBES) + "\n/quit\n"
+    output = run_repl(
+        binary,
+        home,
+        work,
+        sessions,
+        overlay,
+        script,
+        timeout,
+        root / f"log-{name}.txt",
+        resume=base_id,
+    )
+    messages, compactions = keyed_messages(entries(session_file(sessions)))
+    summaries = [item.get("summary", "") for item in compactions]
+    if not summaries:
+        fail(f"{name}：没有产生 compaction（日志：{root / f'log-{name}.txt'}）\n{output[-2000:]}")
+
+    answers = []
+    retrieval = 0
+    for mark in IMPORT_PROBES:
+        _, window = window_after(messages, mark)
+        answers.append("".join(item["text"] for item in window if item["role"] == "Assistant"))
+        retrieval += sum(len(item["tools"]) for item in window if item["role"] == "Assistant")
+    early_hits, early_total = recall(answers[0], truth["early"])
+    file_hits, file_total = file_recall(answers[1], truth["files"])
+    near_hits, near_total = recall(answers[2], truth["near"])
+    # 摘要本身记住了多少：与模型怎么措辞无关，衡量压缩保真度。
+    summary_early = recall(summaries[-1], truth["early"])
+    summary_near = recall(summaries[-1], truth["near"])
+    summary_files = file_recall(summaries[-1], truth["files"])
+
+    def ratio(hits: int, total: int) -> float:
+        return hits / total if total else 0.0
+
+    # 排名用摘要保真度：它不受"回答是不是啰嗦"影响。
+    score = (
+        ratio(*summary_early)
+        + ratio(*summary_near)
+        + ratio(*summary_files)
+    ) / 3.0
+    return {
+        "method": name,
+        "summaries": summaries,
+        "early": (early_hits, early_total),
+        "near": (near_hits, near_total),
+        "files": (file_hits, file_total),
+        "summary_early": summary_early,
+        "summary_near": summary_near,
+        "summary_files": summary_files,
+        "retrieval": retrieval,
+        "tokens": [
+            (item.get("tokens_before"), item.get("tokens_after")) for item in compactions
+        ],
+        "collapsed": min(len(item) for item in summaries) < MIN_CHECKPOINT_CHARS,
+        "score": round(score * 100),
+        "answers": answers,
+    }
+
+
+def render_import_table(results: list[dict]) -> str:
+    headers = ["方法", "代次", "摘要字符", "摘要记忆 早/近/文件", "回答召回 早/近/文件", "检索", "综合%", "token"]
+    rows = []
+    for result in results:
+        sizes = " → ".join(str(len(item)) for item in result["summaries"])
+        # 跨代统计：第一次压缩前 → 最后一次压缩后，避免只看末代把 30k→6k 报成 6k→6k。
+        tokens = (result["tokens"][0][0], result["tokens"][-1][1])
+
+        def percent(pair: tuple[int, int]) -> str:
+            hits, total = pair
+            return f"{round(hits / total * 100)}%" if total else "n/a"
+
+        rows.append(
+            [
+                result["method"],
+                str(len(result["summaries"])),
+                sizes,
+                "/".join(percent(result[key]) for key in ("summary_early", "summary_near", "summary_files")),
+                "/".join(percent(result[key]) for key in ("early", "near", "files")),
+                str(result["retrieval"]),
+                f"{result['score']}%",
+                f"{tokens[0]} → {tokens[1]}",
+            ]
+        )
+    widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
+    lines = [
+        "| " + " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))) + " |",
+        "| " + " | ".join("-" * widths[i] for i in range(len(headers))) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) + " |")
+    return "\n".join(lines)
+
+
 def render_table(results: list[dict]) -> str:
     headers = ["方法", "代次", "摘要字符", "事实", "单选", "连贯", "检索", "第4步", "得分", "token"]
     rows = []
     for result in results:
         sizes = " → ".join(str(len(item)) for item in result["summaries"])
-        tokens = result["tokens"][-1]
+        # 跨代统计：第一次压缩前 → 最后一次压缩后，避免只看末代把 30k→6k 报成 6k→6k。
+        tokens = (result["tokens"][0][0], result["tokens"][-1][1])
         rows.append(
             [
                 result["method"],
@@ -678,6 +1241,36 @@ def render_table(results: list[dict]) -> str:
     for row in rows:
         lines.append("| " + " | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) + " |")
     return "\n".join(lines)
+
+
+def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
+    """生成基准覆盖层：关掉无关子系统，固定压缩策略，并按需收紧输出预留。"""
+    provider, _, model = selector.partition("/")
+    model = model.split(":")[0]
+    text = (
+        "[models.roles]\n"
+        f'default = "{selector}"\n\n'
+        "[mcp]\nenabled = false\n\n"
+        "[context_files]\nenabled = false\n\n"
+        "[skills]\nenabled = false\n\n"
+        "[web_search]\nenabled = false\n\n"
+        "[openviking]\nrecall = false\ncapture = false\nskills = false\n\n"
+        "[compaction]\n"
+        "auto = false\n"
+        "auto_continue = false\n"
+        'method_order = ["soft"]\n'
+        'soft_method = "{method}"\n'
+        f"keep_recent_tokens = {keep_recent}\n"
+        f"protect_recent_tool_tokens = {keep_recent}\n"
+    )
+    if max_output > 0 and provider and model:
+        # 输出预留会直接从压缩输入预算里扣；真实长会话动辄几十万 token，
+        # 384k 的 max_output 会把预算压到十几万，必须按基准需要收紧。
+        text += (
+            f'\n[providers."{provider}".models."{model}"]\n'
+            f"max_output_tokens = {max_output}\n"
+        )
+    return text
 
 
 def main() -> int:
@@ -704,8 +1297,30 @@ def main() -> int:
         help="保留最近尾部 token 数；0 表示纯摘要对比（默认）",
     )
     parser.add_argument("--bin", default=str(DEFAULT_BIN), help="moc 可执行文件，默认 target/debug/moc")
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=32768,
+        help="基准里覆盖模型的 max_output_tokens，避免输出预留吃掉压缩输入预算；0 表示不改",
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="导入 omp 会话 jsonl（只读）做压缩对比；不给则使用内置合成剧本",
+    )
+    parser.add_argument(
+        "--session-max-tokens",
+        type=int,
+        default=160000,
+        help="导入时只保留最近的这么多 token 估算量（0 表示全部导入），默认 160k",
+    )
     parser.add_argument("--timeout", type=int, default=900, help="单次 moc 运行的超时秒数")
     parser.add_argument("--keep", action="store_true", help="保留临时目录并打印路径")
+    parser.add_argument(
+        "--show-anchors",
+        action="store_true",
+        help="导入会话时打印派生出的出题锚点（默认只给命中率，避免泄露会话内容）",
+    )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="用户配置路径（只读复制）")
     args = parser.parse_args()
 
@@ -734,28 +1349,88 @@ def main() -> int:
     work.mkdir()
     shutil.copy2(config, home / ".moc" / "config.toml")
 
-    overlay_text = (
-        "[models.roles]\n"
-        f'default = "{selector}"\n\n'
-        "[mcp]\nenabled = false\n\n"
-        "[context_files]\nenabled = false\n\n"
-        "[skills]\nenabled = false\n\n"
-        "[web_search]\nenabled = false\n\n"
-        "[openviking]\nrecall = false\ncapture = false\nskills = false\n\n"
-        "[compaction]\n"
-        "auto = false\n"
-        "auto_continue = false\n"
-        'method_order = ["soft"]\n'
-        'soft_method = "{method}"\n'
-        f"keep_recent_tokens = {args.keep_recent_tokens}\n"
-        f"protect_recent_tool_tokens = {args.keep_recent_tokens}\n"
-    )
+    overlay_text = build_overlay(selector, args.keep_recent_tokens, args.max_output_tokens)
     base_overlay = root / "overlay-base.toml"
     base_overlay.write_text(overlay_text.replace("{method}", "moc"), encoding="utf-8")
 
     print(f"模型：{selector}")
     print(f"方法：{', '.join(methods)}    代次：{args.generations}")
     print(f"临时目录：{root}")
+
+    if args.session:
+        source = Path(args.session).expanduser()
+        if not source.exists():
+            fail(f"找不到会话文件 {source}")
+        imported_dir, import_id, truth = import_omp_session(
+            source, root, selector, args.session_max_tokens
+        )
+        print(
+            f"导入会话：{import_id}（保留 {truth['kept']} 条消息 / {truth['user_turns']} 条用户消息，"
+            f"约 {truth['tokens'] // 1000}k token；早期锚点 {len(truth['early'])}，近端 {len(truth['near'])}，"
+            f"改动文件 {len(truth['files'])}）"
+        )
+        if args.show_anchors:
+            print(f"早期锚点：{', '.join(truth['early'])}")
+            print(f"近端锚点：{', '.join(truth['near'])}")
+            print(f"改动文件：{', '.join(truth['files'])}")
+        results = []
+        for method in methods:
+            print(f"\n== 运行 {method} ==")
+            results.append(
+                run_import_method(
+                    method,
+                    binary,
+                    root,
+                    home,
+                    work,
+                    imported_dir,
+                    import_id,
+                    overlay_text,
+                    args.generations,
+                    args.timeout,
+                    truth,
+                )
+            )
+        print("\n" + render_import_table(results))
+        print()
+        for result in results:
+            sizes = " → ".join(str(len(item)) for item in result["summaries"])
+            early, near, files = result["early"], result["near"], result["files"]
+            summary_early, summary_near, summary_files = (
+                result["summary_early"],
+                result["summary_near"],
+                result["summary_files"],
+            )
+            print(
+                f"- {result['method']}：checkpoint {sizes} 字符；"
+                f"摘要记忆 早 {summary_early[0]}/{summary_early[1]}、近 {summary_near[0]}/{summary_near[1]}、"
+                f"文件 {summary_files[0]}/{summary_files[1]}；"
+                f"回答召回 早 {early[0]}/{early[1]}、近 {near[0]}/{near[1]}、"
+                f"文件 {files[0]}/{files[1]}；检索 {result['retrieval']} 次"
+            )
+            if result["collapsed"]:
+                print("  ⚠ 出现退化 checkpoint（短于最短长度）")
+        if len(results) > 1:
+            alive = [item for item in results if not item["collapsed"]]
+            if alive:
+                top = max(item["score"] for item in alive)
+                winners = [item["method"] for item in alive if item["score"] == top]
+                verdict = "并列最高" if len(winners) > 1 else "得分最高"
+                print(f"\n综合：{'、'.join(winners)} {verdict}（综合召回 {top}%；退化一票否决）。")
+            else:
+                print("\n综合：所有方法都产生了退化 checkpoint。")
+            print("注意：每个方法只跑一个样本，模型抽样会让分数波动；需要方差就多跑几次。")
+        collapsed = [item["method"] for item in results if item["collapsed"]]
+        if args.keep:
+            print(f"\n临时目录已保留：{root}")
+            print("提示：home/.moc/config.toml 是你配置的副本（可能含密钥），排查完请删除：")
+            print(f"  rm -rf {root}")
+        else:
+            shutil.rmtree(root, ignore_errors=True)
+        if collapsed:
+            print(f"\n失败：{', '.join(collapsed)} 产生了退化 checkpoint", file=sys.stderr)
+            return 1
+        return 0
 
     write_scenario(work)
     base_sessions = root / "sessions-base"
