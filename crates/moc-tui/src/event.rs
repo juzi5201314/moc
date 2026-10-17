@@ -1967,25 +1967,17 @@ fn handle_modal_key(
             let levels: &[String] = entry.map_or(&[], |entry| entry.levels.as_slice());
             let before = highlighted(picker);
             match (code, modifiers) {
-                (KeyCode::Up, _) => {
-                    level.focused = false;
-                    picker.move_selection(-1, filtered.len(), 8);
-                }
-                (KeyCode::Down | KeyCode::Char('j'), _) => {
-                    level.focused = false;
-                    picker.move_selection(1, filtered.len(), 8);
-                }
+                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
                 (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
                 (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
-                (KeyCode::Tab | KeyCode::BackTab, _) if !levels.is_empty() => {
-                    level.focused = !level.focused;
-                }
-                (KeyCode::Left | KeyCode::Char('h'), _) if level.focused => {
+                // 选择器只有一个焦点：Tab 与 ←→ 等价地就地切思考等级，不和候选列表抢焦点。
+                (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
                     level.move_level(levels, false);
                 }
-                (KeyCode::Right | KeyCode::Char('l'), _) if level.focused => {
-                    level.move_level(levels, true);
-                }
+                (KeyCode::Tab, _) => level.move_level(levels, true),
+                (KeyCode::Left, _) => level.move_level(levels, false),
+                (KeyCode::Right, _) => level.move_level(levels, true),
                 (KeyCode::Home, _) => {
                     picker.selected = 0;
                     picker.offset = 0;
@@ -2094,7 +2086,6 @@ fn handle_modal_key(
             // 高亮条目变了（换行或过滤结果变化）就丢弃手动等级，回到该模型的最高等级。
             if highlighted(picker) != before {
                 level.clear_manual();
-                level.focused = false;
             }
         }
 
@@ -6270,17 +6261,43 @@ mod config_picker_tests {
         };
         assert_eq!(choice(&app), "test/big:low", "沿用配置里写明的等级");
 
+        // 选择器就是搜索框：j／h／l 这类字符必须进查询串，而不是被当成方向键。
+        let query = |app: &App| match app.modal.as_ref() {
+            Some(Modal::Model { picker, .. }) => picker.query.clone(),
+            _ => panic!("选择器应当打开"),
+        };
+        for key in ['g', 'j', 'h', 'l'] {
+            handle_modal_key(
+                &mut app,
+                &connection,
+                KeyModifiers::NONE,
+                KeyCode::Char(key),
+            );
+        }
+        assert_eq!(query(&app), "gjhl", "字符键全部进搜索框");
+        handle_modal_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('u'),
+        );
+        assert_eq!(query(&app), "", "Ctrl+U 清空查询");
+
         // 高亮换到另一个模型：等级回到目标模型自己的最高等级。
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
         assert_eq!(choice(&app), "test/small:medium");
 
-        // 回到 big 时手动值已清空，用它的最高等级；再进等级条左右微调。
+        // 回到 big 时手动值已清空，用它的最高等级；Tab 与方向键等价地在候选等级上循环。
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
         assert_eq!(choice(&app), "test/big:max");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
-        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
-        assert_eq!(choice(&app), "test/big:low", "等级条左移一格");
+        assert_eq!(choice(&app), "test/big:off", "Tab 从最高档循环到最低档");
+        handle_modal_key(&mut app, &connection, KeyModifiers::SHIFT, KeyCode::BackTab);
+        assert_eq!(choice(&app), "test/big:max", "Shift+Tab 反向切档");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(choice(&app), "test/big:off", "→ 直接切档，不需要先聚焦");
+        handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(choice(&app), "test/big:max", "← 切回上一档");
         handle_modal_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
 
         assert!(app.modal.is_none(), "确认后关闭选择器");

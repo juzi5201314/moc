@@ -926,6 +926,10 @@ impl App {
                 display_name: String::new(),
                 levels: Vec::new(),
                 context_window: None,
+                max_output_tokens: None,
+                inputs: Vec::new(),
+                remote_compaction: false,
+                pricing: None,
             });
         }
         entries.extend(models.iter().map(|model| crate::modal::ModelEntry {
@@ -939,6 +943,10 @@ impl App {
                     .collect()
             }),
             context_window: model.context_window,
+            max_output_tokens: model.max_output_tokens,
+            inputs: model.inputs.clone(),
+            remote_compaction: model.remote_compaction,
+            pricing: model.pricing,
         }));
         entries
     }

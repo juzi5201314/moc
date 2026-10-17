@@ -18,13 +18,13 @@ use std::time::Duration;
 use moc_protocol::methods::{
     AgentProfile, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
     ConfigGetParams, ConfigGetResult, ContextContentResult, Empty, InitializeParams,
-    InitializeResult, InputPart, ModelInfo, OpenVikingDeleteParams, OpenVikingDeleteResult,
-    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
-    OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
-    PromptParams, PromptResult, ServerCapabilities, ServerInfo, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
-    SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
+    InitializeResult, InputPart, ModelInfo, ModelInput, OpenVikingDeleteParams,
+    OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams,
+    OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams,
+    PermissionResult, PromptParams, PromptResult, ServerCapabilities, ServerInfo,
+    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
+    SessionInfo, SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult,
+    SessionLockInfo, SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
     SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
     SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry,
@@ -176,6 +176,8 @@ impl ScriptedService {
                             context_window: Some(128_000),
                             max_output_tokens: Some(8_192),
                             pricing: None,
+                            inputs: vec![ModelInput::Text],
+                            remote_compaction: false,
                         },
                         ModelInfo {
                             id: "claude-sonnet".to_owned(),
@@ -184,6 +186,8 @@ impl ScriptedService {
                             context_window: Some(200_000),
                             max_output_tokens: None,
                             pricing: None,
+                            inputs: vec![ModelInput::Text, ModelInput::Image],
+                            remote_compaction: false,
                         },
                     ],
                     default_model: Some("deepseek-flash".to_owned()),
@@ -533,6 +537,8 @@ impl AgentService for ScriptedService {
                 context_window: None,
                 max_output_tokens: None,
                 pricing: None,
+                inputs: Vec::new(),
+                remote_compaction: false,
             });
         }
         Ok(ConfigGetResult {

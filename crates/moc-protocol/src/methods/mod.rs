@@ -49,7 +49,7 @@ pub use agent::{
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
 pub use bash::{BashCommand, BashParams, BashResult, SessionBash};
 pub use config::{
-    AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelPricing,
+    AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelInput, ModelPricing,
 };
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff, build_hunks};
 pub use initialize::{

@@ -43,6 +43,16 @@ pub struct ConfigGetResult {
     pub cwd: String,
 }
 
+/// 模型接受的输入模态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInput {
+    /// 文本消息。
+    Text,
+    /// 图片输入。
+    Image,
+}
+
 /// 一个可用模型。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +73,12 @@ pub struct ModelInfo {
     /// 每百万 token 定价（美元）；`None` 表示未配置，前端应隐藏费用段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricing>,
+    /// 模型接受的输入模态；空表示未声明（按纯文本处理）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<ModelInput>,
+    /// Responses 原生服务端压缩是否启用。
+    #[serde(default)]
+    pub remote_compaction: bool,
 }
 
 /// 每百万 token 定价（美元）。
@@ -119,6 +135,8 @@ mod tests {
                     cache_read: Some(0.07),
                     cache_write: None,
                 }),
+                inputs: vec![ModelInput::Text, ModelInput::Image],
+                remote_compaction: true,
             }],
             default_model: Some("deepseek-flash".into()),
             agents: vec![AgentProfile {
@@ -132,7 +150,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
             json!({
-                "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 } }],
+                "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "inputs": ["text", "image"], "remote_compaction": true }],
                 "default_model": "deepseek-flash",
                 "agents": [{ "id": "build", "display_name": "Build" }],
                 "default_agent": "build",

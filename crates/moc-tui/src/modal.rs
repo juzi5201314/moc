@@ -42,6 +42,14 @@ pub struct ModelEntry {
     pub levels: Vec<String>,
     /// 上下文窗口 token 数；未配置或伪值为 `None`。
     pub context_window: Option<u64>,
+    /// 单次输出上限 token 数；未配置或伪值为 `None`。
+    pub max_output_tokens: Option<u32>,
+    /// 接受的输入模态；伪值为空。
+    pub inputs: Vec<moc_protocol::methods::ModelInput>,
+    /// Responses 原生服务端压缩是否启用。
+    pub remote_compaction: bool,
+    /// 每百万 token 定价；未配置为 `None`。
+    pub pricing: Option<moc_protocol::methods::ModelPricing>,
 }
 
 impl ModelEntry {
@@ -65,14 +73,12 @@ fn level_rank(level: &str) -> usize {
         .map_or(0, |index| index + 1)
 }
 
-/// 思考等级条的键盘状态：手动选中的等级与焦点位置。
+/// 思考等级条的键盘状态：手动选中的等级。
 ///
 /// `manual` 为空表示用高亮模型支持的最高等级；高亮换行时清空，回到「一律用最高等级」。
 #[derive(Debug, Clone, Default)]
 pub struct LevelState {
     pub manual: Option<String>,
-    /// 焦点是否在等级条上；`Tab` 在列表与等级条之间切换。
-    pub focused: bool,
 }
 
 impl LevelState {
@@ -91,7 +97,7 @@ impl LevelState {
         levels.iter().max_by_key(|level| level_rank(level)).cloned()
     }
 
-    /// 在等级条上左右移动；候选为空时不动。
+    /// 在候选等级上循环切档；候选为空时不动。
     pub fn move_level(&mut self, levels: &[String], forward: bool) {
         if levels.is_empty() {
             return;
@@ -863,6 +869,10 @@ mod tests {
             display_name: "模型".into(),
             levels: vec!["off".into(), "high".into()],
             context_window: Some(1000),
+            max_output_tokens: Some(512),
+            inputs: vec![moc_protocol::methods::ModelInput::Text],
+            remote_compaction: false,
+            pricing: None,
         };
         assert_eq!(model.selector_with(Some("high")), "p/m:high");
         assert_eq!(model.selector_with(None), "p/m");
@@ -873,6 +883,10 @@ mod tests {
             display_name: String::new(),
             levels: Vec::new(),
             context_window: None,
+            max_output_tokens: None,
+            inputs: Vec::new(),
+            remote_compaction: false,
+            pricing: None,
         };
         assert_eq!(
             inherit.selector_with(Some("max")),
@@ -891,6 +905,10 @@ mod tests {
                 display_name: String::new(),
                 levels: Vec::new(),
                 context_window: None,
+                max_output_tokens: None,
+                inputs: Vec::new(),
+                remote_compaction: false,
+                pricing: None,
             },
             ModelEntry {
                 selector: "p/model".into(),
@@ -898,6 +916,10 @@ mod tests {
                 display_name: "DeepSeek Flash".into(),
                 levels: vec!["off".into()],
                 context_window: None,
+                max_output_tokens: None,
+                inputs: Vec::new(),
+                remote_compaction: false,
+                pricing: None,
             },
         ];
         let found = |query: &str| {

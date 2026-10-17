@@ -10,16 +10,17 @@ use moc_protocol::methods::{
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
     AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
     ContextContentResult, ContextUsageResult, Empty, InitializeParams, InitializeResult, ModelInfo,
-    ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams,
-    OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams,
-    OpenVikingWriteResult, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
-    ServerCapabilities, ServerInfo, SessionCompactParams, SessionContextContentParams,
-    SessionContextParams, SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult,
-    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
-    SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult,
+    ModelInput, ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult,
+    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
+    OpenVikingWriteParams, OpenVikingWriteResult, PromptResult, ResourceCompleteParams,
+    ResourceCompleteResult, ServerCapabilities, ServerInfo, SessionCompactParams,
+    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPermission,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
+    SessionUsageResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -693,6 +694,14 @@ impl AgentService for Core {
                 context_window: Some(model.context_window),
                 max_output_tokens: Some(model.max_output_tokens),
                 pricing: model.pricing,
+                inputs: [
+                    (model.capabilities.text, ModelInput::Text),
+                    (model.capabilities.image, ModelInput::Image),
+                ]
+                .into_iter()
+                .filter_map(|(supported, input)| supported.then_some(input))
+                .collect(),
+                remote_compaction: model.remote_compaction,
             })
             .collect::<Vec<_>>();
         Ok(ConfigGetResult {
