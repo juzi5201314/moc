@@ -68,7 +68,8 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
                 )
             } else {
                 assert_eq!(model, "ds", "热切换后的压缩必须使用当前会话模型");
-                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
         })
         .expect(4)
@@ -225,7 +226,8 @@ async fn model_switch_asks_before_compacting_when_the_target_window_is_too_small
             if body["stream"] == true {
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
         })
         .mount(&upstream)
@@ -304,7 +306,8 @@ async fn model_switch_compact_switches_first_and_compacts_with_the_target_model(
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
                 assert_eq!(model, "small", "压缩必须由切换后的模型执行");
-                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
         })
         .mount(&upstream)
@@ -372,7 +375,8 @@ async fn model_switch_reports_no_overflow_when_the_target_window_fits() {
             if body["stream"] == true {
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
         })
         .mount(&upstream)
@@ -431,7 +435,8 @@ async fn model_switch_keeps_the_switch_when_compaction_fails() {
             if body["stream"] == true {
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
         })
         .mount(&upstream)
@@ -496,7 +501,8 @@ async fn model_switch_action_switch_reports_overflow_after_switching() {
             if body["stream"] == true {
                 ResponseTemplate::new(200).set_body_raw(text_stream("答复"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
             }
         })
         .mount(&upstream)
@@ -2071,7 +2077,8 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
             let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
             if body["stream"] != true {
                 assert_eq!(body["model"], "executor", "压缩必须使用执行模型");
-                ResponseTemplate::new(200).set_body_json(complete("保留计划和接口决策"))
+                ResponseTemplate::new(200)
+                    .set_body_json(complete(&support::soft_checkpoint("保留计划和接口决策")))
             } else if body.to_string().contains("<active-plan") {
                 assert_eq!(body["model"], "executor");
                 ResponseTemplate::new(200)

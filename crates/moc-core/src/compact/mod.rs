@@ -1,7 +1,9 @@
 //! 上下文预算、压缩方法调度与 checkpoint 提交。
 
 pub mod archive;
+mod digest;
 pub mod grok_build;
+mod guard;
 pub mod images;
 pub mod remote;
 pub mod replay;

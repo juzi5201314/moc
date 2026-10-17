@@ -23,15 +23,15 @@ async fn bash(harness: &Harness, id: &str, input: &str) -> moc_protocol::BashRes
 #[tokio::test]
 async fn manual_bash_context_survives_resume_and_compaction_without_private_output() {
     let upstream = MockServer::builder().start().await;
+    let summary = support::soft_checkpoint("保留公开命令与失败退出码");
     Mock::given(method("POST"))
-        .respond_with(|request: &wiremock::Request| {
+        .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             if body["stream"] == true {
                 ResponseTemplate::new(200)
                     .set_body_raw(support::text_stream("已读取命令结果"), "text/event-stream")
             } else {
-                ResponseTemplate::new(200)
-                    .set_body_json(support::complete("保留公开命令及失败退出码"))
+                ResponseTemplate::new(200).set_body_json(support::complete(&summary))
             }
         })
         .mount(&upstream)

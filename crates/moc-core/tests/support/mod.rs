@@ -184,6 +184,32 @@ pub fn complete(text: &str) -> Value {
     json!({"id":"summary","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}]})
 }
 
+/// soft 压缩可接受的 checkpoint：段落齐全、长度过线；`marker` 用于断言正文来源。
+pub fn soft_checkpoint(marker: &str) -> String {
+    let mut body = String::from(marker);
+    body.push('\n');
+    for section in [
+        "Primary Request and Intent",
+        "Key Technical Concepts",
+        "Files and Code",
+        "Errors and Fixes",
+        "Pending Jobs",
+        "Current Work",
+        "Next Step",
+        "Critical Context",
+    ] {
+        body.push_str("## ");
+        body.push_str(section);
+        body.push('\n');
+    }
+    for index in 0..40 {
+        body.push_str(&format!(
+            "第 {index} 条工程细节：公开输出与决策保持不变。\n"
+        ));
+    }
+    body
+}
+
 /// 剪枝类压缩用例的长工具输出标记：剪枝前必须出现在 `read` 结果里，剪枝后消失。
 pub const PRUNE_MARKER: &str = "PRUNE-ME-OMEGA";
 

@@ -172,7 +172,7 @@ async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
     let seen = counter.clone();
     Mock::given(method("POST")).and(path("/v1/chat/completions")).respond_with(move |request: &wiremock::Request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
-        if body["stream"] != true { return ResponseTemplate::new(200).set_body_json(complete("保留用户纠正、文件路径与尚未完成的目标。")); }
+        if body["stream"] != true { return ResponseTemplate::new(200).set_body_json(complete(&support::soft_checkpoint("保留用户纠正、文件路径与尚未完成的目标。"))); }
         match seen.fetch_add(1, Ordering::SeqCst) {
             0 => ResponseTemplate::new(200).set_body_raw(text_stream("已记录"), "text/event-stream"),
             1 => ResponseTemplate::new(400).set_body_json(json!({"error":{"message":"maximum context length exceeded","code":"context_length_exceeded","type":"invalid_request_error"}})),
@@ -333,8 +333,9 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             if body["stream"] != true {
-                return ResponseTemplate::new(200)
-                    .set_body_json(complete("计划和关键决策：保留接口。"));
+                return ResponseTemplate::new(200).set_body_json(complete(
+                    &support::soft_checkpoint("计划和关键决策：保留接口。"),
+                ));
             }
             ResponseTemplate::new(200).set_body_raw(
                 tool_stream(vec![
@@ -393,7 +394,8 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).expect("请求 JSON");
             if body["stream"] != true {
-                ResponseTemplate::new(200).set_body_json(complete(""))
+                ResponseTemplate::new(500)
+                    .set_body_json(json!({"error": {"message": "upstream down"}}))
             } else {
                 ResponseTemplate::new(200).set_body_raw(
                     tool_stream(vec![
@@ -1015,7 +1017,8 @@ async fn disabled_auto_continue_finishes_after_compaction_without_a_stream_reque
         .respond_with(|request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             assert_ne!(body["stream"], true);
-            ResponseTemplate::new(200).set_body_json(complete("checkpoint"))
+            ResponseTemplate::new(200)
+                .set_body_json(complete(&support::soft_checkpoint("checkpoint")))
         })
         .expect(1)
         .mount(&upstream)

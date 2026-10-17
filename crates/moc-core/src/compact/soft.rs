@@ -1,4 +1,14 @@
 //! 用显式解析的模型生成可更新的历史 checkpoint。
+//!
+//! 摘要请求是压缩链路里唯一的模型生成点，也是最脆的一环：模型偶尔会把
+//! "把对话压成 checkpoint" 理解成"回一句确认"，旧实现照单全收，上下文从此归零。
+//! 现在的流程是「生成 → 校验 → 定向重试 → 确定性兜底」：
+//!
+//! 1. 提示词要求模型按固定段落记录**当前状态**，并把上一版 checkpoint 合并进来；
+//! 2. [`guard`] 校验段落完整性与关键锚点覆盖（路径、标识符、数字）；
+//! 3. 不合格时把缺口清单回灌，最多重试 [`SOFT_MAX_ATTEMPTS`] 次；
+//! 4. 仍不合格时由 [`digest::fallback_checkpoint`] 保住上一版 checkpoint 与最近
+//!    一轮的确定性事实，绝不接受"一句话 checkpoint"。
 
 use std::time::Instant;
 
@@ -6,6 +16,7 @@ use moc_llm::{Message, ToolDef};
 use moc_protocol::RequestContext;
 
 use super::replay::visible_history_start;
+use super::{digest, guard};
 use crate::ResolvedModel;
 use crate::config::ResolvedConfig;
 use crate::error::CoreError;
@@ -14,11 +25,30 @@ use crate::session::state::SessionState;
 
 use super::{CompactionBudget, estimate_tokens, messages_tokens, record_compaction};
 // 摘要请求也是模型可见提示词，遵循 `system_prompt` 模块的提示词编写规范。
-const SUMMARY_SYSTEM: &str = "You are compressing an agent conversation into a checkpoint. Output only the checkpoint; no tool calls, no mention of this request. Use concise engineering English. Preserve exact paths, commands, errors, identifiers, numbers, signatures, and code fragments; quote user corrections verbatim.";
-const SUMMARY_SECTIONS: &str = "Use exactly these sections:\n\
-## Primary Request and Intent\n## Key Technical Concepts\n## Files and Code\n\
-## Errors and Fixes\n## Pending Jobs\n## Current Work\n## Next Step\n\
-## Critical Context\n\n";
+const SUMMARY_SYSTEM: &str = "You are compressing an agent conversation into a checkpoint. Output only the checkpoint; no tool calls, no mention of this request. Use concise engineering English.";
+const SUMMARY_CONTRACT: &str = "\
+The successor agent sees ONLY this checkpoint plus the most recent turn: anything you leave out is lost.
+- Record the current state, not a chronological request log: what is done, what is in flight, what comes next.
+- Preserve every file path, command, error string, identifier, number and signature verbatim; quote user constraints and corrections verbatim.
+- Keep each decision together with the reason it was made, and mark rejected alternatives as rejected.
+- If <previous-summary> is present, merge it: keep every still-relevant fact, drop only what later turns completed or contradicted, and never restart from scratch.
+- If <session-digest> is present it is runtime-recorded ground truth; carry its files, commands and open items into the checkpoint.
+";
+/// checkpoint 的固定段落；同时也是 [`guard::evaluate`] 的完整性依据。
+const SUMMARY_SECTIONS: &[&str] = &[
+    "Primary Request and Intent",
+    "Key Technical Concepts",
+    "Files and Code",
+    "Errors and Fixes",
+    "Pending Jobs",
+    "Current Work",
+    "Next Step",
+    "Critical Context",
+];
+/// 最大尝试次数：一次生成 + 两次定向修复。
+const SOFT_MAX_ATTEMPTS: u32 = 3;
+/// 重试提示词比首轮更长，预算里先留出余量，避免修复轮超窗。
+const REPAIR_RESERVE_TOKENS: u64 = 512;
 
 pub(crate) struct SoftContext<'a> {
     pub inner: &'a CoreInner,
@@ -32,6 +62,66 @@ pub(crate) struct SoftContext<'a> {
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
     pub budget: CompactionBudget,
+}
+
+/// 一次被拒收的 checkpoint 及重试时回灌的缺口。
+struct Repair {
+    reason: String,
+    missing: Vec<String>,
+}
+
+/// 摘要采样所需的请求上下文；多次重试共用。
+struct SummaryRequest<'a> {
+    inner: &'a CoreInner,
+    ctx: &'a RequestContext,
+    state: &'a SessionState,
+    config: &'a ResolvedConfig,
+    model: &'a ResolvedModel,
+    static_prefix: &'a [usize],
+    tools: &'a [ToolDef],
+}
+
+impl SummaryRequest<'_> {
+    /// 发一次摘要请求，返回模型原始输出。
+    async fn sample(&self, messages: Vec<Message>) -> Result<String, CoreError> {
+        let request = crate::service::prompt::request::build_request(
+            self.model,
+            self.config,
+            messages,
+            self.tools.to_vec(),
+            None,
+            &self.state.session.id,
+            crate::service::prompt::request::CacheAnchors {
+                instruction_static: self.static_prefix,
+                // 摘要是本次请求特有的最后一条消息，不能落缓存断点。
+                trailing_reminders: 1,
+            },
+        );
+        let cancel = self.ctx.cancel();
+        let request_started = Instant::now();
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(CoreError::Cancelled),
+            result = self.inner.client.complete(&self.model.llm, &request) => match result {
+                Ok(response) => response,
+                Err(error) => {
+                    if let moc_llm::LlmError::Guard(violation) = &error
+                        && let Some(guard) = self.inner.runtime(&self.state.session.id).await.guard.lock().clone()
+                    { guard.stop(violation.clone()); }
+                    return Err(error.into());
+                }
+            },
+        };
+        crate::service::record_model_usage(
+            self.inner,
+            &self.state.session.id,
+            &self.model.selector,
+            response.usage,
+            request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        )
+        .await?;
+        Ok(response.message.text())
+    }
 }
 
 pub(crate) async fn compact(
@@ -54,13 +144,17 @@ pub(crate) async fn compact(
         fixed_tokens,
     } = budget;
     let visible_start = visible_history_start(state);
-    let history: Vec<Message> = state
-        .transcript
-        .iter()
-        .skip(visible_start)
-        .filter_map(|entry| entry.context_message())
-        .map(|message| super::replay::repair_tool_history(message, Some(model)))
-        .collect();
+    // `bash_flags` 与 `history` 一一对应：手动命令的输出是原样文本，不参与锚点校验
+    // （否则模型会被要求逐字复述一段命令输出，而不是工程事实）。
+    let mut history: Vec<Message> = Vec::new();
+    let mut bash_flags: Vec<bool> = Vec::new();
+    for entry in state.transcript.iter().skip(visible_start) {
+        let Some(message) = entry.context_message() else {
+            continue;
+        };
+        history.push(super::replay::repair_tool_history(message, Some(model)));
+        bash_flags.push(entry.bash.is_some());
+    }
     if history.is_empty() && state.summary.is_none() {
         return Err(CoreError::ContextOverflow(
             "no history is available to summarize".into(),
@@ -88,62 +182,98 @@ pub(crate) async fn compact(
             .unwrap_or(history.len());
     }
     let retained = messages_tokens(&history[start..]);
-    let prompt = summary_prompt(state, instructions, 0);
+    let previous_summary = state.summary.as_ref().map(|(_, summary)| summary.as_str());
+    let session_digest = digest::prompt_digest(state);
+    let base_prompt = summary_prompt(state, instructions, 0, session_digest.as_deref(), None);
     let fixed_summary_tokens = messages_tokens(system).saturating_add(super::tools_tokens(tools));
-    let prompt_tokens = estimate_tokens(&prompt);
     let input_budget = model
         .context_window
         .saturating_sub(model.max_output_tokens as u64)
         .saturating_sub(fixed_summary_tokens)
-        .saturating_sub(prompt_tokens);
+        .saturating_sub(estimate_tokens(&base_prompt))
+        .saturating_sub(REPAIR_RESERVE_TOKENS);
     let (selected_history, omitted_prompts) = fit_summary_history(&history[..start], input_budget);
-    let prompt = summary_prompt(state, instructions, omitted_prompts);
-    let mut messages = Vec::with_capacity(system.len() + selected_history.len() + 1);
-    messages.extend_from_slice(system);
-    messages.extend(selected_history);
-    messages.push(Message::user_text(prompt));
-    let request = crate::service::prompt::request::build_request(
-        model,
-        config,
-        messages,
-        tools.to_vec(),
-        None,
-        &state.session.id,
-        crate::service::prompt::request::CacheAnchors {
-            instruction_static: static_prefix,
-            // 摘要是本次请求特有的最后一条消息，不能落缓存断点。
-            trailing_reminders: 1,
-        },
+    // 锚点取自"被丢弃的历史"与上一版 checkpoint：这些事实一旦丢失就永久丢失。
+    // 手动命令输出不入锚点（那是原样文本，不是工程事实）；预算裁掉的更早轮次仍计入，
+    // 提示词里的 `<older-history-omitted>` 指向 `history://transcript`，模型可以回查。
+    let anchors = guard::salient_anchors(
+        history[..start]
+            .iter()
+            .zip(&bash_flags[..start])
+            .filter(|(_, is_bash)| !**is_bash)
+            .map(|(message, _)| message),
+        previous_summary,
     );
-    let cancel = ctx.cancel();
-    let request_started = Instant::now();
-    let response = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Err(CoreError::Cancelled),
-        result = inner.client.complete(&model.llm, &request) => match result {
-            Ok(response) => response,
-            Err(error) => {
-                if let moc_llm::LlmError::Guard(violation) = &error
-                    && let Some(guard) = inner.runtime(&state.session.id).await.guard.lock().clone()
-                { guard.stop(violation.clone()); }
-                return Err(error.into());
+    let summary_request = SummaryRequest {
+        inner,
+        ctx,
+        state,
+        config,
+        model,
+        static_prefix,
+        tools,
+    };
+    let mut best: Option<(String, f64)> = None;
+    let mut repair: Option<Repair> = None;
+    let mut accepted: Option<String> = None;
+    for attempt in 1..=SOFT_MAX_ATTEMPTS {
+        let prompt = summary_prompt(
+            state,
+            instructions,
+            omitted_prompts,
+            session_digest.as_deref(),
+            repair.as_ref(),
+        );
+        let mut messages = Vec::with_capacity(system.len() + selected_history.len() + 1);
+        messages.extend_from_slice(system);
+        messages.extend_from_slice(&selected_history);
+        messages.push(Message::user_text(prompt));
+        let raw = summary_request.sample(messages).await?;
+        let cleaned = guard::unwrap_checkpoint(&raw);
+        let verdict = guard::evaluate(&cleaned, &anchors, SUMMARY_SECTIONS);
+        if matches!(verdict, guard::Verdict::Ok) {
+            accepted = Some(cleaned);
+            break;
+        }
+        if !verdict.is_structural() {
+            let coverage = guard::coverage(&anchors, &cleaned);
+            let better = match &best {
+                None => true,
+                Some((_, current)) => coverage > *current,
+            };
+            if better {
+                best = Some((cleaned, coverage));
+            }
+        }
+        tracing::debug!(
+            session = %state.session.id,
+            attempt,
+            verdict = ?verdict,
+            "summary checkpoint rejected"
+        );
+        let missing = match &verdict {
+            guard::Verdict::Coverage(_, missing) => missing.clone(),
+            _ => Vec::new(),
+        };
+        repair = Some(Repair {
+            reason: verdict.reason(),
+            missing,
+        });
+    }
+    let summary = match accepted {
+        Some(summary) => summary,
+        None => match best {
+            Some((summary, coverage)) if coverage >= guard::ACCEPTABLE_ANCHOR_COVERAGE => summary,
+            _ => {
+                tracing::warn!(
+                    session = %state.session.id,
+                    attempts = SOFT_MAX_ATTEMPTS,
+                    "summary model produced no usable checkpoint; using deterministic fallback"
+                );
+                digest::fallback_checkpoint(state, &history, previous_summary)
             }
         },
     };
-    crate::service::record_model_usage(
-        inner,
-        &state.session.id,
-        &model.selector,
-        response.usage,
-        request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-    )
-    .await?;
-    let summary = response.message.text().trim().to_owned();
-    if summary.is_empty() {
-        return Err(CoreError::ContextOverflow(
-            "the summary model returned an empty checkpoint".into(),
-        ));
-    }
     let first_kept = state
         .transcript
         .iter()
@@ -227,15 +357,25 @@ fn summary_prompt(
     state: &SessionState,
     instructions: Option<&str>,
     omitted_prompts: usize,
+    session_digest: Option<&str>,
+    repair: Option<&Repair>,
 ) -> String {
-    let mut prompt = String::with_capacity(SUMMARY_SYSTEM.len() + SUMMARY_SECTIONS.len() + 64);
+    let sections = sections_block();
+    let mut prompt =
+        String::with_capacity(SUMMARY_SYSTEM.len() + SUMMARY_CONTRACT.len() + sections.len() + 256);
     prompt.push_str(SUMMARY_SYSTEM);
-    prompt.push_str("\n\n");
-    prompt.push_str(SUMMARY_SECTIONS);
+    prompt.push_str("\n\n<checkpoint-contract>\n");
+    prompt.push_str(SUMMARY_CONTRACT);
+    prompt.push_str("</checkpoint-contract>\n\n");
+    prompt.push_str(&sections);
     if let Some((_, summary)) = &state.summary {
         prompt.push_str("<previous-summary>\n");
         prompt.push_str(summary);
         prompt.push_str("\n</previous-summary>\n\n");
+    }
+    if let Some(digest) = session_digest {
+        prompt.push_str(digest);
+        prompt.push_str("\n\n");
     }
     if let Some(plan) = state
         .plans
@@ -257,7 +397,45 @@ fn summary_prompt(
         prompt.push_str(instructions);
         prompt.push_str("\n</user-instructions>\n");
     }
+    if let Some(repair) = repair {
+        prompt.push_str(&repair_block(repair));
+    }
     prompt
+}
+
+/// 固定段落清单；提示词与校验共用同一份顺序。
+fn sections_block() -> String {
+    let mut out = String::with_capacity(SUMMARY_SECTIONS.len() * 40 + 32);
+    out.push_str("Use exactly these sections:\n");
+    for title in SUMMARY_SECTIONS {
+        out.push_str("## ");
+        out.push_str(title);
+        out.push('\n');
+    }
+    out.push('\n');
+    out
+}
+
+/// 拒收原因与缺失事实；重试时原样回灌，模型才知道该补什么。
+fn repair_block(repair: &Repair) -> String {
+    let mut out = String::from("<previous-attempt-rejected>\n");
+    out.push_str("Your previous reply was rejected: ");
+    out.push_str(&repair.reason);
+    out.push_str(
+        ".\nRewrite the COMPLETE checkpoint (not a patch) and keep every required section.\n",
+    );
+    if repair.missing.is_empty() {
+        out.push_str("Follow <checkpoint-contract> exactly.\n");
+    } else {
+        out.push_str("These exact facts must appear verbatim in the checkpoint:\n");
+        for item in &repair.missing {
+            out.push_str("- ");
+            out.push_str(item);
+            out.push('\n');
+        }
+    }
+    out.push_str("</previous-attempt-rejected>\n");
+    out
 }
 
 #[cfg(test)]
@@ -267,7 +445,7 @@ fn summary_transcript(
     start: usize,
     instructions: Option<&str>,
 ) -> String {
-    let mut transcript = summary_prompt(state, instructions, 0);
+    let mut transcript = summary_prompt(state, instructions, 0, None, None);
     for message in &history[..start] {
         transcript.push_str(&serde_json::to_string(message).expect("Message 可序列化"));
         transcript.push_str("\n\n");
@@ -342,6 +520,44 @@ mod tests {
         assert!(input.contains("## Primary Request and Intent\n## Key Technical Concepts"));
         assert!(input.contains("older request"));
         assert!(!input.contains("recent request"));
+    }
+
+    #[test]
+    fn summary_prompt_states_the_merge_contract_and_digest() {
+        let header = Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "t".into(),
+            1,
+        );
+        let state = SessionState::from_entries(vec![header]).unwrap();
+        let prompt = summary_prompt(
+            &state,
+            None,
+            0,
+            Some("<session-digest>\n- a.rs\n</session-digest>"),
+            None,
+        );
+        assert!(prompt.contains("<checkpoint-contract>"));
+        assert!(prompt.contains("never restart from scratch"));
+        assert!(prompt.contains("<session-digest>\n- a.rs\n</session-digest>"));
+        assert!(prompt.contains("## Critical Context"));
+    }
+
+    #[test]
+    fn repair_block_lists_missing_anchors() {
+        let block = repair_block(&Repair {
+            reason: "your reply omits too many concrete facts (anchor coverage 40%)".into(),
+            missing: vec!["45_000".into(), "crates/ingest/src/window.rs".into()],
+        });
+        assert!(block.starts_with("<previous-attempt-rejected>"));
+        assert!(block.contains("- 45_000"));
+        assert!(block.contains("- crates/ingest/src/window.rs"));
+        assert!(block.ends_with("</previous-attempt-rejected>\n"));
     }
 
     #[test]

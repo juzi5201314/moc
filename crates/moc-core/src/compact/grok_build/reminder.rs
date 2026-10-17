@@ -3,13 +3,14 @@
 //! full-replace 历史只保留摘要，todos、后台任务、子代理与活动计划都是运行态，
 //! 不在摘要里也无法从 transcript 推导，必须在压缩时快照成一条 system reminder。
 
-use moc_protocol::methods::{AgentStatus, PlanStatus, TodoStatus};
-use serde_json::Value;
+use moc_protocol::methods::{AgentStatus, PlanStatus};
 
 use crate::service::CoreInner;
 use crate::session::state::SessionState;
 use crate::session::store::now_ms;
 use crate::tools::job::JobStatus;
+
+use super::super::digest::TodoLines;
 
 /// 渲染整条提醒；所有分节都为空时返回 `None`，不注入空标签。
 pub(crate) async fn render(inner: &CoreInner, state: &SessionState) -> Option<String> {
@@ -40,43 +41,7 @@ pub(crate) async fn render(inner: &CoreInner, state: &SessionState) -> Option<St
 
 /// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 使用同一份成功判定。
 fn edited_files(state: &SessionState) -> Option<String> {
-    let completed: std::collections::HashSet<&str> = state
-        .transcript
-        .iter()
-        .flat_map(|entry| entry.message.tool_results())
-        .filter(|result| !result.is_error)
-        .map(|result| result.tool_call_id.as_str())
-        .collect();
-    let mut files = std::collections::BTreeSet::new();
-    for call in state
-        .transcript
-        .iter()
-        .flat_map(|entry| entry.message.tool_calls())
-    {
-        if !completed.contains(call.id.as_str()) {
-            continue;
-        }
-        let Ok(arguments) = call.arguments_json() else {
-            continue;
-        };
-        match call.name.as_str() {
-            "edit" | "write" => {
-                if let Some(path) = arguments.get("path").and_then(Value::as_str) {
-                    files.insert(path.to_owned());
-                }
-            }
-            "move" => {
-                if let Some(path) = arguments
-                    .get("move")
-                    .and_then(|value| value.get("target_path"))
-                    .and_then(Value::as_str)
-                {
-                    files.insert(path.to_owned());
-                }
-            }
-            _ => {}
-        }
-    }
+    let files = super::super::digest::edited_files(state);
     if files.is_empty() {
         return None;
     }
@@ -113,36 +78,11 @@ async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String>
 
 /// 未完成的 todo 项；已完成与已放弃的只计数。
 fn todo_list(state: &SessionState) -> Option<String> {
-    let mut lines = Vec::new();
-    let mut completed = 0usize;
-    let mut cancelled = 0usize;
-    for (phase_index, phase) in state.todos.iter().enumerate() {
-        for (item_index, item) in phase.items.iter().enumerate() {
-            let id = format!("todo-{}-{}", phase_index + 1, item_index + 1);
-            match item.status {
-                TodoStatus::Completed => {
-                    completed += 1;
-                    continue;
-                }
-                TodoStatus::Abandoned => {
-                    cancelled += 1;
-                    continue;
-                }
-                TodoStatus::Pending | TodoStatus::Blocked => {
-                    lines.push(format!("- [pending] {id}: {}", item.task));
-                }
-                TodoStatus::InProgress => {
-                    lines.push(format!("- [in_progress] {id}: {}", item.task));
-                }
-            }
-            if let Some(reason) = &item.reason {
-                let line = lines.last_mut().expect("刚推入一行");
-                line.push_str(" (");
-                line.push_str(reason);
-                line.push(')');
-            }
-        }
-    }
+    let TodoLines {
+        lines,
+        completed,
+        cancelled,
+    } = super::super::digest::todo_lines(state);
     if lines.is_empty() && completed == 0 && cancelled == 0 {
         return None;
     }
@@ -211,7 +151,9 @@ fn active_plan(state: &SessionState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use moc_llm::{ContentPart, Message, ToolCall};
-    use moc_protocol::methods::{PlanInfo, SessionMode, SessionPermission, TodoItem, TodoPhase};
+    use moc_protocol::methods::{
+        PlanInfo, SessionMode, SessionPermission, TodoItem, TodoPhase, TodoStatus,
+    };
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
