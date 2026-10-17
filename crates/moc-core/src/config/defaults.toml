@@ -94,6 +94,7 @@ overflow = "error"
 [compaction]
 enabled = true
 method_order = ["remote", "shake", "soft"]
+soft_method = "moc"
 threshold = { mode = "percent", value = 85 }
 keep_recent_tokens = 20000
 protect_recent_tool_tokens = 20000

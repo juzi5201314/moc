@@ -6,11 +6,14 @@ use moc_protocol::methods::PlanStatus;
 use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
-/// 本地注入上下文消息的固定前缀与正文分块短名：压缩摘要、活动计划、todo 快照。
-const INJECTED_PREFIXES: [(&str, &str); 3] = [
+/// 本地注入上下文消息的固定前缀与正文分块短名：压缩摘要、活动计划、todo 快照、
+/// Grok Build 的续接前言与运行时提醒。
+const INJECTED_PREFIXES: [(&str, &str); 5] = [
     ("<compaction-summary", "compaction summary"),
     ("<active-plan", "active plan"),
     ("<active-todos", "active todos"),
+    ("This session is being continued", "grok build summary"),
+    ("<system-reminder>", "system reminder"),
 ];
 
 /// 消息是否由 moc 注入而非用户输入。
@@ -38,6 +41,23 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
         messages.extend_from_slice(system);
     }
     let start = visible_history_start(state);
+    // Grok Build 的 full-replace 历史：最后一条用户查询 + 摘要 + 运行时提醒，不带旧消息。
+    if let Some((method, summary)) = &state.summary
+        && method == "grok_build"
+    {
+        if let Some(query) = crate::compact::grok_build::last_user_message(state) {
+            messages.push(query);
+        }
+        if !summary.is_empty() {
+            messages.push(Message::user_text(crate::compact::grok_build::carrier(
+                summary,
+            )));
+        }
+        if let Some(reminder) = &state.summary_reminder {
+            messages.push(Message::user_text(reminder.clone()));
+        }
+        return messages;
+    }
     if let Some((method, summary)) = &state.summary
         && !summary.is_empty()
         && state.native_input.is_none()
@@ -214,6 +234,7 @@ mod tests {
                 instructions: None,
                 native: None,
                 model: Some("p/model".into()),
+                reminder: None,
             },
             first_id,
             3,
@@ -311,6 +332,7 @@ mod tests {
                     native: Some(Box::new(native)),
                     // 旧记录没有产出模型：换模型时必须保守作废。
                     model: None,
+                    reminder: None,
                 },
             ] {
                 state.apply_entry(Entry::from_payload(payload, state.last_entry_id.clone(), 2));
@@ -380,6 +402,7 @@ mod tests {
                         {"type": "compaction", "encrypted_content": "opaque"}
                     ]))),
                     model: checkpoint_model.map(str::to_owned),
+                    reminder: None,
                 },
                 state.last_entry_id.clone(),
                 3,
@@ -446,6 +469,84 @@ mod tests {
         assert!(state.native_input.is_none());
         assert!(state.summary.is_none());
         assert!(state.first_kept_id.is_none());
+    }
+
+    #[test]
+    fn grok_build_checkpoint_replays_query_summary_and_reminder_only() {
+        let header = Entry::header(
+            "ses_grok1234567".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "grok".into(),
+            1,
+        );
+        let query = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("原始需求：实现可切换 soft 压缩"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            header.id().into(),
+            2,
+        );
+        let answer = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::assistant_text("旧助手回答不应出现"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            query.id().into(),
+            3,
+        );
+        let compact = Entry::from_payload(
+            EntryPayload::Compaction {
+                method: "grok_build".into(),
+                summary: "Summary:\n1. Primary Request and Intent: 实现可切换 soft 压缩".into(),
+                first_kept_id: None,
+                tokens_before: 100,
+                tokens_after: 40,
+                instructions: None,
+                native: None,
+                model: Some("p/m".into()),
+                reminder: Some(
+                    "<system-reminder>\n## TODO List\n- [pending] todo-1-1: 接线\n</system-reminder>"
+                        .into(),
+                ),
+            },
+            answer.id().into(),
+            4,
+        );
+        let state = SessionState::from_entries(vec![header, query, answer, compact]).unwrap();
+        let messages = model_messages(&state, None, None);
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert_eq!(messages[0].text(), "原始需求：实现可切换 soft 压缩");
+        assert!(messages[1].text().starts_with(
+            "This session is being continued from a previous conversation that ran out of context."
+        ));
+        assert!(messages[1].text().contains("1. Primary Request and Intent"));
+        assert_eq!(
+            messages[2].text(),
+            "<system-reminder>\n## TODO List\n- [pending] todo-1-1: 接线\n</system-reminder>"
+        );
+        for message in &messages {
+            assert!(
+                !message.text().contains("<compaction-summary"),
+                "Grok 不走通用摘要包装"
+            );
+            assert!(
+                !message.text().contains("旧助手回答不应出现"),
+                "压缩前的旧消息必须被隐藏"
+            );
+        }
+        // 注入消息不参与子代理任务推导，也不该被当成用户输入。
+        assert!(is_injected_context(&messages[1]));
+        assert!(is_injected_context(&messages[2]));
+        assert!(!is_injected_context(&messages[0]));
     }
 
     #[test]

@@ -47,6 +47,8 @@ pub(crate) struct SessionRuntime {
     /// 代理间消息收件箱：运行中的提示在轮边界取走并落库。
     pub agent_inbox: Mutex<crate::agents::AgentInbox>,
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
+    /// Grok Build 的两遍压缩预火状态；同步原语，绝不跨任务持有异步锁。
+    pub grok_prefire: crate::compact::grok_build::prefire::PrefireState,
 }
 
 impl SessionRuntime {
@@ -63,6 +65,7 @@ impl SessionRuntime {
             steering: Mutex::new(management::Steering::default()),
             agent_inbox: Mutex::new(crate::agents::AgentInbox::default()),
             guard: parking_lot::Mutex::new(None),
+            grok_prefire: crate::compact::grok_build::prefire::PrefireState::default(),
         }
     }
 }

@@ -340,6 +340,20 @@ pub enum CompactionMethod {
     Soft,
 }
 
+/// soft 压缩使用的摘要实现。
+///
+/// 只切换走到 `soft` 之后的行为；`remote` 与压缩前的 `shake` 顺序、参数与
+/// 默认值不受影响，因此它不参与 [`CompactionConfig::method_order`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SoftMethod {
+    /// moc 自有的保留尾部 + 8 段摘要实现。
+    #[default]
+    Moc,
+    /// Grok Build 的 9 段摘要 + full-replace 历史实现。
+    GrokBuild,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CompactionConfig {
@@ -347,6 +361,8 @@ pub struct CompactionConfig {
     pub enabled: bool,
     /// 压缩方法尝试顺序。
     pub method_order: Vec<CompactionMethod>,
+    /// `soft` 方法的摘要实现。
+    pub soft_method: SoftMethod,
     pub threshold: CompactionThreshold,
     pub keep_recent_tokens: u32,
     pub protect_recent_tool_tokens: u32,
@@ -367,6 +383,7 @@ impl Default for CompactionConfig {
                 CompactionMethod::Shake,
                 CompactionMethod::Soft,
             ],
+            soft_method: SoftMethod::default(),
             threshold: CompactionThreshold::default(),
             keep_recent_tokens: 20_000,
             protect_recent_tool_tokens: 20_000,

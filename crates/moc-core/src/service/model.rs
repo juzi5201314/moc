@@ -77,6 +77,8 @@ pub(crate) async fn switch(
         )
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
+    // 模型变了，旧模型产出的预火摘要（含 NOTE₁）不再可用。
+    inner.runtime(session_id).await.grok_prefire.clear();
     // 先切换再压缩：ModelChange 会作废旧模型的 native 载荷与 remote 摘要，
     // checkpoint 必须由新模型产出。
     let compaction_error = match action {

@@ -1,6 +1,7 @@
 //! 上下文预算、压缩方法调度与 checkpoint 提交。
 
 pub mod archive;
+pub mod grok_build;
 pub mod images;
 pub mod remote;
 pub mod replay;
@@ -11,7 +12,7 @@ use moc_llm::{ContentPart, Message, ToolDef};
 use moc_protocol::RequestContext;
 use moc_protocol::methods::{CompactResult, SessionUpdate};
 
-use crate::config::{CompactionMethod, ResolvedConfig};
+use crate::config::{CompactionMethod, ResolvedConfig, SoftMethod};
 use crate::error::CoreError;
 use crate::service::CoreInner;
 use crate::session::entries::EntryPayload;
@@ -62,8 +63,11 @@ pub fn messages_tokens(messages: &[Message]) -> u64 {
     messages.iter().map(message_tokens).sum()
 }
 
+/// 每条消息的固定结算开销；与内容无关，但确实计入上下文预算。
+pub(crate) const MESSAGE_TOKEN_OVERHEAD: u64 = 8;
+
 pub(crate) fn message_tokens(message: &Message) -> u64 {
-    8u64.saturating_add(message.content.iter().map(content_part_tokens).sum())
+    MESSAGE_TOKEN_OVERHEAD.saturating_add(message.content.iter().map(content_part_tokens).sum())
 }
 
 fn content_part_tokens(part: &ContentPart) -> u64 {
@@ -287,7 +291,7 @@ pub(crate) async fn compact(
     };
     let required_tokens = required_tokens(&config, model.context_window, reason);
     if instructions.is_some() {
-        let result = soft::compact(soft::SoftContext {
+        let result = run_soft(SoftInput {
             inner,
             ctx,
             state: &state,
@@ -326,7 +330,7 @@ pub(crate) async fn compact(
                 shake::compact(inner, ctx, &state, &config, &model, budget).await
             }
             CompactionMethod::Soft => {
-                soft::compact(soft::SoftContext {
+                run_soft(SoftInput {
                     inner,
                     ctx,
                     state: &state,
@@ -375,12 +379,76 @@ pub(crate) async fn compact(
     )))
 }
 
+/// soft 方法的共享输入；两种实现只在摘要提示词与提交方式上不同。
+pub(crate) struct SoftInput<'a> {
+    pub inner: &'a CoreInner,
+    pub ctx: &'a RequestContext,
+    pub state: &'a crate::session::state::SessionState,
+    pub config: &'a ResolvedConfig,
+    pub model: &'a crate::ResolvedModel,
+    pub system: &'a [Message],
+    pub static_prefix: &'a [usize],
+    pub tools: &'a [ToolDef],
+    pub instructions: Option<&'a str>,
+    pub budget: CompactionBudget,
+}
+
+/// 按 `compaction.soft_method` 分派 soft 实现；`remote` 与 `shake` 不经过这里。
+async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
+    let SoftInput {
+        inner,
+        ctx,
+        state,
+        config,
+        model,
+        system,
+        static_prefix,
+        tools,
+        instructions,
+        budget,
+    } = input;
+    match config.compaction.soft_method {
+        SoftMethod::Moc => {
+            soft::compact(soft::SoftContext {
+                inner,
+                ctx,
+                state,
+                config,
+                model,
+                system,
+                static_prefix,
+                tools,
+                instructions,
+                budget,
+            })
+            .await
+        }
+        SoftMethod::GrokBuild => {
+            grok_build::compact(grok_build::GrokBuildContext {
+                inner,
+                ctx,
+                state,
+                config,
+                model,
+                system,
+                static_prefix,
+                tools,
+                instructions,
+                budget,
+            })
+            .await
+        }
+    }
+}
+
 /// checkpoint 归档的来源。
 pub(crate) enum HistoryArchive {
     /// 记录时按当前状态写出压缩前历史。
     Write,
     /// 调用方已在改写 transcript 之前完成归档，直接复用其结果。
     Precomputed(Option<String>),
+    /// 不写归档：Grok Build 的 full-replace 历史不带历史指针。
+    None,
 }
 
 pub(crate) struct Checkpoint {
@@ -389,6 +457,8 @@ pub(crate) struct Checkpoint {
     /// checkpoint 的产出模型；决定原生载荷在换模型后是否仍然有效。
     pub model: Option<String>,
     pub summary: String,
+    /// Grok Build full-replace 的运行时状态提醒；其他方法为 `None`。
+    pub reminder: Option<String>,
     pub first_kept_id: Option<String>,
     pub tokens_before: u64,
     pub tokens_after: u64,
@@ -407,6 +477,7 @@ pub(crate) async fn record_compaction(
         method,
         model,
         mut summary,
+        reminder,
         first_kept_id,
         tokens_before,
         tokens_after,
@@ -430,9 +501,12 @@ pub(crate) async fn record_compaction(
                 instructions,
                 native,
                 model,
+                reminder,
             },
         )
         .await?;
+    // 本轮压缩已经落地，预火结果不再对任何后续压缩有效。
+    inner.runtime(session_id).await.grok_prefire.clear();
     ctx.updates()
         .emit(
             session_id.to_owned(),
@@ -461,6 +535,8 @@ async fn append_runtime_checkpoint(
     let record = inner.sessions.get(session_id).await?;
     let state = record.state.lock().await.clone();
     let archive_uri = match archive {
+        // Grok Build 的 full-replace 历史不携带历史指针，也不追加运行时快照。
+        HistoryArchive::None => return Ok(()),
         HistoryArchive::Write => archive::write(&record.paths, &state).await?,
         HistoryArchive::Precomputed(uri) => uri,
     };

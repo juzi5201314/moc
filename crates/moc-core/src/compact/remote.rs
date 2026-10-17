@@ -157,6 +157,7 @@ pub(crate) async fn compact(
             method: "remote".to_owned(),
             model: Some(model.selector.clone()),
             summary,
+            reminder: None,
             first_kept_id,
             tokens_before,
             tokens_after,

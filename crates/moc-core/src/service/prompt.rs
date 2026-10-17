@@ -620,6 +620,21 @@ async fn run_prompt_locked(
         };
         inputs.messages.extend(reminder_messages.iter().cloned());
         let context_tokens = inputs.context_tokens;
+        // 预火只改 soft 的输入来源，不改变 remote/shake 顺序；条件判断都在内部。
+        compact::grok_build::prefire::maybe_prefire(
+            &inner,
+            &params.session_id,
+            &project_config,
+            &model,
+            context_tokens,
+            compact::grok_build::PromptSkeleton {
+                system: &system.messages,
+                static_prefix: &system.static_prefix,
+                tools: &tools_available,
+            },
+            &ctx.cancel(),
+        )
+        .await;
         if mode != moc_protocol::methods::SessionMode::ClmExperimental
             && project_config.compaction.enabled
             && project_config.compaction.auto
@@ -994,6 +1009,7 @@ async fn run_prompt_locked(
                     method: "remote".to_owned(),
                     model: Some(model.selector.clone()),
                     summary: compact::remote::checkpoint_summary(&compact_state),
+                    reminder: None,
                     first_kept_id,
                     tokens_before: response.usage.input_tokens,
                     tokens_after,

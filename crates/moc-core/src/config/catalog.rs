@@ -130,10 +130,11 @@ fn rank(key: &str) -> usize {
         "mid_prompt" => 3,
         "auto_continue" => 4,
         "method_order" => 5,
-        "keep_recent_tokens" => 6,
-        "protect_recent_tool_tokens" => 7,
-        "remote" => 8,
-        "shake" => 9,
+        "soft_method" => 6,
+        "keep_recent_tokens" => 7,
+        "protect_recent_tool_tokens" => 8,
+        "remote" => 9,
+        "shake" => 10,
         "foreground_after_secs" => 0,
         "monitored_timeout_secs" => 1,
         "slow_warning_interval_secs" => 2,
@@ -281,6 +282,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         "mode" if path.iter().any(|part| part == "threshold") => {
             &[("percent", "按上下文比例"), ("tokens", "按固定长度")]
         }
+        "soft_method" => &[("moc", "Moc（当前实现）"), ("grok_build", "Grok Build")],
         _ => &[],
     };
     let kind = if !options.is_empty() {
@@ -507,7 +509,11 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "overflow" => ("超出上限时", "直接报错，或等待有空位再继续。"),
             "method_order" => (
                 "压缩方式顺序",
-                "逐行填写 remote（服务端）、shake（本地修剪）、soft（摘要），按顺序尝试。",
+                "逐行填写 remote（服务端）、shake（本地修剪）、soft（摘要），按顺序尝试；soft 的摘要实现由「Soft 摘要方式」决定。",
+            ),
+            "soft_method" => (
+                "Soft 摘要方式",
+                "选择 soft 压缩使用的摘要实现；remote 与 shake 不受影响。Grok Build 使用其 9 段摘要与 full-replace 历史，忽略「保留最近对话」和「保留最近工具结果」。",
             ),
             "keep_recent_tokens" => ("保留最近对话", "压缩后保留的最近对话长度（token）。"),
             "protect_recent_tool_tokens" => {

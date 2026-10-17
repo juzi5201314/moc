@@ -313,6 +313,86 @@ async fn workspace_rename_preserves_identity_and_manual_cleanup_is_scoped() {
 }
 
 #[test]
+fn soft_method_defaults_to_moc_and_switches_through_the_editor() {
+    let (_root, boot) = workspace();
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[models.roles]\ndefault='p/demo'\nexplore='p/demo'\nplan='p/demo'\n\
+         [providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n\
+         [providers.p.models.demo]\n",
+    )
+    .unwrap();
+    let resolved = ResolvedConfig::load(&boot).unwrap();
+    assert_eq!(
+        resolved.compaction.soft_method,
+        moc_core::config::SoftMethod::Moc,
+        "默认仍是 moc 自有 soft 实现"
+    );
+    assert_eq!(
+        resolved.compaction.method_order.len(),
+        3,
+        "soft_method 不进入 method_order"
+    );
+
+    let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
+    let field = view
+        .fields
+        .iter()
+        .find(|field| field.path == ["compaction", "soft_method"])
+        .expect("设置目录出现 soft_method");
+    assert_eq!(field.tab, "上下文");
+    assert_eq!(field.label, "Soft 摘要方式");
+    let FieldKind::Choice(options) = &field.kind else {
+        panic!("soft_method 应为候选列表");
+    };
+    assert!(
+        options
+            .iter()
+            .any(|option| option.value == "grok_build" && option.label.contains("Grok Build")),
+        "{options:?}"
+    );
+    assert!(
+        options.iter().any(|option| option.value == "moc"),
+        "{options:?}"
+    );
+
+    let resolved = editor::save(
+        &boot,
+        ConfigScope::Global,
+        &boot.cwd,
+        json!({"compaction": {"soft_method": "grok_build"}}),
+        &view.revision,
+    )
+    .unwrap();
+    assert_eq!(
+        resolved.compaction.soft_method,
+        moc_core::config::SoftMethod::GrokBuild
+    );
+    let saved: toml::Value =
+        toml::from_str(&std::fs::read_to_string(boot.home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        saved["compaction"]["soft_method"].as_str(),
+        Some("grok_build")
+    );
+}
+
+#[test]
+fn unknown_soft_method_is_rejected() {
+    let (_root, boot) = workspace();
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[models.roles]\ndefault='p/demo'\nexplore='p/demo'\nplan='p/demo'\n\
+         [providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n\
+         [providers.p.models.demo]\n[compaction]\nsoft_method = \"caveman\"\n",
+    )
+    .unwrap();
+    let Err(error) = ResolvedConfig::load(&boot) else {
+        panic!("未知的 soft 实现必须报错");
+    };
+    assert!(error.to_string().contains("soft_method"), "{error}");
+}
+
+#[test]
 fn web_search_base_url_round_trips_through_editor() {
     let (_root, boot) = workspace();
     let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();

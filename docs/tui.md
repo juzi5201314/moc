@@ -105,7 +105,7 @@ statusline = "{model} * {mode} -> {workdir}"
 
 ## 上下文正文窗
 
-`/context` 打开：窗内列出**真正送进模型的内容**，顺序与请求一致——系统提示片段（`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`subagent`、`environment`、`append`）、逐个工具 schema（分块名就是工具名）、注入消息（`compaction summary`、`active plan`、`active todos`）与会话消息（`user`、`assistant`、`tool result`、`bash`、`agent`）。每块一行标题，`▌` 色标与分块名同色（按分块顺序取调色板），右端是该块单独估算的 token；标题栏显示合计与窗口上限，与占用窗、顶部进度条同口径。新会话只有前面组装好的上下文，消息部分为空。
+`/context` 打开：窗内列出**真正送进模型的内容**，顺序与请求一致——系统提示片段（`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`subagent`、`environment`、`append`）、逐个工具 schema（分块名就是工具名）、注入消息（`compaction summary`、`active plan`、`active todos`、`grok build summary`、`system reminder`）与会话消息（`user`、`assistant`、`tool result`、`bash`、`agent`）。每块一行标题，`▌` 色标与分块名同色（按分块顺序取调色板），右端是该块单独估算的 token；标题栏显示合计与窗口上限，与占用窗、顶部进度条同口径。新会话只有前面组装好的上下文，消息部分为空。
 
 正文超过 6 行的块默认折叠成前 6 行加一行「… 还有 N 行 · 点击展开」，点标题或正文任意一行展开，再点收起。单块正文超过 256 KiB 时由 core 按字符边界截断，块尾标注被丢掉的字节数。窗口约占终端四分之三宽、五分之四高（上限 120×40），右缘是可拖拽的滚动条（按在滑块上保持抓取点，按在轨道空白处把滑块挪过来），鼠标滚轮一次三行。
 

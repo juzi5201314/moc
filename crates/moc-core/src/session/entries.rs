@@ -78,6 +78,9 @@ pub enum Entry {
         /// 产出该 checkpoint 的模型；旧记录缺省。原生载荷只对该模型有效。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// Grok Build full-replace 的运行时状态提醒；其他压缩方法为 None。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reminder: Option<String>,
     },
     /// 工作模式变化。
     ModeChange {
@@ -188,6 +191,8 @@ pub enum EntryPayload {
         native: Option<Box<serde_json::Value>>,
         /// 产出该 checkpoint 的模型；复用上一份 checkpoint 时沿用其来源。
         model: Option<String>,
+        /// Grok Build 压缩时快照的运行时状态提醒；其他方法为 None。
+        reminder: Option<String>,
     },
     ModeChange {
         mode: SessionMode,
@@ -344,6 +349,7 @@ impl Entry {
                 instructions,
                 native,
                 model,
+                reminder,
             } => Self::Compaction {
                 id,
                 parent_id,
@@ -356,6 +362,7 @@ impl Entry {
                 instructions,
                 native,
                 model,
+                reminder,
             },
             EntryPayload::ModeChange { mode } => Self::ModeChange {
                 id,

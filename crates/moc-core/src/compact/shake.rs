@@ -63,6 +63,8 @@ pub(crate) async fn compact(
                 .as_ref()
                 .map(|(_, summary)| summary.clone())
                 .unwrap_or_default(),
+            // 复用上一份 checkpoint 时连提醒一起保留，避免回放丢掉运行态快照。
+            reminder: state.summary_reminder.clone(),
             first_kept_id: first_kept,
             tokens_before,
             tokens_after,

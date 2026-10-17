@@ -73,6 +73,8 @@ pub struct SessionState {
     pub summary: Option<(String, String)>,
     /// 当前 checkpoint 的产出模型；原生载荷只对该模型有效。
     pub summary_model: Option<String>,
+    /// Grok Build full-replace 的运行时状态提醒；其他 checkpoint 为 None。
+    pub summary_reminder: Option<String>,
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
     pub prompt_sequence: u64,
@@ -141,6 +143,7 @@ impl SessionState {
             server_compaction_disabled: false,
             summary: None,
             summary_model: None,
+            summary_reminder: None,
             first_kept_id: None,
             native_input: None,
             clm_context: None,
@@ -188,12 +191,14 @@ impl SessionState {
                 native,
                 first_kept_id,
                 model,
+                reminder,
                 ..
             } => {
                 self.usage = Usage::default();
                 self.usage_at = 0;
                 self.first_kept_id.clone_from(first_kept_id);
                 self.summary_model.clone_from(model);
+                self.summary_reminder.clone_from(reminder);
                 self.native_input = native
                     .as_ref()
                     .and_then(|native| native.as_array())
@@ -211,6 +216,7 @@ impl SessionState {
                     self.summary = None;
                     self.first_kept_id = None;
                     self.summary_model = None;
+                    self.summary_reminder = None;
                 } else {
                     self.summary = Some((method.clone(), summary.clone()));
                 }
@@ -220,6 +226,7 @@ impl SessionState {
                 self.ptc_state_bytes = 0;
                 self.summary = None;
                 self.summary_model = None;
+                self.summary_reminder = None;
                 self.native_input = None;
                 self.first_kept_id = None;
                 self.clm_context = None;
@@ -262,6 +269,7 @@ impl SessionState {
                         self.summary = None;
                         self.first_kept_id = None;
                         self.summary_model = None;
+                        self.summary_reminder = None;
                     }
                 }
                 self.usage = Usage::default();
