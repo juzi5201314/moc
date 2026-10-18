@@ -1,4 +1,4 @@
-//! web_search 与 web_fetch 工具：联网搜索和提取网页正文（供应商实现见 [`crate::websearch`]）。
+//! web_search 与 web_fetch 工具：Tavily 联网搜索与本地网页抓取（实现见 [`crate::websearch`]）。
 
 use std::collections::HashSet;
 
@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
-use crate::config::ResolvedWebSearch;
+use crate::config::{ResolvedWebFetch, ResolvedWebSearch};
 use crate::websearch::{ExtractRequest, SearchRequest, SearchResponse, TimeRange};
 
 /// 每条结果的 snippet 截断长度（字符，非字节）。
@@ -98,7 +98,7 @@ impl Tool for WebSearchTool {
         Box::pin(async move {
             let args: SearchArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            ensure_enabled(&ctx.config.web_search)?;
+            ensure_search_enabled(&ctx.config.web_search)?;
             let query = args.query.trim().to_owned();
             if query.is_empty() {
                 return Err(ToolError::new("E_BAD_PAYLOAD", "query must not be empty"));
@@ -135,7 +135,7 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Extract page text of URLs as markdown. With query, return only the most relevant ~800-char chunks per page."
+        "Extract page text of URLs as markdown. With query, return only the most relevant ~800-char chunks per page. Large results are archived; read the artifact URI for specific lines."
     }
 
     fn tier(&self) -> Tier {
@@ -143,7 +143,8 @@ impl Tool for WebFetchTool {
     }
 
     fn parallel_safe(&self) -> bool {
-        true
+        // 单页上限 50 MiB，多个 web_fetch 并行会放大峰值内存；批次内顺序执行。
+        false
     }
 
     fn def(&self) -> ToolDef {
@@ -176,33 +177,42 @@ impl Tool for WebFetchTool {
         Box::pin(async move {
             let args: FetchArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            ensure_enabled(&ctx.config.web_search)?;
+            ensure_fetch_enabled(&ctx.config.web_fetch)?;
             let urls = normalize_urls(&args.urls)?;
             let query = args
                 .query
                 .map(|query| query.trim().to_owned())
                 .filter(|query| !query.is_empty());
             let request = ExtractRequest { urls, query };
-            let provider = crate::websearch::create_provider(&ctx.config.web_search)?;
-            let response = provider
-                .extract(&request, &ctx.cancel)
-                .await
-                .map_err(crate::websearch::WebSearchError::into_tool_error)?;
+            let response = crate::websearch::extract_urls(
+                &ctx.config.web_fetch,
+                &request,
+                &ctx.cancel,
+                &ctx.paths.sidecar,
+            )
+            .await
+            .map_err(crate::websearch::WebSearchError::into_tool_error)?;
             Ok(ToolOutcome::success(render_extract(&response)))
         })
     }
 }
 
-/// 未启用或缺少 api_key 时拒绝执行（工具定义里也会隐藏这两个工具）。
-fn ensure_enabled(config: &ResolvedWebSearch) -> Result<(), ToolError> {
+/// `web_search` 未启用或缺少 api_key 时拒绝执行。
+fn ensure_search_enabled(config: &ResolvedWebSearch) -> Result<(), ToolError> {
     if config.available() {
         return Ok(());
     }
-    Err(
-        ToolError::new("E_TOOL_DISABLED", "web tools are disabled").with_hint(
-            "Set [web_search] api_key in the moc config to enable web_search and web_fetch.",
-        ),
-    )
+    Err(ToolError::new("E_TOOL_DISABLED", "web_search is disabled")
+        .with_hint("Set [web_search] api_key in the moc config to enable web_search."))
+}
+
+/// `web_fetch` 关闭时拒绝执行。
+fn ensure_fetch_enabled(config: &ResolvedWebFetch) -> Result<(), ToolError> {
+    if config.enabled {
+        return Ok(());
+    }
+    Err(ToolError::new("E_TOOL_DISABLED", "web_fetch is disabled")
+        .with_hint("Set [web_fetch] enabled=true in the moc config to enable web_fetch."))
 }
 
 /// 组装搜索请求：解析查询里的操作符，并把 limit 限制在有效范围内。
@@ -276,7 +286,29 @@ fn render_search(query: &str, response: &SearchResponse) -> String {
 fn render_extract(response: &crate::websearch::ExtractResponse) -> String {
     let mut text = String::new();
     for result in &response.results {
-        text.push_str(&format!("## {}\n{}\n\n", result.url, result.raw_content));
+        text.push_str(&format!("## {}\n", result.url));
+        if result.final_url != result.url {
+            text.push_str(&format!("Final: {}\n", result.final_url));
+        }
+        let mut meta = Vec::new();
+        if let Some(status) = result.status {
+            meta.push(format!("HTTP {status}"));
+        }
+        if let Some(content_type) = &result.content_type {
+            meta.push(content_type.clone());
+        }
+        meta.push(result.method.to_owned());
+        text.push_str(&meta.join(" · "));
+        text.push('\n');
+        if !result.notes.is_empty() {
+            text.push_str(&format!("Notes: {}\n", result.notes.join("; ")));
+        }
+        if result.truncated {
+            text.push_str("Truncated: yes\n");
+        }
+        text.push('\n');
+        text.push_str(&result.raw_content);
+        text.push_str("\n\n");
     }
     for failed in &response.failed {
         text.push_str(&format!("Failed: {} ({})\n", failed.url, failed.error));
@@ -503,6 +535,12 @@ mod tests {
         let response = ExtractResponse {
             results: vec![ExtractResult {
                 url: "https://a.example".into(),
+                final_url: "https://a.example".into(),
+                status: Some(200),
+                content_type: Some("text/markdown".into()),
+                method: "generic",
+                notes: Vec::new(),
+                truncated: false,
                 raw_content: "body".into(),
             }],
             failed: vec![ExtractFailed {
@@ -512,7 +550,25 @@ mod tests {
         };
         assert_eq!(
             render_extract(&response),
-            "## https://a.example\nbody\n\nFailed: https://b.example (timeout)"
+            "## https://a.example\nHTTP 200 · text/markdown · generic\n\nbody\n\nFailed: https://b.example (timeout)"
+        );
+
+        let redirected = ExtractResponse {
+            results: vec![ExtractResult {
+                url: "https://a.example".into(),
+                final_url: "https://a.example/final".into(),
+                status: Some(200),
+                content_type: Some("text/markdown".into()),
+                method: "github",
+                notes: vec!["GitHub API".into()],
+                truncated: true,
+                raw_content: "body".into(),
+            }],
+            failed: Vec::new(),
+        };
+        assert_eq!(
+            render_extract(&redirected),
+            "## https://a.example\nFinal: https://a.example/final\nHTTP 200 · text/markdown · github\nNotes: GitHub API\nTruncated: yes\n\nbody"
         );
         let empty = ExtractResponse {
             results: Vec::new(),

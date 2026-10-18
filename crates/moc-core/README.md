@@ -94,11 +94,18 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 "子代理"身份的唯一判据是会话头的 `parent_session_id`，而它只由 `spawn_agent` 写入。消息回退分叉与审批计划的新会话执行都不是子代理：它们是不带父链接的独立会话，只在会话头记 `forked_from`（纯用户侧出身，`/resume` 列表与回退提示里可见），模型侧与普通会话完全一致——没有 `<subagent>` 块、没有父／兄弟名册、没有 `yield`，也不继承源会话的循环保护状态。
 
-### Web 搜索
+### Web 搜索与抓取
 
-`web_search` 查询互联网并返回答案与编号来源；`web_fetch` 提取 1–20 个 URL 的正文（markdown）。两者都是只读工具，在标准、问答与计划模式可用，未配置密钥时对模型隐藏。`web_search` 的查询支持 `site:host`、`-site:host`、`after:YYYY-MM-DD`、`before:YYYY-MM-DD`、引号短语与 `-term`；带时间过滤的查询零结果时自动去掉时间过滤重试一次。每条来源摘要按 240 字符截断；`web_fetch` 传入 `query` 时每页只返回与查询相关的约 800 字符块，省略则返回整页。失败项随成功正文一同返回，全部失败仍算成功，便于模型更换地址重试。
+`web_search` 查询互联网并返回答案与编号来源；`web_fetch` 抓取 1–20 个 URL 的正文（markdown）。两者都是只读工具，在标准、问答与计划模式可用，但开关独立：
 
-`[web_search]` 当前只有 Tavily 一个供应商：`api_key` 支持字面量、`env:变量名` 或 `!命令`（与供应商密钥同语法），`base_url` 留空使用官方 `https://api.tavily.com`，自定义代理直接按 `{base}/search`、`{base}/extract` 拼接，`timeout_secs` 默认 30。`enabled=false` 或留空 `api_key` 时两个工具都不会出现在模型工具定义里。鉴权失败、限流（429/432/433）与超时分别以 `E_WEB_AUTH`、`E_WEB_RATE_LIMIT`、`E_TIMEOUT` 返回，限流提示附带 `Retry-After`。
+- `web_search` 需要 `[web_search] api_key`，未配置时从工具定义隐藏。查询支持 `site:host`、`-site:host`、`after:YYYY-MM-DD`、`before:YYYY-MM-DD`、引号短语与 `-term`；带时间过滤的查询零结果时自动去掉时间过滤重试一次。每条来源摘要按 240 字符截断。
+- `web_fetch` 只受 `[web_fetch] enabled` 控制，不需要密钥。HTML 用 htmd 转 Markdown；`query` 传入时每页只返回相关度最高的 3 个约 800 字符块，省略则返回整页；结果头给出 final URL、HTTP 状态、Content-Type、method 与截断说明。失败项随成功正文一同返回，全部失败仍算成功，便于模型更换地址重试。
+
+`[web_fetch]` 默认 `timeout_secs=30`、`max_bytes=52428800`（50 MiB，单页原始响应）、`max_chars=500000`（单页转换后正文）。一次调用最多 20 个 URL，并发 4 个，整批读取上限 100 MiB；原始响应超限、正文超限都会截断并标记。工具输出超过统一首尾预算（默认 40 KiB）时自动归档到 `artifact://artifacts/<id>-output.txt`，模型可用 `read` 的 `offset`/`limit` 精确回读长文。
+
+站点感知：GitHub issue/PR/README/blob、docs.rs rustdoc JSON、MDN `index.json`、arXiv Atom API、npm registry、PyPI JSON。站点 API 失败、限流或格式变化时回退通用 HTML 抓取；GitHub 匿名 API 限流 60 次/小时，环境中有 `GITHUB_TOKEN` 或 `GH_TOKEN` 时自动携带；docs.rs rustdoc JSON 缓存在会话 sidecar。只接受 `http(s)` 且拒绝含内嵌凭据的 URL，允许 localhost 与私网地址；不做 JS 渲染、PDF/Office 转换与 Stack Exchange。
+
+`[web_search]` 当前只有 Tavily 一个供应商：`api_key` 支持字面量、`env:变量名` 或 `!命令`（与供应商密钥同语法），`base_url` 留空使用官方 `https://api.tavily.com`，自定义代理直接按 `{base}/search` 拼接，`timeout_secs` 默认 30。鉴权失败、限流（429/432/433）与超时分别以 `E_WEB_AUTH`、`E_WEB_RATE_LIMIT`、`E_TIMEOUT` 返回，限流提示附带 `Retry-After`。
 
 ### 代码编排（PTC）
 

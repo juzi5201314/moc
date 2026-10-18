@@ -33,9 +33,12 @@ use crate::config::model::ResolvedModel;
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
 // 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
-/// web_search/web_fetch 对模型可见时才拼进工具政策。
-const WEB_SEARCH_POLICY: &str =
+/// web_search/web_fetch 按各自可见性拼进工具政策。
+const WEB_BOTH_POLICY: &str =
     "Use web_search for current information and web_fetch for known URLs; cite the URLs you use.";
+const WEB_SEARCH_ONLY_POLICY: &str =
+    "Use web_search for current information; cite the URLs you use.";
+const WEB_FETCH_ONLY_POLICY: &str = "Use web_fetch for known URLs; cite the URLs you use.";
 const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files. Read before editing; edit takes the anchors from read or diff output (`42sr│line`); the part before │ is the line number plus the two-letter id assigned when the line was shown. An untouched line keeps its anchor when edits shift it; use the newest anchor shown for a line, and re-read if an edit reports a stale anchor.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`, `viking://<path>` (OpenViking). A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nModes are enforced at execution; session state and todo updates are allowed in every mode. A non-normal mode states its contract in a tail reminder; no such reminder means normal mode, which permits workspace changes.";
 /// 项目指令块的开头一句：告诉模型下面是仓库规则文件，别和工具政策混着读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
@@ -181,13 +184,19 @@ pub fn pieces(
         scope: PieceScope::Static,
         text: intro.to_owned(),
     });
+    let web_policy = match (config.web_search.available(), config.web_fetch.enabled) {
+        (true, true) => Some(WEB_BOTH_POLICY),
+        (true, false) => Some(WEB_SEARCH_ONLY_POLICY),
+        (false, true) => Some(WEB_FETCH_ONLY_POLICY),
+        (false, false) => None,
+    };
     let mut tool_policy = String::with_capacity(
-        TOOL_POLICY.len() + TOOL_POLICY_REST.len() + WEB_SEARCH_POLICY.len() + 2,
+        TOOL_POLICY.len() + TOOL_POLICY_REST.len() + web_policy.map_or(0, str::len) + 2,
     );
     tool_policy.push_str(TOOL_POLICY);
-    if config.web_search.available() {
+    if let Some(policy) = web_policy {
         tool_policy.push(' ');
-        tool_policy.push_str(WEB_SEARCH_POLICY);
+        tool_policy.push_str(policy);
     }
     tool_policy.push(' ');
     tool_policy.push_str(TOOL_POLICY_REST);
@@ -599,12 +608,25 @@ mod tests {
                 None,
             ))
         };
+        let fetch_only = prompt(&config);
+        assert!(!fetch_only.contains("web_search"));
         assert!(
-            !prompt(&config).contains("web_search"),
-            "未配置密钥时系统提示不得提及 web 工具"
+            fetch_only.contains("web_fetch"),
+            "无密钥时仍应提示 web_fetch"
         );
+
+        config.web_fetch.enabled = false;
+        let none = prompt(&config);
+        assert!(!none.contains("web_search") && !none.contains("web_fetch"));
+
+        config.web_fetch.enabled = true;
         config.web_search.api_key = Some("tvly-test".to_owned());
-        assert!(prompt(&config).contains("web_search"));
+        let both = prompt(&config);
+        assert!(both.contains("web_search") && both.contains("web_fetch"));
+
+        config.web_fetch.enabled = false;
+        let search_only = prompt(&config);
+        assert!(search_only.contains("web_search") && !search_only.contains("web_fetch"));
     }
 
     #[test]

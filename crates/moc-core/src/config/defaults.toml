@@ -185,3 +185,9 @@ provider = "tavily"
 api_key = ""
 base_url = ""
 timeout_secs = 30
+
+[web_fetch]
+enabled = true
+timeout_secs = 30
+max_bytes = 52428800
+max_chars = 500000

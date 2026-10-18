@@ -1,7 +1,7 @@
-//! Tavily `/search` 与 `/extract` 的 HTTP 实现。
+//! Tavily `/search` 的 HTTP 实现。
 //!
 //! 请求体遵循省 token 实践：恒定 `search_depth=basic`、`include_answer=advanced`、
-//! 不请求 `include_raw_content`（正文全量走 `/extract`）。
+//! 不请求 `include_raw_content`（正文由本地 web_fetch 抓取）。
 
 use std::time::Duration;
 
@@ -10,15 +10,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ExtractFailed, ExtractRequest, ExtractResponse, ExtractResult, SearchRequest, SearchResponse,
-    SearchResult, TimeRange, WebSearchError, WebSearchProvider, client,
+    SearchRequest, SearchResponse, SearchResult, TimeRange, WebSearchError, WebSearchProvider,
+    client,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.tavily.com";
-/// `/extract` 的 `timeout` 参数上限（官方文档 1–60 秒）。
-const EXTRACT_TIMEOUT_MAX_SECS: u64 = 60;
-/// `/extract` 在提供 query 时每页返回的相关 chunk 数。
-const CHUNKS_PER_SOURCE: u32 = 3;
 
 pub(super) struct TavilyProvider {
     base_url: String,
@@ -119,25 +115,6 @@ impl WebSearchProvider for TavilyProvider {
             Ok(normalize_search(envelope, request.max_results))
         })
     }
-
-    fn extract<'a>(
-        &'a self,
-        request: &'a ExtractRequest,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<ExtractResponse, WebSearchError>> {
-        Box::pin(async move {
-            let body = ExtractBody {
-                urls: &request.urls,
-                query: request.query.as_deref(),
-                chunks_per_source: request.query.as_ref().map(|_| CHUNKS_PER_SOURCE),
-                extract_depth: "basic",
-                format: "markdown",
-                timeout: self.timeout.as_secs().clamp(1, EXTRACT_TIMEOUT_MAX_SECS),
-            };
-            let envelope: ExtractEnvelope = self.post("/extract", &body, cancel).await?;
-            Ok(normalize_extract(envelope))
-        })
-    }
 }
 
 #[derive(Serialize)]
@@ -159,18 +136,6 @@ struct SearchBody<'a> {
     time_range: Option<&'a str>,
 }
 
-#[derive(Serialize)]
-struct ExtractBody<'a> {
-    urls: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    query: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chunks_per_source: Option<u32>,
-    extract_depth: &'static str,
-    format: &'static str,
-    timeout: u64,
-}
-
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct SearchEnvelope {
@@ -185,27 +150,6 @@ struct SearchItem {
     url: String,
     content: Option<String>,
     published_date: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ExtractEnvelope {
-    results: Vec<ExtractItem>,
-    failed_results: Vec<ExtractFailedItem>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ExtractItem {
-    url: String,
-    raw_content: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ExtractFailedItem {
-    url: String,
-    error: String,
 }
 
 /// 归一化搜索响应：丢弃无 URL 项、标题回退 URL、空 answer/snippet 转 None、截断到请求上限。
@@ -244,27 +188,6 @@ fn normalize_search(envelope: SearchEnvelope, max_results: u32) -> SearchRespons
     // u32 在 16 位目标上可能超出 usize；此时上限视为 usize::MAX。
     results.truncate(usize::try_from(max_results).unwrap_or(usize::MAX));
     SearchResponse { answer, results }
-}
-
-fn normalize_extract(envelope: ExtractEnvelope) -> ExtractResponse {
-    ExtractResponse {
-        results: envelope
-            .results
-            .into_iter()
-            .map(|item| ExtractResult {
-                url: item.url,
-                raw_content: item.raw_content.unwrap_or_default(),
-            })
-            .collect(),
-        failed: envelope
-            .failed_results
-            .into_iter()
-            .map(|item| ExtractFailed {
-                url: item.url,
-                error: item.error,
-            })
-            .collect(),
-    }
 }
 
 /// 非 2xx 响应的统一映射：鉴权、限流与其它 HTTP 错误。
@@ -362,16 +285,6 @@ mod tests {
         ],
         "usage": {"credits": 1}
     }"#;
-
-    const EXTRACT_FIXTURE: &str = r##"{
-        "results": [
-            {"url": "https://example.com/a", "raw_content": "# A\nbody"},
-            {"url": "https://example.com/b", "raw_content": null}
-        ],
-        "failed_results": [{"url": "https://example.com/c", "error": "timeout"}],
-        "response_time": 1.2,
-        "usage": null
-    }"##;
 
     fn provider(server: &MockServer, timeout_secs: u64) -> TavilyProvider {
         TavilyProvider::new(
@@ -563,51 +476,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code, "E_CANCELLED");
-    }
-
-    #[tokio::test]
-    async fn extract_collects_results_and_failures() {
-        let server = MockServer::builder().start().await;
-        let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&captured);
-        Mock::given(method("POST"))
-            .and(path("/extract"))
-            .and(header("authorization", "Bearer test-key"))
-            .respond_with(move |request: &Request| {
-                sink.lock()
-                    .push(serde_json::from_slice(&request.body).unwrap());
-                ResponseTemplate::new(200).set_body_raw(EXTRACT_FIXTURE, "application/json")
-            })
-            .mount(&server)
-            .await;
-        let request = ExtractRequest {
-            urls: vec![
-                "https://example.com/a".into(),
-                "https://example.com/b".into(),
-            ],
-            query: Some("rust".into()),
-        };
-        // 超时配置超过 /extract 上限时按 60 秒发送。
-        let response = provider(&server, 120)
-            .extract(&request, &CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(response.results.len(), 2);
-        assert_eq!(response.results[0].raw_content, "# A\nbody");
-        assert_eq!(response.results[1].raw_content, "");
-        assert_eq!(response.failed.len(), 1);
-        assert_eq!(response.failed[0].error, "timeout");
-        let bodies = captured.lock();
-        let body = &bodies[0];
-        assert_eq!(body["extract_depth"], "basic");
-        assert_eq!(body["format"], "markdown");
-        assert_eq!(body["chunks_per_source"], 3);
-        assert_eq!(body["query"], "rust");
-        assert_eq!(body["timeout"], 60);
-        assert_eq!(
-            body["urls"],
-            serde_json::json!(["https://example.com/a", "https://example.com/b"])
-        );
     }
 
     #[tokio::test]

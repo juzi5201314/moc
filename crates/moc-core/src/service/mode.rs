@@ -359,7 +359,8 @@ pub fn tool_enabled(
         "todo" => config.tools.todo.enabled,
         "job" => config.tools.job.enabled,
         "skill" => config.skills.enabled,
-        "web_search" | "web_fetch" => config.web_search.available(),
+        "web_search" => config.web_search.available(),
+        "web_fetch" => config.web_fetch.enabled,
         _ => true,
     }
 }

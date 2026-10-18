@@ -99,6 +99,8 @@ fn rank(key: &str) -> usize {
         "context_window" => 0,
         "max_output_tokens" => 1,
         "max_request_bytes" => 2,
+        "max_bytes" => 2,
+        "max_chars" => 3,
         "reasoning" => 3,
         "thinking_levels" => 4,
         "input" => 5,
@@ -235,7 +237,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         "模型"
     } else {
         match path.first().map_or("", String::as_str) {
-            "tools" | "workspace" | "web_search" => "工具",
+            "tools" | "workspace" | "web_search" | "web_fetch" => "工具",
             "compaction" | "limits" => "上下文",
             "context_files" | "system_prompt" | "sources" => "指令",
             "defaults" => "模型",
@@ -366,12 +368,31 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "openviking.timeout_secs" => ("请求超时（秒）", "单次请求等待 OpenViking 回复的最长时间。"),
         "web_search.enabled" => (
             "启用",
-            "关闭后 web_search 与 web_fetch 工具不再向模型开放。",
+            "关闭后 web_search 工具不再向模型开放；不影响 web_fetch。",
         ),
         "web_search.provider" => ("供应商", "网页搜索服务供应商；空格键切换。"),
-        "web_search.api_key" => ("API 密钥", "Tavily 密钥；可填 env:变量名 或 !命令。"),
+        "web_search.api_key" => (
+            "API 密钥",
+            "Tavily 密钥，仅用于 web_search；可填 env:变量名 或 !命令。",
+        ),
         "web_search.base_url" => ("接口地址", "留空使用官方 https://api.tavily.com。"),
-        "web_search.timeout_secs" => ("请求超时（秒）", "单次搜索或提取请求的最长等待时间。"),
+        "web_search.timeout_secs" => ("请求超时（秒）", "单次 Tavily 搜索请求的最长等待时间。"),
+        "web_fetch.enabled" => (
+            "启用",
+            "关闭后 web_fetch 工具不再向模型开放；不影响 web_search。",
+        ),
+        "web_fetch.timeout_secs" => (
+            "请求超时（秒）",
+            "单次页面抓取（含站点 API 调用）的最长等待时间。",
+        ),
+        "web_fetch.max_bytes" => (
+            "响应字节上限",
+            "单页原始响应的最大读取字节数；超出部分截断并标记。",
+        ),
+        "web_fetch.max_chars" => (
+            "正文字符上限",
+            "单页转换后 Markdown 的最大字符数；超出部分截断并标记。",
+        ),
         "mcp.connect_timeout_secs" => (
             "连接超时（秒）",
             "启动 MCP 服务并获取工具列表的最长等待时间。",

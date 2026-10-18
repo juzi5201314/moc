@@ -24,6 +24,7 @@ pub(super) struct ConfigDocument {
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
     pub web_search: WebSearchConfig,
+    pub web_fetch: WebFetchConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -433,11 +434,11 @@ pub(super) fn validate_skills(config: &SkillsConfig) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// web_search / web_fetch 的供应商与凭据配置。
+/// web_search 的供应商与凭据配置；web_fetch 使用独立的本地抓取配置。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WebSearchConfig {
-    /// 关闭后两个工具不再向模型定义暴露（无 api_key 时同样隐藏）。
+    /// 关闭后 web_search 不再向模型定义暴露（无 api_key 时同样隐藏）。
     pub enabled: bool,
     /// 供应商名；当前仅支持 tavily，大小写不敏感。
     pub provider: String,
@@ -458,6 +459,46 @@ impl Default for WebSearchConfig {
             timeout_secs: 30,
         }
     }
+}
+
+/// web_fetch 的本地抓取配置。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebFetchConfig {
+    /// 关闭后 web_fetch 工具不再向模型定义暴露。
+    pub enabled: bool,
+    /// 单次请求（含站点 API 调用）的最长等待时间。
+    pub timeout_secs: u64,
+    /// 单页原始响应的最大字节数。
+    pub max_bytes: usize,
+    /// 单页转换后正文的最大字符数。
+    pub max_chars: usize,
+}
+
+impl Default for WebFetchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_secs: 30,
+            max_bytes: 50 * 1024 * 1024,
+            max_chars: 500_000,
+        }
+    }
+}
+
+pub(super) fn validate_web_fetch(config: &WebFetchConfig) -> Result<(), CoreError> {
+    if config.timeout_secs == 0 {
+        return Err(CoreError::Config(
+            "web_fetch.timeout_secs: 必须大于 0".into(),
+        ));
+    }
+    if config.max_bytes == 0 {
+        return Err(CoreError::Config("web_fetch.max_bytes: 必须大于 0".into()));
+    }
+    if config.max_chars == 0 {
+        return Err(CoreError::Config("web_fetch.max_chars: 必须大于 0".into()));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_web_search(config: &WebSearchConfig) -> Result<String, CoreError> {

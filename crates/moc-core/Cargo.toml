@@ -34,6 +34,10 @@ tracing.workspace = true
 uuid.workspace = true
 rayon.workspace = true
 reqwest.workspace = true
+htmd.workspace = true
+encoding_rs.workspace = true
+roxmltree.workspace = true
+flate2.workspace = true
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 aho-corasick = "1"
 xxhash-rust.workspace = true

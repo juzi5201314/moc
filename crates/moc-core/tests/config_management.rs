@@ -435,3 +435,32 @@ fn web_search_base_url_round_trips_through_editor() {
         "未编辑的默认项不落盘"
     );
 }
+
+#[test]
+fn web_fetch_fields_are_in_tool_tab_and_round_trip() {
+    let (_root, boot) = workspace();
+    let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
+    let web_fetch_field = |name: &str| {
+        view.fields.iter().find(|field| {
+            field.path.len() == 2 && field.path[0] == "web_fetch" && field.path[1] == name
+        })
+    };
+    let enabled = web_fetch_field("enabled").expect("enabled 字段出现在设置目录");
+    assert_eq!(enabled.tab, "工具");
+    assert_eq!(enabled.label, "启用");
+    let max_bytes = web_fetch_field("max_bytes").expect("max_bytes 字段出现在设置目录");
+    assert_eq!(max_bytes.tab, "工具");
+    assert_eq!(max_bytes.label, "响应字节上限");
+    let resolved = editor::save(
+        &boot,
+        ConfigScope::Global,
+        &boot.cwd,
+        json!({"web_fetch": {"max_bytes": 1024}}),
+        &view.revision,
+    )
+    .unwrap();
+    assert_eq!(resolved.web_fetch.max_bytes, 1024);
+    let saved: toml::Value =
+        toml::from_str(&std::fs::read_to_string(boot.home.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(saved["web_fetch"]["max_bytes"].as_integer(), Some(1024));
+}

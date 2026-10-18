@@ -7,6 +7,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 - **双前端**：TUI（默认）与行式交互按需切换；`--print` 支持脚本化调用
 - **多供应商**：OpenAI、Anthropic 及兼容 OpenAI 协议的网关均可接入
 - **代码工具**：`read` / `edit` / `write` / `bash` / `grep` / `find`，编辑前带结构化 diff 预览与确认
+- **联网工具**：`web_search`（Tavily）与 `web_fetch`（本地抓取，HTML 转 Markdown；无需密钥，GitHub/docs.rs/MDN/arXiv/npm/PyPI 结构化）
 - **计划模式**：让模型先写执行计划，审阅后再逐步执行，避免盲目改动
 - **子代理**：可 spawn 独立子会话处理并行任务，共享工作目录与工具权限
 - **上下文管理**：实时查看上下文占用与真正送进模型的正文，支持压缩与消息回退分叉（独立会话，出身只对用户可见）

@@ -24,8 +24,8 @@ pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig, OutputConfig,
     ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig, SoftMethod,
-    SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebSearchConfig, WorkspaceConfig,
-    WriteConfig,
+    SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig, WebSearchConfig,
+    WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -50,12 +50,21 @@ pub struct ResolvedWebSearch {
 }
 
 impl ResolvedWebSearch {
-    /// 两个 web 工具是否对模型可见：启用且已解析出密钥。
+    /// `web_search` 是否对模型可见：启用且已解析出密钥。
     ///
     /// 工具定义过滤、执行门槛与系统提示词共用同一判定，保持单点。
     pub fn available(&self) -> bool {
         self.enabled && self.api_key.is_some()
     }
+}
+
+/// web_fetch 本地抓取的运行时配置。
+#[derive(Debug, Clone)]
+pub struct ResolvedWebFetch {
+    pub enabled: bool,
+    pub timeout_secs: u64,
+    pub max_bytes: usize,
+    pub max_chars: usize,
 }
 
 /// 一次完成路径合并、密钥解析与 provider/model 校验的运行时配置。
@@ -76,6 +85,7 @@ pub struct ResolvedConfig {
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
     pub web_search: ResolvedWebSearch,
+    pub web_fetch: ResolvedWebFetch,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
     overlays: Vec<PathBuf>,
@@ -194,6 +204,7 @@ impl ResolvedConfig {
         let web_search_provider = schema::validate_web_search(&document.web_search)?;
         let web_search_key =
             model::resolve_secret("web_search.api_key", &document.web_search.api_key)?;
+        schema::validate_web_fetch(&document.web_fetch)?;
         schema::validate_ptc(&document.tools.ptc)?;
         schema::validate_limits(&document.limits)?;
         if document.tools.job.max_running == 0 {
@@ -225,6 +236,12 @@ impl ResolvedConfig {
                 base_url: document.web_search.base_url,
                 timeout_secs: document.web_search.timeout_secs,
                 api_key: web_search_key,
+            },
+            web_fetch: ResolvedWebFetch {
+                enabled: document.web_fetch.enabled,
+                timeout_secs: document.web_fetch.timeout_secs,
+                max_bytes: document.web_fetch.max_bytes,
+                max_chars: document.web_fetch.max_chars,
             },
             providers,
             base_raw,
@@ -682,7 +699,7 @@ max_output_tokens = 128000
     }
 
     #[test]
-    fn web_search_defaults_hide_tools_without_api_key() {
+    fn web_tools_follow_their_own_switches() {
         let dir = tempfile::tempdir().expect("临时目录");
         let home = dir.path().join("home");
         fs::create_dir_all(&home).expect("创建 home");
@@ -694,6 +711,10 @@ max_output_tokens = 128000
         assert_eq!(config.web_search.base_url, "");
         assert_eq!(config.web_search.timeout_secs, 30);
         assert!(config.web_search.api_key.is_none());
+        assert!(config.web_fetch.enabled);
+        assert_eq!(config.web_fetch.timeout_secs, 30);
+        assert_eq!(config.web_fetch.max_bytes, 50 * 1024 * 1024);
+        assert_eq!(config.web_fetch.max_chars, 500_000);
         let registry = crate::tools::ToolRegistry::new();
         let visible = |config: &ResolvedConfig, name: &str| {
             registry
@@ -706,8 +727,8 @@ max_output_tokens = 128000
                 .iter()
                 .any(|definition| definition.name == name)
         };
-        assert!(!visible(&config, "web_search"), "无 key 时工具对模型隐藏");
-        assert!(!visible(&config, "web_fetch"), "无 key 时工具对模型隐藏");
+        assert!(!visible(&config, "web_search"), "无 key 时搜索工具隐藏");
+        assert!(visible(&config, "web_fetch"), "抓取不依赖密钥");
 
         fs::write(
             home.join("config.toml"),
@@ -722,6 +743,19 @@ max_output_tokens = 128000
         assert_eq!(config.web_search.api_key.as_deref(), Some("tvly-test"));
         assert!(visible(&config, "web_search"));
         assert!(visible(&config, "web_fetch"));
+
+        fs::write(
+            home.join("config.toml"),
+            format!(
+                "{}\n[web_search]\napi_key='tvly-test'\n[web_fetch]\nenabled=false\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("配置可解析");
+        assert!(visible(&config, "web_search"));
+        assert!(!visible(&config, "web_fetch"), "独立开关只隐藏抓取");
     }
 
     #[test]
@@ -791,6 +825,32 @@ max_output_tokens = 128000
             fs::write(
                 home.join("config.toml"),
                 format!("{}\n[web_search]\n{snippet}", provider_config("literal")),
+            )
+            .expect("写配置");
+            let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+                Ok(_) => panic!("{snippet} 应被拒绝"),
+                Err(error) => error,
+            };
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error for {snippet}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_web_fetch_settings() {
+        for (snippet, expected) in [
+            ("timeout_secs=0\n", "web_fetch.timeout_secs"),
+            ("max_bytes=0\n", "web_fetch.max_bytes"),
+            ("max_chars=0\n", "web_fetch.max_chars"),
+        ] {
+            let dir = tempfile::tempdir().expect("临时目录");
+            let home = dir.path().join("home");
+            fs::create_dir_all(&home).expect("创建 home");
+            fs::write(
+                home.join("config.toml"),
+                format!("{}\n[web_fetch]\n{snippet}", provider_config("literal")),
             )
             .expect("写配置");
             let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {

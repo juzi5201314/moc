@@ -9,7 +9,7 @@ tokio = { version = "1.53.1", features = ["full"] }
 serde = { version = "1.0", features = ["serde_derive"] }
 serde_json = { version = "1.0" }
 serde_yaml = "0.9"
-reqwest = { version = "0.13.5", features = ["stream", "json"] }
+reqwest = { version = "0.13.5", features = ["stream", "json", "gzip"] }
 thiserror = { version = "2.0.21" }
 anyhow = { version = "1.0.104" }
 clap = { version = "4.5", features = ["derive"] }
@@ -20,6 +20,9 @@ tokio-util = { version = "0.7.19" }
 wiremock = { version = "0.6.5" }
 toml = "1"
 base64 = "0.22"
+htmd = "0.5"
+encoding_rs = "0.8"
+roxmltree = "0.20"
 globset = "0.4"
 ignore = "0.4"
 http = "1"

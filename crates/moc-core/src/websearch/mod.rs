@@ -1,8 +1,11 @@
-//! web search / web fetch 供应商抽象：请求归一化、提取与统一错误。
+//! web search / web fetch 供应商抽象：请求归一化、抓取结果与统一错误。
 //!
-//! 当前只有 Tavily 一个实现；工具层只依赖本模块的类型与 [`WebSearchProvider`]，
-//! 新增供应商时实现 trait 并扩展 [`create_provider`] 即可。
+//! 搜索只有 Tavily 一个实现；抓取走本地 `native` 与 `sites` 站点 handler，
+//! 工具层只依赖本模块的类型与入口。
 
+mod http;
+mod native;
+mod sites;
 mod tavily;
 
 use std::sync::{Arc, LazyLock};
@@ -11,7 +14,7 @@ use std::time::Duration;
 use futures_util::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::ResolvedWebSearch;
+use crate::config::{ResolvedWebFetch, ResolvedWebSearch};
 use crate::tools::ToolError;
 
 /// 搜索时间范围；与 Tavily `time_range` 参数一一对应。
@@ -67,9 +70,17 @@ pub struct ExtractRequest {
     pub query: Option<String>,
 }
 
+/// 单页抓取结果；结果头由 `tools::websearch` 渲染给模型。
 #[derive(Debug, Clone)]
 pub struct ExtractResult {
     pub url: String,
+    pub final_url: String,
+    pub status: Option<u16>,
+    pub content_type: Option<String>,
+    /// generic / github / docs.rs / mdn / arxiv / npm / pypi
+    pub method: &'static str,
+    pub notes: Vec<String>,
+    pub truncated: bool,
     pub raw_content: String,
 }
 
@@ -122,12 +133,6 @@ pub trait WebSearchProvider: Send + Sync {
         request: &'a SearchRequest,
         cancel: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<SearchResponse, WebSearchError>>;
-
-    fn extract<'a>(
-        &'a self,
-        request: &'a ExtractRequest,
-        cancel: &'a CancellationToken,
-    ) -> BoxFuture<'a, Result<ExtractResponse, WebSearchError>>;
 }
 
 /// 带时间过滤的查询零结果时去掉时间过滤重试一次，省一轮模型往返。
@@ -148,7 +153,7 @@ pub async fn search_with_fallback(
     provider.search(request, cancel).await
 }
 
-/// 按配置创建供应商实例；未知供应商返回 `E_TOOL_DISABLED`。
+/// 按配置创建搜索供应商；未知供应商返回 `E_TOOL_DISABLED`。
 pub fn create_provider(
     config: &ResolvedWebSearch,
 ) -> Result<Arc<dyn WebSearchProvider>, ToolError> {
@@ -163,6 +168,18 @@ pub fn create_provider(
             format!("未知 web_search 供应商: {other}"),
         )),
     }
+}
+
+/// 本地抓取入口：所有 URL 都走 `NativeFetcher`，站点 handler 在其内部完成。
+pub async fn extract_urls(
+    config: &ResolvedWebFetch,
+    request: &ExtractRequest,
+    cancel: &CancellationToken,
+    cache_dir: &std::path::Path,
+) -> Result<ExtractResponse, WebSearchError> {
+    native::NativeFetcher::new(config, cache_dir)
+        .extract(request, cancel)
+        .await
 }
 
 /// 全部供应商共享的连接池；请求级超时由各请求自身设置。
