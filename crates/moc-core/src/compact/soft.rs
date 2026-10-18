@@ -95,6 +95,8 @@ pub(crate) struct SoftContext<'a> {
     pub static_prefix: &'a [usize],
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
+    /// 审批执行时传入的待执行计划 markdown；`None` 时使用已批准计划。
+    pub plan: Option<&'a str>,
     pub budget: CompactionBudget,
 }
 
@@ -173,6 +175,7 @@ pub(crate) async fn compact(
         static_prefix,
         tools,
         instructions,
+        plan,
         budget,
     } = input;
     let CompactionBudget {
@@ -219,6 +222,9 @@ pub(crate) async fn compact(
     }
     let retained = messages_tokens(&history[start..]);
     let previous_summary = state.summary.as_ref().map(|(_, summary)| summary.as_str());
+    // 审批执行（ExecuteCompacted）时计划仍是 Submitted，必须用显式传入的 markdown；
+    // 它优先于任何旧的 Approved 计划。
+    let plan = plan.or_else(|| digest::approved_plan(state));
     let session_digest = digest::prompt_digest(state);
     // 上一版 checkpoint 在 `native_input` 为空时由 `synthetic_messages` 注入成
     // `<compaction-summary>` 消息；只有原生压缩载荷不在消息视图里，才需要提示词补一份。
@@ -226,11 +232,7 @@ pub(crate) async fn compact(
     // 被否决的方案和计划步号决定「压缩后还能不能接着做」：它们不属于锚点
     // （方案名不是路径或数字，步号不是标识符），必须单独抽出来逐字校验。
     let decisions = digest::decisions(&history[..start], previous_summary);
-    let plan_steps = digest::plan_steps(
-        &history[..start],
-        previous_summary,
-        digest::approved_plan(state),
-    );
+    let plan_steps = digest::plan_steps(&history[..start], previous_summary, plan);
     let required = required_facts(&decisions, &plan_steps);
     let must_preserve = must_preserve_block(&decisions, &plan_steps);
     let base_prompt = summary_prompt(
@@ -344,7 +346,7 @@ pub(crate) async fn compact(
                     attempts = SOFT_MAX_ATTEMPTS,
                     "summary model produced no usable checkpoint; using deterministic fallback"
                 );
-                digest::fallback_checkpoint(state, &history, previous_summary)
+                digest::fallback_checkpoint(state, &history, previous_summary, plan)
             }
         },
     };

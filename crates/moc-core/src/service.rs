@@ -1280,6 +1280,7 @@ impl AgentService for Core {
             &params.session_id,
             params.instructions.as_deref(),
             None,
+            None,
         )
         .await
         .map_err(to_rpc)?;

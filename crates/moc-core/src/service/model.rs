@@ -90,6 +90,7 @@ pub(crate) async fn switch(
             None,
             ContextBudget::default(),
             None,
+            None,
         )
         .await
         .err()

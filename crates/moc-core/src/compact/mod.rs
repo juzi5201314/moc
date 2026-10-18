@@ -244,6 +244,7 @@ pub(crate) async fn manual(
     session_id: &str,
     instructions: Option<&str>,
     model_selector: Option<&str>,
+    plan: Option<&str>,
 ) -> Result<CompactResult, CoreError> {
     compact(
         inner,
@@ -253,11 +254,16 @@ pub(crate) async fn manual(
         instructions,
         ContextBudget::default(),
         model_selector,
+        plan,
     )
     .await
     .map(|report| report.result)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "压缩的入参各自独立，打包成结构体只是把同样多的字段搬一遍"
+)]
 pub(crate) async fn compact(
     inner: &CoreInner,
     ctx: &RequestContext,
@@ -266,6 +272,7 @@ pub(crate) async fn compact(
     instructions: Option<&str>,
     context: ContextBudget,
     model_selector: Option<&str>,
+    plan: Option<&str>,
 ) -> Result<CompactReport, CoreError> {
     let record = inner.sessions.get(session_id).await?;
     let mut state = record.state.lock().await.clone();
@@ -303,6 +310,7 @@ pub(crate) async fn compact(
             static_prefix: &measured.static_prefix,
             tools: &measured.tools,
             instructions,
+            plan,
             budget,
         })
         .await?;
@@ -342,6 +350,7 @@ pub(crate) async fn compact(
                     static_prefix: &measured.static_prefix,
                     tools: &measured.tools,
                     instructions,
+                    plan,
                     budget,
                 })
                 .await
@@ -392,6 +401,8 @@ pub(crate) struct SoftInput<'a> {
     pub static_prefix: &'a [usize],
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
+    /// 审批执行时传入的待执行计划 markdown；`None` 时使用已批准计划。
+    pub plan: Option<&'a str>,
     pub budget: CompactionBudget,
 }
 
@@ -407,6 +418,7 @@ async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
         static_prefix,
         tools,
         instructions,
+        plan,
         budget,
     } = input;
     match config.compaction.soft_method {
@@ -421,6 +433,7 @@ async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
                 static_prefix,
                 tools,
                 instructions,
+                plan,
                 budget,
             })
             .await

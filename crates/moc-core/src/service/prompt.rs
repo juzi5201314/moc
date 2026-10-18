@@ -651,6 +651,7 @@ async fn run_prompt_locked(
                     additional_tokens: compact::messages_tokens(&reminder_messages),
                 },
                 None,
+                None,
             )
             .await
             {
@@ -775,6 +776,7 @@ async fn run_prompt_locked(
                         compact::ContextBudget {
                             additional_tokens: compact::messages_tokens(&reminder_messages),
                         },
+                        None,
                         None,
                     )
                     .await
@@ -906,6 +908,7 @@ async fn run_prompt_locked(
                 compact::ContextBudget {
                     additional_tokens: compact::messages_tokens(&reminder_messages),
                 },
+                None,
                 None,
             )
             .await

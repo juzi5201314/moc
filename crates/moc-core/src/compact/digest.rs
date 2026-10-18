@@ -308,33 +308,41 @@ pub(crate) fn approved_plan(state: &SessionState) -> Option<&str> {
         .map(|plan| plan.markdown.as_str())
 }
 
-/// 用户原文里的编号计划：`第 1 步 … 第 5 步` 视为一份计划，返回每一步的短语。
+/// 用户原文里的编号计划：`第 1 步 … 第 5 步` 视为一份计划。
 ///
-/// `previous` 是上一版 checkpoint：它能保证计划跨代存活，第三次压缩时原始请求已经
-/// 不在可见历史里，只剩 checkpoint 里的那张步骤表。
-/// 只认从 1 开始、至少三步的编号序列：零散提一句「第 3 步」往往只是顺口一提，
+/// 来源按「用户原文 → 计划文档 → 上一版 checkpoint」取第一个合法计划。计划文档
+/// 是当前计划的事实来源（审批执行时由调用方显式传入待执行计划）；上一版 checkpoint
+/// 只是兜底：批准新计划后它可能已经过期，不能压过计划文档。第三次压缩时原始请求
+/// 已经不在可见历史里，`previous` 仍能保证计划跨代存活。
+/// 只认从 1 开始、至少三步的连续编号序列：零散提一句「第 3 步」往往只是顺口一提，
 /// 把它当契约会把无关会话也拖进重试。
-/// 用户原文与上一版 checkpoint 都没有编号计划时，退回已批准计划文档里的编号列表。
 pub(crate) fn plan_steps(
     history: &[Message],
     previous: Option<&str>,
     plan: Option<&str>,
 ) -> Vec<String> {
-    let mut steps: BTreeSet<usize> = BTreeSet::new();
-    if let Some(previous) = previous {
-        collect_steps(previous, &mut steps);
-    }
+    let mut from_user = BTreeSet::new();
     for message in history {
         if message.role != Role::User || is_injected_context(message) {
             continue;
         }
-        collect_steps(&message.text(), &mut steps);
+        collect_steps(&message.text(), &mut from_user);
     }
-    let numbered = numbered_plan(&steps);
-    if !numbered.is_empty() {
-        return numbered;
+    let user = numbered_plan(&from_user);
+    if !user.is_empty() {
+        return user;
     }
-    plan.map_or_else(Vec::new, plan_steps_from_markdown)
+    if let Some(plan) = plan {
+        let steps = plan_steps_from_markdown(plan);
+        if !steps.is_empty() {
+            return steps;
+        }
+    }
+    let mut from_previous = BTreeSet::new();
+    if let Some(previous) = previous {
+        collect_steps(previous, &mut from_previous);
+    }
+    numbered_plan(&from_previous)
 }
 
 /// 连续编号 `1..=n`（3 ≤ n ≤ [`MAX_PLAN_STEPS`]）的步号才算计划。
@@ -349,84 +357,184 @@ fn numbered_plan(steps: &BTreeSet<usize>) -> Vec<String> {
     (1..=last).map(|step| format!("第 {step} 步")).collect()
 }
 
+/// 标题对应的步骤小节等级；`Steps` 比 `Plan` 更具体。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StepTier {
+    /// 「计划 / 任务 / 工作项」这类泛化标题，作为没有步骤小节时的兜底。
+    Plan,
+    /// 「步骤 / steps / checklist」这类明确的步骤小节。
+    Steps,
+}
+
+/// 一个候选小节及其顶格编号列表。
+struct StepSection {
+    tier: StepTier,
+    steps: BTreeSet<usize>,
+}
+
 /// 计划文档里的编号步骤。
 ///
-/// 只认标题含「步骤 / 实施 / 计划 / 工作项 / 任务 / steps / plan / todo / checklist」
-/// 的小节，取小节内顶格的 `1.` `1)` `1、` 列表项；必须从 1 起连续编号、
-/// 3 ≤ n ≤ [`MAX_PLAN_STEPS`]。代码围栏里的编号不算，缩进的子列表也不算。
+/// 收集所有候选小节，优先取 `Steps` 级中第一份合法计划，没有时取 `Plan` 级中
+/// 第一份合法计划。小节内只取顶格的 `1.` `1)` `1、`（含全角 `）`/`．`）列表项；
+/// 必须从 1 起连续编号、3 ≤ n ≤ [`MAX_PLAN_STEPS`]。代码围栏和缩进的子列表都不算。
 fn plan_steps_from_markdown(markdown: &str) -> Vec<String> {
-    let mut steps: BTreeSet<usize> = BTreeSet::new();
-    let mut in_fence = false;
-    let mut in_step_section = false;
+    let mut sections: Vec<StepSection> = Vec::new();
+    let mut current: Option<StepSection> = None;
+    let mut fence: Option<(char, usize)> = None;
     for line in markdown.lines() {
-        if line.starts_with("```") || line.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        if let Some(title) = heading_title(line) {
-            // 标题结束上一小节：它若是一份合法计划，就是答案。
-            let numbered = if in_step_section {
-                numbered_plan(&steps)
-            } else {
-                Vec::new()
-            };
-            if !numbered.is_empty() {
-                return numbered;
+        if let Some((marker, open_len)) = fence {
+            if fence_closes(line, marker, open_len) {
+                fence = None;
             }
-            steps.clear();
-            in_step_section = is_step_heading(title);
             continue;
         }
-        if !in_step_section || line.starts_with([' ', '\t']) {
+        if let Some(open) = fence_open(line) {
+            fence = Some(open);
+            continue;
+        }
+        if let Some((level, title)) = heading(line) {
+            if let Some(section) = current.take() {
+                sections.push(section);
+            }
+            current = step_heading_tier(level, title).map(|tier| StepSection {
+                tier,
+                steps: BTreeSet::new(),
+            });
+            continue;
+        }
+        let Some(section) = current.as_mut() else {
+            continue;
+        };
+        if line.starts_with([' ', '\t']) {
             continue;
         }
         if let Some(number) = list_item_number(line) {
-            steps.insert(number);
+            section.steps.insert(number);
         }
     }
-    if in_step_section {
-        numbered_plan(&steps)
-    } else {
-        Vec::new()
+    if let Some(section) = current {
+        sections.push(section);
     }
+    first_valid(&sections, StepTier::Steps)
+        .or_else(|| first_valid(&sections, StepTier::Plan))
+        .unwrap_or_default()
 }
 
-/// markdown 标题文本：行首 1–6 个 `#`，其后必须是空格或行尾。
-fn heading_title(line: &str) -> Option<&str> {
+/// 指定等级中第一份合法计划。
+fn first_valid(sections: &[StepSection], tier: StepTier) -> Option<Vec<String>> {
+    sections
+        .iter()
+        .filter(|section| section.tier == tier)
+        .find_map(|section| {
+            let steps = numbered_plan(&section.steps);
+            (!steps.is_empty()).then_some(steps)
+        })
+}
+
+/// markdown 标题：行首 1–6 个 `#`，其后必须是空格或行尾；返回级别与标题文本。
+fn heading(line: &str) -> Option<(usize, &str)> {
     let hashes = line.len() - line.trim_start_matches('#').len();
     if !(1..=6).contains(&hashes) {
         return None;
     }
-    match &line[hashes..] {
-        rest if rest.is_empty() => Some(rest),
-        rest => rest.strip_prefix(' ').map(str::trim),
+    let rest = &line[hashes..];
+    if rest.is_empty() {
+        return Some((hashes, rest));
     }
+    rest.strip_prefix(' ').map(|title| (hashes, title.trim()))
 }
 
 /// 标题是否指向计划步骤小节。
-fn is_step_heading(title: &str) -> bool {
-    const KEYWORDS: [&str; 5] = ["步骤", "实施", "计划", "工作项", "任务"];
-    const ASCII_KEYWORDS: [&str; 4] = ["step", "plan", "todo", "checklist"];
+///
+/// `Steps`（`步骤` / `step` / `steps` / `checklist`）比 `Plan`（`实施` / `实现` /
+/// `执行` / `计划` / `任务` / `工作项` / `plan` / `todo`）更具体；H1 是文档标题，
+/// 最多算 `Plan`。英文按词匹配，`Explanation` 不会命中 `plan`；`Steps to reproduce`
+/// 不是实施计划。
+fn step_heading_tier(level: usize, title: &str) -> Option<StepTier> {
     let lower = title.to_ascii_lowercase();
-    KEYWORDS.iter().any(|keyword| title.contains(keyword))
-        || ASCII_KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+    let words: Vec<&str> = lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words
+        .iter()
+        .any(|word| matches!(*word, "reproduce" | "reproduction" | "repro"))
+    {
+        return None;
+    }
+    let specific = title.contains("步骤")
+        || words
+            .iter()
+            .any(|word| matches!(*word, "step" | "steps" | "checklist"));
+    if specific {
+        return Some(if level > 1 {
+            StepTier::Steps
+        } else {
+            StepTier::Plan
+        });
+    }
+    let general = title.contains("实施")
+        || title.contains("实现")
+        || title.contains("执行")
+        || title.contains("计划")
+        || title.contains("任务")
+        || title.contains("工作项")
+        || words
+            .iter()
+            .any(|word| matches!(*word, "plan" | "todo" | "todos"));
+    general.then_some(StepTier::Plan)
 }
 
-/// 顶格列表项的编号：行首数字后紧跟 `.` `)` `、` 之一，再跟一个空格。
+/// 顶格列表项的编号：行首数字后紧跟 `.` `)` `、` `）` `．` 之一。
+///
+/// `.`/`)` 后必须有一个空格（避免把 `1.5 亿` 当列表项）；中文标记 `、` `）` `．`
+/// 不要求空格（`1、读取配置` 是常见写法）。
 fn list_item_number(line: &str) -> Option<usize> {
+    const MARKERS: [char; 5] = ['.', ')', '、', '）', '．'];
     let digits_end = line.find(|ch: char| !ch.is_ascii_digit())?;
     if digits_end == 0 {
         return None;
     }
     let number = line[..digits_end].parse::<usize>().ok()?;
-    let rest = line[digits_end..]
-        .strip_prefix('.')
-        .or_else(|| line[digits_end..].strip_prefix(')'))
-        .or_else(|| line[digits_end..].strip_prefix('、'))?;
-    rest.starts_with(' ').then_some(number)
+    let rest = &line[digits_end..];
+    let marker = MARKERS.iter().copied().find(|marker| rest.starts_with(*marker))?;
+    let after = &rest[marker.len_utf8()..];
+    if matches!(marker, '、' | '）' | '．') || after.starts_with(' ') {
+        Some(number)
+    } else {
+        None
+    }
+}
+
+/// 行首（最多 3 个空格缩进）的围栏标记：字符与连续长度。
+///
+/// 只认 ``` 或 ~~~ 的 3 个及以上连续字符；4 空格是缩进代码，不是围栏。
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let marker = rest.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let len = rest.chars().take_while(|ch| *ch == marker).count();
+    (len >= 3).then_some((marker, len))
+}
+
+/// 闭合围栏：同字符、长度不短于开启、其后只有空白。
+///
+/// 例如 4 反引号围栏里的 3 反引号行不会提前闭合；`marker` 是 ASCII，`len` 同时也是
+/// 字节下标，`rest[len..]` 安全。
+fn fence_closes(line: &str, marker: char, open_len: usize) -> bool {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    let len = rest.chars().take_while(|ch| *ch == marker).count();
+    len >= open_len && rest[len..].trim().is_empty()
 }
 
 /// 扫描 `第 N 步`（阿拉伯数字或中文数字，两侧允许空格）并记录步号。
@@ -539,6 +647,7 @@ pub(crate) fn fallback_checkpoint(
     state: &SessionState,
     history: &[Message],
     previous: Option<&str>,
+    plan: Option<&str>,
 ) -> String {
     let mut requests: Vec<String> = history
         .iter()
@@ -590,7 +699,7 @@ pub(crate) fn fallback_checkpoint(
     }
     // 兜底也要保住被否决的方案和计划步号：它们决定后续会话会不会重提已否决的方案。
     let policies = decisions(history, previous);
-    let plan = plan_steps(history, previous, approved_plan(state));
+    let steps = plan_steps(history, previous, plan);
     let mut preserved = String::new();
     if !policies.is_empty() {
         preserved.push_str("\n## Decisions and Rejected Options\n");
@@ -600,12 +709,12 @@ pub(crate) fn fallback_checkpoint(
             preserved.push('\n');
         }
     }
-    if !plan.is_empty() {
+    if !steps.is_empty() {
         preserved.push_str("\n## Plan Status\n");
         preserved.push_str("- 计划共 ");
-        preserved.push_str(&plan.len().to_string());
+        preserved.push_str(&steps.len().to_string());
         preserved.push_str(" 步：");
-        preserved.push_str(&plan.join("、"));
+        preserved.push_str(&steps.join("、"));
         preserved.push_str("；每步的状态见上文的 Current Work。\n");
     }
 
@@ -852,7 +961,7 @@ mod tests {
             Message::user_text("把 TTL 改成 45 秒"),
             Message::assistant_text("已改好 window.rs"),
         ];
-        let checkpoint = fallback_checkpoint(&state, &history, None);
+        let checkpoint = fallback_checkpoint(&state, &history, None, None);
         for section in [
             "## Primary Request and Intent",
             "## Files and Code",
@@ -871,7 +980,7 @@ mod tests {
     fn fallback_keeps_previous_checkpoint_verbatim() {
         let state = state_with_calls(vec![], vec![]);
         let history = vec![Message::user_text("继续第 3 步")];
-        let checkpoint = fallback_checkpoint(&state, &history, Some("## Previous\nkeep me"));
+        let checkpoint = fallback_checkpoint(&state, &history, Some("## Previous\nkeep me"), None);
         assert!(checkpoint.starts_with("## Previous\nkeep me"));
         assert!(checkpoint.contains("## Recent Activity"));
         assert!(checkpoint.contains("继续第 3 步"));
@@ -884,7 +993,7 @@ mod tests {
             Message::user_text("真实请求"),
             Message::user_text("<system-reminder>Current local time: 2026-01-01</system-reminder>"),
         ];
-        let checkpoint = fallback_checkpoint(&state, &history, None);
+        let checkpoint = fallback_checkpoint(&state, &history, None, None);
         assert!(checkpoint.contains("真实请求"));
         assert!(!checkpoint.contains("Current local time"));
     }
@@ -994,6 +1103,29 @@ mod tests {
     fn plan_steps_skip_fenced_code_numbering() {
         let markdown = "## 实施步骤\n```text\n1. a\n2. b\n3. c\n```\n";
         assert!(plan_steps(&[], None, Some(markdown)).is_empty());
+
+        // 四反引号围栏里的三反引号行不闭合围栏，围栏内的编号都不算步骤。
+        let nested = "## 实施步骤\n````text\n```txt\n1. e1\n2. e2\n3. e3\n4. e4\n5. e5\n```\n````\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(nested)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+
+        // 2 空格缩进的围栏仍算围栏。
+        let indented =
+            "## 实施步骤\n  ```text\n1. e1\n2. e2\n3. e3\n4. e4\n5. e5\n  ```\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(indented)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+
+        // 字符不匹配的围栏不闭合：`~~~` 关不掉 ``` 围栏。
+        let mismatched =
+            "## 实施步骤\n```text\n~~~\n1. e1\n2. e2\n3. e3\n4. e4\n5. e5\n```\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(mismatched)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
     }
 
     #[test]
@@ -1006,6 +1138,73 @@ mod tests {
             plan_steps(&history, None, Some(markdown)),
             vec!["第 1 步", "第 2 步", "第 3 步"]
         );
+    }
+
+    #[test]
+    fn plan_steps_prefer_the_plan_over_the_previous_checkpoint() {
+        // 上一版 checkpoint 的步号可能比刚批准的计划陈旧，不能压过计划文档。
+        let previous: String = (1..=5).map(|step| format!("第 {step} 步 done；")).collect();
+        let markdown = "## 实施步骤\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(
+                &[Message::user_text("继续")],
+                Some(&previous),
+                Some(markdown)
+            ),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+    }
+
+    #[test]
+    fn plan_steps_fall_back_when_user_steps_have_gaps() {
+        let history = vec![Message::user_text(
+            "第 1 步改 A，第 2 步改 B，第 4 步补测试。",
+        )];
+        let markdown = "## 实施步骤\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(&history, None, Some(markdown)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+    }
+
+    #[test]
+    fn plan_steps_prefer_a_step_section_over_an_h1_overview() {
+        let markdown = "# 迁移计划\n1. 概览一\n2. 概览二\n3. 概览三\n4. 概览四\n5. 概览五\n\
+                        6. 概览六\n7. 概览七\n## 实施步骤\n1. a\n2. b\n3. c\n4. d\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(markdown)),
+            vec!["第 1 步", "第 2 步", "第 3 步", "第 4 步"]
+        );
+    }
+
+    #[test]
+    fn plan_steps_ignore_explanation_and_reproduce_sections() {
+        let markdown = "## Explanation\n1. e1\n2. e2\n3. e3\n\
+                        ## Steps to reproduce\n1. r1\n2. r2\n3. r3\n\
+                        ## 实施步骤\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(markdown)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+        assert!(plan_steps(&[], None, Some("## Explanation\n1. e1\n2. e2\n3. e3\n")).is_empty());
+    }
+
+    #[test]
+    fn plan_steps_fall_back_to_a_plan_heading() {
+        let markdown = "## 计划\n1. a\n2. b\n3. c\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(markdown)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+    }
+
+    #[test]
+    fn list_item_number_accepts_cjk_markers_without_spaces() {
+        assert_eq!(list_item_number("1、读取配置"), Some(1));
+        assert_eq!(list_item_number("12）收尾"), Some(12));
+        assert_eq!(list_item_number("3．验证"), Some(3));
+        assert_eq!(list_item_number("1.5 亿"), None);
+        assert_eq!(list_item_number("1.没有空格"), None);
     }
 
     #[test]
@@ -1046,11 +1245,21 @@ mod tests {
         let history = vec![Message::user_text(
             "否决了用 Redis 存窗口状态。计划三步：第 1 步改 TTL，第 2 步加骨架，第 3 步移计数。",
         )];
-        let checkpoint = fallback_checkpoint(&state, &history, None);
+        let checkpoint = fallback_checkpoint(&state, &history, None, None);
         assert!(checkpoint.contains("## Decisions and Rejected Options"));
         assert!(checkpoint.contains("Redis"));
         assert!(checkpoint.contains("## Plan Status"));
         assert!(checkpoint.contains("第 3 步"));
+    }
+
+    #[test]
+    fn fallback_preserves_the_plan_override_steps() {
+        let state = state_with_calls(vec![], vec![]);
+        let history = vec![Message::user_text("继续")];
+        let plan = "## 实施步骤\n1. a\n2. b\n3. c\n";
+        let checkpoint = fallback_checkpoint(&state, &history, None, Some(plan));
+        assert!(checkpoint.contains("计划共 3 步"), "{checkpoint}");
+        assert!(checkpoint.contains("第 3 步"), "{checkpoint}");
     }
 
     #[test]

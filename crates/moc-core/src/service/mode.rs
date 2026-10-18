@@ -107,6 +107,7 @@ pub async fn approve_plan(
             &params.session_id,
             Some("Preserve the plan and key decisions"),
             Some(&execution_model.selector),
+            Some(plan.markdown.as_str()),
         )
         .await
         .map_err(to_rpc)?;

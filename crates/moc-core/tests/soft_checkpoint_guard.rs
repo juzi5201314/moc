@@ -5,7 +5,10 @@ mod support;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use moc_protocol::methods::{SessionCompact, SessionCompactParams, SessionMode};
+use moc_protocol::methods::{
+    PlanAction, PlanStatus, SessionCompact, SessionCompactParams, SessionMode, SessionPlanApprove,
+    SessionPlanApproveParams,
+};
 use serde_json::Value;
 use support::Harness;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
@@ -446,4 +449,72 @@ async fn the_previous_checkpoint_reaches_the_summarizer_as_injected_context() {
         !request.contains("<previous-summary>\nFIRST-CHECKPOINT-MARKER"),
         "已在消息里的 checkpoint 不能在末尾提示词里重复：{request}"
     );
+}
+
+#[tokio::test]
+async fn execute_compacted_requires_the_pending_plan_steps() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] == true {
+                return ResponseTemplate::new(200).set_body_raw(
+                    support::tool_stream(vec![
+                        (
+                            "plan",
+                            "write_plan",
+                            serde_json::json!({
+                                "title": "实施计划",
+                                "markdown": "# 实施计划\n## 实施步骤\n1. 改 A\n2. 改 B\n3. 改 C\n"
+                            }),
+                        ),
+                        ("exit", "exit_plan", serde_json::json!({})),
+                    ]),
+                    "text/event-stream",
+                );
+            }
+            let mut summary = valid_summary("EXECUTE-COMPACTED");
+            summary
+                .push_str("\n计划：第 1 步 改 A 完成；第 2 步 改 B 完成；第 3 步 改 C 进行中。\n");
+            ResponseTemplate::new(200).set_body_json(support::complete(&summary))
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Plan).await;
+    harness.prompt(&session, "提交计划").await;
+    let plan = harness
+        .load(&session)
+        .await
+        .plans
+        .pop()
+        .expect("已保存计划");
+    harness
+        .client
+        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+            session_id: session.clone(),
+            plan_id: plan.plan_id,
+            action: PlanAction::ExecuteCompacted,
+            execution_model: None,
+        })
+        .await
+        .expect("批准并压缩");
+
+    let summaries = summary_requests(&upstream).await;
+    let request = messages_text(summaries.first().expect("摘要请求"));
+    assert!(
+        request.contains("<must-preserve>"),
+        "待执行计划的步号必须进入必保留清单：{request}"
+    );
+    assert!(
+        request.contains("- 第 1 步") && request.contains("- 第 3 步"),
+        "待执行计划的步号必须进入必保留清单：{request}"
+    );
+    let loaded = harness.load(&session).await;
+    assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
 }
