@@ -5,9 +5,11 @@
 //! 单元格像素尺寸就无法 1:1 落位，宁可不出图也不出缩放后发虚的图。
 //!
 //! 放置策略是「后处理」：每帧 `terminal.draw()` 之后把图像按格坐标贴上去。
-//! kitty 的图像独立于文本层，只在位置变化时重放；sixel / iTerm2 的图像会被
-//! 后续文本覆盖，因此位置或内容变化时整串重发。浮层（模态、toast、拖选）
-//! 期间一律不放置，浮层消失后整批重放。
+//! kitty 的图像独立于文本层，只在位置变化时重放，消失时按图像 ID 删除；
+//! sixel / iTerm2 的图像会被后续文本覆盖，因此位置或内容变化时整串重发，
+//! 图像消失时则请求下一帧清屏重绘（`App::chart_repaint`），只靠文本 diff
+//! 擦不掉留在空白占位格上的旧像素。浮层（模态、toast、拖选）期间一律不放置，
+//! 浮层消失后整批重放。
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -269,8 +271,9 @@ fn apply_csi(params: &[u8], final_byte: u8, replies: &mut Replies) {
 
 /// 每帧放置图像：在 `terminal.draw()` 之后调用。
 ///
-/// 位置与内容都没变就跳过；kitty 换位时先删旧放置（placement id 复用），
-/// 消失的图像同步删除，避免残影留在备用屏上。
+/// 位置与内容都没变就跳过；kitty 换位时先删旧放置，永久消失的图像按图像 ID
+/// 连数据一起删除。sixel / iTerm2 消失或改尺寸时置 `chart_repaint`，由事件
+/// 循环清屏重绘，避免残影留在空白占位行上。
 pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
     let Some(support) = app.graphics else {
         return Ok(());
@@ -361,15 +364,30 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
             hash: slot.hash,
         });
     }
-    // kitty 的放置独立于文本层：图像离开视口或变回表格时必须显式删除
+    // kitty 的放置独立于文本层：图像离开视口或收起图表时必须显式删除。
+    // sixel / iTerm2 没有删除动作，只能请求下一帧清屏重绘。
+    let mut repaint = false;
     for old in &previous {
-        if placed.iter().any(|now| now.image_id == old.image_id) {
-            continue;
+        match placed.iter().find(|now| now.image_id == old.image_id) {
+            None => {
+                if old.proto == GraphicsProto::Kitty {
+                    out.write_all(encode::kitty_delete(old.image_id).as_bytes())?;
+                    wrote = true;
+                } else {
+                    repaint = true;
+                }
+            }
+            Some(now) => {
+                if old.proto != GraphicsProto::Kitty
+                    && (old.cols != now.cols || old.rows != now.rows)
+                {
+                    repaint = true;
+                }
+            }
         }
-        if old.proto == GraphicsProto::Kitty {
-            out.write_all(encode::kitty_hide(old.image_id).as_bytes())?;
-            wrote = true;
-        }
+    }
+    if repaint {
+        app.chart_repaint = true;
     }
     app.chart_placed = placed;
     if wrote {
@@ -492,11 +510,12 @@ mod emit_tests {
         emit(&mut app, &mut again).expect("写内存不会失败");
         assert!(again.is_empty(), "位置与指纹都没变，不该重发：{again:?}");
 
-        // 滚动一格：位置变化必须重发
+        // 滚动一格：位置变化必须重发；纯移动不触发整屏清屏，避免滚动卡顿
         app.chart_slots[0].y = slot.y + 1;
         let mut moved = Vec::new();
         emit(&mut app, &mut moved).expect("写内存不会失败");
         assert!(contains(&moved, b"\x1bPq"), "换位后应重发载荷");
+        assert!(!app.chart_repaint, "纯换位不需要清屏重绘");
     }
 
     /// kitty：载荷只传一次，换位只重发放置；图像消失时删除放置。
@@ -524,12 +543,16 @@ mod emit_tests {
         );
         assert!(!transmitted.is_empty());
 
-        // 图像离开视口：删除放置
+        // 图像离开视口：连图像数据与放置一起删
         app.chart_slots.clear();
         let mut gone = Vec::new();
         emit(&mut app, &mut gone).expect("写内存不会失败");
-        assert!(contains(&gone, b"a=d,d=p"), "消失的图像要删掉放置");
+        assert!(
+            contains(&gone, b"a=d,d=i"),
+            "消失的图像要按 ID 删除数据与放置"
+        );
         assert!(app.chart_placed.is_empty());
+        assert!(!app.chart_repaint, "kitty 有显式删除，不需要清屏");
     }
 
     /// 浮层期间不贴图，浮层消失后整批重放（避免图像盖住模态或残影）。
@@ -577,10 +600,25 @@ mod emit_tests {
         let mut resumed = Vec::new();
         emit(&mut app, &mut resumed).expect("写内存不会失败");
         assert!(
-            contains(&resumed, b"a=d,d=p"),
-            "消失的图必须删掉放置：{:?}",
+            contains(&resumed, b"a=d,d=i"),
+            "消失的图必须按 ID 删掉数据与放置：{:?}",
             String::from_utf8_lossy(&resumed)
         );
+        assert!(app.chart_placed.is_empty());
+    }
+
+    /// sixel / iTerm2 没有删除动作：图消失时只能请求下一帧清屏重绘。
+    #[test]
+    fn non_kitty_removal_requests_full_repaint() {
+        let (mut app, _slot) = app_with_chart(GraphicsProto::Sixel);
+        let mut first = Vec::new();
+        emit(&mut app, &mut first).expect("写内存不会失败");
+        assert!(!app.chart_repaint);
+
+        app.chart_slots.clear();
+        let mut gone = Vec::new();
+        emit(&mut app, &mut gone).expect("写内存不会失败");
+        assert!(app.chart_repaint, "sixel 图消失后必须请求清屏重绘");
         assert!(app.chart_placed.is_empty());
     }
 
@@ -652,8 +690,11 @@ mod pipeline_tests {
             (u32::from(slot.cols) * cell.w, u32::from(slot.rows) * cell.h),
             "图片像素尺寸必须等于槽位的格子区域"
         );
-        // 预留区域确实占满正文宽度与版式行数
-        assert_eq!(slot.cols, app.scrollback_area.width - 3);
+        // 宽终端按 720px 上限收窄：720 / 9 = 80 列，而不是占满正文宽度。
+        assert_eq!(
+            slot.cols,
+            (crate::render::chart::MAX_CHART_PX / cell.w) as u16
+        );
         assert_eq!(slot.rows, 6);
     }
 }

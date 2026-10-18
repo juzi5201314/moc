@@ -29,6 +29,12 @@ pub const MIN_COLS: u16 = 24;
 /// 出图允许的最大行数：超过一屏的图读不动，也不该把整屏挤掉。
 pub const MAX_ROWS: u16 = 40;
 
+/// 图表位图的像素宽度上限：与 omp autoGraph 的 720px 栅格一致。
+///
+/// 正文再宽也不把图拉满：720px 左右的信息密度更接近 omp，横向拉伸只会让
+/// 条形和文字之间的距离失真。实际列数在 [`layout`] 里按单元格宽度换算。
+pub const MAX_CHART_PX: u32 = 720;
+
 /// 行高内基线偏移占行高的比例（兼顾上伸部与下伸部）。
 const BASELINE_RATIO: f32 = 0.78;
 
@@ -53,7 +59,7 @@ pub fn cell_supported(cell: CellPixels) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChartLayout {
     pub kind: ChartKind,
-    /// 占用列数（= 正文可用列数）。
+    /// 实际占用列数：正文可用列数与 [`MAX_CHART_PX`] 换算后的较小值。
     pub cols: u16,
     /// 占用行数。
     pub rows: u16,
@@ -85,8 +91,8 @@ pub fn rows_needed(kind: ChartKind, categories: usize, series: usize) -> u16 {
         ChartKind::Line => 1 + categories.clamp(6, 12) + 1,
         // 图例 + 12 行绘图区 + 两行轴标签
         ChartKind::Scatter => 1 + 12 + 2,
-        // 列头 + 每类别一行 + 色标
-        ChartKind::Heatmap => 1 + categories + 1,
+        // 顶部色标 + 列头 + 每类别一行（底部不再有伪数据行）
+        ChartKind::Heatmap => 2 + categories,
     };
     u16::try_from(rows).unwrap_or(u16::MAX)
 }
@@ -96,6 +102,11 @@ pub fn layout(spec: &ChartSpec, cols: u16, cell: CellPixels) -> Option<ChartLayo
     if cols < MIN_COLS || !cell_supported(cell) {
         return None;
     }
+    // 720px 上限换算成列数；极宽的单元格至少要保住 MIN_COLS 的可读宽度。
+    let max_cols = u16::try_from(MAX_CHART_PX / cell.w)
+        .unwrap_or(u16::MAX)
+        .max(MIN_COLS);
+    let cols = cols.min(max_cols);
     let rows = rows_needed(spec.kind, spec.categories.len(), spec.series.len());
     if rows == 0 || rows > MAX_ROWS {
         return None;
@@ -189,6 +200,19 @@ mod tests {
         assert_eq!(layout.px, (60 * 9, 7 * 18));
         assert_eq!(layout.px_size, 13, "18 * 0.72 四舍五入");
         assert_eq!(layout.baseline, 14, "18 * 0.78 四舍五入");
+    }
+
+    /// 宽终端不把图拉满：列数收窄到 720px 对应的整数格，像素宽度不超上限。
+    #[test]
+    fn layout_caps_width_at_omp_pixels() {
+        let cell = CellPixels { w: 8, h: 18 };
+        let wide = layout(&spec(ChartKind::Bar, 5, 1), 160, cell).expect("宽终端可出图");
+        assert_eq!(wide.cols, (MAX_CHART_PX / cell.w) as u16, "720 / 8 = 90 列");
+        assert_eq!(wide.px.0, MAX_CHART_PX, "像素宽度不超过 720");
+
+        let narrow = layout(&spec(ChartKind::Bar, 5, 1), 60, cell).expect("窄终端可出图");
+        assert_eq!(narrow.cols, 60, "窄终端不放大");
+        assert_eq!(narrow.px.0, 60 * cell.w);
     }
 
     /// 太窄、太矮、行数超限都不出图（入口也不出现）。

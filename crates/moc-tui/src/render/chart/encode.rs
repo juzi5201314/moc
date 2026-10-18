@@ -114,8 +114,10 @@ pub fn kitty_delete(id: u32) -> String {
 /// kitty 隐藏：只删放置、保留已传输的图像数据。
 ///
 /// 图像换位与暂时离开视口都走它——重放时不必重新传输几十 KB 的像素数据。
+/// 同时带 `i` 与 `p`：部分终端只按 placement id 删除时会漏掉没有 `i` 的请求，
+/// 两个键一起给才能稳定命中同一张图。
 pub fn kitty_hide(id: u32) -> String {
-    format!("\x1b_Ga=d,d=p,p={id},q=2\x1b\\")
+    format!("\x1b_Ga=d,d=p,i={id},p={id},q=2\x1b\\")
 }
 
 /// sixel 字节流。
@@ -515,7 +517,7 @@ mod tests {
             kitty_place(9, 40, 12),
             "\x1b_Ga=p,i=9,p=9,c=40,r=12,q=2\x1b\\"
         );
-        assert_eq!(kitty_hide(9), "\x1b_Ga=d,d=p,p=9,q=2\x1b\\");
+        assert_eq!(kitty_hide(9), "\x1b_Ga=d,d=p,i=9,p=9,q=2\x1b\\");
         assert_eq!(kitty_delete(9), "\x1b_Ga=d,d=i,i=9,q=2\x1b\\");
     }
 

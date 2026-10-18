@@ -1,8 +1,8 @@
 //! 图型规划：把表格的语义分析结果映射成一种可绘制的图型。
 //!
 //! 判定顺序固定、先命中先返回（计划里的 1–11 条规则），顺序本身是契约的一部分：
-//! 例如 `Heatmap` 排在 `Stacked` 之前，所以「读 / 写 / 合计」这种 3 行以上的表会画成热力图；
-//! `Stacked` 只在行数不足 3 行（热力图的最小行数）或主组不足 3 列时才轮得到。
+//! 例如 `Heatmap` 排在 `Stacked` 之前，所以「读 / 写 / 合计 / 其他」这种至少 4 列、
+//! 至少 3 行的表会画成热力图；`Stacked` 只在行数不足 3 行或主组不足 4 列时才轮得到。
 //! 阈值一律命名常量并写清理由，避免以后再猜「为什么是 0.8」。
 
 use super::table::{Cell, Column, ColumnRole, Composition, Dimension, TableAnalysis};
@@ -62,8 +62,9 @@ const MIN_ROWS: usize = 2;
 const MAX_ROWS: usize = 200;
 /// `Grouped` / `Heatmap` 的系列数上限：每类别占一行系列的版式超过 4 个系列就读不动。
 const GROUP_MAX: usize = 4;
-/// `Heatmap` 需要的系列数下限（少于 3 个系列不成矩阵）。
-const HEATMAP_MIN_MEMBERS: usize = 3;
+/// `Heatmap` 需要的系列数下限：与 omp autoGraph 一致，至少 4 列才成矩阵。
+/// 3 个系列交给分组条形图，避免把普通数值表画成满屏色块。
+const HEATMAP_MIN_MEMBERS: usize = 4;
 /// `Heatmap` 需要的数据行数下限。
 const HEATMAP_MIN_ROWS: usize = 3;
 /// `Paired` 的箭头单元占比（两列合计）：超过这个比例说明单元格本身就在写「改前 → 改后」。
@@ -176,7 +177,7 @@ pub fn plan(table: &TableAnalysis) -> Option<ChartPlan> {
             false,
         ));
     }
-    // 规则 7：同组系列 ≥ 3 → 热力图
+    // 规则 7：同组系列 ≥ 4 → 热力图
     if main.len() >= HEATMAP_MIN_MEMBERS && rows >= HEATMAP_MIN_ROWS {
         return Some(finish(table, ChartKind::Heatmap, label, main, false, false));
     }
@@ -561,19 +562,37 @@ mod tests {
         assert_eq!(spec.series[1].dim, Dimension::Bytes);
     }
 
+    /// 3 个同量纲系列走分组条形：普通数值表不该被画成满屏热力色块。
     #[test]
-    fn plans_heatmap_for_three_same_unit_measures() {
+    fn plans_grouped_for_three_numeric_measures() {
         let raw = table(
-            &["区域", "Q1", "Q2", "Q3"],
+            &["序号", "数值", "平方", "立方"],
             &[
-                &["北", "1", "2", "3"],
-                &["中", "4", "5", "6"],
-                &["南", "7", "8", "9"],
+                &["1", "12", "144", "1,728"],
+                &["2", "27", "729", "19,683"],
+                &["3", "45", "2,025", "91,125"],
+            ],
+        );
+        let (planned, spec) = chart(&raw);
+        assert_eq!(planned.kind, ChartKind::Grouped);
+        assert_eq!(planned.series, vec![1, 2, 3]);
+        assert_eq!(spec.categories, vec!["1", "2", "3"]);
+    }
+
+    /// 至少 4 个同量纲系列才成矩阵，与 omp autoGraph 的热力图门槛一致。
+    #[test]
+    fn plans_heatmap_for_four_same_unit_measures() {
+        let raw = table(
+            &["区域", "Q1", "Q2", "Q3", "Q4"],
+            &[
+                &["北", "1", "2", "3", "4"],
+                &["中", "5", "6", "7", "8"],
+                &["南", "9", "10", "11", "12"],
             ],
         );
         let (planned, _) = chart(&raw);
         assert_eq!(planned.kind, ChartKind::Heatmap);
-        assert_eq!(planned.series, vec![1, 2, 3]);
+        assert_eq!(planned.series, vec![1, 2, 3, 4]);
     }
 
     #[test]

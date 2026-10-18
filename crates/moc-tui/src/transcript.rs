@@ -66,8 +66,8 @@ pub struct Entry {
     pub elapsed_ms: Option<u64>,
     /// 正文里每张顶层表格的图表视图态（下标 = 表格序号）。
     ///
-    /// 纯进程内视图态：不进会话文件、不随历史恢复回填；`push_text`
-    /// 追加正文时整表清空——表格内容变了，旧的图表数据立刻作废。
+    /// 纯进程内视图态：不进会话文件、不随历史恢复回填；追加正文时
+    /// 整表清空——表格内容变了，旧的图表数据立刻作废。
     pub charts: Vec<Option<TableChartState>>,
 }
 
@@ -199,7 +199,7 @@ pub struct ToolCallStart {
 
 /// 一张表格的图表视图态。
 ///
-/// 存活期等于「块存在且正文没变」：`push_text` 会整表清空。载荷按像素尺寸
+/// 存活期等于「块存在且正文没变」：正文追加时会整表清空。载荷按像素尺寸
 /// 缓存，终端尺寸变了（`px` 不同）就重新栅格化——绝不缩放已有的图。
 #[derive(Debug, Clone)]
 pub struct TableChartState {

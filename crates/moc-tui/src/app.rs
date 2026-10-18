@@ -150,6 +150,9 @@ pub struct App {
     pub chart_covered: bool,
     /// 浮层结束后需要整批重放（浮层期间图像被覆盖或擦除，位置指纹已不可信）。
     pub chart_resume: bool,
+    /// 图像消失或尺寸变化后请求清屏重绘：sixel / iTerm2 不能单独擦除像素，
+    /// 只靠 ratatui 的文本 diff 会把旧图留在“仍然空白”的占位格上。
+    pub chart_repaint: bool,
     /// 鼠标悬停的表格入口 `(块下标, 表格序号)`。
     pub hover_chart: Option<(usize, usize)>,
     /// 下一个 kitty 图像 ID（进程内自增，永不复用）。
@@ -349,6 +352,7 @@ impl App {
             chart_placed: Vec::new(),
             chart_covered: false,
             chart_resume: false,
+            chart_repaint: false,
             hover_chart: None,
             next_image_id: 1,
             selection: None,
@@ -1086,6 +1090,9 @@ impl App {
         };
         text.reserve(delta.len());
         text.push_str(delta);
+        // 正文继续增长后表格序号与内容都可能漂移，旧图立刻作废。
+        // 旧图的清屏由 graphics::emit 在帧后发现并标记，不在这里猜协议。
+        entry.charts.clear();
         entry.touch();
     }
 
@@ -1581,6 +1588,33 @@ mod tests {
         assert_eq!(app.blocks.len(), 1);
         assert!(
             matches!(&app.blocks[0].block, crate::transcript::Block::Assistant { text } if text == "已提交正文")
+        );
+    }
+
+    /// 正文继续流式增长时，旧图表状态必须立刻作废，避免 index 漂移后画旧图。
+    #[test]
+    fn streaming_append_invalidates_chart_state() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.scrollback_area = Rect::new(3, 0, 80, 30);
+        app.push_block(crate::transcript::Block::Assistant {
+            text: "| 项 | 读 | 写 |\n|---|---|---|\n| a | 10 | 20 |\n| b | 30 | 40 |".into(),
+        });
+        app.toggle_table_chart(0, 0);
+        assert!(app.blocks[0].table_chart(0).is_some());
+        app.append_streaming(
+            |block| match block {
+                crate::transcript::Block::Assistant { text } => Some(text),
+                _ => None,
+            },
+            "\n\n追加正文",
+        );
+        assert!(
+            app.blocks[0].table_chart(0).is_none(),
+            "正文变化后旧图必须清掉"
+        );
+        assert!(
+            matches!(&app.blocks[0].block, crate::transcript::Block::Assistant { text } if text.ends_with("追加正文"))
         );
     }
 }

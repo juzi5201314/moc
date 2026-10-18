@@ -4,14 +4,15 @@
 //! 同一份恢复序列；顺序与启用相反，保证终端状态无残留。
 
 use anyhow::Context;
+use crossterm::cursor::MoveTo;
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    supports_keyboard_enhancement,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+    enable_raw_mode, supports_keyboard_enhancement,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -74,6 +75,19 @@ impl TerminalGuard {
 
     pub fn terminal_mut(&mut self) -> &mut Terminal<CrosstermBackend<std::io::Stdout>> {
         &mut self.terminal
+    }
+
+    /// 强制整屏重绘：清屏并重建 ratatui 双缓冲。
+    ///
+    /// 不直接用 `Terminal::clear()`：它会先发 DSR 查询并同步读 stdin 来保存
+    /// 光标位置，而输入线程也在读 stdin，可能吞键或阻塞 2 秒。这里直接发
+    /// clear 序列，再换一个双缓冲全空的新 Terminal，下一帧必然写满全屏。
+    pub fn reset_screen(&mut self) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        crossterm::execute!(stdout, Clear(ClearType::All), MoveTo(0, 0)).context("清屏失败")?;
+        self.terminal =
+            Terminal::new(CrosstermBackend::new(stdout)).context("重建终端双缓冲失败")?;
+        Ok(())
     }
 
     /// 恢复终端状态；幂等，供 Drop 与显式退出共用。

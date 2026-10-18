@@ -1588,8 +1588,11 @@ fn distinct_texts(column: &Column, rows: &[usize]) -> usize {
 
 // ---------------------------------------------------------------- 份额组合
 
-/// 找出份额组合：几列之和等于另一列（`exact`），或不超过另一列且至少一行占到 5%。
+/// 找出份额组合：几列之和等于另一列（`exact`），或不超过「合计/总计」类列
+/// 且至少一行占到 5%（`exact = false`）。
 ///
+/// 近似组合要求整列的表头明确写成总量类词：否则像 `数值 / 平方 / 立方`
+/// 这种「小列相加恰好小于大列」的数学关系也会被误当成份额组合，画成堆叠图。
 /// 部分列必须同量纲同单位；合计列要求同量纲（单位可以不同，数值已归一化）。
 /// 并列时取部分列最多的组合，仍然并列取先枚举到的（列序升序）。
 fn detect_composition(
@@ -1637,6 +1640,11 @@ fn detect_composition(
                         return;
                     }
                     if let Some(exact) = composition_relation(columns, parts, whole, rows) {
+                        // 近似组合只在整列表头明确是总量时成立；否则「平方/立方」
+                        // 这种数学列会被误读成份额。
+                        if !exact && !is_total_label(&columns[whole].header) {
+                            return;
+                        }
                         best = Some(Composition {
                             whole: Some(whole),
                             parts: parts.to_vec(),
@@ -2037,7 +2045,7 @@ mod tests {
         );
 
         let raw = table(
-            &["服务", "命中", "落空", "请求量"],
+            &["服务", "命中", "落空", "总计"],
             &[&["A", "80", "20", "120"], &["B", "90", "5", "100"]],
         );
         let composition = analyze(&raw).composition.expect("应当识别出近似份额组合");
@@ -2054,6 +2062,18 @@ mod tests {
         let raw = table(
             &["服务", "耗时 ms", "体积 KiB"],
             &[&["A", "12", "3"], &["B", "15", "4"]],
+        );
+        assert!(analyze(&raw).composition.is_none());
+
+        // 数学列（数值 / 平方 / 立方）即使满足「小列之和小于大列」也不是份额组合：
+        // 近似组合只认「合计 / 总计」这类整列表头。
+        let raw = table(
+            &["序号", "数值", "平方", "立方"],
+            &[
+                &["1", "12", "144", "1,728"],
+                &["2", "27", "729", "19,683"],
+                &["3", "45", "2,025", "91,125"],
+            ],
         );
         assert!(analyze(&raw).composition.is_none());
     }

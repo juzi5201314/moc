@@ -587,6 +587,13 @@ async fn event_loop(
         }
         let now = tokio::time::Instant::now();
         if dirty && now >= next_frame {
+            // sixel / iTerm2 的旧图只能靠覆盖像素擦除：先清屏并重置 back buffer，
+            // 再让 ratatui 完整重画一帧；剩余图表由 emit 整批重放。
+            if app.chart_repaint {
+                app.chart_repaint = false;
+                app.chart_resume = true;
+                guard.reset_screen()?;
+            }
             let draw_result = guard
                 .terminal_mut()
                 .draw(|frame| render::draw(frame, app, &mut view));
@@ -595,6 +602,10 @@ async fn event_loop(
             draw_result?;
             // 位图只能画在帧之后：先让 ratatui 把文本与底色写完，再按格坐标贴图
             crate::render::graphics::emit(app, &mut std::io::stdout())?;
+            // emit 在帧后才发现“上一张图消失了”：立刻再排一帧清屏。
+            if app.chart_repaint {
+                dirty = true;
+            }
             if app.history_load_requested {
                 request_history_page(app, connection);
             }

@@ -117,6 +117,85 @@ fn point(series: &Series, row: usize) -> Option<&Point> {
     series.points.get(row).and_then(Option::as_ref)
 }
 
+/// 条形刻度的极差门槛：全部为正且 max/min 达到这个倍数时改用对数刻度。
+///
+/// 与 omp autoGraph 的 100 倍阈值一致：线性刻度下 12 与 884,736 同图时，
+/// 小值的条只剩一两个像素，读者无法比较。
+const LOG_SCALE_RATIO: f64 = 100.0;
+
+/// 条形 / 分组条 / 成对条共用的横向刻度。
+#[derive(Debug, Clone, Copy)]
+enum ValueScale {
+    /// 含零线性刻度：条从零基线起画，正负都能表达。
+    Linear { min: f64, max: f64 },
+    /// 全正数据的对数刻度：条从最小值起画，极差很大时仍可比较。
+    Log { min: f64, max: f64 },
+}
+
+impl ValueScale {
+    fn new(series: &[Series]) -> Self {
+        let Some((min, max)) = data_bounds(series) else {
+            return Self::Linear { min: 0.0, max: 1.0 };
+        };
+        if min > 0.0 && max / min >= LOG_SCALE_RATIO {
+            Self::Log { min, max }
+        } else {
+            let (min, max) = bounds(series).unwrap_or((0.0, 1.0));
+            Self::Linear { min, max }
+        }
+    }
+
+    fn is_log(self) -> bool {
+        matches!(self, Self::Log { .. })
+    }
+
+    /// 数值在横向轨道里的比例（0..1）。
+    fn ratio(self, value: f64) -> f64 {
+        match self {
+            Self::Linear { min, max } => {
+                let span = (max - min).max(f64::EPSILON);
+                ((value - min) / span).clamp(0.0, 1.0)
+            }
+            Self::Log { min, max } => {
+                let span = (max / min).ln();
+                if span.abs() < f64::EPSILON {
+                    0.0
+                } else {
+                    ((value.max(min) / min).ln() / span).clamp(0.0, 1.0)
+                }
+            }
+        }
+    }
+
+    /// 条的起点：线性用零轴，对数用轨道左端（最小值）。
+    fn origin(self, track: (u32, u32)) -> u32 {
+        match self {
+            Self::Linear { .. } => {
+                track.0 + (self.ratio(0.0) * f64::from(track.1 - track.0)).round() as u32
+            }
+            Self::Log { .. } => track.0,
+        }
+        .min(track.1)
+    }
+
+    /// 数值在轨道里的横坐标。
+    fn position(self, track: (u32, u32), value: f64) -> u32 {
+        track.0 + (self.ratio(value) * f64::from(track.1 - track.0)).round() as u32
+    }
+
+    /// 对数刻度的三条轴标签（最小值 / 几何中值 / 最大值）；线性刻度由调用方用真实单元格文本。
+    fn log_labels(self, reference: &Series) -> (String, String, String) {
+        match self {
+            Self::Linear { .. } => (String::new(), String::new(), String::new()),
+            Self::Log { min, max } => (
+                format_value(min, reference.factor, &reference.unit),
+                format_value(min.sqrt() * max.sqrt(), reference.factor, &reference.unit),
+                format_value(max, reference.factor, &reference.unit),
+            ),
+        }
+    }
+}
+
 /// 按 8 位 alpha 把前景混到背景上。
 fn blend(under: [u8; 3], over: [u8; 3], alpha: u32) -> [u8; 3] {
     let channel = |u: u8, o: u8| -> u8 {
@@ -129,10 +208,10 @@ fn blend(under: [u8; 3], over: [u8; 3], alpha: u32) -> [u8; 3] {
     ]
 }
 
-/// 数值 → 混色档位（0..HEAT_STEPS-1）：最浅留一点底色，最深是纯系列色。
+/// 数值 → 混色档位（0..HEAT_STEPS-1）：最浅几乎只有底色，最深接近纯系列色。
 fn heat_alpha(step: usize) -> u32 {
-    // 5 档：40 / 92 / 145 / 198 / 255
-    40 + (step.min(HEAT_STEPS - 1) as u32 * 215) / (HEAT_STEPS as u32 - 1)
+    // 5 档：32 / 80 / 128 / 176 / 224。上限留一点底色，避免整块图过曝。
+    32 + (step.min(HEAT_STEPS - 1) as u32 * 192) / (HEAT_STEPS as u32 - 1)
 }
 
 struct Painter<'a> {
@@ -241,8 +320,8 @@ impl Painter<'_> {
         widest
     }
 
-    /// 图例行：色块 + 系列名；单系列时顺带写出书写单位。
-    fn legend(&mut self) {
+    /// 图例行：色块 + 系列名；单系列时顺带写出书写单位。返回结束笔位。
+    fn legend(&mut self) -> u32 {
         let spec = self.spec;
         let limit = self.w().saturating_sub(PAD_X);
         let mut x = PAD_X;
@@ -263,23 +342,39 @@ impl Painter<'_> {
             self.text(0, x, &shown, self.palette.text_secondary);
             x += width + 3 * GAP;
         }
+        x
     }
 
-    /// 底轴：基线 + 零 / 中 / 最大三个刻度。
+    /// 底轴：基线 + 三个刻度。
     ///
-    /// 刻度文本全部取自真实数据点（最接近中值的那个点 + 最大值点），
-    /// 保证「轴上的字」与「表里的字」是同一套写法。
-    fn value_axis(&mut self, row: u16, track: (u32, u32), zero_x: u32, mid: &str, max: &str) {
+    /// 线性刻度画零 / 中 / 最大；对数刻度画最小 / 几何中值 / 最大。
+    /// 线性刻度的文本取自真实数据点，保证「轴上的字」与「表里的字」同一套写法。
+    fn value_axis(
+        &mut self,
+        row: u16,
+        track: (u32, u32),
+        scale: ValueScale,
+        min: &str,
+        mid: &str,
+        max: &str,
+    ) {
         let y = self.row_top(row);
         let border = self.palette.border_subtle;
         let gray = self.palette.gray_dim;
+        let center = track.0 + (track.1 - track.0) / 2;
         self.hline(track.0, track.1, y, border);
-        self.vline(zero_x, y, y + 3, border);
-        let zero_label = "0";
-        let zero_width = self.text_width(zero_label);
-        self.text(row, zero_x.saturating_sub(zero_width / 2), zero_label, gray);
+        if scale.is_log() {
+            if !min.is_empty() {
+                self.vline(track.0, y, y + 3, border);
+                self.text(row, track.0, min, gray);
+            }
+        } else {
+            let zero_x = scale.origin(track);
+            self.vline(zero_x, y, y + 3, border);
+            let zero_width = self.text_width("0");
+            self.text(row, zero_x.saturating_sub(zero_width / 2), "0", gray);
+        }
         if !mid.is_empty() {
-            let center = track.0 + (track.1 - track.0) / 2;
             let width = self.text_width(mid);
             self.vline(center, y, y + 3, border);
             self.text(row, center.saturating_sub(width / 2), mid, gray);
@@ -292,13 +387,26 @@ impl Painter<'_> {
         }
     }
 
+    /// 对数刻度时在图例右侧补一条注记（空间不足就不写，避免压住系列名）。
+    fn scale_note(&mut self, legend_end: u32, scale: ValueScale) {
+        if !scale.is_log() {
+            return;
+        }
+        let note = "对数刻度";
+        let width = self.text_width(note);
+        let right = self.w().saturating_sub(PAD_X);
+        if legend_end.saturating_add(GAP) < right.saturating_sub(width) {
+            self.text_end(0, right, note, self.palette.gray_dim);
+        }
+    }
+
     /// 条形图：单系列，每类别一行。
     fn bar(&mut self) {
         let spec = self.spec;
         let Some(series) = spec.series.first() else {
             return;
         };
-        let (min_v, max_v) = bounds(&spec.series).unwrap_or((0.0, 1.0));
+        let scale = ValueScale::new(&spec.series);
         let label_w = self.label_width();
         let labels: Vec<String> = (0..spec.categories.len())
             .filter_map(|row| point(series, row).map(|point| point.text.clone()))
@@ -310,13 +418,14 @@ impl Painter<'_> {
                 .saturating_sub(PAD_X + value_w + GAP)
                 .max(PAD_X + label_w + GAP + 1),
         );
-        let zero_x = zero_position(track, min_v, max_v);
-        self.legend();
+        let origin = scale.origin(track);
+        let legend_end = self.legend();
+        self.scale_note(legend_end, scale);
         let color = self.series_color(0);
         let gray = self.palette.gray_dim;
-        if spec.diverging {
+        if spec.diverging && !scale.is_log() {
             let bottom = self.row_top(u16::try_from(spec.categories.len()).unwrap_or(0) + 1);
-            self.vline(zero_x, self.row_top(1), bottom, self.palette.border_subtle);
+            self.vline(origin, self.row_top(1), bottom, self.palette.border_subtle);
         }
         for (row, category) in spec.categories.iter().enumerate() {
             let line = u16::try_from(row + 1).unwrap_or(u16::MAX);
@@ -326,13 +435,13 @@ impl Painter<'_> {
                 self.text(line, track.0, "—", gray);
                 continue;
             };
-            let x = value_position(track, min_v, max_v, value.value);
+            let x = scale.position(track, value.value);
             let bar_y = self.row_top(line) + bar_inset(self.cell_h());
             let bar_h = bar_height(self.cell_h());
-            let (left, right) = if x >= zero_x {
-                (zero_x, x)
+            let (left, right) = if x >= origin {
+                (origin, x)
             } else {
-                (x, zero_x)
+                (x, origin)
             };
             self.fill(left, bar_y, (right - left).max(1), bar_h, color);
             if value.value >= 0.0 {
@@ -347,15 +456,22 @@ impl Painter<'_> {
             }
         }
         let axis_row = u16::try_from(spec.categories.len() + 1).unwrap_or(u16::MAX);
-        let max_text = max_point(series).map_or_else(String::new, |point| point.text.clone());
-        let mid_text = mid_point(series).map_or_else(String::new, |point| point.text.clone());
-        self.value_axis(axis_row, track, zero_x, &mid_text, &max_text);
+        let (min_text, mid_text, max_text) = if scale.is_log() {
+            scale.log_labels(series)
+        } else {
+            (
+                String::new(),
+                mid_point(series).map_or_else(String::new, |point| point.text.clone()),
+                max_point(series).map_or_else(String::new, |point| point.text.clone()),
+            )
+        };
+        self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
     /// 分组条形图：每类别占系列数行，行内只画条与数值（系列由色块图例区分）。
     fn grouped(&mut self) {
         let spec = self.spec;
-        let (min_v, max_v) = bounds(&spec.series).unwrap_or((0.0, 1.0));
+        let scale = ValueScale::new(&spec.series);
         let label_w = self.label_width();
         let value_w = self.widest(&collect_texts(&spec.series)).min(self.w() / 4);
         let track = (
@@ -364,8 +480,9 @@ impl Painter<'_> {
                 .saturating_sub(PAD_X + value_w + GAP)
                 .max(PAD_X + label_w + GAP + 1),
         );
-        let zero_x = zero_position(track, min_v, max_v);
-        self.legend();
+        let origin = scale.origin(track);
+        let legend_end = self.legend();
+        self.scale_note(legend_end, scale);
         let mut row = 1usize;
         for category in 0..spec.categories.len() {
             for (index, series) in spec.series.iter().enumerate() {
@@ -375,12 +492,12 @@ impl Painter<'_> {
                     self.text(line, PAD_X, &shown, self.palette.text_primary);
                 }
                 if let Some(value) = point(series, category) {
-                    let x = value_position(track, min_v, max_v, value.value);
+                    let x = scale.position(track, value.value);
                     let bar_y = self.row_top(line) + bar_inset(self.cell_h());
-                    let (left, right) = if x >= zero_x {
-                        (zero_x, x)
+                    let (left, right) = if x >= origin {
+                        (origin, x)
                     } else {
-                        (x, zero_x)
+                        (x, origin)
                     };
                     self.fill(
                         left,
@@ -404,18 +521,22 @@ impl Painter<'_> {
             }
         }
         let axis_row = u16::try_from(row).unwrap_or(u16::MAX);
-        let extreme = spec
-            .series
-            .iter()
-            .filter_map(max_point)
-            .max_by(|a, b| a.value.total_cmp(&b.value));
-        let max_text = extreme.map_or_else(String::new, |point| point.text.clone());
-        let mid_text = spec
-            .series
-            .first()
-            .and_then(mid_point)
-            .map_or_else(String::new, |point| point.text.clone());
-        self.value_axis(axis_row, track, zero_x, &mid_text, &max_text);
+        let reference = spec.series.first().expect("分组图至少一个系列");
+        let (min_text, mid_text, max_text) = if scale.is_log() {
+            scale.log_labels(reference)
+        } else {
+            let extreme = spec
+                .series
+                .iter()
+                .filter_map(max_point)
+                .max_by(|a, b| a.value.total_cmp(&b.value));
+            (
+                String::new(),
+                mid_point(reference).map_or_else(String::new, |point| point.text.clone()),
+                extreme.map_or_else(String::new, |point| point.text.clone()),
+            )
+        };
+        self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
     /// 成对条形图：每类别两行（前灰后彩），行尾标差值与变化率。
@@ -424,7 +545,7 @@ impl Painter<'_> {
         let [before, after, ..] = spec.series.as_slice() else {
             return;
         };
-        let (min_v, max_v) = bounds(&spec.series).unwrap_or((0.0, 1.0));
+        let scale = ValueScale::new(&spec.series);
         let label_w = self.label_width();
         let value_w = self.widest(&collect_texts(&spec.series)).min(self.w() / 5);
         let deltas = paired_deltas(&spec.series);
@@ -435,8 +556,9 @@ impl Painter<'_> {
                 .saturating_sub(PAD_X + value_w + delta_w + 2 * GAP)
                 .max(PAD_X + label_w + GAP + 1),
         );
-        let zero_x = zero_position(track, min_v, max_v);
-        self.legend();
+        let origin = scale.origin(track);
+        let legend_end = self.legend();
+        self.scale_note(legend_end, scale);
         let polarity = after.polarity;
         let mut row = 1usize;
         for (category, label) in spec.categories.iter().enumerate() {
@@ -445,23 +567,9 @@ impl Painter<'_> {
             let shown = self.fit(label, label_w);
             self.text(first, PAD_X, &shown, self.palette.text_primary);
             let gray = self.palette.text_secondary;
-            self.bar_row(
-                first,
-                point(before, category),
-                track,
-                zero_x,
-                (min_v, max_v),
-                gray,
-            );
+            self.bar_row(first, point(before, category), track, scale, origin, gray);
             let accent = self.series_color(1);
-            self.bar_row(
-                second,
-                point(after, category),
-                track,
-                zero_x,
-                (min_v, max_v),
-                accent,
-            );
+            self.bar_row(second, point(after, category), track, scale, origin, accent);
             if let Some(delta) = deltas.get(category).filter(|delta| !delta.is_empty()) {
                 let color = self.delta_color(category, polarity);
                 self.text_end(second, self.w() - PAD_X, delta, color);
@@ -469,9 +577,16 @@ impl Painter<'_> {
             row += 2;
         }
         let axis_row = u16::try_from(row).unwrap_or(u16::MAX);
-        let max_text = max_point(after).map_or_else(String::new, |point| point.text.clone());
-        let mid_text = mid_point(after).map_or_else(String::new, |point| point.text.clone());
-        self.value_axis(axis_row, track, zero_x, &mid_text, &max_text);
+        let (min_text, mid_text, max_text) = if scale.is_log() {
+            scale.log_labels(after)
+        } else {
+            (
+                String::new(),
+                mid_point(after).map_or_else(String::new, |point| point.text.clone()),
+                max_point(after).map_or_else(String::new, |point| point.text.clone()),
+            )
+        };
+        self.value_axis(axis_row, track, scale, &min_text, &mid_text, &max_text);
     }
 
     /// 一行条形（成对图复用前 / 后两行）。
@@ -480,19 +595,19 @@ impl Painter<'_> {
         row: u16,
         point: Option<&Point>,
         track: (u32, u32),
-        zero_x: u32,
-        bounds: (f64, f64),
+        scale: ValueScale,
+        origin: u32,
         color: [u8; 3],
     ) {
         let Some(value) = point else {
             return;
         };
-        let x = value_position(track, bounds.0, bounds.1, value.value);
+        let x = scale.position(track, value.value);
         let bar_y = self.row_top(row) + bar_inset(self.cell_h());
-        let (left, right) = if x >= zero_x {
-            (zero_x, x)
+        let (left, right) = if x >= origin {
+            (origin, x)
         } else {
-            (x, zero_x)
+            (x, origin)
         };
         self.fill(
             left,
@@ -768,10 +883,11 @@ impl Painter<'_> {
         }
     }
 
-    /// 热力图：列头 + 每类别一行色块 + 色标。
+    /// 热力图：顶部色标 + 列头 + 每类别一行色块。
     ///
-    /// 色深按**全部系列**统一定标（而不是逐列定标）：色标只有一条，
-    /// 逐列定标会让「同一颜色代表不同数值」，读者无法横向比较。
+    /// 所有格子共用系列 0 的色相：热力图表达同一量纲的强弱，逐列换色会把
+    /// 「值」误读成「类别」。色深按全部系列统一定标，宽范围走对数映射；
+    /// 色标放在顶部图例区，底部不再有与数据行同构的色标行。
     fn heatmap(&mut self) {
         let spec = self.spec;
         let Some(reference) = spec.series.first() else {
@@ -784,22 +900,60 @@ impl Painter<'_> {
         let cell_w = ((grid_right - grid_left) / columns as u32).max(2);
         let (min_v, max_v) = data_bounds(&spec.series).unwrap_or((0.0, 1.0));
         let span = (max_v - min_v).max(f64::EPSILON);
-        // 列头：系列名居中于各自色块列
+        let log = min_v > 0.0 && max_v / min_v >= LOG_SCALE_RATIO;
+        let ratio = |value: f64| -> f64 {
+            if log {
+                ((value.max(min_v) / min_v).ln() / (max_v / min_v).ln()).clamp(0.0, 1.0)
+            } else {
+                ((value - min_v) / span).clamp(0.0, 1.0)
+            }
+        };
+        let hue = self.series_color(0);
+
+        // 第 0 行：顶部色标（低值 → 渐变 → 高值），不再占用数据行。
+        let low = format_value(min_v, reference.factor, &reference.unit);
+        let high = format_value(max_v, reference.factor, &reference.unit);
+        let legend = if log { "色阶（对数）" } else { "色阶" };
+        let legend_w = self.text_width(legend);
+        let low_w = self.text_width(&low);
+        let high_w = self.text_width(&high);
+        let bar_left = PAD_X + legend_w + GAP + low_w + GAP;
+        let bar_right = grid_right.saturating_sub(high_w + GAP).max(bar_left + 1);
+        let bar_h = (self.cell_h() / 4).max(3);
+        let bar_y = self.row_top(0) + (self.cell_h() - bar_h) / 2;
+        let bar_span = (bar_right - bar_left).max(1);
+        let segment = (bar_span / HEAT_STEPS as u32).max(1);
+        for step in 0..HEAT_STEPS {
+            let fill = blend(self.palette.bg_base, hue, heat_alpha(step));
+            self.fill(
+                bar_left + segment * step as u32,
+                bar_y,
+                segment,
+                bar_h,
+                fill,
+            );
+        }
+        self.text(0, PAD_X, legend, self.palette.text_secondary);
+        self.text(0, PAD_X + legend_w + GAP, &low, self.palette.gray_dim);
+        self.text_end(0, grid_right, &high, self.palette.gray_dim);
+
+        // 第 1 行：列头（系列名居中于各自色块列）。
         for (index, series) in spec.series.iter().enumerate() {
             let center = grid_left + cell_w * index as u32 + cell_w / 2;
             let label = self.fit(&series.name, cell_w.saturating_sub(2));
             let width = self.text_width(&label);
             self.text(
-                0,
+                1,
                 center.saturating_sub(width / 2),
                 &label,
                 self.palette.text_secondary,
             );
         }
+
         let text_color = self.palette.text_primary;
         let dark = [0x10, 0x10, 0x10];
         for row in 0..spec.categories.len() {
-            let line = u16::try_from(row + 1).unwrap_or(u16::MAX);
+            let line = u16::try_from(row + 2).unwrap_or(u16::MAX);
             let shown = self.fit(&spec.categories[row].clone(), label_w);
             self.text(line, PAD_X, &shown, self.palette.text_primary);
             let y = self.row_top(line) + 2;
@@ -809,19 +963,17 @@ impl Painter<'_> {
                 let Some(value) = point(series, row) else {
                     continue;
                 };
-                let ratio = ((value.value - min_v) / span).clamp(0.0, 1.0);
-                let step = ((ratio * (HEAT_STEPS - 1) as f64).round() as usize).min(HEAT_STEPS - 1);
-                let fill = blend(
-                    self.palette.bg_base,
-                    self.series_color(index),
-                    heat_alpha(step),
-                );
-                self.fill(x, y, cell_w, height, fill);
+                let step = ((ratio(value.value) * (HEAT_STEPS - 1) as f64).round() as usize)
+                    .min(HEAT_STEPS - 1);
+                let fill = blend(self.palette.bg_base, hue, heat_alpha(step));
+                let inset = if cell_w >= 4 { 1 } else { 0 };
+                let width = cell_w.saturating_sub(2 * inset).max(1);
+                self.fill(x + inset, y, width, height, fill);
                 // 格内数值：格宽足够才写，否则宁可不写（挤成一团更不可读）
                 let label = &value.text;
-                let width = self.text_width(label);
-                if cell_w >= width + 6 {
-                    // 墨色按格子亮度选：浅底（绿 / 橙）写深色，深底写浅色
+                let text_w = self.text_width(label);
+                if width >= text_w + 6 {
+                    // 墨色按格子亮度选：浅底写深色，深底写浅色
                     let luma = (299 * u32::from(fill[0])
                         + 587 * u32::from(fill[1])
                         + 114 * u32::from(fill[2]))
@@ -831,7 +983,7 @@ impl Painter<'_> {
                     let px = self.px();
                     text::draw(
                         &mut self.canvas,
-                        x + (cell_w - width) / 2,
+                        x + (cell_w - text_w) / 2,
                         baseline,
                         label,
                         px,
@@ -842,24 +994,6 @@ impl Painter<'_> {
                 }
             }
         }
-        // 色标：数值在两端、色阶在中间（文字不压在渐变条上）
-        let scale_row = u16::try_from(spec.categories.len() + 1).unwrap_or(u16::MAX);
-        let low = format_value(min_v, reference.factor, &reference.unit);
-        let high = format_value(max_v, reference.factor, &reference.unit);
-        let low_w = self.text_width(&low);
-        let high_w = self.text_width(&high);
-        let bar_left = grid_left + low_w + GAP;
-        let bar_right = grid_right.saturating_sub(high_w + GAP).max(bar_left + 1);
-        let bar_h = (self.cell_h() / 4).max(3);
-        let y = self.row_top(scale_row) + (self.cell_h() - bar_h) / 2;
-        let span = (bar_right - bar_left).max(1);
-        let segment = (span / HEAT_STEPS as u32).max(1);
-        for step in 0..HEAT_STEPS {
-            let fill = blend(self.palette.bg_base, self.series_color(0), heat_alpha(step));
-            self.fill(bar_left + segment * step as u32, y, segment, bar_h, fill);
-        }
-        self.text(scale_row, grid_left, &low, self.palette.gray_dim);
-        self.text_end(scale_row, grid_right, &high, self.palette.gray_dim);
     }
 
     /// 散点图：x / y 两个量纲，12 行绘图区 + 两行轴标签。
@@ -927,19 +1061,6 @@ impl Painter<'_> {
             self.palette.text_secondary,
         );
     }
-}
-
-/// 条形在图宽里的零位置。
-fn zero_position(track: (u32, u32), min_v: f64, max_v: f64) -> u32 {
-    let span = (max_v - min_v).max(f64::EPSILON);
-    track.0 + ((0.0 - min_v) / span * f64::from(track.1 - track.0)).round() as u32
-}
-
-/// 数值在图宽里的横坐标。
-fn value_position(track: (u32, u32), min_v: f64, max_v: f64, value: f64) -> u32 {
-    let span = (max_v - min_v).max(f64::EPSILON);
-    let ratio = ((value - min_v) / span).clamp(0.0, 1.0);
-    track.0 + (ratio * f64::from(track.1 - track.0)).round() as u32
 }
 
 /// 条形在行内的上边距（剩余空间上下均分）。
@@ -1234,6 +1355,30 @@ mod tests {
         );
     }
 
+    /// 极差 100 倍以上时线性会把小值压成 1px；对数刻度下中值仍可读。
+    #[test]
+    fn bar_uses_log_scale_for_wide_positive_ranges() {
+        let spec = spec(
+            ChartKind::Bar,
+            &["a", "b", "c"],
+            vec![series(
+                "量",
+                &[(10.0, "10"), (1_000.0, "1000"), (100_000.0, "100000")],
+            )],
+        );
+        let scale = ValueScale::new(&spec.series);
+        assert!(scale.is_log(), "10000 倍极差应走对数刻度");
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let color = chart_rgb(&theme, 0);
+        let (canvas, _) = raster(&spec);
+        let widths: Vec<u32> = (1..=3)
+            .map(|row| width_of(&canvas, row * 18 + 9, color))
+            .collect();
+        assert!(widths[0] <= 3, "最小值只需少量像素：{widths:?}");
+        assert!(widths[1] > 40, "中值在对数刻度下必须明显可见：{widths:?}");
+        assert!(widths[0] < widths[1] && widths[1] < widths[2], "{widths:?}");
+    }
+
     /// 分组图：每个类别占系列数行，且每行只用对应系列的颜色。
     #[test]
     fn grouped_gives_each_series_its_own_row() {
@@ -1396,16 +1541,15 @@ mod tests {
             ],
         );
         let (canvas, layout) = raster(&spec);
-        assert_eq!(layout.rows, 1 + 3 + 1, "列头 + 3 类别 + 色标");
+        assert_eq!(layout.rows, 2 + 3, "顶部色标 + 列头 + 3 类别，无底部色标行");
         let brightness = |x: u32, y: u32| -> u32 {
             let rgb = rgb_at(&canvas, x, y);
             u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2])
         };
-        // 列 0（读）的 row a（值 1）应比 row c（值 9）暗
-        let grid_left = PAD_X; // 标签列宽度未知，这里只取图片中部的相对位置
-        let x = (grid_left + 40).min(canvas.w() - 1);
-        let dark = brightness(x, 18 + 9);
-        let bright = brightness(x, 3 * 18 + 9);
+        // 数据行从第 2 行开始：列 0（读）的 row a（值 1）应比 row c（值 9）暗。
+        let x = (PAD_X + 60).min(canvas.w() - 1);
+        let dark = brightness(x, 2 * 18 + 9);
+        let bright = brightness(x, 4 * 18 + 9);
         assert!(bright > dark, "大值应更亮：{dark} vs {bright}");
         let _ = theme;
     }
@@ -1452,6 +1596,76 @@ mod tests {
             .count();
         assert!(ink > 8, "至少落下 8 个点：{ink}");
         assert!(ink < 8 * 64, "点数远小于绘图区面积：{ink}");
+    }
+
+    /// 用户示例表：3 个数学列 + 73,728 倍极差 → 分组条 + 对数刻度，三条都可见。
+    #[test]
+    fn preview_sample_table_uses_grouped_log_scale() {
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let spec = spec(
+            ChartKind::Grouped,
+            &["1", "2", "3", "4", "5", "6"],
+            vec![
+                series(
+                    "数值",
+                    &[
+                        (12.0, "12"),
+                        (27.0, "27"),
+                        (45.0, "45"),
+                        (68.0, "68"),
+                        (83.0, "83"),
+                        (96.0, "96"),
+                    ],
+                ),
+                series(
+                    "平方",
+                    &[
+                        (144.0, "144"),
+                        (729.0, "729"),
+                        (2_025.0, "2,025"),
+                        (4_624.0, "4,624"),
+                        (6_889.0, "6,889"),
+                        (9_216.0, "9,216"),
+                    ],
+                ),
+                series(
+                    "立方",
+                    &[
+                        (1_728.0, "1,728"),
+                        (19_683.0, "19,683"),
+                        (91_125.0, "91,125"),
+                        (314_432.0, "314,432"),
+                        (571_787.0, "571,787"),
+                        (884_736.0, "884,736"),
+                    ],
+                ),
+            ],
+        );
+        let layout = super::super::layout(&spec, 90, cell()).expect("示例表可出图");
+        assert_eq!(layout.px.0, 720, "90 列 × 8px");
+        assert_eq!(layout.rows, 20, "图例 + 6 类别 × 3 系列 + 轴");
+        let scale = ValueScale::new(&spec.series);
+        assert!(scale.is_log(), "极差 73,728 倍必须走对数刻度");
+        let canvas = with_fonts(|fonts| {
+            let canvas = Canvas::new(layout.px.0, layout.px.1, theme.raw().bg_base);
+            paint(canvas, &spec, &layout, theme.raw(), fonts)
+        });
+        for index in 0..3 {
+            let color = chart_rgb(&theme, index);
+            let ink = (18..canvas.h())
+                .flat_map(|y| (0..canvas.w()).map(move |x| (x, y)))
+                .filter(|(x, y)| rgb_at(&canvas, *x, *y) == color)
+                .count();
+            assert!(ink > 100, "系列 {index} 的条必须可见：{ink}");
+        }
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/chart-preview");
+        std::fs::create_dir_all(&dir).expect("创建预览目录");
+        std::fs::write(
+            dir.join("Sample-Grouped.png"),
+            super::super::encode::png(&canvas),
+        )
+        .expect("写出示例预览图");
     }
 
     /// 预览落盘：八种图型各出一张 PNG 供肉眼验收（顺带钉住尺寸与 PNG 头）。

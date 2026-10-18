@@ -4,9 +4,9 @@
 //! 标题结束时统一按显示宽度换行产出（续行悬挂缩进）；代码块整块交给
 //! syntect 高亮；表格按内容定列宽，单元格折行，表头/行之间用细线分隔。
 //!
-//! 顶层表格下方会挂一个可点击入口（`▸ 可视化图表`）：点击后该表格就地换成
+//! 顶层表格下方会挂一个可点击入口（`▸ 可视化图表`）：点击后在表格下方追加
 //! 像素图占位行（真正的位图由 `render::graphics` 在帧后贴上），再点
-//! `▾ 还原表格` 换回。入口只在终端支持图形协议时出现。
+//! `▾ 隐藏图表` 收起。表格始终保留；入口只在终端支持图形协议时出现。
 
 use moc_core::chart::{self, RawTable};
 
@@ -20,9 +20,9 @@ use super::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
 use crate::transcript::TableChartState;
 
-/// 表格入口的两种形态：展开成图表 / 还原成表格。
+/// 表格入口的两种形态：展开图表 / 隐藏图表。
 const ENTRY_CHART: &str = "▸ 可视化图表";
-const ENTRY_TABLE: &str = "▾ 还原表格";
+const ENTRY_HIDE: &str = "▾ 隐藏图表";
 
 /// 表格列间距（格）。
 const TABLE_COLUMN_GAP: usize = 2;
@@ -70,9 +70,9 @@ pub struct TableViews<'a> {
 pub struct TableSlot {
     /// 顶层表格序号（从 0 起，与 [`RawTable`] 顺序一致）。
     pub table: usize,
-    /// 入口按钮所在行与列区间。
+    /// 表格下方入口按钮所在行与列区间。
     pub button: Option<ButtonSpan>,
-    /// 已切换成图表时的占位行区间。
+    /// 已展开图表时、位于入口下方的位图占位行区间。
     pub chart: Option<ChartPlacement>,
 }
 
@@ -191,7 +191,7 @@ struct MdRenderer<'a> {
     in_table_cell: bool,
     /// 顶层表格序号（引用块 / 列表内嵌表格不计数，与渲染顺序一致）。
     table_index: usize,
-    /// 待落定的入口按钮：`(表格序号, 插入前行号, 是否为图表态)`。
+    /// 待落定的入口按钮：`(表格序号, 插入前行号, 是否已展开图表)`。
     buttons: Vec<(usize, usize, bool)>,
     /// 最后一张表格之后是否已经出现别的块（流式尾部判定）。
     tails: bool,
@@ -529,7 +529,7 @@ impl<'a> MdRenderer<'a> {
         u16::try_from(self.width).unwrap_or(u16::MAX)
     }
 
-    /// 表格收尾：顶层表格可能已被切换成图表，其余照常画成表格并挂入口。
+    /// 表格收尾：表格始终保留；展开图表时在表格下方追加占位区与入口。
     fn finish_table(&mut self, table: TableAcc) {
         if table.header.is_empty() {
             return;
@@ -555,8 +555,13 @@ impl<'a> MdRenderer<'a> {
             .and_then(|(state, graphics)| {
                 crate::render::chart::layout(&state.spec, self.cols(), graphics.cell)
             });
+        // 表格行先落定：入口与图表都排在它后面。
+        self.render_table(table);
+        let button_row = self.out.len();
         if let Some(layout) = layout {
-            let row = self.out.len();
+            // 入口由 finish() 插入到 button_row；空一行再把位图占位区铺在入口下方。
+            self.out.push(Line::from(String::new()));
+            let chart_row = self.out.len();
             let blank = " ".repeat(self.width);
             self.out.extend(std::iter::repeat_n(
                 Line::from(blank),
@@ -566,24 +571,23 @@ impl<'a> MdRenderer<'a> {
                 table: index,
                 button: None,
                 chart: Some(ChartPlacement {
-                    row,
+                    row: chart_row,
                     cols: layout.cols,
                     rows: layout.rows,
                     px: layout.px,
                 }),
             });
-            self.buttons.push((index, self.out.len(), true));
+            self.buttons.push((index, button_row, true));
             self.raw.push(raw);
             return;
         }
-        self.render_table(table);
         self.slots.push(TableSlot {
             table: index,
             button: None,
             chart: None,
         });
         // 入口只在「终端能画像素图 + 格子放得下字 + 这张表确实能图表化」时出现；
-        // 已经切换过图表的表格必须保留还原入口，哪怕当前画不出图。
+        // 已经切换过图表的表格必须保留隐藏入口，哪怕当前画不出图。
         let fits = self.width >= usize::from(crate::render::chart::MIN_COLS)
             && self
                 .views
@@ -598,8 +602,7 @@ impl<'a> MdRenderer<'a> {
         if offers {
             // 用户可能马上点入口：后台先把字体解析好，别让第一张图卡在解析上
             crate::render::chart::warm_fonts();
-            self.buttons
-                .push((index, self.out.len(), charted.is_some()));
+            self.buttons.push((index, button_row, charted.is_some()));
         }
         self.raw.push(raw);
     }
@@ -620,34 +623,31 @@ impl<'a> MdRenderer<'a> {
         let kept: Vec<(usize, usize, bool)> = std::mem::take(&mut self.buttons);
         // 落定第 k 个入口会让它之后的每一行下移一行：插入行号与图表占位行都按
         // 同一份偏移修正，绘制与命中才不会错位。
-        for (order, (table, row, chart)) in kept.iter().enumerate() {
-            let label = if *chart { ENTRY_TABLE } else { ENTRY_CHART };
+        for (order, (table, row, shown)) in kept.iter().enumerate() {
+            let label = if *shown { ENTRY_HIDE } else { ENTRY_CHART };
             let label_width = str_width(label);
-            let x = self.width.saturating_sub(label_width);
-            let line = Line::from(vec![
-                Span::styled(" ".repeat(x), Style::new()),
-                Span::styled(
-                    (*label).to_owned(),
-                    Style::new()
-                        .fg(self.theme.link)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-            ]);
+            let line = Line::from(vec![Span::styled(
+                (*label).to_owned(),
+                Style::new()
+                    .fg(self.theme.link)
+                    .add_modifier(Modifier::UNDERLINED),
+            )]);
             let row = row + order;
             self.out.insert(row, line);
             if let Some(slot) = self.slots.get_mut(*table) {
                 slot.button = Some(ButtonSpan {
                     row,
-                    x: u16::try_from(x).unwrap_or(u16::MAX),
+                    x: 0,
                     w: u16::try_from(label_width).unwrap_or(u16::MAX),
                 });
             }
         }
         for slot in &mut self.slots {
             if let Some(chart) = slot.chart.as_mut() {
+                // 图表位于自己的入口之后，所以连同一张表的按钮插入也要计入偏移。
                 chart.row += kept
                     .iter()
-                    .take_while(|(table, _, _)| *table < slot.table)
+                    .take_while(|(table, _, _)| *table <= slot.table)
                     .count();
             }
         }
@@ -1294,7 +1294,7 @@ mod tests {
         assert_eq!(lines("前缀`bash`后缀", 40), vec!["前缀 bash 后缀"]);
     }
 
-    /// 入口只在支持图形协议时出现；按钮右对齐且命中区间等于文字宽度。
+    /// 入口只在支持图形协议时出现；按钮左对齐且命中区间等于文字宽度。
     #[test]
     fn table_entry_appears_only_with_graphics_support() {
         let with = render(
@@ -1311,11 +1311,8 @@ mod tests {
         let button = slot.button.expect("支持图形时应有入口");
         let width = str_width(ENTRY_CHART);
         assert_eq!(button.w as usize, width);
-        assert_eq!(button.x as usize, 80 - width, "右对齐");
-        assert_eq!(
-            text(&with.lines)[button.row],
-            format!("{}▸ 可视化图表", " ".repeat(80 - width)),
-        );
+        assert_eq!(button.x, 0, "与正文左缘对齐");
+        assert_eq!(text(&with.lines)[button.row], "▸ 可视化图表");
 
         let without = render(
             NUMERIC_TABLE,
@@ -1367,9 +1364,9 @@ mod tests {
         assert!(settled.tables[1].button.is_some(), "收尾后入口出现");
     }
 
-    /// 已切换成图表：表格被占位行取代，入口变成还原，占位区落在按钮之前。
+    /// 已切换成图表：表格保留，入口在表格下方，位图占位区在入口下方。
     #[test]
-    fn chart_state_replaces_table_with_placeholder_rows() {
+    fn chart_state_keeps_table_and_appends_placeholder_below() {
         let state = chart_state(NUMERIC_TABLE, 0, 7);
         let charts = [Some(state)];
         let rendered = render(
@@ -1383,22 +1380,23 @@ mod tests {
         );
         let out = text(&rendered.lines);
         assert!(
-            !out.iter().any(|line| line.contains("耗时")),
-            "不应再画表格：{out:?}"
+            out.iter().any(|line| line.contains("耗时"))
+                && out.iter().any(|line| line.contains("4 MiB")),
+            "表格必须保留：{out:?}"
         );
         let slot = rendered.tables[0];
         let chart = slot.chart.expect("应有图表占位区");
-        let button = slot.button.expect("应有还原入口");
-        assert_eq!(chart.cols, 80, "占满正文宽度");
+        let button = slot.button.expect("应有隐藏入口");
+        assert_eq!(chart.cols, 80, "正文宽度未超过 720px 上限");
         assert_eq!(chart.px, (80 * 8, u32::from(chart.rows) * 18));
-        assert_eq!(
-            button.row,
-            chart.row + usize::from(chart.rows),
-            "按钮紧跟占位区"
+        assert_eq!(button.row + 2, chart.row, "入口与图表之间应隔一个空行");
+        assert!(
+            out[button.row].starts_with("▾ 隐藏图表"),
+            "表格下方是隐藏入口：{out:?}"
         );
         assert!(
-            out[usize::from(chart.rows)].contains("▾ 还原表格"),
-            "占位区之后是还原入口：{out:?}"
+            out[button.row + 1].trim().is_empty(),
+            "入口与图表之间应为空行"
         );
         assert!(
             out[chart.row..chart.row + usize::from(chart.rows)]
@@ -1406,6 +1404,59 @@ mod tests {
                 .all(|line| line.trim().is_empty()),
             "占位行必须是空白"
         );
+    }
+
+    /// 图表宽度固定为 720px 上限，即使正文更宽也不拉满；入口仍左对齐。
+    #[test]
+    fn chart_width_is_capped_at_720px() {
+        let state = chart_state(NUMERIC_TABLE, 0, 7);
+        let charts = [Some(state)];
+        let rendered = render(
+            NUMERIC_TABLE,
+            200,
+            TableViews {
+                charts: &charts,
+                graphics: graphics(),
+                streaming: false,
+            },
+        );
+        let slot = rendered.tables[0];
+        let chart = slot.chart.expect("应有图表占位区");
+        let button = slot.button.expect("应有隐藏入口");
+        assert_eq!(chart.cols, 90, "720 / 8 = 90 列");
+        assert_eq!(chart.px.0, 720);
+        assert_eq!(button.x, 0);
+    }
+
+    /// 多张表格：每张图的占位区都必须紧贴自己的入口，不能被后一张表的按钮挤歪。
+    #[test]
+    fn multiple_tables_keep_chart_rows_aligned() {
+        let source = format!("{NUMERIC_TABLE}\n\n正文\n\n{NUMERIC_TABLE}");
+        let charts = [Some(chart_state(NUMERIC_TABLE, 0, 7)), None];
+        let rendered = render(
+            &source,
+            80,
+            TableViews {
+                charts: &charts,
+                graphics: graphics(),
+                streaming: false,
+            },
+        );
+        assert_eq!(rendered.tables.len(), 2);
+        let first = rendered.tables[0];
+        let second = rendered.tables[1];
+        let first_chart = first.chart.expect("第一张表应展开图表");
+        let first_button = first.button.expect("第一张表应有隐藏入口");
+        let second_button = second.button.expect("第二张表应有可视化入口");
+        assert_eq!(first_chart.row, first_button.row + 2);
+        assert_eq!(second.chart, None);
+        assert!(
+            second_button.row > first_chart.row + usize::from(first_chart.rows),
+            "第二张表的入口必须在第一张图之后"
+        );
+        let out = text(&rendered.lines);
+        assert!(out[first_button.row].starts_with("▾ 隐藏图表"));
+        assert!(out[second_button.row].starts_with("▸ 可视化图表"));
     }
 
     /// 纯文本快照与屏幕上的单元格一致：装饰标记不会漏进分析（`**7648**` → `7648`）。

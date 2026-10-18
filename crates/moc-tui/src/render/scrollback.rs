@@ -1967,9 +1967,10 @@ mod tests {
         assert_eq!(hit.entry, 0);
         assert_eq!(hit.table, 0);
         assert_eq!(hit.w as usize, str_width("▸ 可视化图表"));
-        assert!(
-            hit.x >= app.scrollback_area.x + super::PROSE_INDENT as u16,
-            "按钮在正文列上"
+        assert_eq!(
+            hit.x,
+            app.scrollback_area.x + super::PROSE_INDENT as u16,
+            "入口与正文左缘对齐"
         );
         assert!(app.chart_slots.is_empty(), "表格形态没有位图槽位");
 
@@ -1977,21 +1978,14 @@ mod tests {
         terminal
             .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
             .expect("切换后绘制成功");
-        assert!(
-            app.chart_hits
-                .iter()
-                .all(|hit| hit.w as usize == str_width("▾ 还原表格")),
-            "按钮变成还原"
-        );
+        let hit = *app.chart_hits.first().expect("展开后仍有入口");
+        assert_eq!(hit.w as usize, str_width("▾ 隐藏图表"), "按钮变成隐藏");
         let slot = *app.chart_slots.first().expect("图表应登记位图槽位");
         let kind = app.blocks[0]
             .table_chart(0)
             .map(|state| state.spec.kind)
             .expect("图表态仍在");
-        assert_eq!(
-            slot.cols,
-            app.scrollback_area.width - super::PROSE_INDENT as u16
-        );
+        assert_eq!(slot.cols, 90, "正文可用 91 列，但 720px 上限收窄到 90");
         assert_eq!(slot.x, app.scrollback_area.x + super::PROSE_INDENT as u16);
         assert_eq!(
             kind,
@@ -1999,6 +1993,7 @@ mod tests {
             "两个同量纲测量列应画成分组条形图"
         );
         assert_eq!(slot.rows, 6, "图例 + 2 类别 × 2 系列 + 轴");
+        assert_eq!(slot.y, hit.row + 2, "图表在入口与一行空白之后");
         assert!(
             slot.y + slot.rows <= app.scrollback_area.y + app.scrollback_area.height,
             "槽位必须整块落在视口内"
