@@ -191,9 +191,11 @@ pub fn soft_checkpoint(marker: &str) -> String {
     for section in [
         "Primary Request and Intent",
         "Key Technical Concepts",
+        "Decisions and Rejected Options",
         "Files and Code",
         "Errors and Fixes",
         "Pending Jobs",
+        "Plan Status",
         "Current Work",
         "Next Step",
         "Critical Context",

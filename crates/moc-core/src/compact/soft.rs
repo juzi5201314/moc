@@ -5,11 +5,13 @@
 //! 现在的流程是「生成 → 校验 → 定向重试 → 确定性兜底」：
 //!
 //! 1. 提示词要求模型按固定段落记录**当前状态**，并把上一版 checkpoint 合并进来；
-//! 2. [`guard`] 校验段落完整性与关键锚点覆盖（路径、标识符、数字）；
+//! 2. [`guard`] 校验段落完整性、必保留短语（被否决方案名、计划步号）与关键锚点覆盖
+//!    （路径、标识符、数字）；
 //! 3. 不合格时把缺口清单回灌，最多重试 [`SOFT_MAX_ATTEMPTS`] 次；
 //! 4. 仍不合格时由 [`digest::fallback_checkpoint`] 保住上一版 checkpoint 与最近
-//!    一轮的确定性事实，绝不接受"一句话 checkpoint"。
+//!    一轮的确定性事实（含被否决方案与计划状态），绝不接受"一句话 checkpoint"。
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use moc_llm::{ContentPart, Message, ToolDef};
@@ -31,16 +33,21 @@ The successor agent sees ONLY this checkpoint plus the most recent turn: anythin
 - Record the current state, not a chronological request log: what is done, what is in flight, what comes next.
 - Preserve every file path, command, error string, identifier, number and signature verbatim; quote user constraints and corrections verbatim.
 - Keep each decision together with the reason it was made, and mark rejected alternatives as rejected.
+- Every rejected alternative goes into `## Decisions and Rejected Options` as `- rejected: <option> — <reason>`; never drop one, never propose it again without new evidence.
+- If the conversation has a numbered plan, restate it in `## Plan Status` with every step marked done / current / pending, and name the current step number.
 - If <previous-summary> is present, merge it: keep every still-relevant fact, drop only what later turns completed or contradicted, and never restart from scratch.
 - If <session-digest> is present it is runtime-recorded ground truth; carry its files, commands and open items into the checkpoint.
+- If <must-preserve> is present, each listed item must appear verbatim in the checkpoint.
 ";
 /// checkpoint 的固定段落；同时也是 [`guard::evaluate`] 的完整性依据。
 const SUMMARY_SECTIONS: &[&str] = &[
     "Primary Request and Intent",
     "Key Technical Concepts",
+    "Decisions and Rejected Options",
     "Files and Code",
     "Errors and Fixes",
     "Pending Jobs",
+    "Plan Status",
     "Current Work",
     "Next Step",
     "Critical Context",
@@ -187,7 +194,20 @@ pub(crate) async fn compact(
     let retained = messages_tokens(&history[start..]);
     let previous_summary = state.summary.as_ref().map(|(_, summary)| summary.as_str());
     let session_digest = digest::prompt_digest(state);
-    let base_prompt = summary_prompt(state, instructions, 0, session_digest.as_deref(), None);
+    // 被否决方案与计划步号决定"压缩后还能不能继续做事"：它们不在锚点体系里
+    // （专名不是路径/数字，步号不是标识符），必须单独抽出来逐字校验。
+    let decisions = digest::decisions(&history[..start], previous_summary);
+    let plan_steps = digest::plan_steps(&history[..start], previous_summary);
+    let required = required_facts(&decisions, &plan_steps);
+    let must_preserve = must_preserve_block(&decisions, &plan_steps);
+    let base_prompt = summary_prompt(
+        state,
+        instructions,
+        0,
+        session_digest.as_deref(),
+        must_preserve.as_deref(),
+        None,
+    );
     let fixed_summary_tokens = messages_tokens(system).saturating_add(super::tools_tokens(tools));
     let input_budget = model
         .context_window
@@ -226,6 +246,7 @@ pub(crate) async fn compact(
             instructions,
             omitted_prompts,
             session_digest.as_deref(),
+            must_preserve.as_deref(),
             repair.as_ref(),
         );
         let mut messages = Vec::with_capacity(system.len() + selected_history.len() + 1);
@@ -234,7 +255,7 @@ pub(crate) async fn compact(
         messages.push(Message::user_text(prompt));
         let raw = summary_request.sample(messages).await?;
         let cleaned = guard::unwrap_checkpoint(&raw);
-        let verdict = guard::evaluate(&cleaned, &anchors, SUMMARY_SECTIONS);
+        let verdict = guard::evaluate(&cleaned, &anchors, &required, SUMMARY_SECTIONS);
         if matches!(verdict, guard::Verdict::Ok) {
             accepted = Some(cleaned);
             break;
@@ -246,7 +267,7 @@ pub(crate) async fn compact(
                 Some((_, current)) => hits > *current,
             };
             if better {
-                best = Some((cleaned, hits));
+                best = Some((cleaned.clone(), hits));
             }
         }
         tracing::debug!(
@@ -255,10 +276,17 @@ pub(crate) async fn compact(
             verdict = ?verdict,
             "summary checkpoint rejected"
         );
-        let missing = match &verdict {
+        // 修复提示同时列出锚点缺口与必保留短语：一次重试把两类缺口都补上。
+        let mut missing = match &verdict {
             guard::Verdict::Coverage { missing, .. } => missing.clone(),
+            guard::Verdict::Required(missing) => missing.clone(),
             _ => Vec::new(),
         };
+        for phrase in guard::missing_required(&required, &cleaned) {
+            if !missing.contains(&phrase) {
+                missing.push(phrase);
+            }
+        }
         repair = Some(Repair {
             reason: verdict.reason(),
             missing,
@@ -267,7 +295,13 @@ pub(crate) async fn compact(
     let summary = match accepted {
         Some(summary) => summary,
         None => match best {
-            Some((summary, hits)) if hits >= guard::acceptable_hits(anchors.len()) => summary,
+            // 最佳尝试仍要满足锚点覆盖，且必保留短语至多缺四分之一。
+            Some((summary, hits))
+                if hits >= guard::acceptable_hits(anchors.len())
+                    && guard::missing_required(&required, &summary).len() * 4 <= required.len() =>
+            {
+                summary
+            }
             _ => {
                 tracing::warn!(
                     session = %state.session.id,
@@ -391,6 +425,7 @@ fn summary_prompt(
     instructions: Option<&str>,
     omitted_prompts: usize,
     session_digest: Option<&str>,
+    must_preserve: Option<&str>,
     repair: Option<&Repair>,
 ) -> String {
     let sections = sections_block();
@@ -408,6 +443,10 @@ fn summary_prompt(
     }
     if let Some(digest) = session_digest {
         prompt.push_str(digest);
+        prompt.push_str("\n\n");
+    }
+    if let Some(must_preserve) = must_preserve {
+        prompt.push_str(must_preserve);
         prompt.push_str("\n\n");
     }
     if let Some(plan) = state
@@ -434,6 +473,58 @@ fn summary_prompt(
         prompt.push_str(&repair_block(repair));
     }
     prompt
+}
+
+/// 必保留短语：计划步号在前（决定"进行到第几步"），其后是被否决方案的专名。
+fn required_facts(decisions: &[digest::Decision], plan_steps: &[String]) -> Vec<String> {
+    /// 校验与提示词都不宜无限增长：超过这个条数后只保留先出现的。
+    const MAX_REQUIRED_FACTS: usize = 32;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for phrase in plan_steps.iter().chain(
+        decisions
+            .iter()
+            .flat_map(|decision| decision.anchors.iter()),
+    ) {
+        if !seen.insert(phrase.to_lowercase()) {
+            continue;
+        }
+        out.push(phrase.clone());
+        if out.len() >= MAX_REQUIRED_FACTS {
+            break;
+        }
+    }
+    out
+}
+
+/// 提示词里的 `<must-preserve>`：给模型一份可以逐字照抄的清单。
+fn must_preserve_block(decisions: &[digest::Decision], plan_steps: &[String]) -> Option<String> {
+    if decisions.is_empty() && plan_steps.is_empty() {
+        return None;
+    }
+    let mut out = String::from("<must-preserve>\n");
+    if !plan_steps.is_empty() {
+        out.push_str(
+            "Numbered plan steps (each must appear in `## Plan Status` with done/current/pending):\n",
+        );
+        for step in plan_steps {
+            out.push_str("- ");
+            out.push_str(step);
+            out.push('\n');
+        }
+    }
+    if !decisions.is_empty() {
+        out.push_str(
+            "Rejected options and hard constraints (each must appear verbatim in `## Decisions and Rejected Options`):\n",
+        );
+        for decision in decisions {
+            out.push_str("- ");
+            out.push_str(&decision.clause);
+            out.push('\n');
+        }
+    }
+    out.push_str("</must-preserve>");
+    Some(out)
 }
 
 /// 固定段落清单；提示词与校验共用同一份顺序。
@@ -478,7 +569,7 @@ fn summary_transcript(
     start: usize,
     instructions: Option<&str>,
 ) -> String {
-    let mut transcript = summary_prompt(state, instructions, 0, None, None);
+    let mut transcript = summary_prompt(state, instructions, 0, None, None, None);
     for message in &history[..start] {
         transcript.push_str(&serde_json::to_string(message).expect("Message 可序列化"));
         transcript.push_str("\n\n");
@@ -573,6 +664,7 @@ mod tests {
             None,
             0,
             Some("<session-digest>\n- a.rs\n</session-digest>"),
+            None,
             None,
         );
         assert!(prompt.contains("<checkpoint-contract>"));

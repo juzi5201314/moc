@@ -1,8 +1,9 @@
-//! 摘要 checkpoint 的校验：标签剥离、段落完整性与关键锚点覆盖。
+//! 摘要 checkpoint 的校验：标签剥离、段落完整性、必保留短语与关键锚点覆盖。
 //!
 //! 压缩的失败模式不是请求报错，而是模型返回一句闲聊：旧实现照单全收，上下文
 //! 从此归零。这里把"可用的 checkpoint"变成可判定的条件，并给出重试所需的
-//! 具体缺口（缺哪些段落、漏了哪些标识符/路径/数字），让重试有方向。
+//! 具体缺口（缺哪些段落、漏了哪些标识符/路径/数字、丢了哪条决策或步号），
+//! 让重试有方向。
 
 use std::collections::HashSet;
 
@@ -29,6 +30,8 @@ pub(crate) enum Verdict {
     Short(usize),
     /// 缺少的必需段落标题。
     Sections(Vec<String>),
+    /// 缺少的必须逐字出现的事实短语（被否决方案名、计划步号等）。
+    Required(Vec<String>),
     /// 锚点命中不足：命中数、达标线与缺失清单。
     Coverage {
         hits: usize,
@@ -47,6 +50,10 @@ impl Verdict {
             ),
             Self::Sections(missing) => format!(
                 "your reply is missing these required sections: {}",
+                missing.join(", ")
+            ),
+            Self::Required(missing) => format!(
+                "your reply dropped these required facts: {}",
                 missing.join(", ")
             ),
             Self::Coverage { hits, required, .. } => format!(
@@ -78,6 +85,56 @@ pub(crate) fn acceptable_hits(total: usize) -> usize {
     let required = required_hits(total);
     required.saturating_sub(required / 4).max(1)
 }
+
+/// 必保留短语里缺失的那些；大小写不敏感，`第 3 步` 的常见写法都算命中。
+pub(crate) fn missing_required(required: &[String], text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    required
+        .iter()
+        .filter(|phrase| !phrase_present(&lower, phrase))
+        .take(MAX_REPORTED_MISSING)
+        .cloned()
+        .collect()
+}
+
+/// 短语是否出现在（已转小写的）文本里。
+///
+/// 计划步号会被模型写成 `第 3 步`、`第3步` 或 `第三步`，逐字比较会误伤，
+/// 因此这里把步号展开成几种等价写法；其余短语按大小写不敏感的子串匹配。
+fn phrase_present(lower_text: &str, phrase: &str) -> bool {
+    let phrase_lower = phrase.to_lowercase();
+    let Some(number) = step_number(&phrase_lower) else {
+        return lower_text.contains(&phrase_lower);
+    };
+    let step_hit = |digits: &str| {
+        lower_text.contains(&format!("第 {digits} 步"))
+            || lower_text.contains(&format!("第{digits}步"))
+    };
+    if step_hit(&number.to_string()) {
+        return true;
+    }
+    // 步号从 1 开始，中文写法数组从 0 开始。
+    number
+        .checked_sub(1)
+        .and_then(|index| CHINESE_NUMERALS.get(index))
+        .is_some_and(|numerals| step_hit(numerals))
+}
+
+/// `第 3 步` 这类短语里的步号。
+fn step_number(phrase: &str) -> Option<usize> {
+    let rest = phrase
+        .strip_prefix("第 ")
+        .or_else(|| phrase.strip_prefix("第"))?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    rest[digits.len()..].trim_start().strip_prefix('步')?;
+    digits.parse().ok()
+}
+
+/// 步号的中文写法，用于 `第三步` 与 `第 3 步` 的等价匹配。
+const CHINESE_NUMERALS: [&str; 9] = ["一", "二", "三", "四", "五", "六", "七", "八", "九"];
 
 /// 剥掉模型常加的外壳：开头 `<analysis>` 草稿、`<summary>` 标签与代码围栏。
 pub(crate) fn unwrap_checkpoint(raw: &str) -> String {
@@ -229,7 +286,12 @@ pub(crate) fn missing_anchors(anchors: &[String], text: &str) -> Vec<String> {
 }
 
 /// 校验一个 checkpoint 是否可用。
-pub(crate) fn evaluate(text: &str, anchors: &[String], sections: &[&str]) -> Verdict {
+pub(crate) fn evaluate(
+    text: &str,
+    anchors: &[String],
+    required: &[String],
+    sections: &[&str],
+) -> Verdict {
     let chars = text.chars().count();
     if chars < MIN_CHECKPOINT_CHARS {
         return Verdict::Short(chars);
@@ -238,12 +300,18 @@ pub(crate) fn evaluate(text: &str, anchors: &[String], sections: &[&str]) -> Ver
     if !missing.is_empty() {
         return Verdict::Sections(missing);
     }
+    // 必保留短语先于覆盖率：被否决方案名、计划步号决定"压缩后还能不能继续做事"，
+    // 而锚点覆盖只是防止整体丢失细节。
+    let missing = missing_required(required, text);
+    if !missing.is_empty() {
+        return Verdict::Required(missing);
+    }
     let hits = matching(anchors, text);
-    let required = required_hits(anchors.len());
-    if hits < required {
+    let needed = required_hits(anchors.len());
+    if hits < needed {
         return Verdict::Coverage {
             hits,
-            required,
+            required: needed,
             missing: missing_anchors(anchors, text),
         };
     }
@@ -424,16 +492,41 @@ mod tests {
     fn evaluate_flags_short_sections_and_coverage() {
         let anchors = vec!["45_000".to_owned(), "rotate_windows".to_owned()];
         assert!(matches!(
-            evaluate("好，已停在这里", &anchors, SECTIONS),
+            evaluate("好，已停在这里", &anchors, &[], SECTIONS),
             Verdict::Short(_)
         ));
         let sections = sections_text();
         assert!(matches!(
-            evaluate(&sections, &anchors, SECTIONS),
+            evaluate(&sections, &anchors, &[], SECTIONS),
             Verdict::Coverage { .. }
         ));
         let good = format!("{sections}\n45_000 rotate_windows");
-        assert_eq!(evaluate(&good, &anchors, SECTIONS), Verdict::Ok);
+        assert_eq!(evaluate(&good, &anchors, &[], SECTIONS), Verdict::Ok);
+    }
+
+    #[test]
+    fn required_phrases_survive_spelling_variants() {
+        let sections = sections_text();
+        let required = vec!["Redis".to_owned(), "第 3 步".to_owned()];
+        // 大小写与步号写法都放宽：redis / 第三步 都算命中。
+        let good = format!("{sections}\n否决 redis；当前在第三步。");
+        assert_eq!(evaluate(&good, &[], &required, SECTIONS), Verdict::Ok);
+
+        let missing = format!("{sections}\n否决了跨进程方案；当前在第二步。");
+        assert_eq!(
+            evaluate(&missing, &[], &required, SECTIONS),
+            Verdict::Required(vec!["Redis".to_owned(), "第 3 步".to_owned()])
+        );
+    }
+
+    #[test]
+    fn step_phrases_parse_and_match_numerals() {
+        assert_eq!(step_number("第 3 步"), Some(3));
+        assert_eq!(step_number("第3步"), Some(3));
+        assert_eq!(step_number("第三步"), None, "中文写法不是短语的输入形式");
+        assert!(phrase_present("当前在第三步", "第 3 步"));
+        assert!(phrase_present("第5步已完成", "第 5 步"));
+        assert!(!phrase_present("当前在第二步", "第 3 步"));
     }
 
     #[test]

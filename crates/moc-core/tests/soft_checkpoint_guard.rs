@@ -10,12 +10,14 @@ use serde_json::Value;
 use support::Harness;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
-const SECTIONS: [&str; 8] = [
+const SECTIONS: [&str; 10] = [
     "Primary Request and Intent",
     "Key Technical Concepts",
+    "Decisions and Rejected Options",
     "Files and Code",
     "Errors and Fixes",
     "Pending Jobs",
+    "Plan Status",
     "Current Work",
     "Next Step",
     "Critical Context",
@@ -291,4 +293,87 @@ async fn fallback_preserves_the_previous_checkpoint_across_generations() {
     );
     assert!(context.contains("## Recent Activity"));
     assert!(context.contains("继续第 3 步"));
+}
+
+#[tokio::test]
+async fn rejected_options_and_plan_steps_are_repaired_not_dropped() {
+    let upstream = MockServer::builder().start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] == true {
+                return ResponseTemplate::new(200).set_body_raw(
+                    support::text_stream("已经记录下这次请求。"),
+                    "text/event-stream",
+                );
+            }
+            let attempt = counter.fetch_add(1, Ordering::SeqCst);
+            // 第一版段落齐全、锚点齐全，唯独丢掉了被否决方案与计划步号。
+            let summary = if attempt == 0 {
+                valid_summary("DROPPED-DECISIONS")
+            } else {
+                let mut repaired = valid_summary("KEPT-DECISIONS");
+                repaired.push_str(
+                    "\n计划：第 1 步 完成；第 2 步 完成；第 3 步 进行中。\
+                     rotate_windows 骨架已就绪。否决 Redis。\n",
+                );
+                repaired
+            };
+            ResponseTemplate::new(200).set_body_json(support::complete(&summary))
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness
+        .prompt(
+            &session,
+            "计划三步：第 1 步改 TTL，第 2 步加 rotate_windows 骨架，第 3 步移 metrics 计数。\
+             另外，我们否决了用 Redis 存窗口状态。把 crates/ingest/src/window.rs 的 WINDOW_TTL_MS 改成 45_000。",
+        )
+        .await;
+
+    let compacted = harness
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: session.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("丢掉被否决方案时必须重试修好，而不是接受");
+    assert_eq!(compacted.method, "soft");
+
+    let summaries = summary_requests(&upstream).await;
+    assert_eq!(
+        summaries.len(),
+        2,
+        "一次生成加一次定向修复；第二次请求内容：{}",
+        summaries
+            .get(1)
+            .map_or_else(|| "（没有第二次请求）".to_owned(), messages_text)
+    );
+    let repair_prompt = messages_text(&summaries[1]);
+    assert!(
+        repair_prompt.contains("dropped these required facts"),
+        "拒收原因必须点名必保留短语：{repair_prompt}"
+    );
+    assert!(
+        repair_prompt.contains("- Redis") && repair_prompt.contains("- 第 3 步"),
+        "修复清单必须列出被否决方案与当前步号：{repair_prompt}"
+    );
+
+    let context = prompt_and_text(&harness, &session, "继续", &upstream).await;
+    assert!(context.contains("KEPT-DECISIONS"));
+    assert!(
+        context.contains("Redis"),
+        "修复后的 checkpoint 必须保住被否决方案"
+    );
+    assert!(!context.contains("DROPPED-DECISIONS"));
 }
