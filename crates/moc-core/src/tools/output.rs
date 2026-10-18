@@ -1,4 +1,4 @@
-//! 统一模型可见文本预算、完整输出归档与已有文件的有界预览。
+//! 工具输出：模型可见文本的大小预算、完整输出归档，以及已有文件的限长预览。
 
 use std::path::{Path, PathBuf};
 
@@ -15,16 +15,16 @@ pub enum OutputError {
     Resource(#[from] ResourceError),
 }
 
-/// 工具只声明输出来源，归档和预览由交付出口处理。
+/// 工具输出的来源。工具只说明输出在哪，归档和预览由统一出口处理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolOutput {
     Text(String),
-    /// 流式输出已落盘；附注不属于原始日志，例如退出状态。
+    /// 已写入文件的流式输出；`suffix` 是附在后面、不属于原始日志的说明，例如退出状态。
     File {
         path: PathBuf,
         suffix: String,
     },
-    /// 工具按语义选择的片段；超限时引用原文件，不复制日志。
+    /// 工具自己挑出的片段；超出预算时引用原文件，不再复制一份日志。
     Excerpt {
         text: String,
         path: PathBuf,
@@ -43,7 +43,7 @@ impl From<&str> for ToolOutput {
     }
 }
 
-/// 将原始结构化数据仅在模型展示出口格式化；工具执行与 JS 仍读取原值。
+/// 只在交给模型展示时格式化结构化数据；工具执行和 JS 读到的仍是原始值。
 pub(crate) async fn prepare_outcome(
     outcome: &crate::tools::ToolOutcome,
     config: &OutputConfig,
@@ -72,7 +72,7 @@ pub(crate) async fn prepare_outcome(
     prepare(ToolOutput::Text(text), config, artifacts).await
 }
 
-/// 在持久化和发送给模型之前调用；不改变工具错误、图片、diff 或提示控制。
+/// 在持久化和发给模型之前调用；只处理文本，不改动错误、图片、diff 和提示控制。
 pub(crate) async fn prepare(
     output: ToolOutput,
     config: &OutputConfig,
@@ -106,7 +106,7 @@ pub(crate) async fn prepare(
     }
 }
 
-/// 分页工具在完整行边界使用同一预算，避免截断后仍授权不可见的锚点。
+/// 分页工具共用的同一份预算。分页按整行截断，避免截掉的行仍然拿到可编辑的锚点。
 pub(crate) fn budget(config: &OutputConfig) -> usize {
     config.head_bytes.saturating_add(config.tail_bytes)
 }
@@ -138,7 +138,7 @@ async fn preview_file(path: &Path, config: &OutputConfig, uri: &str) -> std::io:
     }
     let mut head = vec![0; config.head_bytes];
     file.read_exact(&mut head).await?;
-    // 截断处若落在 UTF-8 字符内部，丢弃跨边界的部分；真实无效字节仍替换显示。
+    // 截断点落在 UTF-8 字符中间时，丢弃跨边界的残缺部分；真正无效的字节仍显示为替换字符。
     if let Err(error) = std::str::from_utf8(&head)
         && error.error_len().is_none()
     {
@@ -187,10 +187,10 @@ mod tests {
         assert_eq!(
             prepare(at_limit.into(), &config, &ArtifactStore::new(paths.clone()))
                 .await
-                .expect("交付"),
+                .expect("生成输出"),
             at_limit
         );
-        assert!(!paths.artifacts().exists(), "阈值内不归档");
+        assert!(!paths.artifacts().exists(), "没超预算时不应归档");
         let text = "前中后尾外后前中";
         let result = prepare(text.into(), &config, &ArtifactStore::new(paths.clone()))
             .await

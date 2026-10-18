@@ -1,4 +1,4 @@
-//! 会话所有的后台进程、日志、等待与进程树取消。
+//! 会话的后台进程：日志、等待，以及按进程树取消。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -65,7 +65,7 @@ pub struct JobManager {
     pub(crate) slots: Arc<crate::concurrency::Gate>,
 }
 
-/// 已结束任务的保留数量；更早的任务随驱逐释放日志句柄与环形缓冲。
+/// 保留的已结束任务数量；更早的任务被驱逐，释放日志句柄和环形缓冲。
 const RETAINED_FINISHED_JOBS: usize = 16;
 
 impl JobManager {
@@ -73,9 +73,9 @@ impl JobManager {
         Self::default()
     }
 
-    /// 驱逐超出保留上限的已结束任务：释放 JobLog 句柄与 persistent 环形缓冲。
+    /// 驱逐超出保留上限的已结束任务，释放 JobLog 句柄和 persistent 任务的环形缓冲。
     ///
-    /// 运行中与正在终止的任务不受影响；按开始时间淘汰最旧的已结束任务。
+    /// 运行中和正在终止的任务不受影响；已结束任务按开始时间从旧到新淘汰。
     fn evict_finished(&self, jobs: &mut HashMap<String, JobInfo>) {
         let mut finished: Vec<(std::time::Instant, String)> = jobs
             .values()
@@ -184,9 +184,9 @@ impl JobManager {
                     _ = ctx.guard.stopped.cancelled() => {
                         let killed = {
                             let mut jobs = manager.jobs.lock();
-                            let job = jobs.get_mut(&id).expect("后台 worker 持有已注册任务");
+                            let job = jobs.get_mut(&id).expect("后台 worker 对应的任务一定已注册");
                             job.status = JobStatus::Killing;
-                            job.group.as_ref().expect("运行中的任务持有进程组").kill()
+                            job.group.as_ref().expect("运行中的任务一定持有进程组").kill()
                         };
                         let result = waiting.await;
                         killed.and(result)
@@ -261,7 +261,7 @@ impl JobManager {
                     Ok(result) if result.output_truncated => JobStatus::OutputLimited,
                     Ok(result) => JobStatus::Finished(result.code),
                     Err(error) => {
-                        tracing::warn!(job_id = %id, %error, "后台任务等待失败");
+                        tracing::warn!(job_id = %id, %error, "等待后台任务结束失败");
                         JobStatus::Finished(None)
                     }
                 }
@@ -283,7 +283,7 @@ impl JobManager {
             JobStatus::Killed => (None, "killed".into()),
             JobStatus::TimedOut => (None, "timeout".into()),
             JobStatus::OutputLimited => (None, "output_limit".into()),
-            JobStatus::Running | JobStatus::Killing => unreachable!("任务已回收"),
+            JobStatus::Running | JobStatus::Killing => unreachable!("任务已经回收"),
         };
         let output = {
             let (text, truncated) = log.read_tail(200).unwrap_or_else(|error| {
@@ -318,7 +318,7 @@ impl JobManager {
                 if let Err(error) = job
                     .group
                     .as_ref()
-                    .expect("运行中的后台任务必须持有进程组")
+                    .expect("运行中的后台任务一定持有进程组")
                     .kill()
                 {
                     tracing::warn!(job_id = %job.id, pid = ?job.pid, %error, "终止后台任务失败");
@@ -328,7 +328,7 @@ impl JobManager {
         let workers = std::mem::take(&mut *self.workers.lock());
         for worker in workers {
             if let Err(error) = worker.await {
-                tracing::warn!(%error, "后台任务回收失败");
+                tracing::warn!(%error, "回收后台任务失败");
             }
         }
     }
@@ -370,7 +370,7 @@ impl JobManager {
             if job.status == JobStatus::Running {
                 job.group
                     .as_ref()
-                    .expect("运行中的后台任务必须持有进程组")
+                    .expect("运行中的后台任务一定持有进程组")
                     .kill()?;
                 job.status = JobStatus::Killing;
             }
@@ -380,7 +380,7 @@ impl JobManager {
             tokio::pin!(notified);
             notified.as_mut().enable();
             let Some(status) = self.info(id).await.map(|job| job.status) else {
-                // 任务已结束并被驱逐（超过保留上限）：终止已经生效。
+                // 任务已结束并因超出保留上限被驱逐，说明终止已经生效。
                 return Ok(JobStatus::Killed);
             };
             if !matches!(status, JobStatus::Running | JobStatus::Killing) {
@@ -536,7 +536,7 @@ impl Tool for JobTool {
                         if job.lifecycle == JobLifecycle::Persistent {
                             "persistent job will not auto-complete; use output or kill"
                         } else {
-                            "monitored job is still running; inspect output or kill it instead of repeating wait without diagnosis"
+                            "monitored job is still running; check output or kill it rather than waiting again"
                         }
                     } else {
                         "job finished"
@@ -630,7 +630,7 @@ mod tests {
         }
         manager.evict_finished(&mut jobs);
         assert_eq!(jobs.len(), RETAINED_FINISHED_JOBS + 1);
-        assert!(jobs.contains_key("running"), "运行中的任务不得被驱逐");
+        assert!(jobs.contains_key("running"), "运行中的任务不能被驱逐");
         assert!(!jobs.contains_key("finished_00") && !jobs.contains_key("finished_02"));
         assert!(jobs.contains_key("finished_03"));
         assert!(jobs.contains_key(&format!("finished_{RETAINED_FINISHED_JOBS:02}")));

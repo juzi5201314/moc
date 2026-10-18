@@ -151,7 +151,7 @@ mod tests {
         let (text, truncated) = log.read_tail(10).expect("读取日志");
         assert_eq!(text, "cdef");
         assert!(truncated);
-        log.finish().expect("压平日志");
+        log.finish().expect("把环形日志写成普通文件");
         assert_eq!(
             std::fs::read(directory.path().join("job.log")).expect("读取日志文件"),
             b"cdef"

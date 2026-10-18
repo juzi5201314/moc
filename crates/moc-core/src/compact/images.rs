@@ -1,17 +1,17 @@
-//! 图片 token 与请求体预算。
+//! 图片的 token 估算与请求体大小预算。
 //!
-//! 图片的 Base64 字节数不应直接当作 token；请求体又有独立于上下文窗口的
-//! HTTP 大小上限。这里在构造请求的拥有副本上执行高低水位淘汰，不改写会话原始历史。
+//! 图片的 Base64 字节数不能直接当 token 算；请求体还有一个与上下文窗口无关的 HTTP
+//! 大小上限。这里在构造请求用的副本上按高低水位淘汰图片，不改动会话的原始历史。
 
 use moc_llm::{ContentPart, Message, ToolDef};
 use serde::Serialize;
 use serde_json::Value;
 
-/// 没有供应商专属配置时采用的请求体上限。
+/// 供应商没有单独配置时使用的请求体上限。
 const DEFAULT_MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
-/// 触发图片淘汰前为请求封套与工具定义预留的空间。
+/// 触发图片淘汰前，为请求外层结构和工具定义预留的空间。
 const TRIGGER_HEADROOM_BYTES: usize = 3 * 1024 * 1024;
-/// 单张图片的上下文 token 估算，沿用 Grok Build 的低分辨率图片估算值。
+/// 单张图片的上下文 token 估算，沿用 Grok Build 对低分辨率图片的估算值。
 pub const IMAGE_TOKEN_ESTIMATE: u64 = 765;
 const USER_IMAGE_PLACEHOLDER: &str =
     "[Earlier image removed to meet the request size limit; provide it again if needed]";
@@ -25,20 +25,20 @@ pub struct ImageBudgetOutcome {
     pub evicted: usize,
 }
 
-/// 在请求副本上按旧到新的顺序移除图片，直到降到低水位。
+/// 在请求副本上从旧到新移除图片，直到体积降到低水位。
 ///
-/// 该接口只改变 `messages`，因此不会损坏可回放的 transcript；同样的输入会得到同样
-/// 的输出，后续请求可以继续复用稳定前缀。体积只统计一次，随后按被改动消息的差值
-/// 增量维护，不在每一步重新序列化整个消息列表。若正文本身超过上限但没有图片，
-/// 调用方仍会交给上游返回上下文或请求体错误。
+/// 只改动 `messages`，所以不会破坏可回放的 transcript；相同输入得到相同输出，后续请求
+/// 仍能复用稳定前缀。体积只完整计算一次，之后按被改动消息的差值增量更新，不会每一步都
+/// 重新序列化整个消息列表。如果正文本身超限但没有图片，照样交给上游，由上游返回上下文
+/// 或请求体错误。
 pub fn apply(
     mut messages: Vec<Message>,
     tools: &[ToolDef],
     native_input: Option<&[Value]>,
     configured_max_bytes: Option<u64>,
 ) -> (Vec<Message>, ImageBudgetOutcome) {
-    // 配置上限原样生效：小于触发余量的上限会让图片全部被淘汰（0 已在校验阶段拒绝），
-    // 静默回落到默认值会让用户设置的请求体上限失效。
+    // 配置的上限原样生效：小于触发余量的上限会让图片全部被淘汰（0 已在校验时拒绝）。
+    // 悄悄退回默认值会让用户设置的请求体上限失效。
     let max_bytes = configured_max_bytes
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(DEFAULT_MAX_REQUEST_BYTES);
@@ -82,7 +82,7 @@ pub fn apply(
     )
 }
 
-/// 该消息是否携带图片；用于跳过与图片无关的序列化。
+/// 消息是否带图片；不带图片的消息跳过序列化。
 fn has_images(message: &Message) -> bool {
     message.content.iter().any(|part| match part {
         ContentPart::Image { .. } => true,
@@ -125,7 +125,7 @@ pub fn strip_images(message: &mut Message) -> usize {
 
 #[cfg(test)]
 thread_local! {
-    /// 测试用序列化调用计数，钉住「体积只统计一次、按差值增量维护」的性能契约。
+    /// 测试用的序列化次数计数，保证「体积只完整计算一次、之后按差值增量更新」不被改坏。
     static SERIALIZED_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -186,7 +186,7 @@ mod tests {
                 detail: None,
             }],
         }];
-        // 4 MiB 上限低于默认值：必须按配置淘汰，而不是静默回落到 50 MiB。
+        // 4 MiB 上限低于默认值：必须按配置淘汰，不能悄悄退回 50 MiB。
         let (messages, outcome) = apply(messages, &[], None, Some(4 * 1024 * 1024));
         assert_eq!(outcome.evicted, 1);
         assert!(outcome.body_bytes > 4 * 1024 * 1024);
@@ -211,7 +211,7 @@ mod tests {
         let (messages, outcome) = apply(messages, &[], None, Some(8 * 1024 * 1024));
         assert!(
             outcome.evicted > 0 && outcome.evicted < 10,
-            "够用即停，实际淘汰 {} 张",
+            "够用就停，实际淘汰了 {} 张",
             outcome.evicted
         );
         assert!(outcome.body_bytes_after <= 4 * 1024 * 1024 + 4096);

@@ -1,4 +1,4 @@
-//! 原子更新会话任务列表，保持至多一个活动任务。
+//! todo 工具：原子地更新会话任务列表，同一时间最多一个进行中的任务。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -34,11 +34,11 @@ enum ItemInput {
     Object { task: String },
 }
 
-/// 扁平 `init` 合成的 phase 名。
+/// 扁平写法的 `init` 自动生成的 phase 名。
 const DEFAULT_INIT_PHASE: &str = "tasks";
 
-/// 修复模型漏填 `op` 的无歧义形态：非空 `list` → init；非空 `items` 带 `phase` → append；
-/// 非空 `items` 且当前没有 phase → init。其余形态交回模型重试，不做猜测。
+/// 模型漏填 `op` 时只补全没有歧义的写法：非空 `list` → init；非空 `items` 带 `phase` → append；
+/// 非空 `items` 且当前没有任何 phase → init。其它写法让模型重试，不去猜。
 fn infer_op(args: &TodoArgs, has_phases: bool) -> Option<&'static str> {
     if args.list.as_ref().is_some_and(|list| !list.is_empty()) {
         return Some("init");
@@ -52,8 +52,8 @@ fn infer_op(args: &TodoArgs, has_phases: bool) -> Option<&'static str> {
     (!has_phases).then_some("init")
 }
 
-/// `init` 的载荷裁决：`list` 优先；没有 `list` 时用扁平 `items` 合成单 phase。模型常把单
-/// phase 清单压成 `{op:"init", items:[...]}`，这与 `list` 等价，不该让它重试。
+/// 决定 `init` 用哪组参数：优先 `list`；没有 `list` 时把扁平的 `items` 包成一个 phase。
+/// 模型常把只有一个 phase 的清单写成 `{op:"init", items:[...]}`，它和 `list` 等价，不必让模型重试。
 fn init_phases(args: TodoArgs) -> Result<Vec<TodoPhase>, ToolError> {
     let phases = match (args.list, args.items) {
         (Some(list), _) => list,

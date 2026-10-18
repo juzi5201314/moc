@@ -1,4 +1,4 @@
-//! 宿主与固定 WASM guest 共用的 JSON 线协议。
+//! 宿主和内嵌 WASM guest 共用的 JSON 通信协议。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

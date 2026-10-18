@@ -1,4 +1,4 @@
-//! 遵循 ignore 规则的有界并行搜索；分页顺序由路径决定。
+//! grep 工具：遵守 ignore 规则的并行搜索，输出有上限；分页按路径排序。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,12 +56,12 @@ impl Tool for GrepTool {
                     "pattern":{"type":"string"},
                     "path":{"type":"string","description":"Scan root or resource URI; default cwd"},
                     "glob":{"type":"array","items":{"type":"string"}},
-                    "case":{"type":"boolean"},
+                    "case":{"type":"boolean","description":"Case-sensitive; default true"},
                     "gitignore":{"type":"boolean"},
                     "hidden":{"type":"boolean","description":"Include dotfiles and .git; default false"},
                     "context_before":{"type":"integer","minimum":0},
                     "context_after":{"type":"integer","minimum":0},
-                    "skip":{"type":"integer","minimum":0},
+                    "skip":{"type":"integer","minimum":0,"description":"Matched files to skip, for paging"},
                     "cross_filesystems":{"type":"boolean","description":"Default false"}
                 }),
                 &["pattern"],
@@ -137,14 +137,14 @@ fn search_resource_text(
     })
 }
 
-/// 命名空间里的每个目录逐文件匹配：命中行前缀由（URI 前缀 + 相对路径）拼回，
-/// 模型看到与 read 一致的 URI，而不是农场或 sidecar 的真实路径。
+/// 在命名空间的各个目录里逐个文件匹配。命中行的前缀用「URI 前缀 + 相对路径」拼出，
+/// 模型看到的是与 read 一致的 URI，而不是 urlfs 或 sidecar 的真实路径。
 fn search_resource_namespace(
     entries: &[(String, PathBuf)],
     args: &GrepArgs,
     config: &crate::config::GrepConfig,
 ) -> Result<String, ToolError> {
-    /// 单次命名空间扫描的文件数上限：命名空间可以无界，工具输出必须有界。
+    /// 一次命名空间扫描最多检查的文件数：命名空间可以无限大，工具输出必须有上限。
     const MAX_FILES: usize = 200;
     let mut output = String::new();
     let mut notices = Vec::new();
@@ -197,7 +197,7 @@ fn search_resource_namespace(
     Ok(output)
 }
 
-/// 目录下的全部文件及其相对路径（`/` 分隔、按路径排序）；跳过点文件。
+/// 列出目录下所有文件及其相对路径（用 `/` 分隔，按路径排序），跳过点文件。
 fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
     let mut files = Vec::new();
     let mut stack = vec![(String::new(), directory.to_owned())];
@@ -229,7 +229,7 @@ fn directory_files(directory: &Path) -> Vec<(String, PathBuf)> {
     files
 }
 
-/// 单份文本里的命中行；无命中返回空串，由调用方决定是报空还是继续拼下一份。
+/// 取出一段文本里的命中行；没有命中时返回空串，由调用方决定报告无结果还是继续拼下一段。
 fn collect_resource_matches(
     uri: &str,
     text: &str,
@@ -288,7 +288,7 @@ fn collect_resource_matches(
         };
         use std::fmt::Write;
         writeln!(output, "{uri}{marker}{}{marker}{}", index + 1, lines[index])
-            .expect("写入 String 不失败");
+            .expect("写入 String 不会失败");
     }
     Ok(output.trim_end_matches('\n').to_owned())
 }
@@ -403,7 +403,7 @@ impl Search {
         let mut limited = false;
         let mut skipped_large_files = 0usize;
         let skip = self.args.skip.unwrap_or(0);
-        // 分块保留并行度，同时使低输出上限无需搜索整个候选集合。
+        // 分块搜索：块内并行，输出上限较低时不必搜完全部候选文件。
         let width = rayon::current_num_threads().clamp(1, 32);
         'blocks: for block in paths.chunks(width) {
             let results: Vec<_> = block
@@ -468,7 +468,7 @@ impl Search {
                         row.number,
                         row.text
                     )
-                    .expect("写入 String 不失败");
+                    .expect("写入 String 不会失败");
                 }
                 shown_files += 1;
                 shown_matches += count;
@@ -484,7 +484,7 @@ impl Search {
         }
         if limited {
             output.push_str(&format!(
-                "[{shown_files} files, {shown_matches} matches shown; result limit reached, continue with skip={}; narrow pattern when one file hits its limit]\n",
+                "[{shown_files} files, {shown_matches} matches shown; limit reached. Continue with skip={}; narrow the pattern if a single file hits its limit]\n",
                 skip + shown_files
             ));
         }
@@ -495,7 +495,7 @@ impl Search {
             ));
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
-            output.push_str("[Scan was incomplete because the cooperative timeout, candidate-file limit, cancellation, unreadable path, or oversized-file limit was reached; results may be incomplete and are not a no-match proof. Narrow path or glob, or set cross_filesystems=true to include mounted paths below the root]\n");
+            output.push_str("[Scan incomplete (time limit, candidate-file limit, cancellation, unreadable path, or oversized file); results may be incomplete, so a miss does not prove absence. Narrow path or glob, or set cross_filesystems=true to include mounts below the root]\n");
         }
         Ok(output.trim_end_matches('\n').to_owned())
     }
@@ -521,7 +521,7 @@ impl Search {
             .after_context(self.args.context_after.unwrap_or(self.config.context_after))
             .binary_detection(BinaryDetection::quit(0))
             .build();
-        // 禁止 mmap；文件在扫描中增长时也不能突破读取字节预算。
+        // 不用 mmap：文件在扫描过程中变大时，读取量也不能超过字节预算。
         use std::io::Read;
         searcher.search_reader(
             &self.matcher,
@@ -680,7 +680,7 @@ mod tests {
         );
     }
 
-    /// 命名空间扫描：命中行前缀必须是 read 里同一形状的 URI，而不是 sidecar 路径。
+    /// 命名空间扫描：命中行的前缀必须是和 read 一样的 URI，不能是 sidecar 路径。
     #[test]
     fn namespace_scan_prefixes_rows_with_entry_uris() {
         let root = tempfile::tempdir().unwrap();
@@ -695,7 +695,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({"pattern":"error"})).unwrap();
         let entries = vec![("artifact://jobs/".to_owned(), jobs.clone())];
         let output = search_resource_namespace(&entries, &args, &config).unwrap();
-        // 默认上下文各一行：上下文行也带同一文件的 URI 前缀。
+        // 默认前后各一行上下文，上下文行也带所在文件的 URI 前缀。
         assert_eq!(
             output,
             "artifact://jobs/job_1.log-2-beta\nartifact://jobs/job_1.log:3:error: boom\nartifact://jobs/nested/job_3.log:1:error: nested"
@@ -706,7 +706,7 @@ mod tests {
         );
     }
 
-    /// 命名空间可以无界，扫描必须有界：超限文件跳过并说明，文件数超限即停。
+    /// 命名空间可以无限大，扫描必须有上限：超大的文件跳过并说明，文件数超限就停止。
     #[test]
     fn namespace_scan_is_bounded_and_reports_what_it_skipped() {
         let root = tempfile::tempdir().unwrap();

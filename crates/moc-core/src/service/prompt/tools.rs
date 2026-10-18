@@ -1,4 +1,4 @@
-//! 工具批次的有界并发、授权、取消与结果配对。
+//! 执行工具批次：并发上限、授权、取消，以及把结果与调用配对。
 
 use super::workspace::{WorkspaceScope, check_workspace};
 use crate::{
@@ -289,7 +289,7 @@ pub(super) async fn execute_tool_batch(
             let message = serde_json::json!({"role":"tool","tool_call_id":call.id,"tool_name":call.name,"parts":[{"type":"text","text":tool_result.content.chars().take(4096).collect::<String>()}]});
             let _ = client.append_messages(&session, &[message], peer).await;
         }
-        // 停滞提醒的计数：todo 之外的每次工具调用都算一次进度。
+        // todo 停滞提醒的计数：除 todo 外，每次工具调用都加一。
         if call.name != "todo" {
             tool_ctx.state.lock().await.tool_calls_since_todo += 1;
         }
@@ -337,7 +337,7 @@ pub(super) async fn execute_tool_batch(
             *changed = true;
         }
     }
-    // 只读批次可忽略返回顺序；带写入屏障的批次必须保留执行顺序。
+    // 全是只读调用的批次不必在意完成顺序；含写入屏障的批次必须按顺序执行。
     if calls.iter().all(|call| {
         inner
             .tools
@@ -421,8 +421,8 @@ async fn execute_tool(
             ));
         }
     };
-    // bash 在执行前过静态规则，并把命令里未加引号的内部 URI 换成 urlfs 农场路径：
-    // 沙盒判定与审批提示看到的都是真实路径，URI 落到 shell 里也不会静默落空。
+    // bash 执行前先过静态规则，并把命令里没加引号的内部 URI 换成 urlfs 目录里的路径：
+    // 沙盒判定和审批提示看到的都是真实路径，URI 交给 shell 也不会悄悄失效。
     if name == "bash"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
@@ -478,7 +478,7 @@ async fn execute_tool(
             result = execution => result,
         }
     } else {
-        // 写入事务必须提交完整；进程工具自行响应取消并回收进程组。
+        // 写入事务必须完整提交，不能中途取消；进程类工具自己响应取消并回收进程组。
         execution.await
     };
     match result {
@@ -497,7 +497,7 @@ async fn execute_tool(
     }
 }
 
-/// 执行继承提示权限的 PTC 子工具，不写入模型消息。
+/// 执行 PTC 脚本发起的子工具调用：沿用当前提示的权限，结果不写入模型消息。
 pub(crate) async fn execute_nested_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
@@ -521,17 +521,17 @@ pub(crate) async fn execute_nested_tool(
 
 enum Authorization {
     Allowed(moc_protocol::SessionPermission),
-    /// 用户明确拒绝本次操作。
+    /// 用户拒绝了本次操作。
     Denied,
-    /// 前端不支持权限询问，无法取得一次性授权。
+    /// 前端不支持权限询问，拿不到一次性授权。
     Unavailable,
 }
 
-/// 授权入口：`full` 是 yolo；`workspace` 下 bash 与写工具都要过边界判定。
+/// 授权入口：`full` 不询问（yolo）；`workspace` 下 bash 和写入工具都要检查工作区边界。
 ///
-/// 工作区外写入与「沙盒外执行命令」共用同一条审批链：能弹出权限询问的前端
-/// 得到一次显式授权，否则直接拒绝。只读工具不设边界——沙盒本身对工作区外
-/// 就是只读接管，read/find/grep 与沙盒内命令的能力保持一致。
+/// 工作区外写入和「在沙盒外执行命令」走同一条审批流程：前端能弹出权限询问时向用户
+/// 要一次授权，否则直接拒绝。只读工具不设边界：沙盒对工作区外本来就是只读的，
+/// read/find/grep 的能力与沙盒内的命令保持一致。
 async fn authorize(
     ctx: &ToolCtx,
     tool_call_id: &str,
@@ -548,7 +548,7 @@ async fn authorize(
     }
 }
 
-/// bash：可留在沙盒内的命令直接放行，其余命令先问用户。
+/// bash：能在沙盒内执行的命令直接放行，其余命令先问用户。
 async fn authorize_bash(
     ctx: &ToolCtx,
     tool_call_id: &str,
@@ -579,9 +579,9 @@ async fn authorize_bash(
     .await
 }
 
-/// 写工具（write/edit）中越出工作区的目标；空表示无需审批。
+/// 找出写入工具（write/edit）中越出工作区的目标；返回空表示不需要审批。
 ///
-/// 与执行阶段共用参数解析，解析失败由工具自身返回 `E_BAD_PAYLOAD`。
+/// 参数解析与执行阶段共用一套；解析失败交给工具自己返回 `E_BAD_PAYLOAD`。
 fn outside_workspace_targets(
     cwd: &std::path::Path,
     tool_name: &str,
@@ -606,7 +606,7 @@ fn outside_workspace_targets(
         .collect())
 }
 
-/// write / edit：目标都在工作区内则直接放行，越界（含符号链接逃逸）先问用户。
+/// write/edit：目标都在工作区内就直接放行；有目标越界（包括经符号链接逃出）先问用户。
 async fn authorize_write_tools(
     ctx: &ToolCtx,
     tool_call_id: &str,
@@ -634,7 +634,7 @@ async fn authorize_write_tools(
         _ => (crate::tools::edit::preview_arguments(ctx, arguments), None),
     };
     let mut body = format!(
-        "以下写入目标位于会话工作区之外：\n{paths}\n工作区外的写入不做沙盒接管，请确认目标无误。"
+        "以下写入目标在会话工作区之外：\n{paths}\n工作区外的写入不受沙盒保护，请确认目标无误。"
     );
     if let Some(content) = &content {
         body.push_str(&format!(
@@ -665,7 +665,7 @@ async fn authorize_write_tools(
 const WRITE_PREVIEW_LINES: usize = 40;
 const WRITE_PREVIEW_BYTES: usize = 4096;
 
-/// 写入内容预览：前若干行加字节数，超限时注明截断。
+/// 生成写入内容预览：取开头若干行，超出上限时注明已截断。
 fn write_preview(content: &str) -> String {
     let mut preview = String::new();
     let mut lines = 0usize;
@@ -872,7 +872,7 @@ mod tests {
             outside_workspace_targets(&root, "write", &write).unwrap(),
             vec![outside.join("result.txt")]
         );
-        // move 的 target_path 与源文件同批授权，跨出工作区的目标必须被发现。
+        // move 的 target_path 与源文件一起授权，越出工作区的目标也必须检查出来。
         let edit = serde_json::json!({
             "path": "src/main.rs",
             "edits": [["1aa","1aa","change"]],

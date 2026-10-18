@@ -1,4 +1,4 @@
-//! 配置保存与运行提示的原子切换，以及安全工具边界的补充消息投递。
+//! 保存配置、与运行中提示的配置切换，以及在安全的工具边界投递补充消息。
 
 use super::CoreInner;
 use crate::{
@@ -13,7 +13,7 @@ use std::{collections::VecDeque, path::Path, sync::Arc};
 pub(crate) struct Steering {
     pub accepting: bool,
     pub messages: VecDeque<moc_llm::Message>,
-    /// 补充消息入队时唤醒 `wait_agent`，让它立刻交还控制权。
+    /// 补充消息入队时唤醒 `wait_agent`，让它立刻返回。
     pub notify: Arc<tokio::sync::Notify>,
 }
 
@@ -88,7 +88,7 @@ pub(super) async fn manage(
         } => {
             let cancel = ctx.cancel();
             let _write = inner.config_write.lock().await;
-            // 正在运行的提示使用同一份配置；保存等待其收尾，不中途撤销 MCP 连接。
+            // 运行中的提示在用同一份配置：保存要等它们结束，不能中途断开 MCP 连接。
             let _epoch = tokio::select! {
                 _ = cancel.cancelled() => return Err(CoreError::Cancelled),
                 epoch = inner.config_epoch.write() => epoch,
@@ -108,7 +108,7 @@ pub(super) async fn manage(
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();
             inner.openviking_clients.lock().await.clear();
-            // 指令文件按会话缓存：保存配置后必须同步失效，否则既有会话沿用旧开关。
+            // 指令文件按会话缓存：保存配置后必须让缓存失效，否则已有会话还用旧开关。
             let runtimes: Vec<_> = inner.runtimes.lock().await.values().cloned().collect();
             for runtime in runtimes {
                 *runtime.context_files.lock().await = None;
@@ -140,7 +140,7 @@ pub(super) async fn manage(
                 .map(ConfigReply::Maintenance)
         }
         ConfigAction::Workspaces => {
-            // 已存在会话的可访问目录补登记；消失目录没有可靠 peer 信息时不猜测身份。
+            // 给已有会话的现存目录补登记；目录已消失又没有可靠的对端信息时，不猜测身份。
             let sessions = inner.sessions.list().await?;
             for session in sessions {
                 if Path::new(&session.cwd).is_dir() {

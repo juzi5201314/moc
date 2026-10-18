@@ -1,9 +1,8 @@
-//! 摘要 checkpoint 的校验：标签剥离、段落完整性、必保留短语与关键锚点覆盖。
+//! 摘要 checkpoint 的校验：剥掉外层标签，检查段落完整性、必保留短语和关键锚点是否齐全。
 //!
-//! 压缩的失败模式不是请求报错，而是模型返回一句闲聊：旧实现照单全收，上下文
-//! 从此归零。这里把"可用的 checkpoint"变成可判定的条件，并给出重试所需的
-//! 具体缺口（缺哪些段落、漏了哪些标识符/路径/数字、丢了哪条决策或步号），
-//! 让重试有方向。
+//! 压缩的失败方式不是请求报错，而是模型只回一句闲聊。这里把「能用的 checkpoint」写成
+//! 可以判定的条件，并给出重试需要的具体缺口：缺了哪些段落、漏了哪些标识符、路径或数字、
+//! 丢了哪条决策或步号，让重试有方向。
 
 use std::collections::HashSet;
 
@@ -11,28 +10,28 @@ use moc_llm::{ContentPart, Message, Role};
 
 /// 合格的 checkpoint 至少要有这么多字符。
 pub(crate) const MIN_CHECKPOINT_CHARS: usize = 600;
-/// 锚点总量上限：超长会话里按等距抽样保留这些，避免校验本身变成负担。
+/// 锚点总数上限：超长会话按等距抽样保留这些，避免校验本身成为负担。
 const MAX_ANCHORS: usize = 240;
-/// 达标所需的锚点命中数下限与上限。
+/// 达标需要的锚点命中数下限与上限。
 ///
-/// 小输入按 85% 要求；大输入封顶到固定条数——几十万 token 的历史压成几千 token
-/// 的 checkpoint 不可能覆盖 85% 的锚点，否则重试与兜底会误伤正常结果。
+/// 小输入要求 85%；大输入封顶到固定条数：几十万 token 的历史压成几千 token 的
+/// checkpoint，不可能覆盖 85% 的锚点，硬要求会让重试和兜底误伤正常结果。
 const MIN_REQUIRED_ANCHOR_HITS: usize = 8;
 const MAX_REQUIRED_ANCHOR_HITS: usize = 64;
-/// 一次修复提示里最多列出的缺失锚点。
+/// 一次修复提示里最多列出多少个缺失锚点。
 pub(crate) const MAX_REPORTED_MISSING: usize = 24;
 
-/// checkpoint 校验结果。
+/// checkpoint 的校验结果。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Verdict {
     Ok,
-    /// 文本过短（字符数）。
+    /// 文本太短（字符数）。
     Short(usize),
     /// 缺少的必需段落标题。
     Sections(Vec<String>),
-    /// 缺少的必须逐字出现的事实短语（被否决方案名、计划步号等）。
+    /// 缺少的必须逐字出现的事实短语（被否决的方案名、计划步号等）。
     Required(Vec<String>),
-    /// 锚点命中不足：命中数、达标线与缺失清单。
+    /// 锚点命中不足：命中数、达标线和缺失清单。
     Coverage {
         hits: usize,
         required: usize,
@@ -41,7 +40,7 @@ pub(crate) enum Verdict {
 }
 
 impl Verdict {
-    /// 重试提示词里的拒收原因。
+    /// 重试提示词里写的拒收原因。
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Ok => "the checkpoint is acceptable".to_owned(),
@@ -62,7 +61,7 @@ impl Verdict {
         }
     }
 
-    /// 结构性不合格（再重试也未必能救）时返回 `true`。
+    /// 结构性不合格（重试也未必能救）时返回 `true`。
     pub(crate) fn is_structural(&self) -> bool {
         matches!(self, Self::Short(_) | Self::Sections(_))
     }
@@ -86,7 +85,7 @@ pub(crate) fn acceptable_hits(total: usize) -> usize {
     required.saturating_sub(required / 4).max(1)
 }
 
-/// 必保留短语里缺失的那些；大小写不敏感，`第 3 步` 的常见写法都算命中。
+/// 必保留短语里缺失的那些；忽略大小写，`第 3 步` 的常见写法都算命中。
 pub(crate) fn missing_required(required: &[String], text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
     required
@@ -99,8 +98,8 @@ pub(crate) fn missing_required(required: &[String], text: &str) -> Vec<String> {
 
 /// 短语是否出现在（已转小写的）文本里。
 ///
-/// 计划步号会被模型写成 `第 3 步`、`第3步` 或 `第三步`，逐字比较会误伤，
-/// 因此这里把步号展开成几种等价写法；其余短语按大小写不敏感的子串匹配。
+/// 模型会把计划步号写成 `第 3 步`、`第3步` 或 `第三步`，逐字比较会误判，所以这里
+/// 把步号展开成几种等价写法；其它短语按忽略大小写的子串匹配。
 fn phrase_present(lower_text: &str, phrase: &str) -> bool {
     let phrase_lower = phrase.to_lowercase();
     let Some(number) = step_number(&phrase_lower) else {
@@ -120,7 +119,7 @@ fn phrase_present(lower_text: &str, phrase: &str) -> bool {
         .is_some_and(|numerals| step_hit(numerals))
 }
 
-/// `第 3 步` 这类短语里的步号。
+/// 取出 `第 3 步` 这类短语里的步号。
 fn step_number(phrase: &str) -> Option<usize> {
     let rest = phrase
         .strip_prefix("第 ")
@@ -133,19 +132,19 @@ fn step_number(phrase: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// 步号的中文写法，用于 `第三步` 与 `第 3 步` 的等价匹配。
+/// 步号的中文写法，用于 `第三步` 和 `第 3 步` 的等价匹配。
 const CHINESE_NUMERALS: [&str; 9] = ["一", "二", "三", "四", "五", "六", "七", "八", "九"];
 
-/// 剥掉模型常加的外壳：开头 `<analysis>` 草稿、`<summary>` 标签与代码围栏。
+/// 剥掉模型常加的外壳：开头的 `<analysis>` 草稿、`<summary>` 标签和代码围栏。
 pub(crate) fn unwrap_checkpoint(raw: &str) -> String {
     let mut text = raw.trim().to_owned();
     loop {
-        // `to_ascii_lowercase` 只改 ASCII 字节，下标与原文一一对应。
+        // `to_ascii_lowercase` 只改 ASCII 字节，下标和原文一一对应。
         let lower = text.to_ascii_lowercase();
         let Some(start) = lower.find("<analysis") else {
             break;
         };
-        // 只有位于第一个 `<summary>` 之前的 `<analysis>` 才算草稿。
+        // 只有出现在第一个 `<summary>` 之前的 `<analysis>` 才算草稿。
         let summary_at = lower.find("<summary").unwrap_or(usize::MAX);
         if start > summary_at {
             break;
@@ -157,7 +156,7 @@ pub(crate) fn unwrap_checkpoint(raw: &str) -> String {
                 text = text.trim().to_owned();
             }
             None => {
-                // 未闭合：砍到 `<summary>`，否则整段作废。
+                // 没闭合：从 `<summary>` 开始保留，否则整段作废。
                 text = if summary_at != usize::MAX && summary_at > start {
                     text[summary_at..].to_owned()
                 } else {
@@ -197,7 +196,7 @@ fn strip_fence(text: &str) -> &str {
     body.trim_end().strip_suffix("```").unwrap_or(body).trim()
 }
 
-/// 必需段落里缺失的标题；按行首 `#` 判定，避免正文里提到段落名就算数。
+/// 必需段落里缺了哪些标题；只认行首的 `#`，正文里提到段落名不算。
 pub(crate) fn missing_sections(text: &str, sections: &[&str]) -> Vec<String> {
     let headings: Vec<String> = text
         .lines()
@@ -221,11 +220,11 @@ pub(crate) fn missing_sections(text: &str, sections: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// 从会话正文里抽取"压缩后必须逐字保留"的锚点：路径、标识符、数字。
+/// 从会话正文里抽取「压缩后必须逐字保留」的锚点：路径、标识符、数字。
 ///
-/// 只扫描用户/助手文本与工具调用参数：工具结果里是整份文件内容，把它算进
-/// 覆盖率会让任何摘要都不合格。`previous` 是上一版 checkpoint，它的锚点排在最前，
-/// 保证多次压缩时优先保住已经沉淀下来的事实。
+/// 只扫描用户和助手的文本以及工具调用参数：工具结果里是整份文件内容，算进覆盖率
+/// 会让任何摘要都不合格。`previous` 是上一版 checkpoint，它的锚点排在最前，保证多次
+/// 压缩时优先保住已经沉淀下来的事实。
 pub(crate) fn salient_anchors<'a>(
     messages: impl Iterator<Item = &'a Message>,
     previous: Option<&str>,
@@ -253,7 +252,7 @@ pub(crate) fn salient_anchors<'a>(
     anchors
 }
 
-/// 锚点过多时按等距抽样：超长会话里必须让开头、中段和结尾都有代表，
+/// 锚点过多时按等距抽样：超长会话里开头、中段和结尾都要有代表，
 /// 只留最先出现的 240 个会让校验偏向会话早期。
 fn sample_even(anchors: &mut Vec<String>) {
     let len = anchors.len();
@@ -267,7 +266,7 @@ fn sample_even(anchors: &mut Vec<String>) {
     *anchors = sampled;
 }
 
-/// 文本命中的锚点数。
+/// 文本命中了多少个锚点。
 pub(crate) fn matching(anchors: &[String], text: &str) -> usize {
     anchors
         .iter()
@@ -275,7 +274,7 @@ pub(crate) fn matching(anchors: &[String], text: &str) -> usize {
         .count()
 }
 
-/// 文本里缺失的锚点，最多 `MAX_REPORTED_MISSING` 个。
+/// 文本里缺了哪些锚点，最多 `MAX_REPORTED_MISSING` 个。
 pub(crate) fn missing_anchors(anchors: &[String], text: &str) -> Vec<String> {
     anchors
         .iter()
@@ -300,8 +299,8 @@ pub(crate) fn evaluate(
     if !missing.is_empty() {
         return Verdict::Sections(missing);
     }
-    // 必保留短语先于覆盖率：被否决方案名、计划步号决定"压缩后还能不能继续做事"，
-    // 而锚点覆盖只是防止整体丢失细节。
+    // 必保留短语先于覆盖率检查：被否决的方案名和计划步号决定「压缩后还能不能接着做」，
+    // 锚点覆盖只是防止整体丢失细节。
     let missing = missing_required(required, text);
     if !missing.is_empty() {
         return Verdict::Required(missing);
@@ -318,14 +317,14 @@ pub(crate) fn evaluate(
     Verdict::Ok
 }
 
-/// 标记 token 的边界字符：只在 ASCII 字母数字与少量标识符字符内连续。
+/// 标记词边界的字节：词只在 ASCII 字母数字和少量标识符字符内连续。
 fn is_token_byte(byte: u8) -> bool {
     matches!(byte,
         b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'
         | b'_' | b'-' | b'.' | b'/' | b':' | b'~' | b'@' | b'+' | b'%')
 }
 
-/// 扫描文本并收集锚点；按出现顺序去重。
+/// 扫描文本收集锚点，按出现顺序去重。
 fn scan(text: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>) {
     let bytes = text.as_bytes();
     let mut index = 0;
@@ -348,7 +347,7 @@ fn scan(text: &str, anchors: &mut Vec<String>, seen: &mut HashSet<String>) {
     }
 }
 
-/// 判断一个 token 是否值得作为必须保留的锚点。
+/// 判断一个词是否值得作为必须保留的锚点。
 fn classify(token: &str) -> bool {
     if token.len() < 3 {
         return false;
@@ -366,7 +365,7 @@ fn classify(token: &str) -> bool {
                     .split_once('.')
                     .is_some_and(|(left, right)| !left.is_empty() && !right.is_empty()));
     }
-    // 只收相对路径：绝对路径（含临时目录）在换机、换目录后没有复述价值。
+    // 只收相对路径：绝对路径（含临时目录）换机器、换目录后没有复述价值。
     let starts_with_name = token
         .as_bytes()
         .first()
@@ -400,7 +399,7 @@ fn classify(token: &str) -> bool {
     if has_extension && token.len() >= 6 {
         return true;
     }
-    // 标识符：下划线或内部大写才算"具体名字"，普通英文单词一律忽略。
+    // 标识符：要有下划线或内部大写才算「具体名字」，普通英文单词一律忽略。
     let identifier = token
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -508,7 +507,7 @@ mod tests {
     fn required_phrases_survive_spelling_variants() {
         let sections = sections_text();
         let required = vec!["Redis".to_owned(), "第 3 步".to_owned()];
-        // 大小写与步号写法都放宽：redis / 第三步 都算命中。
+        // 大小写和步号写法都放宽：redis 与 第三步 都算命中。
         let good = format!("{sections}\n否决 redis；当前在第三步。");
         assert_eq!(evaluate(&good, &[], &required, SECTIONS), Verdict::Ok);
 
@@ -523,7 +522,7 @@ mod tests {
     fn step_phrases_parse_and_match_numerals() {
         assert_eq!(step_number("第 3 步"), Some(3));
         assert_eq!(step_number("第3步"), Some(3));
-        assert_eq!(step_number("第三步"), None, "中文写法不是短语的输入形式");
+        assert_eq!(step_number("第三步"), None, "中文写法不会作为短语输入");
         assert!(phrase_present("当前在第三步", "第 3 步"));
         assert!(phrase_present("第5步已完成", "第 5 步"));
         assert!(!phrase_present("当前在第二步", "第 3 步"));
@@ -544,14 +543,14 @@ mod tests {
         assert_eq!(required_hits(0), 0);
         assert_eq!(required_hits(2), 2);
         assert_eq!(required_hits(10), 9);
-        assert_eq!(required_hits(100), 64, "大输入封顶而不是要求 85%");
+        assert_eq!(required_hits(100), 64, "大输入直接封顶，不再要求 85%");
         assert_eq!(required_hits(240), 64);
         assert!(acceptable_hits(240) < required_hits(240));
     }
 
     #[test]
     fn long_histories_sample_anchors_evenly() {
-        // 3000 个互不相同的锚点必须抽样到 240，且首尾都要有代表。
+        // 3000 个互不相同的锚点必须抽样到 240 个，且开头和结尾都要有代表。
         let mut messages = Vec::new();
         for index in 0..3000 {
             messages.push(Message::user_text(format!(

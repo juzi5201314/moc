@@ -1,4 +1,4 @@
-//! 基于 create_new 的跨进程会话锁。
+//! 用 create_new 实现的跨进程会话锁。
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
 
-/// 陈旧锁回收期间持有的认领文件后缀。
+/// 回收过期锁时使用的认领文件后缀。
 const RECLAIM_SUFFIX: &str = ".reclaim";
-/// 认领被其它进程持有时重试读取锁记录的次数。
+/// 认领文件被其它进程占用时，重读锁记录的次数。
 const RECLAIM_RETRIES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +34,7 @@ impl From<LockRecord> for SessionLockInfo {
     }
 }
 
-/// 只在创建它的进程内释放对应的锁文件。
+/// 只在创建它的进程里释放对应的锁文件。
 pub struct SessionLockGuard {
     path: PathBuf,
     record: LockRecord,
@@ -42,7 +42,7 @@ pub struct SessionLockGuard {
 }
 
 impl SessionLockGuard {
-    /// 原子创建锁；遇到已死亡进程遗留的锁时回收并重试一次。
+    /// 原子地创建锁；遇到已退出进程留下的锁就回收并重试一次。
     pub fn acquire(path: impl AsRef<Path>, frontend: &str) -> Result<Self, CoreError> {
         let path = path.as_ref().to_owned();
         for _ in 0..2 {
@@ -112,22 +112,22 @@ impl Drop for SessionLockGuard {
     }
 }
 
-/// 回收陈旧锁；调用前已确认当前锁记录属于已退出的进程。
+/// 回收过期锁；调用前已经确认这条锁记录属于已退出的进程。
 ///
-/// 回收分两步：先用 `create_new` 建立固定名字的认领文件（同一时刻只有一个进程
-/// 能成功），取得认领权后**重新读取**锁记录，确认它仍然陈旧才删除。只根据先前
-/// 快照无条件 unlink 会让两个同时读到陈旧记录的进程依次删除对方刚建立的锁，
-/// 随后同时持有同一会话锁；认领把「复查 + 删除」串行化，落败者只会重新读取到
-/// 存活锁并报 `SESSION_LOCKED`。
+/// 回收分两步：先用 `create_new` 建立固定名字的认领文件（同一时刻只有一个进程能
+/// 成功），拿到认领权后**重新读取**锁记录，确认它仍然过期才删除。只按先前的快照
+/// 直接 unlink，会让两个同时读到过期记录的进程依次删掉对方刚建好的锁，然后同时
+/// 持有同一个会话锁。认领把「复查 + 删除」串行化，落败的一方只会重新读到仍然有效的
+/// 锁并报 `SESSION_LOCKED`。
 ///
-/// 认领文件内容不可读（回收途中崩溃在写入进程号之前）时保守地按「认领仍有效」
-/// 处理，避免误删他人正在使用的认领；此时取得锁会失败并要求显式 force 解锁。
+/// 认领文件内容读不出来时（回收途中崩溃，还没来得及写进程号），保守地按「认领仍然
+/// 有效」处理，避免误删别人正在使用的认领；这种情况下获取锁会失败，需要显式 force 解锁。
 fn reclaim(path: &Path) -> Result<(), CoreError> {
     let claim = claim_path(path);
     for _ in 0..RECLAIM_RETRIES {
         match OpenOptions::new().write(true).create_new(true).open(&claim) {
             Ok(mut file) => {
-                // 认领文件记录持有者进程：回收途中崩溃时由其它进程按进程存活判定清理。
+                // 认领文件里记录持有者进程号；回收途中崩溃时，其它进程可以按进程是否存活来清理。
                 let _ = file.write_all(std::process::id().to_string().as_bytes());
                 let _ = file.sync_all();
                 let result = reclaim_claimed(path);

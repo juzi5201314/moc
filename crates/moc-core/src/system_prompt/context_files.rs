@@ -1,12 +1,12 @@
-//! 项目与全局 AGENTS.md 加载链，以及有界的 @import 展开。
+//! 加载项目和全局的 AGENTS.md，并展开其中的 `@` 导入（有大小上限）。
 
 use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// 单个指令文件与整条 `@` 导入链的字节上限：解码与 token 预算都发生在读取之后，
-/// 因此必须在读取处封顶（`@/dev/zero` 不能无限增长，FIFO 不能挂住启动）。
+/// 单个指令文件和整条 `@` 导入链的字节上限。解码和 token 预算都在读取之后才生效，
+/// 所以读取时就得截断：否则 `@/dev/zero` 会无限增长，FIFO 会卡住启动。
 const MAX_CONTEXT_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
@@ -16,7 +16,7 @@ pub struct ContextFile {
     pub content: String,
 }
 
-/// 从 git root（或 cwd）到当前目录读取 AGENTS.md，并最后拼接全局规则。
+/// 从仓库根（不在仓库里则从 cwd）逐级读到 cwd 的 AGENTS.md，最后拼上全局规则。
 pub fn load_context_files(
     cwd: &Path,
     moc_home: &Path,
@@ -76,8 +76,8 @@ pub(crate) fn git_root(cwd: &Path) -> Option<PathBuf> {
     enclosing_repository(cwd)
 }
 
-/// git 不可用或拒绝作答时按 `.git` 标记向上查找；找不到仓库一律返回 `None`，
-/// 绝不回退到文件系统根，否则会把 `/` 下的 AGENTS.md 当成项目指令。
+/// git 不可用或报错时，向上查找 `.git` 标记；找不到仓库就返回 `None`。
+/// 不能退到文件系统根，否则 `/` 下的 AGENTS.md 会被当成项目指令。
 fn enclosing_repository(cwd: &Path) -> Option<PathBuf> {
     let mut current = Some(cwd);
     while let Some(directory) = current {
@@ -116,7 +116,7 @@ fn push_file(
     });
 }
 
-/// 只读取有界的普通文件；目录、设备、FIFO 与超限文件一律跳过并告警。
+/// 只读取大小在上限内的普通文件；目录、设备、FIFO 和超限文件跳过并告警。
 fn read_bounded_text(path: &Path) -> Option<String> {
     let Ok(metadata) = fs::metadata(path) else {
         return None;
@@ -131,7 +131,7 @@ fn read_bounded_text(path: &Path) -> Option<String> {
     let mut content = String::new();
     fs::File::open(path)
         .ok()?
-        // 元数据检查与读取之间文件仍可能增长，读取量按上限封顶。
+        // 检查元数据之后文件仍可能变大，读取量也要封顶。
         .take(MAX_CONTEXT_FILE_BYTES + 1)
         .read_to_string(&mut content)
         .ok()?;
@@ -217,8 +217,8 @@ fn parse_import_line(line: &str) -> Option<&str> {
     Some(import)
 }
 
-/// 把 `@` 导入解析为规范路径：绝对路径、`~/` 与相对路径都必须落在指令根之内，
-/// 符号链接按解析后的真实路径判定，越界一律拒绝。
+/// 把 `@` 导入解析成规范路径。绝对路径、`~/` 和相对路径都必须在指令根之内；
+/// 符号链接按解析后的真实路径判断，越界就拒绝。
 fn resolve_import(source: &Path, import: &str, root: &Path) -> Option<PathBuf> {
     let joined = if let Some(rest) = import
         .strip_prefix("~/")
@@ -282,11 +282,11 @@ fn deduplicate_and_bound(
     result
 }
 
-/// 段落包含去重：更接近工作目录的项目文件完整包含前面某个项目文件时，前面的副本
-/// 不再注入——更近的副本本身更醒目，重复注入只会挤占指令预算。用户级文件不参与，
-/// 它是全局指令，不因仓库内某个文件包含它就整体消失。
+/// 按段落去重：离工作目录更近的项目文件完整包含了前面某个项目文件时，不再注入前面那份。
+/// 近处的文件本身更显眼，重复注入只会挤占指令预算。用户级文件是全局指令，不参与去重，
+/// 不会因为仓库里某个文件包含了它就消失。
 ///
-/// `files` 的项目部分按「仓库根 → 当前目录」排列，因此只比较项目文件内部。
+/// `files` 里的项目文件按「仓库根 → 当前目录」排列，只在项目文件之间比较。
 fn drop_contained(files: Vec<ContextFile>, project_files: usize) -> Vec<ContextFile> {
     if project_files < 2 {
         return files;

@@ -1,7 +1,7 @@
-//! moc-core：会话持久化、工具执行与提示编排。
+//! moc-core：会话持久化、工具执行和提示编排。
 //!
-//! [`moc_protocol`] 是稳定的前端 JSON-RPC 边界；[`moc_llm`] 管理上游协议兼容，
-//! 本 crate 负责会话状态、工具与上下文生命周期。
+//! [`moc_protocol`] 是稳定的前端 JSON-RPC 边界，[`moc_llm`] 负责兼容上游协议；
+//! 本 crate 管理会话状态、工具和上下文的生命周期。
 
 pub(crate) mod agents;
 pub mod chart;

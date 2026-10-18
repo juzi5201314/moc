@@ -9,8 +9,8 @@ unsafe extern "system" {
     fn nt_resume_process(process_handle: std::os::windows::io::RawHandle) -> i32;
 }
 
-/// 跨平台的进程树句柄：Unix 使用独立进程组，Windows 使用 Job Object。
-/// Arc 让完成 future 与 JobManager 共享同一个终止边界。
+/// 跨平台的进程树句柄：Unix 用独立进程组，Windows 用 Job Object。
+/// 用 Arc 包装，完成 future 和 JobManager 终止的是同一组进程。
 #[derive(Debug, Clone)]
 pub(crate) struct ProcessGroup(Arc<ProcessGroupInner>);
 
@@ -219,12 +219,12 @@ fn terminate_unassigned_process(process_handle: std::os::windows::io::RawHandle)
     if unsafe { TerminateProcess(process_handle, 1) } == 0 {
         tracing::warn!(
             error = %std::io::Error::last_os_error(),
-            "Windows Job Object 建立失败后无法终止子进程"
+            "创建 Windows Job Object 失败，且无法终止子进程"
         );
         return;
     }
     if let Err(error) = wait_windows_process(process_handle) {
-        tracing::warn!(%error, "Windows Job Object 建立失败后未能及时回收子进程");
+        tracing::warn!(%error, "创建 Windows Job Object 失败，且没能及时回收子进程");
     }
 }
 

@@ -1,4 +1,4 @@
-//! 一次提示内的循环保护状态与跨轮无进展检测；压缩、续写和 PTC 不重置。
+//! 一次提示内的循环保护状态，以及跨轮的无进展检测；压缩、续写和 PTC 都不会重置它们。
 
 use std::io::Write;
 use std::sync::{
@@ -17,7 +17,7 @@ pub(crate) struct PromptGuard {
     violation: Mutex<Option<LoopViolation>>,
     progress: AtomicU64,
     pub(crate) cancel: CancellationToken,
-    /// 只由保护停止触发；用户取消仍保留已有后台任务的既定行为。
+    /// 只在循环保护叫停时取消。用户主动取消不会触发它，已有后台任务照常运行。
     pub(crate) stopped: CancellationToken,
     parent: Option<Arc<Self>>,
 }
@@ -75,7 +75,7 @@ pub(crate) enum CycleAction {
     Stop(String),
 }
 
-/// 只保留最近 32 个固定大小指纹；检测 1～4 轮周期，五次相同无进展周期才纠偏。
+/// 只保留最近 32 个定长指纹，检测长度为 1～4 轮的周期；同一无进展周期重复 5 次才纠偏。
 #[derive(Default)]
 pub(crate) struct ToolCycles {
     history: [u128; 32],
@@ -89,7 +89,7 @@ impl ToolCycles {
         if observations.is_empty() {
             return CycleAction::Continue;
         }
-        // 有提交变更或全部是尚未完成的正常等待，不能按重复动作判为循环。
+        // 有已提交的改动，或者全都是还没结束的正常等待，就不算重复动作。
         if observations.iter().any(|(_, changed, _)| *changed)
             || observations.iter().all(|(_, _, waiting)| *waiting)
         {
@@ -112,7 +112,7 @@ impl ToolCycles {
             let repeated =
                 (period..period * 5).all(|offset| self.back(offset) == self.back(offset % period));
             if repeated {
-                // detail 同时进入模型可见的 <system-interrupt>，按提示词规范用英文。
+                // detail 也会进入模型可见的 <system-interrupt>，所以按提示词规范用英文。
                 let detail = format!(
                     "Tool calls and full results repeated a {period}-turn cycle 5 times without committed changes"
                 );
@@ -143,11 +143,11 @@ impl Write for HashWriter<'_> {
 }
 
 fn hash_json(hash: &mut Xxh3, value: &serde_json::Value) {
-    // serde_json 的默认对象表示按键排序；数组和调用批次顺序保持语义。
+    // serde_json 默认的对象表示按键排序；数组和调用批次的顺序有含义，保持原样。
     serde_json::to_writer(HashWriter(hash), value).expect("JSON Value 可序列化");
 }
 
-/// 在输出归档／截断前取完整结果指纹，不把变化的 artifact ID 当作进展。
+/// 在输出归档或截断之前对完整结果计算指纹，避免把每次都不同的 artifact ID 当成进展。
 pub(super) async fn observe_tool(
     ctx: &ToolCtx,
     call: &ToolCall,
@@ -156,7 +156,7 @@ pub(super) async fn observe_tool(
     use tokio::io::AsyncReadExt;
     let mut arguments = serde_json::from_str::<serde_json::Value>(&call.arguments);
     if let Ok(serde_json::Value::Object(arguments)) = &mut arguments {
-        // i 是调用意图元数据；只剔除已定义的元数据，业务参数完整参与比较。
+        // `i` 是描述调用意图的元数据，先剔除；其余参数全部参与比较。
         arguments.remove("i");
     }
     let mut hash = Xxh3::new();
@@ -189,7 +189,7 @@ pub(super) async fn observe_tool(
     }
     if let Some(structured) = &outcome.structured_content {
         if call.name == "job" {
-            // elapsed_secs、warning_count 不是进展；保留状态和实际日志内容。
+            // elapsed_secs、warning_count 的变化不算进展；只取状态和实际日志内容。
             if let Some(status) = structured.get("status") {
                 hash_json(&mut hash, status);
             }
@@ -214,7 +214,7 @@ pub(super) async fn observe_tool(
                 .and_then(serde_json::Value::as_str)
                 == Some("Running")
     } else if !outcome.is_error && call.name == "wait_agent" {
-        // 等待中 = 还没有终态也没有新消息；读结构化结果，避免依赖文本解析。
+        // 「等待中」指既没进入终态也没有新消息；读结构化结果判断，不解析文本。
         outcome.structured_content.as_ref().is_some_and(|value| {
             value.get("settled") == Some(&serde_json::Value::Bool(false))
                 && value.get("messages_pending") != Some(&serde_json::Value::Bool(true))
@@ -222,7 +222,7 @@ pub(super) async fn observe_tool(
     } else {
         false
     };
-    // diff 证明写入实际改变了文件；读取版本纳入指纹，分页没变化也不会掩盖外部改动。
+    // 有 diff 说明写入确实改了文件。读取时的文件版本也计入指纹：即使读到的分页没变，外部改动也不会被漏掉。
     if call.name == "read"
         && let Ok(arguments) = &arguments
         && let Some(path) = arguments.get("path").and_then(serde_json::Value::as_str)

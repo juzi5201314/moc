@@ -1,4 +1,4 @@
-//! 子代理工具：父会话通过统一 ToolCtx 调用 core registry。
+//! 子代理相关工具：通过 ToolCtx 调用 core 的代理注册表。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -11,7 +11,7 @@ use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 fn text(value: &str, label: &str) -> Result<String, ToolError> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(ToolError::new("E_BAD_PAYLOAD", format!("{label} 不能为空")));
+        return Err(ToolError::new("E_BAD_PAYLOAD", format!("{label} must not be empty")));
     }
     Ok(value.to_owned())
 }
@@ -97,7 +97,7 @@ impl Tool for SpawnAgentTool {
             {
                 return Err(ToolError::new(
                     "E_BAD_PAYLOAD",
-                    "model 只允许 inherit、default、explore、plan",
+                    "model must be inherit, default, explore, or plan",
                 ));
             }
             let result = crate::agents::spawn(
@@ -145,7 +145,7 @@ impl Tool for ListAgentsTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             if !args.as_object().is_some_and(serde_json::Map::is_empty) {
-                return Err(ToolError::new("E_BAD_PAYLOAD", "list_agents 不接受参数"));
+                return Err(ToolError::new("E_BAD_PAYLOAD", "list_agents takes no arguments"));
             }
             let result = crate::agents::list(&ctx.core, ctx.session_id.clone())
                 .await
@@ -200,14 +200,14 @@ impl Tool for MessageAgentTool {
             .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
             let body = serde_json::to_string(&result).expect("AgentMessageResult 可序列化");
             let mut outcome = ToolOutcome::success(body);
-            // 全败时标记为错误结果，内容保持回执原文，模型照旧拿到每个目标的失败原因。
+            // 全部失败时标记为错误结果，内容仍是原始回执，模型照样能看到每个目标的失败原因。
             outcome.is_error = all_failed(&result);
             Ok(outcome)
         })
     }
 }
 
-/// 全部目标都投递失败时按错误回灌：模型必须知道没人收到。
+/// 所有目标都投递失败时按错误返回：模型必须知道没有任何代理收到消息。
 fn all_failed(result: &AgentMessageResult) -> bool {
     !result.receipts.is_empty()
         && result
@@ -301,7 +301,7 @@ impl Tool for WaitAgentTool {
             let args: WaitArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             if args.timeout_secs == Some(0) {
-                return Err(ToolError::new("E_BAD_PAYLOAD", "timeout_secs 必须大于 0"));
+                return Err(ToolError::new("E_BAD_PAYLOAD", "timeout_secs must be greater than 0"));
             }
             let progress = crate::agents::WaitProgress {
                 updates: ctx.request.updates(),

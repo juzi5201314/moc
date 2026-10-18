@@ -32,7 +32,7 @@ pub enum CoreError {
 }
 
 impl CoreError {
-    /// 错误原文，不带“配置错误：”这类分类前缀；用于把错误再包一层时避免前缀重复。
+    /// 错误原文，不含「配置错误：」这类分类前缀；再包一层错误时用它避免前缀重复。
     pub fn detail(&self) -> String {
         match self {
             CoreError::Config(text)

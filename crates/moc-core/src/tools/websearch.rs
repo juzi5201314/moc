@@ -1,4 +1,4 @@
-//! 互联网搜索与网页正文提取工具（供应商实现见 [`crate::websearch`]）。
+//! web_search 与 web_fetch 工具：联网搜索和提取网页正文（供应商实现见 [`crate::websearch`]）。
 
 use std::collections::HashSet;
 
@@ -193,7 +193,7 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// 工具执行门槛：未启用或缺 api_key 时拒绝（工具定义层也会隐藏这两个工具）。
+/// 未启用或缺少 api_key 时拒绝执行（工具定义里也会隐藏这两个工具）。
 fn ensure_enabled(config: &ResolvedWebSearch) -> Result<(), ToolError> {
     if config.available() {
         return Ok(());
@@ -205,7 +205,7 @@ fn ensure_enabled(config: &ResolvedWebSearch) -> Result<(), ToolError> {
     )
 }
 
-/// 组装搜索请求：解析查询操作符并归一化 limit。
+/// 组装搜索请求：解析查询里的操作符，并把 limit 限制在有效范围内。
 fn build_search_request(
     query: &str,
     recency: Option<Recency>,
@@ -225,7 +225,7 @@ fn build_search_request(
     }
 }
 
-/// 过滤空白 URL 并去重保序；过滤后须落在 1..=20。
+/// 去掉空白 URL 并保序去重；剩下的数量必须在 1..=20 之间。
 fn normalize_urls(urls: &[String]) -> Result<Vec<String>, ToolError> {
     let mut seen = HashSet::with_capacity(urls.len());
     let mut normalized = Vec::with_capacity(urls.len());
@@ -244,7 +244,7 @@ fn normalize_urls(urls: &[String]) -> Result<Vec<String>, ToolError> {
     Ok(normalized)
 }
 
-/// 答案优先的输出：answer 原文在前，sources 只给计数与编号列表。
+/// 渲染搜索结果：answer 原文在前，后面是来源数量和编号列表。
 fn render_search(query: &str, response: &SearchResponse) -> String {
     if response.answer.is_none() && response.results.is_empty() {
         return format!("No results found for: {query}");
@@ -272,7 +272,7 @@ fn render_search(query: &str, response: &SearchResponse) -> String {
     text.trim_end().to_owned()
 }
 
-/// 每个成功项一段正文，失败项在尾部逐行标注；全部失败同样按成功返回。
+/// 渲染提取结果：每个成功项一段正文，失败项在末尾逐行列出；全部失败也按成功返回。
 fn render_extract(response: &crate::websearch::ExtractResponse) -> String {
     let mut text = String::new();
     for result in &response.results {
@@ -289,7 +289,7 @@ fn render_extract(response: &crate::websearch::ExtractResponse) -> String {
     }
 }
 
-/// 按字符（非字节）截断到 `max`；越界时原样返回。
+/// 按字符（不是字节）截断到 `max`；不足 `max` 时原样返回。
 fn truncate_chars(value: &str, max: usize) -> &str {
     match value.char_indices().nth(max) {
         Some((index, _)) => &value[..index],
@@ -297,7 +297,7 @@ fn truncate_chars(value: &str, max: usize) -> &str {
     }
 }
 
-/// [`parse_query_ops`] 的解析结果；操作符已从查询文本中剥离。
+/// [`parse_query_ops`] 的解析结果；操作符已从查询文本里去掉。
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ParsedQuery {
     query: String,
@@ -307,10 +307,10 @@ struct ParsedQuery {
     end_date: Option<String>,
 }
 
-/// 解析查询中的域名与时间操作符，其余记号重组为查询文本。
+/// 解析查询里的域名和时间操作符，其余记号重新拼成查询文本。
 ///
-/// 识别 `site:host`、`-site:host`（host 截断到域名）与 `after:YYYY-MM-DD`、
-/// `before:YYYY-MM-DD`；仅小写前缀生效，未通过校验的记号原样保留。
+/// 识别 `site:host`、`-site:host`（host 只保留域名）以及 `after:YYYY-MM-DD`、
+/// `before:YYYY-MM-DD`；只认小写前缀，校验不通过的记号原样保留。
 fn parse_query_ops(input: &str) -> ParsedQuery {
     let mut parsed = ParsedQuery::default();
     let mut kept: Vec<&str> = Vec::new();
@@ -345,7 +345,7 @@ fn parse_query_ops(input: &str) -> ParsedQuery {
     parsed
 }
 
-/// 按空白分词；引号包裹的短语（含引号）保持为单个记号。
+/// 按空白切分记号；引号包住的短语（连同引号）算一个记号。
 fn split_query_tokens(input: &str) -> Vec<&str> {
     let mut tokens = Vec::new();
     let mut rest = input;
@@ -356,7 +356,7 @@ fn split_query_tokens(input: &str) -> Vec<&str> {
         }
         if let Some(quoted) = trimmed.strip_prefix('"') {
             let Some(end) = quoted.find('"') else {
-                // 引号未闭合：整段作为单个记号。
+                // 引号没闭合：剩下的整段算一个记号。
                 tokens.push(trimmed);
                 return tokens;
             };
@@ -370,12 +370,12 @@ fn split_query_tokens(input: &str) -> Vec<&str> {
     }
 }
 
-/// `site:` 值只保留域名部分；路径与查询串丢弃。
+/// `site:` 的值只保留域名，去掉路径和查询串。
 fn site_host(value: &str) -> &str {
     value.split('/').next().unwrap_or_default()
 }
 
-/// 精确匹配 `YYYY-MM-DD` 字面格式；不做日期合法性校验。
+/// 只检查字面格式是否为 `YYYY-MM-DD`，不校验日期是否真实存在。
 fn is_iso_date(value: &str) -> bool {
     value.len() == 10
         && value.bytes().enumerate().all(|(index, byte)| match index {
@@ -444,13 +444,13 @@ mod tests {
             "https://a.example".into(),
             "  ".into(),
         ])
-        .expect("过滤后可解析");
+        .expect("过滤后应能解析");
         assert_eq!(urls, ["https://a.example", "https://b.example"]);
         assert!(normalize_urls(&["   ".into()]).is_err());
         let exactly_20: Vec<String> = (0..20)
             .map(|index| format!("https://example.com/{index}"))
             .collect();
-        assert_eq!(normalize_urls(&exactly_20).expect("20 条合法").len(), 20);
+        assert_eq!(normalize_urls(&exactly_20).expect("20 条是合法数量").len(), 20);
         let too_many: Vec<String> = (0..21)
             .map(|index| format!("https://example.com/{index}"))
             .collect();

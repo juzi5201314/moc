@@ -1,4 +1,4 @@
-//! Grok Build 的两遍压缩：在阈值前预先摘要前缀，压缩时只补尾部。
+//! Grok Build 的两遍压缩：在触发阈值之前先摘要前缀，真正压缩时只补尾部。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -13,15 +13,15 @@ use crate::service::{CoreInner, SessionRuntime};
 
 use super::{PromptSkeleton, Sampler, prompt};
 
-/// 第一遍覆盖的对话权重比例。
+/// 第一遍覆盖对话的权重比例。
 pub(crate) const TWO_PASS_DEFAULT_SPLIT_FRACTION: f64 = 0.95;
 
-/// 预火提前量（占上下文窗口的百分比）；环境变量可覆盖。
+/// 提前量占上下文窗口的百分比；可用环境变量覆盖。
 const DEFAULT_PREFIRE_LEAD_PERCENT: u64 = 10;
 
 const PREFIRE_LEAD_ENV: &str = "GROK_PREFIRE_LEAD_PERCENT";
 
-/// 预火提前量的窗口百分比。
+/// 提前量占窗口的百分比。
 pub(crate) fn prefire_lead_percent() -> u64 {
     std::env::var(PREFIRE_LEAD_ENV)
         .ok()
@@ -29,7 +29,7 @@ pub(crate) fn prefire_lead_percent() -> u64 {
         .unwrap_or(DEFAULT_PREFIRE_LEAD_PERCENT)
 }
 
-/// 预火启动点：压缩触发阈值向前推一个提前量。
+/// 预火启动点：压缩触发阈值往前推一个提前量。
 pub(crate) fn prefire_start(config: &ResolvedConfig, context_window: u64) -> u64 {
     let lead = prefire_lead_percent();
     match config.compaction.threshold {
@@ -42,7 +42,7 @@ pub(crate) fn prefire_start(config: &ResolvedConfig, context_window: u64) -> u64
     }
 }
 
-/// 第一遍的产物：交给第二遍的 NOTE₁ 与其覆盖的前缀长度。
+/// 第一遍的产物：交给第二遍的 NOTE₁，以及它覆盖的前缀长度。
 #[derive(Debug, Clone)]
 pub(crate) struct PrefireCache {
     pub note1: String,
@@ -53,12 +53,12 @@ pub(crate) struct PrefireCache {
 
 /// 会话级的预火状态。
 ///
-/// 全部使用同步原语：压缩路径与提示循环会并发访问它，异步锁一旦跨任务持有就会
-/// 把提示卡在预火上。
+/// 全部用同步原语：压缩路径和提示循环会并发访问它，异步锁一旦跨任务持有，就会把提示
+/// 卡在预火上。
 #[derive(Default)]
 pub(crate) struct PrefireState {
     in_flight: AtomicBool,
-    /// 每次 `try_begin` / `clear` 递增；旧任务只能用自己那一代写入结果。
+    /// 每次 `try_begin` / `clear` 都会递增；旧任务只能写入自己那一代的结果。
     generation: AtomicU64,
     cache: Mutex<Option<PrefireCache>>,
     handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -66,7 +66,7 @@ pub(crate) struct PrefireState {
 }
 
 impl PrefireState {
-    /// 抢占本次预火；已有一遍在跑时返回 `None`。
+    /// 抢占本次预火；已经有一遍在跑时返回 `None`。
     pub(crate) fn try_begin(&self) -> Option<(u64, CancellationToken)> {
         self.in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -77,24 +77,24 @@ impl PrefireState {
         Some((generation, token))
     }
 
-    /// 结束本次预火；代际不匹配说明已被 `clear` 作废，不再改动状态。
+    /// 结束本次预火；代际对不上说明已被 `clear` 作废，不再改状态。
     pub(crate) fn finish(&self, generation: u64) {
         if self.generation.load(Ordering::Acquire) == generation {
             self.in_flight.store(false, Ordering::Release);
         }
     }
 
-    /// 保存第一遍结果；只有当前代际的结果会被接受。
+    /// 保存第一遍的结果；只接受当前代际的结果。
     pub(crate) fn store(&self, generation: u64, cache: PrefireCache) {
         if self.generation.load(Ordering::Acquire) == generation {
             *self.cache.lock() = Some(cache);
         }
     }
 
-    /// 已缓存的结果是否仍然覆盖当前切点的前半段。
+    /// 缓存的结果是否仍然覆盖当前切点之前的那段前缀。
     ///
-    /// 对话是追加式的：只要缓存的前缀长度不超过当前切点，它仍然是同一条前缀的
-    /// 头部，第二遍可以直接续写，无需在频带内每轮重跑一次第一遍。
+    /// 对话是追加式的：只要缓存的前缀长度不超过当前切点，它就还是同一条前缀的开头，
+    /// 第二遍可以直接续写，不必在频带内每轮都重跑第一遍。
     pub(crate) fn keeps_valid_prefix(&self, split: usize, model: &str) -> bool {
         self.cache
             .lock()
@@ -106,14 +106,14 @@ impl PrefireState {
         *self.handle.lock() = Some(handle);
     }
 
-    /// 取用第一遍结果供第二遍使用；仍在跑的预火先等到结束。
+    /// 取出第一遍的结果给第二遍用；如果预火还在跑，先等它结束。
     pub(crate) async fn take_for_pass2(
         &self,
         cancel: &CancellationToken,
         model: &ResolvedModel,
         messages: &[Message],
     ) -> Option<(String, usize)> {
-        // 先取出 handle 再 await：parking_lot 的守卫不能跨 await 存活，future 否则不是 Send。
+        // 先取出 handle 再 await：parking_lot 的守卫不能跨 await 存活，否则 future 不是 Send。
         let handle = { self.handle.lock().take() };
         if let Some(handle) = handle {
             tokio::select! {

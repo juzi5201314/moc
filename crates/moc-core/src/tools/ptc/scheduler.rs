@@ -1,4 +1,4 @@
-//! 请求按提交顺序进入有界队列；非并行操作作为屏障，取消后排空事务。
+//! 调度脚本发起的宿主调用：按提交顺序进入有上限的队列；不能并行的操作充当屏障；取消后让进行中的事务完整结束。
 use super::{
     result::{script_result, status},
     runtime::Guest,
@@ -44,8 +44,8 @@ async fn perform(
         let arguments = arguments.to_string();
         let started = Instant::now();
         let update = ctx.request.updates();
-        // 沙盒内的嵌套调用与模型直发的调用走同一对更新：`parent_tool_call_id` 标明它挂在
-        // 发起它的 `run_code` 下，参数就是即将执行的那一份。
+        // 沙盒内的嵌套调用和模型直接发起的调用推送同样的开始/结束更新：`parent_tool_call_id`
+        // 指明它属于哪个 `run_code`，参数就是马上要执行的那一份。
         let start_result = update
             .emit(
                 ctx.session_id.clone(),
@@ -195,7 +195,7 @@ pub(super) async fn run(
     let config = &ctx.config.tools.ptc;
     let mut queue = VecDeque::<HostRequest>::new();
     let mut active = FuturesUnordered::<Work<'_>>::new();
-    // 存活 ID 稀疏，数量始终受 max_pending_calls 限制；完成交付后立即删除。
+    // 未完成调用的 ID 是稀疏的，数量受 max_pending_calls 限制；结果交付后立即删除。
     let mut pending = BTreeMap::<u32, usize>::new();
     let mut pending_bytes = 0usize;
     let mut next_id = 0u64;
@@ -270,7 +270,7 @@ pub(super) async fn run(
             if !safe && !active.is_empty() {
                 break;
             }
-            let request = queue.pop_front().expect("队首存在");
+            let request = queue.pop_front().expect("队列非空");
             active.push(Box::pin(perform(&child, request, None)));
             if !safe {
                 break;
@@ -299,7 +299,7 @@ pub(super) async fn run(
         }
         input = serde_json::to_vec(&[HostCompletion { id, result }]).expect("完成项可序列化");
     }
-    // 取消尚在执行的只读／进程子工具；写入事务按已有执行出口完整提交。
+    // 取消还在执行的只读和进程类子工具；写入事务照常完整提交。
     child.cancel.cancel();
     let code = if outcome.error_code.as_deref() == Some("E_TURN_ENDED") {
         "E_TURN_ENDED"

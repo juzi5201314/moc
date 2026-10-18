@@ -11,12 +11,11 @@ use crate::compact;
 use crate::error::CoreError;
 use crate::session::entries::{EntryPayload, SessionOrigin};
 
-/// 计划模式切换时的会话模型同步：进入计划模式应用 `plan` 角色模型，退出时恢复
-/// 进入前的会话模型。
+/// 切换计划模式时同步会话模型：进入计划模式时切到 `plan` 角色模型，退出时恢复进入前的模型。
 ///
-/// `plan_model` 是进入计划模式时预先解析好的目标模型选择器；`plan = "none"` 表示
-/// 不切换，此时传 `None`。返回切换后的选择器；模型未变化时为 `None`，调用方据此
-/// 决定是否推送 [`SessionUpdate::ModelChanged`]。
+/// `plan_model` 是进入计划模式前解析好的目标模型选择器；`plan = "none"` 表示不切换，
+/// 此时传 `None`。返回切换后的选择器，模型没变时返回 `None`，调用方据此决定是否推送
+/// [`SessionUpdate::ModelChanged`]。
 pub async fn sync_plan_model(
     inner: &CoreInner,
     session_id: &str,
@@ -46,7 +45,7 @@ pub async fn sync_plan_model(
     Ok(Some(target))
 }
 
-/// 推送模式变化；模型随模式切换时按「先模式后模型」的顺序补推模型变化。
+/// 推送模式变化；模型随模式一起变化时，先推模式再推模型。
 pub async fn emit_mode_change(
     ctx: &RequestContext,
     session_id: &str,
@@ -92,7 +91,7 @@ pub async fn approve_plan(
     if plan.status != PlanStatus::Submitted {
         return Err(RpcError::new(
             RpcErrorCode::InvalidParams.code(),
-            "The plan has already been processed",
+            "计划已经处理过",
         ));
     }
     let config = inner
@@ -268,12 +267,12 @@ pub async fn approve_plan(
     })
 }
 
-/// 只在 CLM 模式可用的内置工具；名单里的其余条目在 Normal 与 CLM 下都可用。
+/// 只在 CLM 模式开放的内置工具；白名单里的其余工具在 Normal 和 CLM 下都可用。
 const CLM_ONLY_TOOLS: &[&str] = &["clm_context"];
 
 pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     match mode {
-        // `clm_context` 是 CLM 专属工具：Normal 下由 `mode_allows` 拒绝。
+        // `clm_context` 是 CLM 专属工具，Normal 下由 `mode_allows` 拒绝。
         SessionMode::Normal | SessionMode::ClmExperimental => &[
             "read",
             "grep",
@@ -328,11 +327,11 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     }
 }
 
-/// 是否允许在当前模式调用该工具。
+/// 当前模式是否允许调用该工具。
 ///
-/// 内置工具沿用名字白名单；`clm_context` 只在 CLM 模式可用，Normal 下可用会
-/// 让一次工具调用伪造实时上下文视图并锁死会话模式。动态（MCP）工具按风险类别
-/// 判定：Normal 全量放行，Ask/Plan 只放行 `Tier::Read` 的只读工具。
+/// 内置工具按名字白名单判断。`clm_context` 只在 CLM 模式可用：如果 Normal 下也能调用，
+/// 一次工具调用就能伪造实时上下文视图并锁死会话模式。动态（MCP）工具按风险等级判断：
+/// Normal 全部放行，Ask/Plan 只放行 `Tier::Read` 的只读工具。
 pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> bool {
     if CLM_ONLY_TOOLS.contains(&name) && mode != SessionMode::ClmExperimental {
         return false;
@@ -386,7 +385,7 @@ mod agent_mode_tests {
         ] {
             assert!(
                 !mode_allows(mode, "clm_context", Tier::Write),
-                "{mode:?} 不得开放实时上下文写入"
+                "{mode:?} 不能开放实时上下文写入"
             );
         }
     }

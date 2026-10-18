@@ -1,4 +1,4 @@
-//! 工作区覆盖范围、外部变化与只读模式违规通知。
+//! 工作区检查：扫描范围、外部改动，以及只读模式下的违规通知。
 
 use crate::{
     service::{SessionRuntime, protocol_to_rpc, snapshot_workspace, to_rpc},
@@ -8,14 +8,14 @@ use moc_protocol::{RpcError, methods::SessionUpdate};
 
 /// 一次工作区检查中随提示变化的输入。
 ///
-/// `mode` 是**本次提示实际生效**的模式：`/ask` 这类按提示注入的覆盖不会写入会话状态，
-/// 只读违规判定必须跟着本次提示走，不能回读 `record.state`。
+/// `mode` 是**本次提示实际生效**的模式：`/ask` 这类只对单次提示生效的覆盖不会写入
+/// 会话状态，所以判断只读违规必须用这里的值，不能读 `record.state`。
 pub(super) struct WorkspaceScope<'a> {
     pub session_id: &'a str,
     pub cwd: &'a std::path::Path,
     pub config: &'a crate::ResolvedConfig,
     pub mode: moc_protocol::methods::SessionMode,
-    /// 工具批次执行前的工作区快照；`None` 表示本次检查不忽略工具自身改动。
+    /// 工具批次执行前的工作区快照；`None` 表示不排除工具自己造成的改动。
     pub before_tools: Option<&'a WorkspaceSnapshot>,
 }
 

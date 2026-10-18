@@ -1,4 +1,4 @@
-//! 通过前端反向请求完成交互式提问。
+//! ask 工具：向前端发反向请求，向用户提问。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -138,8 +138,8 @@ impl Tool for AskTool {
     }
 }
 
-/// 归一化预览文本：未提供或只有空白都视为没有预览，避免前端为
-/// 空内容切到并排布局；外围空白（含首尾空行）在此剥掉。
+/// 规范化预览文本：没提供或只有空白都算没有预览，免得前端为空内容切到并排布局；
+/// 首尾的空白和空行在这里去掉。
 fn preview_text(preview: &Option<String>) -> Option<String> {
     preview
         .as_deref()
@@ -148,8 +148,8 @@ fn preview_text(preview: &Option<String>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// 解析并校验 ask 载荷：逐题检查必填项、保留标签、单选预览约束，
-/// 并把选项归一化成协议结构。
+/// 解析并校验 ask 参数：逐题检查必填项、保留标签和「预览只用于单选」的限制，
+/// 再把选项转成协议结构。
 fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
     let args: AskArgs = serde_json::from_value(args)
         .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;

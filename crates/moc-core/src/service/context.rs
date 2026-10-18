@@ -1,7 +1,7 @@
-//! 上下文快照：占用估算（`session/context`）与真实正文（`session/context_content`）。
+//! 上下文快照：占用估算（`session/context`）与实际内容（`session/context_content`）。
 //!
-//! 两个方法共用同一份组装——系统提示片段、工具定义、注入消息与可见历史的转写
-//! 消息。占用口径与正文口径都从这里出，避免两处各拼一遍导致数字和正文对不上。
+//! 两个方法共用同一套组装逻辑：系统提示片段、工具定义、注入消息和可见历史里的
+//! transcript 消息。占用和内容都从这里算，避免两边各拼一遍导致数字和内容对不上。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,31 +21,31 @@ use crate::system_prompt::{PromptPiece, SystemPrompt};
 
 /// 上下文里的一条消息分块。
 struct MessageBlock {
-    /// 正文分块的短名（1-3 个英文单词）。
+    /// 分块短名（1-3 个英文单词）。
     name: &'static str,
     message: Message,
-    /// 估算 token；转写消息沿用会话内累计的逐条估算，与占用口径逐字一致。
+    /// 估算的 token 数。transcript 消息直接用会话里逐条累计的估算值，与占用统计完全一致。
     tokens: u64,
 }
 
 /// 一次上下文快照。
 struct Snapshot {
-    /// 模型上下文窗口上限。
+    /// 模型的上下文窗口大小。
     context_window: u64,
-    /// 系统提示片段，顺序即线上顺序。
+    /// 系统提示片段，按发送顺序排列。
     pieces: Vec<PromptPiece>,
-    /// 片段拼成的系统消息（与 `pieces` 同源）。
+    /// 由 `pieces` 拼成的指令消息。
     system: SystemPrompt,
     /// 当前模型可见的工具定义。
     tools: Vec<moc_llm::ToolDef>,
     /// 压缩摘要、活动计划、todo 快照等注入消息。
     injected: Vec<MessageBlock>,
-    /// 可见历史里的转写消息。
+    /// 可见历史里的 transcript 消息。
     transcript: Vec<MessageBlock>,
 }
 
 impl Snapshot {
-    /// 注入消息与转写消息的总 token。
+    /// 注入消息与 transcript 消息的 token 总数。
     fn history_tokens(&self) -> u64 {
         self.injected
             .iter()
@@ -54,9 +54,9 @@ impl Snapshot {
             .sum()
     }
 
-    /// 占用口径的分块估算；`session/context` 与正文窗的合计共用一个实现。
+    /// 按分块估算占用；`session/context` 和正文窗的合计都用它。
     fn usage(&self) -> ContextUsageResult {
-        // 分块口径的 token 账必须在组装前算好：组装后片段不再单独存在。
+        // 各片段的 token 必须在拼接前算好，拼接后片段就不再单独存在了。
         let directory_tokens = self
             .pieces
             .iter()
@@ -123,7 +123,7 @@ impl Snapshot {
     }
 }
 
-/// `session/context`：分块 token 估算。
+/// `session/context`：按分块估算 token。
 pub(crate) async fn usage(
     inner: &Arc<CoreInner>,
     ctx: RequestContext,
@@ -132,7 +132,7 @@ pub(crate) async fn usage(
     Ok(snapshot(inner, &ctx, &params.session_id).await?.usage())
 }
 
-/// `session/context_content`：上下文里的真实正文。
+/// `session/context_content`：返回上下文里的实际内容。
 pub(crate) async fn content(
     inner: &Arc<CoreInner>,
     ctx: RequestContext,
@@ -170,7 +170,7 @@ pub(crate) async fn content(
     }
     Ok(ContextContentResult {
         context_window: usage.context_window,
-        // 合计沿用占用口径：正文窗标题栏与顶部进度条、占用窗必须显示同一个数。
+        // 合计沿用占用统计的结果：正文窗标题栏、顶部进度条和占用窗必须显示同一个数。
         total_tokens: usage.total_tokens,
         sections,
     })

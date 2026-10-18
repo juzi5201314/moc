@@ -1,4 +1,4 @@
-//! 每次实例仅持有一次 JavaScript 执行；宿主通过 start/resume 驱动待处理 Promise。
+//! PTC guest：每个实例只执行一段 JavaScript，宿主通过 start/resume 推进其中待完成的 Promise。
 
 #[path = "../../../crates/moc-core/src/tools/ptc/wire.rs"]
 mod wire;
@@ -76,7 +76,7 @@ fn start(bytes: &[u8]) -> GuestStep {
     SCRIPT.with(|slot| {
         let mut slot = slot.borrow_mut();
         *slot = Some(Script { control, context });
-        drive(slot.as_ref().expect("script 已设置"))
+        drive(slot.as_ref().expect("script 刚刚设置"))
     })
 }
 
@@ -87,7 +87,7 @@ fn resume(bytes: &[u8]) -> GuestStep {
     };
     SCRIPT.with(|slot| {
         let slot = slot.borrow();
-        let Some(script) = slot.as_ref() else { return failed("E_PTC_PROTOCOL", "guest 尚未启动"); };
+        let Some(script) = slot.as_ref() else { return failed("E_PTC_PROTOCOL", "guest has not started"); };
         let submitted = script.context.with(|ctx| -> rquickjs::Result<()> {
             let control = script.control.clone().restore(&ctx)?;
             let complete: Function = control.get("complete")?;
@@ -111,7 +111,7 @@ fn resume(bytes: &[u8]) -> GuestStep {
 
 fn respond(step: GuestStep) -> u64 {
     let bytes = serde_json::to_vec(&step).expect("guest 结果可序列化").into_boxed_slice();
-    let len = u32::try_from(bytes.len()).expect("WASM32 单个缓冲区不超过地址空间");
+    let len = u32::try_from(bytes.len()).expect("WASM32 单个缓冲区不会超出地址空间");
     let ptr = Box::into_raw(bytes) as *mut u8 as u32;
     (u64::from(len) << 32) | u64::from(ptr)
 }

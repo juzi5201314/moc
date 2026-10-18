@@ -1,4 +1,4 @@
-//! Core 公开入口、生命周期与 JSON-RPC 服务实现。
+//! core 的公开入口、生命周期管理和 JSON-RPC 服务实现。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ use crate::session::{SessionTable, TranscriptEntryId};
 use crate::tools::{JobManager, ToolRegistry};
 use crate::workspace::watch::WorkspaceSnapshot;
 
-/// 已加载会话的临时状态，不写入 JSONL。
+/// 已加载会话的运行时状态，只在内存里，不写入 JSONL。
 pub(crate) struct SessionRuntime {
     pub anchors: Arc<crate::hashline::AnchorStore>,
     pub jobs: Arc<JobManager>,
@@ -45,10 +45,10 @@ pub(crate) struct SessionRuntime {
     pub reminders: tokio::sync::Mutex<crate::system_prompt::reminder::ReminderState>,
     pub loaded_skills: Arc<RwLock<crate::skills::LoadedSkills>>,
     pub steering: Mutex<management::Steering>,
-    /// 代理间消息收件箱：运行中的提示在轮边界取走并落库。
+    /// 代理间消息的收件箱。运行中的提示在两轮之间取走消息并写入会话。
     pub agent_inbox: Mutex<crate::agents::AgentInbox>,
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
-    /// Grok Build 的两遍压缩预火状态；同步原语，绝不跨任务持有异步锁。
+    /// Grok Build 两遍压缩中提前摘要（prefire）的状态；用同步原语实现，不跨任务持有异步锁。
     pub grok_prefire: crate::compact::grok_build::prefire::PrefireState,
 }
 
@@ -86,13 +86,13 @@ pub(crate) struct CoreInner {
     pub capabilities: RwLock<HashMap<u64, ClientCapabilities>>,
     pub runtimes: Mutex<HashMap<String, Arc<SessionRuntime>>>,
     pub project_configs: RwLock<HashMap<PathBuf, Arc<ResolvedConfig>>>,
-    /// 每个 cwd（项目）一个 MCP 管理器，与 project_configs 同键。
+    /// 每个项目（cwd）一个 MCP 管理器，键与 `project_configs` 相同。
     pub mcp_managers: Mutex<HashMap<PathBuf, Arc<moc_mcp::McpManager>>>,
-    /// 按 canonical workspace 缓存 OpenViking client，空 URL 时保持为空。
+    /// 按规范化的工作区路径缓存 OpenViking 客户端；未配置 URL 时存 `None`。
     pub openviking_clients: Mutex<HashMap<PathBuf, Option<Arc<moc_openviking::OpenVikingClient>>>>,
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
-    /// 当前进程中的子代理运行状态；持久 transcript 仍是历史真相源。
+    /// 本进程内子代理的运行状态。历史以持久化的 transcript 为准。
     pub agents: Mutex<crate::agents::AgentRegistry>,
     pub agent_tasks: Mutex<tokio::task::JoinSet<()>>,
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
@@ -187,10 +187,10 @@ impl CoreInner {
         }
     }
 
-    /// 脱离地跑一次提示：任务挂在 `prompts` JoinSet 上，结果只记日志。
+    /// 在后台跑一次提示：任务挂在 `prompts` JoinSet 上，结果只记日志。
     ///
-    /// 供代理消息唤醒顶层会话使用；与 [`Core::run_operation`] 的差别是不回传结果
-    /// （前端通过更新观察），且调用方已持有该会话的提示锁。
+    /// 用于代理消息唤醒顶层会话。和 [`Core::run_operation`] 的区别：不返回结果（前端
+    /// 通过更新通知观察），并且调用方已经持有该会话的提示锁。
     pub(crate) async fn spawn_detached_prompt(
         inner: &Arc<CoreInner>,
         ctx: RequestContext,
@@ -229,7 +229,7 @@ impl CoreInner {
                 result = &mut running => result,
             };
             if let Err(error) = result {
-                tracing::warn!(session_id = %session_id, %error, "代理消息唤醒的提示失败");
+                tracing::warn!(session_id = %session_id, %error, "代理消息唤醒的提示执行失败");
             }
         });
     }
@@ -241,7 +241,7 @@ impl CoreInner {
             .is_some_and(|caps| caps.ask_requests)
     }
 
-    /// 取得（或惰性创建）该项目的 MCP 管理器；仅提示执行显式启动连接。
+    /// 获取该项目的 MCP 管理器，没有就创建。这里不建立连接，连接在执行提示时才启动。
     pub(crate) async fn project_mcp(
         &self,
         cwd: &Path,
@@ -276,7 +276,7 @@ impl CoreInner {
         Ok(catalog.summary())
     }
 
-    /// 取得（或惰性扫描）该项目的 skill 索引。
+    /// 获取该项目的 skill 索引，没有就扫描生成。
     pub(crate) fn project_skills(
         &self,
         cwd: &Path,
@@ -347,7 +347,7 @@ fn probe_bwrap() -> bool {
     }
 }
 
-/// 通过协议 [`AgentService`] 暴露的完整代理运行时。
+/// 代理运行时，通过协议层的 [`AgentService`] 对外提供服务。
 #[derive(Clone)]
 pub struct Core {
     pub(crate) inner: Arc<CoreInner>,
@@ -357,7 +357,7 @@ impl Core {
     pub fn config_home(&self) -> PathBuf {
         self.inner.config().home.clone()
     }
-    /// 加载配置、验证供应商并建立会话存储目录。
+    /// 加载配置、校验供应商，并创建会话存储目录。
     pub fn new(config: CoreConfig) -> anyhow::Result<Arc<Self>> {
         let mut resolved = ResolvedConfig::load(&config)?;
         if let Some(session_dir) = &config.session_dir {
@@ -394,19 +394,19 @@ impl Core {
         }))
     }
 
-    /// 等待提示取消收尾，终止后台进程组与 MCP 连接并释放临时状态。
+    /// 取消并等待所有提示结束，终止后台进程组和 MCP 连接，释放运行时状态。
     pub async fn shutdown(&self) {
         self.inner.shutdown.cancel();
         let mut agents = std::mem::take(&mut *self.inner.agent_tasks.lock().await);
         while let Some(result) = agents.join_next().await {
             if let Err(error) = result {
-                tracing::error!(%error, "子代理收尾任务失败");
+                tracing::error!(%error, "子代理任务异常退出");
             }
         }
         let mut prompts = std::mem::take(&mut *self.inner.prompts.lock().await);
         while let Some(result) = prompts.join_next().await {
             if let Err(error) = result {
-                tracing::error!(%error, "提示收尾任务失败");
+                tracing::error!(%error, "提示任务异常退出");
             }
         }
         let sessions = match self.inner.sessions.list().await {
@@ -497,7 +497,7 @@ impl Core {
             .workspace_identity(&self.inner.config().cwd)
             .map_err(to_rpc)
     }
-    /// 由 Core 持有长操作，前端断线后仍完成进程回收与会话提交。
+    /// 把长操作挂在 Core 上运行，前端断开后也能完成进程回收和会话提交。
     async fn run_operation<T: Send + 'static>(
         &self,
         cancel: tokio_util::sync::CancellationToken,
@@ -530,7 +530,7 @@ impl Core {
     }
 }
 
-/// 把一次已完成的模型请求写入会话统计；统计 entry 不进入模型 transcript。
+/// 把一次完成的模型请求计入会话用量统计；统计 entry 不会出现在模型看到的历史里。
 pub(crate) async fn record_model_usage(
     inner: &CoreInner,
     session_id: &str,
@@ -780,7 +780,7 @@ impl AgentService for Core {
         params: OpenVikingWriteParams,
     ) -> Result<OpenVikingWriteResult, RpcError> {
         if params.mode != "replace" {
-            return Err(invalid_params("OpenViking 仅支持 mode=replace"));
+            return Err(invalid_params("OpenViking 只支持 mode=replace"));
         }
         let client = self.openviking_client().await?;
         let identity = self.openviking_identity()?;
@@ -888,8 +888,8 @@ impl AgentService for Core {
             )
             .await
             .map_err(to_rpc)?;
-        // 以计划模式创建会话：header 记录会话自身模型，随后立即覆盖为计划模型，
-        // 退出计划模式时再恢复。
+        // 以计划模式创建会话：header 记下会话本来的模型，随后立即切到计划模型，
+        // 退出计划模式时再切回。
         if params.mode == SessionMode::Plan
             && let Some(plan_model) = config
                 .resolve_plan_mode_model()
@@ -1001,8 +1001,8 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        // unload_locked 要求调用者持有提示锁：在飞提示会因运行态被摘除而 panic 或写入失败，
-        // 这里还会先杀掉提示正在使用的后台任务。与其他改动类 RPC 一致，先取锁或返回 SESSION_BUSY。
+        // unload_locked 要求调用方持有提示锁：进行中的提示会因运行时状态被移除而 panic 或写入失败，
+        // 而且这里会先杀掉提示正在用的后台任务。和其它修改类 RPC 一样，拿不到锁就返回 SESSION_BUSY。
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
         let runtime = self.inner.runtime(&params.session_id).await;
@@ -1103,7 +1103,7 @@ impl AgentService for Core {
         if params.permission == SessionPermission::Workspace
             && !self.inner.workspace_sandbox_available()
         {
-            return Err(invalid_params("当前环境不可用 bwrap，只有 full 权限可用"));
+            return Err(invalid_params("当前环境没有可用的 bwrap，只能使用 full 权限"));
         }
         let record = self
             .inner
@@ -1162,7 +1162,7 @@ impl AgentService for Core {
             (PathBuf::from(state.session.cwd.clone()), state.mode)
         };
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
-        // 进入计划模式需要先解析计划模型：解析失败不能留下已切模式、未切模型的半状态。
+        // 进入计划模式前先解析计划模型，避免解析失败时模式已切换而模型没切换。
         let plan_model = if params.mode == SessionMode::Plan && from != SessionMode::Plan {
             config
                 .resolve_plan_mode_model()

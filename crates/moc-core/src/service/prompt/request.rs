@@ -1,4 +1,4 @@
-//! 输入投影、推理档位与稳定缓存断点。
+//! 构建请求：输入消息、推理等级和稳定的缓存断点。
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -150,16 +150,16 @@ fn image_media_type(path: &str) -> Option<&'static str> {
     }
 }
 
-/// 缓存断点锚点：由提示编排方给出，编码器据此落位。
+/// 缓存断点的位置信息，由提示编排给出，编码器据此放置断点。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CacheAnchors<'a> {
-    /// 每条指令消息的静态前缀块数；请求开头的消息即指令消息，下标一一对应。
-    /// `0` 表示该指令消息没有静态前缀。
+    /// 每条指令消息开头的静态块数。请求开头的几条消息就是指令消息，下标一一对应；
+    /// `0` 表示该消息没有静态前缀。
     pub instruction_static: &'a [usize],
-    /// 追加在请求末尾、不进会话历史的提醒消息条数。
+    /// 追加在请求末尾、不进入会话历史的提醒消息条数。
     ///
-    /// 提醒下一轮不会出现在同样的位置，落在它上面的断点永远不会命中，因此尾部
-    /// 断点必须退回到最后一条会进入历史的 IR 消息。
+    /// 提醒下一轮不会出现在同一位置，放在它上面的断点永远不会命中，所以尾部断点
+    /// 要放在最后一条会进入历史的 IR 消息上。
     pub trailing_reminders: usize,
 }
 
@@ -190,7 +190,7 @@ pub(crate) fn build_request(
             body_bytes = image_budget.body_bytes,
             body_bytes_after = image_budget.body_bytes_after,
             evicted = image_budget.evicted,
-            "Request images evicted to meet the byte budget"
+            "为满足请求体字节上限，已从请求中移除部分图片"
         );
     }
     let message_count = messages.len();
@@ -234,16 +234,16 @@ pub(crate) fn cache_options(
         return None;
     }
     let (breakpoints, instruction_blocks) = if anthropic {
-        // 首块：整条指令；Anthropic 的最小缓存单元是「系统提示 + 工具定义」。
+        // 第一个断点：整段指令。Anthropic 的最小缓存单元是「系统提示 + 工具定义」。
         let mut points = vec![0];
-        // 尾块：最后一条会进入历史的 IR 消息；本轮提醒不落位，否则断点永远不命中。
+        // 尾部断点：最后一条会进入历史的 IR 消息。不能放在本轮提醒上，否则永远不会命中。
         let tail = message_count.saturating_sub(1 + anchors.trailing_reminders);
         if tail != 0 && tail < message_count {
             points.push(tail);
         }
-        // 静态前缀块：与工作目录无关的部分单独落位，跨目录、跨会话复用。只落最后
-        // 一条含静态前缀的指令消息——指令拆成 system 与 user 两组时前缀不再连续，
-        // 多段落点收益递减，而 Anthropic 每次请求至多 4 个断点。
+        // 静态前缀断点：与工作目录无关的部分单独设断点，跨目录、跨会话复用。只放在最后
+        // 一条含静态前缀的指令消息上：指令拆成 system 和 user 两组后前缀不再连续，多放
+        // 几个收益很小，而 Anthropic 每个请求最多只能有 4 个断点。
         let blocks = anchors
             .instruction_static
             .iter()
@@ -273,12 +273,11 @@ pub(crate) fn cache_options(
     })
 }
 
-/// 比对上游回显与本地请求，列出所有不一致的字段。
+/// 比较上游回显与本地请求，列出所有不一致的字段。
 ///
-/// 只比较**双方都给出**的字段：上游没回显（`None` 或空白）不产生结论，避免把
-/// 网关的沉默误报成改写。模型 id 逐字（去首尾空白后）比较——网关降级、别名映射、
-/// 混淆 id 解包正是要暴露的目标；推理强度按 ASCII 大小写不敏感比较，因为上游
-/// 常把强度归一化成小写。
+/// 只比较**两边都有值**的字段：上游没回显（`None` 或空白）就不下结论，以免把网关
+/// 不回显误报成改写。模型 id 去掉首尾空白后逐字比较，网关降级、别名映射、混淆 id
+/// 解包正是要发现的情况；推理强度按 ASCII 忽略大小写比较，因为上游常把它转成小写。
 pub(in crate::service) fn upstream_mismatches(
     model: &crate::ResolvedModel,
     request: &ChatRequest,

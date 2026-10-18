@@ -1,7 +1,7 @@
 //! Grok Build 压缩后注入的运行时状态提醒。
 //!
-//! full-replace 历史只保留摘要，todos、后台任务、子代理与活动计划都是运行态，
-//! 不在摘要里也无法从 transcript 推导，必须在压缩时快照成一条 system reminder。
+//! 整体替换历史后只剩摘要，而 todos、后台任务、子代理和活动计划都是运行状态，既不在
+//! 摘要里也无法从 transcript 推导出来，必须在压缩时快照成一条 system reminder。
 
 use moc_protocol::methods::{AgentStatus, PlanStatus};
 
@@ -39,7 +39,7 @@ pub(crate) async fn render(inner: &CoreInner, state: &SessionState) -> Option<St
     ))
 }
 
-/// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 使用同一份成功判定。
+/// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 用同一个「成功」判断。
 fn edited_files(state: &SessionState) -> Option<String> {
     let files = super::super::digest::edited_files(state);
     if files.is_empty() {
@@ -76,7 +76,7 @@ async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String>
     ))
 }
 
-/// 未完成的 todo 项；已完成与已放弃的只计数。
+/// 未完成的 todo 项；已完成和已丢弃的只计数。
 fn todo_list(state: &SessionState) -> Option<String> {
     let TodoLines {
         lines,
@@ -106,7 +106,7 @@ fn todo_list(state: &SessionState) -> Option<String> {
     Some(section)
 }
 
-/// 压缩前启动、仍在排队的子代理。
+/// 压缩前已启动、仍在排队或运行的子代理。
 async fn running_agents(inner: &CoreInner, state: &SessionState) -> Option<String> {
     let now = now_ms();
     let mut lines = Vec::new();
@@ -135,7 +135,7 @@ async fn running_agents(inner: &CoreInner, state: &SessionState) -> Option<Strin
     ))
 }
 
-/// 已批准或已提交的最新计划；计划本身不进摘要，必须整段重注入。
+/// 已批准或已提交的最新计划；计划本身不进摘要，必须整段重新注入。
 fn active_plan(state: &SessionState) -> Option<String> {
     let plan = state
         .plans
@@ -234,7 +234,7 @@ mod tests {
             Some(
                 "## Files Edited This Session\nThese files were modified by you during this session:\n- a.rs\n- b.rs\n- d.rs"
             ),
-            "失败的工具调用不进清单，move 取目标路径"
+            "失败的工具调用不进清单，move 只取目标路径"
         );
     }
 

@@ -1,4 +1,4 @@
-//! 原子创建与整体替换文件，拒绝回写已服务锚点。
+//! write 工具：原子地创建文件或替换全部内容；拒绝把带锚点的行原样写回。
 
 use std::path::{Path, PathBuf};
 
@@ -19,16 +19,16 @@ pub(crate) struct WriteArgs {
     pub(crate) content: String,
 }
 
-/// 解析 write 参数；授权与执行共用同一份解析。
+/// 解析 write 参数；授权和执行共用这一个解析函数。
 pub(crate) fn parse_args(args: Value) -> Result<WriteArgs, ToolError> {
     serde_json::from_value(args).map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))
 }
 
 pub struct WriteTool;
 
-/// 逐行 diff 的输入上限；更大的内容仍可整体替换，只是不展示 diff。
+/// 生成逐行 diff 的内容大小上限；更大的内容照样可以整体替换，只是不显示 diff。
 ///
-/// 与 `edit` 的 4 MiB 快照上限一致：逐行拆分的成本只服务于前端展示。
+/// 与 `edit` 的 4 MiB 快照上限一致：逐行拆分只为前端展示，不值得在大文件上付出这个开销。
 const WRITE_DIFF_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 impl Tool for WriteTool {
@@ -63,7 +63,7 @@ impl Tool for WriteTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let args = parse_args(args)?;
-            // 授权入口之外的调用也要受检；解析前先按词法落点判定一次。
+            // 绕过授权入口的调用也要检查：解析路径前先按词法结果判断一次。
             crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &args.path)?;
             ResourceRouter::write(&args.path)
                 .map_err(|error| ToolError::new(error.code, error.message))?;
@@ -99,8 +99,8 @@ impl Tool for WriteTool {
                 .await
                 .map_err(|error| ToolError::new("E_ACCESS", error.to_string()))?;
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
-            // create_dir_all 可能补出尾段组件：按当前解析结果重跑边界判定，
-            // 未获授权的越界在这里被拦下，不会落到磁盘。
+            // create_dir_all 可能会创建末尾缺失的目录：按当前解析结果再判断一次边界，
+            // 没获授权的越界写入在这里拦下，不会写到磁盘上。
             crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &path)?;
             let max_file_bytes = ctx.config.tools.output.max_file_bytes;
             if args.content.len() as u64 > max_file_bytes {
@@ -115,8 +115,8 @@ impl Tool for WriteTool {
                 &ctx.anchors,
                 ctx.config.tools.write.hash_echo_min_hits,
             )?;
-            // 覆盖既有文件前先看旧文件大小：超过读写上限时不读旧内容，
-            // 也就不做 diff、不写撤销记录（几 GB 旧文件会把内存打爆）。
+            // 覆盖已有文件前先看旧文件大小：超过读写上限就不读旧内容，
+            // 因此也不做 diff、不记撤销（几 GB 的旧文件会撑爆内存）。
             let (old, oversized_old) = read_previous(&path, max_file_bytes).await?;
             let ending = old.as_deref().map(line_ending).unwrap_or(b"\n");
             let content = normalize_line_endings(&args.content, ending);
@@ -171,7 +171,7 @@ impl Tool for WriteTool {
     }
 }
 
-/// 授权预览：用与执行相同的旧内容与归一化计算覆盖 diff，不落盘。
+/// 授权预览：用与执行相同的旧内容和换行归一化算出覆盖后的 diff，不写盘。
 pub(crate) async fn preview_arguments(ctx: &ToolCtx, args: &WriteArgs) -> Option<ToolDiff> {
     if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
         return None;
@@ -187,10 +187,10 @@ pub(crate) async fn preview_arguments(ctx: &ToolCtx, args: &WriteArgs) -> Option
     write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES)
 }
 
-/// 拒绝把 read/diff 的锚点行原样写回文件。
+/// 拒绝把 read/diff 输出里带锚点的行原样写回文件。
 ///
-/// 直接使用会话内已登记的稳定令牌，不再为校验重读磁盘：既避免旧位图与新
-/// 内容混用，也不会在大文件上无界分配。
+/// 直接用会话里已登记的令牌校验，不为此重读磁盘：既不会把旧位图和新内容混在一起，
+/// 也不会在大文件上无限制地分配内存。
 fn reject_served_hash_echo(
     path: &Path,
     content: &str,
@@ -229,9 +229,9 @@ fn reject_served_hash_echo(
     Ok(())
 }
 
-/// 覆盖既有文件前读取旧内容；超过读写上限的旧文件不读取。
+/// 覆盖已有文件前读取旧内容；超过读写上限的旧文件不读。
 ///
-/// 返回 `(旧内容, 是否因为超过上限而跳过)`：跳过时不做 diff、不写撤销记录。
+/// 返回 `(旧内容, 是否因超过上限而跳过)`；跳过时不做 diff、不记撤销。
 async fn read_previous(
     path: &Path,
     max_file_bytes: u64,
@@ -247,7 +247,7 @@ async fn read_previous(
     }
 }
 
-/// 覆盖 diff：任一侧超过展示预算时返回 `None`，整体替换本身不受影响。
+/// 覆盖写入的 diff：任一侧超过展示上限就返回 `None`，不影响整体替换本身。
 fn write_diff(
     path: &Path,
     old: Option<&[u8]>,
@@ -272,8 +272,7 @@ fn line_ending(bytes: &[u8]) -> &'static [u8] {
 
 /// 计算整体写入的 diff：旧文件（可能不存在）对比归一化后的新内容。
 ///
-/// 旧文件不是合法 UTF-8 或新旧内容完全一致时返回 `None`——前者无法按行
-/// 渲染，后者没有可展示的变更。
+/// 旧文件不是合法 UTF-8 或新旧内容完全相同时返回 `None`：前者没法按行显示，后者没有变化可显示。
 fn build_write_diff(path: &Path, old: Option<&[u8]>, content: &str) -> Option<ToolDiff> {
     let old_lines: Vec<String> = match old {
         Some(bytes) => match std::str::from_utf8(bytes) {
@@ -303,7 +302,7 @@ fn normalize_line_endings(content: &str, ending: &[u8]) -> String {
     if ending == b"\n" {
         return normalized;
     }
-    let ending = std::str::from_utf8(ending).expect("line ending ASCII");
+    let ending = std::str::from_utf8(ending).expect("换行符一定是 ASCII");
     normalized.replace('\n', ending)
 }
 

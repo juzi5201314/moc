@@ -1,4 +1,4 @@
-//! 管道与 PTY 共用的完成句柄；后台化只转移所有权，不重置 monitored 超时。
+//! 管道和 PTY 进程共用的完成句柄。转为后台任务只转移所有权，不会重置 monitored 超时。
 
 use super::{BashArgs, JobLog, ProcessGroup, ToolError};
 use futures_util::future::BoxFuture;
@@ -14,8 +14,8 @@ use std::{
 use tokio::{io::AsyncWriteExt, process::Command};
 use tokio_util::sync::CancellationToken;
 
-/// 子进程退出后等待管道写完的窗口；超时即放弃读取并回收任务，
-/// 避免逃出进程组的子孙进程一直持有 stdout 占住 Gate 名额。
+/// 子进程退出后等管道读完的时限。超时就放弃读取并回收任务，免得逃出进程组的子孙进程
+/// 一直占着 stdout，导致并发名额无法释放。
 const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 pub(crate) struct ProcessExit {
@@ -159,7 +159,7 @@ impl Process {
                         .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
                         .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
                     Err(_) => {
-                        tracing::warn!("子进程退出后 stdout 仍被占用，停止继续读取输出");
+                        tracing::warn!("子进程已退出但 stdout 仍被占用，停止读取输出");
                         reader.abort();
                         (false, ())
                     }
@@ -289,7 +289,7 @@ fn shell_arguments(command: &str) -> Vec<String> {
 }
 
 #[cfg(windows)]
-// portable-pty 不支持暂停创建；先启动关闭 AutoRun 的空闲 cmd，再在入 Job 后发送命令。
+// portable-pty 不支持以挂起状态创建进程：先启动一个关闭 AutoRun 的空闲 cmd，加入 Job 后再发送命令。
 fn pty_shell_arguments(_command: &str) -> Vec<String> {
     vec![
         "/D".into(),
@@ -321,7 +321,7 @@ fn pty_input(command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> {
         .replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace('\n', "\r");
-    // exit 与用户命令同属一行，避免未读取的 stdin 被外层 cmd 当作命令。
+    // exit 和用户命令写在同一行，免得没读完的 stdin 被外层 cmd 当成命令执行。
     Ok(format!("({command}) 2>&1 & exit\r{}", stdin.unwrap_or_default()).into_bytes())
 }
 
@@ -527,7 +527,7 @@ mod unix_tests {
         .expect("启动 external shell");
         let result = process.completion.await.expect("等待 external shell");
         assert_ne!(result.code, Some(0));
-        assert!(!external.exists(), "沙盒不应写入工作区外");
+        assert!(!external.exists(), "沙盒不能写入工作区外");
     }
 
     #[tokio::test]
@@ -546,7 +546,7 @@ mod unix_tests {
         .expect("启动 shell");
         let result = tokio::time::timeout(Duration::from_secs(6), process.completion)
             .await
-            .expect("持有 stdout 的子孙进程不得让任务永不回收")
+            .expect("占着 stdout 的子孙进程不能让任务永远无法回收")
             .expect("等待 shell");
         assert_eq!(result.code, Some(0));
     }

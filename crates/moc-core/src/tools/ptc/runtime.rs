@@ -1,4 +1,4 @@
-//! 固定 guest 模块的 Wasmtime 生命周期与有界 ABI 交换。
+//! 内嵌 guest 模块的 Wasmtime 生命周期，以及有长度上限的 ABI 数据交换。
 
 use super::ToolError;
 use super::wire::{ABI_VERSION, GuestStep};

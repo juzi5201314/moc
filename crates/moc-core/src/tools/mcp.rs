@@ -1,9 +1,9 @@
-//! MCP server 工具桥接：把 moc-mcp 的协商结果适配为 [`Tool`]。
+//! MCP 工具桥接：把 moc-mcp 协商得到的工具适配成 [`Tool`]。
 //!
-//! 命名沿用 Claude Code 生态惯例 `mcp__<server>__<tool>`；server 名在配置层
-//! 保证不含 `__`，限定名因此可无歧义反解。风险类别不取 MCP `annotations`
-//! 的服务端自述：`readOnlyHint` 只作为描述信息保留，`tier` 与并行性都由本地
-//! 策略决定，服务端无法据此扩大自己的权限。
+//! 命名沿用 Claude Code 的惯例 `mcp__<server>__<tool>`。配置层保证 server 名不含 `__`，
+//! 所以限定名可以无歧义地拆回 server 名和工具名。风险等级不采信 MCP `annotations` 里
+//! 服务端的自我声明：`readOnlyHint` 只当描述信息保留，`tier` 和并行性都由本地策略决定，
+//! 服务端无法借此扩大自己的权限。
 
 use std::sync::Arc;
 
@@ -26,8 +26,8 @@ impl McpTool {
 }
 
 impl Tool for McpTool {
-    // 工具的注册名是带前缀的限定名而非原始 name；该 getter 有意如此，
-    // clippy 的 misnamed_getter 在本工具链上不可用，这里整体屏蔽单方法。
+    // 注册名是带前缀的限定名，不是原始 name，这是有意的。当前工具链没有单独的
+    // clippy::misnamed_getters 可关，只能对这个方法整体关闭 clippy。
     #[allow(clippy::all)]
     fn name(&self) -> &str {
         &self.info.qualified
@@ -40,16 +40,16 @@ impl Tool for McpTool {
             .unwrap_or("MCP server-provided tool.")
     }
 
-    /// MCP 工具的风险类别不取服务端自述的 `readOnlyHint`。
+    /// MCP 工具的风险等级不采信服务端声明的 `readOnlyHint`。
     ///
-    /// 自述只读的 `mcp__*` 工具会在 Ask/Plan 只读模式下被放行，等于让 server 自行
-    /// 扩大权限；因此一律按 `Tier::Exec` 处理，只读模式不开放 MCP 工具。
+    /// 如果采信，声称只读的 `mcp__*` 工具会在 Ask/Plan 只读模式下放行，等于让 server
+    /// 自己扩大权限。所以统一按 `Tier::Exec` 处理，只读模式不开放 MCP 工具。
     fn tier(&self) -> Tier {
         Tier::Exec
     }
 
-    /// 并行性同样不取服务端自述：声明只读却在自身状态上写入的 server 会被并发调用
-    /// 打乱。取舍是只读 MCP 工具也串行执行，用一批调用的延迟换掉一条不可信输入。
+    /// 并行性同样不采信服务端声明：声称只读、实际会改自身状态的 server 会被并发调用
+    /// 搞乱。代价是只读 MCP 工具也串行执行，多一点批量调用的延迟，换来不依赖不可信的声明。
     fn parallel_safe(&self) -> bool {
         false
     }
@@ -58,7 +58,7 @@ impl Tool for McpTool {
         ToolDef {
             name: self.info.qualified.clone(),
             description: Some(self.description().to_owned()),
-            // MCP inputSchema 原样透传，三种协议编码器零改动。
+            // MCP 的 inputSchema 原样传给模型，三种协议的编码器都不需要特殊处理。
             parameters: self.info.input_schema.clone(),
             strict: None,
         }
@@ -131,7 +131,7 @@ mod tests {
             assert_eq!(
                 tool.tier(),
                 Tier::Exec,
-                "服务端自述的 readOnlyHint 不得提升风险类别"
+                "服务端声明的 readOnlyHint 不能改变风险等级"
             );
             assert!(
                 !tool.parallel_safe(),

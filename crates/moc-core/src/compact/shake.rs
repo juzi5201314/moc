@@ -1,4 +1,4 @@
-//! 在保护窗口之外修剪工具结果，保留调用配对与原始日志地址。
+//! shake 压缩：保护窗口之外的工具结果只保留开头结尾，调用配对和原始日志地址不变。
 
 use super::{CompactionBudget, messages_tokens, record_compaction};
 use crate::session::{entries::Entry, state::SessionState};
@@ -25,8 +25,8 @@ pub(crate) async fn compact(
             "local pruning found no reclaimable tool output".into(),
         ));
     }
-    // 归档必须覆盖完整的压缩前历史：整表 rewrite 之后 transcript 只剩剪枝结果，
-    // 而 summary 向模型承诺的正是这份压缩前历史。
+    // 归档必须覆盖完整的压缩前历史：整表重写之后 transcript 只剩下剪枝后的内容，
+    // 而摘要向模型承诺能回读的正是这份压缩前的历史。
     let record = inner.sessions.get(&state.session.id).await?;
     let archive_uri = super::archive::write(&record.paths, state).await?;
     inner.sessions.rewrite(&state.session.id, entries).await?;
@@ -44,9 +44,9 @@ pub(crate) async fn compact(
             .get(super::replay::visible_history_start(state))
             .map(|entry| entry.id.clone())
     });
-    // 复用上一份 checkpoint 的 summary/native 时必须保留其真实来源（方法名与产出模型）：
-    // `ModelChange` 依赖 `remote` 与产出模型作废不再匹配的原生载荷，写成 `shake`/
-    // 当前模型都会让清理失效。
+    // 沿用上一份 checkpoint 的 summary/native 时，必须保留它原本的方法名和生成它的模型：
+    // `ModelChange` 靠 `remote` 和生成模型让不再匹配的原生数据失效，写成 `shake` 或
+    // 当前模型都会让这条清理失效。
     let (method, model) = match state.summary.as_ref() {
         Some((method, _)) => (method.clone(), state.summary_model.clone()),
         None => ("shake".to_owned(), None),
@@ -63,7 +63,7 @@ pub(crate) async fn compact(
                 .as_ref()
                 .map(|(_, summary)| summary.clone())
                 .unwrap_or_default(),
-            // 复用上一份 checkpoint 时连提醒一起保留，避免回放丢掉运行态快照。
+            // 沿用上一份 checkpoint 时连提醒一起保留，回放时才不会丢掉运行时状态快照。
             reminder: state.summary_reminder.clone(),
             first_kept_id: first_kept,
             tokens_before,

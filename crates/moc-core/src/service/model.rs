@@ -1,4 +1,4 @@
-//! 会话模型切换：切换前按目标模型窗口检查上下文容量。
+//! 切换会话模型：切换前按目标模型的窗口检查上下文是否装得下。
 
 use std::path::Path;
 
@@ -12,17 +12,17 @@ use crate::ResolvedModel;
 use crate::compact::{self, CompactReason, ContextBudget};
 use crate::error::CoreError;
 
-/// 一次模型切换的完整结果。
+/// 一次模型切换的结果。
 pub(crate) struct SwitchOutcome {
     pub session: SessionInfo,
     pub overflow: Option<ModelSwitchOverflow>,
     pub compaction_error: Option<String>,
 }
 
-/// 切换会话模型；调用方必须已持有该会话的提示锁与文件锁。
+/// 切换会话模型；调用方必须已经持有该会话的提示锁和文件锁。
 ///
-/// 目标模型容不下当前上下文时按 `action` 处理：`Ask` 只回报缺口不切换，
-/// `Switch` 直接切换，`Compact` 先切换再用新模型压缩。
+/// 目标模型装不下当前上下文时按 `action` 处理：`Ask` 不切换，只返回缺口；
+/// `Switch` 直接切换；`Compact` 先切换，再用新模型压缩。
 pub(crate) async fn switch(
     inner: &CoreInner,
     ctx: &RequestContext,
@@ -77,10 +77,10 @@ pub(crate) async fn switch(
         )
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
-    // 模型变了，旧模型产出的预火摘要（含 NOTE₁）不再可用。
+    // 模型变了，旧模型提前生成的摘要（含 NOTE₁）不能再用。
     inner.runtime(session_id).await.grok_prefire.clear();
-    // 先切换再压缩：ModelChange 会作废旧模型的 native 载荷与 remote 摘要，
-    // checkpoint 必须由新模型产出。
+    // 必须先切换再压缩：ModelChange 会让旧模型的原生压缩数据和远程摘要失效，
+    // checkpoint 只能由新模型生成。
     let compaction_error = match action {
         SessionModelOverflowAction::Compact if overflow.is_some() => compact::compact(
             inner,

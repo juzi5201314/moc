@@ -1,4 +1,4 @@
-//! 手动 Bash 的会话锁、结果持久化和前端事件；不触发模型请求。
+//! 用户手动执行的 Bash：会话加锁、结果持久化和前端事件；不触发模型请求。
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
@@ -55,7 +55,7 @@ pub(super) async fn run(
     )
     .await
     .unwrap_or_else(|error| error.into_outcome());
-    // 用户命令的工作区改动不能归因于下一次 agent 提示，重新采集其基线。
+    // 用户命令造成的工作区改动不能算到下一次 agent 提示头上，所以重新采集基线。
     *inner.runtime(session_id).await.workspace.lock().await = None;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let artifacts = crate::resources::ArtifactStore::new(record.paths.clone());
@@ -70,7 +70,7 @@ pub(super) async fn run(
         Ok(content) => content,
         Err(error) => {
             is_error = true;
-            format!("[E_ARTIFACT] 命令已执行，但输出交付失败：{error}")
+            format!("[E_ARTIFACT] 命令已执行，但保存输出失败：{error}")
         }
     };
     let status = outcome.status.unwrap_or(if is_error {
@@ -84,7 +84,7 @@ pub(super) async fn run(
         is_error,
         images: Vec::new(),
     };
-    let arguments = serde_json::to_string(&params.command).expect("Bash 命令参数可序列化");
+    let arguments = serde_json::to_string(&params.command).expect("Bash 命令参数可以序列化");
     inner
         .sessions
         .append(

@@ -1,4 +1,4 @@
-//! 可重建的会话内存状态；只有完整 JSONL entry 才改变状态。
+//! 可以重建的会话内存状态；只有完整的 JSONL entry 才会改变它。
 
 use moc_llm::{Role, Usage};
 use moc_protocol::methods::{
@@ -39,7 +39,7 @@ fn add_optional(current: Option<u64>, added: Option<u64>) -> Option<u64> {
     }
 }
 
-/// 当前会话中每个模型的调用累计；属于运行态，随会话生命周期保留。
+/// 当前会话里每个模型的调用累计；属于运行状态，随会话生命周期保留。
 #[derive(Debug, Clone, Default)]
 pub struct ModelUsage {
     pub calls: u64,
@@ -47,22 +47,22 @@ pub struct ModelUsage {
     pub active_ms: u64,
 }
 
-/// 一个会话的 transcript 与当前投影。
+/// 一个会话的 transcript 和当前状态。
 #[derive(Debug, Clone)]
 pub struct SessionState {
     pub session: SessionInfo,
     pub entries: Vec<Entry>,
     pub transcript: Vec<TranscriptEntry>,
-    /// 与 transcript 一一对应的 token 估算，避免上下文面板重复扫描正文。
+    /// 与 transcript 一一对应的 token 估算，免得上下文面板反复扫描正文。
     pub transcript_token_counts: Vec<u64>,
     pub mode: SessionMode,
     pub permission: SessionPermission,
     pub model: String,
-    /// 计划模式临时覆盖前的会话模型；退出计划模式时恢复。随 transcript 重放，
-    /// 会话恢复后依然有效；只在当前处于计划模式时有意义。
+    /// 计划模式临时覆盖前的会话模型，退出计划模式时恢复。它随 transcript 重放，
+    /// 会话恢复后依然有效；只有处于计划模式时才有意义。
     plan_base_model: Option<String>,
     pub todos: Vec<TodoPhase>,
-    /// 自上次 todo 变更以来的工具调用数；停滞提醒的计数来源。
+    /// 自上次 todo 变更以来的工具调用数，供停滞提醒计数。
     pub tool_calls_since_todo: u32,
     /// 本次提示已发出的 todo 提醒数。
     pub todo_reminders_sent: u32,
@@ -71,9 +71,9 @@ pub struct SessionState {
     pub ptc_state: BTreeMap<String, Arc<serde_json::Value>>,
     pub ptc_state_bytes: usize,
     pub summary: Option<(String, String)>,
-    /// 当前 checkpoint 的产出模型；原生载荷只对该模型有效。
+    /// 当前 checkpoint 的生成模型；原生数据只对这个模型有效。
     pub summary_model: Option<String>,
-    /// Grok Build full-replace 的运行时状态提醒；其他 checkpoint 为 None。
+    /// Grok Build 整体替换历史时附带的运行时状态提醒；其它 checkpoint 为 `None`。
     pub summary_reminder: Option<String>,
     pub native_input: Option<Vec<serde_json::Value>>,
     pub first_kept_id: Option<String>,
@@ -84,7 +84,7 @@ pub struct SessionState {
     pub model_usage: BTreeMap<String, ModelUsage>,
     pub usage_at: usize,
     pub server_compaction_disabled: bool,
-    /// CLM 实验模式的当前工作上下文；原始 transcript 始终保留。
+    /// CLM 实验模式当前的工作上下文；原始 transcript 始终保留。
     pub clm_context: Option<String>,
     pub last_entry_id: String,
 }
@@ -95,7 +95,7 @@ impl SessionState {
         Self::from_entries(vec![header])
     }
 
-    /// 重放并校验 JSONL 线性 parent 链。
+    /// 重放 JSONL，并校验 parent 链是否连续。
     pub fn from_entries(entries: Vec<Entry>) -> Result<Self, CoreError> {
         let Some(first) = entries.first() else {
             return Err(CoreError::Session("transcript 缺少 header".into()));
@@ -163,7 +163,7 @@ impl SessionState {
         Ok(state)
     }
 
-    /// 把已落盘 entry 投影到可读的会话状态。
+    /// 把已写入的 entry 应用到会话状态。
     pub fn apply_entry(&mut self, entry: Entry) {
         self.session.updated_at_ms = self.session.updated_at_ms.max(entry.at_ms());
         match &entry {
@@ -212,7 +212,7 @@ impl SessionState {
                     })
                     .cloned();
                 if method == "remote" && self.native_input.is_none() {
-                    // 不可解码的载荷不能成为截断历史的依据。
+                    // 无法解码的数据不能作为截断历史的依据。
                     self.summary = None;
                     self.first_kept_id = None;
                     self.summary_model = None;
@@ -255,8 +255,8 @@ impl SessionState {
             Entry::ModelChange { model, .. } => {
                 self.model.clone_from(model);
                 self.session.model.clone_from(model);
-                // 原生载荷只对产出它的模型有效；为同一模型产出的 checkpoint（例如计划
-                // 审批先把上下文压到执行模型再切换）必须保留，否则压缩会被静默作废。
+                // 原生数据只对生成它的模型有效；如果 checkpoint 就是这个模型生成的（比如
+                // 计划审批先把上下文压到执行模型再切换），必须保留，否则这次压缩会被悄悄作废。
                 let foreign_checkpoint = self.summary_model.as_deref() != Some(model.as_str());
                 if foreign_checkpoint {
                     self.native_input = None;
@@ -265,7 +265,7 @@ impl SessionState {
                         .as_ref()
                         .is_some_and(|(method, _)| method == "remote")
                     {
-                        // 加密 checkpoint 不可跨模型使用；恢复日志而非仅留下占位摘要。
+                        // 加密的 checkpoint 不能跨模型使用；这时恢复日志视图，而不是只留一条占位摘要。
                         self.summary = None;
                         self.first_kept_id = None;
                         self.summary_model = None;
@@ -334,15 +334,15 @@ impl SessionState {
         self.entries.push(entry);
     }
 
-    /// 最新持久化视图的 session 元信息。
+    /// 当前会话的最新元信息。
     pub fn session_info(&self) -> SessionInfo {
         self.session.clone()
     }
 
     /// 退出计划模式时要恢复的会话模型。
     ///
-    /// 计划模式期间该值由进入时的覆盖记录（或计划模式下的 header）填充；不在
-    /// 计划模式时退回当前模型，供统一的恢复路径使用。
+    /// 计划模式期间该值来自进入时的记录（或计划模式下的 header）；不在计划模式时返回
+    /// 当前模型，供统一的恢复路径使用。
     pub fn exit_plan_model(&self) -> &str {
         self.plan_base_model
             .as_deref()

@@ -1,4 +1,4 @@
-//! 统一工具执行接口、上下文、结果及按模式筛选的注册表。
+//! 工具的公共接口：执行上下文、结果类型，以及按模式筛选的注册表。
 
 pub mod agent;
 pub mod ask;
@@ -37,7 +37,7 @@ use moc_protocol::{RequestContext, SessionMode, SessionPermission};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-/// 工具风险类别；授权在工具执行入口统一处理。
+/// 工具的风险等级；授权统一在工具执行入口处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     Read,
@@ -45,7 +45,7 @@ pub enum Tier {
     Exec,
 }
 
-/// 成功、可继续的失败、或提交计划后的提示终止。
+/// 工具执行后提示是否继续：`Continue` 照常进入下一轮，`EndTurn` 结束本轮（如提交计划后）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolControl {
     #[default]
@@ -53,19 +53,19 @@ pub enum ToolControl {
     EndTurn,
 }
 
-/// 工具的原始输出来源与执行结果；模型可见文本由统一出口生成。
+/// 工具的原始输出与执行状态；模型看到的文本由统一的出口生成。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutcome {
     pub content: ToolOutput,
     pub is_error: bool,
     pub structured_content: Option<Value>,
     pub error_code: Option<String>,
-    /// 结果携带的图片；仅 MCP 桥接工具会填充。
+    /// 结果附带的图片；只有 MCP 桥接工具会填。
     pub images: Vec<moc_llm::ImageSource>,
     pub control: ToolControl,
     pub status: Option<moc_protocol::methods::ToolStatus>,
-    /// 文件变更的结构化 diff；仅 `edit` / `write` 成功时给出，随
-    /// `SessionUpdate::ToolFinished` 透传给前端渲染。
+    /// 文件变更的结构化 diff。只在 `edit`/`write` 成功时给出，经
+    /// `SessionUpdate::ToolFinished` 原样交给前端渲染。
     pub diff: Option<moc_protocol::methods::ToolDiff>,
 }
 
@@ -110,7 +110,7 @@ impl ToolOutcome {
     }
 }
 
-/// 工具边界上的结构化错误，转换为普通 tool_result 后可由模型修复。
+/// 工具层的结构化错误；转成普通 tool_result 后模型可以据此修正。
 #[derive(Debug, thiserror::Error)]
 #[error("[{code}] {message}{hint}")]
 pub struct ToolError {
@@ -147,7 +147,7 @@ impl ToolError {
     }
 }
 
-/// 廉价克隆的每次工具调用上下文。
+/// 单次工具调用的上下文，克隆开销很小。
 #[derive(Clone)]
 pub struct ToolCtx {
     pub session_id: String,
@@ -164,20 +164,20 @@ pub struct ToolCtx {
     pub mode: SessionMode,
     pub permission: SessionPermission,
     pub allow_agents: bool,
-    /// 当前上下文是否子代理；决定 `yield` 是否可用。
+    /// 当前是否在子代理里；决定 `yield` 是否可用。
     pub subagent: bool,
     pub nested: bool,
     pub cancel: CancellationToken,
     pub(crate) guard: Arc<crate::service::prompt::guard::PromptGuard>,
     pub jobs: Arc<job::JobManager>,
-    /// 当前 workspace 的惰性 OpenViking client；未配置时为 None。
+    /// 当前工作区的 OpenViking 客户端，按需创建；未配置时为 `None`。
     pub openviking: Option<Arc<moc_openviking::OpenVikingClient>>,
     pub openviking_peer: Option<String>,
-    /// 该项目的 MCP 管理器（空配置时为空管理器）。
+    /// 该项目的 MCP 管理器（没有配置时是空管理器）。
     pub mcp: Arc<moc_mcp::McpManager>,
     /// 该项目的 skill 索引。
     pub skills: Arc<crate::skills::SkillIndex>,
-    /// 当前正在执行的外层工具调用 ID；PTC 用它建立父子调用关系。
+    /// 当前正在执行的外层工具调用 ID；PTC 用它关联父子调用。
     pub tool_call_id: String,
     /// 本会话已加载的 skill 名。
     pub loaded_skills: Arc<parking_lot::RwLock<crate::skills::LoadedSkills>>,
@@ -199,14 +199,14 @@ impl ToolCtx {
     }
 }
 
-/// 工具实例由注册表持有；实现将同步 schema 与异步执行分开。
+/// 工具实现。注册表持有工具实例；schema 同步生成，执行是异步的。
 ///
-/// `name` / `description` 返回动态 `&str`：MCP 桥接工具的标识来自运行期
-/// 协商结果，不能是 `'static`；内置工具返回字面量即可自动兼容。
+/// `name`/`description` 返回非 `'static` 的 `&str`：MCP 桥接工具的名字来自运行时
+/// 协商；内置工具直接返回字面量即可。
 ///
-/// `description`、schema 字段说明与结果文本都是模型可见提示词，编写遵循
-/// [`crate::system_prompt`] 模块文档的「提示词编写规范」：只写该工具自己的用法，
-/// 不复述工具政策或 schema 已表达的约束。
+/// `description`、schema 字段说明和结果文本都是模型可见的提示词，按
+/// [`crate::system_prompt`] 模块文档里的「提示词编写规范」编写：只写这个工具自己的
+/// 用法，不重复工具政策，也不重复 schema 已经表达的约束。
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
@@ -223,17 +223,17 @@ pub trait Tool: Send + Sync {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>>;
 }
 
-/// 工具可见性范围：同一个 registry 在顶层会话与子代理下的差异。
+/// 工具可见范围：同一个注册表在顶层会话和子代理里暴露的工具不同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolScope {
-    /// 是否允许创建、停止与等待子代理。
+    /// 是否允许创建、停止和等待子代理。
     pub control_agents: bool,
-    /// 是否是子代理上下文（`yield` 只在子代理可用）。
+    /// 是否在子代理里（`yield` 只对子代理开放）。
     pub subagent: bool,
 }
 
 impl ToolScope {
-    /// 顶层会话：全部代理控制工具可用。
+    /// 顶层会话：所有代理控制工具都可用。
     pub fn top() -> Self {
         Self {
             control_agents: true,
@@ -294,9 +294,9 @@ impl ToolRegistry {
         self.builtins
             .iter()
             .filter(|tool| match tool.name() {
-                // 创建与回收子代理只在顶层会话可用；子代理只能通信。
+                // 创建、停止和等待子代理只在顶层会话可用；子代理只能通信。
                 name if Self::is_parent_only_tool(name) => scope.control_agents,
-                // 交付终态只对子代理有意义：顶层会话没有父代理可交付。
+                // 交付最终结果只对子代理有意义：顶层会话没有父代理可交付。
                 "yield" => scope.subagent,
                 _ => true,
             })
@@ -312,7 +312,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// 创建/回收/等待子代理的工具；子代理上下文一律剔除。
+    /// 创建、停止、等待子代理的工具；子代理里全部去掉。
     fn is_parent_only_tool(name: &str) -> bool {
         matches!(name, "spawn_agent" | "stop_agent" | "wait_agent")
     }
@@ -366,18 +366,18 @@ pub fn resolve_tool_path(cwd: &std::path::Path, value: &str) -> Result<PathBuf, 
     Ok(parent.join(filename))
 }
 
-/// 写目标越出工作区时的解析结果：返回真实的写入落点。
+/// 写入目标越出工作区时，返回实际会写到的路径。
 ///
-/// 已存在的目标直接 canonicalize；尚未存在的目标展开最近存在祖先的符号链接，
-/// 再把剩余组件按词法折叠成落点，因此工作区内的符号链接与尾段 `..` 都不能
-/// 把写入引到工作区外。返回 `None` 表示目标在工作区内或无法解析。
+/// 已存在的目标直接 canonicalize。不存在的目标先展开最近一个已存在祖先上的符号链接，
+/// 再按词法折叠剩余部分，所以工作区内的符号链接和末尾的 `..` 都不能把写入引到工作区外。
+/// 返回 `None` 表示目标在工作区内或无法解析。
 pub fn workspace_escape(
     cwd: &std::path::Path,
     value: impl AsRef<std::path::Path>,
 ) -> Option<PathBuf> {
     let supplied = value.as_ref();
-    // OpenViking 写入是远程写入，不属于会话工作区：按越界处理并在工作区权限下
-    // 走一次性授权。只读的 MOC 内部 URI 由 ResourceRouter 直接拒绝写入。
+    // OpenViking 写入是远程写入，不属于会话工作区：按越界处理，在 workspace 权限下需要
+    // 一次性授权。只读的 MOC 内部 URI 由 ResourceRouter 直接拒绝写入。
     if let Some(text) = supplied.to_str()
         && crate::resources::is_writable_resource_uri(text)
     {
@@ -393,11 +393,11 @@ pub fn workspace_escape(
     (!landing.starts_with(&root)).then_some(landing)
 }
 
-/// canonicalize 路径中已存在的最深前缀，再按文件系统语义词法折叠剩余组件。
+/// canonicalize 路径中已存在的最深前缀，再按文件系统语义词法折叠剩余部分。
 ///
-/// 尾段组件在写入前不存在，其中的 `..` 只会抵消这些待创建组件本身，因此词法
-/// 折叠与 `create_dir_all` 之后的真实落点一致；已存在部分的符号链接由
-/// canonicalize 展开，不能借链接逃出工作区。
+/// 剩余部分在写入前还不存在，其中的 `..` 只会抵消这些待创建的组件，所以词法折叠的结果
+/// 与 `create_dir_all` 之后的实际路径一致；已存在部分里的符号链接由 canonicalize 展开，
+/// 不能借链接逃出工作区。
 fn resolve_landing(joined: &std::path::Path) -> Option<PathBuf> {
     let mut existing = joined;
     loop {
@@ -422,10 +422,10 @@ fn resolve_landing(joined: &std::path::Path) -> Option<PathBuf> {
     }
 }
 
-/// 写入路径的工作区边界复校验：授权入口之外的调用不得越界写入。
+/// 执行写入前再校验一次工作区边界，防止绕过授权入口的调用越界写入。
 ///
-/// 与授权阶段共用 [`workspace_escape`]，保证判定与解析同源；`full` 权限
-/// （yolo，或本次调用已获一次性授权）不做限制。
+/// 与授权阶段共用 [`workspace_escape`]，两边判断和路径解析完全一致。`full` 权限（yolo，
+/// 或本次调用已获一次性授权）不受限制。
 pub fn ensure_workspace_write(
     cwd: &std::path::Path,
     permission: SessionPermission,
@@ -480,8 +480,8 @@ mod tests {
     fn unresolved_parent_components_cannot_hide_an_escape() {
         let directory = tempfile::tempdir().unwrap();
         let (root, _) = workspace(&directory);
-        // 尾段组件尚不存在，`..` 会在 create_dir_all 补出组件后再折叠：落点必须
-        // 按词法折叠判定，不能把带 `..` 的字面路径当作工作区内。
+        // 末尾的组件还不存在，`..` 要等 create_dir_all 补出组件后才折叠：必须按词法折叠
+        // 后的结果判断，不能因为字面路径带 `..` 就当它在工作区内。
         for value in ["z/../../x", "y/deep/../../../../x"] {
             let escape = workspace_escape(&root, value).expect("尾段 `..` 必须判为越界");
             assert!(
@@ -493,7 +493,7 @@ mod tests {
         let absolute = root.join("z/../../x").display().to_string();
         let escape = workspace_escape(&root, &absolute).expect("绝对路径变体必须判为越界");
         assert_eq!(escape, directory.path().join("x"));
-        // 对照组语义不变：已存在组件之上的 `..` 与其他越界仍然拒绝，区内路径不受影响。
+        // 对照组：已存在组件上的 `..` 和其它越界照样拒绝，工作区内的路径不受影响。
         assert!(workspace_escape(&root, "src/new/deep.rs").is_none());
         assert_eq!(
             workspace_escape(&root, "src/../../evil2.txt").expect("已存在组件上的 `..` 越界"),
@@ -521,7 +521,7 @@ mod tests {
             )
             .is_err()
         );
-        // full 权限（yolo 或本次调用已获授权）与工作区内的目标不受限制。
+        // full 权限（yolo 或本次调用已获授权）以及工作区内的目标都不受限制。
         assert!(ensure_workspace_write(&root, SessionPermission::Full, "z/../../x").is_ok());
         assert!(
             ensure_workspace_write(&root, SessionPermission::Workspace, "src/new/deep.rs").is_ok()
@@ -534,7 +534,7 @@ mod tests {
             )
             .is_ok()
         );
-        // OpenViking 写入是远程写入：工作区权限下按越界处理，需要一次性授权。
+        // OpenViking 写入是远程写入：workspace 权限下按越界处理，需要一次性授权。
         for uri in ["viking://~/notes/memory.md", "ov://repo/notes.md"] {
             assert!(workspace_escape(&root, uri).is_some(), "{uri}");
             assert!(
@@ -543,7 +543,7 @@ mod tests {
             );
             assert!(ensure_workspace_write(&root, SessionPermission::Full, uri).is_ok());
         }
-        // 只读的 MOC 内部 URI 不在此列：写入由 ResourceRouter 直接拒绝。
+        // 只读的 MOC 内部 URI 不算越界：写入会被 ResourceRouter 直接拒绝。
         assert!(workspace_escape(&root, "artifact://artifacts/out.txt").is_none());
         assert!(workspace_escape(&root, "plain://dir/file").is_none());
     }
@@ -556,12 +556,12 @@ mod tests {
         std::fs::write(outside.join("target.txt"), "outside\n").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
         std::os::unix::fs::symlink(outside.join("target.txt"), root.join("file-link")).unwrap();
-        // 目录链接下新建文件、以及指向文件外目标的链接，都必须判为越界。
+        // 在目录链接下新建文件、写指向外部文件的链接，都必须判为越界。
         let escaped = workspace_escape(&root, "dir-link/new.txt").expect("目录链接逃逸");
         assert_eq!(escaped, outside.join("new.txt"));
         let file = workspace_escape(&root, "file-link").expect("文件链接逃逸");
         assert_eq!(file, outside.join("target.txt"));
-        // 工作区内的链接仍可正常写入，不产生误报。
+        // 工作区内的链接照常写入，不能误报。
         std::os::unix::fs::symlink(root.join("src"), root.join("internal-link")).unwrap();
         assert!(workspace_escape(&root, "internal-link/main.rs").is_none());
     }

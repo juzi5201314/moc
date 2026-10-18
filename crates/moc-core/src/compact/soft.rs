@@ -1,15 +1,14 @@
-//! 用显式解析的模型生成可更新的历史 checkpoint。
+//! soft 压缩：用显式指定的模型生成可迭代更新的历史 checkpoint。
 //!
-//! 摘要请求是压缩链路里唯一的模型生成点，也是最脆的一环：模型偶尔会把
-//! "把对话压成 checkpoint" 理解成"回一句确认"，旧实现照单全收，上下文从此归零。
-//! 现在的流程是「生成 → 校验 → 定向重试 → 确定性兜底」：
+//! 摘要请求是压缩链路里唯一要模型生成的地方，也是最容易出错的一环：模型偶尔会把
+//! 「把对话压成 checkpoint」理解成「回一句确认」。流程分四步：
 //!
 //! 1. 提示词要求模型按固定段落记录**当前状态**，并把上一版 checkpoint 合并进来；
-//! 2. [`guard`] 校验段落完整性、必保留短语（被否决方案名、计划步号）与关键锚点覆盖
-//!    （路径、标识符、数字）；
-//! 3. 不合格时把缺口清单回灌，最多重试 [`SOFT_MAX_ATTEMPTS`] 次；
-//! 4. 仍不合格时由 [`digest::fallback_checkpoint`] 保住上一版 checkpoint 与最近
-//!    一轮的确定性事实（含被否决方案与计划状态），绝不接受"一句话 checkpoint"。
+//! 2. [`guard`] 校验段落完整性、必保留短语（被否决的方案名、计划步号）和关键锚点
+//!    （路径、标识符、数字）是否齐全；
+//! 3. 不合格时把缺了什么列给模型，最多重试 [`SOFT_MAX_ATTEMPTS`] 次；
+//! 4. 仍不合格就用 [`digest::fallback_checkpoint`]：保住上一版 checkpoint 和最近一轮
+//!    的确定性事实（含被否决方案和计划状态），绝不接受一句话的 checkpoint。
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -26,7 +25,7 @@ use crate::service::CoreInner;
 use crate::session::state::SessionState;
 
 use super::{CompactionBudget, estimate_tokens, messages_tokens, record_compaction};
-// 摘要请求也是模型可见提示词，遵循 `system_prompt` 模块的提示词编写规范。
+// 摘要请求也是模型可见文本，按 `system_prompt` 模块的提示词编写规范编写。
 const SUMMARY_SYSTEM: &str = "You are compressing an agent conversation into a checkpoint. Output only the checkpoint; no tool calls, no mention of this request. Use concise engineering English.";
 const SUMMARY_CONTRACT: &str = "\
 The successor agent sees ONLY this checkpoint plus the most recent turn: anything you leave out is lost.
@@ -34,12 +33,13 @@ The successor agent sees ONLY this checkpoint plus the most recent turn: anythin
 - Preserve every file path, command, error string, identifier, number and signature verbatim; quote user constraints and corrections verbatim.
 - Keep each decision together with the reason it was made, and mark rejected alternatives as rejected.
 - Every rejected alternative goes into `## Decisions and Rejected Options` as `- rejected: <option> — <reason>`; never drop one, never propose it again without new evidence.
-- If the conversation has a numbered plan, restate it in `## Plan Status` with every step marked done / current / pending, and name the current step number.
-- If <previous-summary> is present, merge it: keep every still-relevant fact, drop only what later turns completed or contradicted, and never restart from scratch.
+- If the conversation has a numbered plan, or an `<active-plan>` block, restate it in `## Plan Status` with every step marked done / current / pending, and name the current step number.
+- A `<compaction-summary>` block in the conversation is the prior checkpoint: merge it — keep every still-relevant fact, drop only what later turns completed or contradicted, and never restart from scratch.
+- If a `<previous-summary>` block is present, merge it the same way.
 - If <session-digest> is present it is runtime-recorded ground truth; carry its files, commands and open items into the checkpoint.
 - If <must-preserve> is present, each listed item must appear verbatim in the checkpoint.
 ";
-/// checkpoint 的固定段落；同时也是 [`guard::evaluate`] 的完整性依据。
+/// checkpoint 的固定段落，也是 [`guard::evaluate`] 校验完整性的依据。
 const SUMMARY_SECTIONS: &[&str] = &[
     "Primary Request and Intent",
     "Key Technical Concepts",
@@ -52,12 +52,36 @@ const SUMMARY_SECTIONS: &[&str] = &[
     "Next Step",
     "Critical Context",
 ];
-/// 最大尝试次数：一次生成 + 两次定向修复。
+/// 最多尝试次数：一次生成 + 两次带缺口清单的修复。
 const SOFT_MAX_ATTEMPTS: u32 = 3;
-/// 重试提示词比首轮更长，预算里先留出余量，避免修复轮超窗。
+/// 修复提示比首轮长，预算里先留出这部分，免得修复轮自己超窗。
 const REPAIR_RESERVE_TOKENS: u64 = 512;
-/// 校验锚点只看被丢弃历史的最后这么多个字符（约 6k token）：再往前的细节
-/// 允许被压缩掉，模型可以用 `history://transcript` 回查。
+/// 摘要请求的输出上界：checkpoint 只需几千 token，沿用模型的完整输出上限会从
+/// 输入预算里扣掉几十万 token，摘要模型只看得到历史末尾的一小段。
+const SUMMARY_MAX_OUTPUT_TOKENS: u32 = 32_768;
+
+/// 摘要请求实际申请的输出上限；模型自身上限更小时取模型值。
+fn summary_output_tokens(model_max: u32) -> u32 {
+    model_max.min(SUMMARY_MAX_OUTPUT_TOKENS)
+}
+
+/// 摘要消息（含 system）可用的 token 预算：窗口除去输出上界、工具定义、
+/// 提示词与修复余量。
+fn summary_input_budget(
+    context_window: u64,
+    tools_tokens: u64,
+    prompt_tokens: u64,
+    output_tokens: u32,
+) -> u64 {
+    context_window
+        .saturating_sub(u64::from(output_tokens))
+        .saturating_sub(tools_tokens)
+        .saturating_sub(prompt_tokens)
+        .saturating_sub(REPAIR_RESERVE_TOKENS)
+}
+
+/// 校验锚点只看被丢弃历史的末尾这么多个字符（约 6k token）；更早的细节允许被压掉，
+/// 模型可以用 `history://transcript` 回查。
 const ANCHOR_WINDOW_CHARS: usize = 24_000;
 
 pub(crate) struct SoftContext<'a> {
@@ -67,20 +91,20 @@ pub(crate) struct SoftContext<'a> {
     pub config: &'a ResolvedConfig,
     pub model: &'a ResolvedModel,
     pub system: &'a [Message],
-    /// 指令消息的静态前缀块数；摘要请求沿用主循环的缓存断点锚点。
+    /// 指令消息开头的静态块数；摘要请求沿用主循环的缓存断点位置。
     pub static_prefix: &'a [usize],
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
     pub budget: CompactionBudget,
 }
 
-/// 一次被拒收的 checkpoint 及重试时回灌的缺口。
+/// 一次被拒收的 checkpoint；重试时把缺口连同原因一起列给模型。
 struct Repair {
     reason: String,
     missing: Vec<String>,
 }
 
-/// 摘要采样所需的请求上下文；多次重试共用。
+/// 发一次摘要请求所需的上下文，多次重试共用。
 struct SummaryRequest<'a> {
     inner: &'a CoreInner,
     ctx: &'a RequestContext,
@@ -92,9 +116,9 @@ struct SummaryRequest<'a> {
 }
 
 impl SummaryRequest<'_> {
-    /// 发一次摘要请求，返回模型原始输出。
+    /// 发一次摘要请求，返回模型的原始输出。
     async fn sample(&self, messages: Vec<Message>) -> Result<String, CoreError> {
-        let request = crate::service::prompt::request::build_request(
+        let mut request = crate::service::prompt::request::build_request(
             self.model,
             self.config,
             messages,
@@ -103,10 +127,12 @@ impl SummaryRequest<'_> {
             &self.state.session.id,
             crate::service::prompt::request::CacheAnchors {
                 instruction_static: self.static_prefix,
-                // 摘要是本次请求特有的最后一条消息，不能落缓存断点。
+                // 摘要是本次请求特有的最后一条消息，不能放缓存断点。
                 trailing_reminders: 1,
             },
         );
+        // checkpoint 只有几千 token：按模型完整上限申请输出会从预算里扣掉几十万 token。
+        request.max_output_tokens = Some(summary_output_tokens(self.model.max_output_tokens));
         let cancel = self.ctx.cancel();
         let request_started = Instant::now();
         let response = tokio::select! {
@@ -154,8 +180,8 @@ pub(crate) async fn compact(
         fixed_tokens,
     } = budget;
     let visible_start = visible_history_start(state);
-    // `bash_flags` 与 `history` 一一对应：手动命令的输出是原样文本，不参与锚点校验
-    // （否则模型会被要求逐字复述一段命令输出，而不是工程事实）。
+    // `bash_flags` 与 `history` 一一对应：手动命令的输出是原文，不参与锚点校验，
+    // 否则会要求模型逐字复述一段命令输出，而不是记录工程事实。
     let mut history: Vec<Message> = Vec::new();
     let mut bash_flags: Vec<bool> = Vec::new();
     for entry in state.transcript.iter().skip(visible_start) {
@@ -194,10 +220,17 @@ pub(crate) async fn compact(
     let retained = messages_tokens(&history[start..]);
     let previous_summary = state.summary.as_ref().map(|(_, summary)| summary.as_str());
     let session_digest = digest::prompt_digest(state);
-    // 被否决方案与计划步号决定"压缩后还能不能继续做事"：它们不在锚点体系里
-    // （专名不是路径/数字，步号不是标识符），必须单独抽出来逐字校验。
+    // 上一版 checkpoint 在 `native_input` 为空时由 `synthetic_messages` 注入成
+    // `<compaction-summary>` 消息；只有原生压缩载荷不在消息视图里，才需要提示词补一份。
+    let previous_in_view = state.native_input.is_none();
+    // 被否决的方案和计划步号决定「压缩后还能不能接着做」：它们不属于锚点
+    // （方案名不是路径或数字，步号不是标识符），必须单独抽出来逐字校验。
     let decisions = digest::decisions(&history[..start], previous_summary);
-    let plan_steps = digest::plan_steps(&history[..start], previous_summary);
+    let plan_steps = digest::plan_steps(
+        &history[..start],
+        previous_summary,
+        digest::approved_plan(state),
+    );
     let required = required_facts(&decisions, &plan_steps);
     let must_preserve = must_preserve_block(&decisions, &plan_steps);
     let base_prompt = summary_prompt(
@@ -207,18 +240,22 @@ pub(crate) async fn compact(
         session_digest.as_deref(),
         must_preserve.as_deref(),
         None,
+        previous_in_view,
     );
-    let fixed_summary_tokens = messages_tokens(system).saturating_add(super::tools_tokens(tools));
-    let input_budget = model
-        .context_window
-        .saturating_sub(model.max_output_tokens as u64)
-        .saturating_sub(fixed_summary_tokens)
-        .saturating_sub(estimate_tokens(&base_prompt))
-        .saturating_sub(REPAIR_RESERVE_TOKENS);
-    let (selected_history, omitted_prompts) = fit_summary_history(&history[..start], input_budget);
-    // 锚点只取"被丢弃历史"的最近一段：checkpoint 的契约是记录当前状态，
-    // 要求它复述几十万 token 之前的具体标识符不现实（实测：最近 20 条消息覆盖率
-    // 90%，最近 1000 条约 13%）。上一版 checkpoint 的锚点单独全量参与校验。
+    // 摘要请求复用主循环的消息前缀（system + 注入消息）：从第一条消息起就与主循环
+    // 逐条相同，prompt cache 才有机会命中；预算只再装被这次压缩丢弃的历史。
+    let prefix = super::replay::synthetic_messages(state, Some(system));
+    let input_budget = summary_input_budget(
+        model.context_window,
+        super::tools_tokens(tools),
+        estimate_tokens(&base_prompt),
+        summary_output_tokens(model.max_output_tokens),
+    );
+    let (selected_history, omitted_prompts) =
+        fit_summary_messages(&prefix, &history[..start], input_budget);
+    // 锚点只取被丢弃历史的最近一段：checkpoint 的职责是记录当前状态，要求它复述几十万
+    // token 之前的标识符不现实（实测最近 20 条消息覆盖率 90%，最近 1000 条只有 13%）。
+    // 上一版 checkpoint 的锚点单独全量校验。
     let anchor_start = anchor_window_start(&history[..start], ANCHOR_WINDOW_CHARS);
     let anchors = guard::salient_anchors(
         history[anchor_start..start]
@@ -248,10 +285,9 @@ pub(crate) async fn compact(
             session_digest.as_deref(),
             must_preserve.as_deref(),
             repair.as_ref(),
+            previous_in_view,
         );
-        let mut messages = Vec::with_capacity(system.len() + selected_history.len() + 1);
-        messages.extend_from_slice(system);
-        messages.extend_from_slice(&selected_history);
+        let mut messages = selected_history.clone();
         messages.push(Message::user_text(prompt));
         let raw = summary_request.sample(messages).await?;
         let cleaned = guard::unwrap_checkpoint(&raw);
@@ -276,7 +312,7 @@ pub(crate) async fn compact(
             verdict = ?verdict,
             "summary checkpoint rejected"
         );
-        // 修复提示同时列出锚点缺口与必保留短语：一次重试把两类缺口都补上。
+        // 修复提示同时列出缺的锚点和缺的必保留短语，一次重试补齐两类。
         let mut missing = match &verdict {
             guard::Verdict::Coverage { missing, .. } => missing.clone(),
             guard::Verdict::Required(missing) => missing.clone(),
@@ -295,7 +331,7 @@ pub(crate) async fn compact(
     let summary = match accepted {
         Some(summary) => summary,
         None => match best {
-            // 最佳尝试仍要满足锚点覆盖，且必保留短语至多缺四分之一。
+            // 采纳最好的那次尝试：锚点覆盖要达标，必保留短语最多缺四分之一。
             Some((summary, hits))
                 if hits >= guard::acceptable_hits(anchors.len())
                     && guard::missing_required(&required, &summary).len() * 4 <= required.len() =>
@@ -342,7 +378,7 @@ pub(crate) async fn compact(
     .await
 }
 
-/// 从末尾向前累计字符，返回最近 `budget` 字符窗口的起始下标。
+/// 从末尾往前累计字符数，返回最近 `budget` 个字符窗口的起始下标。
 fn anchor_window_start(history: &[Message], budget: usize) -> usize {
     let mut total = 0usize;
     let mut start = history.len();
@@ -357,7 +393,7 @@ fn anchor_window_start(history: &[Message], budget: usize) -> usize {
     start
 }
 
-/// 估算一条消息的字符量，不额外分配字符串。
+/// 估算一条消息有多少字符，不额外分配字符串。
 fn message_chars(message: &Message) -> usize {
     message
         .content
@@ -371,18 +407,25 @@ fn message_chars(message: &Message) -> usize {
         .sum()
 }
 
-/// 选取能放进 `budget` 的完整轮次后缀；最近一轮自身超预算时退化为有界摘录。
+/// 摘要请求的消息：主循环前缀原样保留，随后是能放进预算的最近轮次。
 ///
-/// 返回 `(交给摘要模型的最近历史, 被省略的完整轮次数)`。预算检查必须覆盖最近的
-/// 一轮：本轮工具结果可能整组超预算，原样塞进摘要请求会让该请求必然超窗，
-/// 之后没有任何压缩方法能成功。
-fn fit_summary_history(history: &[Message], budget: u64) -> (Vec<Message>, usize) {
-    if history.is_empty() {
-        return (Vec::new(), 0);
+/// 返回 `(消息, 被丢弃的用户轮次数)`。前缀自身超预算（例如超大计划文档）时只发前缀：
+/// 丢掉前缀比超窗更糟，主循环在同一份状态下也同样会超窗。预算检查必须覆盖最近的一轮：
+/// 本轮的工具结果可能整组超预算，原样放进摘要请求必然超窗，之后任何压缩方法都会失败。
+fn fit_summary_messages(
+    prefix: &[Message],
+    history: &[Message],
+    budget: u64,
+) -> (Vec<Message>, usize) {
+    let head = messages_tokens(prefix);
+    if head > budget {
+        return (prefix.to_vec(), 0);
     }
+    let mut view = Vec::with_capacity(prefix.len() + history.len());
+    view.extend_from_slice(prefix);
+    let mut remaining = budget - head;
     let mut end = history.len();
     let mut start = end;
-    let mut remaining = budget;
     let mut kept = false;
     while end > 0 {
         let prompt_start = history[..end]
@@ -394,21 +437,27 @@ fn fit_summary_history(history: &[Message], budget: u64) -> (Vec<Message>, usize
             if kept {
                 break;
             }
-            return (oversized_excerpt(&history[prompt_start..end], budget), 1);
+            view.extend(oversized_excerpt(&history[prompt_start..end], remaining));
+            return (view, user_prompts(&history[..prompt_start]));
         }
         start = prompt_start;
         kept = true;
         remaining = remaining.saturating_sub(cost);
         end = prompt_start;
     }
-    let omitted_prompts = history[..start]
-        .iter()
-        .filter(|message| message.role == moc_llm::Role::User)
-        .count();
-    (history[start..].to_vec(), omitted_prompts)
+    view.extend_from_slice(&history[start..]);
+    (view, user_prompts(&history[..start]))
 }
 
-/// 超预算轮次的有界摘录；按 4 字符 1 token 的估算裁剪序列化文本。
+/// 被丢弃历史里的用户轮次数；提示词用它说明还有多少内容不在请求里。
+fn user_prompts(history: &[Message]) -> usize {
+    history
+        .iter()
+        .filter(|message| message.role == moc_llm::Role::User)
+        .count()
+}
+
+/// 超预算轮次的有界摘录：把序列化文本按 4 字符 1 token 的估算裁剪。
 fn oversized_excerpt(group: &[Message], budget: u64) -> Vec<Message> {
     let serialized = serde_json::to_string(group).unwrap_or_default();
     let max_chars = usize::try_from(budget.saturating_mul(4))
@@ -427,6 +476,7 @@ fn summary_prompt(
     session_digest: Option<&str>,
     must_preserve: Option<&str>,
     repair: Option<&Repair>,
+    previous_in_view: bool,
 ) -> String {
     let sections = sections_block();
     let mut prompt =
@@ -436,7 +486,9 @@ fn summary_prompt(
     prompt.push_str(SUMMARY_CONTRACT);
     prompt.push_str("</checkpoint-contract>\n\n");
     prompt.push_str(&sections);
-    if let Some((_, summary)) = &state.summary {
+    // 旧 checkpoint 已经在消息前缀里（`<compaction-summary>`）时不再重复一遍：
+    // 重复会占预算，也让模型看到两份不一致的副本。
+    if !previous_in_view && let Some((_, summary)) = &state.summary {
         prompt.push_str("<previous-summary>\n");
         prompt.push_str(summary);
         prompt.push_str("\n</previous-summary>\n\n");
@@ -475,9 +527,9 @@ fn summary_prompt(
     prompt
 }
 
-/// 必保留短语：计划步号在前（决定"进行到第几步"），其后是被否决方案的专名。
+/// 必保留短语：计划步号在前（决定「做到第几步了」），后面是被否决方案的名字。
 fn required_facts(decisions: &[digest::Decision], plan_steps: &[String]) -> Vec<String> {
-    /// 校验与提示词都不宜无限增长：超过这个条数后只保留先出现的。
+    /// 校验结果和提示词都不能无限长：超过这个条数后只保留先出现的。
     const MAX_REQUIRED_FACTS: usize = 32;
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -497,7 +549,7 @@ fn required_facts(decisions: &[digest::Decision], plan_steps: &[String]) -> Vec<
     out
 }
 
-/// 提示词里的 `<must-preserve>`：给模型一份可以逐字照抄的清单。
+/// 提示词里的 `<must-preserve>`：一份模型可以直接照抄的清单。
 fn must_preserve_block(decisions: &[digest::Decision], plan_steps: &[String]) -> Option<String> {
     if decisions.is_empty() && plan_steps.is_empty() {
         return None;
@@ -527,7 +579,7 @@ fn must_preserve_block(decisions: &[digest::Decision], plan_steps: &[String]) ->
     Some(out)
 }
 
-/// 固定段落清单；提示词与校验共用同一份顺序。
+/// 固定段落清单；提示词和校验用同一份顺序。
 fn sections_block() -> String {
     let mut out = String::with_capacity(SUMMARY_SECTIONS.len() * 40 + 32);
     out.push_str("Use exactly these sections:\n");
@@ -540,7 +592,7 @@ fn sections_block() -> String {
     out
 }
 
-/// 拒收原因与缺失事实；重试时原样回灌，模型才知道该补什么。
+/// 拒收原因和缺失的事实，重试时原样发给模型，它才知道该补什么。
 fn repair_block(repair: &Repair) -> String {
     let mut out = String::from("<previous-attempt-rejected>\n");
     out.push_str("Your previous reply was rejected: ");
@@ -569,7 +621,7 @@ fn summary_transcript(
     start: usize,
     instructions: Option<&str>,
 ) -> String {
-    let mut transcript = summary_prompt(state, instructions, 0, None, None, None);
+    let mut transcript = summary_prompt(state, instructions, 0, None, None, None, false);
     for message in &history[..start] {
         transcript.push_str(&serde_json::to_string(message).expect("Message 可序列化"));
         transcript.push_str("\n\n");
@@ -666,6 +718,7 @@ mod tests {
             Some("<session-digest>\n- a.rs\n</session-digest>"),
             None,
             None,
+            true,
         );
         assert!(prompt.contains("<checkpoint-contract>"));
         assert!(prompt.contains("never restart from scratch"));
@@ -712,7 +765,7 @@ mod tests {
             Message::assistant_text("recent assistant"),
         ];
         let budget = messages_tokens(&history[2..]);
-        let (selected, omitted) = fit_summary_history(&history, budget);
+        let (selected, omitted) = fit_summary_messages(&[], &history, budget);
         assert_eq!(selected.len(), 2);
         assert_eq!(selected[0].text(), "recent user");
         assert_eq!(omitted, 1);
@@ -725,7 +778,7 @@ mod tests {
             Message::user_text("recent"),
         ];
         let budget = messages_tokens(&history[1..]);
-        let (selected, omitted) = fit_summary_history(&history, budget);
+        let (selected, omitted) = fit_summary_messages(&[], &history, budget);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].text(), "recent");
         assert_eq!(omitted, 1);
@@ -733,18 +786,18 @@ mod tests {
 
     #[test]
     fn oversized_recent_prompt_falls_back_to_a_bounded_excerpt() {
-        // 最近一轮（含本轮工具结果）自身超预算：整组塞进摘要请求必然超窗。
+        // 最近一轮（含本轮工具结果）自己就超预算：整组放进摘要请求必然超窗。
         let history = vec![Message::user_text("x".repeat(4_000))];
         let budget = 50;
-        let (selected, omitted) = fit_summary_history(&history, budget);
+        let (selected, omitted) = fit_summary_messages(&[], &history, budget);
         assert_eq!(selected.len(), 1);
-        assert_eq!(omitted, 1);
+        assert_eq!(omitted, 0, "摘录代表的是当前这一轮，不是被省略的更早轮次");
         let text = selected[0].text();
         assert!(text.starts_with("<oversized-prompt>"), "{text}");
         assert!(text.ends_with("</oversized-prompt>"), "{text}");
         assert!(
             messages_tokens(&selected) <= budget + 32,
-            "摘录必须落在预算内，实际 {} token",
+            "摘录必须在预算内，实际 {} token",
             messages_tokens(&selected)
         );
     }
@@ -757,12 +810,120 @@ mod tests {
             Message::tool_result("call_1", "y".repeat(8_000), false),
         ];
         let budget = 40;
-        let (selected, omitted) = fit_summary_history(&history, budget);
+        let (selected, omitted) = fit_summary_messages(&[], &history, budget);
         assert_eq!(selected.len(), 1);
         assert_eq!(omitted, 1);
         let text = selected[0].text();
         assert!(text.starts_with("<oversized-prompt>"), "{text}");
         assert!(text.contains("current"), "摘录必须来自本轮而不是更早的轮次");
         assert!(messages_tokens(&selected) <= budget + 32);
+    }
+
+    #[test]
+    fn summary_output_is_capped_for_large_output_models() {
+        assert_eq!(summary_output_tokens(384_000), SUMMARY_MAX_OUTPUT_TOKENS);
+        assert_eq!(summary_output_tokens(8_000), 8_000);
+    }
+
+    #[test]
+    fn summary_budget_covers_a_full_context_window_history() {
+        // 500k 窗口的 85% 触发点上，被丢弃的历史仍必须放得下。
+        let budget = summary_input_budget(500_000, 20_000, 5_000, summary_output_tokens(384_000));
+        assert!(budget >= 435_000, "输入预算只剩 {budget} token");
+    }
+
+    #[test]
+    fn summary_view_keeps_the_main_loop_prefix_when_it_fits() {
+        let prefix = vec![
+            Message::user_text("system"),
+            Message::user_text("<compaction-summary>prior</compaction-summary>"),
+        ];
+        let history = vec![
+            Message::user_text("u1"),
+            Message::assistant_text("a1"),
+            Message::user_text("u2"),
+        ];
+        let budget = messages_tokens(&prefix) + messages_tokens(&history);
+        let (view, omitted) = fit_summary_messages(&prefix, &history, budget);
+        assert_eq!(view.len(), 5);
+        assert_eq!(view[0].text(), "system");
+        assert_eq!(view[2].text(), "u1");
+        assert_eq!(view[4].text(), "u2");
+        assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn summary_view_drops_oldest_turns_when_over_budget() {
+        let prefix = vec![
+            Message::user_text("system"),
+            Message::user_text("<compaction-summary>prior</compaction-summary>"),
+        ];
+        let history = vec![
+            Message::user_text("u1".repeat(40)),
+            Message::assistant_text("a1"),
+            Message::user_text("u2"),
+        ];
+        let budget = messages_tokens(&prefix) + messages_tokens(&history[2..]);
+        let (view, omitted) = fit_summary_messages(&prefix, &history, budget);
+        assert_eq!(view.len(), 3);
+        assert_eq!(view[0].text(), "system");
+        assert_eq!(view[2].text(), "u2");
+        assert_eq!(omitted, 1, "被省略的只有第一轮用户请求");
+    }
+
+    #[test]
+    fn summary_view_keeps_the_prefix_when_it_exceeds_the_budget() {
+        // 超大计划文档撑爆预算：前缀不能丢，否则缓存前缀与主循环分叉。
+        let prefix = vec![
+            Message::user_text("system"),
+            Message::user_text("x".repeat(4_000)),
+        ];
+        let history = vec![Message::user_text("u1")];
+        let (view, omitted) = fit_summary_messages(&prefix, &history, 10);
+        assert_eq!(view.len(), prefix.len());
+        assert_eq!(view[0].text(), "system");
+        assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn summary_prompt_omits_a_replayed_previous_summary() {
+        let header = Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "t".into(),
+            1,
+        );
+        let parent = header.id().to_owned();
+        let summary = Entry::from_payload(
+            EntryPayload::Compaction {
+                method: "soft".into(),
+                summary: "PRIOR CHECKPOINT".into(),
+                first_kept_id: None,
+                tokens_before: 20,
+                tokens_after: 10,
+                instructions: None,
+                native: None,
+                model: Some("p/m".into()),
+                reminder: None,
+            },
+            parent,
+            2,
+        );
+        let state = SessionState::from_entries(vec![header, summary]).unwrap();
+
+        let replayed = summary_prompt(&state, None, 0, None, None, None, true);
+        assert!(
+            !replayed.contains("<previous-summary>\nPRIOR CHECKPOINT"),
+            "上一版 checkpoint 已在消息前缀里，不能再占预算：{replayed}"
+        );
+        let isolated = summary_prompt(&state, None, 0, None, None, None, false);
+        assert!(
+            isolated.contains("<previous-summary>\nPRIOR CHECKPOINT\n</previous-summary>"),
+            "原生压缩载荷不在消息视图里时必须补上上一版 checkpoint：{isolated}"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Provider 请求与后台进程共享的并发许可；许可随真实工作完成而释放。
+//! 供应商请求和后台进程共享的并发许可；工作真正完成后才释放。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,7 +31,7 @@ impl Gate {
         loop {
             let changed = self.changed.notified();
             tokio::pin!(changed);
-            // 注册在检查之前，避免许可释放发生在检查与 await 之间造成丢失唤醒。
+            // 先注册再检查，免得许可在检查和 await 之间被释放而丢掉唤醒。
             changed.as_mut().enable();
             if cancel.is_cancelled() {
                 return None;

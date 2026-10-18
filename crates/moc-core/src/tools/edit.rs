@@ -1,4 +1,4 @@
-//! 仅允许编辑已经展示的锚点范围；拒绝时直接服务当前文件。
+//! edit 工具：只能编辑已经展示过锚点的范围；锚点出错时在错误里附上当前文件的带锚点内容。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
@@ -9,7 +9,7 @@ use crate::hashline::apply::{EditError, EditOutput, EditRequest, apply_edit};
 use crate::hashline::{anchor_line_token, parse_anchor};
 use crate::resources::ResourceRouter;
 
-/// 需要回灌当前锚点的错误码；其余错误保持原样。
+/// 这些错误会在结果里附上当前文件的带锚点内容；其它错误原样返回。
 const ANCHOR_ERRORS: [&str; 6] = [
     "E_UNSERVED_RANGE",
     "E_STALE_ANCHOR",
@@ -18,14 +18,14 @@ const ANCHOR_ERRORS: [&str; 6] = [
     "E_BAD_PAYLOAD",
     "E_OVERLAP",
 ];
-/// 回灌最多展示的行数，避免错误输出绕过 read 的分页预算。
+/// 附带内容最多显示的行数，避免错误输出绕过 read 的分页预算。
 const FEEDBACK_MAX_LINES: usize = 200;
 
 fn reject_resource_path(path: &str) -> Result<(), ToolError> {
     ResourceRouter::write(path).map_err(|error| ToolError::new(error.code, error.message))
 }
 
-/// 将兼容载荷归一为单文件编辑请求；授权预览与执行共用此入口。
+/// 把各种兼容写法的参数统一成单文件编辑请求；授权预览和执行都用它。
 pub(crate) fn parse_requests(args: Value) -> Result<EditRequest, ToolError> {
     let (path, edits, move_lines) = normalize_args(args)?;
     Ok(EditRequest {
@@ -217,10 +217,10 @@ impl Tool for EditTool {
     }
 }
 
-/// 授权预览：用与执行相同的计划计算 edit 将产生的结构化 diff。
+/// 授权预览：用与执行相同的计划算出 edit 会产生的结构化 diff。
 ///
-/// 任一文件无法预览（如 E_UNSERVED_RANGE）时整体放弃：宁可没有预览，也不给
-/// 出一份与实际执行无关的 diff。
+/// 任何一个文件无法预览（如 E_UNSERVED_RANGE）就整体放弃：宁可没有预览，也不给一份
+/// 和实际执行对不上的 diff。
 pub(crate) fn preview_arguments(ctx: &ToolCtx, args: &Value) -> Option<moc_protocol::ToolDiff> {
     let request = parse_requests(args.clone()).ok()?;
     reject_resource_path(&request.path).ok()?;
@@ -286,7 +286,7 @@ async fn apply_one(
 ) -> Result<Result<EditOutput, ToolOutcome>, ToolError> {
     reject_resource_path(&request.path)?;
     let source_path = resolve_tool_path(&ctx.cwd, &request.path)?;
-    // 授权入口之外的调用也要受检；判定与授权阶段同源。
+    // 绕过授权入口的调用也要检查，判断方式与授权阶段相同。
     crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &source_path)?;
     request.path = source_path.to_string_lossy().into_owned();
     let target_path = request
@@ -346,9 +346,9 @@ async fn apply_one(
     }
 }
 
-/// 锚点错误后回灌当前令牌。
+/// 锚点出错后附上当前令牌。
 ///
-/// 只在 epoch 与行数一致时刷新；否则保留原错误并提示重读。输出限制在失败
+/// 只在 epoch 和行数都对得上时刷新，否则保留原错误并提示重新读取。附带的内容限制在出错
 /// 锚点附近最多 [`FEEDBACK_MAX_LINES`] 行，避免绕过 read 的分页预算。
 fn append_anchor_feedback(
     ctx: &ToolCtx,
@@ -415,7 +415,7 @@ fn append_anchor_feedback(
     }
 }
 
-/// 源文件回灌的参考行号：编辑锚点与 move 源锚点。
+/// 源文件附带内容围绕的行号：编辑锚点和 move 的源锚点。
 fn source_hints(request: &EditRequest) -> Vec<usize> {
     let mut hints = Vec::new();
     for [from, to, _] in &request.edits {
@@ -435,7 +435,7 @@ fn source_hints(request: &EditRequest) -> Vec<usize> {
     hints
 }
 
-/// 目标文件回灌的参考行号：move 的插入锚点。
+/// 目标文件附带内容围绕的行号：move 的插入锚点。
 fn target_hints(request: &EditRequest) -> Vec<usize> {
     request
         .move_lines
@@ -456,7 +456,7 @@ mod tests {
             "path": "file.txt",
             "edits": [["42sr", "inserted"]],
         }))
-        .expect("二元组应归一化");
+        .expect("二元组应统一成三元组");
         assert_eq!(
             request.edits,
             vec![["42sr".to_owned(), "42sr".to_owned(), "inserted".to_owned()]]
@@ -465,14 +465,14 @@ mod tests {
 
     #[test]
     fn rejects_files_field_and_unknown_fields() {
-        let error = parse_requests(serde_json::json!({"files": []})).expect_err("files 应拒绝");
+        let error = parse_requests(serde_json::json!({"files": []})).expect_err("应拒绝 files 字段");
         assert!(error.message.contains("takes one file per call"));
         let error = parse_requests(serde_json::json!({
             "path": "file.txt",
             "edits": [["42sr", "42sr", "replacement"]],
             "file": "other.txt",
         }))
-        .expect_err("未声明字段应拒绝");
+        .expect_err("应拒绝未声明的字段");
         assert!(error.message.contains("unexpected field"));
     }
 
@@ -482,14 +482,14 @@ mod tests {
             "path": "file.txt",
             "edits": [{"from":"1aa", "to":"2bb", "replace":"new"}],
         }))
-        .expect("对象编辑应归一化");
+        .expect("对象写法应统一成三元组");
         assert_eq!(request.edits[0], ["1aa", "2bb", "new"]);
     }
 
     #[test]
     fn rejects_empty_edits_early() {
         let error = parse_requests(serde_json::json!({"path":"file.txt", "edits":[]}))
-            .expect_err("空编辑应拒绝");
+            .expect_err("应拒绝空的 edits");
         assert!(error.message.contains("at least one item"));
     }
 }

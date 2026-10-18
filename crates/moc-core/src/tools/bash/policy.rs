@@ -1,7 +1,7 @@
-//! workspace 沙盒内直接执行的 bash 命令判定。
+//! 判断 bash 命令能否直接在 workspace 沙盒里执行。
 //!
-//! 白名单命令和用户配置的正则规则只决定命令能否在 workspace 沙盒中执行；
-//! 无法确认安全的命令须经用户批准，并在沙盒外执行一次以尊重用户决定。
+//! 白名单命令和用户配置的正则规则只决定命令能否直接在沙盒里执行。无法确认安全的命令
+//! 要先经用户批准，批准后在沙盒外执行这一次。
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -10,7 +10,7 @@ use grep_matcher::Matcher;
 
 use crate::{config::BashConfig, tools::ToolError};
 
-/// 允许核实的 sed 脚本文件上限；超过或不可读时按「写工作区外」处理。
+/// 能检查的 sed 脚本文件大小上限；超过上限或读不了时，按「会写工作区外」处理。
 const MAX_SED_SCRIPT_BYTES: u64 = 64 * 1024;
 
 /// 返回命令是否可在 workspace 沙盒中直接执行。
@@ -154,8 +154,8 @@ fn contains_unsafe_shell_syntax(segment: &str) -> bool {
             if ch == active {
                 quote = None;
             } else if active == '"' && matches!(ch, '$' | '`') {
-                // 双引号内同样会展开命令替换与参数展开（echo "$(id)"），
-                // 单引号内的 `$`/`` ` `` 是字面量，保持放行。
+                // 双引号里同样会做命令替换和参数展开（echo "$(id)"）；
+                // 单引号里的 `$`、`` ` `` 是字面量，照常放行。
                 return true;
             }
             continue;
@@ -233,8 +233,8 @@ fn builtin_writes(name: &str, args: &[String]) -> bool {
     }
 }
 
-/// sed 脚本的写目标与执行命令都会绕开白名单语义：`w`/`W` 可能写到工作区外，
-/// `e` 命令、`s///e` 标志与解析不了的脚本等于在白名单命令里藏一段任意 shell。
+/// sed 脚本的写文件和执行命令都会绕过白名单的本意：`w`/`W` 可能写到工作区外；
+/// `e` 命令、`s///e` 标志和解析不了的脚本，等于在白名单命令里藏了任意 shell。
 fn sed_escapes_workspace(args: &[String], cwd: &Path, workspace: &Path) -> bool {
     let escapes = |script: &str| {
         let (targets, opaque) = scan_sed_script(script);
@@ -251,12 +251,12 @@ fn sed_escapes_workspace(args: &[String], cwd: &Path, workspace: &Path) -> bool 
         .iter()
         .any(|file| match readable_script(file, cwd, workspace) {
             Some(text) => escapes(&text),
-            // 脚本文件在工作区外、不可读或过大时无从核实，按外部写入交给审批。
+            // 脚本文件在工作区外、读不了或太大时无法检查，按写工作区外处理，交给用户审批。
             None => true,
         })
 }
 
-/// 拆分 sed 参数为内联脚本与 `-f` 脚本文件：给了 `-e`/`-f` 后，位置参数是输入文件。
+/// 把 sed 参数拆成内联脚本和 `-f` 脚本文件。给了 `-e`/`-f` 时，位置参数都是输入文件。
 fn sed_scripts(args: &[String]) -> (Vec<String>, Vec<String>) {
     let mut scripts = Vec::new();
     let mut files = Vec::new();
@@ -295,7 +295,7 @@ fn sed_scripts(args: &[String]) -> (Vec<String>, Vec<String>) {
     (scripts, files)
 }
 
-/// 读取工作区内的 sed 脚本文件；为假说明内容不可核实。
+/// 读取工作区内的 sed 脚本文件；返回 `None` 表示无法检查其内容。
 fn readable_script(file: &str, cwd: &Path, workspace: &Path) -> Option<String> {
     let path = Path::new(file);
     let absolute = if path.is_absolute() {
@@ -314,8 +314,8 @@ fn readable_script(file: &str, cwd: &Path, workspace: &Path) -> Option<String> {
     fs::read_to_string(&canonical).ok()
 }
 
-/// 扫描一段 sed 脚本，返回 `w`/`W`/`s///w` 的写目标，以及脚本是否含执行 shell
-/// 或无法解析的命令：这两种情况都不允许直放沙盒。
+/// 扫描一段 sed 脚本，返回 `w`/`W`/`s///w` 的写入目标，以及脚本里是否有执行 shell
+/// 或解析不了的命令；后两种情况都不能直接放进沙盒执行。
 fn scan_sed_script(script: &str) -> (Vec<String>, bool) {
     let chars: Vec<char> = script.chars().collect();
     let mut targets = Vec::new();
@@ -362,14 +362,14 @@ fn scan_sed_script(script: &str) -> (Vec<String>, bool) {
             'y' => {
                 index = scan_sed_delimited_parts(&chars, index, 2);
             }
-            // `a`/`i`/`c` 的文本与 `r`/`R` 的文件名都读到行尾；标签读到行尾前一个分号。
+            // `a`/`i`/`c` 的文本和 `r`/`R` 的文件名都读到行尾；标签读到分号或行尾为止。
             'a' | 'i' | 'c' | 'r' | 'R' => index = line_end(&chars, index),
             'b' | 't' | 'T' | ':' => index = command_end(&chars, index),
             'd' | 'D' | 'F' | 'g' | 'G' | 'h' | 'H' | 'l' | 'n' | 'N' | 'p' | 'P' | 'q' | 'Q'
             | 'v' | 'x' | 'z' | '=' => {}
-            // 解析不了的命令按不可核实处理：脚本语义无法确认时一律交出审批。
+            // 解析不了的命令视为无法检查：确认不了脚本会做什么，就交给用户审批。
             _ => {
-                tracing::warn!("sed 脚本包含无法解析的命令，交由审批确认");
+                tracing::warn!("sed 脚本里有无法解析的命令，交给用户审批");
                 return (targets, true);
             }
         }
@@ -377,7 +377,7 @@ fn scan_sed_script(script: &str) -> (Vec<String>, bool) {
     (targets, opaque)
 }
 
-/// 解析 `s` 命令：返回（下一个下标、`w` 标志的写目标、是否含执行 shell 的标志）。
+/// 解析 `s` 命令，返回（下一个下标、`w` 标志的写入目标、是否带执行 shell 的标志）。
 fn scan_sed_substitute(chars: &[char], start: usize) -> (usize, Option<String>, bool) {
     let Some(&delimiter) = chars.get(start) else {
         return (chars.len(), None, false);
@@ -410,7 +410,7 @@ fn scan_sed_substitute(chars: &[char], start: usize) -> (usize, Option<String>, 
     (cursor, target, executes)
 }
 
-/// 跳过分隔符包围的 `count` 段；未闭合时视为读到了脚本末尾。
+/// 跳过 `count` 段由分隔符包围的内容；没闭合时视为读到了脚本末尾。
 fn scan_sed_delimited_parts(chars: &[char], start: usize, count: usize) -> usize {
     let Some(&delimiter) = chars.get(start) else {
         return chars.len();
@@ -439,7 +439,7 @@ fn scan_sed_delimited_parts(chars: &[char], start: usize, count: usize) -> usize
     cursor
 }
 
-/// 跳过 sed 地址：行号、`$`、`/正则/`、`\c正则c`、`,`/`+`/`~` 与 `!` 前导组合。
+/// 跳过 sed 地址：行号、`$`、`/正则/`、`\c正则c`，以及 `,`/`+`/`~` 和 `!` 组成的前缀。
 fn skip_sed_address(chars: &[char], start: usize) -> usize {
     let mut cursor = skip_blanks(chars, start);
     loop {
@@ -748,22 +748,22 @@ mod tests {
             );
         };
         for command in [
-            // 双引号内的命令替换与参数展开都不得再被白名单放过。
+            // 双引号里的命令替换和参数展开都不能被白名单放过。
             r#"echo "$(id)""#,
             "echo \"`id`\"",
             r#"cat "$HOME/.moc/config.toml""#,
-            // sed 的写脚本与执行命令躲在白名单命令里。
+            // 藏在白名单命令 sed 里的写文件和执行命令。
             "sed -n 'w /etc/passwd' x",
             "sed -n 's/a/b/w /etc/passwd' x",
             "sed '1e id' x",
             "sed 's/a/$(id)/e' x",
-            // 无法核实的脚本文件（不存在或在工作区外）同样交给审批。
+            // 无法检查的脚本文件（不存在或在工作区外）同样交给审批。
             "sed -f missing.sed x",
         ] {
             denied(command);
         }
         denied(&format!("sed -f {} x", script.display()));
-        // 解析不了的命令按不可核实处理，同样不得直放沙盒。
+        // 解析不了的命令视为无法检查，同样不能直接放进沙盒。
         denied("sed -n '1,2.w /tmp/leak' x");
         denied("sed -n '1w /tmp/leak' x");
     }

@@ -1,4 +1,4 @@
-//! Grok Build 的摘要输入阶梯：原样、预算裁剪、有损裁剪三档。
+//! Grok Build 摘要请求的输入阶梯：原样发送、按预算裁剪、有损裁剪，代价依次升高。
 
 use moc_llm::{ContentPart, Message, Role};
 
@@ -6,25 +6,25 @@ use crate::compact::{
     MESSAGE_TOKEN_OVERHEAD, estimate_tokens, message_tokens, messages_tokens, prefix_within_tokens,
 };
 
-/// 为摘要输出、系统提示与工具定义预留的窗口份额。
+/// 为摘要输出、系统提示和工具定义预留的窗口份额。
 pub(crate) const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
 
-/// 有损阶段的窗口占比；超限请求只保留这部分对话。
+/// 有损阶段使用窗口的百分比；超限请求只保留这一部分对话。
 pub(crate) const LOSSY_WINDOW_PERCENT: u64 = 70;
 
 /// 摘要请求的输入档位，按代价从低到高排列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputStage {
-    /// 原始对话原样发送，只修掉不完整的尾部工具调用。
+    /// 原始对话原样发送，只去掉尾部不完整的工具调用。
     Verbatim,
-    /// 丢弃最老的完整轮次，直到放进预算。
+    /// 从最老的完整轮次开始丢弃，直到能放进预算。
     Fitted,
-    /// 先删除图片与思维链，再按更紧的比例裁剪。
+    /// 先删掉图片和思维链，再按更紧的比例裁剪。
     Lossy,
 }
 
 impl InputStage {
-    /// 阶梯中的下一档；`Lossy` 之后没有档位，调用方应报告上下文超限。
+    /// 阶梯中的下一档；`Lossy` 之后没有了，调用方应报告上下文超限。
     pub(crate) fn next(self) -> Option<Self> {
         match self {
             Self::Verbatim => Some(Self::Fitted),
@@ -34,7 +34,7 @@ impl InputStage {
     }
 }
 
-/// 保留摘要输出余量后的输入预算。
+/// 扣掉摘要输出余量后的输入预算。
 pub(crate) fn fitted_budget(context_window: u64, tools_tokens: u64) -> u64 {
     context_window
         .saturating_sub(SUMMARY_BUDGET_RESERVE_TOKENS)
@@ -49,7 +49,7 @@ pub(crate) fn lossy_budget(context_window: u64, tools_tokens: u64) -> u64 {
         .saturating_sub(tools_tokens)
 }
 
-/// 首次尝试使用的档位：系统提示与对话合计放得下就原样发送。
+/// 第一次尝试用哪一档：系统提示和对话合起来放得下就原样发送。
 pub(crate) fn initial_stage(
     system: &[Message],
     messages: &[Message],
@@ -84,7 +84,7 @@ pub(crate) fn prepare_stage(
     }
 }
 
-/// 删除尾部悬空的助手工具调用：被裁掉结果的调用不能单独发往上游。
+/// 去掉尾部悬空的助手工具调用：结果已被裁掉的调用不能单独发给上游。
 pub(crate) fn truncate_incomplete_tail(mut messages: Vec<Message>) -> Vec<Message> {
     while messages.last().is_some_and(|message| {
         message.role == Role::Assistant && message.tool_calls().next().is_some()
@@ -94,7 +94,7 @@ pub(crate) fn truncate_incomplete_tail(mut messages: Vec<Message>) -> Vec<Messag
     messages
 }
 
-/// 有损阶段的内容降级：图片与思维链不参与摘要。
+/// 有损阶段的内容降级：图片和思维链不参与摘要。
 fn drop_images_and_reasoning(messages: Vec<Message>) -> Vec<Message> {
     messages
         .into_iter()
@@ -113,8 +113,8 @@ fn drop_images_and_reasoning(messages: Vec<Message>) -> Vec<Message> {
 
 /// 按完整轮次裁剪历史，绝不拆开工具调用与结果的配对。
 ///
-/// 轮次从最新一轮向前累加；最新一轮自身超预算时退化为有界摘录，因为摘要请求
-/// 必须可发送——否则该次压缩必然超窗，之后没有任何方法能成功。
+/// 从最新一轮往前累加；最新一轮自己就超预算时退化成有界摘录，因为摘要请求必须能发出去，
+/// 否则这次压缩必然超窗，之后任何方法都救不回来。
 pub(crate) fn fit_conversation_to_budget(messages: Vec<Message>, budget: u64) -> Vec<Message> {
     if messages.is_empty() || messages_tokens(&messages) <= budget {
         return messages;
@@ -139,7 +139,7 @@ pub(crate) fn fit_conversation_to_budget(messages: Vec<Message>, budget: u64) ->
     }
 }
 
-/// 按用户消息切分轮次；首轮可以从助手/工具消息开始。
+/// 按用户消息切分轮次；首轮可以从助手或工具消息开始。
 fn rounds(messages: &[Message]) -> Vec<std::ops::Range<usize>> {
     let mut starts: Vec<usize> = messages
         .iter()
@@ -158,7 +158,7 @@ fn rounds(messages: &[Message]) -> Vec<std::ops::Range<usize>> {
         .collect()
 }
 
-/// 单轮超预算时的有界摘录：保留尾部工具结果整组，并尽量保住该轮的用户请求。
+/// 单轮超预算时的有界摘录：整组保留尾部的工具结果，并尽量保住这一轮的用户请求。
 fn shrink_round(round: &[Message], budget: u64) -> Vec<Message> {
     let mut results_start = round.len();
     while results_start > 0 && round[results_start - 1].role == Role::Tool {

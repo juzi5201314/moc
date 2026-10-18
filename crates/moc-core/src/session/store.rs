@@ -1,4 +1,4 @@
-//! JSONL transcript 存储与原子历史重写。
+//! JSONL transcript 的存储和原子历史重写。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use crate::error::CoreError;
 
 use super::entries::Entry;
 
-/// 一个会话的 transcript 与 sidecar 路径。
+/// 一个会话的 transcript 和 sidecar 路径。
 #[derive(Debug, Clone)]
 pub struct SessionPaths {
     pub transcript: PathBuf,
@@ -43,11 +43,11 @@ impl SessionPaths {
     }
 }
 
-/// 单会话 JSONL 文件句柄；支持磁盘尚无文件的延迟初始化。
+/// 单个会话的 JSONL 文件句柄；磁盘上还没有文件时延迟创建。
 ///
-/// 新会话创建时只登记内存，首次 append/rewrite 才把 header（及后续 entry）
-/// 真正写入磁盘。这样从未产生任何 entry 的空会话不会留下 JSONL 文件，
-/// 也就不会出现在 `session/list` 中。
+/// 新会话创建时只登记内存，第一次 append/rewrite 才把 header（以及后续 entry）真正
+/// 写入磁盘。这样从未产生 entry 的空会话不会留下 JSONL 文件，也不会出现在
+/// `session/list` 里。
 pub struct SessionFile {
     path: PathBuf,
     file: tokio::sync::Mutex<Option<File>>,
@@ -59,10 +59,10 @@ impl SessionFile {
         &self.path
     }
 
-    /// 在目标路径创建新的 transcript 文件并写入 header 作为第一行。
+    /// 在目标路径创建 transcript 文件，并把 header 写成第一行。
     ///
-    /// 供延迟落盘使用：目录按需创建，`create_new` 保证并发下只有一个
-    /// 写入者胜出，输者因文件已存在而报错（由上层互斥锁避免）。
+    /// 供延迟写盘使用：目录按需创建，`create_new` 保证并发时只有一个写入者成功，
+    /// 另一个因文件已存在而报错（上层互斥锁会避免这种情况）。
     pub async fn create_with_header(path: &Path, header: &Entry) -> Result<Self, CoreError> {
         let parent = path
             .parent()
@@ -118,8 +118,8 @@ impl SessionFile {
 
     /// 重新打开磁盘上的 transcript。
     ///
-    /// 外部维护可能已把日志归档成 `.jsonl.gz`：先解压恢复可写日志再打开，
-    /// 否则重新打开的会话无法再追加记录。调用者持会话文件锁。
+    /// 外部维护可能已经把日志归档成 `.jsonl.gz`：先解压恢复可写日志再打开，否则重新
+    /// 打开的会话无法再追加记录。调用者要持有会话文件锁。
     pub async fn reopen(&self) -> Result<(), CoreError> {
         super::maintenance::restore(&self.path).await?;
         let mut current = self.file.lock().await;
@@ -134,7 +134,7 @@ impl SessionFile {
         Ok(())
     }
 
-    /// 追加一条完整 JSONL 记录并 flush；磁盘文件缺失时以 header 起步重建。
+    /// 追加一条完整的 JSONL 记录并 flush；磁盘文件不存在时先用 header 重建。
     pub async fn append(&self, entry: &Entry, header: Option<&Entry>) -> Result<(), CoreError> {
         let mut line = serde_json::to_vec(entry).map_err(|error| {
             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
@@ -165,7 +165,7 @@ impl SessionFile {
                     .await?;
             }
         }
-        let handle = file.as_mut().expect("延迟初始化后句柄必然存在");
+        let handle = file.as_mut().expect("延迟创建之后一定已有句柄");
         handle.write_all(&line).await?;
         handle.flush().await?;
         *self.revision.write() =
@@ -173,8 +173,8 @@ impl SessionFile {
         Ok(())
     }
 
-    /// 原子替换完整 transcript；rename 前刷写并 fsync 临时文件。
-    /// 磁盘文件不存在时同样适用：整份 entries 经临时文件 rename 发布。
+    /// 原子替换整个 transcript；rename 前先刷写并 fsync 临时文件。
+    /// 磁盘文件不存在时同样适用：整份 entries 通过临时文件 rename 发布。
     pub async fn rewrite(&self, entries: &[Entry]) -> Result<(), CoreError> {
         let mut current = self.file.lock().await;
         let parent = self
@@ -211,7 +211,7 @@ impl SessionFile {
             *self.revision.write() = crate::hashline::SnapshotId::from_metadata(
                 &current
                     .as_ref()
-                    .expect("rename 后句柄必然存在")
+                    .expect("rename 之后一定已有句柄")
                     .metadata()
                     .await?,
             );
@@ -225,7 +225,7 @@ impl SessionFile {
     }
 }
 
-/// 会话文件发现、创建、读取与删除。
+/// 会话文件的发现、创建、读取和删除。
 pub struct SessionStore {
     root: PathBuf,
     index: RwLock<HashMap<String, SessionPaths>>,
@@ -243,16 +243,16 @@ impl SessionStore {
         &self.root
     }
 
-    /// 只计算 transcript 与 sidecar 的路径，不触碰磁盘。
+    /// 只计算 transcript 和 sidecar 的路径，不访问磁盘。
     pub fn paths_for(&self, cwd: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
         self.paths_in(&self.root.join(encode_cwd(cwd)), session_id, created_at_ms)
     }
 
-    /// 子代理路径：transcript 与父会话的 transcript 同目录，父会话的 sidecar 目录
-    /// 就是它的容器。代理树因此与目录树同构，删除父会话一并带走整棵子树。
+    /// 子代理路径：transcript 和父会话的 transcript 同目录，父会话的 sidecar 目录
+    /// 就是它的容器。代理树因此和目录树同构，删除父会话会一并删除整棵子树。
     ///
-    /// 父会话在磁盘上缺失（从未落盘的父会话）时按顶层布局推导落点，保证子代理
-    /// 仍然写在自己的父目录里：sidecar 目录名恒等于会话 ID。
+    /// 父会话在磁盘上不存在（从未写盘的父会话）时按顶层布局推导落点，保证子代理仍
+    /// 写在自己的父目录里：sidecar 目录名永远等于会话 ID。
     pub async fn paths_for_child(
         &self,
         cwd: &Path,
@@ -267,7 +267,7 @@ impl SessionStore {
         Ok(self.paths_in(&parent_sidecar, session_id, created_at_ms))
     }
 
-    /// 会话日志与 sidecar 的落点：`directory` 是它们的共同父目录。
+    /// 会话日志和 sidecar 的位置；`directory` 是它们共同的父目录。
     fn paths_in(&self, directory: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
         SessionPaths {
             transcript: directory.join(format!(
@@ -279,7 +279,7 @@ impl SessionStore {
         }
     }
 
-    /// 通过会话 ID 查找记录路径，必要时扫描磁盘目录。
+    /// 按会话 ID 查找路径，必要时扫描磁盘目录。
     pub async fn find(&self, session_id: &str) -> Result<Option<SessionPaths>, CoreError> {
         if let Some(paths) = self.index.read().get(session_id).cloned() {
             return Ok(Some(paths));
@@ -303,10 +303,10 @@ impl SessionStore {
         Ok(None)
     }
 
-    /// 全部会话日志，按目录树遍历：第一层是工作目录桶，更深只进会话目录。
+    /// 遍历目录树找出全部会话日志：第一层是工作目录分桶，再往下只进会话目录。
     ///
-    /// 子代理日志落在父会话目录里，所以「更深一层」等价于「代理树的一层」；
-    /// 只进 `ses_` 目录同时把 jobs／artifacts／plans／compaction 等同级目录挡在外面。
+    /// 子代理日志落在父会话目录里，所以「再深一层」就等于「代理树的一层」；只进
+    /// `ses_` 目录也能把 jobs、artifacts、plans、compaction 这些同级目录挡在外面。
     async fn journals(&self) -> Result<Vec<PathBuf>, CoreError> {
         let mut found = Vec::new();
         let mut pending = vec![(self.root.clone(), 0usize)];
@@ -350,7 +350,7 @@ impl SessionStore {
         })
     }
 
-    /// 读取并反序列化完整 JSONL 历史。
+    /// 读取并反序列化完整的 JSONL 历史。
     pub async fn read_entries(&self, paths: &SessionPaths) -> Result<Vec<Entry>, CoreError> {
         let mut lines = super::maintenance::reader(&paths.transcript).await?.lines();
         let mut entries = Vec::new();
@@ -368,8 +368,8 @@ impl SessionStore {
         Ok(entries)
     }
 
-    /// 流式投影元信息，跳过消息载荷分配，并按更新时间降序列会话。
-    /// 只有 header、从未产生任何 entry 的空会话不出现在列表中。
+    /// 流式读取元信息，跳过消息内容的分配，并按更新时间从新到旧排序。
+    /// 只有 header、从未产生 entry 的空会话不会出现在列表里。
     pub async fn list(&self) -> Result<Vec<moc_protocol::methods::SessionInfo>, CoreError> {
         let mut result = Vec::new();
         for path in self.journals().await? {
@@ -399,10 +399,10 @@ impl SessionStore {
         Ok(result)
     }
 
-    /// 删除 transcript 与 sidecar；锁文件由调用方先按语义释放。
+    /// 删除 transcript 和 sidecar；锁文件由调用方按语义先释放。
     ///
-    /// sidecar 目录同时是子代理 transcript 的容器，所以删除父会话会一并删除
-    /// 它的整棵子代理子树（与代理树、目录树同构）。
+    /// sidecar 目录同时是子代理 transcript 的容器，所以删除父会话会一并删除整棵
+    /// 子代理子树（与代理树、目录树同构）。
     pub async fn delete(&self, session_id: &str, paths: &SessionPaths) -> Result<(), CoreError> {
         match fs::remove_file(&paths.transcript).await {
             Ok(()) => {}
@@ -419,7 +419,7 @@ impl SessionStore {
     }
 }
 
-/// 会话目录：目录名就是会话 ID。子代理按父会话目录归档，因此判别它就是判别
+/// 会话目录的目录名就是会话 ID。子代理按父会话目录归档，所以识别它就等于识别
 /// 代理树的下一层。
 fn is_session_directory(path: &Path) -> bool {
     path.file_name()
@@ -427,7 +427,7 @@ fn is_session_directory(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with(crate::ids::SESSION_PREFIX))
 }
 
-/// 列表用的会话元信息；单条损坏记录只跳过该文件并告警，不让整个列表不可用。
+/// 列表用的会话元信息；单个文件损坏时只跳过它并告警，不让整个列表不可用。
 async fn listed_session(path: &Path) -> Option<moc_protocol::methods::SessionInfo> {
     match read_session_info(path).await {
         Ok(Some((info, true))) => Some(info),
@@ -439,8 +439,8 @@ async fn listed_session(path: &Path) -> Option<moc_protocol::methods::SessionInf
     }
 }
 
-/// 读取 header 与轻量元信息；`has_entries` 为 `false` 表示文件只有 header，
-/// 该会话从未产生任何对话内容（延迟落盘前被抛弃的空会话）。
+/// 读取 header 和少量元信息；`has_entries` 为 `false` 表示文件只有 header，
+/// 该会话从未产生对话内容（写盘前就被丢弃的空会话）。
 async fn read_session_info(
     path: &Path,
 ) -> Result<Option<(moc_protocol::methods::SessionInfo, bool)>, CoreError> {
@@ -455,7 +455,7 @@ async fn read_session_info(
         return Ok(None);
     };
     let mut has_entries = false;
-    // 忽略大消息字段；无需构造正文、工具参数或思维链的对象树。
+    // 忽略大消息字段，不必构造正文、工具参数或思维链的对象树。
     #[derive(serde::Deserialize)]
     struct Metadata {
         #[serde(rename = "type")]
@@ -476,7 +476,7 @@ async fn read_session_info(
         let metadata: Metadata = match serde_json::from_str(&line) {
             Ok(metadata) => metadata,
             Err(error) => {
-                // 一条损坏记录只影响它自己携带的元信息，其余记录继续参与列表。
+                // 一条记录损坏只影响它自己的元信息，其余记录照常参与列表。
                 tracing::warn!(path = %path.display(), %error, "跳过损坏的 transcript 记录");
                 continue;
             }
@@ -711,7 +711,7 @@ mod tests {
         );
         file.append(&message, None).await.expect("追加消息");
 
-        // 一条损坏记录之后的合法记录仍必须生效。
+        // 损坏记录后面的合法记录仍然必须生效。
         let broken = Entry::header(
             "ses_broken00001".into(),
             "/tmp/project".into(),
@@ -739,7 +739,7 @@ mod tests {
         bytes.push(b'\n');
         std::fs::write(&broken_paths.transcript, &bytes).expect("写入损坏记录");
 
-        // header 损坏的文件整条跳过，其余文件照常列出。
+        // header 损坏的文件整条跳过，其它文件照常列出。
         let unreadable = store.paths_for(cwd, "ses_unread0001", 5);
         std::fs::write(&unreadable.transcript, b"{\"type\":\n").expect("写入损坏 header");
 
@@ -783,8 +783,8 @@ mod tests {
         file.append(&message, None).await.expect("追加消息");
     }
 
-    /// 子代理落在父会话目录里：代理树与目录树同构，列表与查找都要穿过会话目录
-    /// 发现它，删除父会话带走整棵子树；非会话目录里的日志一律不算会话。
+    /// 子代理落在父会话目录里：代理树和目录树同构，列表和查找都要穿过会话目录才能
+    /// 发现它，删除父会话会一并删除整棵子树；非会话目录里的日志一律不算会话。
     #[tokio::test]
     async fn child_transcripts_nest_under_the_parent_session_directory() {
         let directory = tempfile::tempdir().expect("临时目录");
@@ -802,11 +802,11 @@ mod tests {
         assert_eq!(
             child_paths.transcript.parent(),
             Some(parent_paths.sidecar.as_path()),
-            "transcript 与父会话 sidecar 同目录才能让 urlfs 的相对链接继续成立"
+            "transcript 必须和父会话 sidecar 同目录，urlfs 的相对链接才能继续成立"
         );
         assert_eq!(child_paths.sidecar, parent_paths.sidecar.join(child));
         write_session(&child_paths, child).await;
-        // 同一目录下的 jobs 不是会话目录：里面的日志不算会话。
+        // 同级的 jobs 不是会话目录，里面的日志不算会话。
         tokio::fs::create_dir_all(parent_paths.jobs())
             .await
             .expect("jobs 目录");
@@ -830,7 +830,7 @@ mod tests {
             child_paths.transcript
         );
 
-        // 父会话尚未落盘时仍按父目录归档：sidecar 目录名恒等于会话 ID。
+        // 父会话还没写盘时也按父目录归档：sidecar 目录名永远等于会话 ID。
         let pending = store
             .paths_for_child(cwd, "ses_pending00001", "ses_pendingchild1", 40)
             .await

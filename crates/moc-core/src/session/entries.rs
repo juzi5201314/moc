@@ -1,4 +1,4 @@
-//! JSONL transcript entry schema 与协议投影。
+//! JSONL transcript 的 entry 结构，以及它到协议类型的转换。
 
 use moc_llm::{FinishReason, Message};
 use moc_protocol::methods::{
@@ -37,10 +37,10 @@ pub enum Entry {
         mode: SessionMode,
         #[serde(default)]
         permission: SessionPermission,
-        /// `spawn_agent` 出来的子代理才有父会话；其余会话为 `null`。模型侧据此
-        /// 决定是否使用子代理契约与工具，因此不能借用它表达其它血缘。
+        /// 只有 `spawn_agent` 创建的子代理才有父会话，其它会话为 `null`。模型侧据此
+        /// 决定是否使用子代理约定和工具，所以不能借这个字段表达其它关系。
         parent_session_id: Option<String>,
-        /// 消息回退分叉的来源会话；纯用户侧出身记录，模型侧完全不可见。旧记录缺省。
+        /// 消息回退分叉的来源会话；只给用户看，模型侧完全不可见。旧记录没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forked_from: Option<String>,
         title: String,
@@ -56,10 +56,10 @@ pub enum Entry {
         tool: Option<ToolExecution>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         finish_reason: Option<FinishReason>,
-        /// 手动命令的来源及上下文可见性；普通对话没有此字段。
+        /// 手动命令的来源以及是否进入上下文；普通对话没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bash: Option<moc_protocol::BashCommand>,
-        /// 代理间消息的来源元信息；普通输入没有此字段。
+        /// 代理间消息的来源信息；普通输入没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
     },
@@ -75,10 +75,10 @@ pub enum Entry {
         tokens_after: u64,
         instructions: Option<String>,
         native: Option<Box<serde_json::Value>>,
-        /// 产出该 checkpoint 的模型；旧记录缺省。原生载荷只对该模型有效。
+        /// 生成该 checkpoint 的模型；旧记录没有这个字段。原生数据只对这个模型有效。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
-        /// Grok Build full-replace 的运行时状态提醒；其他压缩方法为 None。
+        /// Grok Build 整体替换历史时附带的运行时状态提醒；其它压缩方法为 `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<String>,
     },
@@ -166,14 +166,14 @@ pub enum Entry {
     },
 }
 
-/// 非 header entry 的载荷；公共 ID 与 parent 链由 store 分配。
+/// 非 header entry 的载荷；公共 ID 和 parent 链由 store 分配。
 #[derive(Debug, Clone, PartialEq)]
 pub enum EntryPayload {
     Message {
         message: Message,
         tool: Option<ToolExecution>,
         finish_reason: Option<FinishReason>,
-        /// 代理间消息的来源元信息；普通输入为 `None`。
+        /// 代理间消息的来源信息；普通输入为 `None`。
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
     },
     Bash {
@@ -189,9 +189,9 @@ pub enum EntryPayload {
         tokens_after: u64,
         instructions: Option<String>,
         native: Option<Box<serde_json::Value>>,
-        /// 产出该 checkpoint 的模型；复用上一份 checkpoint 时沿用其来源。
+        /// 生成该 checkpoint 的模型；沿用上一份 checkpoint 时保留原来的来源。
         model: Option<String>,
-        /// Grok Build 压缩时快照的运行时状态提醒；其他方法为 None。
+        /// Grok Build 压缩时快照的运行时状态提醒；其它方法为 `None`。
         reminder: Option<String>,
     },
     ModeChange {
@@ -234,12 +234,12 @@ pub enum EntryPayload {
     ResetBoundary,
 }
 
-/// 一条会话记录的出身。两个字段互斥：
+/// 会话的来源。两个字段互斥：
 ///
-/// - `parent_session_id`：`spawn_agent` 出来的子代理。模型侧据此获得 `<subagent>`
-///   契约、`yield` 与代理通信能力，因此只允许真实 spawn 写入。
-/// - `forked_from`：消息回退分叉出来的独立会话。分叉在模型侧与普通会话完全一致，
-///   这个字段只用于给用户标出出处，永不参与提示词、工具或名册判定。
+/// - `parent_session_id`：`spawn_agent` 创建的子代理。模型侧据此获得 `<subagent>` 约定、
+///   `yield` 和代理通信能力，所以只有真正的 spawn 才能写入。
+/// - `forked_from`：消息回退分叉出来的独立会话。分叉在模型侧和普通会话完全一致，
+///   这个字段只给用户标出来源，永远不参与提示词、工具或代理列表的判断。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionOrigin {
     pub parent_session_id: Option<String>,
@@ -252,7 +252,7 @@ impl SessionOrigin {
         Self::default()
     }
 
-    /// 子代理：由 `parent_session_id` 会话 spawn。
+    /// 子代理：由 `parent_session_id` 指定的会话 spawn。
     pub fn spawned(parent_session_id: impl Into<String>) -> Self {
         Self {
             parent_session_id: Some(parent_session_id.into()),
@@ -270,7 +270,7 @@ impl SessionOrigin {
 }
 
 impl Entry {
-    /// 创建 session JSONL 第一行。
+    /// 创建 JSONL 文件的第一行。
     #[expect(
         clippy::too_many_arguments,
         reason = "header 的字段就是持久化格式本身，逐字段对应比包装结构更直白"
@@ -287,7 +287,7 @@ impl Entry {
     ) -> Self {
         debug_assert!(
             !(origin.parent_session_id.is_some() && origin.forked_from.is_some()),
-            "会话出身互斥：子代理与回退分叉不能共存"
+            "会话来源的两个字段互斥：子代理和回退分叉不能同时存在"
         );
         Self::Header {
             id: ids::entry_id(),
@@ -488,7 +488,7 @@ impl Entry {
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
-    /// 把非头部 entry 接到新的 transcript 父节点上。
+    /// 把非 header entry 挂到新的 transcript 父节点上。
     pub fn set_parent_id(&mut self, parent_id: String) {
         match self {
             Self::Header { .. } => {}

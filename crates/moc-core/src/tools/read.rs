@@ -1,4 +1,4 @@
-//! 展示目录与文本文件，为完整可见行提供 hashline 锚点。
+//! read 工具：展示目录和文本文件，给完整显示出来的行分配 hashline 锚点。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -177,12 +177,12 @@ impl Tool for ReadTool {
                     }
                     last_served = Some(position + 1);
                 } else if let Some(start_window) = window_start.take() {
-                    windows.push(start_window..last_served.expect("served window has an end"));
+                    windows.push(start_window..last_served.expect("显示窗口一定有结束行"));
                     last_served = None;
                 }
             }
             if let Some(start_window) = window_start {
-                windows.push(start_window..last_served.expect("served window has an end"));
+                windows.push(start_window..last_served.expect("显示窗口一定有结束行"));
             }
 
             let tokens = if anchored {
@@ -197,7 +197,7 @@ impl Tool for ReadTool {
                 let text = match mode {
                     LineMode::Anchor => {
                         let (token_position, token) =
-                            token_iter.next().expect("锚点行必须已登记令牌");
+                            token_iter.next().expect("锚点行一定已登记令牌");
                         debug_assert_eq!(token_position, position);
                         anchor_line_token(token, line)
                     }
@@ -237,11 +237,11 @@ enum LineMode {
 
 fn digits_of(value: usize) -> usize {
     value.checked_ilog10().map_or(1, |digits| {
-        usize::try_from(digits).expect("digits fit in usize") + 1
+        usize::try_from(digits).expect("位数一定放得进 usize") + 1
     })
 }
 
-/// 超长行的占位文本；可编辑模式带 `N│` 前缀，其余模式不带锚点形状。
+/// 超长行的占位文本；可编辑模式带 `N│` 前缀，其它模式不带任何像锚点的前缀。
 fn placeholder_line(line_no: usize, bytes: usize, anchored: bool) -> String {
     let notice = format!(
         "[Line {line_no} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",

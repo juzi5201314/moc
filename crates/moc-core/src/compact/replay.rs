@@ -1,4 +1,4 @@
-//! 从追加式日志与有效压缩边界重建模型视图。
+//! 由追加式日志和生效中的压缩边界重建模型看到的历史。
 
 use moc_llm::{Message, Role};
 use moc_protocol::methods::PlanStatus;
@@ -6,8 +6,8 @@ use moc_protocol::methods::PlanStatus;
 use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
-/// 本地注入上下文消息的固定前缀与正文分块短名：压缩摘要、活动计划、todo 快照、
-/// Grok Build 的续接前言与运行时提醒。
+/// 本地注入消息的固定前缀与对应的分块短名：压缩摘要、活动计划、todo 快照、
+/// Grok Build 的续接前言和运行时提醒。
 const INJECTED_PREFIXES: [(&str, &str); 5] = [
     ("<compaction-summary", "compaction summary"),
     ("<active-plan", "active plan"),
@@ -16,15 +16,15 @@ const INJECTED_PREFIXES: [(&str, &str); 5] = [
     ("<system-reminder>", "system reminder"),
 ];
 
-/// 消息是否由 moc 注入而非用户输入。
+/// 消息是否是 moc 注入的，而不是用户输入。
 ///
-/// 这些消息由本模块与计划流程生成并随 transcript 进入上下文；任何要再次引用
-/// 其内容的地方（例如子代理任务推导）都必须先跳过，避免整段复制进系统提示。
+/// 这些消息由本模块和计划流程生成，会随 transcript 进入上下文。任何需要引用其内容的
+/// 地方（比如推导子代理任务）都要先跳过它们，免得整段被复制进系统提示。
 pub(crate) fn is_injected_context(message: &Message) -> bool {
     injected_name(message).is_some()
 }
 
-/// 注入消息的正文分块短名；用户与模型消息返回 `None`。
+/// 注入消息的分块短名；用户和模型的消息返回 `None`。
 pub(crate) fn injected_name(message: &Message) -> Option<&'static str> {
     let text = message.text();
     let trimmed = text.trim_start();
@@ -34,14 +34,14 @@ pub(crate) fn injected_name(message: &Message) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// 构造指令消息、checkpoint、活动计划和 todo 等合成前缀，不复制 transcript。
+/// 生成指令消息、checkpoint、活动计划、todo 这类合成消息，不复制 transcript。
 pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]>) -> Vec<Message> {
     let mut messages = Vec::new();
     if let Some(system) = system {
         messages.extend_from_slice(system);
     }
     let start = visible_history_start(state);
-    // Grok Build 的 full-replace 历史：最后一条用户查询 + 摘要 + 运行时提醒，不带旧消息。
+    // Grok Build 整体替换历史：回放只有最后一条用户消息、摘要和运行时提醒，不带旧消息。
     if let Some((method, summary)) = &state.summary
         && method == "grok_build"
     {
@@ -101,7 +101,7 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
     messages
 }
 
-/// 从追加式日志重建模型消息；transcript 消息只在真正请求模型时复制。
+/// 由追加式日志重建模型消息；只有真正要请求模型时才复制 transcript 消息。
 pub fn model_messages(
     state: &SessionState,
     system: Option<&[Message]>,
@@ -128,7 +128,7 @@ pub fn model_messages(
     messages
 }
 
-/// 重置优先于旧压缩；没有保留边界表示该次压缩已覆盖此前全部消息。
+/// 可见历史的起点：重置边界优先于旧的压缩；没有保留边界说明那次压缩已经覆盖了此前的全部消息。
 pub(crate) fn visible_history_start(state: &SessionState) -> usize {
     let reset = state
         .entries
@@ -330,7 +330,7 @@ mod tests {
                     tokens_after: 10,
                     instructions: None,
                     native: Some(Box::new(native)),
-                    // 旧记录没有产出模型：换模型时必须保守作废。
+                    // 旧记录没有生成它的模型：换模型时必须稳妥地作废。
                     model: None,
                     reminder: None,
                 },

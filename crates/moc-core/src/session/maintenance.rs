@@ -1,4 +1,4 @@
-//! 存储维护独立于上下文压缩：先预览，用户确认后才归档和清理未引用产物。
+//! 存储维护和上下文压缩互不相干：先预览，用户确认后才归档并清理没有被引用的产物。
 
 use super::{
     SessionTable,
@@ -42,7 +42,7 @@ pub(crate) async fn reader(path: &Path) -> Result<Pin<Box<dyn AsyncBufRead + Sen
     }
 }
 
-/// 调用者持会话文件锁；解压完整且 fsync 后才发布可写日志。
+/// 调用者要持有会话文件锁；解压完整并 fsync 之后才发布可写日志。
 pub(crate) async fn restore(path: &Path) -> Result<(), CoreError> {
     if fs::try_exists(path).await? {
         return Ok(());
@@ -177,7 +177,7 @@ impl SessionTable {
                 }
             }
         }
-        // 只按完整 canonical URI 或旧 transcript 中的完整物理路径保护，不按 basename 串联不同会话。
+        // 只按完整的规范化 URI 或旧 transcript 里的完整物理路径保护，不按文件名把不同会话关联起来。
         let mut referenced = HashSet::new();
         if !files.is_empty() {
             let references: Vec<String> = files

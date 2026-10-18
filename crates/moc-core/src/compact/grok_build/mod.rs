@@ -1,7 +1,7 @@
-//! Grok Build 的 soft 压缩：9 段摘要、full-replace 历史与阈值前两遍预火。
+//! Grok Build 的 soft 压缩：9 段摘要、整体替换历史，以及在触发阈值之前先摘要前缀（预火）。
 //!
-//! 与 moc 自有实现（[`super::soft`]）的区别集中在压缩后的上下文形状：
-//! `remote`/`shake` 不受影响，只有走到 `soft` 并按配置选择 `grok_build` 时才启用这里。
+//! 与 moc 自带的 soft 实现（[`super::soft`]）区别在压缩后的上下文形式：
+//! `remote`/`shake` 不受影响，只有走到 `soft` 且配置选择 `grok_build` 时才用这里。
 
 pub(crate) mod fit;
 pub(crate) mod prefire;
@@ -24,15 +24,15 @@ use crate::session::state::SessionState;
 
 use super::{CompactionBudget, HistoryArchive, messages_tokens, record_compaction};
 
-/// 摘要请求的最大尝试次数（含退化输出的重试）。
+/// 摘要请求最多尝试几次（含输出退化后的重试）。
 const MAX_ATTEMPTS: u32 = 3;
 
-/// 两次尝试之间的等待；`GROK_COMPACT_RETRY_MS` 可覆盖（集成测试用 1ms）。
+/// 两次尝试之间的等待时间；可用 `GROK_COMPACT_RETRY_MS` 覆盖（集成测试用 1ms）。
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 const RETRY_DELAY_ENV: &str = "GROK_COMPACT_RETRY_MS";
 
-/// full-replace 历史的续接前言；后续轮次靠它识别“这是上一段会话的继续”。
+/// 整体替换历史时的续接前言；之后回放靠它识别出这是上一段会话的延续。
 const CONTINUATION_PREAMBLE: &str = "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
 
 fn retry_delay() -> Duration {
@@ -45,7 +45,7 @@ fn retry_delay() -> Duration {
         .map_or(RETRY_DELAY, Duration::from_millis)
 }
 
-/// 摘要请求复用的提示骨架：指令消息、缓存断点锚点与工具定义。
+/// 摘要请求复用的提示骨架：指令消息、缓存断点位置和工具定义。
 #[derive(Clone, Copy)]
 pub(crate) struct PromptSkeleton<'a> {
     pub system: &'a [Message],
@@ -53,7 +53,7 @@ pub(crate) struct PromptSkeleton<'a> {
     pub tools: &'a [ToolDef],
 }
 
-/// 一次摘要采样的固定上下文；同一会话的多档输入与多次尝试共用一份。
+/// 一次摘要采样的固定上下文；同一会话的各档输入和每次尝试共用一份。
 pub(crate) struct Sampler<'a> {
     inner: &'a CoreInner,
     config: &'a ResolvedConfig,
@@ -83,7 +83,7 @@ impl<'a> Sampler<'a> {
         &self.model.selector
     }
 
-    /// 发送一次摘要请求，返回模型的原始输出（未清洗）。
+    /// 发一次摘要请求，返回模型未经清洗的原始输出。
     async fn sample(
         &self,
         cancel: &CancellationToken,
@@ -108,7 +108,7 @@ impl<'a> Sampler<'a> {
             self.session_id,
             CacheAnchors {
                 instruction_static: static_prefix,
-                // 摘要是本次请求特有的最后一条消息，不能落缓存断点。
+                // 摘要是本次请求特有的最后一条消息，不能放缓存断点。
                 trailing_reminders: 1,
             },
         );
@@ -150,7 +150,7 @@ pub(crate) struct GrokBuildContext<'a> {
     pub config: &'a ResolvedConfig,
     pub model: &'a ResolvedModel,
     pub system: &'a [Message],
-    /// 指令消息的静态前缀块数；摘要请求沿用主循环的缓存断点锚点。
+    /// 指令消息开头的静态块数；摘要请求沿用主循环的缓存断点位置。
     pub static_prefix: &'a [usize],
     pub tools: &'a [ToolDef],
     pub instructions: Option<&'a str>,
@@ -192,7 +192,7 @@ pub(crate) async fn compact(
             tools,
         },
     };
-    // 系统提示与工具定义无论如何都要发送；它们本身就超窗时任何档位都救不回来。
+    // 系统提示和工具定义每次都要发送；它们自己就超窗时，换哪一档输入都没用。
     if messages_tokens(system).saturating_add(tool_tokens)
         > fit::fitted_budget(model.context_window, tool_tokens)
     {
@@ -225,12 +225,12 @@ pub(crate) async fn compact(
             Ok(raw) => tracing::debug!(
                 session_id = %state.session.id,
                 chars = raw.chars().count(),
-                "Grok Build 预火摘要退化，回退单遍压缩"
+                "Grok Build 预火摘要输出退化，回退到单遍压缩"
             ),
             Err(error) => tracing::debug!(
                 session_id = %state.session.id,
                 %error,
-                "Grok Build 预火摘要失败，回退单遍压缩"
+                "Grok Build 预火摘要失败，回退到单遍压缩"
             ),
         }
     }
@@ -258,7 +258,7 @@ pub(crate) async fn compact(
                         session_id = %state.session.id,
                         chars = raw.chars().count(),
                         attempt,
-                        "Grok Build 摘要输出退化"
+                        "Grok Build 摘要输出持续退化"
                     );
                     if attempt >= MAX_ATTEMPTS {
                         return Err(CoreError::ContextOverflow(

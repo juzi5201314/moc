@@ -1,4 +1,4 @@
-//! 使用固定 WASM guest 执行 PTC 代码，宿主保留工具执行和会话权限。
+//! run_code 工具：在内嵌的 WASM guest 里执行 PTC 脚本；工具调用和会话权限仍由宿主负责。
 
 mod result;
 pub(crate) mod runtime;
@@ -33,7 +33,7 @@ impl Tool for RunCodeTool {
             schema(
                 serde_json::json!({
                     "code": {"type": "string", "description": "JavaScript to execute"},
-                    "timeout_secs": {"type": "integer", "minimum": 1}
+                    "timeout_secs": {"type": "integer", "minimum": 1, "description": "Seconds before the script is stopped"}
                 }),
                 &["code"],
             ),

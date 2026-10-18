@@ -1,4 +1,4 @@
-//! 并行遍历本地路径；排序结果使用有界堆，空间不随目录大小增长。
+//! find 工具：并行遍历本地路径；排序用定长堆，内存不随目录规模增长。
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -158,7 +158,7 @@ impl Scan {
             .ignore(gitignore)
             .same_file_system(!self.args.cross_filesystems)
             .threads(std::thread::available_parallelism().map_or(1, usize::from));
-        // 堆顶为当前最差结果；最多 200 项，避免保存整棵目录树。
+        // 堆顶是当前最差的结果；最多保留 200 项，不必保存整棵目录树。
         let best = Mutex::new(BinaryHeap::with_capacity(limit));
         let visited = AtomicUsize::new(0);
         let matches = AtomicUsize::new(0);
@@ -246,7 +246,7 @@ impl Scan {
             ));
         }
         if incomplete.load(Ordering::Relaxed) {
-            output.push("[Scan was incomplete because the cooperative timeout, scan-entry limit, cancellation, or unreadable path was reached; results may be incomplete and are not a no-match proof. Narrow path or glob, or set cross_filesystems=true to include mounted paths below the root]".into());
+            output.push("[Scan incomplete (time limit, scan-entry limit, cancellation, or unreadable path); results may be incomplete, so a miss does not prove absence. Narrow path or glob, or set cross_filesystems=true to include mounts below the root]".into());
         }
         Ok(output.join("\n"))
     }

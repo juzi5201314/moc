@@ -1,7 +1,7 @@
-//! Volatile local-time reminder.
+//! 本地时间提醒。
 //!
-//! 后台任务完成与工作区变更走会话 notice（`tools/job.rs`、`service/prompt/workspace.rs`），
-//! 不在这里重复一份措辞。
+//! 后台任务完成和工作区变更通过会话 notice 告知模型（见 `tools/job.rs`、
+//! `service/prompt/workspace.rs`），这里不重复。
 
 use std::process::Command;
 
@@ -24,7 +24,7 @@ impl ReminderState {
     }
 }
 
-/// 当前机器本地时区时间，仅在日期变化时由 ReminderState 注入。
+/// 本机本地时区的当前时间；`ReminderState` 只在日期变化时注入。
 pub fn local_time() -> String {
     #[cfg(unix)]
     let output = Command::new("date")

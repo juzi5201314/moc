@@ -1,4 +1,4 @@
-//! 显式提交会话 JSON 状态；配额按当前投影计算。
+//! PTC 的 `state.*`：显式保存会话级 JSON 状态，配额按当前状态计算。
 use super::wire::{Operation, ScriptError};
 use crate::{
     session::{

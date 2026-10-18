@@ -140,7 +140,7 @@ async fn slow_request_only_warns_and_still_finishes() {
                     terminal: false,
                     message,
                     ..
-                } if message.contains("耗时超过 1 秒")
+                } if message.contains("已超过 1 秒")
             )),
             "慢请求只应发出一次非终止警告：{notices:?}"
         );

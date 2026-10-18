@@ -1,4 +1,4 @@
-//! JS 完整结果与模型展示预算分离。
+//! 子工具结果：JS 拿到完整结果，模型看到的部分受展示预算限制。
 use super::{
     state::error,
     wire::{ScriptError, ScriptToolResult},
@@ -89,7 +89,7 @@ pub(super) async fn script_result(
     }
 }
 
-/// 与其它出口一致地宽松解码结果文件；二进制输出保留替换字符而不是整体失败。
+/// 和其它出口一样宽松地解码结果文件：遇到二进制内容用替换字符代替，不整体失败。
 fn decode_result_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }

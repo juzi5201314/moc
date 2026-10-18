@@ -1,4 +1,4 @@
-//! 上下文预算、压缩方法调度与 checkpoint 提交。
+//! 上下文压缩：token 估算与预算、按配置依次尝试压缩方法、提交 checkpoint。
 
 pub mod archive;
 mod digest;
@@ -29,7 +29,7 @@ pub enum CompactReason {
     Switch,
 }
 
-/// 每四个 ASCII 字节估算一个 token，非 ASCII 字符各估算一个。
+/// 估算 token：每 4 个 ASCII 字节算 1 个，每个非 ASCII 字符算 1 个。
 pub fn estimate_tokens(text: &str) -> u64 {
     let mut ascii = 0u64;
     let mut non_ascii = 0u64;
@@ -43,7 +43,7 @@ pub fn estimate_tokens(text: &str) -> u64 {
     ascii / 4 + non_ascii
 }
 
-/// 用同一个 token 估算器确定 UTF-8 前缀，避免中文按字节裁剪时超预算。
+/// 按同一套估算规则取不超过预算的 UTF-8 前缀，避免中文按字节截断时超出预算。
 pub fn prefix_within_tokens(text: &str, budget: u64) -> &str {
     let mut ascii = 0u64;
     let mut non_ascii = 0u64;
@@ -60,12 +60,12 @@ pub fn prefix_within_tokens(text: &str, budget: u64) -> &str {
     text
 }
 
-/// 按内容块估算消息 token；图片按固定视觉 token 计量，不把 Base64 字节当成文本。
+/// 按内容块估算消息的 token；图片按固定的视觉 token 计算，不把 Base64 字节当文本。
 pub fn messages_tokens(messages: &[Message]) -> u64 {
     messages.iter().map(message_tokens).sum()
 }
 
-/// 每条消息的固定结算开销；与内容无关，但确实计入上下文预算。
+/// 每条消息固定额外计入的 token 数，与内容无关。
 pub(crate) const MESSAGE_TOKEN_OVERHEAD: u64 = 8;
 
 pub(crate) fn message_tokens(message: &Message) -> u64 {
@@ -88,7 +88,7 @@ fn content_part_tokens(part: &ContentPart) -> u64 {
     }
 }
 
-/// 工具定义整体序列化后估算一次；工具 schema 随每次请求发送，必须计入基数。
+/// 把全部工具定义序列化后整体估算一次；schema 每次请求都会发送，必须计入。
 pub fn tools_tokens(tools: &[ToolDef]) -> u64 {
     let Ok(text) = serde_json::to_string(tools) else {
         return 0;
@@ -96,7 +96,7 @@ pub fn tools_tokens(tools: &[ToolDef]) -> u64 {
     estimate_tokens(&text)
 }
 
-/// 估算 Responses 原生压缩载荷在本地回放视图中的 token 占用。
+/// 估算 Responses 原生压缩数据在本地回放视图里占用的 token。
 fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
     state
         .native_input
@@ -105,23 +105,23 @@ fn native_input_tokens(state: &crate::session::state::SessionState) -> u64 {
         .map_or(0, |serialized| estimate_tokens(&serialized))
 }
 
-/// 提示路径口径的上下文基准：给定模型的指令消息、工具定义与完整估算。
+/// 某个模型下的上下文基准：指令消息、工具定义，以及与提示执行时算法一致的完整估算。
 pub(crate) struct ModelContext {
-    /// 该模型下的指令消息（压缩摘要请求同样复用它）。
+    /// 该模型的指令消息（压缩摘要请求也复用它）。
     pub system: Vec<Message>,
-    /// 指令消息的静态前缀块数；摘要请求沿用同一份缓存断点锚点。
+    /// 指令消息开头的静态块数；摘要请求沿用同样的缓存断点位置。
     pub static_prefix: Vec<usize>,
-    /// 该模型下注册的工具定义。
+    /// 该模型可用的工具定义。
     pub tools: Vec<ToolDef>,
-    /// 不带系统提示的模型回放消息。
+    /// 回放给模型的历史消息，不含系统提示。
     pub messages: Vec<Message>,
-    /// 系统提示与工具定义自身的 token 合计（不含 transcript 与附加内容）。
+    /// 系统提示和工具定义本身的 token 数（不含 transcript 和附加内容）。
     pub fixed_tokens: u64,
-    /// 与提示路径一致的完整上下文估算（含 `additional_tokens`）。
+    /// 完整的上下文估算，算法与提示执行时一致（含 `additional_tokens`）。
     pub tokens: u64,
 }
 
-/// 组装给定模型的系统提示与工具定义，并按提示路径口径估算当前上下文。
+/// 组装指定模型的系统提示和工具定义，并按提示执行时的算法估算当前上下文。
 pub(crate) async fn model_context(
     inner: &CoreInner,
     ctx: &RequestContext,
@@ -162,8 +162,8 @@ pub(crate) async fn model_context(
     })
 }
 
-/// 有上游用量时以其为基准，仅估算响应之后追加的消息；同时以完整本地
-/// 会话估算作为下限，避免请求前变换导致上下文历史被低估。
+/// 有上游返回的用量时以它为基准，只估算那次响应之后追加的消息；同时用完整的本地估算
+/// 作下限，避免请求前对历史的变换导致低估。
 pub(crate) fn context_tokens_with_additional(
     state: &crate::session::state::SessionState,
     messages: &[Message],
@@ -192,7 +192,7 @@ pub(crate) fn context_tokens_with_additional(
     provider_anchor.max(stored_estimate)
 }
 
-/// 只使用模型上下文窗口，绝不扣除模型输出上限；上游溢出仍走自动压缩恢复。
+/// 压缩触发线：只按模型上下文窗口计算，不扣除输出上限；上游报溢出时仍由自动压缩恢复。
 pub fn threshold(config: &ResolvedConfig, context_window: u64) -> u64 {
     match config.compaction.threshold {
         crate::config::CompactionThreshold::Percent(percent) => {
@@ -201,7 +201,7 @@ pub fn threshold(config: &ResolvedConfig, context_window: u64) -> u64 {
         crate::config::CompactionThreshold::Tokens(tokens) => tokens,
     }
 }
-/// 一次压缩调用中不属于 transcript 的当前请求内容。
+/// 一次压缩中，当前请求里不属于 transcript 的内容。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ContextBudget {
     pub additional_tokens: u64,
@@ -219,14 +219,14 @@ pub(crate) struct CompactReport {
     pub created_headroom: bool,
 }
 
-/// 触发阈值以下仍需保留的恢复空间比例，参考 OMP 核心的 0.8 recovery band。
+/// 自动压缩后占用必须降到触发线的这个百分比以下（参考 OMP 的 0.8 recovery band）。
 const RECOVERY_BAND_PERCENT: u64 = 80;
 
 pub(crate) fn recovery_band(config: &ResolvedConfig, context_window: u64) -> u64 {
     threshold(config, context_window).saturating_mul(RECOVERY_BAND_PERCENT) / 100
 }
 
-/// 当前压缩原因需要达到的占用上限。
+/// 按压缩原因决定压缩后占用必须低于多少。
 fn required_tokens(config: &ResolvedConfig, context_window: u64, reason: CompactReason) -> u64 {
     match reason {
         CompactReason::Overflow => threshold(config, context_window),
@@ -237,7 +237,7 @@ fn required_tokens(config: &ResolvedConfig, context_window: u64, reason: Compact
     }
 }
 
-/// 按配置执行压缩链；显式指令只交给摘要模型。
+/// 按配置依次尝试各压缩方法；用户给的压缩指令只交给摘要模型。
 pub(crate) async fn manual(
     inner: &CoreInner,
     ctx: &RequestContext,
@@ -363,10 +363,10 @@ pub(crate) async fn compact(
             Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => return Err(error),
             Err(error @ CoreError::Llm(moc_llm::LlmError::Guard(_))) => return Err(error),
             Err(error) => {
-                tracing::warn!(session_id, method = ?method, %error, "上下文压缩方法失败，尝试下一方法");
+                tracing::warn!(session_id, method = ?method, %error, "压缩方法失败，改用下一个方法");
                 failures.push(format!("{method:?}: {error}"));
-                // 失败的方法可能已改写 transcript（shake 的整表 rewrite）或写入 usage：
-                // 后续方法必须基于当前状态，否则会用旧快照覆盖期间追加的 entry。
+                // 失败的方法可能已经改写了 transcript（shake 会整体重写）或写入了 usage：
+                // 后面的方法必须基于当前状态，否则会用旧快照覆盖这期间追加的 entry。
                 state = record.state.lock().await.clone();
                 measured.messages = replay::model_messages(&state, None, Some(&model));
             }
@@ -376,12 +376,12 @@ pub(crate) async fn compact(
         return Ok(report);
     }
     Err(CoreError::ContextOverflow(format!(
-        "所有上下文压缩方法均失败（{reason:?}）：{}",
+        "所有压缩方法都失败了（{reason:?}）：{}",
         failures.join("；")
     )))
 }
 
-/// soft 方法的共享输入；两种实现只在摘要提示词与提交方式上不同。
+/// soft 压缩的公共输入；两种实现只在摘要提示词和提交方式上不同。
 pub(crate) struct SoftInput<'a> {
     pub inner: &'a CoreInner,
     pub ctx: &'a RequestContext,
@@ -395,7 +395,7 @@ pub(crate) struct SoftInput<'a> {
     pub budget: CompactionBudget,
 }
 
-/// 按 `compaction.soft_method` 分派 soft 实现；`remote` 与 `shake` 不经过这里。
+/// 按 `compaction.soft_method` 选择 soft 实现；`remote` 和 `shake` 不走这里。
 async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
     let SoftInput {
         inner,
@@ -443,23 +443,23 @@ async fn run_soft(input: SoftInput<'_>) -> Result<CompactResult, CoreError> {
     }
 }
 
-/// checkpoint 归档的来源。
+/// checkpoint 的历史归档方式。
 pub(crate) enum HistoryArchive {
-    /// 记录时按当前状态写出压缩前历史。
+    /// 记录 checkpoint 时按当前状态写出压缩前的历史。
     Write,
-    /// 调用方已在改写 transcript 之前完成归档，直接复用其结果。
+    /// 调用方已在改写 transcript 前完成归档，直接用它的结果。
     Precomputed(Option<String>),
-    /// 不写归档：Grok Build 的 full-replace 历史不带历史指针。
+    /// 不归档：Grok Build 整体替换历史，不带指向旧历史的链接。
     None,
 }
 
 pub(crate) struct Checkpoint {
-    /// checkpoint 的产出方法；复用上一份 summary/native 时必须保留其真实方法名。
+    /// 生成 checkpoint 的方法；沿用上一份 summary/native 时必须保留它原本的方法名。
     pub method: String,
-    /// checkpoint 的产出模型；决定原生载荷在换模型后是否仍然有效。
+    /// 生成 checkpoint 的模型；决定换模型后原生压缩数据是否仍然有效。
     pub model: Option<String>,
     pub summary: String,
-    /// Grok Build full-replace 的运行时状态提醒；其他方法为 `None`。
+    /// Grok Build 整体替换历史时附带的运行时状态提醒；其它方法为 `None`。
     pub reminder: Option<String>,
     pub first_kept_id: Option<String>,
     pub tokens_before: u64,
@@ -507,7 +507,7 @@ pub(crate) async fn record_compaction(
             },
         )
         .await?;
-    // 本轮压缩已经落地，预火结果不再对任何后续压缩有效。
+    // 本次压缩已经提交，提前生成的摘要对后续压缩都不再有效。
     inner.runtime(session_id).await.grok_prefire.clear();
     ctx.updates()
         .emit(
@@ -537,7 +537,7 @@ async fn append_runtime_checkpoint(
     let record = inner.sessions.get(session_id).await?;
     let state = record.state.lock().await.clone();
     let archive_uri = match archive {
-        // Grok Build 的 full-replace 历史不携带历史指针，也不追加运行时快照。
+        // Grok Build 整体替换历史：不带旧历史链接，也不追加运行时快照。
         HistoryArchive::None => return Ok(()),
         HistoryArchive::Write => archive::write(&record.paths, &state).await?,
         HistoryArchive::Precomputed(uri) => uri,
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn token_estimator_and_threshold_modes() {
-        // 估算按 4 字符 1 token 折算：abcd 记 1，中日韩字符各记 1。
+        // 4 个 ASCII 字符算 1 个 token：abcd 记 1，中日韩字符各记 1。
         assert_eq!(estimate_tokens("abcd你好"), 3);
         let tokens =
             config_with("\n[compaction]\nthreshold = { mode = 'tokens', value = 50000 }\n");
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn threshold_ignores_max_output_tokens() {
-        // 500k 窗口 / 384k 最大输出：阈值仍为 85% 窗口，不因输出上限提前压缩。
+        // 500k 窗口、384k 输出上限：触发线仍是窗口的 85%，不会因输出上限提前压缩。
         let config = config_with("max_output_tokens = 393216\n");
         assert_eq!(threshold(&config, 500_000), 425_000);
     }
@@ -674,7 +674,7 @@ mod tests {
             context_tokens_with_additional(&state, &messages, &tools, 0),
             messages_tokens(&messages) + tools_tokens(&tools)
         );
-        // 有 usage 时上游基数已含工具 schema，只追加新消息，不再重复计入。
+        // 有 usage 时上游的数字已经包含工具 schema，只追加新消息，不重复计入。
         let header = header_entry();
         let mut state =
             SessionState::from_entries(vec![header.clone(), message_entry(&header)]).unwrap();

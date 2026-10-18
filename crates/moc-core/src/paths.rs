@@ -2,7 +2,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// 返回当前用户的主目录，兼容 Unix、原生 Windows 和 Git Bash 环境。
+/// 返回用户主目录，兼容 Unix、原生 Windows 和 Git Bash。
 pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {

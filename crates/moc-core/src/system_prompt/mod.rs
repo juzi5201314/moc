@@ -1,21 +1,23 @@
-//! Stable system prefix and volatile tail reminders.
+//! 系统提示：稳定前缀与每轮现算的尾部提醒。
 //!
-//! # 提示词编写规范（修改任何模型可见文本前必读）
+//! # 提示词编写规范（改任何模型可见文本前先读）
 //!
-//! 模型可见文本包括：本模块的静态片段与模式契约、各工具的 `description` 与 schema
-//! 字段说明、工具结果与错误文本、notice／尾部提醒、压缩请求与回放包装。它们每一轮
-//! 都按 token 计费，编写时遵守：
+//! 模型可见文本包括：本模块的静态片段与模式提醒、各工具的 `description` 与 schema
+//! 字段说明、工具结果与错误、notice 和尾部提醒、压缩请求与回放包装。这些文本每轮都
+//! 计入 token，编写时遵守：
 //!
-//! 1. **一处一事实**：每条事实只在一个位置出现。工具的用法写在它自己的 description；
-//!    跨工具纪律（不用 bash 读写搜、内部 URI、后台任务投递）只写在工具政策；当前模式的
-//!    规则只写在 [`mode_contract`]；schema 已表达的枚举、默认值、范围不在 description 复述。
-//! 2. **只写模型能用的信息**：不写实现细节（并行扫描、超时协作语义等模型无法调节的东西），
-//!    不写礼貌语、动机解释、"请注意"类铺垫。
-//! 3. **紧凑祈使句**：短句、分号连接，优先动词开头；能用 `a/b/c` 列举就不展开成句。
-//! 4. **模型侧一律英文**：英文 token 密度更高；面向前端的文案（GuardNotice、RPC 错误）不受此限。
+//! 1. **一处一事实**：每条事实只写在一个地方。工具用法写在该工具的 description；
+//!    跨工具纪律（不用 bash 读写搜索、内部 URI、后台任务结果投递）只写在工具政策；
+//!    当前模式的规则只写在 [`mode_contract`]；schema 已表达的枚举、默认值、范围不在
+//!    description 里重复。
+//! 2. **只写模型用得上的信息**：不写模型无法调节的实现细节（并行扫描、超时协作等），
+//!    不写客套话、动机解释和「请注意」之类的铺垫。
+//! 3. **短句祈使**：优先以动词开头，用分号连接；能用 `a/b/c` 列举就不展开成句。
+//! 4. **模型可见文本用英文**：英文 token 密度更高。给前端看的文案（GuardNotice、
+//!    RPC 错误）不受此限。
 //! 5. **测试锚点**：断言里的子串（如 `Ask mode is active`、`Standard tool batches allow up to`）
-//!    是行为契约的检验点；改写时保留语义并同步更新断言，不要为过测试回填废话。
-//! 6. 新增文本前先找是否已有同义表述；有就复用或合并，没有再加，且按上面的密度写。
+//!    用来检验行为约定；改写时保留语义并同步改断言，不要为了过测试塞回废话。
+//! 6. 加新文本前先找有没有同义的现成表述，有就复用或合并，没有再加，并按上面的密度写。
 
 pub mod context_files;
 pub mod reminder;
@@ -29,16 +31,16 @@ use crate::config::ResolvedConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
-// 下列政策是跨工具纪律的唯一出处；单个工具的用法写在工具 description，不在此复述。
+// 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
-/// 仅当 web_search/web_fetch 对模型可见时拼入工具政策。
+/// web_search/web_fetch 对模型可见时才拼进工具政策。
 const WEB_SEARCH_POLICY: &str =
     "Use web_search for current information and web_fetch for known URLs; cite the URLs you use.";
 const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files. Read before editing; edit takes the anchors from read or diff output (`42sr│line`); the part before │ is the line number plus the two-letter id assigned when the line was shown. An untouched line keeps its anchor when edits shift it; use the newest anchor shown for a line, and re-read if an edit reports a stale anchor.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`, `viking://<path>` (OpenViking). A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nModes are enforced at execution; session state and todo updates are allowed in every mode. A non-normal mode states its contract in a tail reminder; no such reminder means normal mode, which permits workspace changes.";
-/// 项目指令块的导语：标明这些文件的身份，避免与工具政策混读。
+/// 项目指令块的开头一句：告诉模型下面是仓库规则文件，别和工具政策混着读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
-/// 指令片段名：正文窗用它作标题，模型配置也按它指定角色归属。
+/// 提示片段名。上下文正文窗用它作标题，模型配置用它指定片段归哪个角色。
 pub const PIECE_INTRO: &str = "intro";
 pub const PIECE_TOOL_POLICY: &str = "tool policy";
 pub const PIECE_PTC_RUNTIME: &str = "ptc runtime";
@@ -48,7 +50,7 @@ pub const PIECE_SKILLS: &str = "skills";
 pub const PIECE_SUBAGENT: &str = "subagent";
 pub const PIECE_ENVIRONMENT: &str = "environment";
 pub const PIECE_APPEND: &str = "append";
-/// 全部片段名；配置校验与角色归属都以它为准。
+/// 全部片段名，配置校验和角色分组都以此为准。
 pub const PIECE_NAMES: [&str; 9] = [
     PIECE_INTRO,
     PIECE_TOOL_POLICY,
@@ -61,38 +63,36 @@ pub const PIECE_NAMES: [&str; 9] = [
     PIECE_APPEND,
 ];
 
-/// 配置里的片段名 → 规范名；未知名字返回 `None`，配置加载据此报错。
+/// 把配置里的片段名转成规范名；未知名字返回 `None`，由配置加载报错。
 pub fn canonical_piece_name(name: &str) -> Option<&'static str> {
     PIECE_NAMES.into_iter().find(|candidate| *candidate == name)
 }
 
-/// 片段作用域：决定缓存断点落位。
+/// 片段作用域，决定缓存断点放在哪里。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PieceScope {
-    /// 与工作目录无关的静态前缀：断点落在它的最后一块上，跨目录、跨会话共享缓存。
+    /// 与工作目录无关的静态前缀。缓存断点放在最后一个静态块上，不同目录和会话共用同一份缓存。
     Static,
-    /// 工作目录或会话相关的内容：排在静态前缀之后，不参与静态缓存。
+    /// 依赖工作目录或会话的内容，排在静态前缀之后，不参与静态缓存。
     Project,
 }
 
 #[derive(Clone)]
 pub struct PromptPiece {
-    /// Section category (`system`, `project`, or `skills`) for context accounting.
+    /// 上下文占用统计用的分类：`system`、`project`、`skills` 或 `tools`。
     pub title: &'static str,
-    /// 正文分块的短名（1-3 个英文单词）：上下文正文窗的标题行直接用这个，
-    /// 与 `title` 的占用分组名互不影响。
+    /// 片段短名（1-3 个英文单词），上下文正文窗直接用它作标题；与 `title` 的分类互不影响。
     pub name: &'static str,
-    /// 片段作用域。
     pub scope: PieceScope,
     pub text: String,
 }
 
-/// 组装完成的指令消息序列。
+/// 组装好的指令消息。
 pub struct SystemPrompt {
-    /// 指令消息：保持 system 的片段组成首条消息，其余片段组成随后的 user 消息；
+    /// 留在 system 的片段组成第一条消息，其余片段组成随后的 user 消息。
     /// 默认配置（指令角色为 system）下只有一条 system 消息。
     pub messages: Vec<Message>,
-    /// 每条指令消息的静态前缀块数，与 `messages` 一一对应；缓存断点落在
+    /// 每条指令消息开头的静态块数，与 `messages` 一一对应；缓存断点放在
     /// `messages[i]` 的第 `static_prefix[i] - 1` 块上。
     pub static_prefix: Vec<usize>,
 }
@@ -120,12 +120,12 @@ pub fn build(
     )
 }
 
-/// 按片段拼装指令消息：system 组在前、user 组在后，组内保持片段顺序。
+/// 把片段拼成指令消息：system 组在前，user 组在后，组内保持片段顺序。
 ///
-/// 角色分组只影响消息边界与角色，片段正文逐字不变；默认配置（指令角色为
-/// system）下所有片段都留在 system，只有一条消息，与单条形态完全一致。内容块
-/// 边界只服务于本地缓存断点：线上拍平（Chat / Responses）与无断点时的字符串
-/// 形态（Anthropic）都由编码器补回块间空行，文本与单块形态逐字一致。
+/// 分组只决定消息边界和角色，片段正文不变。默认配置（指令角色为 system）下所有片段
+/// 都在 system 组，结果只有一条消息。按片段切分内容块只是为了放本地缓存断点：
+/// Chat/Responses 会把各块合并成一段文本，Anthropic 没有断点时也发字符串，两种情况
+/// 都由编码器在块之间补空行，最终文本与不分块时完全相同。
 pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt {
     let mut groups: [Vec<PromptPiece>; 2] = [Vec::new(), Vec::new()];
     for piece in pieces {
@@ -159,7 +159,7 @@ pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt 
     }
 }
 
-/// Build the stable prefix. Time, jobs, workspace changes, MCP status, and mode belong in tail reminders.
+/// 生成稳定前缀的各个片段。时间、后台任务、工作区变更、MCP 状态和当前模式放在尾部提醒里，不进前缀。
 pub fn pieces(
     config: &ResolvedConfig,
     model: &ResolvedModel,
@@ -266,7 +266,7 @@ pub fn pieces(
             model.id,
         ),
     });
-    // 追加指令放在最后：它是用户对本会话最直接的指令，权威顺序上最靠近模型。
+    // 追加指令放在最后，让用户为本会话写的指令紧挨着对话。
     if !config.system_prompt.append.trim().is_empty() {
         sections.push(PromptPiece {
             title: "system",
@@ -278,12 +278,12 @@ pub fn pieces(
     sections
 }
 
-/// 当前模式的行为契约，`None` 表示普通模式不需要额外声明。
+/// 当前模式的规则提醒；普通模式返回 `None`。
 ///
-/// 契约只走尾部提醒：静态系统提示保持与模式无关（跨目录、跨会话复用缓存），
-/// 因此模式不能靠"当前是 X、去上面找规则"这种指针，必须自带该模式该做什么。
-/// 普通模式没有增量——工具面是完整的，静态政策也已写明它允许改工作区——不发声明
-/// 本身就是"当前是普通模式"的信号。
+/// 模式规则只放在尾部提醒里：静态系统提示与模式无关，才能跨目录、跨会话复用缓存。
+/// 所以提醒不能只写「当前是 X 模式，规则见上文」，必须把该模式的规则写全。
+/// 普通模式没有额外规则：工具齐全，静态政策也写明可以改工作区。没有模式提醒就表示
+/// 当前是普通模式。
 pub fn mode_contract(mode: SessionMode) -> Option<Message> {
     let text = match mode {
         SessionMode::Normal => return None,
@@ -303,10 +303,11 @@ pub fn mode_contract(mode: SessionMode) -> Option<Message> {
     )))
 }
 
-/// Put volatile facts after replayed history so the stable prefix remains cacheable.
+/// 把易变信息包成一条 user 消息，放在回放的历史之后，稳定前缀因此可以缓存。
 pub fn reminder_message(text: String) -> Message {
     Message::user_text(text)
 }
+/// 把多条提醒合并成一条 user 消息，正文之间空一行。
 pub fn merge_reminders(messages: Vec<Message>) -> Vec<Message> {
     if messages.is_empty() {
         Vec::new()
@@ -331,7 +332,7 @@ mod tests {
         resolved_with_compat(cwd, home, "")
     }
 
-    /// 带 compat 覆写的配置：用于覆盖指令角色等逐模型开关。
+    /// 生成带 compat 覆写的配置，用来测试指令角色这类逐模型开关。
     fn resolved_with_compat(cwd: &Path, home: &Path, compat: &str) -> ResolvedConfig {
         let raw = format!(
             "[models.roles]\ndefault='p/model'\nexplore='p/model'\nplan='p/model:xhigh'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\n[providers.p.models.model]\n[providers.p.models.model.compat]\n{compat}\n"
@@ -351,7 +352,7 @@ mod tests {
             .expect("resolve project")
     }
 
-    /// 指令消息的文本块，按线上顺序；测试据此断言块边界。
+    /// 按发送顺序取出指令消息的全部文本块，用于断言块边界。
     fn blocks(prompt: &SystemPrompt) -> Vec<String> {
         prompt
             .messages
@@ -364,7 +365,7 @@ mod tests {
             .collect()
     }
 
-    /// 指令消息的纯文本形态，按线上顺序拼接。
+    /// 按发送顺序把指令消息拼成纯文本。
     fn prompt_text(prompt: &SystemPrompt) -> String {
         prompt
             .messages
@@ -404,7 +405,7 @@ mod tests {
         assert!(text.contains("state.store"));
         assert!(text.contains("Standard tool batches allow up to 16"));
         assert!(!text.contains("Current mode:"));
-        // 默认配置下所有片段留在 system：只有一条消息，静态前缀即前三块。
+        // 默认配置下所有片段都在 system：只有一条消息，前三块是静态前缀。
         assert_eq!(prompt.messages.len(), 1);
         assert_eq!(prompt.messages[0].role, Role::System);
         assert_eq!(prompt.static_prefix, vec![3]);
@@ -421,8 +422,8 @@ mod tests {
         );
     }
 
-    /// 工具政策必须声明内部 URI 的归属工具与后台任务的结果投递：模型不再拿
-    /// bash 去 tail `artifact://jobs/job_1.log` 的依据只能来自这里。
+    /// 工具政策必须说明内部 URI 该用哪些工具读，以及后台任务的结果会自动送达。
+    /// 模型只能从这里知道不该用 bash 去 tail `artifact://jobs/job_1.log`。
     #[test]
     fn tool_policy_declares_internal_uris_and_job_delivery() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -452,7 +453,7 @@ mod tests {
         }
         assert!(
             text.contains("A bare scheme") && text.contains("lists that namespace when read"),
-            "必须说明裸 scheme 是命名空间列表入口：{text}"
+            "必须说明读裸 scheme 会列出该命名空间：{text}"
         );
         assert!(
             text.contains("Never pass a resource URI to bash or to any other program"),
@@ -461,7 +462,7 @@ mod tests {
         assert!(
             text.contains("reports its completion notice")
                 && text.contains("never sleep, re-run, or poll"),
-            "必须说明后台任务的完成通知自动投递且禁止轮询：{text}"
+            "必须说明后台任务的完成通知会自动送达，且禁止轮询：{text}"
         );
     }
 
@@ -491,8 +492,8 @@ mod tests {
         assert_eq!(prompt.static_prefix, vec![3]);
     }
 
-    /// 指令角色切到 user：规定性片段改走 user 消息，描述性片段留在 system，
-    /// 片段正文逐字不变，只是分组与排列顺序不同。
+    /// 指令角色设为 user 时，规定性片段改用 user 消息，描述性片段留在 system；
+    /// 片段正文不变，只有分组和顺序不同。
     #[test]
     fn instruction_role_user_splits_pieces_without_rewriting_them() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -513,7 +514,7 @@ mod tests {
             "<mcp-servers>\ngithub\n</mcp-servers>",
             None,
         );
-        // 两条消息：system 组承载描述性片段，user 组承载规定性片段。
+        // 两条消息：system 组放描述性片段，user 组放规定性片段。
         assert_eq!(prompt.messages.len(), 2);
         assert_eq!(prompt.messages[0].role, Role::System);
         assert_eq!(prompt.messages[1].role, Role::User);
@@ -528,9 +529,9 @@ mod tests {
         assert!(user.contains("structuredContent"));
         assert!(user.contains(REPO_RULES_INTRO));
         assert!(user.contains("Follow local rule."));
-        assert!(!user.contains("<env>"), "环境事实不得混进 user 组");
+        assert!(!user.contains("<env>"), "环境信息不能进 user 组");
 
-        // 与默认配置相比：片段正文逐字相同，只有分组与顺序不同。
+        // 与默认配置相比，片段正文相同，只有分组和顺序不同。
         let plain_config = resolved(&cwd, &home);
         let plain_model = plain_config.resolve_role("default").expect("resolve model");
         let plain = build(
@@ -550,7 +551,7 @@ mod tests {
         assert_eq!(split, single);
     }
 
-    /// 未知片段名在配置加载期报错，而不是静默退化成整条 user。
+    /// 未知片段名在加载配置时报错，不会悄悄把整条指令都放进 user。
     #[test]
     fn unknown_keep_system_piece_name_fails_config_load() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -629,12 +630,12 @@ mod tests {
         assert!(text.contains("- demo: demo skill"));
     }
 
-    /// 模式契约：普通模式不发声明，其余模式自带该模式该做什么（不是名字指针）。
+    /// 普通模式不发模式提醒；其余模式的提醒要写全规则，不能只报模式名。
     #[test]
     fn mode_contract_only_declares_non_normal_modes() {
         assert!(
             mode_contract(SessionMode::Normal).is_none(),
-            "普通模式没有任何增量，不发声明本身就是信号"
+            "普通模式没有额外规则，不应发提醒"
         );
         for (mode, needles) in [
             (
@@ -654,7 +655,7 @@ mod tests {
                 ["<clm-experimental>", "clm_context"].as_slice(),
             ),
         ] {
-            let text = mode_contract(mode).expect("非普通模式必须有契约").text();
+            let text = mode_contract(mode).expect("非普通模式必须有模式提醒").text();
             assert!(
                 text.starts_with("<system-reminder>") && text.ends_with("</system-reminder>"),
                 "{mode:?}: {text}"
@@ -664,7 +665,7 @@ mod tests {
             }
             assert!(
                 !text.contains("follow the tool policies above"),
-                "{mode:?} 不得只报模式名让模型自己去上面找规则：{text}"
+                "{mode:?} 不能只报模式名、让模型去上文找规则：{text}"
             );
         }
     }

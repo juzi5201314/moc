@@ -1,4 +1,4 @@
-//! 子代理运行时 registry、持久子会话控制、代理间消息与生命周期收尾。
+//! 子代理运行时注册表、持久化子会话、代理间消息和生命周期收尾。
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
@@ -27,7 +27,7 @@ pub(crate) struct AgentRuntime {
     pub notify: Arc<Notify>,
     pub message: Option<Message>,
     pub finish_reason: Option<FinishReason>,
-    /// `yield` 交付的最终报告；父侧结果查询优先取它。
+    /// `yield` 交付的最终报告；父代理查询结果时优先用它。
     pub yielded: Option<String>,
 }
 
@@ -37,10 +37,10 @@ pub(crate) struct PendingAgentMessage {
     pub message: Message,
 }
 
-/// 会话收件箱：运行中的提示在轮边界取走并落库。
+/// 会话收件箱：运行中的提示在两轮之间取走消息并写入会话。
 #[derive(Default)]
 pub(crate) struct AgentInbox {
-    /// 提示运行期间为 true；收尾置 false 后新投递改为唤醒或明确失败。
+    /// 提示运行期间为 true；结束时置 false，之后的新消息改为唤醒或明确失败。
     pub accepting: bool,
     pub messages: VecDeque<PendingAgentMessage>,
     pub notify: Arc<Notify>,
@@ -62,7 +62,7 @@ fn live(status: AgentStatus) -> bool {
     matches!(status, AgentStatus::Queued | AgentStatus::Running)
 }
 
-/// 收件箱积压上限；超过即明确回报失败，避免父侧无限投递而子代理永不消费。
+/// 收件箱积压上限；超过就明确回报失败，免得父代理一直投递、子代理却永远不消费。
 const MAX_PENDING_AGENT_MESSAGES: usize = 64;
 
 /// 子代理缺 `yield` 时的提醒次数上限。
@@ -80,10 +80,10 @@ const RESULT_PREVIEW_CHARS: usize = 500;
 /// 子代理系统提示里的兄弟清单上限。
 const ROSTER_LIMIT: usize = 32;
 
-/// 常驻注册表保留的已完成子代理条目上限；更早的终态条目按更新时间回收。
+/// 注册表最多保留多少个已结束的子代理；更早的按更新时间回收。
 ///
-/// 终态信息仍可从 transcript 复原（`list_agents` 会回退到会话信息），
-/// 这里只需为最近的 `wait_agent` 查询保留一段窗口。
+/// 终态信息仍然可以从 transcript 复原（`list_agents` 会回退到会话信息），这里只为
+/// 最近的 `wait_agent` 查询保留一段窗口。
 const MAX_TERMINAL_AGENTS: usize = 64;
 
 /// 回收超出上限的终态条目；运行中的条目永远保留。
@@ -151,7 +151,7 @@ fn resolve_model(
         }
         other => {
             return Err(CoreError::Config(format!(
-                "INVALID_PARAMS: 子代理 model 只允许 inherit、default、explore、plan，收到 {other}"
+                "INVALID_PARAMS: 子代理 model 只能是 inherit、default、explore、plan，收到 {other}"
             )));
         }
     };
@@ -172,11 +172,11 @@ fn info_from_session(session: &SessionInfo, status: AgentStatus) -> AgentInfo {
     }
 }
 
-/// 登记一个即将启动的子代理条目并先打开收件箱。
+/// 登记即将启动的子代理，并先打开收件箱。
 ///
-/// 顺序是硬约束：`accepting = true` 必须在注册表条目出现之前生效。消息投递先看
-/// 收件箱再看状态，否则「已登记但提示尚未取得锁」的窗口里投递会走唤醒路径，
-/// 与即将启动的提示抢同一个会话。
+/// 顺序不能反：`accepting = true` 必须在注册表条目出现之前生效。投递消息时先看收件箱
+/// 再看状态，否则在「已登记、提示还没拿到锁」的窗口里，投递会走唤醒路径，和即将启动的
+/// 提示抢同一个会话。
 async fn prepare_agent(inner: &CoreInner, info: &AgentInfo, cancel: CancellationToken) {
     inner
         .runtime(&info.id)
@@ -198,7 +198,7 @@ async fn prepare_agent(inner: &CoreInner, info: &AgentInfo, cancel: Cancellation
     );
 }
 
-/// 子代理的取消令牌挂在直接父会话的 guard 上，父会话整体取消时一并终止。
+/// 子代理的取消令牌挂在直接父会话的 guard 下，父会话整体取消时一起终止。
 async fn child_cancel(inner: &CoreInner, parent_id: &str) -> CancellationToken {
     match inner.runtime(parent_id).await.guard.lock().clone() {
         Some(guard) => guard.cancel.child_token(),
@@ -255,12 +255,12 @@ pub(crate) async fn spawn(
     Ok(AgentSpawnResult { agent: info })
 }
 
-/// 唤醒一个空闲代理所需的交付信息。
+/// 唤醒空闲代理所需的交付信息。
 ///
-/// `spawn` 的首轮任务两者都为空；代理消息唤醒则带着来源元信息与已占用的提示锁。
+/// `spawn` 的首轮任务两者都为空；被代理消息唤醒时则带着来源信息和已占用的提示锁。
 #[derive(Default)]
 struct Wakeup {
-    /// 来源元信息；落库为 `IRC ◀` 卡片。
+    /// 来源信息；写入会话后显示为 `IRC ◀` 卡片。
     agent: Option<AgentMessageMeta>,
     /// 派发前已抢占的提示锁。
     prompt_lock: Option<tokio::sync::OwnedMutexGuard<()>>,
@@ -280,7 +280,7 @@ async fn activate(
 ) -> Result<(), CoreError> {
     let Wakeup { agent, prompt_lock } = wakeup;
     let record = inner.sessions.get(&agent_id).await?;
-    // 锁被占意味着该会话仍有提示在收尾，唤醒必须放弃（调用方据此改走收件箱）。
+    // 锁被占说明该会话还有提示没结束，唤醒只能放弃（调用方据此改走收件箱）。
     let prompt_lock = match prompt_lock {
         Some(lock) => lock,
         None => record.try_prompt_lock()?,
@@ -309,7 +309,7 @@ async fn activate(
     let task_inner = Arc::clone(&inner);
     let task_request = request.clone();
     let mut tasks = inner.agent_tasks.lock().await;
-    // 已完成的任务连同输出一起回收，避免 JoinSet 随会话时长无界增长。
+    // 回收已完成的任务和输出，免得 JoinSet 随会话时间无限增长。
     while let Some(result) = tasks.try_join_next() {
         if let Err(error) = result {
             tracing::error!(%error, "子代理任务失败");
@@ -367,7 +367,7 @@ async fn finish(
             (AgentStatus::Stopped, None, Some(FinishReason::Cancelled))
         }
         Err(error) => {
-            // 父会话只看到 failed 状态时无从判断原因：失败消息与日志都要留下。
+            // 父会话只看到 failed 状态时看不出原因，所以失败消息和日志都要留下。
             tracing::warn!(agent_id = %agent_id, %error, "子代理提示失败");
             (
                 AgentStatus::Failed,
@@ -383,7 +383,7 @@ async fn finish(
         let Some(runtime) = registry.items.get_mut(&agent_id) else {
             return;
         };
-        // `yield` 报告是子代理自己交付的权威结果，覆盖模型最后一条正文。
+        // `yield` 报告是子代理自己交付的最终结果，会覆盖模型最后一条正文。
         let message = runtime
             .yielded
             .take()
@@ -430,7 +430,7 @@ async fn finish(
     .await;
 }
 
-/// 子代理进入终态时把结果投进父会话的 notices：父模型下一轮就能看到。
+/// 子代理结束时把结果作为 notice 投进父会话，父模型下一轮就能看到。
 async fn deliver_result_notice(
     inner: &CoreInner,
     parent_id: &str,
@@ -506,9 +506,9 @@ impl Peers {
     }
 }
 
-/// 从会话表与注册表构建调用方视角的代理关系。
+/// 从会话表和注册表构建调用方看到的代理关系。
 ///
-/// 注册表缺条目时按 `Idle`（历史上跑过、当前进程没在运行）。
+/// 注册表里没有条目时按 `Idle` 处理（以前跑过，当前进程里没有运行）。
 async fn peers(inner: &CoreInner, session_id: &str) -> Result<Peers, CoreError> {
     let sessions = inner.sessions.known().await?;
     let registry = inner.agents.lock().await;
@@ -605,7 +605,7 @@ fn resolve_targets(peers: &Peers, target: &str) -> Result<Vec<MessageTarget>, Co
     }
 }
 
-/// `agent/message`：向其它代理投递一条消息（运行中注入、空闲唤醒）。
+/// `agent/message`：给其它代理投递消息；目标在运行就注入，空闲就唤醒。
 pub(crate) async fn message(
     inner: Arc<CoreInner>,
     request: RequestContext,
@@ -663,7 +663,7 @@ async fn deliver(
             return receipt(target, AgentMessageOutcome::Failed, Some(error.to_string()));
         }
     };
-    // 提示锁被占 = 该会话仍有提示在收尾，此刻唤醒必然与它抢锁。
+    // 提示锁被占，说明该会话还有提示没结束，此刻唤醒必然和它抢锁。
     let Ok(prompt_lock) = record.try_prompt_lock() else {
         return match session_runtime.agent_inbox.lock().await {
             mut inbox if inbox.accepting => push_inbox(&mut inbox, from, text, target),
@@ -680,8 +680,8 @@ async fn deliver(
     };
     match &target.session.parent_session_id {
         Some(parent_id) => {
-            // 收件箱未接受投递、提示锁也空闲，说明旧条目（若有）已经作废：
-            // 重建条目以清掉上一轮的交付物与等待者。
+            // 收件箱不收消息、提示锁也空闲，说明旧条目（如果有）已经作废：
+            // 重建条目，清掉上一轮的交付物和等待者。
             let info = info_from_session(&target.session, AgentStatus::Queued);
             let cancel = child_cancel(inner, parent_id).await;
             prepare_agent(inner, &info, cancel.clone()).await;
@@ -723,7 +723,7 @@ async fn deliver(
     receipt(target, AgentMessageOutcome::Woken, None)
 }
 
-/// 收件箱入队；满队列明确回报失败。
+/// 放入收件箱；队列满了就明确回报失败。
 fn push_inbox(
     inbox: &mut AgentInbox,
     from: &AgentMessageMeta,
@@ -745,7 +745,7 @@ fn push_inbox(
     receipt(target, from.delivery, None)
 }
 
-/// 把收件箱中的消息落库并推送 `SessionUpdate::AgentMessage`。
+/// 把收件箱里的消息写入会话，并推送 `SessionUpdate::AgentMessage`。
 pub(crate) async fn drain_inbox(
     inner: &CoreInner,
     updates: &UpdateSink,
@@ -879,7 +879,7 @@ struct WaitRow {
     elapsed_ms: u64,
 }
 
-/// 注册表锁内的等待快照：等待者必须先于状态可读。
+/// 在注册表锁内取等待快照：必须先建好等待者，再读状态。
 struct WaitSnapshot {
     rows: Vec<WaitRow>,
     watched: Vec<std::pin::Pin<Box<OwnedNotified>>>,
@@ -888,9 +888,9 @@ struct WaitSnapshot {
 
 /// 在注册表锁内建立等待者并读取快照。
 ///
-/// 完成路径先写终态、再 `notify_waiters`；两者若与这里的读取交错，等待者会错过
-/// 唤醒并永久挂起（`notify_waiters` 不保存许可）。锁内先建等待者再读状态，
-/// 任何顺序的交错都会落在「立即返回终态」或「等待者已就绪」之一。
+/// 完成路径先写终态、再 `notify_waiters`；这两步如果和这里的读取交错，等待者会错过
+/// 唤醒并一直挂起（`notify_waiters` 不保存许可）。所以锁内先建等待者再读状态，无论怎么
+/// 交错，结果都会是「立即返回终态」或「等待者已就绪」。
 fn wait_snapshot(registry: &AgentRegistry, targets: &[SessionInfo]) -> WaitSnapshot {
     let mut rows = Vec::with_capacity(targets.len());
     let mut watched = Vec::with_capacity(targets.len());
@@ -898,7 +898,7 @@ fn wait_snapshot(registry: &AgentRegistry, targets: &[SessionInfo]) -> WaitSnaps
     let now = now_ms();
     for session in targets {
         let Some(runtime) = registry.items.get(&session.id) else {
-            // 注册表没有条目：进程内没有在跑，按空闲的终态回报。
+            // 注册表里没有条目：进程内没有在跑，按 `Idle` 回报。
             settled = true;
             rows.push(WaitRow {
                 entry: AgentWaitEntry {
@@ -1035,8 +1035,8 @@ async fn resolve_wait_targets(
             if !live_targets.is_empty() {
                 return Ok(live_targets);
             }
-            // 全部子代理都已结束：直接回报它们的终态。否则「刚 spawn 就 wait」这种
-            // 快子代理场景会掉进空目标错误，而这正是最常见的收集结果时机。
+            // 子代理全都结束了：直接回报它们的终态。否则「刚 spawn 就 wait」这种很快
+            // 结束的子代理会撞上空目标错误，而这恰恰是最常见的收集结果时机。
             if peers.children.is_empty() {
                 return Err(invalid("没有可等待的子代理"));
             }
@@ -1114,9 +1114,9 @@ pub(crate) async fn wait(
 
 /// 子代理提示的组装结果。
 pub(crate) struct SubagentPrompt {
-    /// 系统提示块：交付契约与任务本身。任务放在这里，权威顺序上压过通用仓库规则。
+    /// 系统提示块：交付约定和任务本身。任务放在这里，优先级高于通用仓库规则。
     pub block: String,
-    /// 运行期清单：父代理与兄弟代理。兄弟状态随时变化，作为尾部提醒注入，
+    /// 运行期列表：父代理和兄弟代理。兄弟状态随时会变，所以作为尾部提醒注入，
     /// 不参与系统前缀缓存。
     pub roster: String,
 }
@@ -1167,10 +1167,10 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
     Some(SubagentPrompt { block, roster })
 }
 
-/// 子代理会话的第一条用户消息：spawn 投递的任务原文。
+/// 子代理会话里的第一条用户消息：spawn 投递的任务原文。
 ///
-/// 跳过 moc 自己注入的上下文消息（计划、todo、压缩摘要）：它们已经随 transcript
-/// 进入上下文，再抄进系统块只会把整段内容复制一遍。
+/// 跳过 moc 自己注入的上下文消息（计划、todo、压缩摘要）：它们已经随 transcript 进入
+/// 上下文，再抄进系统块只会重复一遍。
 async fn assignment(inner: &CoreInner, session_id: &str) -> Option<String> {
     let record = inner.sessions.get(session_id).await.ok()?;
     let state = record.state.lock().await;
@@ -1184,7 +1184,7 @@ async fn assignment(inner: &CoreInner, session_id: &str) -> Option<String> {
         .map(|message| message.text())
 }
 
-/// 状态词；子代理系统提示与工具结果共用，模型侧一律英文。
+/// 状态词，子代理系统提示和工具结果共用；模型可见的文本一律用英文。
 pub(crate) fn status_word(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Queued => "queued",
@@ -1246,7 +1246,7 @@ mod tests {
         registry
             .items
             .insert("ses_agent00001".into(), running_agent(Arc::clone(&notify)));
-        // 等待者与终态读取在同一临界区建立；此刻代理仍在运行。
+        // 等待者和终态读取在同一临界区内完成；此时代理还在运行。
         let snapshot = wait_snapshot(&registry, &[target("ses_agent00001")]);
         assert!(!snapshot.settled);
         assert_eq!(snapshot.watched.len(), 1);
@@ -1263,8 +1263,8 @@ mod tests {
             runtime.message = Some(Message::assistant_text("子代理完成"));
         }
         notify.notify_waiters();
-        // 唤醒落在等待者建立之后：必须立即就绪，不得依赖后续通知。
-        // 上限取 5s：只用于兜住「永不被唤醒」的原缺陷，避免并行测试的调度延迟造成误报。
+        // 唤醒发生在等待者建立之后：必须立即就绪，不能依赖后续通知。
+        // 上限取 5s，只用来兜住「永远不会被唤醒」这种缺陷，避免并行测试的调度延迟造成误报。
         tokio::time::timeout(Duration::from_secs(5), await_any(&mut watched))
             .await
             .expect("完成通知不得丢失");
@@ -1291,7 +1291,7 @@ mod tests {
         let entry = &snapshot.rows[0].entry;
         assert_eq!(entry.status, AgentStatus::Failed);
         assert_eq!(entry.message.as_ref().expect("失败消息").text(), "上游失败");
-        // 注册表缺条目：按空闲终态回报。
+        // 注册表里没有条目：按 `Idle` 回报。
         let absent = wait_snapshot(&registry, &[target("ses_missing0001")]);
         assert!(absent.settled);
         assert_eq!(absent.rows[0].entry.status, AgentStatus::Idle);
@@ -1370,7 +1370,7 @@ mod tests {
                 .contains_key(&format!("ses_done{:05}", MAX_TERMINAL_AGENTS + 4)),
             "最新的终态条目必须保留"
         );
-        // 上限之内重复回收不得再删除条目。
+        // 没超过上限时，再回收也不应删除条目。
         prune_terminal_agents(&mut registry);
         assert_eq!(registry.items.len(), MAX_TERMINAL_AGENTS + 1);
     }

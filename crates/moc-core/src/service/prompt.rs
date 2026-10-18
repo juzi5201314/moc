@@ -1,4 +1,4 @@
-//! 流式提示编排、取消收尾、持久化与工具执行。
+//! 提示的流式编排、取消后的清理、持久化与工具执行。
 
 use crate::{
     compact,
@@ -42,10 +42,10 @@ pub async fn run_prompt(
     run_prompt_with_lock(inner, ctx, params, record, prompt).await
 }
 
-/// 复用调用方已取得的提示锁跑一次提示。
+/// 用调用方已经拿到的提示锁跑一次提示。
 ///
-/// 代理唤醒在派发前先抢占提示锁：锁被占说明该会话仍有提示在收尾，调用方据此
-/// 改走收件箱而不是与收尾中的提示抢同一个会话。
+/// 代理唤醒会在派发前先抢提示锁：抢不到说明该会话还有提示没结束，调用方就把消息
+/// 放进收件箱，而不是和那个提示争同一个会话。
 pub(crate) async fn run_prompt_with_lock(
     inner: Arc<CoreInner>,
     ctx: RequestContext,
@@ -98,7 +98,7 @@ pub(crate) async fn run_prompt_with_lock(
             };
             let reason = FinishReason::LoopDetected;
             let message = Message::assistant_text(format!(
-                "已终止本次提示：{violation}。已提交的工具操作保留；没有自动重试。"
+                "已停止本次提示：{violation}。已完成的工具操作会保留，不会自动重试。"
             ));
             inner
                 .sessions
@@ -132,8 +132,8 @@ pub(crate) async fn run_prompt_with_lock(
         result
     };
     *runtime.guard.lock() = None;
-    // 推送失败只影响前端可见性，不能跳过收尾：steering 复位、工具配对修复、
-    // 补充消息落库与解锁广播都必须无条件执行。
+    // 推送失败只影响前端能否看到，不能跳过后面的清理：steering 复位、修复工具调用配对、
+    // 写入补充消息和广播解锁都必须执行。
     let finished = match &result {
         Ok(result) => update
             .emit(
@@ -163,7 +163,7 @@ pub(crate) async fn run_prompt_with_lock(
     super::management::drain_steering(&inner, &session_id, true)
         .await
         .map_err(to_rpc)?;
-    // 收尾阶段到达的代理消息仍然落库：模型看不见，但界面与下次唤醒必须看得到。
+    // 结束阶段收到的代理消息照样写入会话：模型这轮看不到，但界面和下次唤醒要能看到。
     crate::agents::drain_inbox(&inner, &update, &session_id, true)
         .await
         .map_err(to_rpc)?;
@@ -178,17 +178,17 @@ pub(crate) async fn run_prompt_with_lock(
     match result {
         Err(error) => Err(error),
         Ok(outcome) => {
-            // 完成推送与解锁广播都是通知：任一失败都要让客户端知道本次提示未完整交付。
+            // 完成推送和解锁广播都是通知，任何一个失败都要告诉客户端本次提示没有完整交付。
             unlocked?;
             finished.map_or(Ok(outcome), Err)
         }
     }
 }
 
-/// 一轮请求所需的会话状态投影。
+/// 一轮请求需要的会话状态副本。
 ///
-/// 只复制构建请求必需的内容，避免 `'turns` 循环每轮深拷贝整份 [`SessionState`]
-/// （长会话含 base64 图片时单次可达数十 MB）。
+/// 只复制构建请求所需的部分，避免 `'turns` 循环每轮深拷贝整个 [`SessionState`]
+/// （长会话带 base64 图片时一次可达数十 MB）。
 struct TurnInputs {
     messages: Vec<Message>,
     context_tokens: u64,
@@ -196,7 +196,7 @@ struct TurnInputs {
     server_compaction_disabled: bool,
 }
 
-/// 在调用方持有的会话状态锁内构建一轮投影；锁不跨越任何 await。
+/// 在调用方持有的会话状态锁内生成 [`TurnInputs`]；持锁期间没有 await。
 fn turn_inputs(
     state: &crate::session::state::SessionState,
     system: &[Message],
@@ -239,7 +239,7 @@ async fn run_prompt_locked(
     if user_message.content.is_empty() {
         return Err(RpcError::of(RpcErrorCode::InvalidParams));
     }
-    // 代理消息按原样落库：技能调用改写的用户输入语义不适用于代理投递。
+    // 代理消息原样写入会话：skill 调用对用户输入的改写不适用于代理投递的消息。
     let agent_meta = params.agent_message.clone();
     let user_message = if agent_meta.is_none() {
         apply_skill_invocation(&inner, user_message, &state_snapshot.session.cwd).await?
@@ -287,7 +287,7 @@ async fn run_prompt_locked(
             .append_messages(&ov_session, &[message], &identity.peer_id)
             .await
         {
-            // 记忆写入不阻塞提示：失败只记录，避免整轮对话因远端不可用而静默丢失事件。
+            // 写记忆不阻塞提示：失败只记日志，不能因为远端不可用就让整轮对话丢掉。
             tracing::warn!(session_id = %params.session_id, %error, "OpenViking 用户消息写入失败");
         }
     }
@@ -328,12 +328,12 @@ async fn run_prompt_locked(
         .guard
         .lock()
         .clone()
-        .expect("运行中的提示持有共享预算");
+        .expect("运行中的提示一定持有共享预算");
     let mut tool_cycles = ToolCycles::default();
     let mut state = record.state.lock().await;
     state.todo_reminders_sent = 0;
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
-    // CLM 是会话级模式；临时 `/ask` 不能覆盖已经启用的 CLM。
+    // CLM 是会话级模式，临时的 `/ask` 不能覆盖已启用的 CLM。
     let mode = if state_snapshot.mode == moc_protocol::methods::SessionMode::ClmExperimental {
         moc_protocol::methods::SessionMode::ClmExperimental
     } else {
@@ -386,7 +386,7 @@ async fn run_prompt_locked(
         .map_err(protocol_to_rpc)?;
 
     let cancel = ctx.cancel();
-    // 一次提示固定发现与执行目录，服务器刷新留到下一次提示生效。
+    // 一次提示内 MCP 的工具发现和执行用同一份目录，服务器刷新到下一次提示才生效。
     let mcp = inner
         .project_mcp(std::path::Path::new(&state_snapshot.session.cwd))
         .await
@@ -410,8 +410,8 @@ async fn run_prompt_locked(
     let skills = inner
         .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
         .map_err(to_rpc)?;
-    // 会话身份只有一个来源：会话头。提示词、工具可见性与名册都必须走它，
-    // 否则「系统提示说我是子代理、工具表却不给 yield」这类矛盾会重新出现。
+    // 会话身份只看会话头。系统提示、工具可见性和代理列表都必须以它为准，
+    // 否则会出现「系统提示说我是子代理，工具表里却没有 yield」这类矛盾。
     let subagent = state_snapshot.session.is_subagent();
     let tools_available = inner.tools.definitions(
         mode,
@@ -423,7 +423,7 @@ async fn run_prompt_locked(
         },
     );
     let mut last_message = Message::default();
-    // 无界循环只在 break 前赋值：初值没有任何路径会读到。
+    // 只在 break 前赋值；循环没有别的出口，所以不需要初值。
     let mut final_reason: FinishReason;
     let mut usage = Usage::default();
     let mut length_continues = 0usize;
@@ -442,12 +442,12 @@ async fn run_prompt_locked(
         &summary,
         subagent_prompt.as_ref().map(|prompt| prompt.block.as_str()),
     );
-    // 代理清单随兄弟状态变化：放在尾部提醒里，避免每次变化都让系统前缀缓存失效。
+    // 代理列表随兄弟代理的状态变化，放在尾部提醒里，免得每次变化都让系统前缀缓存失效。
     let roster = subagent_prompt.map(|prompt| prompt.roster);
 
     let mut is_first_turn = true;
     'turns: loop {
-        // 首轮才注入召回结果与本地提醒；同一提示内的 continue 不再算首轮。
+        // 召回结果和本地提醒只在首轮注入；同一提示内因 continue 进入的轮次不算首轮。
         let first_turn = std::mem::take(&mut is_first_turn);
         if cancel.is_cancelled() {
             final_reason = FinishReason::Cancelled;
@@ -460,8 +460,8 @@ async fn run_prompt_locked(
             .await
             .map_err(to_rpc)?;
         let mut reminder_messages = Vec::new();
-        // todo 停滞提醒：只在已有未完成项、且距上次 todo 变更累积了足够工具调用时注入一次。
-        // 每个提示最多 `reminders_max` 次；前端按工具样式展示占位行，提醒本身无参数与结果。
+        // todo 停滞提醒：仍有未完成项，且距上次 todo 变更已累计足够多次工具调用时注入一次。
+        // 每个提示最多 `reminders_max` 次；前端把它显示成一行工具样式的占位，没有参数和结果。
         if project_config.tools.todo.enabled
             && project_config.tools.todo.reminders
             && mode != moc_protocol::methods::SessionMode::Plan
@@ -620,7 +620,7 @@ async fn run_prompt_locked(
         };
         inputs.messages.extend(reminder_messages.iter().cloned());
         let context_tokens = inputs.context_tokens;
-        // 预火只改 soft 的输入来源，不改变 remote/shake 顺序；条件判断都在内部。
+        // 提前摘要只改变 soft 压缩的输入来源，不改变 remote/shake 的顺序；触发条件在函数内部判断。
         compact::grok_build::prefire::maybe_prefire(
             &inner,
             &params.session_id,
@@ -660,7 +660,7 @@ async fn run_prompt_locked(
                             session_id = %params.session_id,
                             tokens_after = report.result.tokens_after,
                             recovery_band = compact::recovery_band(&project_config, model.context_window),
-                            "Compaction did not create enough context space; stopping automatic continuation to avoid repeated compaction"
+                            "压缩没有腾出足够的上下文空间，停止自动续写，避免反复压缩"
                         );
                     }
                     if !report.created_headroom || !project_config.compaction.auto_continue {
@@ -697,7 +697,7 @@ async fn run_prompt_locked(
             },
         );
         let mut overflow_attempts = 0;
-        // 单次请求耗时只发一条警告，不设生成阶段硬时限。
+        // 请求耗时过长只发一条警告，生成阶段不设硬性时限。
         let request_warning = RequestWarning::spawn(
             &update,
             &params.session_id,
@@ -730,7 +730,7 @@ async fn run_prompt_locked(
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
                 result = inner.client.stream(&llm_config, &request) => result,
             };
-            // 错误恢复可能再次请求同一 Provider，必须先归还失败请求的许可。
+            // 错误恢复可能再次请求同一个供应商，必须先归还失败请求占用的并发名额。
             if streamed.is_err() {
                 crate::service::record_model_usage(
                     &inner,
@@ -1034,7 +1034,7 @@ async fn run_prompt_locked(
                 .append_messages(&ov_session, &[message], &identity.peer_id)
                 .await
             {
-                // 记忆写入不阻塞提示：失败只记录，避免整轮对话因远端不可用而静默丢失事件。
+                // 写记忆不阻塞提示：失败只记日志，不能因为远端不可用就让整轮对话丢掉。
                 tracing::warn!(session_id = %params.session_id, %error, "OpenViking 助手消息写入失败");
             }
         }
@@ -1078,8 +1078,8 @@ async fn run_prompt_locked(
                 tracing::warn!(session_id = %params.session_id, "模型连续输出达到长度上限");
             }
             if !interrupted {
-                // 子代理必须以 `yield` 交付结果；用纯文本结束回合只会让父侧拿到
-                // 一段没有交付语义的正文，因此先提醒若干次，仍缺才回退。
+                // 子代理必须用 `yield` 交付结果；如果只用普通文本结束回合，父代理拿到的
+                // 只是一段正文而不是交付结果。所以先提醒几次，仍然没有再退回用最后一条消息。
                 if subagent
                     && yield_reminders < crate::agents::MAX_YIELD_REMINDERS
                     && !crate::agents::has_yielded(&inner, &params.session_id).await
@@ -1153,7 +1153,7 @@ async fn run_prompt_locked(
                             SessionUpdate::GuardNotice {
                                 prompt_id: prompt_id.clone(),
                                 message: format!(
-                                    "检测到无进展工具循环，已给予一次纠偏机会：{detail}"
+                                    "检测到无进展的工具循环，已提醒模型纠正一次：{detail}"
                                 ),
                                 terminal: false,
                             },
@@ -1310,7 +1310,7 @@ async fn emit_fatal(
         .map_err(protocol_to_rpc)
 }
 
-/// 单次请求耗时警告：到点只推一条通知，请求结束即撤销计时器。
+/// 请求耗时警告：到时间只推一条通知，请求结束时取消计时器。
 struct RequestWarning(tokio::task::JoinHandle<()>);
 
 impl RequestWarning {
@@ -1331,7 +1331,7 @@ impl RequestWarning {
                     SessionUpdate::GuardNotice {
                         prompt_id,
                         message: format!(
-                            "单次请求已耗时超过 {warn_secs} 秒，仍在等待模型响应；不会自动终止"
+                            "本次请求已超过 {warn_secs} 秒，仍在等待模型响应，不会自动终止"
                         ),
                         terminal: false,
                     },
@@ -1347,10 +1347,10 @@ impl Drop for RequestWarning {
     }
 }
 
-/// 解析用户输入中的 `/skill:<name> 参数` 显式调用。
+/// 解析用户输入里的 `/skill:<name> 参数` 显式调用。
 ///
-/// 正文以 user 消息注入（用户指令优先级高于工具结果），`disable-model-invocation`
-/// 的 skill 仅此路径可用；输入不以 `/skill:` 开头时原样返回。
+/// skill 正文以 user 消息注入（用户指令的优先级高于工具结果）。设置了
+/// `disable-model-invocation` 的 skill 只能通过这条路径使用。输入不以 `/skill:` 开头时原样返回。
 async fn apply_skill_invocation(
     inner: &CoreInner,
     message: Message,

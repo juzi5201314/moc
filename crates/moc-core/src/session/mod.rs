@@ -1,4 +1,4 @@
-//! 会话表、追加式 transcript 与每会话提示互斥。
+//! 会话表、追加式 transcript，以及每个会话的提示互斥。
 
 pub mod entries;
 pub mod lock;
@@ -26,7 +26,7 @@ use self::entries::{Entry, EntryPayload, SessionOrigin};
 use self::state::SessionState;
 use self::store::{SessionFile, SessionPaths, SessionStore, now_ms};
 
-/// transcript 条目标识，避免与会话标识在内部调用中混淆。
+/// transcript 条目 ID，避免内部调用时和会话 ID 混淆。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptEntryId(String);
 
@@ -47,7 +47,7 @@ pub struct SessionRecord {
     append_lock: Mutex<()>,
     active: AtomicBool,
     pub paths: SessionPaths,
-    /// 磁盘上还没有 transcript 文件时为 `None`；首次 append 延迟落盘。
+    /// 磁盘上还没有 transcript 文件时为 `None`；第一次 append 时才写入磁盘。
     file: Mutex<Option<SessionFile>>,
     header: Entry,
 }
@@ -82,7 +82,7 @@ impl SessionTable {
         }
     }
 
-    /// 只登记内存状态；transcript 由首次 append 延迟落盘，空会话不残留文件。
+    /// 只登记内存状态；transcript 在第一次 append 时才写盘，空会话不会留下文件。
     pub async fn create(
         &self,
         cwd: impl AsRef<Path>,
@@ -111,7 +111,7 @@ impl SessionTable {
             created_at_ms,
         );
         let state = SessionState::new(header.clone())?;
-        // 子代理落在父会话目录里：代理树就是目录树，删除父会话带走整棵子树。
+        // 子代理落在父会话目录里，代理树和目录树同构：删除父会话会一并删除整棵子树。
         let paths = match origin_parent.as_deref() {
             Some(parent) => {
                 self.store
@@ -146,7 +146,7 @@ impl SessionTable {
             .find(session_id)
             .await?
             .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {session_id}")))?;
-        // 归档恢复同样是写操作；与其他进程的归档/追加共享会话锁。
+        // 恢复归档同样是写操作，所以和其它进程的归档、追加共用同一把会话锁。
         let _disk = lock::SessionLockGuard::acquire(paths.lock_file(session_id), "load")?;
         let entries = self.store.read_entries(&paths).await?;
         let state = SessionState::from_entries(entries)?;
@@ -177,15 +177,15 @@ impl SessionTable {
         ))
     }
 
-    /// 磁盘日志为跨进程的唯一真相源，不用缓存状态覆盖外部更新。
+    /// 磁盘上的日志是跨进程的唯一依据，不能用缓存状态覆盖外部更新。
     pub async fn list(&self) -> Result<Vec<SessionInfo>, CoreError> {
         self.store.list().await
     }
 
-    /// 已知会话：磁盘上的会话与内存中已加载的会话合并，内存记录优先。
+    /// 已知会话：合并磁盘上的会话和内存里已加载的会话，内存记录优先。
     ///
-    /// `list` 只覆盖磁盘，而 transcript 是首次 append 才落盘：`session/new` 与刚
-    /// spawn 的子代理在写入第一条记录前只存在于内存。代理关系解析必须看到它们。
+    /// `list` 只看磁盘，而 transcript 要到第一次 append 才写盘：`session/new` 和刚
+    /// spawn 的子代理在写入第一条记录前只存在于内存里。解析代理关系时必须能看到它们。
     pub async fn known(&self) -> Result<Vec<SessionInfo>, CoreError> {
         let mut sessions: HashMap<String, SessionInfo> = self
             .store
@@ -200,7 +200,7 @@ impl SessionTable {
             sessions.insert(info.id.clone(), info);
         }
         let mut sessions: Vec<SessionInfo> = sessions.into_values().collect();
-        // 稳定顺序：创建先后即子代理的解析顺序，避免等待快照随哈希顺序抖动。
+        // 固定顺序：按创建时间排列，子代理的解析顺序因此稳定，等待快照不会随哈希顺序抖动。
         sessions.sort_by(|left, right| {
             left.created_at_ms
                 .cmp(&right.created_at_ms)
@@ -209,7 +209,7 @@ impl SessionTable {
         Ok(sessions)
     }
 
-    /// 加载消息投影；非 transcript entries 只更新状态，不进入 entries 列表。
+    /// 加载可展示的消息；不进入 transcript 的 entry 只更新会话状态，不出现在列表里。
     pub async fn load(
         &self,
         session_id: &str,
@@ -234,7 +234,7 @@ impl SessionTable {
         })
     }
 
-    /// 读取有界的展示页；不会复制超出单条预算的正文、思考或工具结果。
+    /// 读取大小受限的展示页：超出单条预算的正文、思维链和工具结果不会被完整复制。
     pub async fn load_page(
         &self,
         session_id: &str,
@@ -322,14 +322,14 @@ impl SessionTable {
             content_truncated,
         })
     }
-    /// 创建一个回退分叉，并从目标消息重建该分叉的上下文。
+    /// 创建回退分叉，并从目标消息重建分叉的上下文。
     ///
-    /// 用户消息作为待重新编辑的起点，不写入分叉；助手工具调用会连同
-    /// 紧随其后的工具结果一并保留，避免留下不完整的工具历史。原会话保持不变。
+    /// 用户消息作为待重新编辑的内容，不写入分叉；助手的工具调用会连同紧随其后的工具
+    /// 结果一起保留，不留下不完整的工具历史。原会话保持不变。
     ///
-    /// 分叉是**独立会话**：不建立父子链接，模型侧看不出与普通会话的区别，
-    /// 因此不会获得子代理契约、代理名册或 `yield`。来源会话只记在
-    /// [`SessionOrigin::forked`] 的 `forked_from` 里，供用户端展示出身。
+    /// 分叉是**独立会话**：不建立父子链接，模型侧看不出它和普通会话的区别，因此没有
+    /// 子代理约定、代理列表和 `yield`。来源只记在 [`SessionOrigin::forked`] 的
+    /// `forked_from` 里，供界面显示。
     pub async fn rewind(
         &self,
         session_id: &str,
@@ -419,17 +419,17 @@ impl SessionTable {
         self.load(&child_info.id, None).await
     }
 
-    /// 追加新 entry；状态锁不跨越文件 I/O await。
+    /// 追加新 entry；持有状态锁时不跨文件 I/O 的 await。
     ///
-    /// transcript 文件缺失时（新会话尚未落盘）先写入 header 再写 entry，
-    /// 完成延迟落盘；因此从未产生 entry 的会话不会在磁盘上留下文件。
+    /// transcript 文件还不存在时（新会话尚未写盘），先写 header 再写 entry，完成延迟
+    /// 写入；因此从未产生 entry 的会话不会在磁盘上留下文件。
     pub async fn append(
         &self,
         session_id: &str,
         payload: EntryPayload,
     ) -> Result<Entry, CoreError> {
         let record = self.get(session_id).await?;
-        // 独立任务拥有写入事务；请求 future 被丢弃也必须完成磁盘与内存提交。
+        // 写入事务放在独立任务里：即使请求的 future 被丢弃，磁盘和内存的提交也必须完成。
         tokio::spawn(async move {
             let _append = record.append_lock.lock().await;
             if !record.active.load(Ordering::Acquire) {
@@ -450,7 +450,7 @@ impl SessionTable {
             }
             file_slot
                 .as_ref()
-                .expect("延迟落盘或已打开的句柄必然存在")
+                .expect("此处一定已经打开或创建了文件句柄")
                 .append(&entry, None)
                 .await?;
             record.state.lock().await.apply_entry(entry.clone());
@@ -480,7 +480,7 @@ impl SessionTable {
         .await
     }
 
-    /// 追加一条代理间消息 entry（带来源元信息）。
+    /// 追加一条代理间消息 entry（带来源信息）。
     pub async fn append_agent_message(
         &self,
         session_id: &str,
@@ -499,7 +499,7 @@ impl SessionTable {
         .await
     }
 
-    /// 原子替换 transcript，并同步重建内存投影。
+    /// 原子替换 transcript，同时重建内存里的状态。
     pub async fn rewrite(&self, session_id: &str, entries: Vec<Entry>) -> Result<(), CoreError> {
         let record = self.get(session_id).await?;
         let mut state = SessionState::from_entries(entries.clone())?;
@@ -524,7 +524,7 @@ impl SessionTable {
             }
             file_slot
                 .as_ref()
-                .expect("延迟落盘或已打开的句柄必然存在")
+                .expect("此处一定已经打开或创建了文件句柄")
                 .rewrite(&entries)
                 .await?;
             let mut current = record.state.lock().await;
@@ -538,7 +538,7 @@ impl SessionTable {
         .map_err(|error| CoreError::Session(error.to_string()))?
     }
 
-    /// 改名并追加可重放的标题事件。
+    /// 改名，并追加一条可重放的标题事件。
     pub async fn rename(
         &self,
         session_id: &str,
@@ -562,7 +562,7 @@ impl SessionTable {
         Ok(session)
     }
 
-    /// 追加会话模式变化。
+    /// 记录会话模式的变更。
     pub async fn set_mode(
         &self,
         session_id: &str,
@@ -571,8 +571,9 @@ impl SessionTable {
         let record = self.get(session_id).await?;
         self.reject_foreign_lock(session_id, &record.paths)?;
         let state = record.state.lock().await;
-        // README：CLM 会话「第一次请求后」锁定模式。实时上下文 entry 只在 CLM 模式
-        // 下产生，因此要求当前模式也是 CLM；否则其它模式下写入的伪造 entry 会永久锁死会话。
+        // CLM 会话在「第一次请求后」锁定模式（见 README）。实时上下文 entry 只在 CLM
+        // 模式下产生，所以还要求当前模式是 CLM；否则在其它模式写入一条伪造 entry 就会
+        // 永久锁死会话。
         let clm_locked = state.mode == SessionMode::ClmExperimental
             && state
                 .entries
@@ -591,7 +592,7 @@ impl SessionTable {
         Ok(session)
     }
 
-    /// 追加会话命令执行权限变化。
+    /// 记录会话执行权限的变更。
     pub async fn set_permission(
         &self,
         session_id: &str,
@@ -605,7 +606,7 @@ impl SessionTable {
         session.lock = lock::read(record.paths.lock_file(session_id));
         Ok(session)
     }
-    /// 追加会话模型变化并清除旧模型专属的回放上下文。
+    /// 记录会话模型的变更，并清除旧模型专用的回放数据。
     pub async fn set_model(
         &self,
         session_id: &str,
@@ -620,7 +621,7 @@ impl SessionTable {
         Ok(session)
     }
 
-    /// 尝试取得跨进程写锁。
+    /// 尝试获取跨进程写锁。
     pub async fn acquire_lock(
         &self,
         session_id: &str,
@@ -630,7 +631,7 @@ impl SessionTable {
         if !self.locking {
             return Ok(None);
         }
-        // 锁文件与 transcript 同目录；延迟落盘时该目录可能还不存在，先补建。
+        // 锁文件和 transcript 在同一目录；延迟写盘时目录可能还不存在，先创建。
         if let Some(directory) = record.paths.transcript.parent() {
             tokio::fs::create_dir_all(directory).await?;
         }
@@ -652,7 +653,7 @@ impl SessionTable {
         Ok(Some(guard))
     }
 
-    /// 释放当前进程锁或强制清除陈旧/他人锁。
+    /// 释放本进程的锁，或强制清除过期锁、他人的锁。
     pub async fn unlock(&self, session_id: &str, force: bool) -> Result<bool, CoreError> {
         let paths = self
             .store
@@ -662,7 +663,7 @@ impl SessionTable {
         lock::unlock(paths.lock_file(session_id), force)
     }
 
-    /// 从内存表卸载会话，不删除 JSONL 或 sidecar。
+    /// 从内存表里卸载会话，不删除 JSONL 和 sidecar。
     pub async fn unload(&self, session_id: &str) -> Result<(), CoreError> {
         let record = self.get(session_id).await?;
         let _prompt = record.try_prompt_lock()?;
@@ -670,7 +671,7 @@ impl SessionTable {
         Ok(())
     }
 
-    /// 调用者必须持有该 record 的提示_lock，防止已取得句柄的请求继续写入。
+    /// 调用者必须持有该 record 的提示锁，防止已经拿到句柄的请求继续写入。
     pub(crate) fn unload_locked(&self, session_id: &str, record: &SessionRecord) {
         record.active.store(false, Ordering::Release);
         self.records.write().remove(session_id);
@@ -839,8 +840,8 @@ mod tests {
 
     use super::*;
 
-    /// 子代理会话整体落在父会话目录里：transcript 与父会话 sidecar 同目录、
-    /// 自己的 sidecar 是它的子目录；恢复后父链接与出身都在，删除父会话带走子树。
+    /// 子代理会话整个放在父会话目录里：transcript 和父会话的 sidecar 同目录，自己的
+    /// sidecar 是它的子目录。恢复后父链接和来源都在，删除父会话会一并删除子树。
     #[tokio::test]
     async fn spawned_child_session_lives_inside_the_parent_directory() {
         let directory = tempfile::tempdir().expect("临时目录");
@@ -916,7 +917,7 @@ mod tests {
             )
             .await
             .expect("创建会话");
-        // 未产生任何 entry 前：磁盘上既无 transcript 也无 sidecar，列表不收录。
+        // 还没产生 entry 时，磁盘上既没有 transcript 也没有 sidecar，列表里也不会出现。
         let paths = table.store.paths_for(
             std::path::Path::new("/tmp/project"),
             &info.id,
@@ -924,7 +925,7 @@ mod tests {
         );
         assert!(!paths.transcript.exists());
         assert!(table.list().await.expect("列出会话").is_empty());
-        // append 之后：header 与 entry 一并落盘，列表收录。
+        // append 之后：header 和 entry 一起写盘，列表里能看到。
         table
             .append_message(&info.id, Message::user_text("第一条消息"), None, None)
             .await
@@ -1173,7 +1174,7 @@ mod tests {
             .expect("追加消息");
         let record = table.get(&info.id).await.expect("取会话");
         let transcript = record.paths.transcript.clone();
-        // 外部维护把可写日志压缩归档后删除原文件。
+        // 外部维护把可写日志压缩归档后删掉了原文件。
         let archive = transcript.with_extension("jsonl.gz");
         {
             let source =
@@ -1191,7 +1192,7 @@ mod tests {
         tokio::fs::remove_file(&transcript)
             .await
             .expect("删除可写日志");
-        // 刷新路径必须先恢复可写日志再重新打开，否则会话无法再追加记录。
+        // 刷新时必须先恢复可写日志再重新打开，否则会话无法再追加记录。
         let guard = table
             .acquire_lock(&info.id, "tui")
             .await
@@ -1235,7 +1236,7 @@ mod tests {
             .set_mode(&untouched.id, SessionMode::Normal)
             .await
             .expect("首次请求前允许切换模式");
-        // 其它模式下写入的实时上下文不能让会话永久锁死。
+        // 在其它模式写入的实时上下文不能永久锁死会话。
         let forged = create(SessionMode::Normal).await;
         table
             .append(
@@ -1250,7 +1251,7 @@ mod tests {
             .set_mode(&forged.id, SessionMode::Ask)
             .await
             .expect("正常模式下的实时上下文不得锁死模式");
-        // CLM 会话在第一次请求写入实时上下文后锁定。
+        // CLM 会话在第一次请求写入实时上下文后锁定模式。
         let clm = create(SessionMode::ClmExperimental).await;
         table
             .append(
@@ -1332,7 +1333,7 @@ mod tests {
             Role::Tool
         );
         assert_ne!(rewound.session.id, info.id);
-        // 分叉是独立会话：不建立父链接，出身只落在 forked_from 上。
+        // 分叉是独立会话：不建立父链接，来源只记在 forked_from 上。
         assert!(rewound.session.parent_session_id.is_none());
         assert!(!rewound.session.is_subagent());
         assert_eq!(

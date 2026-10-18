@@ -1,4 +1,4 @@
-//! CLM 实验模式的上下文维护。
+//! CLM 实验模式：维护模型的实时工作上下文。
 
 use futures_util::future::BoxFuture;
 use moc_llm::{Message, ToolDef};
@@ -27,7 +27,7 @@ struct Request {
     content: Option<String>,
 }
 
-/// 首次进入 CLM 请求时建立工作上下文快照。
+/// CLM 模式下第一次请求时创建工作上下文快照。
 pub async fn ensure_context(
     sessions: &SessionTable,
     session_id: &str,
@@ -49,7 +49,7 @@ pub async fn ensure_context(
     Ok(context)
 }
 
-/// 将模型或工具消息追加到当前 CLM 工作上下文并持久化版本。
+/// 把模型或工具消息追加到当前 CLM 工作上下文，并保存新版本。
 pub async fn append_message(
     sessions: &SessionTable,
     state: &Arc<tokio::sync::Mutex<SessionState>>,

@@ -1,17 +1,17 @@
-//! 生成具备足够碰撞安全性的实体标识。
+//! 生成实体 ID，碰撞概率足够低。
 
 use uuid::Uuid;
 
-/// 会话 ID 前缀；会话目录的识别也以它为准（子代理 transcript 按父会话目录归档）。
+/// 会话 ID 前缀；会话目录也按它识别（子代理 transcript 归在父会话目录下）。
 pub const SESSION_PREFIX: &str = "ses_";
 
-/// UUIDv7 的前缀仅包含时间；会话取随机尾部以避免同毫秒覆盖。
+/// UUIDv7 的前半段只有时间；会话 ID 取随机尾部，避免同一毫秒内重复。
 pub fn session_id() -> String {
     let raw = Uuid::now_v7().simple().to_string();
     format!("{SESSION_PREFIX}{}", &raw[20..])
 }
 
-/// 创建 8 位十六进制 entry 标识。
+/// 生成 8 位十六进制的 entry ID。
 pub fn entry_id() -> String {
     short_uuid()
 }

@@ -1,4 +1,4 @@
-//! Responses 原生压缩、尾部去重与载荷持久化。
+//! Responses 原生压缩：调用压缩端点、去掉重复的尾部，并持久化返回的数据。
 
 use std::time::Instant;
 
@@ -128,7 +128,7 @@ pub(crate) async fn compact(
     };
     let tail = moc_llm::encode_responses_input_items(&model.llm, &tail_request)?;
     let mut native_items = response.items;
-    // 端点可原样返回真实尾部；移除与本地保留区重复的后缀，仅回放一次。
+    // 端点可能原样返回真实的尾部消息；去掉与本地保留区重复的后缀，只回放一次。
     if native_items.len() >= tail.len()
         && !tail.is_empty()
         && native_items[native_items.len() - tail.len()..]

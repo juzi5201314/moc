@@ -1,4 +1,4 @@
-//! 持久化计划并结束当前计划轮次。
+//! 计划工具：write_plan 保存计划，exit_plan 结束本轮并请求审阅。
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;

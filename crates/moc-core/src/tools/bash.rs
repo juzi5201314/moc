@@ -1,4 +1,4 @@
-//! 有界日志输出的前台、后台与 PTY 命令。
+//! bash 工具：前台、后台和 PTY 命令，输出写入有大小上限的日志。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -106,7 +106,7 @@ impl Tool for BashTool {
                     "command":{"type":"string"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
-                    "timeout":{"type":"integer","minimum":1,"maximum":3600},
+                    "timeout":{"type":"integer","minimum":1,"maximum":3600,"description":"Seconds before the process group is killed"},
                     "lifecycle":{"type":"string","enum":["monitored","persistent"]},
                     "pty":{"type":"boolean"},
                     "stdin":{"type":"string"},
@@ -172,7 +172,7 @@ impl Tool for BashTool {
                     output_path.clone(),
                     log,
                     process,
-                    permit.expect("后台任务已预留名额"),
+                    permit.expect("后台任务名额已预留"),
                     match lifecycle {
                         BashLifecycle::Monitored => super::job::JobLifecycle::Monitored,
                         BashLifecycle::Persistent => super::job::JobLifecycle::Persistent,
@@ -216,7 +216,7 @@ impl Tool for BashTool {
     }
 }
 
-/// 用户输入即显式授权：不经过模型工具开关、模式限制或自动后台化。
+/// 用户手动执行命令：用户输入本身就是授权，不受模型工具开关、模式限制和自动转后台影响。
 pub(crate) async fn run_manual(
     command: String,
     cwd: PathBuf,
@@ -377,8 +377,8 @@ pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), To
     Ok(())
 }
 
-/// 命令里的一个词：`text` 是原样切片（引号与转义保留），`quoted` 记录该词是否
-/// 以引号开头，`start..end` 是在命令里的字节范围。
+/// 命令里的一个词：`text` 是原文切片（保留引号和转义），`quoted` 表示这个词是否以引号开头，
+/// `start..end` 是它在命令里的字节范围。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Word<'a> {
     text: &'a str,
@@ -387,8 +387,8 @@ struct Word<'a> {
     end: usize,
 }
 
-/// 按 shell 词法切分命令：引号与转义保留在词内，未加引号的空白、`;|&()<>`
-/// 与换行结束当前词。只服务于 URI 改写，不做展开、变量或重定向解析。
+/// 按 shell 词法切分命令：引号和转义留在词内，未加引号的空白、`;|&()<>` 和换行结束当前词。
+/// 只用于改写 URI，不做展开，也不解析变量和重定向。
 fn scan_words(command: &str) -> Vec<Word<'_>> {
     let mut words = Vec::new();
     let mut start = None;

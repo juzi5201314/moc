@@ -1,18 +1,18 @@
-//! 内部 URI 在 shell 里的兜底：执行前把未加引号的 URI 词解析成 urlfs 农场路径。
+//! 内部 URI 在 shell 里的后备处理：执行前把没加引号的 URI 词换成 urlfs 目录里的真实路径。
 //!
-//! 提示词禁止把 URI 交给 shell（read/grep/find 才是它们的出口），但模型不守规则、
-//! 用户手敲 `!` 命令时都不能静默落空，于是按 scheme 在会话 sidecar 里维护一棵符号
-//! 链接农场，把 `artifact://jobs/x.log` 这样的词换成真实路径再执行。外部程序
-//! （rg、git、python…）因此也能直接读这些资源。
+//! 提示词禁止把 URI 交给 shell（应该用 read/grep/find），但模型可能不守规则，用户手敲的
+//! `!` 命令也可能带 URI，这些情况都不能悄悄失败。所以按 scheme 在会话 sidecar 里维护
+//! 一个由符号链接组成的目录（下称 urlfs 目录），把 `artifact://jobs/x.log` 这样的词换成
+//! 真实路径再执行。外部程序（rg、git、python 等）因此也能直接读这些资源。
 //!
-//! 引号内的词保持字面量：搜索模式、heredoc 内容与数据都不能被改成路径。变量或
-//! 命令替换里拼出的 URI 同样不解析——那条路只有内嵌 shell 才能做到。
+//! 引号里的词按字面量保留：搜索模式、heredoc 内容和数据都不能被改成路径。通过变量或
+//! 命令替换拼出来的 URI 也不解析，那只有内嵌 shell 才做得到。
 
 use crate::session::store::SessionPaths;
 use crate::skills::SkillIndex;
 use crate::tools::ToolError;
 
-/// 有本地农场映射的 scheme（`viking://`/`ov://` 是远程资源，没有本地路径）。
+/// 在 urlfs 目录里有本地映射的 scheme（`viking://`、`ov://` 是远程资源，没有本地路径）。
 #[cfg(unix)]
 const FARM_SCHEMES: [&str; 4] = ["artifact", "local", "history", "skill"];
 
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use super::scan_words;
 
-/// 把命令里未加引号的内部 URI 词换成农场路径；没有此类词时返回 `None`。
+/// 把命令里没加引号的内部 URI 词换成 urlfs 路径；没有这类词时返回 `None`。
 pub(crate) fn prepare(
     paths: &SessionPaths,
     skills: &SkillIndex,
@@ -32,7 +32,7 @@ pub(crate) fn prepare(
 ) -> Result<Option<String>, ToolError> {
     #[cfg(not(unix))]
     {
-        // 农场是符号链接布局，只有 unix 有；Windows 上 URI 保持字面量。
+        // urlfs 目录靠符号链接实现，只在 unix 上有；Windows 上 URI 保持原样。
         let _ = (paths, skills, command);
         return Ok(None);
     }
@@ -72,7 +72,7 @@ pub(crate) fn prepare(
     }
 }
 
-/// 词里的 scheme 与 `scheme://` 之后的部分；不是农场 scheme 时返回 `None`。
+/// 拆出词里的 scheme 和 `scheme://` 之后的部分；scheme 不在 urlfs 映射里时返回 `None`。
 #[cfg(unix)]
 fn split_scheme(word: &str) -> Option<(&str, &str)> {
     let (scheme, remainder) = word.split_once("://")?;
@@ -81,7 +81,7 @@ fn split_scheme(word: &str) -> Option<(&str, &str)> {
         .then_some((scheme, remainder))
 }
 
-/// 第一个 glob 元字符前后的两段：路径前缀加引号，glob 尾巴原样保留让 shell 展开
+/// 在第一个 glob 元字符处拆成两段：路径前缀加引号，glob 部分原样留给 shell 展开
 /// （`artifact://jobs/*.log` → `'<farm>/artifact/jobs/'*.log`）。
 #[cfg(unix)]
 fn split_glob(remainder: &str) -> (&str, &str) {
@@ -100,7 +100,7 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// 建立/刷新农场并返回其根目录；相对链接保证会话目录整体搬移后仍有效。
+/// 创建或刷新 urlfs 目录并返回其根路径。用相对链接，会话目录整体搬走后链接仍然有效。
 #[cfg(unix)]
 fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<PathBuf> {
     let farm = paths.sidecar.join("urlfs");
@@ -129,7 +129,7 @@ fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<Pat
     Ok(farm)
 }
 
-/// skill 链接是绝对路径：索引里的 base_dir 可能在工作区、也可能是用户级目录。
+/// skill 链接用绝对路径：索引里的 base_dir 可能在工作区，也可能在用户级目录。
 #[cfg(unix)]
 fn sync_skill_links(directory: &Path, skills: &SkillIndex) -> std::io::Result<()> {
     let mut wanted = Vec::new();
@@ -140,7 +140,7 @@ fn sync_skill_links(directory: &Path, skills: &SkillIndex) -> std::io::Result<()
         wanted.push(name.to_owned());
         link(&directory.join(name), &skill.base_dir)?;
     }
-    // 本次索引里没有的旧链接一并清掉：农场只反映当前索引。
+    // 清掉本次索引里没有的旧链接，让目录只反映当前索引。
     for entry in fs::read_dir(directory)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if wanted.contains(&name) {
@@ -156,14 +156,14 @@ fn sync_skill_links(directory: &Path, skills: &SkillIndex) -> std::io::Result<()
     Ok(())
 }
 
-/// skill 名字要能当目录项：名字就是 URI authority，路径分隔符在这里没有意义。
+/// 检查 skill 名能否用作目录项：名字就是 URI 的 authority，不能含路径分隔符。
 #[cfg(unix)]
 fn link_name(name: &str) -> Option<&str> {
     let valid = !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != "..";
     valid.then_some(name)
 }
 
-/// 建立符号链接；目标相同直接跳过，旧的其它类型先移除。
+/// 创建符号链接；已有指向相同目标的链接就跳过，已有其它类型的项先删除。
 #[cfg(unix)]
 fn link(path: &Path, target: &Path) -> std::io::Result<()> {
     match fs::symlink_metadata(path) {
@@ -199,7 +199,7 @@ mod tests {
         let root = tempfile::tempdir().expect("临时目录");
         let paths = paths(root.path());
         fs::create_dir_all(paths.sidecar.join("plans")).expect("plans");
-        let farm = ensure_farm(&paths, &SkillIndex::empty()).expect("农场");
+        let farm = ensure_farm(&paths, &SkillIndex::empty()).expect("创建 urlfs 目录");
         assert_eq!(
             fs::read_link(farm.join("artifact/jobs")).expect("jobs 链接"),
             Path::new("../../jobs")
@@ -220,14 +220,14 @@ mod tests {
             fs::read_link(farm.join("history/transcript")).expect("transcript 链接"),
             Path::new("../../../ses_1.jsonl")
         );
-        // 相对链接要真的指到 sidecar：写进农场等于写进会话目录。
+        // 相对链接必须真的指向 sidecar：通过 urlfs 目录读到的就是会话目录里的文件。
         fs::write(paths.sidecar.join("plans/plan_1.md"), "# plan\n").expect("计划");
         assert_eq!(
-            fs::read_to_string(farm.join("local/plan_1.md")).expect("农场读计划"),
+            fs::read_to_string(farm.join("local/plan_1.md")).expect("通过 urlfs 读计划"),
             "# plan\n"
         );
         // 幂等：重复调用不改链接目标。
-        let again = ensure_farm(&paths, &SkillIndex::empty()).expect("农场");
+        let again = ensure_farm(&paths, &SkillIndex::empty()).expect("再次创建 urlfs 目录");
         assert_eq!(farm, again);
         assert_eq!(
             fs::read_link(farm.join("artifact/jobs")).expect("jobs 链接"),
