@@ -828,6 +828,378 @@ def run_method(
     }
 
 
+# ---------------------------------------------------------------------------
+# 长会话模式：每轮压缩之间穿插一步真实工作，逐轮量化计划记忆
+# ---------------------------------------------------------------------------
+
+LONG_PLAN_STEPS = 5
+LONG_CHINESE_NUMERALS = "一二三四五六七八九"
+LONG_WINDOW = "crates/ingest/src/window.rs"
+LONG_DOC = "docs/ingest.md"
+
+
+# 只记录计划与决策，不落地代码：计划的每一步都留到后续轮次执行。
+LONG_BASE: list[str] = [
+    "先熟悉代码：读 crates/ingest/src/window.rs 的 1-80 行，然后用一行告诉我 WINDOW_TTL_MS 现在的取值（带下划线原样）。",
+    "读 bench/results.md 全文，用两行分别回答：优化前和优化后的吞吐（行/秒，带下划线原样），以及优化前和优化后的 p99。不要展开。",
+    "读 bench/audit-report.md 全文，读完只回一行：唯一一条 error 级规则的编号，以及它报出的硬编码阈值。",
+    "再读 crates/ingest/src/metrics.rs 和 crates/ingest/tests/window_rotation.rs，然后回答：flush 耗时指标记录在哪个结构里？一行；pinned 窗口为什么不能回收？一行。",
+    "读 bench/incident-review.md 全文，然后回答三点：根因第一条、一共丢弃多少条事件、p99 峰值是多少。",
+    "补充背景，这是一次设计评审的结论，请记住：TTL 定为 45 秒（常量写 45_000，上游心跳 15 秒留 3 倍余量）；"
+    "新增 pub fn rotate_windows(state: &mut WindowState, now_ms: u64) -> usize，返回本轮回收到期的窗口数，"
+    "窗口容器换成 SmallVec<[Window; 4]>，不要 HashMap<u64, Window>；错误统一 thiserror，保留 "
+    "IngestError::Expired { id: u64, age_ms: u64 }，不要引入 anyhow；绝对不要碰 crates/ingest/src/legacy.rs。"
+    "另外两条硬约束：我们否决了用 lru crate 的 LRU 缓存来管理窗口，原因是 pinned 窗口会违反淘汰顺序；"
+    "进程内存上限 512MB，TTL 45 秒就是上限，不能再往上加。"
+    "收尾计划共 5 步：第 1 步改 TTL 常量，第 2 步加 rotate_windows 骨架，"
+    "第 3 步把 metrics 计数移进 rotate_windows（签名加 metrics: &Metrics 参数），"
+    "第 4 步更新 docs/ingest.md 的 TTL 表，"
+    "第 5 步给轮转路径加 tracing 日志。回一句「已记住」。",
+    "顺带问个和任务无关的：nvme 的队列深度怎么看？给一行命令就行，不要执行。",
+    "团队纪律记一下：全量测试预算 1 分钟，禁止在测试里做 bench；提交信息用 conventional commit，"
+    "scope 写 ingest；注释和文档用中文。回一句收到。",
+    "另外确认一下：CI 缓存是每次都重建吗？只回「会」或「不会」。",
+    "先停在这里，等我下一步指令。",
+]
+
+
+def window_text(work: Path) -> str:
+    path = work / LONG_WINDOW
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def doc_text(work: Path) -> str:
+    path = work / LONG_DOC
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def step_landed(work: Path) -> set[int]:
+    """每一步是否真正落地，以工作区内容为准，不看模型自称完成了什么。"""
+    window = window_text(work)
+    doc = doc_text(work)
+    flags = {
+        1: "45_000" in window and "30_000" not in window,
+        2: "fn rotate_windows" in window,
+        3: "record_rotated" in window,
+        4: "45_000" in doc,
+        5: "tracing::" in window,
+    }
+    return {step for step, landed in flags.items() if landed}
+
+
+def plan_truth(work: Path) -> tuple[set[int], int | None]:
+    """当前应完成哪些步、下一步是哪一步；都以工作区状态为准。"""
+    done = step_landed(work)
+    pending = [step for step in range(1, LONG_PLAN_STEPS + 1) if step not in done]
+    return done, (pending[0] if pending else None)
+
+
+LONG_WORK: list[str] = [
+    "执行计划第 1 步：把 crates/ingest/src/window.rs 里的 WINDOW_TTL_MS 从 30_000 改成 45_000，"
+    "行内注释写「上游心跳 15 秒，留 3 倍余量」。只改这一个常量，绝对不要碰 crates/ingest/src/legacy.rs。"
+    "改完只回一行确认。",
+    "执行计划第 2 步：在 crates/ingest/src/window.rs 里把 WindowState::windows 换成 "
+    "SmallVec<[Window; 4]>，并新增 pub fn rotate_windows(state: &mut WindowState, now_ms: u64) -> usize 的骨架："
+    "按 now_ms 回收空闲超过 TTL 的非 pinned 窗口，返回回收数；先不要接进 flush()。改完回一行确认。",
+    "执行计划第 3 步：把 crates/ingest/src/window.rs 的 rotate_windows 签名改成 "
+    "pub fn rotate_windows(state: &mut WindowState, now_ms: u64, metrics: &Metrics) -> usize，"
+    "在回收循环里调用 metrics.record_rotated(reclaimed as u64)；flush() 的过期计数保持不动。"
+    "只改这一个文件，改完回一行确认。",
+    "执行计划第 4 步：更新 docs/ingest.md 的 TTL 表，把 WINDOW_TTL_MS 那一行的 30_000 改成 45_000，"
+    "并在说明里注明「45 秒 = 上游心跳 15 秒 × 3」。改完回一行确认。",
+    "执行计划第 5 步：给 rotate_windows 的回收路径加 tracing::debug! 日志，带上窗口 id 与空闲时长。"
+    "改完回一行确认。",
+    "用 bash 跑 wc -l crates/ingest/src/window.rs 和 crates/ingest/src/metrics.rs，只报告两条行数，不要做别的。",
+    "按团队规范写一条 conventional commit 信息（scope 写 ingest），一句话概括这次改动；"
+    "不要执行 git，只回那一行。",
+]
+
+
+def long_probe(round_index: int) -> str:
+    """每轮压缩后的进度自查：模拟开发者“我现在做到哪了”。
+
+    REPL 逐行喂输入，多行探针会被拆成多条 prompt，必须压成一行。
+    """
+    return (
+        f"【R{round_index}】这不是新任务，不要调用任何工具。用一行回答当前进度，"
+        "格式严格为「已完成: <步号，逗号分隔，没有写 无>；正在做: <一句话>；"
+        "接下来: <步号与动作，没有写 无>」。"
+    )
+
+
+# 计划条目的写法：中文 `第 N 步`、英文 `Step N` 都算。
+STEP_PATTERN = re.compile(rf"第\s*([{LONG_CHINESE_NUMERALS}1-9])\s*步|steps?\s*(\d+)", re.I)
+# 区间写法：`第 1–4 步`、`steps 1–4` 要展开成逐个步号。
+STEP_RANGE = re.compile(
+    rf"第\s*([{LONG_CHINESE_NUMERALS}1-9])\s*步?\s*[–—~至到-]\s*第?\s*([{LONG_CHINESE_NUMERALS}1-9])\s*步"
+    rf"|steps?\s*(\d+)\s*[–—~至到-]\s*(\d+)",
+    re.I,
+)
+
+
+def step_value(token: str) -> int:
+    return int(token) if token.isdigit() else LONG_CHINESE_NUMERALS.index(token) + 1
+
+
+def step_numbers(text: str) -> list[int]:
+    """从文本里取步号：`第 3 步`、`第三步`、`Step 3` 或裸的 `1, 2`。"""
+    found = [step_value(match.group(1) or match.group(2)) for match in STEP_PATTERN.finditer(text)]
+    if found:
+        return found
+    found = [int(match.group(1)) for match in re.finditer(r"(?<![\d.])([1-9])(?![\d.])", text)]
+    if found:
+        return found
+    # 裸的中文步号（“一、二”）只在完全没有阿拉伯数字时兜底。
+    return [LONG_CHINESE_NUMERALS.index(ch) + 1 for ch in text if ch in LONG_CHINESE_NUMERALS]
+
+
+def mentioned_steps(text: str) -> set[int]:
+    """明确提到的步号集合（不含裸数字兜底），区间会展开。"""
+    out: set[int] = set()
+    for match in STEP_RANGE.finditer(text):
+        tokens = [group for group in match.groups() if group]
+        low, high = step_value(tokens[0]), step_value(tokens[1])
+        out.update(range(min(low, high), max(low, high) + 1))
+    out.update(step_numbers(text))
+    return {step for step in out if 1 <= step <= LONG_PLAN_STEPS}
+
+
+def plan_steps_present(summary: str) -> int:
+    """计划条目还剩几条：五个步号至少各出现一次才算数。"""
+    return len(mentioned_steps(summary))
+
+
+def parse_progress(answer: str) -> tuple[set[int], list[int], str]:
+    """解析进度自查：已完成步号集合、接下来步号、正在做原文。
+
+    三个字段可能被模型写成一行（用 `；`）或三行，两种都要认。
+    """
+    done: set[int] = set()
+    following: list[int] = []
+    doing = ""
+    for match in re.finditer(r"(已完成|正在做|接下来)\s*[:：]\s*([^\n；;]*)", answer):
+        label, body = match.group(1), match.group(2).strip()
+        if label == "已完成":
+            done = set(step_numbers(body))
+        elif label == "接下来":
+            following = step_numbers(body)
+        else:
+            doing = body
+    return done, following, doing
+
+
+def run_long_round(
+    binary: Path,
+    home: Path,
+    work: Path,
+    sessions: Path,
+    overlay: Path,
+    session_id: str,
+    round_index: int,
+    work_turn: str | None,
+    timeout: int,
+    log_path: Path,
+) -> None:
+    # REPL 的 stdin 也喂给 ask 工具：模型一旦提问，控制行会被当成回答吃掉。
+    script = (work_turn + "（直接执行，不要向我提问。）\n") if work_turn else ""
+    script += "/compact\n" + long_probe(round_index) + "\n/quit\n"
+    run_repl(binary, home, work, sessions, overlay, script, timeout, log_path, resume=session_id)
+
+
+def run_long_method(
+    name: str,
+    binary: Path,
+    root: Path,
+    home: Path,
+    work: Path,
+    base_sessions: Path,
+    base_id: str,
+    overlay_template: str,
+    rounds: int,
+    timeout: int,
+) -> dict:
+    sessions = root / f"sessions-{name}"
+    if sessions.exists():
+        shutil.rmtree(sessions)
+    shutil.copytree(base_sessions, sessions)
+    # 恢复会话时 cwd 由会话 header 决定，`--cwd` 不再生效：所有方法共用同一个
+    # 工作目录，开跑前重置到 base 状态，两个方法看到的起点完全一致。
+    if work.exists():
+        shutil.rmtree(work)
+    shutil.copytree(root / "work-base", work)
+    overlay = root / f"overlay-{name}.toml"
+    overlay.write_text(overlay_template.replace("{method}", name), encoding="utf-8")
+
+    rounds_data: list[dict] = []
+    for round_index in range(1, rounds + 1):
+        work_turn = LONG_WORK[round_index - 2] if 2 <= round_index <= len(LONG_WORK) + 1 else None
+        log_path = root / f"log-{name}-r{round_index}.txt"
+        run_long_round(
+            binary,
+            home,
+            work,
+            sessions,
+            overlay,
+            base_id,
+            round_index,
+            work_turn,
+            timeout,
+            log_path,
+        )
+        messages, compactions = keyed_messages(entries(session_file(sessions)))
+        if len(compactions) < round_index:
+            fail(
+                f"{name}：第 {round_index} 轮没有产生 compaction（见 {log_path}）；"
+                "常见原因是模型调用了 ask，把 /compact 当成了回答"
+            )
+        compaction = compactions[round_index - 1]
+        summary = compaction.get("summary", "")
+        done, next_step = plan_truth(work)
+        present = plan_steps_present(summary)
+        facts, _ = score_facts(summary)
+        _, window = window_after(messages, f"【R{round_index}】")
+        answer = "".join(item["text"] for item in window if item["role"] == "Assistant")
+        answered_done, following, doing = parse_progress(answer)
+        if next_step is None:
+            next_ok = not following
+        else:
+            next_ok = following[:1] == [next_step]
+        rounds_data.append(
+            {
+                "round": round_index,
+                "chars": len(summary),
+                "tokens_before": compaction.get("tokens_before"),
+                "tokens_after": compaction.get("tokens_after"),
+                "facts": facts,
+                "done": done,
+                "present": present,
+                "answered_done": answered_done,
+                "answered_next": following[:1],
+                "answered_doing": doing,
+                "done_ok": answered_done == done,
+                "next_ok": next_ok,
+                "expected_next": next_step,
+                "tools": sum(len(item["tools"]) for item in window if item["role"] == "Assistant"),
+            }
+        )
+
+    return {
+        "method": name,
+        "rounds": rounds_data,
+        "final_steps": len(step_landed(work)),
+    }
+
+
+def render_long_table(results: list[dict]) -> str:
+    headers = ["方法", "轮次", "token", "字符", "计划", "事实", "自查已完成", "自查下一步", "工具"]
+    rows = []
+    for result in results:
+        for item in result["rounds"]:
+            done_text = "无" if not item["answered_done"] else ",".join(
+                str(step) for step in sorted(item["answered_done"])
+            )
+            truth_text = "无" if not item["done"] else ",".join(
+                str(step) for step in sorted(item["done"])
+            )
+            rows.append(
+                [
+                    result["method"],
+                    f"R{item['round']}",
+                    f"{item['tokens_before']} → {item['tokens_after']}",
+                    str(item["chars"]),
+                    f"{item['present']}/{LONG_PLAN_STEPS}",
+                    f"{item['facts']}/{len(FACT_CHECKS)}",
+                    ("✓ " if item["done_ok"] else "✗ ") + done_text + f"（应 {truth_text}）",
+                    "✓" if item["next_ok"] else f"✗ {item['answered_next'] or '无'}",
+                    str(item["tools"]),
+                ]
+            )
+    widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
+    lines = [
+        "| " + " | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))) + " |",
+        "| " + " | ".join("-" * widths[i] for i in range(len(headers))) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(row[i].ljust(widths[i]) for i in range(len(headers))) + " |")
+    return "\n".join(lines)
+
+
+def run_long_session(
+    binary: Path,
+    root: Path,
+    home: Path,
+    work: Path,
+    overlay_text: str,
+    methods: list[str],
+    rounds: int,
+    timeout: int,
+) -> int:
+    write_scenario(work)
+    base_sessions = root / "sessions-base"
+    base_overlay = root / "overlay-base.toml"
+    base_overlay.write_text(overlay_text.replace("{method}", "moc"), encoding="utf-8")
+    script = "\n".join(LONG_BASE) + "\n/quit\n"
+    run_repl(
+        binary,
+        home,
+        work,
+        base_sessions,
+        base_overlay,
+        script,
+        timeout,
+        root / "log-base.txt",
+    )
+    base_entries = entries(session_file(base_sessions))
+    base_id = next(
+        (item.get("session_id") for item in base_entries if item.get("type") == "header"), None
+    )
+    if not base_id:
+        fail("长会话 base 阶段没有生成会话")
+    if step_landed(work):
+        fail(f"base 阶段不该落地任何步骤，检查 {root / 'log-base.txt'}")
+    shutil.copytree(work, root / "work-base")
+    print(f"长会话 base：{base_id}（{len(LONG_BASE)} 条用户消息，计划 5 步全部未落地）")
+
+    results = []
+    for method in methods:
+        print(f"\n== 运行 {method}（{rounds} 轮压缩）==")
+        results.append(
+            run_long_method(
+                method,
+                binary,
+                root,
+                home,
+                work,
+                base_sessions,
+                base_id,
+                overlay_text,
+                rounds,
+                timeout,
+            )
+        )
+
+    print("\n" + render_long_table(results))
+    print()
+    for result in results:
+        items = result["rounds"]
+        size_text = " → ".join(str(item["chars"]) for item in items)
+        facts = sum(item["facts"] for item in items) / len(items)
+        print(
+            f"- {result['method']}：终态落地 {result['final_steps']}/5 步；"
+            f"checkpoint 字符 {size_text}；事实均值 {facts:.1f}/{len(FACT_CHECKS)}；"
+            f"计划步号 {sum(item['present'] for item in items)}/{len(items) * LONG_PLAN_STEPS}；"
+            f"进度回答 已完成 {sum(1 for item in items if item['done_ok'])}/{len(items)}、"
+            f"下一步 {sum(1 for item in items if item['next_ok'])}/{len(items)}"
+        )
+        for item in items:
+            print(
+                f"    R{item['round']} 自查：已完成 {sorted(item['answered_done']) or '无'} | "
+                f"正在做「{item['answered_doing'][:60]}」 | 下一步 {item['answered_next'] or '无'}"
+            )
+    print("\n注意：每轮都只跑一个样本，模型抽样会让分数波动。")
+    return 0
+
+
 IMPORT_PROBES = [
     "这段历史最早的阶段在做什么？请点名至少 3 个具体对象（文件、函数或类型名），2 句话以内，不要执行工具，不要只给概要。",
     "这段历史里已经修改过哪些文件？逐行列出路径；没有改过就写「无」。",
@@ -1281,6 +1653,7 @@ def main() -> int:
             "示例：\n"
             "  scripts/soft-compaction-bench.py --model <provider>/<model> --methods moc,grok_build\n"
             "  scripts/soft-compaction-bench.py --methods moc --generations 1\n"
+            "  scripts/soft-compaction-bench.py --methods moc,grok_build --rounds 8\n"
         ),
     )
     parser.add_argument("--model", default=None, help="模型 selector；默认取用户配置的 models.roles.default")
@@ -1290,6 +1663,12 @@ def main() -> int:
         help="soft 摘要实现，逗号分隔（moc | grok_build），多个时输出对比表",
     )
     parser.add_argument("--generations", type=int, default=2, help="连续压缩次数，默认 2")
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=0,
+        help="长会话模式：每轮压缩之间执行一步真实工作，逐轮量化计划记忆（1-8）；0 表示关闭",
+    )
     parser.add_argument(
         "--keep-recent-tokens",
         type=int,
@@ -1326,6 +1705,10 @@ def main() -> int:
 
     if args.generations < 1:
         fail("--generations 至少为 1")
+    if args.rounds and not 1 <= args.rounds <= len(LONG_WORK) + 1:
+        fail(f"--rounds 取值范围 1-{len(LONG_WORK) + 1}")
+    if args.rounds and args.session:
+        fail("--rounds 与 --session 不能同时使用")
     methods = [item.strip() for item in args.methods.split(",") if item.strip()]
     unknown = [item for item in methods if item not in {"moc", "grok_build"}]
     if unknown:
@@ -1354,8 +1737,24 @@ def main() -> int:
     base_overlay.write_text(overlay_text.replace("{method}", "moc"), encoding="utf-8")
 
     print(f"模型：{selector}")
-    print(f"方法：{', '.join(methods)}    代次：{args.generations}")
+    if args.rounds:
+        print(f"方法：{', '.join(methods)}    长会话轮次：{args.rounds}")
+    else:
+        print(f"方法：{', '.join(methods)}    代次：{args.generations}")
     print(f"临时目录：{root}")
+
+    if args.rounds:
+        code = run_long_session(
+            binary, root, home, work, overlay_text, methods, args.rounds, args.timeout
+        )
+        if args.keep:
+            print(f"\n临时目录已保留：{root}")
+            print("提示：home/.moc/config.toml 是你配置的副本（可能含密钥），排查完请删除：")
+            print(f"  rm -rf {root}")
+        else:
+            shutil.rmtree(root, ignore_errors=True)
+        return code
+
 
     if args.session:
         source = Path(args.session).expanduser()
