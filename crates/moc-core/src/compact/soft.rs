@@ -419,7 +419,8 @@ fn fit_summary_messages(
 ) -> (Vec<Message>, usize) {
     let head = messages_tokens(prefix);
     if head > budget {
-        return (prefix.to_vec(), 0);
+        // 整个被丢弃的历史都不在请求里，提示词必须如实说明这一点。
+        return (prefix.to_vec(), user_prompts(history));
     }
     let mut view = Vec::with_capacity(prefix.len() + history.len());
     view.extend_from_slice(prefix);
@@ -882,7 +883,7 @@ mod tests {
         let (view, omitted) = fit_summary_messages(&prefix, &history, 10);
         assert_eq!(view.len(), prefix.len());
         assert_eq!(view[0].text(), "system");
-        assert_eq!(omitted, 0);
+        assert_eq!(omitted, 1, "整段历史都没进请求，提示词必须如实说明");
     }
 
     #[test]

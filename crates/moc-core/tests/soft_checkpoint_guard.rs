@@ -377,3 +377,73 @@ async fn rejected_options_and_plan_steps_are_repaired_not_dropped() {
     );
     assert!(!context.contains("DROPPED-DECISIONS"));
 }
+
+#[tokio::test]
+async fn the_previous_checkpoint_reaches_the_summarizer_as_injected_context() {
+    let upstream = MockServer::builder().start().await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counter = attempts.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["stream"] == true {
+                return ResponseTemplate::new(200)
+                    .set_body_raw(support::text_stream("按计划继续。"), "text/event-stream");
+            }
+            let attempt = counter.fetch_add(1, Ordering::SeqCst);
+            let marker = if attempt == 0 {
+                "FIRST-CHECKPOINT-MARKER"
+            } else {
+                "SECOND-CHECKPOINT-MARKER"
+            };
+            ResponseTemplate::new(200).set_body_json(support::complete(&valid_summary(marker)))
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+    )
+    .await;
+    let session = harness.session(SessionMode::Normal).await;
+    harness
+        .prompt(
+            &session,
+            "把 crates/ingest/src/window.rs 的 WINDOW_TTL_MS 改成 45_000，不要碰 legacy.rs。",
+        )
+        .await;
+    harness
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: session.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("第一次压缩成功");
+
+    harness.prompt(&session, "继续第 3 步。").await;
+    harness
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: session.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("第二次压缩成功");
+
+    let summaries = summary_requests(&upstream).await;
+    let request = messages_text(summaries.get(1).expect("第二次摘要请求"));
+    assert!(
+        request.contains("<compaction-summary"),
+        "摘要请求必须复用主循环的注入消息前缀：{request}"
+    );
+    assert!(
+        request.contains("FIRST-CHECKPOINT-MARKER"),
+        "上一版 checkpoint 必须出现在摘要请求的消息里：{request}"
+    );
+    assert!(
+        !request.contains("<previous-summary>\nFIRST-CHECKPOINT-MARKER"),
+        "已在消息里的 checkpoint 不能在末尾提示词里重复：{request}"
+    );
+}

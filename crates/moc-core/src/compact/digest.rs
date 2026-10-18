@@ -1,38 +1,39 @@
-//! 压缩摘要共用的确定性会话事实：改动文件、命令、待办与兜底 checkpoint。
+//! 压缩摘要共用的会话事实：改过的文件、执行过的命令、待办，以及兜底 checkpoint。
 //!
-//! 这些内容全部由 transcript 与运行态推导，不依赖模型。摘要提示词用它给模型
-//! 提供锚点；模型连续给出不合格 checkpoint 时用它兜底，保证一次压缩永远不会
-//! 把上下文丢成一句话。
+//! 这些内容全部由 transcript 和运行状态推导，不依赖模型。摘要提示词用它给模型提供
+//! 参考；模型连续给出不合格 checkpoint 时用它兜底，保证一次压缩不会把上下文丢成一句话。
 
 use std::collections::BTreeSet;
 use std::collections::HashSet;
 
 use moc_llm::{ContentPart, Message, Role};
-use moc_protocol::methods::TodoStatus;
+use moc_protocol::methods::{PlanStatus, TodoStatus};
 use serde_json::Value;
 
 use crate::session::state::SessionState;
 
 use super::replay::is_injected_context;
 
-/// 提示词里最多列出的文件、命令与待办条数；超出部分按最近优先截断。
+/// 提示词里最多列出的文件、命令、待办条数；多出的部分优先保留最近的。
 const MAX_PROMPT_FILES: usize = 20;
 const MAX_PROMPT_COMMANDS: usize = 12;
 const MAX_PROMPT_TODOS: usize = 24;
-/// 兜底 checkpoint 里单条用户请求与助手输出的截断长度。
+/// 兜底 checkpoint 里单条用户请求和助手输出的截断长度。
 const MAX_QUOTE_CHARS: usize = 700;
 const MAX_ACTIVITY_CHARS: usize = 400;
 /// 兜底 checkpoint 保留的最近用户请求条数。
 const MAX_QUOTED_REQUESTS: usize = 5;
+/// 参与校验的计划步数上限；为被否决方案等决策留出 `required_facts` 的名额。
+const MAX_PLAN_STEPS: usize = 16;
 
-/// 未完成 todo 的渲染结果与计数。
+/// 未完成 todo 的渲染结果和计数。
 pub(crate) struct TodoLines {
     pub lines: Vec<String>,
     pub completed: usize,
     pub cancelled: usize,
 }
 
-/// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 使用同一份成功判定。
+/// 本次会话成功写入过的文件；与 `remote::checkpoint_summary` 用同一个「成功」判断。
 pub(crate) fn edited_files(state: &SessionState) -> Vec<String> {
     let completed: HashSet<&str> = state
         .transcript
@@ -74,11 +75,11 @@ pub(crate) fn edited_files(state: &SessionState) -> Vec<String> {
     files.into_iter().collect()
 }
 
-/// 会话里执行过的 bash 命令，最近 `MAX_PROMPT_COMMANDS` 条去重后按时间顺序返回。
+/// 会话里执行过的 bash 命令：最近 `MAX_PROMPT_COMMANDS` 条，去重后按时间顺序返回。
 pub(crate) fn commands(state: &SessionState) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut recent = Vec::new();
-    // 同一条消息里的并行调用按调用顺序排列，必须先把整条流收集起来再反转。
+    // 同一条消息里的并行调用按调用顺序排列，所以要先把整条流收集起来再反转。
     let calls: Vec<&moc_llm::ToolCall> = state
         .transcript
         .iter()
@@ -107,7 +108,7 @@ pub(crate) fn commands(state: &SessionState) -> Vec<String> {
     recent
 }
 
-/// 未完成的 todo 项；已完成与已放弃的只计数。
+/// 未完成的 todo 项；已完成和已丢弃的只计数。
 pub(crate) fn todo_lines(state: &SessionState) -> TodoLines {
     let mut lines = Vec::new();
     let mut completed = 0usize;
@@ -146,52 +147,52 @@ pub(crate) fn todo_lines(state: &SessionState) -> TodoLines {
     }
 }
 
-/// 一条"压缩后必须保留"的决策：原文片段 + 其中必须逐字出现的专名。
+/// 一条「压缩后必须保留」的决策：原文片段 + 其中必须逐字出现的名字。
 ///
 /// 被否决的方案（`否决了用 lru crate 的 LRU 缓存`、表格里的 `… 迁到 Redis | 否决`）
-/// 既不是路径也不是数字，普通锚点永远抓不到；压缩丢掉它，继任者就会把否决过的方案
-/// 重新提出来。这里单独抽出来，交给校验强制保留。
+/// 既不是路径也不是数字，普通锚点永远抓不到。压缩丢掉它，之后的会话就会把它重新
+/// 提出来。这里单独抽出来，交给校验强制保留。
 pub(crate) struct Decision {
     /// 决策原文片段（截断后），写进提示词让模型照抄。
     pub clause: String,
-    /// 决策里的专名/标识符；checkpoint 必须包含（大小写不敏感）。
+    /// 决策里的名字或标识符；checkpoint 必须包含（忽略大小写）。
     pub anchors: Vec<String>,
 }
 
-/// 被否决方案的识别词：出现在正文或工具结果里都算决策。
+/// 识别被否决方案的词：出现在正文或工具结果里都算。
 ///
-/// 英文条目来自 checkpoint 契约要求的 `- rejected: <option> — <reason>`，
-/// 这样上一版 checkpoint 里的否决项在下一代仍会被重新要求保留。
+/// 英文词来自 checkpoint 契约要求的 `- rejected: <option> — <reason>` 格式，
+/// 这样上一版 checkpoint 里的否决项在下一代仍会被要求保留。
 const REJECTION_MARKERS: [&str; 5] = ["否决", "不采用", "放弃", "rejected", "not adopted"];
-/// 硬约束的识别词：只认用户/助手的原话。
+/// 识别硬约束的词：只认用户和助手的原话。
 ///
-/// 工具结果里这些词大多是代码注释（`// 禁止在这里分配`），当成约束会让每份代码
+/// 工具结果里出现这些词大多来自代码注释（`// 禁止在这里分配`）；当成约束会把每份代码
 /// 都变成必须保留的决策，反而把 checkpoint 撑爆。
 const CONSTRAINT_MARKERS: [&str; 5] = ["禁止", "不要碰", "绝对不能", "上限", "不能再"];
 /// 决策原文片段的最大字符数。
 const MAX_DECISION_CHARS: usize = 160;
-/// 一条决策最多抽取的专名个数。
+/// 一条决策最多抽取的名字个数。
 const MAX_DECISION_ANCHORS: usize = 3;
 /// 最多保留的决策条数。
 const MAX_DECISIONS: usize = 12;
-/// 抽取专名时忽略的通用英文词：它们是行文，不是被否决的对象。
+/// 抽取名字时忽略的常见英文词：它们是行文，不是被否决的对象。
 const DECISION_STOP_WORDS: [&str; 14] = [
     "crate", "crates", "self", "the", "and", "for", "with", "that", "this", "from", "into", "true",
     "false", "null",
 ];
 
-/// 从历史里抽取决策与被否决的方案；同一决策只保留一次。
+/// 从历史里抽取决策和被否决的方案；同一条只保留一次。
 ///
-/// `previous` 是上一版 checkpoint：第二次压缩之后原始请求已不在可见历史里，
-/// 被否决方案只存在于那一版 checkpoint，必须继续参与抽取，否则第三代就会丢。
-/// 工具结果只扫"否决"这一类行（不是整篇内容），因此不会像锚点那样被文件正文稀释。
+/// `previous` 是上一版 checkpoint：第二次压缩之后，原始请求已不在可见历史里，
+/// 被否决的方案只存在于那一版 checkpoint，必须继续参与抽取，否则第三代就会丢。
+/// 工具结果只扫「否决」这一类行，不扫整篇内容，所以不会像锚点那样被文件正文稀释。
 pub(crate) fn decisions(history: &[Message], previous: Option<&str>) -> Vec<Decision> {
     let mut out: Vec<Decision> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (text, from_tool) in decision_sources(history, previous) {
         for line in text.lines() {
             let line = line.trim();
-            // 段落标题（`## Decisions and Rejected Options`）不是决策本身。
+            // 段落标题（`## Decisions and Rejected Options`）本身不是决策。
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -223,7 +224,7 @@ pub(crate) fn decisions(history: &[Message], previous: Option<&str>) -> Vec<Deci
     out
 }
 
-/// 参与决策抽取的全部文本：上一版 checkpoint 在前，其后是历史消息。
+/// 参与决策抽取的全部文本：上一版 checkpoint 在前，然后是历史消息。
 fn decision_sources<'a>(history: &'a [Message], previous: Option<&'a str>) -> Vec<(&'a str, bool)> {
     let mut out: Vec<(&str, bool)> = Vec::new();
     if let Some(previous) = previous {
@@ -244,7 +245,7 @@ fn decision_sources<'a>(history: &'a [Message], previous: Option<&'a str>) -> Ve
     out
 }
 
-/// 决策行里的专名：优先含大写的词（Redis、LRU），其次是小写标识符（lru）。
+/// 决策行里的名字：优先含大写的词（Redis、LRU），其次是小写标识符（lru）。
 fn decision_anchors(line: &str) -> Vec<String> {
     let mut upper: Vec<String> = Vec::new();
     let mut lower: Vec<String> = Vec::new();
@@ -272,7 +273,7 @@ fn decision_anchors(line: &str) -> Vec<String> {
     upper
 }
 
-/// 抽出 ASCII 标识符样式的 token（字母数字与 `_ - . /`）。
+/// 抽出 ASCII 标识符样式的词（字母、数字与 `_ - . /`）。
 fn ascii_tokens(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
@@ -296,13 +297,29 @@ fn ascii_tokens(text: &str) -> Vec<String> {
     tokens
 }
 
-/// 用户消息里的编号计划：`第 1 步 … 第 5 步` 视为一份计划，返回每一步的短语。
+/// 已批准计划的 markdown 原文；计划以 `<active-plan>` 注入每轮请求，但历史扫描
+/// 会跳过注入消息，步骤需要单独从计划文档推导。
+pub(crate) fn approved_plan(state: &SessionState) -> Option<&str> {
+    state
+        .plans
+        .iter()
+        .rev()
+        .find(|plan| plan.status == PlanStatus::Approved)
+        .map(|plan| plan.markdown.as_str())
+}
+
+/// 用户原文里的编号计划：`第 1 步 … 第 5 步` 视为一份计划，返回每一步的短语。
 ///
-/// `previous` 是上一版 checkpoint：它能保证计划跨代存活——第三次压缩时原始
-/// 请求已经不在可见历史里，只剩 checkpoint 里那张步骤表。
-/// 只认从 1 开始、至少三步的编号序列：零散的"第 3 步"往往只是顺口一提，
-/// 拿它当契约会把无关会话也拖进重试。
-pub(crate) fn plan_steps(history: &[Message], previous: Option<&str>) -> Vec<String> {
+/// `previous` 是上一版 checkpoint：它能保证计划跨代存活，第三次压缩时原始请求已经
+/// 不在可见历史里，只剩 checkpoint 里的那张步骤表。
+/// 只认从 1 开始、至少三步的编号序列：零散提一句「第 3 步」往往只是顺口一提，
+/// 把它当契约会把无关会话也拖进重试。
+/// 用户原文与上一版 checkpoint 都没有编号计划时，退回已批准计划文档里的编号列表。
+pub(crate) fn plan_steps(
+    history: &[Message],
+    previous: Option<&str>,
+    plan: Option<&str>,
+) -> Vec<String> {
     let mut steps: BTreeSet<usize> = BTreeSet::new();
     if let Some(previous) = previous {
         collect_steps(previous, &mut steps);
@@ -313,19 +330,106 @@ pub(crate) fn plan_steps(history: &[Message], previous: Option<&str>) -> Vec<Str
         }
         collect_steps(&message.text(), &mut steps);
     }
-    let Some(&first) = steps.first() else {
-        return Vec::new();
-    };
+    let numbered = numbered_plan(&steps);
+    if !numbered.is_empty() {
+        return numbered;
+    }
+    plan.map_or_else(Vec::new, plan_steps_from_markdown)
+}
+
+/// 连续编号 `1..=n`（3 ≤ n ≤ [`MAX_PLAN_STEPS`]）的步号才算计划。
+fn numbered_plan(steps: &BTreeSet<usize>) -> Vec<String> {
     let Some(&last) = steps.last() else {
         return Vec::new();
     };
-    if first != 1 || steps.len() < 3 || last > 9 {
+    if steps.first() != Some(&1) || steps.len() < 3 || steps.len() != last || last > MAX_PLAN_STEPS
+    {
         return Vec::new();
     }
     (1..=last).map(|step| format!("第 {step} 步")).collect()
 }
 
-/// 扫描 `第 N 步`（阿拉伯数字或中文数字，数字两侧允许空格）并记录步号。
+/// 计划文档里的编号步骤。
+///
+/// 只认标题含「步骤 / 实施 / 计划 / 工作项 / 任务 / steps / plan / todo / checklist」
+/// 的小节，取小节内顶格的 `1.` `1)` `1、` 列表项；必须从 1 起连续编号、
+/// 3 ≤ n ≤ [`MAX_PLAN_STEPS`]。代码围栏里的编号不算，缩进的子列表也不算。
+fn plan_steps_from_markdown(markdown: &str) -> Vec<String> {
+    let mut steps: BTreeSet<usize> = BTreeSet::new();
+    let mut in_fence = false;
+    let mut in_step_section = false;
+    for line in markdown.lines() {
+        if line.starts_with("```") || line.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some(title) = heading_title(line) {
+            // 标题结束上一小节：它若是一份合法计划，就是答案。
+            let numbered = if in_step_section {
+                numbered_plan(&steps)
+            } else {
+                Vec::new()
+            };
+            if !numbered.is_empty() {
+                return numbered;
+            }
+            steps.clear();
+            in_step_section = is_step_heading(title);
+            continue;
+        }
+        if !in_step_section || line.starts_with([' ', '\t']) {
+            continue;
+        }
+        if let Some(number) = list_item_number(line) {
+            steps.insert(number);
+        }
+    }
+    if in_step_section {
+        numbered_plan(&steps)
+    } else {
+        Vec::new()
+    }
+}
+
+/// markdown 标题文本：行首 1–6 个 `#`，其后必须是空格或行尾。
+fn heading_title(line: &str) -> Option<&str> {
+    let hashes = line.len() - line.trim_start_matches('#').len();
+    if !(1..=6).contains(&hashes) {
+        return None;
+    }
+    match &line[hashes..] {
+        rest if rest.is_empty() => Some(rest),
+        rest => rest.strip_prefix(' ').map(str::trim),
+    }
+}
+
+/// 标题是否指向计划步骤小节。
+fn is_step_heading(title: &str) -> bool {
+    const KEYWORDS: [&str; 5] = ["步骤", "实施", "计划", "工作项", "任务"];
+    const ASCII_KEYWORDS: [&str; 4] = ["step", "plan", "todo", "checklist"];
+    let lower = title.to_ascii_lowercase();
+    KEYWORDS.iter().any(|keyword| title.contains(keyword))
+        || ASCII_KEYWORDS.iter().any(|keyword| lower.contains(keyword))
+}
+
+/// 顶格列表项的编号：行首数字后紧跟 `.` `)` `、` 之一，再跟一个空格。
+fn list_item_number(line: &str) -> Option<usize> {
+    let digits_end = line.find(|ch: char| !ch.is_ascii_digit())?;
+    if digits_end == 0 {
+        return None;
+    }
+    let number = line[..digits_end].parse::<usize>().ok()?;
+    let rest = line[digits_end..]
+        .strip_prefix('.')
+        .or_else(|| line[digits_end..].strip_prefix(')'))
+        .or_else(|| line[digits_end..].strip_prefix('、'))?;
+    rest.starts_with(' ').then_some(number)
+}
+
+/// 扫描 `第 N 步`（阿拉伯数字或中文数字，两侧允许空格）并记录步号。
 fn collect_steps(text: &str, steps: &mut BTreeSet<usize>) {
     let chars: Vec<char> = text.chars().collect();
     let mut index = 0;
@@ -338,11 +442,11 @@ fn collect_steps(text: &str, steps: &mut BTreeSet<usize>) {
         while cursor < chars.len() && chars[cursor].is_whitespace() {
             cursor += 1;
         }
-        let Some(number) = chars.get(cursor).copied().and_then(step_digit) else {
+        let Some((number, number_end)) = step_number(&chars, cursor) else {
             index += 1;
             continue;
         };
-        let mut after = cursor + 1;
+        let mut after = number_end;
         while after < chars.len() && chars[after].is_whitespace() {
             after += 1;
         }
@@ -353,7 +457,24 @@ fn collect_steps(text: &str, steps: &mut BTreeSet<usize>) {
     }
 }
 
-/// 单个步号字符：阿拉伯数字或 1-9 的中文数字。
+/// 步号与它之后的位置：连续的 ASCII 数字（`第 10 步`）或单个中文数字（`第三步`）。
+fn step_number(chars: &[char], start: usize) -> Option<(usize, usize)> {
+    let mut cursor = start;
+    let mut number = 0usize;
+    while let Some(digit) = chars.get(cursor).and_then(|ch| ch.to_digit(10)) {
+        // 位数超出上限时饱和：`numbered_plan` 会因步号不连续而拒收，不会溢出。
+        number = number
+            .saturating_mul(10)
+            .saturating_add(usize::try_from(digit).ok()?);
+        cursor += 1;
+    }
+    if cursor > start {
+        return Some((number, cursor));
+    }
+    Some((step_digit(*chars.get(start)?)?, start + 1))
+}
+
+/// 把单个步号字符转成数字：阿拉伯数字或一到九的中文数字。
 fn step_digit(ch: char) -> Option<usize> {
     if let Some(digit) = ch.to_digit(10) {
         return usize::try_from(digit).ok();
@@ -365,7 +486,7 @@ fn step_digit(ch: char) -> Option<usize> {
         .map(|index| index + 1)
 }
 
-/// 摘要提示词使用的会话事实块；全空时返回 `None`，不注入空标签。
+/// 摘要提示词使用的会话事实块；内容为空时返回 `None`，不注入空标签。
 pub(crate) fn prompt_digest(state: &SessionState) -> Option<String> {
     let mut body = String::new();
     let files = edited_files(state);
@@ -412,8 +533,8 @@ pub(crate) fn prompt_digest(state: &SessionState) -> Option<String> {
     Some(format!("<session-digest>\n{body}</session-digest>"))
 }
 
-/// 模型连续给出不合格 checkpoint 时的兜底：保留上一版 checkpoint 全文，并把
-/// 最近一轮的确定性事实追加在后面；没有上一版时按必需段落拼出骨架。
+/// 模型连续给出不合格 checkpoint 时的兜底：保留上一版 checkpoint 全文，再把最近一轮
+/// 的确定性事实追加在后面；没有上一版时按必需段落拼出骨架。
 pub(crate) fn fallback_checkpoint(
     state: &SessionState,
     history: &[Message],
@@ -467,9 +588,9 @@ pub(crate) fn fallback_checkpoint(
             activity.push('\n');
         }
     }
-    // 兜底也必须保住被否决方案与计划步号：它们决定继任者会不会重提已否决的方案。
+    // 兜底也要保住被否决的方案和计划步号：它们决定后续会话会不会重提已否决的方案。
     let policies = decisions(history, previous);
-    let plan = plan_steps(history, previous);
+    let plan = plan_steps(history, previous, approved_plan(state));
     let mut preserved = String::new();
     if !policies.is_empty() {
         preserved.push_str("\n## Decisions and Rejected Options\n");
@@ -485,7 +606,7 @@ pub(crate) fn fallback_checkpoint(
         preserved.push_str(&plan.len().to_string());
         preserved.push_str(" 步：");
         preserved.push_str(&plan.join("、"));
-        preserved.push_str("；逐项状态见上文的 Current Work。\n");
+        preserved.push_str("；每步的状态见上文的 Current Work。\n");
     }
 
     match previous {
@@ -547,7 +668,7 @@ pub(crate) fn fallback_checkpoint(
     }
 }
 
-/// 按字符截断并补省略号；不拆开 UTF-8 字符。
+/// 按字符截断并补上省略号，不拆开 UTF-8 字符。
 fn truncate(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_owned();
@@ -832,13 +953,13 @@ mod tests {
             "收尾计划共 5 步：第 1 步改 TTL，第 2 步加骨架，第 3 步移计数，第 4 步更新文档，第 5 步加日志。",
         )];
         assert_eq!(
-            plan_steps(&plan, None),
+            plan_steps(&plan, None, None),
             vec!["第 1 步", "第 2 步", "第 3 步", "第 4 步", "第 5 步"]
         );
 
         // 零散提一句"第 3 步"不构成计划。
         let scattered = vec![Message::user_text("继续第 3 步。")];
-        assert!(plan_steps(&scattered, None).is_empty());
+        assert!(plan_steps(&scattered, None, None).is_empty());
     }
 
     #[test]
@@ -847,9 +968,54 @@ mod tests {
             "分三步：第一步读代码，第二步改常量，第三步补测试。",
         )];
         assert_eq!(
-            plan_steps(&history, None),
+            plan_steps(&history, None, None),
             vec!["第 1 步", "第 2 步", "第 3 步"]
         );
+    }
+
+    #[test]
+    fn plan_steps_come_from_the_approved_plan_markdown() {
+        let markdown = "# 重构计划\n\n## 实施步骤\n1. 改 A\n2. 改 B\n3. 改 C\n";
+        assert_eq!(
+            plan_steps(&[], None, Some(markdown)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+        // 没有计划文档时不会有计划步骤。
+        assert!(plan_steps(&[], None, None).is_empty());
+    }
+
+    #[test]
+    fn plan_steps_ignore_numbered_lists_outside_step_sections() {
+        let markdown = "## 证据\n1. 第一条日志\n2. 第二条日志\n3. 第三条日志\n";
+        assert!(plan_steps(&[], None, Some(markdown)).is_empty());
+    }
+
+    #[test]
+    fn plan_steps_skip_fenced_code_numbering() {
+        let markdown = "## 实施步骤\n```text\n1. a\n2. b\n3. c\n```\n";
+        assert!(plan_steps(&[], None, Some(markdown)).is_empty());
+    }
+
+    #[test]
+    fn plan_steps_prefer_user_text_over_the_plan_document() {
+        let history = vec![Message::user_text(
+            "计划三步：第 1 步改 TTL，第 2 步加骨架，第 3 步移计数。",
+        )];
+        let markdown = "## 实施步骤\n1. a\n2. b\n3. c\n4. d\n";
+        assert_eq!(
+            plan_steps(&history, None, Some(markdown)),
+            vec!["第 1 步", "第 2 步", "第 3 步"]
+        );
+    }
+
+    #[test]
+    fn plan_steps_parse_multi_digit_numbers() {
+        let previous: String = (1..=12)
+            .map(|step| format!("第 {step} 步 done；"))
+            .collect();
+        let steps = plan_steps(&[Message::user_text("继续")], Some(&previous), None);
+        assert_eq!(steps.len(), 12);
+        assert_eq!(steps[11], "第 12 步");
     }
 
     #[test]
@@ -859,7 +1025,7 @@ mod tests {
                         ## Decisions and Rejected Options\n- rejected: Redis — 一致性不可接受\n";
         let history = vec![Message::user_text("继续")];
         assert_eq!(
-            plan_steps(&history, Some(previous)),
+            plan_steps(&history, Some(previous), None),
             vec!["第 1 步", "第 2 步", "第 3 步"]
         );
         let decisions = decisions(&history, Some(previous));
