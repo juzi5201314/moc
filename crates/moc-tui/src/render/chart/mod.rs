@@ -1,26 +1,24 @@
 //! 图表栅格化：把 `moc_core::chart::ChartSpec` 画成像素图。
 //!
 //! 分成四层，层与层之间只靠数据传递：
-//! - [`canvas`]：双平面像素画布（24 位 RGB + 有界调色板索引），几何图元的唯一写入口；
+//! - [`crate::render::canvas`]：双平面像素画布（24 位 RGB + 有界调色板索引），几何图元的唯一写入口；
 //! - [`fonts`]：内嵌字体的光栅化与字形缓存，缺字才懒回退系统字体；
 //! - [`text`]：把字形覆盖度按 5 档 alpha 预混成调色板像素；
-//! - [`draw`]：八种图型的版式；[`encode`]：kitty / sixel / iTerm2 / PNG 编码。
+//! - [`draw`]：八种图型的版式；`graphics::encode`：kitty / sixel / iTerm2 / PNG 编码。
 //!
 //! 字体与画布都按整数像素落位：图片尺寸 = 终端格尺寸的整数倍，终端不缩放，
 //! 文字才不会像系统字体 + 分数缩放那样发虚。
 
 use moc_core::chart::{ChartKind, ChartSpec};
 
-use crate::render::graphics::CellPixels;
+use crate::render::canvas::Canvas;
+use crate::render::graphics::{CellPixels, cell_supported};
 use crate::theme::Theme;
 
-pub mod canvas;
 pub mod draw;
-pub mod encode;
 pub mod fonts;
 pub mod text;
 
-pub use canvas::Canvas;
 pub use fonts::{Fonts, with_fonts};
 
 /// 出图所需的最小可用列数：再窄就放不下类别标签 + 条形 + 数值。
@@ -37,20 +35,6 @@ pub const MAX_CHART_PX: u32 = 720;
 
 /// 行高内基线偏移占行高的比例（兼顾上伸部与下伸部）。
 const BASELINE_RATIO: f32 = 0.78;
-
-/// 出图所需的最小单元格宽度（像素）：再窄放不下半个字形。
-pub const MIN_CELL_W: u32 = 4;
-
-/// 出图所需的最小单元格高度（像素）：低于它一行字都放不下。
-pub const MIN_CELL_H: u32 = 8;
-
-/// 单元格尺寸是否足够出图。
-///
-/// 入口是否出现、点击后能否画出来都必须走这同一个判定，否则会出现
-/// 「按钮能点、点了没反应」的死入口。
-pub fn cell_supported(cell: CellPixels) -> bool {
-    cell.w >= MIN_CELL_W && cell.h >= MIN_CELL_H
-}
 
 /// 一个图表的版式：格数、像素尺寸与字号。
 ///

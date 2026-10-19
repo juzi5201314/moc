@@ -11,14 +11,15 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use super::diff;
+use super::image::{ImagePlacement, ImageState, layout as image_layout};
 use super::markdown::{
-    ButtonSpan, ChartPlacement, TableViews, render_markdown, render_markdown_with,
+    ButtonSpan, ChartPlacement, RenderViews, render_markdown, render_markdown_with,
 };
 use super::wrap::{str_width, wrap_text};
 use super::{PROSE_INDENT, TITLE_INDENT};
-use crate::app::{App, ChartHit, ChartSlot};
+use crate::app::{App, ChartHit, ImageSlot, SlotSource};
 use crate::theme::Theme;
-use crate::transcript::{Block, DetailLevel, Entry, ToolCallBlock};
+use crate::transcript::{Block, DetailLevel, Entry, MAX_TOOL_IMAGES, ToolCallBlock};
 
 /// 简略档的思考预览行数（取正文末尾若干行）。
 pub(crate) const BRIEF_THINKING_ROWS: usize = 4;
@@ -54,6 +55,8 @@ struct CachedEntry {
     rendered: bool,
     /// 表格入口与图表占位（行号是块内局部行）。
     tables: Vec<LocalTable>,
+    /// 通用图片落位（行号是块内局部行）。
+    images: Vec<ImagePlacement>,
 }
 
 /// 一张顶层表格在块内的落位（局部行号，尚未加屏幕原点与正文缩进）。
@@ -71,14 +74,16 @@ struct LocalTable {
 struct EntryLines {
     lines: Vec<Line<'static>>,
     tables: Vec<LocalTable>,
+    images: Vec<ImagePlacement>,
 }
 
 impl EntryLines {
-    /// 无表格的块：只有行。
+    /// 无表格、无图片的块：只有行。
     fn plain(lines: Vec<Line<'static>>) -> Self {
         Self {
             lines,
             tables: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -123,12 +128,19 @@ impl ScrollbackView {
             {
                 continue;
             }
-            let (lines, tables, height, rendered) = if index >= eager_start {
+            let (lines, tables, images, height, rendered) = if index >= eager_start {
                 let rendered = render_entry(index, entry, app, width, index == 0);
                 let height = rendered.lines.len();
-                (rendered.lines, rendered.tables, height, true)
+                (
+                    rendered.lines,
+                    rendered.tables,
+                    rendered.images,
+                    height,
+                    true,
+                )
             } else {
                 (
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                     estimate_entry_height_at(app, index, width),
@@ -141,6 +153,7 @@ impl ScrollbackView {
                 lines,
                 rendered,
                 tables,
+                images,
             };
             if index < self.cache.len() {
                 self.cache[index] = cached;
@@ -160,6 +173,7 @@ impl ScrollbackView {
             if next <= skip_rows || offset >= end {
                 cached.lines.clear();
                 cached.tables.clear();
+                cached.images.clear();
                 cached.rendered = false;
             }
             offset = next;
@@ -191,6 +205,7 @@ impl ScrollbackView {
                     cached.height = rendered.lines.len();
                     cached.lines = rendered.lines;
                     cached.tables = rendered.tables;
+                    cached.images = rendered.images;
                     cached.rendered = true;
                     rendered_count += 1;
                 }
@@ -298,18 +313,50 @@ impl ScrollbackView {
                     if row >= area.y && end <= bottom {
                         let from = chart.row;
                         let to = from + usize::from(chart.rows);
-                        slots.push(ChartSlot {
+                        slots.push(ImageSlot {
                             entry: index,
-                            table: table.table,
+                            source: SlotSource::Chart { table: table.table },
                             x: area.x + PROSE_INDENT as u16,
                             y: row,
                             cols: chart.cols,
                             rows: chart.rows,
                             px: chart.px,
-                            hash: line_hash(&cached.lines[from..to]),
+                            hash: line_hash(&cached.lines[from..to], 0),
+                            placement_id: placement_id(index, 0, table.table),
                         });
                     }
                 }
+            }
+            // 通用图片：同一张图可以在一屏里出现多次，放置 ID 按块内序号区分
+            for (ordinal, image) in cached.images.iter().enumerate() {
+                if image.row < offset {
+                    continue;
+                }
+                let row = origin + u16::try_from(image.row - offset).unwrap_or(u16::MAX);
+                let end = row.saturating_add(image.rows);
+                if row < area.y || end > bottom {
+                    continue;
+                }
+                if image.x.saturating_add(image.cols) > area.width {
+                    continue;
+                }
+                let digest = image.key.digest();
+                let from = image.row;
+                let to = from + usize::from(image.rows);
+                let Some(lines) = cached.lines.get(from..to) else {
+                    continue;
+                };
+                slots.push(ImageSlot {
+                    entry: index,
+                    source: SlotSource::Image(image.key.clone()),
+                    x: area.x.saturating_add(image.x),
+                    y: row,
+                    cols: image.cols,
+                    rows: image.rows,
+                    px: image.px,
+                    hash: line_hash(lines, digest),
+                    placement_id: placement_id(index, 1, ordinal),
+                });
             }
             if has_title {
                 hits.push((index, row_start, y));
@@ -331,22 +378,40 @@ pub struct PaintSinks<'a> {
     /// 表格入口命中（点击切换图表）。
     pub charts: &'a mut Vec<ChartHit>,
     /// 本帧要贴的位图。
-    pub slots: &'a mut Vec<ChartSlot>,
+    pub slots: &'a mut Vec<ImageSlot>,
     /// 行文本快照（拖选复制）。
     pub lines: &'a mut Vec<(u16, String)>,
 }
 
 /// 一段行的内容指纹：位图只在指纹变化时重发。
-fn line_hash(lines: &[Line<'static>]) -> u64 {
+///
+/// `salt` 用来把「内容寻址的图片键」混进来——同一段空白占位行可能对应两张
+/// 不同的图（键不同），只比文本会漏发。
+fn line_hash(lines: &[Line<'static>], salt: u64) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    salt.hash(&mut hasher);
     for line in lines {
         for span in &line.spans {
             span.content.hash(&mut hasher);
         }
     }
     hasher.finish()
+}
+
+/// kitty 放置 ID：`(块, 域, 序号)` 的稳定散列，取低 24 位并保证非零。
+///
+/// 同一个块的同一个位置每帧算出同一个 ID，位置或内容变化时由 `emit` 比对
+/// 指纹重发；同一张图贴多处则靠序号分开。
+fn placement_id(entry: usize, domain: u8, ordinal: usize) -> u32 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+    hasher.update(&u64::try_from(entry).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(&[domain]);
+    hasher.update(&u64::try_from(ordinal).unwrap_or(u64::MAX).to_le_bytes());
+    // 低 24 位：kitty 的 placement id 只需进程内唯一，24 位足够避开碰撞
+    let low = u32::try_from(hasher.digest() & 0x00ff_ffff).unwrap_or(0);
+    low | 1
 }
 
 /// 计算块内容代次：批次成员的代次归并到同批最大值。
@@ -390,18 +455,18 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     let Some(entry) = app.blocks.get(index) else {
         return 0;
     };
-    // 含表格的正文不能用折行近似：表格列宽收缩、入口按钮、图表占位行都是
-    // 渲染期才算出来的，估错会让滚动范围与懒渲染的可见区间一起失真。
+    // 含表格 / 图片的正文不能用折行近似：表格列宽收缩、入口按钮、图表占位行、
+    // 图片占位行都是渲染期才算出来的，估错会让滚动范围与懒渲染的可见区间一起失真。
     if let Block::Assistant { text } = &entry.block
-        && may_contain_table(text)
+        && (may_contain_table(text) || may_contain_image(text))
     {
-        return render_entry(index, entry, app, width, index == 0)
+        return render_entry_estimate(index, entry, app, width, index == 0)
             .lines
             .len();
     }
     let level = entry.level(app.block_level(&entry.block));
     let Some((batch_id, name)) = tool_batch_key(entry) else {
-        return estimate_entry_height(entry, level, width);
+        return estimate_entry_height(entry, app, level, width);
     };
     if batch_group_start(app, index, batch_id, name) != index {
         return 0;
@@ -414,13 +479,14 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
             _ => None,
         })
         .collect();
-    estimate_tool_batch_height(&tools, index == 0, level, usize::from(width))
+    estimate_tool_batch_height(app, &tools, index == 0, level, usize::from(width))
 }
 
 /// 批次渲染的行数：标题 + 每个工具的（摘要行 + 正文行）+ 完成统计 + 尾随留白。
 ///
 /// 批次只在组首块渲染，其余成员高度为零。
 fn estimate_tool_batch_height(
+    app: &App,
     tools: &[&ToolCallBlock],
     first: bool,
     level: DetailLevel,
@@ -437,7 +503,7 @@ fn estimate_tool_batch_height(
             continue;
         }
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        rows += tool_body_rows(tool, &args, inner_width, limit);
+        rows += tool_body_rows(tool, &args, app, inner_width, limit);
     }
     rows
 }
@@ -460,7 +526,7 @@ fn batch_group_start(app: &App, index: usize, batch_id: &str, name: &str) -> usi
 /// 工具结果的截断规则、折叠态与展开态都与渲染共用同一套判定；正文按显示宽度折行
 /// 近似 markdown 的落行数。估算与渲染差一个数量级会让滚动范围、滚动条与懒渲染的
 /// 可见区间同时失真。
-fn estimate_entry_height(entry: &Entry, level: DetailLevel, width: u16) -> usize {
+fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u16) -> usize {
     let width = usize::from(width).max(8);
     match &entry.block {
         Block::User { text } | Block::Assistant { text } | Block::Note { text, .. } => {
@@ -474,7 +540,7 @@ fn estimate_entry_height(entry: &Entry, level: DetailLevel, width: u16) -> usize
                 DetailLevel::Full => rows.saturating_add(2),
             }
         }
-        Block::Tool(tool) => estimate_tool_height(tool, level, width),
+        Block::Tool(tool) => estimate_tool_height(tool, app, level, width),
         Block::AgentMessage { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
             let rows = wrapped_rows(body, width.saturating_sub(TITLE_INDENT + 2));
@@ -503,6 +569,26 @@ fn may_contain_table(text: &str) -> bool {
             && trimmed
                 .chars()
                 .all(|ch| matches!(ch, '|' | '-' | ':' | ' ' | '\t'))
+    })
+}
+
+/// 正文里是否可能出现内联图片：`![](…)` 或 SVG 代码块。
+///
+/// 与 [`may_contain_table`] 同理：只做廉价预筛，宁可多渲染一次。
+/// SVG 的判定必须与 [`crate::render::markdown`] 里实际出图的条件一致——
+/// 围栏支持 ` ``` ` 与 `~~~`、info 前可有空格、大小写不敏感；只要这里漏判，
+/// 懒块的估高就会用折行近似顶替真实占位行，滚动范围随之失真。
+fn may_contain_image(text: &str) -> bool {
+    text.lines().any(|line| {
+        if line.contains("![") {
+            return true;
+        }
+        let trimmed = line.trim_start();
+        let fence_len = trimmed
+            .chars()
+            .take_while(|ch| *ch == '`' || *ch == '~')
+            .count();
+        fence_len >= 3 && crate::render::markdown::is_svg_fence_info(&trimmed[fence_len..])
     })
 }
 
@@ -582,7 +668,12 @@ fn estimate_todo_height(phases: &[moc_protocol::methods::TodoPhase], width: usiz
 
 /// 工具块高度：无正文工具有一行标题；有正文工具是
 /// 标题 +（隐藏档无正文）+（耗时尾注）+ 尾随留白，与 [`render_tool`] 同规则。
-fn estimate_tool_height(tool: &ToolCallBlock, level: DetailLevel, width: usize) -> usize {
+fn estimate_tool_height(
+    tool: &ToolCallBlock,
+    app: &App,
+    level: DetailLevel,
+    width: usize,
+) -> usize {
     if !tool.has_body() {
         return 1;
     }
@@ -590,7 +681,7 @@ fn estimate_tool_height(tool: &ToolCallBlock, level: DetailLevel, width: usize) 
         0
     } else {
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        tool_body_rows(tool, &args, width, brief_limit(level))
+        tool_body_rows(tool, &args, app, width, brief_limit(level))
     };
     body.saturating_add(1)
         .saturating_add(usize::from(tool.duration_ms.is_some()))
@@ -600,6 +691,31 @@ fn estimate_tool_height(tool: &ToolCallBlock, level: DetailLevel, width: usize) 
 /// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
 /// 折叠状态由全局开关与块类型共同决定。
 fn render_entry(index: usize, entry: &Entry, app: &App, width: u16, first: bool) -> EntryLines {
+    render_entry_with(index, entry, app, width, first, true)
+}
+
+/// 估高路径的渲染：图片只查缓存，绝不触发解码（否则懒块会连锁解码整个历史）。
+fn render_entry_estimate(
+    index: usize,
+    entry: &Entry,
+    app: &App,
+    width: u16,
+    first: bool,
+) -> EntryLines {
+    render_entry_with(index, entry, app, width, first, false)
+}
+
+fn render_entry_with(
+    index: usize,
+    entry: &Entry,
+    app: &App,
+    width: u16,
+    first: bool,
+    spawn_images: bool,
+) -> EntryLines {
+    // 估高路径统一按「至少 8 列」计算宽度；渲染必须用同一口径，否则超窄
+    // 终端下图片版式（可容纳列数 → 行数）在两侧会算出不同的块高。
+    let width = width.max(8);
     let level = entry.level(app.block_level(&entry.block));
     if let Some((batch_id, name)) = tool_batch_key(entry) {
         if batch_group_start(app, index, batch_id, name) != index {
@@ -613,15 +729,9 @@ fn render_entry(index: usize, entry: &Entry, app: &App, width: u16, first: bool)
                 _ => None,
             })
             .collect();
-        return EntryLines::plain(render_tool_batch(
-            app,
-            &tools,
-            usize::from(width),
-            first,
-            level,
-        ));
+        return render_tool_batch(app, &tools, usize::from(width), first, level, spawn_images);
     }
-    render_entry_single(entry, app, usize::from(width), first, level)
+    render_entry_single(entry, app, usize::from(width), first, level, spawn_images)
 }
 
 fn render_entry_single(
@@ -630,13 +740,14 @@ fn render_entry_single(
     width: usize,
     first: bool,
     level: DetailLevel,
+    spawn_images: bool,
 ) -> EntryLines {
     let theme = app.theme;
     match &entry.block {
         Block::User { text } => {
             EntryLines::plain(user_message(text, entry.at_ms, first, width, theme))
         }
-        Block::Assistant { text } => assistant_message(text, entry, app, width),
+        Block::Assistant { text } => assistant_message(text, entry, app, width, spawn_images),
         Block::Thinking {
             text,
             reasoning_tokens,
@@ -649,7 +760,7 @@ fn render_entry_single(
             width,
             level,
         )),
-        Block::Tool(tool) => EntryLines::plain(render_tool(tool, app, width, level)),
+        Block::Tool(tool) => render_tool(tool, app, width, level, spawn_images),
         Block::AgentMessage { meta, body } => {
             EntryLines::plain(agent_message_block(meta, body, width, theme, level))
         }
@@ -670,11 +781,13 @@ fn render_tool_batch(
     width: usize,
     first: bool,
     level: DetailLevel,
-) -> Vec<Line<'static>> {
+    spawn_images: bool,
+) -> EntryLines {
     let theme = app.theme;
     let name = tools.first().map_or("tool", |tool| tool.name.as_str());
     let completed = tools.iter().filter(|tool| !tool.running).count();
     let mut lines = Vec::new();
+    let mut images = Vec::new();
     if !first {
         lines.push(Line::from(String::new()));
     }
@@ -702,24 +815,38 @@ fn render_tool_batch(
             continue;
         }
         let indent = Span::raw(" ".repeat(BATCH_BODY_INDENT));
-        for line in tool_body(
+        let base = lines.len();
+        let (body, mut placements) = tool_body(
             tool,
             &args,
             app,
             width.saturating_sub(BATCH_BODY_INDENT),
             limit,
-        ) {
+            spawn_images,
+        );
+        for line in body {
             let mut spans = vec![indent.clone()];
             spans.extend(line.spans);
             lines.push(Line::from(spans));
         }
+        for placement in &mut placements {
+            placement.row += base;
+            placement.x = placement
+                .x
+                .saturating_add(u16::try_from(BATCH_BODY_INDENT).unwrap_or(u16::MAX));
+        }
+        images.extend(placements);
     }
     lines.push(Line::from(Span::styled(
         format!("  {completed}/{} 完成", tools.len()),
         Style::new().fg(theme.gray_dim),
     )));
     lines.push(Line::from(String::new()));
-    lines
+    EntryLines {
+        lines,
+        tables: Vec::new(),
+        images,
+    }
 }
 
 /// 该档位的正文行上限（隐藏档没有正文）。
@@ -793,17 +920,26 @@ fn user_message(
 ///
 /// 正文交给带表格视图态的渲染器：已切换成图表的表格会变成占位行，其余表格
 /// 下方挂入口按钮；返回的落位信息（局部行号）供命中表与位图槽位登记。
-fn assistant_message(text: &str, entry: &Entry, app: &App, width: usize) -> EntryLines {
+fn assistant_message(
+    text: &str,
+    entry: &Entry,
+    app: &App,
+    width: usize,
+    spawn_images: bool,
+) -> EntryLines {
     let theme = app.theme;
     let rendered = render_markdown_with(
         text,
         width.saturating_sub(PROSE_INDENT).max(8),
         theme,
-        TableViews {
+        RenderViews {
             charts: &entry.charts,
             graphics: app.graphics,
             // 提示还没收尾时，末尾表格的入口等最终 token 落地再出现
             streaming: app.prompt_running && entry.elapsed_ms.is_none(),
+            images: Some(&app.images),
+            cwd: Some(std::path::Path::new(&app.startup_cwd)),
+            spawn_images,
         },
     );
     let mut lines: Vec<Line<'static>> = rendered.lines.into_iter().map(indent_prose).collect();
@@ -813,6 +949,7 @@ fn assistant_message(text: &str, entry: &Entry, app: &App, width: usize) -> Entr
     lines.push(Line::from(String::new()));
     EntryLines {
         lines,
+        images: rendered.images,
         tables: rendered
             .tables
             .into_iter()
@@ -1089,7 +1226,8 @@ fn render_tool(
     app: &App,
     width: usize,
     level: DetailLevel,
-) -> Vec<Line<'static>> {
+    spawn_images: bool,
+) -> EntryLines {
     let theme = app.theme;
     let depth = tool_depth(app, &tool.id);
     let mut lines = Vec::new();
@@ -1123,10 +1261,22 @@ fn render_tool(
     ]));
 
     if !tool.has_body() {
-        return indent_tool_lines(lines, depth);
+        return EntryLines::plain(indent_tool_lines(lines, depth));
     }
+    let mut images = Vec::new();
     if level != DetailLevel::Hidden {
-        lines.extend(tool_body(tool, &args, app, width, brief_limit(level)));
+        let base = lines.len();
+        let (body, mut placements) =
+            tool_body(tool, &args, app, width, brief_limit(level), spawn_images);
+        lines.extend(body);
+        for placement in &mut placements {
+            placement.row += base;
+            // 嵌套调用（PTC）整体右移，图片跟着正文一起缩进
+            placement.x = placement
+                .x
+                .saturating_add(u16::try_from(depth * 2).unwrap_or(u16::MAX));
+        }
+        images = placements;
     }
     // 尾注：耗时；尾随留白（失败原因由正文承载）
     if let Some(duration) = tool.duration_ms {
@@ -1136,7 +1286,11 @@ fn render_tool(
         )));
     }
     lines.push(Line::from(String::new()));
-    indent_tool_lines(lines, depth)
+    EntryLines {
+        lines: indent_tool_lines(lines, depth),
+        tables: Vec::new(),
+        images,
+    }
 }
 
 /// 工具正文行（不含标题、耗时尾注与留白，无缩进）。
@@ -1150,7 +1304,8 @@ fn tool_body(
     app: &App,
     width: usize,
     limit: usize,
-) -> Vec<Line<'static>> {
+    spawn_images: bool,
+) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let theme = app.theme;
     let inner_width = width.saturating_sub(4);
     let is_error = tool
@@ -1238,11 +1393,99 @@ fn tool_body(
             Style::new().fg(theme.gray_dim),
         )));
     }
-    lines
+    let placements = tool_images(tool, app, width, spawn_images, &mut lines);
+    (lines, placements)
+}
+
+/// 把工具结果里的图片追加到正文行后，返回它们的落位。
+///
+/// 行数与 [`tool_body_rows`] 走同一份判定：状态（解码中 / 就绪 / 失败）决定占
+/// 几行，两侧必须完全一致，否则懒渲染的块高会与真实渲染错位。
+fn tool_images(
+    tool: &ToolCallBlock,
+    app: &App,
+    width: usize,
+    spawn_images: bool,
+    lines: &mut Vec<Line<'static>>,
+) -> Vec<ImagePlacement> {
+    let theme = app.theme;
+    let mut placements = Vec::new();
+    if tool.images.is_empty() {
+        return placements;
+    }
+    // 正文缩进 2 格 + 右侧余量 4 格；图片按这点宽度排版
+    let max_cols = u16::try_from(width.saturating_sub(6)).unwrap_or(u16::MAX);
+    let shown = tool.images.len().min(MAX_TOOL_IMAGES);
+    for image in &tool.images[..shown] {
+        let Some(graphics) = app.graphics else {
+            lines.push(Line::from(Span::styled(
+                format!("  [图片 {}]", image.media_type),
+                Style::new().fg(theme.gray_dim),
+            )));
+            continue;
+        };
+        let state = if spawn_images {
+            match image.spec_factory() {
+                Some(make) => app.images.state(&image.key, make),
+                // 超出显示上限的图在落地时已丢弃载荷：不该走到这里
+                None => ImageState::Failed("图片载荷已丢弃".into()),
+            }
+        } else {
+            match app.images.peek(&image.key) {
+                Some(state) => state,
+                None => ImageState::Pending,
+            }
+        };
+        match state {
+            ImageState::Ready(prepared) => {
+                let Some(layout) = image_layout(prepared.size(), graphics.cell, max_cols) else {
+                    lines.push(Line::from(Span::styled(
+                        format!("  [图片 {}]", image.media_type),
+                        Style::new().fg(theme.gray_dim),
+                    )));
+                    continue;
+                };
+                let row = lines.len();
+                for _ in 0..layout.rows {
+                    lines.push(Line::from(" ".repeat(width)));
+                }
+                placements.push(ImagePlacement {
+                    row,
+                    // 正文行统一带 2 格前缀
+                    x: 2,
+                    cols: layout.cols,
+                    rows: layout.rows,
+                    px: layout.px,
+                    key: image.key.clone(),
+                });
+            }
+            ImageState::Pending => lines.push(Line::from(Span::styled(
+                "  图片解码中…",
+                Style::new().fg(theme.gray_dim),
+            ))),
+            ImageState::Failed(reason) => lines.push(Line::from(Span::styled(
+                format!("  图片无法显示：{reason}"),
+                Style::new().fg(theme.gray_dim),
+            ))),
+        }
+    }
+    if tool.images.len() > shown {
+        lines.push(Line::from(Span::styled(
+            format!("  ⋯ 还有 {} 张图片", tool.images.len() - shown),
+            Style::new().fg(theme.gray_dim),
+        )));
+    }
+    placements
 }
 
 /// 工具正文的展示行数：与 [`tool_body`] 同规则（含省略提示行），懒渲染估高用。
-fn tool_body_rows(tool: &ToolCallBlock, args: &Value, width: usize, limit: usize) -> usize {
+fn tool_body_rows(
+    tool: &ToolCallBlock,
+    args: &Value,
+    app: &App,
+    width: usize,
+    limit: usize,
+) -> usize {
     let inner_width = width.saturating_sub(4);
     let mut rows = 0usize;
     let mut dropped = 0usize;
@@ -1289,6 +1532,10 @@ fn tool_body_rows(tool: &ToolCallBlock, args: &Value, width: usize, limit: usize
         dropped += clamped.dropped;
     }
 
+    // 图片行与会话状态相关（解码中 / 就绪 / 失败），只能复用渲染判定
+    let mut probe = Vec::new();
+    tool_images(tool, app, width, false, &mut probe);
+    rows += probe.len();
     rows + usize::from(dropped > 0)
 }
 
@@ -1759,6 +2006,24 @@ mod tests {
     use crate::theme::ColorLevel;
     use crate::transcript::{ToolCallFinish, ToolCallStart};
 
+    /// 回归：图片预筛必须与渲染期真正出图的条件一致。
+    ///
+    /// 漏判不会导致画错，而是让懒块用折行近似顶替真实的占位行——块高差十几行，
+    /// 滚动范围与滚动条一起失真。围栏的四种写法都得出图。
+    #[test]
+    fn image_prefilter_matches_the_renderer() {
+        for fence in ["```svg", "```SVG", "~~~svg", "``` svg", "~~~~svg"] {
+            let source = format!("{fence}\n<svg width=\"10\" height=\"10\"/>\n```\n");
+            assert!(may_contain_image(&source), "{fence} 应被预筛命中");
+        }
+        assert!(
+            !may_contain_image("```rust\nfn main() {}\n```"),
+            "普通代码块不该命中"
+        );
+        assert!(may_contain_image("前文\n\n![](./a.png)\n"), "markdown 图片");
+        assert!(!may_contain_image("纯文本\n没有图也没有代码块"), "纯文本");
+    }
+
     /// 用户消息：使用 `>` 前缀，短消息时间戳右对齐，窄宽度时另起一行。
     #[test]
     fn user_message_aligns_clock_without_panel_borders() {
@@ -1946,7 +2211,7 @@ mod tests {
 
     /// 绘制登记：表格入口的列区间等于按钮宽度；切换后占位区落在正文列上。
     #[test]
-    fn paint_registers_entry_hits_and_chart_slots() {
+    fn paint_registers_entry_hits_and_bitmap_slots() {
         use crate::render::graphics::{CellPixels, GraphicsProto, GraphicsSupport};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -1977,7 +2242,7 @@ mod tests {
             app.scrollback_area.x + super::PROSE_INDENT as u16,
             "入口与正文左缘对齐"
         );
-        assert!(app.chart_slots.is_empty(), "表格形态没有位图槽位");
+        assert!(app.image_slots.is_empty(), "表格形态没有位图槽位");
 
         app.toggle_table_chart(0, 0);
         terminal
@@ -1985,7 +2250,7 @@ mod tests {
             .expect("切换后绘制成功");
         let hit = *app.chart_hits.first().expect("展开后仍有入口");
         assert_eq!(hit.w as usize, str_width("▾ 隐藏图表"), "按钮变成隐藏");
-        let slot = *app.chart_slots.first().expect("图表应登记位图槽位");
+        let slot = app.image_slots.first().expect("图表应登记位图槽位").clone();
         let kind = app.blocks[0]
             .table_chart(0)
             .map(|state| state.spec.kind)
@@ -2585,6 +2850,7 @@ mod tests {
             usize::from(width),
             true,
             DetailLevel::Hidden,
+            true,
         );
         assert_eq!(hidden.lines.len(), 2, "隐藏档只剩标题行与尾随留白");
     }
@@ -2733,5 +2999,157 @@ mod tests {
             lines.len(),
             "结果态估算与渲染同源"
         );
+    }
+
+    /// 工具结果里的图片：正文多出的行数估算与渲染必须一致。
+    #[test]
+    fn tool_result_images_keep_estimate_and_render_in_sync() {
+        use crate::render::graphics::{CellPixels, GraphicsProto, GraphicsSupport};
+        use crate::render::image::{DecodedImage, ImageKey};
+        use crate::transcript::ToolImage;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        });
+        let key = ImageKey::from_bytes("image/png", "AAAA");
+        app.images.complete(
+            key.clone(),
+            Ok(DecodedImage::Raster(image::RgbaImage::from_pixel(
+                40,
+                20,
+                image::Rgba([9, 9, 9, 255]),
+            ))),
+        );
+        app.push_block(Block::Tool(ToolCallBlock {
+            id: "shot".into(),
+            batch_id: None,
+            parent_id: None,
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+            status: Some(moc_protocol::methods::ToolStatus::Completed),
+            result: None,
+            diff: None,
+            duration_ms: None,
+            running: false,
+            progress: None,
+            images: vec![ToolImage::for_test(key, "image/png", Some("AAAA"))],
+        }));
+
+        let width = 80u16;
+        let rendered = render_entry(0, &app.blocks[0], &app, width, true);
+        assert_eq!(rendered.images.len(), 1, "一张图一张落位");
+        let placement = &rendered.images[0];
+        assert_eq!(placement.x, 2, "正文前缀两格");
+        assert!(
+            placement.row + usize::from(placement.rows) <= rendered.lines.len(),
+            "占位行必须真的存在"
+        );
+        assert!(rendered.lines[placement.row].width() >= usize::from(placement.cols));
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, width),
+            rendered.lines.len(),
+            "图片块：估算与渲染必须同源"
+        );
+    }
+
+    /// 绘制登记：图片槽位落在正文前缀上；比视口宽时不登记（会盖住边框）。
+    #[test]
+    fn paint_registers_tool_image_slots_within_the_viewport() {
+        use crate::render::graphics::{CellPixels, GraphicsProto, GraphicsSupport};
+        use crate::render::image::{DecodedImage, ImageKey};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        });
+        let key = ImageKey::from_bytes("image/png", "AAAA");
+        app.images.complete(
+            key.clone(),
+            Ok(DecodedImage::Raster(image::RgbaImage::from_pixel(
+                40,
+                20,
+                image::Rgba([9, 9, 9, 255]),
+            ))),
+        );
+        app.push_block(Block::Tool(ToolCallBlock {
+            id: "shot".into(),
+            batch_id: None,
+            parent_id: None,
+            name: "screenshot".into(),
+            arguments: "{}".into(),
+            status: Some(moc_protocol::methods::ToolStatus::Completed),
+            result: None,
+            diff: None,
+            duration_ms: None,
+            running: false,
+            progress: None,
+            images: vec![crate::transcript::ToolImage::for_test(
+                key,
+                "image/png",
+                Some("AAAA"),
+            )],
+        }));
+
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        let slot = app.image_slots.first().expect("图片应登记槽位").clone();
+        assert!(matches!(slot.source, SlotSource::Image(_)));
+        assert_eq!(slot.x, app.scrollback_area.x + 2, "落位对齐正文前缀");
+        assert_eq!(slot.cols, 5, "40px 宽 ÷ 8px 单元格");
+        assert_eq!(slot.rows, 2, "20px 高 ÷ 18px 单元格，向上取整");
+        assert!(slot.placement_id != 0, "kitty 放置 ID 不得为零");
+
+        // 视口比占位区窄：整块放不下就不登记，免得盖住边框
+        let mut narrow = ScrollbackView::new();
+        narrow.width = 100;
+        narrow.cache = vec![CachedEntry {
+            key: (0, 0),
+            height: 3,
+            lines: vec![
+                Line::from("标题"),
+                Line::from(" ".repeat(40)),
+                Line::from(" ".repeat(40)),
+            ],
+            rendered: true,
+            tables: Vec::new(),
+            images: vec![ImagePlacement {
+                row: 1,
+                x: 2,
+                cols: 40,
+                rows: 2,
+                px: (320, 36),
+                key: ImageKey::from_bytes("image/png", "zzz"),
+            }],
+        }];
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 10));
+        let mut slots = Vec::new();
+        let mut hits = Vec::new();
+        let mut charts = Vec::new();
+        let mut lines = Vec::new();
+        narrow.paint(
+            &mut buffer,
+            Rect::new(0, 0, 20, 10),
+            0,
+            false,
+            Theme::global(),
+            None,
+            PaintSinks {
+                hits: &mut hits,
+                charts: &mut charts,
+                slots: &mut slots,
+                lines: &mut lines,
+            },
+        );
+        assert!(slots.is_empty(), "占位区超出视口宽度时不登记");
     }
 }

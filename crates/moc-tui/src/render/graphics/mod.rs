@@ -5,17 +5,22 @@
 //! 单元格像素尺寸就无法 1:1 落位，宁可不出图也不出缩放后发虚的图。
 //!
 //! 放置策略是「后处理」：每帧 `terminal.draw()` 之后把图像按格坐标贴上去。
+//! 槽位来自两处：表格图表（载荷随块缓存在 `TableChartState` 里）与通用内联
+//! 图片（载荷在 [`crate::render::image::ImageStore`] 里，按内容寻址）。
 //! kitty 的图像独立于文本层，只在位置变化时重放，消失时按图像 ID 删除；
-//! sixel / iTerm2 的图像会被后续文本覆盖，因此位置或内容变化时整串重发，
-//! 图像消失时则请求下一帧清屏重绘（`App::chart_repaint`），只靠文本 diff
-//! 擦不掉留在空白占位格上的旧像素。浮层（模态、toast、拖选）期间一律不放置，
-//! 浮层消失后整批重放。
+//! 同一张图贴多处各有放置 ID，像素数据只传一次。sixel / iTerm2 的图像会被
+//! 后续文本覆盖，因此位置或内容变化时整串重发，图像消失时则请求下一帧清屏
+//! 重绘（`App::image_repaint`），只靠文本 diff 擦不掉留在空白占位格上的旧像素。
+//! 浮层（模态、toast、拖选）期间一律不放置，浮层消失后整批重放。
 
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::app::{App, ChartSlot, Focus, Placed};
-use crate::render::chart::{encode, layout, rasterize, with_fonts};
+use crate::app::{App, Focus, ImageSlot, Placed, SlotSource};
+use crate::render::chart::{layout, rasterize, with_fonts};
+
+pub mod encode;
 
 /// 终端单元格的像素尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +30,10 @@ pub struct CellPixels {
 }
 
 /// 支持的图形协议。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` 给「终端里已存在哪份像素数据」建索引用：同一张图可能按不同协议
+/// 各传输一份，二者不能互相顶替。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphicsProto {
     /// kitty 图形协议（kitty / WezTerm / foot / ghostty 等）。
     Kitty,
@@ -33,6 +41,20 @@ pub enum GraphicsProto {
     Sixel,
     /// iTerm2 内联图片（iTerm2 / WezTerm 的 iTerm2 模式）。
     Iterm2,
+}
+
+/// 出图所需的最小单元格宽度（像素）：再窄放不下半个字形。
+pub const MIN_CELL_W: u32 = 4;
+
+/// 出图所需的最小单元格高度（像素）：低于它一行字都放不下。
+pub const MIN_CELL_H: u32 = 8;
+
+/// 单元格尺寸是否足够出图。
+///
+/// 入口是否出现、点击后能否画出来都必须走这同一个判定，否则会出现
+/// 「按钮能点、点了没反应」的死入口。
+pub fn cell_supported(cell: CellPixels) -> bool {
+    cell.w >= MIN_CELL_W && cell.h >= MIN_CELL_H
 }
 
 /// 探测结果：协议 + 单元格像素尺寸。
@@ -91,6 +113,19 @@ pub fn probe() -> Option<GraphicsSupport> {
     Some(GraphicsSupport { proto, cell })
 }
 
+/// 单元格尺寸的合法范围（像素）。
+///
+/// 下界是「画不出一张可读的图」，上界是防御：终端应答是**不可信输入**
+/// （探测窗口内 stdin 上的任何字节都会被当成应答），一个
+/// `CSI 6;4294967295;8t` 就能让 `cols × cell.h` 撑出 TB 级画布，而 Rust 的
+/// 分配失败是 abort，不是可恢复错误。
+const CELL_RANGE: std::ops::RangeInclusive<u32> = 1..=128;
+
+/// 单元格尺寸是否在合法范围内。
+fn cell_in_range(cell: CellPixels) -> bool {
+    CELL_RANGE.contains(&cell.w) && CELL_RANGE.contains(&cell.h)
+}
+
 /// 解析 `MOC_CHART_CELL` 的 `WxH` 形式（也接受 `W,H`）。
 fn parse_cell(spec: &str) -> Option<CellPixels> {
     let (w, h) = spec
@@ -100,10 +135,7 @@ fn parse_cell(spec: &str) -> Option<CellPixels> {
         w: w.parse().ok()?,
         h: h.parse().ok()?,
     };
-    if !(1..=128).contains(&cell.w) || !(1..=128).contains(&cell.h) {
-        return None;
-    }
-    Some(cell)
+    cell_in_range(cell).then_some(cell)
 }
 
 /// 终端查询应答的解析结果。
@@ -122,9 +154,11 @@ struct Replies {
 }
 
 /// 由应答算单元格尺寸：优先 `CSI 16 t`，否则窗口像素 ÷ 终端格数。
+///
+/// 两条路都要过 [`cell_in_range`]：应答来自终端，是不可信输入。
 fn cell_from_replies(replies: &Replies) -> Option<CellPixels> {
     if let Some(cell) = replies.cell {
-        return Some(cell);
+        return cell_in_range(cell).then_some(cell);
     }
     let (width, height) = replies.window?;
     let (cols, rows) = crossterm::terminal::size().ok()?;
@@ -132,7 +166,7 @@ fn cell_from_replies(replies: &Replies) -> Option<CellPixels> {
         w: width / u32::from(cols.max(1)),
         h: height / u32::from(rows.max(1)),
     };
-    (cell.w >= 1 && cell.h >= 1).then_some(cell)
+    cell_in_range(cell).then_some(cell)
 }
 
 /// 发查询并收应答（仅 unix：raw mode 下直接读 fd 0）。
@@ -272,8 +306,9 @@ fn apply_csi(params: &[u8], final_byte: u8, replies: &mut Replies) {
 /// 每帧放置图像：在 `terminal.draw()` 之后调用。
 ///
 /// 位置与内容都没变就跳过；kitty 换位时先删旧放置，永久消失的图像按图像 ID
-/// 连数据一起删除。sixel / iTerm2 消失或改尺寸时置 `chart_repaint`，由事件
-/// 循环清屏重绘，避免残影留在空白占位行上。
+/// 删放置，并让 [`crate::render::image::ImageStore`] 忘掉「已传输」记录。
+/// sixel / iTerm2 消失或改尺寸时置 `image_repaint`，由事件循环清屏重绘，
+/// 避免残影留在空白占位行上。浮层期间先把已贴的图撤下来，恢复后整批重放。
 pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
     let Some(support) = app.graphics else {
         return Ok(());
@@ -282,53 +317,84 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
         || app.notice_visible()
         || app.warning_visible()
         || app.selection.is_some();
-    if covered != app.chart_covered {
-        app.chart_covered = covered;
-        // 浮层期间不贴图（会盖住浮层，或被浮层重绘擦掉）：位置记录留着，
-        // 恢复后整批重放，浮层期间消失的图才能按 ID 删干净。
+    let mut wrote = false;
+    if covered != app.image_covered {
+        app.image_covered = covered;
+        // 浮层期间不贴图：kitty 的图像独立于文本层且默认 z-index 在文字之上，
+        // 「不放置」并不等于「撤下来」——已经贴上去的会直接盖住模态框。
+        // 这里先删掉全部放置（数据保留），浮层消失后靠 `image_resume` 整批重放。
         if covered {
-            app.chart_resume = true;
+            app.image_resume = true;
+            let previous = std::mem::take(&mut app.image_placed);
+            for old in &previous {
+                if old.proto == GraphicsProto::Kitty {
+                    out.write_all(encode::kitty_hide(old.image_id, old.placement_id).as_bytes())?;
+                    wrote = true;
+                }
+            }
+            if wrote {
+                out.flush()?;
+            }
         }
     }
     if covered {
         return Ok(());
     }
-    let resume = std::mem::take(&mut app.chart_resume);
-    let previous = std::mem::take(&mut app.chart_placed);
-    let slots: Vec<ChartSlot> = app.chart_slots.clone();
+    let resume = std::mem::take(&mut app.image_resume);
+    let previous = std::mem::take(&mut app.image_placed);
+    // 槽位表归 `App` 所有，下一帧 `render::draw` 会先 clear 再重填；这里只读不取走，
+    // 免得 emit 之后还有人想读本帧登记的落位。
+    let slots: Vec<ImageSlot> = app.image_slots.clone();
     let theme = app.theme;
     let mut placed: Vec<Placed> = Vec::with_capacity(slots.len());
-    let mut wrote = false;
     for slot in slots {
-        let Some(entry) = app.blocks.get_mut(slot.entry) else {
-            continue;
+        // 载荷来源：表格图表就地编码，通用图片走 `ImageStore` 的内容缓存
+        let (payload, image_id, transmit) = match &slot.source {
+            SlotSource::Chart { table } => {
+                let Some(entry) = app.blocks.get_mut(slot.entry) else {
+                    continue;
+                };
+                let Some(state) = entry.table_chart_mut(*table) else {
+                    continue;
+                };
+                let Some(chart_layout) = layout(&state.spec, slot.cols, support.cell) else {
+                    continue;
+                };
+                // 载荷按像素尺寸缓存：终端格尺寸或可用列数变了就重排，绝不缩放旧图
+                let fresh = state.payload.is_none() || state.px != chart_layout.px;
+                if fresh {
+                    let canvas =
+                        with_fonts(|fonts| rasterize(&state.spec, &chart_layout, theme, fonts));
+                    state.payload = Some(Arc::new(encode::encode(
+                        &canvas,
+                        support.proto,
+                        state.image_id,
+                        slot.cols,
+                        slot.rows,
+                    )));
+                    state.px = chart_layout.px;
+                }
+                let Some(payload) = state.payload.as_ref() else {
+                    continue;
+                };
+                (Arc::clone(payload), state.image_id, fresh)
+            }
+            SlotSource::Image(key) => {
+                let Some(encoded) =
+                    app.images
+                        .payload(key, support.proto, slot.cols, slot.rows, slot.px, theme)
+                else {
+                    continue;
+                };
+                (encoded.payload, encoded.image_id, encoded.transmit)
+            }
         };
-        let Some(state) = entry.table_chart_mut(slot.table) else {
-            continue;
-        };
-        let Some(chart_layout) = layout(&state.spec, slot.cols, support.cell) else {
-            continue;
-        };
-        // 载荷按像素尺寸缓存：终端格尺寸或可用列数变了就重排，绝不缩放旧图
-        let fresh = state.payload.is_none() || state.px != chart_layout.px;
-        if fresh {
-            let canvas = with_fonts(|fonts| rasterize(&state.spec, &chart_layout, theme, fonts));
-            state.payload = Some(std::sync::Arc::new(encode::encode(
-                &canvas,
-                support.proto,
-                state.image_id,
-                slot.cols,
-                slot.rows,
-            )));
-            state.px = chart_layout.px;
-        }
-        let Some(payload) = state.payload.as_ref() else {
-            continue;
-        };
-        let reused = !fresh
+        // 放置 ID 与图像 ID 分开：同一张图可以同时贴多处
+        let reused = !transmit
             && !resume
             && previous.iter().any(|old| {
-                old.image_id == state.image_id
+                old.placement_id == slot.placement_id
+                    && old.image_id == image_id
                     && old.proto == support.proto
                     && old.x == slot.x
                     && old.y == slot.y
@@ -341,13 +407,14 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
             match payload.as_ref() {
                 encode::Payload::Kitty(_) => {
                     KITTY_USED.store(true, Ordering::Relaxed);
-                    out.write_all(encode::kitty_hide(state.image_id).as_bytes())?;
-                    // 像素数据只传一次：换位只需要重新放置
-                    if fresh {
+                    out.write_all(encode::kitty_hide(image_id, slot.placement_id).as_bytes())?;
+                    // 像素数据每份只传一次：换位、重复放置只需要重新放置
+                    if transmit {
                         out.write_all(payload.as_bytes())?;
                     }
                     out.write_all(
-                        encode::kitty_place(state.image_id, slot.cols, slot.rows).as_bytes(),
+                        encode::kitty_place(image_id, slot.placement_id, slot.cols, slot.rows)
+                            .as_bytes(),
                     )?;
                 }
                 _ => out.write_all(payload.as_bytes())?,
@@ -355,7 +422,8 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
             wrote = true;
         }
         placed.push(Placed {
-            image_id: state.image_id,
+            image_id,
+            placement_id: slot.placement_id,
             proto: support.proto,
             x: slot.x,
             y: slot.y,
@@ -368,10 +436,23 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
     // sixel / iTerm2 没有删除动作，只能请求下一帧清屏重绘。
     let mut repaint = false;
     for old in &previous {
-        match placed.iter().find(|now| now.image_id == old.image_id) {
+        match placed
+            .iter()
+            .find(|now| now.placement_id == old.placement_id && now.image_id == old.image_id)
+        {
             None => {
                 if old.proto == GraphicsProto::Kitty {
-                    out.write_all(encode::kitty_delete(old.image_id).as_bytes())?;
+                    // 同一张图还有别的放置就只删这一个，否则连图像数据一起删
+                    let shared = placed.iter().any(|now| now.image_id == old.image_id);
+                    let seq = if shared {
+                        encode::kitty_hide(old.image_id, old.placement_id)
+                    } else {
+                        // 终端里这份像素数据没了：不记录的话滚回来只会重新放置
+                        // 一个终端并不存在的图像，屏幕上留下一片空白。
+                        app.images.forget_transmission(old.image_id);
+                        encode::kitty_delete(old.image_id)
+                    };
+                    out.write_all(seq.as_bytes())?;
                     wrote = true;
                 } else {
                     repaint = true;
@@ -387,9 +468,9 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
         }
     }
     if repaint {
-        app.chart_repaint = true;
+        app.image_repaint = true;
     }
-    app.chart_placed = placed;
+    app.image_placed = placed;
     if wrote {
         // 贴图把光标挪走了：把它送回输入框（ratatui 只在焦点位于输入框时定位光标）
         if app.focus == Focus::Prompt && !app.prompt_area.is_empty() {
@@ -450,11 +531,11 @@ mod emit_tests {
 
     use ratatui::layout::Rect;
 
-    use crate::app::ChartSlot;
+    use crate::app::ImageSlot;
     use crate::transcript::Block;
 
     /// 造一个「已展开一张图表」的 app，并给出对应的槽位。
-    fn app_with_chart(proto: GraphicsProto) -> (App, ChartSlot) {
+    fn app_with_chart(proto: GraphicsProto) -> (App, ImageSlot) {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(crate::theme::Theme::global(), events);
         app.graphics = Some(GraphicsSupport {
@@ -472,17 +553,18 @@ mod emit_tests {
             state.spec.categories.len(),
             state.spec.series.len(),
         );
-        let slot = ChartSlot {
+        let slot = ImageSlot {
             entry: 0,
-            table: 0,
+            source: SlotSource::Chart { table: 0 },
             x: 6,
             y: 5,
             cols: 71,
             rows,
             px: (71 * 8, u32::from(rows) * 18),
             hash: 0xabcd,
+            placement_id: 0x1234,
         };
-        app.chart_slots = vec![slot];
+        app.image_slots = vec![slot.clone()];
         (app, slot)
     }
 
@@ -504,18 +586,18 @@ mod emit_tests {
         );
         assert!(contains(&out, b"\x1bPq"), "sixel 载荷应已写出");
         assert!(contains(&out, b"\x1b\\"), "sixel 结尾 ST");
-        assert_eq!(app.chart_placed.len(), 1);
+        assert_eq!(app.image_placed.len(), 1);
 
         let mut again = Vec::new();
         emit(&mut app, &mut again).expect("写内存不会失败");
         assert!(again.is_empty(), "位置与指纹都没变，不该重发：{again:?}");
 
         // 滚动一格：位置变化必须重发；纯移动不触发整屏清屏，避免滚动卡顿
-        app.chart_slots[0].y = slot.y + 1;
+        app.image_slots[0].y = slot.y + 1;
         let mut moved = Vec::new();
         emit(&mut app, &mut moved).expect("写内存不会失败");
         assert!(contains(&moved, b"\x1bPq"), "换位后应重发载荷");
-        assert!(!app.chart_repaint, "纯换位不需要清屏重绘");
+        assert!(!app.image_repaint, "纯换位不需要清屏重绘");
     }
 
     /// kitty：载荷只传一次，换位只重发放置；图像消失时删除放置。
@@ -528,11 +610,12 @@ mod emit_tests {
         assert!(contains(&out, b"a=p"), "再放置图像");
         let transmitted = out.clone();
 
-        app.chart_slots[0].y += 2;
+        app.image_slots[0].y += 2;
         let mut moved = Vec::new();
         emit(&mut app, &mut moved).expect("写内存不会失败");
         assert!(
-            contains(&moved, b"a=d,d=p"),
+            // 按 image id + placement id 精确删除；`d=p` 是按单元格删，命中不了
+            contains(&moved, b"a=d,d=i,i=1,p=4660"),
             "换位先删旧放置：{:?}",
             String::from_utf8_lossy(&moved)
         );
@@ -544,15 +627,15 @@ mod emit_tests {
         assert!(!transmitted.is_empty());
 
         // 图像离开视口：连图像数据与放置一起删
-        app.chart_slots.clear();
+        app.image_slots.clear();
         let mut gone = Vec::new();
         emit(&mut app, &mut gone).expect("写内存不会失败");
         assert!(
             contains(&gone, b"a=d,d=i"),
             "消失的图像要按 ID 删除数据与放置"
         );
-        assert!(app.chart_placed.is_empty());
-        assert!(!app.chart_repaint, "kitty 有显式删除，不需要清屏");
+        assert!(app.image_placed.is_empty());
+        assert!(!app.image_repaint, "kitty 有显式删除，不需要清屏");
     }
 
     /// 浮层期间不贴图，浮层消失后整批重放（避免图像盖住模态或残影）。
@@ -566,18 +649,38 @@ mod emit_tests {
         app.notice_at = Some(std::time::Instant::now());
         let mut covered = Vec::new();
         emit(&mut app, &mut covered).expect("写内存不会失败");
-        assert!(covered.is_empty(), "浮层期间不写任何图形序列");
-        assert_eq!(
-            app.chart_placed.len(),
-            1,
-            "位置记录必须保留：恢复后要靠它重放"
+        assert!(
+            !contains(&covered, b"\x1bPq"),
+            "浮层期间不得再贴图：{:?}",
+            String::from_utf8_lossy(&covered)
         );
 
         app.notice = None;
-        app.chart_slots = vec![slot];
+        app.image_slots = vec![slot];
         let mut resumed = Vec::new();
         emit(&mut app, &mut resumed).expect("写内存不会失败");
         assert!(contains(&resumed, b"\x1bPq"), "浮层消失后重放");
+    }
+
+    /// 浮层出现时 kitty 的图必须被撤下来：图像是独立图层，默认画在文字之上，
+    /// 「不放置」不等于「撤下来」，不删就会直接盖住模态框。
+    #[test]
+    fn kitty_placements_are_hidden_when_an_overlay_appears() {
+        let (mut app, _slot) = app_with_chart(GraphicsProto::Kitty);
+        let mut first = Vec::new();
+        emit(&mut app, &mut first).expect("写内存不会失败");
+        assert_eq!(app.image_placed.len(), 1);
+
+        app.notice = Some("操作反馈".into());
+        app.notice_at = Some(std::time::Instant::now());
+        let mut covered = Vec::new();
+        emit(&mut app, &mut covered).expect("写内存不会失败");
+        assert!(
+            contains(&covered, b"a=d,d=i"),
+            "浮层出现时要撤下图：{:?}",
+            String::from_utf8_lossy(&covered)
+        );
+        assert!(app.image_placed.is_empty(), "放置记录已随删除作废");
     }
 
     /// 浮层期间图表被还原：恢复时要按 ID 删掉它的 kitty 放置（不留残影）。
@@ -591,20 +694,25 @@ mod emit_tests {
         app.notice_at = Some(std::time::Instant::now());
         let mut covered = Vec::new();
         emit(&mut app, &mut covered).expect("写内存不会失败");
-        assert!(covered.is_empty());
+        // 浮层出现的第一帧就把放置撤下来，避免图像盖住模态
+        assert!(
+            contains(&covered, b"a=d,d=i"),
+            "{:?}",
+            String::from_utf8_lossy(&covered)
+        );
 
         // 浮层期间用户把图表还原成表格，浮层随后消失
         app.blocks[0].set_table_chart(0, None);
-        app.chart_slots.clear();
+        app.image_slots.clear();
         app.notice = None;
         let mut resumed = Vec::new();
         emit(&mut app, &mut resumed).expect("写内存不会失败");
         assert!(
-            contains(&resumed, b"a=d,d=i"),
-            "消失的图必须按 ID 删掉数据与放置：{:?}",
+            !contains(&resumed, b"a=p"),
+            "图已经撤过，恢复时不该再贴：{:?}",
             String::from_utf8_lossy(&resumed)
         );
-        assert!(app.chart_placed.is_empty());
+        assert!(app.image_placed.is_empty());
     }
 
     /// sixel / iTerm2 没有删除动作：图消失时只能请求下一帧清屏重绘。
@@ -613,13 +721,13 @@ mod emit_tests {
         let (mut app, _slot) = app_with_chart(GraphicsProto::Sixel);
         let mut first = Vec::new();
         emit(&mut app, &mut first).expect("写内存不会失败");
-        assert!(!app.chart_repaint);
+        assert!(!app.image_repaint);
 
-        app.chart_slots.clear();
+        app.image_slots.clear();
         let mut gone = Vec::new();
         emit(&mut app, &mut gone).expect("写内存不会失败");
-        assert!(app.chart_repaint, "sixel 图消失后必须请求清屏重绘");
-        assert!(app.chart_placed.is_empty());
+        assert!(app.image_repaint, "sixel 图消失后必须请求清屏重绘");
+        assert!(app.image_placed.is_empty());
     }
 
     /// 没有图形能力时 emit 完全静默（表格形态的终端不该收到任何控制序列）。
@@ -681,7 +789,7 @@ mod pipeline_tests {
         terminal
             .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
             .expect("绘制成功");
-        let slot = *app.chart_slots.first().expect("图表已登记槽位");
+        let slot = app.image_slots.first().expect("图表已登记槽位").clone();
 
         let mut out = Vec::new();
         emit(&mut app, &mut out).expect("写内存不会失败");
@@ -696,5 +804,209 @@ mod pipeline_tests {
             (crate::render::chart::MAX_CHART_PX / cell.w) as u16
         );
         assert_eq!(slot.rows, 6);
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// 画一张真 PNG 到临时目录，返回它的绝对路径。
+    fn write_png(directory: &std::path::Path, name: &str, size: (u32, u32)) -> std::path::PathBuf {
+        let mut canvas = crate::render::canvas::Canvas::new(size.0, size.1, [0x20, 0x40, 0x80]);
+        let dot = canvas.color([0xff, 0xff, 0xff]);
+        canvas.fill_rect(0, 0, size.0 / 2, size.1 / 2, dot);
+        let path = directory.join(name);
+        std::fs::write(&path, crate::render::graphics::encode::png(&canvas)).expect("落盘");
+        path
+    }
+
+    /// 事件循环的替身：把解码结果灌回 `ImageStore`，直到本帧登记出图片槽位。
+    fn settle_images(
+        app: &mut App,
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<crate::protocol::AppEvent>,
+        terminal: &mut Terminal<TestBackend>,
+        view: &mut crate::render::ScrollbackView,
+    ) {
+        for _ in 0..400 {
+            while let Ok(event) = receiver.try_recv() {
+                if let crate::protocol::AppEvent::ImagePrepared { key, result } = event {
+                    app.images.complete(key, result);
+                    app.view_gen = app.view_gen.wrapping_add(1);
+                }
+            }
+            terminal
+                .draw(|frame| crate::render::draw(frame, app, view))
+                .expect("绘制成功");
+            // 登记出槽位后主动热身编码：生产里这一步由 `emit` → `payload()` 触发，
+            // 测试不能调 emit（它会消费放置记录），所以单独走 request_payload。
+            if let Some(support) = app.graphics {
+                for slot in &app.image_slots {
+                    if let crate::app::SlotSource::Image(key) = &slot.source {
+                        app.images.request_payload(
+                            key,
+                            support.proto,
+                            slot.cols,
+                            slot.rows,
+                            slot.px,
+                            app.theme,
+                        );
+                    }
+                }
+            }
+            // 解码完只说明能排版；还要等后台把缩放 / 量化 / 编码也做完，
+            // 否则 `emit` 拿不到载荷（这正是主线程不再被卡住的原因）。
+            if !app.image_slots.is_empty()
+                && app.image_slots.iter().all(|slot| payload_ready(app, slot))
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("图片没有在预算内解码并编码完成");
+    }
+
+    /// 槽位对应的编码载荷是否已经就绪。
+    fn payload_ready(app: &App, slot: &crate::app::ImageSlot) -> bool {
+        let crate::app::SlotSource::Image(key) = &slot.source else {
+            return true;
+        };
+        let Some(support) = app.graphics else {
+            return true;
+        };
+        app.images
+            .has_payload(key, support.proto, slot.cols, slot.rows, slot.px)
+    }
+
+    /// 从输出里取出全部 kitty 放置 ID（`a=p` 序列）。
+    fn kitty_placements(out: &[u8]) -> Vec<String> {
+        let text = String::from_utf8_lossy(out);
+        text.split("\x1b_G")
+            .filter(|sequence| sequence.starts_with("a=p,"))
+            .filter_map(|sequence| {
+                sequence
+                    .split(',')
+                    .find(|field| field.starts_with("p="))
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    /// 端到端：markdown 本地图片 → 解码 → 占位行 → 按格贴出。
+    #[test]
+    fn markdown_image_flows_from_file_to_pixels() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = write_png(directory.path(), "shot.png", (160, 90));
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let cell = CellPixels { w: 9, h: 20 };
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Sixel,
+            cell,
+        });
+        app.push_block(Block::Assistant {
+            text: format!("图：\n\n![]({})\n", path.display()),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("测试终端");
+        let mut view = crate::render::ScrollbackView::new();
+        settle_images(&mut app, &mut receiver, &mut terminal, &mut view);
+
+        let slot = app.image_slots.first().expect("图片已登记槽位").clone();
+        assert!(matches!(slot.source, SlotSource::Image(_)));
+        assert_eq!(
+            slot.x,
+            app.scrollback_area.x + super::super::PROSE_INDENT as u16
+        );
+        assert_eq!(slot.cols, 18, "160px ÷ 9px 单元格，向上取整");
+        assert_eq!(slot.rows, 5, "90px ÷ 20px 单元格，向上取整");
+
+        let mut out = Vec::new();
+        emit(&mut app, &mut out).expect("写内存不会失败");
+        assert_eq!(
+            sixel_size(&out),
+            (u32::from(slot.cols) * cell.w, u32::from(slot.rows) * cell.h),
+            "sixel 栅格尺寸必须等于槽位的格子区域"
+        );
+    }
+
+    /// 同一张图在一条消息里出现两次：两个放置 ID，像素数据只传一次。
+    #[test]
+    fn repeated_images_get_distinct_placements() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = write_png(directory.path(), "twice.png", (64, 36));
+        let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.graphics = Some(GraphicsSupport {
+            proto: GraphicsProto::Kitty,
+            cell: CellPixels { w: 8, h: 18 },
+        });
+        app.push_block(Block::Assistant {
+            text: format!("![]({})\n\n![]({})\n", path.display(), path.display()),
+        });
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("测试终端");
+        let mut view = crate::render::ScrollbackView::new();
+        settle_images(&mut app, &mut receiver, &mut terminal, &mut view);
+        assert_eq!(app.image_slots.len(), 2, "两处引用各占一块");
+
+        let mut out = Vec::new();
+        emit(&mut app, &mut out).expect("写内存不会失败");
+        let text = String::from_utf8_lossy(&out).to_string();
+        assert_eq!(text.matches("a=t,").count(), 1, "像素数据只传一次");
+        let placements = kitty_placements(&out);
+        assert_eq!(placements.len(), 2, "两次放置：{placements:?}");
+        assert_ne!(placements[0], placements[1], "放置 ID 必须区分");
+    }
+
+    /// 图片消失：kitty 按图像 ID 删除，sixel 只能请求清屏重绘。
+    #[test]
+    fn vanished_images_are_cleaned_up_per_protocol() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = write_png(directory.path(), "gone.png", (32, 18));
+        for (proto, expect_delete) in [(GraphicsProto::Kitty, true), (GraphicsProto::Sixel, false)]
+        {
+            let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+            let mut app = App::new(crate::theme::Theme::global(), events);
+            app.graphics = Some(GraphicsSupport {
+                proto,
+                cell: CellPixels { w: 8, h: 18 },
+            });
+            app.push_block(Block::Assistant {
+                text: format!("![]({})\n", path.display()),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("测试终端");
+            let mut view = crate::render::ScrollbackView::new();
+            settle_images(&mut app, &mut receiver, &mut terminal, &mut view);
+
+            let mut first = Vec::new();
+            emit(&mut app, &mut first).expect("写内存不会失败");
+            assert!(!app.image_placed.is_empty());
+
+            // 正文换成纯文本：图片离开视口（改块内容必须让缓存失效）
+            app.blocks[0].block = Block::Assistant {
+                text: "纯文本".into(),
+            };
+            app.blocks[0].touch();
+            terminal
+                .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+                .expect("绘制成功");
+            assert!(app.image_slots.is_empty(), "换文案后不再有图片槽位");
+
+            let mut gone = Vec::new();
+            emit(&mut app, &mut gone).expect("写内存不会失败");
+            if expect_delete {
+                assert!(
+                    contains(&gone, b"a=d,d=i"),
+                    "kitty 必须按图像 ID 删干净：{:?}",
+                    String::from_utf8_lossy(&gone)
+                );
+                assert!(!app.image_repaint, "kitty 不需要清屏");
+            } else {
+                assert!(app.image_repaint, "sixel 靠清屏擦掉旧像素");
+            }
+            assert!(app.image_placed.is_empty());
+        }
     }
 }

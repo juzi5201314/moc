@@ -68,6 +68,38 @@ impl Canvas {
         self.h
     }
 
+    /// 从已量化结果直接建画布：RGB 与索引平面一次写入。
+    ///
+    /// 通用内联图片走这里——NeuQuant 已经把整张图量化完，再逐个像素走
+    /// [`Canvas::color`] 只会把同样的活干第二遍。`bucket` 留空：画布往后
+    /// 只读（图片不再绘制新图元），需要时再懒回填。
+    pub fn from_indexed(w: u32, h: u32, palette: Vec<[u8; 3]>, index: Vec<u8>) -> Self {
+        let pixels = w as usize * h as usize;
+        debug_assert!(
+            !palette.is_empty() && palette.len() <= MAX_COLORS,
+            "调色板项数越界：{}",
+            palette.len()
+        );
+        debug_assert!(index.len() == pixels, "索引平面长度必须等于像素数");
+        debug_assert!(
+            index.iter().all(|slot| usize::from(*slot) < palette.len()),
+            "索引越出调色板"
+        );
+        let mut rgb = Vec::with_capacity(pixels * 3);
+        for slot in &index {
+            let color = palette.get(usize::from(*slot)).copied().unwrap_or_default();
+            rgb.extend_from_slice(&color);
+        }
+        Self {
+            w,
+            h,
+            rgb,
+            index,
+            palette,
+            bucket: vec![None; BUCKET_SLOTS],
+        }
+    }
+
     /// 登记颜色并返回调色板索引。
     ///
     /// 快路径是 5-5-5 桶：桶里存着同量化区间内最近一次使用的颜色，命中且

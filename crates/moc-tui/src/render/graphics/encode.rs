@@ -10,7 +10,7 @@ use std::io::Write;
 
 use base64::Engine as _;
 
-use super::canvas::Canvas;
+use crate::render::canvas::Canvas;
 use crate::render::graphics::GraphicsProto;
 
 /// 一次图形载荷：三种协议各自的线上表示。
@@ -102,8 +102,11 @@ fn kitty_transmit(canvas: &Canvas, id: u32) -> String {
 }
 
 /// kitty 放置：把已传输的图像按整数格贴到当前光标位置。
-pub fn kitty_place(id: u32, cols: u16, rows: u16) -> String {
-    format!("\x1b_Ga=p,i={id},p={id},c={cols},r={rows},q=2\x1b\\")
+///
+/// `placement` 与 `id` 分开：同一张图可以在屏幕上贴多处（消息里重复引用同一
+/// 文件、同一张工具图片出现两次），每处一个放置 ID，互不干扰。
+pub fn kitty_place(id: u32, placement: u32, cols: u16, rows: u16) -> String {
+    format!("\x1b_Ga=p,i={id},p={placement},c={cols},r={rows},q=2\x1b\\")
 }
 
 /// kitty 删除：按图像 ID 删掉全部放置（离开备用屏前与图像变回表格时用）。
@@ -111,13 +114,16 @@ pub fn kitty_delete(id: u32) -> String {
     format!("\x1b_Ga=d,d=i,i={id},q=2\x1b\\")
 }
 
-/// kitty 隐藏：只删放置、保留已传输的图像数据。
+/// kitty 隐藏：只删这一个放置、保留已传输的图像数据。
 ///
 /// 图像换位与暂时离开视口都走它——重放时不必重新传输几十 KB 的像素数据。
-/// 同时带 `i` 与 `p`：部分终端只按 placement id 删除时会漏掉没有 `i` 的请求，
-/// 两个键一起给才能稳定命中同一张图。
-pub fn kitty_hide(id: u32) -> String {
-    format!("\x1b_Ga=d,d=p,i={id},p={id},q=2\x1b\\")
+///
+/// 动作必须是 `d=i` 而不是 `d=p`：后者的语义是「删除与 `x`/`y` 指定单元格
+/// 相交的放置」，压根不看放置 ID；不给 `x`/`y` 时偏移取 0，
+/// `start_column <= -1` 对任何放置都不成立，等于什么都没删。规范里按
+/// image id + placement id 精确删除的写法是 `d=i` 加 `p` 键。
+pub fn kitty_hide(id: u32, placement: u32) -> String {
+    format!("\x1b_Ga=d,d=i,i={id},p={placement},q=2\x1b\\")
 }
 
 /// sixel 字节流。
@@ -510,14 +516,16 @@ mod tests {
         );
     }
 
-    /// kitty 放置、隐藏与删除：`a=p` 带格数与 ID，`d=p` 只删放置，`d=i` 连数据删。
+    /// kitty 放置、隐藏与删除：`a=p` 带格数与 ID，`d=i` 只删放置，`d=i` 不带
+    /// `p` 时按图像删全部放置。
     #[test]
     fn kitty_placement_and_delete_carry_image_id() {
         assert_eq!(
-            kitty_place(9, 40, 12),
-            "\x1b_Ga=p,i=9,p=9,c=40,r=12,q=2\x1b\\"
+            kitty_place(9, 3, 40, 12),
+            "\x1b_Ga=p,i=9,p=3,c=40,r=12,q=2\x1b\\"
         );
-        assert_eq!(kitty_hide(9), "\x1b_Ga=d,d=p,i=9,p=9,q=2\x1b\\");
+        // `d=p` 是按单元格删除，永远命中不了「按放置删除」的意图
+        assert_eq!(kitty_hide(9, 3), "\x1b_Ga=d,d=i,i=9,p=3,q=2\x1b\\");
         assert_eq!(kitty_delete(9), "\x1b_Ga=d,d=i,i=9,q=2\x1b\\");
     }
 

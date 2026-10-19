@@ -143,24 +143,24 @@ pub struct App {
     pub paint_lines: Vec<(u16, String)>,
     /// 终端图形能力（启动探测一次）；`None` = 本终端不出图表入口。
     pub graphics: Option<crate::render::graphics::GraphicsSupport>,
+    /// 内联图片的解码 / 编码缓存（工具结果、markdown 图片、SVG 代码块共用）。
+    pub images: crate::render::image::ImageStore,
     /// 本帧要贴的位图槽位（`ScrollbackView::paint` 填充，帧后由
     /// [`crate::render::graphics::emit`] 消费）。
-    pub chart_slots: Vec<ChartSlot>,
+    pub image_slots: Vec<ImageSlot>,
     /// 本帧可点击的表格入口（`paint` 填充，命中判定读它）。
     pub chart_hits: Vec<ChartHit>,
     /// 已贴到终端上的位图（kitty 依靠它删旧放置，其余协议靠它跳过多余重发）。
-    pub chart_placed: Vec<Placed>,
+    pub image_placed: Vec<Placed>,
     /// 上一帧是否被浮层覆盖：切换瞬间整批重放，避免残影或盖住浮层。
-    pub chart_covered: bool,
+    pub image_covered: bool,
     /// 浮层结束后需要整批重放（浮层期间图像被覆盖或擦除，位置指纹已不可信）。
-    pub chart_resume: bool,
+    pub image_resume: bool,
     /// 图像消失或尺寸变化后请求清屏重绘：sixel / iTerm2 不能单独擦除像素，
     /// 只靠 ratatui 的文本 diff 会把旧图留在“仍然空白”的占位格上。
-    pub chart_repaint: bool,
+    pub image_repaint: bool,
     /// 鼠标悬停的表格入口 `(块下标, 表格序号)`。
     pub hover_chart: Option<(usize, usize)>,
-    /// 下一个 kitty 图像 ID（进程内自增，永不复用）。
-    pub next_image_id: u32,
     /// 鼠标拖选区（屏幕坐标 (列, 行) 起点 / 终点）。
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
@@ -239,14 +239,14 @@ pub struct ConfigWrite {
 
 /// 一帧里要贴的一张位图：屏幕格坐标 + 内容指纹。
 ///
-/// `hash` 覆盖占位行文本与视图版本：行内容或全局视图变了就重发，
+/// `hash` 覆盖占位行文本与图片键：行内容、全局视图或图片内容变了就重发，
 /// 纯粹的光标移动/滚动不改指纹，靠 `x`/`y` 变化触发重贴。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChartSlot {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageSlot {
     /// 所在转写块下标。
     pub entry: usize,
-    /// 该块内的顶层表格序号。
-    pub table: usize,
+    /// 该位图的载荷来源。
+    pub source: SlotSource,
     /// 屏幕列（滚动区原点 + 正文缩进）。
     pub x: u16,
     /// 屏幕行。
@@ -256,6 +256,17 @@ pub struct ChartSlot {
     /// 位图像素尺寸。
     pub px: (u32, u32),
     pub hash: u64,
+    /// kitty 放置 ID：与图像 ID 分开，同一张图可以贴多处。
+    pub placement_id: u32,
+}
+
+/// 位图载荷的来源：位图数据要么挂在转写块上，要么归 `ImageStore` 缓存。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotSource {
+    /// 表格图表：载荷在 `Entry::table_chart` 里，随块一起失效。
+    Chart { table: usize },
+    /// 通用图片（工具结果 / markdown / SVG）：载荷在 `App::images`。
+    Image(crate::render::image::ImageKey),
 }
 
 /// 一个可点击的表格入口：整行命中，列区间限定在按钮文字上。
@@ -272,6 +283,7 @@ pub struct ChartHit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placed {
     pub image_id: u32,
+    pub placement_id: u32,
     pub x: u16,
     pub y: u16,
     pub cols: u16,
@@ -312,6 +324,7 @@ impl App {
         self.focused.is_some()
     }
     pub fn new(theme: &'static Theme, events: UnboundedSender<AppEvent>) -> Self {
+        let images = crate::render::image::ImageStore::new(events.clone());
         Self {
             theme,
             events,
@@ -357,14 +370,14 @@ impl App {
             mouse_hits: Vec::new(),
             paint_lines: Vec::new(),
             graphics: None,
-            chart_slots: Vec::new(),
+            images,
+            image_slots: Vec::new(),
             chart_hits: Vec::new(),
-            chart_placed: Vec::new(),
-            chart_covered: false,
-            chart_resume: false,
-            chart_repaint: false,
+            image_placed: Vec::new(),
+            image_covered: false,
+            image_resume: false,
+            image_repaint: false,
             hover_chart: None,
-            next_image_id: 1,
             selection: None,
             pending_click: None,
             ctrl_c_pending: None,
@@ -559,6 +572,7 @@ impl App {
             duration_ms: None,
             running: true,
             progress: None,
+            images: Vec::new(),
         })));
         self.tool_indices.insert(id, index);
     }
@@ -606,6 +620,8 @@ impl App {
                 duration_ms,
                 running: false,
                 progress: None,
+                // 正常路径在 `Entry::finish_tool` 里填；这条兜底分支不能把图丢掉
+                images: crate::transcript::ToolImage::from_sources(result.images),
             })));
             self.tool_indices.insert(id, index);
         }
@@ -640,6 +656,7 @@ impl App {
             duration_ms: None,
             running: false,
             progress: None,
+            images: Vec::new(),
         }));
     }
 
@@ -698,10 +715,11 @@ impl App {
                 text,
                 width,
                 theme,
-                crate::render::markdown::TableViews {
+                crate::render::markdown::RenderViews {
                     charts: &[],
                     graphics: None,
                     streaming: false,
+                    ..crate::render::markdown::RenderViews::default()
                 },
             );
             match rendered.raw.get(table) {
@@ -721,8 +739,9 @@ impl App {
                 return;
             }
         };
-        let image_id = self.next_image_id;
-        self.next_image_id = self.next_image_id.wrapping_add(1);
+        // 编号必须与内联图片共用同一个空间：kitty 里用已存在的 `i=` 重传会
+        // 释放旧图像、清掉它的全部放置，两套自增器各自从 1 起必然互相覆盖。
+        let image_id = self.images.allocate_image_id();
         if let Some(block) = self.blocks.get_mut(entry) {
             block.set_table_chart(
                 table,
@@ -734,6 +753,27 @@ impl App {
                 }),
             );
         }
+    }
+
+    /// 让含指定图片键的工具块失效；返回是否命中。
+    ///
+    /// 图片从「解码中」变成真像素时，只有含它的块需要重渲染。`view_gen` 是全局
+    /// 失效，长会话里会让最近 64 块把所有 markdown 重解析一遍，图片一多就成了
+    /// 肉眼可见的卡顿。markdown 图片的键在渲染期才算出，反查不到，由调用方
+    /// 回落到全局失效。
+    pub fn touch_blocks_with_image(&mut self, key: &crate::render::image::ImageKey) -> bool {
+        let mut hit = false;
+        for entry in &mut self.blocks {
+            let matches = matches!(
+                &entry.block,
+                Block::Tool(tool) if tool.images.iter().any(|image| image.key == *key)
+            );
+            if matches {
+                entry.touch();
+                hit = true;
+            }
+        }
+        hit
     }
 
     pub fn start_generation(&mut self) {

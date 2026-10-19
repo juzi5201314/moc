@@ -173,6 +173,7 @@ impl Entry {
             return;
         };
         tool.status = Some(status);
+        tool.images = ToolImage::from_sources(result.images);
         tool.result = Some(result.content);
         tool.duration_ms = duration_ms;
         tool.diff = diff;
@@ -206,7 +207,7 @@ pub struct TableChartState {
     /// 图表数据（类别、系列、单位、极性）。
     pub spec: moc_core::chart::ChartSpec,
     /// 已编码的图形载荷；`None` = 尚未贴过图。
-    pub payload: Option<std::sync::Arc<crate::render::chart::encode::Payload>>,
+    pub payload: Option<std::sync::Arc<crate::render::graphics::encode::Payload>>,
     /// 载荷对应的像素尺寸；与当前布局不一致即失效。
     pub px: (u32, u32),
     /// kitty 图像 ID（进程内唯一，放置/删除都靠它对齐）。
@@ -259,6 +260,96 @@ pub struct ToolCallBlock {
     pub running: bool,
     /// 运行中工具的进度行（目前只有 `wait_agent` 推送）。
     pub progress: Option<Vec<moc_protocol::methods::ToolProgressRow>>,
+    /// 结果携带的内联图片（含惰性缓存键，渲染期只查表）。
+    pub images: Vec<ToolImage>,
+}
+
+/// 结果图片最多贴几张：再多就不是「看一眼」而是画廊了。
+pub const MAX_TOOL_IMAGES: usize = 4;
+
+/// 工具结果里的一张图片：键在结果落地时算一次，渲染期只做哈希查表。
+#[derive(Debug, Clone)]
+pub struct ToolImage {
+    /// 内容寻址的缓存键。
+    pub key: crate::render::image::ImageKey,
+    /// MIME 类型（`image/png` 等），回落文本时原样显示到终端。
+    ///
+    /// 展示用的这份已过滤控制字符；解码用的是下面那份原样值。
+    pub media_type: std::sync::Arc<str>,
+    /// 协议层给的原始 MIME：参与解码期的格式嗅探，不该被展示层的清洗改写。
+    raw_media_type: std::sync::Arc<str>,
+    /// 不含 `data:` 前缀的 base64 载荷。
+    ///
+    /// 只有真正会显示的前 [`MAX_TOOL_IMAGES`] 张保留：转写块活到会话结束，
+    /// 给一张永远不显示的图留几 MB base64 就是纯占内存。
+    pub data: Option<std::sync::Arc<str>>,
+}
+
+/// 图片的同一性只由缓存键决定：逐字节比 base64 在热路径上毫无意义。
+impl PartialEq for ToolImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for ToolImage {}
+
+impl ToolImage {
+    /// 协议层图片 → 渲染层图片。
+    ///
+    /// 载荷按值接管（不克隆）：调用方拿到的是刚从协议层解析出来的 `Vec`。
+    /// URL 来源对工具结果无意义，直接丢弃。
+    pub fn from_sources(sources: Vec<moc_protocol::ImageSource>) -> Vec<Self> {
+        let mut kept = 0usize;
+        sources
+            .into_iter()
+            .filter_map(|source| {
+                let moc_protocol::ImageSource::Base64 { media_type, data } = source else {
+                    return None;
+                };
+                let key = crate::render::image::ImageKey::from_bytes(&media_type, &data);
+                let keep_payload = kept < MAX_TOOL_IMAGES;
+                if keep_payload {
+                    kept += 1;
+                }
+                Some(Self {
+                    key,
+                    media_type: std::sync::Arc::from(sanitize_media_type(&media_type)),
+                    raw_media_type: std::sync::Arc::from(media_type),
+                    data: keep_payload.then(|| std::sync::Arc::from(data)),
+                })
+            })
+            .collect()
+    }
+
+    /// 仅测试用：绕开 `from_sources`（那里要完整走一遍协议层载荷）。
+    #[cfg(test)]
+    pub fn for_test(
+        key: crate::render::image::ImageKey,
+        media_type: &str,
+        data: Option<&str>,
+    ) -> Self {
+        Self {
+            key,
+            media_type: std::sync::Arc::from(media_type),
+            raw_media_type: std::sync::Arc::from(media_type),
+            data: data.map(std::sync::Arc::from),
+        }
+    }
+
+    /// 解码工厂：交给 `ImageStore`，在后台线程里才真正构造载荷。
+    ///
+    /// 返回 `None` 表示载荷在落地时就被丢弃了（超出显示上限的那几张）。
+    pub fn spec_factory(
+        &self,
+    ) -> Option<impl FnOnce() -> crate::render::image::ImageSourceSpec + Send + 'static> {
+        let data = self.data.clone()?;
+        let media_type = self.raw_media_type.clone();
+        Some(move || crate::render::image::ImageSourceSpec::Base64 {
+            media_type: media_type.as_ref().into(),
+            data: data.as_ref().into(),
+        })
+    }
 }
 
 /// 转写中的一个可渲染块。
@@ -305,9 +396,32 @@ impl ToolCallBlock {
     /// 是否有值得展开的正文：无正文工具成功时只占一行；失败时正文是错误原因，仍可展开。
     pub fn has_body(&self) -> bool {
         tool_body_allowed(&self.name)
+            || !self.images.is_empty()
             || self
                 .status
                 .is_some_and(|status| status != ToolStatus::Completed)
+    }
+}
+
+/// 媒体类型只保留 `type/subtype` 里合法的那部分字符。
+///
+/// 这个字段会被原样写进终端（`[图片 image/png]`），而它来自 MCP / 模型输出；
+/// 一个带 ESC 的字符串就能往终端里注入控制序列。图片正文本身早就是原样渲染的，
+/// 但这一处是新加的写入口，顺手在这里堵住。
+fn sanitize_media_type(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(64));
+    for ch in raw.chars() {
+        if out.len() >= 64 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '+' | '-' | '_') {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() {
+        "image/*".to_owned()
+    } else {
+        out
     }
 }
 

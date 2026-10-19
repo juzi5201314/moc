@@ -16,6 +16,7 @@ syntect = { version = "5.3", default-features = false, features = [
 two-face = "0.5"
 unicode-width = "0.2"
 anyhow.workspace = true
+thiserror.workspace = true
 base64 = "0.22"
 # 消息时间戳按本地时区格式化（`clock` 特性走 iana-time-zone）。
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -30,6 +31,22 @@ ttf-parser.workspace = true
 fontdue.workspace = true
 fontdb.workspace = true
 flate2.workspace = true
+xxhash-rust.workspace = true
+# 通用内联图片：位图解码（PNG/JPEG/GIF/WebP）与 NeuQuant 量化
+image = { version = "0.25.10", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "color_quant",
+] }
+# NeuQuant 量化：`image` 的 `color_quant` 特性只启用 impl，不重导出类型
+color_quant = "1"
+# SVG 代码块的光栅化（自带 usvg / tiny-skia）
+resvg = { version = "0.48.1", default-features = false, features = [
+    "text",
+    "system-fonts",
+] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
 
 # 终端图形能力探测要直接读 fd 0（`#![forbid(unsafe_code)]` 下不能调 libc）：

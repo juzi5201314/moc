@@ -10,8 +10,8 @@
 //! 把 5 个结果登记进画布调色板；每个文本像素只需一次索引写入，调色板规模
 //! 也不会随覆盖率增长。
 
-use super::canvas::Canvas;
 use super::fonts::{Fonts, glyph_advance, missing_box_width};
+use crate::render::canvas::Canvas;
 
 /// 覆盖度分档对应的 alpha：0 档不落墨，其余 4 档参与预混。
 const ALPHAS: [u32; 5] = [0, 64, 128, 192, 255];

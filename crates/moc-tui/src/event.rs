@@ -600,10 +600,13 @@ async fn event_loop(
         if dirty && now >= next_frame {
             // sixel / iTerm2 的旧图只能靠覆盖像素擦除：先清屏并重置 back buffer，
             // 再让 ratatui 完整重画一帧；剩余图表由 emit 整批重放。
-            if app.chart_repaint {
-                app.chart_repaint = false;
-                app.chart_resume = true;
+            if app.image_repaint {
+                app.image_repaint = false;
+                app.image_resume = true;
                 guard.reset_screen()?;
+                // 整屏清空把终端里的图像数据一并作废：下一次放置必须重新传输，
+                // 否则贴上去的是一张终端已经没有的图。
+                app.images.forget_all_transmissions();
             }
             let draw_result = guard
                 .terminal_mut()
@@ -614,7 +617,7 @@ async fn event_loop(
             // 位图只能画在帧之后：先让 ratatui 把文本与底色写完，再按格坐标贴图
             crate::render::graphics::emit(app, &mut std::io::stdout())?;
             // emit 在帧后才发现“上一张图消失了”：立刻再排一帧清屏。
-            if app.chart_repaint {
+            if app.image_repaint {
                 dirty = true;
             }
             if app.history_load_requested {
@@ -778,6 +781,18 @@ async fn event_loop(
                         Ok(notice) => app.set_notice(notice.message),
                         Err(error) => app.set_notice(format!("子代理操作失败：{error}")),
                     },
+                    Some(AppEvent::ImagePrepared { key, result }) => {
+                        app.images.complete(key.clone(), result);
+                        // 只让真正含这张图的块失效：全局 view_gen 会让最近 64 块
+                        // 全部重新解析 markdown，一张图一张图地叠加就是明显卡顿。
+                        if !app.touch_blocks_with_image(&key) {
+                            // markdown 图片的键在渲染期才算出来，无法反查，只能全局失效
+                            app.view_gen = app.view_gen.wrapping_add(1);
+                        }
+                    }
+                    // 编码完成不改变布局（占位行已经按版式留好了），
+                    // 下一次 emit 就能取到载荷；事件本身已经把 dirty 置上了。
+                    Some(AppEvent::ImageEncoded { .. }) => {}
                     Some(AppEvent::PickerError(error)) => {
                         let shown = app
                             .modal

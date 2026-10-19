@@ -133,6 +133,15 @@ pub enum AppEvent {
         result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
     },
     SubagentOperation(anyhow::Result<crate::subagent::AgentOperationNotice>),
+    /// 内联图片解码完成（后台线程 → 主线程）。
+    ImagePrepared {
+        key: crate::render::image::ImageKey,
+        result: Result<crate::render::image::DecodedImage, String>,
+    },
+    /// 内联图片的缩放 / 量化 / 编码完成：本帧错过的那张图下一帧可以贴出来。
+    ImageEncoded {
+        key: crate::render::image::ImageKey,
+    },
 }
 
 /// 剪贴板粘贴载荷：图片以 base64 承载，文本内联。

@@ -4,10 +4,12 @@
 //! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝帮助键提示，右＝模型 · 模式）。
 //! 整帧先铺主题底色，滚动区由 [`ScrollbackView`] 按行缓存直写 buffer。
 
+pub mod canvas;
 pub mod chart;
 pub mod diff;
 pub mod graphics;
 pub mod highlight;
+pub mod image;
 pub mod markdown;
 pub mod modal;
 pub mod scrollback;
@@ -152,7 +154,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.scroll_offset = window.scroll_offset;
     app.mouse_hits.clear();
     app.chart_hits.clear();
-    app.chart_slots.clear();
+    app.image_slots.clear();
     app.paint_lines.clear();
     let collect_lines = app.selection.is_some() || app.pending_click.is_some();
     let hover = app.hover_chart;
@@ -166,7 +168,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
         scrollback::PaintSinks {
             hits: &mut app.mouse_hits,
             charts: &mut app.chart_hits,
-            slots: &mut app.chart_slots,
+            slots: &mut app.image_slots,
             lines: &mut app.paint_lines,
         },
     );

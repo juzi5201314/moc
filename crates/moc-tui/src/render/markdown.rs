@@ -9,13 +9,18 @@
 //! `▾ 隐藏图表` 收起。表格始终保留；入口只在终端支持图形协议时出现。
 
 use moc_core::chart::{self, RawTable};
+use std::path::PathBuf;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use super::PROSE_INDENT;
 use super::graphics::GraphicsSupport;
 use super::highlight;
+use super::image::{
+    ImageKey, ImagePlacement, ImageSourceSpec, ImageState, ImageStore, layout as image_layout,
+};
 use super::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
 use crate::transcript::TableChartState;
@@ -42,27 +47,36 @@ const TABLE_COLUMN_CAP_CEILING: usize = 40;
 
 /// 渲染 markdown 文本为终端行（无表格视图态：表格永远画成表格）。
 pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    render_markdown_with(
-        source,
-        width,
-        theme,
-        TableViews {
-            charts: &[],
-            graphics: None,
-            streaming: false,
-        },
-    )
-    .lines
+    render_markdown_with(source, width, theme, RenderViews::default()).lines
 }
 
-/// 表格视图态：由转写层注入（进程内视图态），渲染层只读。
-pub struct TableViews<'a> {
+/// 渲染期视图态：由转写层注入（进程内视图态），渲染层只读。
+pub struct RenderViews<'a> {
     /// 每张顶层表格的图表态（已切换则 `Some`），下标与渲染顺序一致。
     pub charts: &'a [Option<TableChartState>],
-    /// 终端图形能力；`None` 时表格下不出入口（不支持的终端不该看到死按钮）。
+    /// 终端图形能力；`None` 时表格下不出入口、图片回落文本。
     pub graphics: Option<GraphicsSupport>,
     /// 该块是否仍在流式接收：末尾表格的入口等它落地再出现。
     pub streaming: bool,
+    /// 内联图片缓存；`None` 时不解析图片（表格切换等只读场景）。
+    pub images: Option<&'a ImageStore>,
+    /// 相对路径的基准目录（拼 markdown 里的本地图片路径）。
+    pub cwd: Option<&'a std::path::Path>,
+    /// `false` = 估高路径：只 `peek`，绝不触发解码。
+    pub spawn_images: bool,
+}
+
+impl Default for RenderViews<'_> {
+    fn default() -> Self {
+        Self {
+            charts: &[],
+            graphics: None,
+            streaming: false,
+            images: None,
+            cwd: None,
+            spawn_images: true,
+        }
+    }
 }
 
 /// 一张顶层表格在渲染结果里的落位信息（命中表与图像槽位登记用）。
@@ -101,6 +115,8 @@ pub struct Rendered {
     pub tables: Vec<TableSlot>,
     /// 顶层表格的纯文本快照：供「点击入口时就地分析」复用同一份解析结果。
     pub raw: Vec<RawTable>,
+    /// 位图占位区（markdown 图片与 SVG 代码块），行号是块内局部行。
+    pub images: Vec<ImagePlacement>,
 }
 
 /// 渲染 markdown 文本，并带上表格视图态。
@@ -108,7 +124,7 @@ pub fn render_markdown_with(
     source: &str,
     width: usize,
     theme: &Theme,
-    views: TableViews<'_>,
+    views: RenderViews<'_>,
 ) -> Rendered {
     let mut renderer = MdRenderer {
         theme,
@@ -137,6 +153,8 @@ pub fn render_markdown_with(
         tails: false,
         slots: Vec::new(),
         raw: Vec::new(),
+        images: Vec::new(),
+        image: None,
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -159,15 +177,100 @@ struct ListFrame {
     next_index: u64,
 }
 
+/// 代码块 info 串是否声明了 SVG：首个空白分隔 token，大小写不敏感。
+///
+/// 转写层的廉价预筛也走这个判定，两处必须完全一致——否则懒块的估高会用
+/// 折行近似顶替真实的占位行。
+pub(crate) fn is_svg_fence_info(info: &str) -> bool {
+    info.split_whitespace()
+        .next()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("svg"))
+}
+
+/// `file://` 之后的部分 → 本地路径。
+///
+/// 按 RFC 8089 处理两种写法：`file:///abs/path`（空 host）与
+/// `file://localhost/abs/path`。带其它 host 的是远程文件，本地读不到，直接拒绝。
+/// 百分号编码在这里解开——路径里的空格在 markdown 里就是 `%20`。
+fn file_url_path(rest: &str) -> Option<std::path::PathBuf> {
+    let raw = if rest.starts_with('/') {
+        rest.to_owned()
+    } else {
+        let (host, path) = rest.split_once('/')?;
+        if !host.eq_ignore_ascii_case("localhost") {
+            return None;
+        }
+        format!("/{path}")
+    };
+    Some(std::path::PathBuf::from(percent_decode(&raw)))
+}
+
+/// 解码 `%XX`；非法转义原样保留（宁可找不到文件，也不要静默改路径）。
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+        {
+            out.push(high << 4 | low);
+            index += 3;
+            continue;
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// 本地图片的缓存键：路径 + mtime + 长度。文件被改写就必须重新解码。
+///
+/// 文件不存在 / 不是普通文件 / 超过解码上限时返回 `None`（回落 alt 文本）。
+fn file_key(path: &std::path::Path) -> Option<ImageKey> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > super::image::decode::MAX_FILE_BYTES {
+        return None;
+    }
+    let mtime_ns = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| i128::try_from(elapsed.as_nanos()).ok())
+        .unwrap_or(0);
+    Some(ImageKey::File {
+        path: std::sync::Arc::new(path.to_path_buf()),
+        mtime_ns,
+        len: meta.len(),
+    })
+}
+
 #[derive(Default)]
 struct TableAcc {
     header: Vec<Vec<Run>>,
     rows: Vec<Vec<Vec<Run>>>,
 }
 
+/// 正在累积的图片：`![](dest)` 的链接目标与 alt 文本。
+struct ImageAcc {
+    dest: String,
+    alt: String,
+}
+
 struct MdRenderer<'a> {
     theme: &'a Theme,
-    views: TableViews<'a>,
+    views: RenderViews<'a>,
     width: usize,
     out: Vec<Line<'static>>,
     inline: Vec<Run>,
@@ -199,6 +302,10 @@ struct MdRenderer<'a> {
     slots: Vec<TableSlot>,
     /// 表格纯文本快照，供点击入口时就地分析。
     raw: Vec<RawTable>,
+    /// 图片占位区（块内局部行号）。
+    images: Vec<ImagePlacement>,
+    /// 当前正在累积 alt 文本的图片。
+    image: Option<ImageAcc>,
 }
 
 impl<'a> MdRenderer<'a> {
@@ -207,15 +314,14 @@ impl<'a> MdRenderer<'a> {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
             Event::Text(text) => self.text(&text),
-            Event::Code(code) => {
-                let style = Style::new().fg(self.theme.path).bg(self.theme.code_bg);
-                self.push_run(Run {
-                    style,
-                    text: format!(" {code} "),
-                });
-            }
+            Event::Code(code) => self.code(&code),
             Event::SoftBreak => {
-                if self.in_table_cell {
+                if self.image.is_some() {
+                    // alt 文本里的软换行：图片不显示时就是一段普通文字，给个空格
+                    if let Some(image) = &mut self.image {
+                        image.alt.push(' ');
+                    }
+                } else if self.in_table_cell {
                     self.push_run(Run {
                         style: self.current_style(),
                         text: " ".to_owned(),
@@ -225,7 +331,11 @@ impl<'a> MdRenderer<'a> {
                 }
             }
             Event::HardBreak => {
-                if self.in_table_cell {
+                if self.image.is_some() {
+                    if let Some(image) = &mut self.image {
+                        image.alt.push(' ');
+                    }
+                } else if self.in_table_cell {
                     self.push_run(Run {
                         style: self.current_style(),
                         text: " ".to_owned(),
@@ -345,8 +455,16 @@ impl<'a> MdRenderer<'a> {
             Tag::Strong => self.bold += 1,
             Tag::Strikethrough => self.strike += 1,
             Tag::Link { .. } => self.link_depth += 1,
-            Tag::Image { .. }
-            | Tag::MetadataBlock(_)
+            Tag::Image { dest_url, .. } => {
+                // 先不 flush：能否出图要到 `TagEnd::Image` 才知道。无条件在这里
+                // 结算 inline 会把「请看 ![远端图](https://…) 这个」劈成两行，
+                // 远端图与不存在的本地文件本该原地显示 alt 文本。
+                self.image = Some(ImageAcc {
+                    dest: dest_url.to_string(),
+                    alt: String::new(),
+                });
+            }
+            Tag::MetadataBlock(_)
             | Tag::FootnoteDefinition(_)
             | Tag::DefinitionList
             | Tag::DefinitionListTitle
@@ -408,8 +526,8 @@ impl<'a> MdRenderer<'a> {
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => self.link_depth = self.link_depth.saturating_sub(1),
-            TagEnd::Image
-            | TagEnd::MetadataBlock(_)
+            TagEnd::Image => self.finish_image(),
+            TagEnd::MetadataBlock(_)
             | TagEnd::FootnoteDefinition
             | TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle
@@ -440,8 +558,27 @@ impl<'a> MdRenderer<'a> {
             self.code_buf.push_str(text);
             return;
         }
+        if let Some(image) = &mut self.image {
+            image.alt.push_str(text);
+            return;
+        }
         let style = self.current_style();
         self.push_inline_text(text, style);
+    }
+
+    /// alt 文本里的内联代码：`![a `b` c](x.png)` 的 `` b `` 也要进 alt，
+    /// 否则它会掉进段落正文，在图片本来就不显示时尤其突兀。
+    fn code(&mut self, text: &str) {
+        if let Some(image) = &mut self.image {
+            image.alt.push(' ');
+            image.alt.push_str(text);
+            return;
+        }
+        let style = Style::new().fg(self.theme.path).bg(self.theme.code_bg);
+        self.push_run(Run {
+            style,
+            text: format!(" {text} "),
+        });
     }
 
     /// 逐行压入 inline 片段：事件可能整块携带换行（HTML 块等），换行
@@ -529,6 +666,140 @@ impl<'a> MdRenderer<'a> {
         u16::try_from(self.width).unwrap_or(u16::MAX)
     }
 
+    /// 图片落定：能出图就留占位行，否则回落 alt 文本（改动前的内联行为）。
+    ///
+    /// 只有真正出图时才把前面的正文结算成一行——图片必须独占块，段落在这里
+    /// 被劈开是合理的；画不出图时 alt 直接回到 inline 缓冲，段落保持原样。
+    fn finish_image(&mut self) {
+        let Some(image) = self.image.take() else {
+            return;
+        };
+        if !self.place_image(&image.dest) {
+            let style = self.current_style();
+            self.push_inline_text(&image.alt, style);
+        }
+    }
+
+    /// 为本地图片留出占位行；返回 `false` 表示这一步画不出图。
+    fn place_image(&mut self, dest: &str) -> bool {
+        // 引用块 / 列表 / 表格单元格里的图片不贴：没有独立命中区，宽度也不够
+        if self.quote_depth > 0 || !self.list_stack.is_empty() || self.in_table_cell {
+            return false;
+        }
+        // 终端画不了像素图就别解码：解出来只会回落成 alt 文本，
+        // 白白占几十 MB 解码缓冲与缓存预算。
+        if self.views.graphics.is_none() {
+            return false;
+        }
+        let Some(path) = self.local_path(dest) else {
+            return false;
+        };
+        let Some(key) = file_key(&path) else {
+            return false;
+        };
+        let Some(store) = self.views.images else {
+            return false;
+        };
+        let state = if self.views.spawn_images {
+            let source = path;
+            store.state(&key, move || ImageSourceSpec::File(source))
+        } else {
+            match store.peek(&key) {
+                Some(state) => state,
+                None => return false,
+            }
+        };
+        self.emit_placeholder(&key, state)
+    }
+
+    /// SVG 代码块：整块换成位图占位行（比一屏坐标文本有用得多）。
+    fn place_svg(&mut self, info: &str, code: &str) -> bool {
+        if self.quote_depth > 0 || !self.list_stack.is_empty() {
+            return false;
+        }
+        if !is_svg_fence_info(info) || code.trim().is_empty() {
+            return false;
+        }
+        // 终端画不了像素图就别解码：解出来也只会回落成代码块，
+        // 白白占几十 MB 解码缓冲与缓存预算。
+        if self.views.graphics.is_none() {
+            return false;
+        }
+        let Some(store) = self.views.images else {
+            return false;
+        };
+        let key = ImageKey::from_svg(code);
+        let state = if self.views.spawn_images {
+            let text = code.to_owned().into_boxed_str();
+            store.state(&key, move || ImageSourceSpec::Svg(text))
+        } else {
+            match store.peek(&key) {
+                Some(state) => state,
+                None => return false,
+            }
+        };
+        self.emit_placeholder(&key, state)
+    }
+
+    /// 解码就绪就按版式留空行并登记落位；其余状态返回 `false`（回落文本）。
+    fn emit_placeholder(&mut self, key: &ImageKey, state: ImageState) -> bool {
+        let (ImageState::Ready(prepared), Some(graphics)) = (state, self.views.graphics) else {
+            return false;
+        };
+        let Some(layout) = image_layout(prepared.size(), graphics.cell, self.cols()) else {
+            return false;
+        };
+        self.flush_inline();
+        self.ensure_block_gap();
+        let row = self.out.len();
+        // 占位行只放空格：像素由 `graphics::emit` 在帧后贴上去
+        for _ in 0..layout.rows {
+            self.out.push(Line::from(" ".repeat(self.width)));
+        }
+        self.images.push(ImagePlacement {
+            row,
+            x: u16::try_from(PROSE_INDENT).unwrap_or(0),
+            cols: layout.cols,
+            rows: layout.rows,
+            px: layout.px,
+            key: key.clone(),
+        });
+        self.out.push(Line::from(String::new()));
+        true
+    }
+
+    /// markdown 链接目标 → 本地路径。只认本地文件：`http(s)://` 与 `data:`
+    /// 既不联网也不内联解码（那是另一条信任边界）。
+    ///
+    /// 不限制路径范围：`..`、绝对路径、`~` 都照常解析。图片是给人看的，
+    /// 而会话里的模型本来就有 shell 权限，在这里加目录围栏挡不住任何东西，
+    /// 只会让 `/tmp` 与 `$HOME` 下的合法图片打不开。
+    fn local_path(&self, dest: &str) -> Option<std::path::PathBuf> {
+        let dest = dest.trim();
+        if dest.is_empty() {
+            return None;
+        }
+        let raw = match dest.strip_prefix("file://").or_else(|| {
+            // scheme 大小写不敏感（RFC 3986），`FILE://` 与 `file://` 等价
+            dest.get(..7)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("file://"))
+                .map(|prefix| &dest[prefix.len()..])
+        }) {
+            Some(rest) => file_url_path(rest)?,
+            None if dest.contains("://") => return None,
+            None => PathBuf::from(dest),
+        };
+        let path = match raw.to_str().and_then(|text| text.strip_prefix("~/")) {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+            None => raw,
+        };
+        if path.is_absolute() {
+            Some(path)
+        } else {
+            Some(self.views.cwd?.join(path))
+        }
+    }
+
     /// 表格收尾：表格始终保留；展开图表时在表格下方追加占位区与入口。
     fn finish_table(&mut self, table: TableAcc) {
         if table.header.is_empty() {
@@ -592,7 +863,7 @@ impl<'a> MdRenderer<'a> {
             && self
                 .views
                 .graphics
-                .is_some_and(|graphics| crate::render::chart::cell_supported(graphics.cell));
+                .is_some_and(|graphics| crate::render::graphics::cell_supported(graphics.cell));
         let plannable = fits
             && chart::plan(&chart::analyze(&raw)).is_some_and(|plan| {
                 crate::render::chart::rows_needed(plan.kind, raw.rows.len(), plan.series.len())
@@ -651,10 +922,16 @@ impl<'a> MdRenderer<'a> {
                     .count();
             }
         }
+        // 图片占位区同理：插入行号不大于它的入口都会把它往下推一行
+        let mut images = std::mem::take(&mut self.images);
+        for image in &mut images {
+            image.row += kept.iter().filter(|(_, row, _)| *row <= image.row).count();
+        }
         Rendered {
             lines: self.out,
             tables: self.slots,
             raw: self.raw,
+            images,
         }
     }
 
@@ -742,6 +1019,9 @@ impl<'a> MdRenderer<'a> {
         let info = self.code_info.take().unwrap_or_default();
         let code = std::mem::take(&mut self.code_buf);
         if code.trim().is_empty() && info.is_empty() {
+            return;
+        }
+        if self.place_svg(&info, &code) {
             return;
         }
         let highlighted = highlight::highlight(&info, &code);
@@ -1080,7 +1360,7 @@ mod tests {
         })
     }
 
-    fn render(source: &str, width: usize, views: TableViews<'_>) -> Rendered {
+    fn render(source: &str, width: usize, views: RenderViews<'_>) -> Rendered {
         let theme = Theme::resolved(ColorLevel::TrueColor);
         render_markdown_with(source, width, &theme, views)
     }
@@ -1102,10 +1382,11 @@ mod tests {
         let rendered = render(
             source,
             77,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: None,
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         let raw = &rendered.raw[table];
@@ -1300,10 +1581,11 @@ mod tests {
         let with = render(
             NUMERIC_TABLE,
             80,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: graphics(),
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         assert_eq!(with.tables.len(), 1, "一张顶层表格");
@@ -1317,10 +1599,11 @@ mod tests {
         let without = render(
             NUMERIC_TABLE,
             80,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: None,
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         assert!(without.tables[0].button.is_none(), "无图形能力时不出入口");
@@ -1339,10 +1622,11 @@ mod tests {
         let streamed = render(
             &source,
             80,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: graphics(),
                 streaming: true,
+                ..RenderViews::default()
             },
         );
         assert_eq!(streamed.tables.len(), 2);
@@ -1355,10 +1639,11 @@ mod tests {
         let settled = render(
             &source,
             80,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: graphics(),
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         assert!(settled.tables[1].button.is_some(), "收尾后入口出现");
@@ -1372,10 +1657,11 @@ mod tests {
         let rendered = render(
             NUMERIC_TABLE,
             80,
-            TableViews {
+            RenderViews {
                 charts: &charts,
                 graphics: graphics(),
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         let out = text(&rendered.lines);
@@ -1414,10 +1700,11 @@ mod tests {
         let rendered = render(
             NUMERIC_TABLE,
             200,
-            TableViews {
+            RenderViews {
                 charts: &charts,
                 graphics: graphics(),
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         let slot = rendered.tables[0];
@@ -1436,10 +1723,11 @@ mod tests {
         let rendered = render(
             &source,
             80,
-            TableViews {
+            RenderViews {
                 charts: &charts,
                 graphics: graphics(),
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         assert_eq!(rendered.tables.len(), 2);
@@ -1466,10 +1754,11 @@ mod tests {
         let rendered = render(
             source,
             80,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: None,
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         let raw = &rendered.raw[0];
@@ -1486,15 +1775,263 @@ mod tests {
         let rendered = render(
             &source,
             80,
-            TableViews {
+            RenderViews {
                 charts: &[],
                 graphics: graphics(),
                 streaming: false,
+                ..RenderViews::default()
             },
         );
         assert_eq!(rendered.raw.len(), 1, "只有顶层表格进入快照");
         assert_eq!(rendered.tables.len(), 1);
         assert_eq!(rendered.tables[0].table, 0, "顶层序号从 0 起");
         assert!(rendered.tables[0].button.is_some());
+    }
+
+    /// 落一张图进缓存：解码结果只需要尺寸，位图内容与排版无关。
+    fn ready_store(key: &ImageKey, size: (u32, u32)) -> ImageStore {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let store = ImageStore::new(events);
+        store.complete(
+            key.clone(),
+            Ok(crate::render::image::DecodedImage::Raster(
+                image::RgbaImage::from_pixel(size.0, size.1, image::Rgba([0x10, 0x20, 0x30, 0xff])),
+            )),
+        );
+        store
+    }
+
+    /// 本地图片按格贴出：留出与版式一致的行数，并登记一张落位。
+    #[test]
+    fn local_image_reserves_rows_and_registers_a_placement() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("shot.png");
+        std::fs::write(&path, b"not decoded here").expect("落盘");
+        let key = file_key(&path).expect("文件存在");
+        // 320×180 源图 → 640×360 之外的框里按 720 上限收窄（40 列 × 8px）
+        let store = ready_store(&key, (320, 180));
+        let source = "前文\n\n![](./shot.png)\n\n后文".to_owned();
+        let rendered = render(
+            &source,
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                images: Some(&store),
+                cwd: Some(directory.path()),
+                spawn_images: false,
+            },
+        );
+        let layout = image_layout((320, 180), CellPixels { w: 8, h: 18 }, 80).expect("版式");
+        assert_eq!(rendered.images.len(), 1, "一张图一张落位");
+        let placement = &rendered.images[0];
+        assert_eq!(placement.key, key);
+        assert_eq!((placement.cols, placement.rows), (layout.cols, layout.rows));
+        assert_eq!(placement.x, u16::try_from(PROSE_INDENT).unwrap_or(0));
+        // 占位行确实存在，且与落位行号对齐
+        let lines = text(&rendered.lines);
+        for (offset, line) in lines
+            .iter()
+            .skip(placement.row)
+            .take(usize::from(placement.rows))
+            .enumerate()
+        {
+            assert!(
+                line.trim().is_empty(),
+                "占位行 {} 必须留白：{line:?}",
+                placement.row + offset
+            );
+        }
+        assert!(
+            lines.iter().any(|line| line.contains("后文")),
+            "图片之后的正文照常输出"
+        );
+    }
+
+    /// 文件不存在：回落 alt 文本，不留占位行（改动前的内联行为）。
+    #[test]
+    fn missing_image_falls_back_to_alt_text() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let store = ImageStore::new(events);
+        let rendered = render(
+            "![](./nope.png) 说明",
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                images: Some(&store),
+                cwd: Some(directory.path()),
+                spawn_images: false,
+            },
+        );
+        assert!(rendered.images.is_empty());
+        assert!(
+            text(&rendered.lines)
+                .iter()
+                .any(|line| line.contains("说明"))
+        );
+    }
+
+    /// 回归：画不出图的图片不该把段落劈成两行。
+    ///
+    /// 远端图、不存在的本地文件都走 alt 文本；改动前 `Tag::Image` 无条件
+    /// 结算 inline 缓冲，连「永远不会显示」的图片也会把句子截断。
+    #[test]
+    fn non_renderable_image_keeps_the_paragraph_inline() {
+        let rendered = render(
+            "请看 ![远端图](https://example.com/a.png) 这个",
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                ..RenderViews::default()
+            },
+        );
+        let lines = text(&rendered.lines);
+        assert_eq!(lines.len(), 1, "段落被劈开了：{lines:?}");
+        assert!(lines[0].contains("请看"));
+        assert!(lines[0].contains("远端图"));
+        assert!(lines[0].contains("这个"));
+    }
+
+    /// `file://` 的 host 段与百分号编码。
+    #[test]
+    fn file_url_path_handles_host_and_escapes() {
+        assert_eq!(
+            file_url_path("/tmp/a%20b.png").expect("空 host"),
+            PathBuf::from("/tmp/a b.png"),
+            "百分号编码要解开"
+        );
+        assert_eq!(
+            file_url_path("localhost/tmp/a.png").expect("localhost"),
+            PathBuf::from("/tmp/a.png"),
+            "localhost 视作本机"
+        );
+        assert!(
+            file_url_path("example.com/tmp/a.png").is_none(),
+            "远程 host 拒绝"
+        );
+        // 非法转义原样保留：宁可找不到文件，也不静默改路径
+        assert_eq!(percent_decode("a%2"), "a%2");
+        assert_eq!(percent_decode("a%zz"), "a%zz");
+    }
+
+    /// 远端链接不联网、不渲染：只留 alt 文本。
+    #[test]
+    fn remote_images_never_render() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let store = ImageStore::new(events);
+        let rendered = render(
+            "![远端图](https://example.com/a.png)",
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                images: Some(&store),
+                cwd: Some(directory.path()),
+                spawn_images: true,
+            },
+        );
+        assert!(rendered.images.is_empty());
+        assert!(
+            text(&rendered.lines)
+                .iter()
+                .any(|line| line.contains("远端图"))
+        );
+    }
+
+    /// 引用块与列表里的图片不贴：没有独立命中区，宽度也不够。
+    #[test]
+    fn images_inside_containers_stay_textual() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let path = directory.path().join("shot.png");
+        std::fs::write(&path, b"x").expect("落盘");
+        let key = file_key(&path).expect("文件存在");
+        let store = ready_store(&key, (64, 36));
+        let source = "> ![](./shot.png)\n\n- ![](./shot.png)\n".to_owned();
+        let rendered = render(
+            &source,
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                images: Some(&store),
+                cwd: Some(directory.path()),
+                spawn_images: false,
+            },
+        );
+        assert!(rendered.images.is_empty(), "容器内不贴图");
+    }
+
+    /// SVG 代码块整块换成位图：就绪时不留一行代码。
+    #[test]
+    fn svg_fence_is_replaced_by_a_placeholder() {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"120\"><rect width=\"200\" height=\"120\" fill=\"#3b82f6\"/></svg>";
+        let source = format!("```svg\n{svg}\n```");
+        let key = ImageKey::from_svg(&format!("{svg}\n"));
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let store = ImageStore::new(events);
+        store.complete(
+            key,
+            Ok(
+                crate::render::image::decode::decode(crate::render::image::ImageSourceSpec::Svg(
+                    format!("{svg}\n").into_boxed_str(),
+                ))
+                .expect("SVG 可解析"),
+            ),
+        );
+        let rendered = render(
+            &source,
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                images: Some(&store),
+                cwd: None,
+                spawn_images: false,
+            },
+        );
+        assert_eq!(rendered.images.len(), 1, "一张 SVG 落位");
+        assert!(
+            !text(&rendered.lines)
+                .iter()
+                .any(|line| line.contains("<svg") || line.contains("rect")),
+            "就绪时不再输出代码行"
+        );
+    }
+
+    /// 还没解码完就照常出代码块，解码完成后自动换成像素图。
+    #[test]
+    fn pending_svg_falls_back_to_the_code_block() {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"10\"><rect width=\"20\" height=\"10\" fill=\"#000\"/></svg>";
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let store = ImageStore::new(events);
+        let rendered = render(
+            &format!("```svg\n{svg}\n```"),
+            80,
+            RenderViews {
+                charts: &[],
+                graphics: graphics(),
+                streaming: false,
+                images: Some(&store),
+                cwd: None,
+                spawn_images: false,
+            },
+        );
+        assert!(rendered.images.is_empty());
+        assert!(
+            text(&rendered.lines)
+                .iter()
+                .any(|line| line.contains("<svg")),
+            "未就绪时保留代码块"
+        );
     }
 }

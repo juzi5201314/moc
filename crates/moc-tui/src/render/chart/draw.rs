@@ -13,9 +13,9 @@
 use moc_core::chart::{ChartKind, ChartSpec, Point, Polarity, Series};
 
 use super::ChartLayout;
-use super::canvas::Canvas;
 use super::fonts::Fonts;
 use super::text;
+use crate::render::canvas::Canvas;
 use crate::theme::RawPalette;
 
 /// 左右留白（像素）。
