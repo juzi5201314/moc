@@ -1540,6 +1540,8 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             .and_then(|questions| questions.first())
             .and_then(|question| question.get("question"))
             .and_then(Value::as_str)
+            // 摘要只占一行：问题正文可含换行，取首行避免控制字符在标题里粘连。
+            .and_then(|text| text.lines().next())
             .unwrap_or_default()
             .to_owned(),
         "job" | "write_plan" | "exit_plan" => String::new(),
@@ -2284,7 +2286,7 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
     }
 
-    /// ask 的标题摘要取首问的 question 字段，而不是根上不存在的 question。
+    /// ask 的标题摘要取首问 question 的首行，而不是根上不存在的 question。
     #[test]
     fn ask_tool_summary_names_the_first_question() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -2293,7 +2295,7 @@ mod tests {
             id: "call_ask".into(),
             name: "ask".into(),
             parent_id: None,
-            arguments: r#"{"questions":[{"id":"q1","question":"先修哪个缺陷？","options":[{"label":"A"},{"label":"B"}]},{"id":"q2","question":"第二个问题","options":[{"label":"A"},{"label":"B"}]}]}"#.into(),
+            arguments: r#"{"questions":[{"id":"q1","question":"先修哪个缺陷？\n补充说明不应出现在摘要","options":[{"label":"A"},{"label":"B"}]},{"id":"q2","question":"第二个问题","options":[{"label":"A"},{"label":"B"}]}]}"#.into(),
         });
 
         let lines = render_entry(0, &app.blocks[0], &app, 80, true).lines;
@@ -2304,6 +2306,7 @@ mod tests {
             .collect::<String>();
         assert!(title.contains("ask"), "标题行应带工具名：{title}");
         assert!(title.contains("先修哪个缺陷？"), "摘要应取首问：{title}");
+        assert!(!title.contains("补充说明"), "摘要只取问题首行：{title}");
         assert!(!title.contains("第二个问题"), "摘要不展开其余问题：{title}");
     }
 
