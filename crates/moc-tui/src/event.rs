@@ -27,7 +27,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::app::{App, ChartHit, CtrlCPending, Focus, MODES};
 use crate::input::{InputEvent, InputThread};
-use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal};
+use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, SessionScope};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
 use crate::render;
 use crate::terminal::TerminalGuard;
@@ -151,8 +151,10 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
         )>,
     > = async {
         let config = client.call::<ConfigGet>(ConfigGetParams {}).await?;
+        // core 的 cwd 已规范化，会话 header 里存的也是同一形式；用它比较才不受
+        // `--cwd` 的相对路径或符号链接影响。
+        app.startup_cwd = config.cwd.clone();
         app.models = config.models;
-        app.startup_cwd = opts.cwd.clone().unwrap_or(config.cwd);
         if config.default_model.is_none() && opts.model.is_none() {
             app.set_notice("首次启动：请添加供应商并选择至少一个模型");
             return Ok(None);
@@ -174,10 +176,9 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                     Some(id) => id.clone(),
                     None => {
                         let list = client.call::<SessionList>(SessionListParams {}).await?;
-                        let cwd = opts.cwd.as_deref().unwrap_or_default();
                         list.sessions
                             .into_iter()
-                            .find(|session| session.cwd == cwd)
+                            .find(|session| session.cwd == config.cwd)
                             .map(|session| session.id)
                             .context("当前目录没有可恢复的会话")?
                     }
@@ -743,6 +744,8 @@ async fn event_loop(
                     Some(AppEvent::Sessions(sessions)) => {
                         app.modal = Some(Modal::Sessions {
                             sessions,
+                            cwd: app.startup_cwd.clone(),
+                            scope: SessionScope::default(),
                             picker: crate::modal::PickerState::default(),
                         });
                     }
@@ -2423,13 +2426,23 @@ fn handle_modal_key(
             }
             _ => {}
         },
-        Modal::Sessions { sessions, picker } => {
-            let filtered = crate::modal::filtered_sessions(sessions, &picker.query);
+        Modal::Sessions {
+            sessions,
+            cwd,
+            scope,
+            picker,
+        } => {
+            let filtered = crate::modal::filtered_sessions(sessions, &picker.query, *scope, cwd);
             match (code, modifiers) {
                 (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
                 (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
                 (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
                 (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
+                (KeyCode::Tab, _) => {
+                    *scope = scope.toggled();
+                    picker.selected = 0;
+                    picker.offset = 0;
+                }
                 (KeyCode::Home, _) => {
                     picker.selected = 0;
                     picker.offset = 0;

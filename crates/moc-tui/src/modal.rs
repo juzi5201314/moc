@@ -760,6 +760,24 @@ impl ContextContentState {
     }
 }
 
+/// 会话恢复列表的范围：默认只看当前目录，`Tab` 切到全部目录。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionScope {
+    #[default]
+    Folder,
+    All,
+}
+
+impl SessionScope {
+    /// 在「当前目录」与「全部目录」之间切换。
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Folder => Self::All,
+            Self::All => Self::Folder,
+        }
+    }
+}
+
 /// 打开的模态。
 pub enum Modal {
     /// 工具授权：展示 diff 预览（若有）与选项列表。
@@ -811,6 +829,9 @@ pub enum Modal {
     /// 会话恢复（`session/list` + `session/load`）。
     Sessions {
         sessions: Vec<SessionInfo>,
+        /// 当前目录；`SessionScope::Folder` 只列与它一致的会话。
+        cwd: String,
+        scope: SessionScope,
         picker: PickerState,
     },
     /// 当前会话的子代理列表。
@@ -869,7 +890,10 @@ impl Modal {
                 format!("{}{}", if *dirty { "* " } else { "" }, uri)
             }
             Modal::Rewind { .. } => "消息回退".into(),
-            Modal::Sessions { .. } => "恢复会话".into(),
+            Modal::Sessions { scope, .. } => match scope {
+                SessionScope::Folder => "恢复会话（当前目录）".into(),
+                SessionScope::All => "恢复会话（全部目录）".into(),
+            },
             Modal::Subagents { .. } => "子代理".into(),
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help => "快捷键帮助".into(),
@@ -906,9 +930,12 @@ impl Modal {
                 .count(),
             Modal::MemoryEditor { .. } => 0,
             Modal::Rewind { .. } => 0,
-            Modal::Sessions { picker, sessions } => {
-                filtered_sessions(sessions, &picker.query).len()
-            }
+            Modal::Sessions {
+                picker,
+                sessions,
+                cwd,
+                scope,
+            } => filtered_sessions(sessions, &picker.query, *scope, cwd).len(),
             Modal::Subagents { picker, agents } => agents
                 .iter()
                 .filter(|agent| {
@@ -1050,11 +1077,14 @@ pub fn filtered_entries<'a>(
 pub fn filtered_sessions<'a>(
     sessions: &'a [SessionInfo],
     query: &str,
+    scope: SessionScope,
+    cwd: &str,
 ) -> Vec<(usize, &'a SessionInfo)> {
     let query = query.to_lowercase();
     sessions
         .iter()
         .enumerate()
+        .filter(|(_, session)| scope == SessionScope::All || session.cwd == cwd)
         .filter(|(_, session)| {
             query.is_empty()
                 || session.title.to_lowercase().contains(&query)

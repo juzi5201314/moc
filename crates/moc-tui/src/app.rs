@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 /// tok/s 滑动窗口长度。
 pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
-use crate::modal::Modal;
+use crate::modal::{Modal, SessionScope};
 use crate::protocol::AppEvent;
 use crate::theme::Theme;
 use crate::transcript::{
@@ -988,6 +988,8 @@ impl App {
     pub fn open_session_picker(&mut self) {
         self.modal = Some(Modal::Sessions {
             sessions: Vec::new(),
+            cwd: self.startup_cwd.clone(),
+            scope: SessionScope::default(),
             picker: crate::modal::PickerState {
                 loading: true,
                 ..Default::default()

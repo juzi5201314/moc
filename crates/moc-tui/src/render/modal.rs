@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 
 use crate::app::App;
-use crate::modal::Modal;
+use crate::modal::{Modal, SessionScope};
 use crate::render::context_content;
 use crate::render::wrap::str_width;
 use crate::theme::Theme;
@@ -1238,8 +1238,13 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             }
             lines
         }
-        Modal::Sessions { sessions, picker } => {
-            let filtered = crate::modal::filtered_sessions(sessions, &picker.query);
+        Modal::Sessions {
+            sessions,
+            cwd,
+            scope,
+            picker,
+        } => {
+            let filtered = crate::modal::filtered_sessions(sessions, &picker.query, *scope, cwd);
             let visible = max_lines.saturating_sub(4).max(1);
             let offset = picker.offset.min(filtered.len().saturating_sub(visible));
             let mut lines = vec![Line::from(Span::styled(
@@ -1268,10 +1273,13 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     Style::new().fg(theme.gray_dim),
                 )));
             } else if filtered.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "没有匹配的会话",
-                    Style::new().fg(theme.gray),
-                )));
+                // 搜索无结果与目录为空要分开说：后者才值得引导切范围。
+                let hint = if picker.query.is_empty() && *scope == SessionScope::Folder {
+                    "当前目录没有会话 · Tab 查看全部"
+                } else {
+                    "没有匹配的会话"
+                };
+                lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.gray))));
             } else {
                 for (index, (_, session)) in filtered.iter().skip(offset).take(visible).enumerate()
                 {
@@ -1285,7 +1293,9 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     if let Some(source) = crate::modal::fork_source_label(sessions, session) {
                         text.push_str(&format!("  ← {source}"));
                     }
-                    text.push_str(&format!("  {}", ellipsize(&session.cwd, width / 2),));
+                    if *scope == SessionScope::All {
+                        text.push_str(&format!("  {}", ellipsize(&session.cwd, width / 2)));
+                    }
                     lines.push(Line::from(Span::styled(
                         ellipsize(&text, width),
                         if actual == picker.selected {
@@ -1300,7 +1310,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }
             }
             lines.push(Line::from(Span::styled(
-                "↑↓ 移动 · PgUp/PgDn 翻页 · 输入搜索 · Enter 恢复 · Esc 关闭",
+                "↑↓ 移动 · PgUp/PgDn 翻页 · Tab 切换范围 · 输入搜索 · Enter 恢复 · Esc 关闭",
                 Style::new().fg(theme.gray_dim),
             )));
             lines
@@ -1848,7 +1858,7 @@ mod tests {
     use super::modal_lines;
     use crate::{
         app::App,
-        modal::{Modal, PickerState},
+        modal::{Modal, PickerState, SessionScope},
         theme::Theme,
     };
     use moc_protocol::methods::{
@@ -2152,12 +2162,13 @@ mod tests {
         );
     }
 
-    /// 恢复会话列表：分叉会话标注来源，来源已不在列表时退回短 id，普通会话不带标注。
+    /// 恢复会话列表：默认只看当前目录且行尾不带目录；分叉来源始终标注，
+    /// 来源已不在列表时退回短 id。切到全部目录后行尾才显示 cwd。
     #[test]
-    fn session_picker_marks_fork_provenance() {
+    fn session_picker_scopes_to_current_folder_and_marks_fork_provenance() {
         let (events, _receiver) = unbounded_channel();
         let app = App::new(Theme::global(), events);
-        let session = |id: &str, title: &str, forked_from: Option<&str>| SessionInfo {
+        let session = |id: &str, title: &str, cwd: &str, forked_from: Option<&str>| SessionInfo {
             id: id.into(),
             title: title.into(),
             model: "p/model".into(),
@@ -2165,20 +2176,80 @@ mod tests {
             mode: SessionMode::Normal,
             parent_session_id: None,
             forked_from: forked_from.map(str::to_owned),
-            cwd: "/tmp/project".into(),
+            cwd: cwd.into(),
             created_at_ms: 1,
             updated_at_ms: 2,
             lock: None,
         };
-        let modal = Modal::Sessions {
-            sessions: vec![
-                session("ses_plain0000001", "原会话", None),
-                session("ses_fork00000001", "回退：原会话", Some("ses_plain0000001")),
-                session("ses_orphan0000001", "孤儿分叉", Some("ses_gone00000001")),
-            ],
-            picker: PickerState::default(),
+        let rows = |scope| -> Vec<String> {
+            let modal = Modal::Sessions {
+                sessions: vec![
+                    session("ses_plain0000001", "原会话", "/tmp/project", None),
+                    session(
+                        "ses_fork00000001",
+                        "回退：原会话",
+                        "/tmp/project",
+                        Some("ses_plain0000001"),
+                    ),
+                    session(
+                        "ses_orphan0000001",
+                        "孤儿分叉",
+                        "/tmp/other",
+                        Some("ses_gone00000001"),
+                    ),
+                ],
+                cwd: "/tmp/project".into(),
+                scope,
+                picker: PickerState::default(),
+            };
+            modal_lines(&app, &modal, 80, 20)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect()
+                })
+                .collect()
+        };
+        let row = |rows: &[String], needle: &str| {
+            rows.iter()
+                .find(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("缺少 {needle} 行：{rows:?}"))
+                .clone()
         };
 
+        let folder = rows(SessionScope::Folder);
+        assert_eq!(row(&folder, "回退：原会话"), "  回退：原会话  ← 原会话");
+        assert!(
+            !folder.iter().any(|row| row.contains("孤儿分叉")),
+            "当前目录范围不得出现其它目录的会话：{folder:?}"
+        );
+        assert_eq!(row(&folder, "原会话"), "❯ 原会话");
+
+        let all = rows(SessionScope::All);
+        assert_eq!(
+            row(&all, "回退：原会话"),
+            "  回退：原会话  ← 原会话  /tmp/project"
+        );
+        assert_eq!(
+            row(&all, "孤儿分叉"),
+            "  孤儿分叉  ← ses_gone00000001  /tmp/other"
+        );
+        assert_eq!(row(&all, "原会话"), "❯ 原会话  /tmp/project");
+    }
+
+    /// 当前目录没有会话时给出切到全部目录的提示，而不是笼统的「没有匹配」。
+    #[test]
+    fn session_picker_hints_tab_when_current_folder_is_empty() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let modal = Modal::Sessions {
+            sessions: Vec::new(),
+            cwd: "/tmp/project".into(),
+            scope: SessionScope::Folder,
+            picker: PickerState::default(),
+        };
         let rows: Vec<String> = modal_lines(&app, &modal, 80, 20)
             .iter()
             .map(|line| {
@@ -2188,21 +2259,16 @@ mod tests {
                     .collect()
             })
             .collect();
-        let row = |needle: &str| {
+        assert_eq!(modal.title(), "恢复会话（当前目录）");
+        assert!(
             rows.iter()
-                .find(|row| row.contains(needle))
-                .unwrap_or_else(|| panic!("缺少 {needle} 行：{rows:?}"))
-                .clone()
-        };
-        assert_eq!(
-            row("回退：原会话"),
-            "  回退：原会话  ← 原会话  /tmp/project"
+                .any(|row| row.contains("当前目录没有会话 · Tab 查看全部")),
+            "{rows:?}"
         );
-        assert_eq!(
-            row("孤儿分叉"),
-            "  孤儿分叉  ← ses_gone00000001  /tmp/project"
+        assert!(
+            rows.iter().any(|row| row.contains("Tab 切换范围")),
+            "页脚应提示 Tab 的范围切换：{rows:?}"
         );
-        assert_eq!(row("原会话"), "❯ 原会话  /tmp/project");
     }
 
     /// 上下文窗：分块名用英文、数值统一为 k，色标与色条同色，色条按窗口定标。
