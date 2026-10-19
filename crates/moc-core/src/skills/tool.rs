@@ -21,7 +21,7 @@ impl Tool for SkillTool {
         "skill"
     }
     fn description(&self) -> &str {
-        "Load a skill named in the `<skills>` catalog; the result carries its SKILL.md body and resource list."
+        "Load a skill named in the `<skills>` catalog; the result carries its SKILL.md body, resource list, and the real skill directory (`dir`) for bundled scripts/assets."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -105,9 +105,10 @@ async fn load_skill_text(
     let parsed = super::frontmatter::parse(&text)
         .map_err(|error| ToolError::new("E_SKILL", error.to_string()))?;
     let mut output = format!(
-        "<skill_content name=\"{}\" base=\"skill://{}\">\n{}\n</skill_content>",
+        "<skill_content name=\"{}\" base=\"skill://{}\" dir=\"{}\">\n{}\n</skill_content>",
         skill.name,
         skill.name,
+        escape_attr(&skill.base_dir.to_string_lossy()),
         parsed.body.trim()
     );
     let resources = list_resources(&skill.base_dir)
@@ -123,6 +124,22 @@ async fn load_skill_text(
     loaded.write().insert(skill.name.clone());
     Ok(ToolOutcome::success(output))
 }
+
+/// 把自由文本转义成 XML 双引号属性值；skill 目录可能含 `&`、引号等字符。
+fn escape_attr(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// 列出 skill 目录一级条目（SKILL.md 本体除外），按名称排序。
 fn list_resources(base_dir: &std::path::Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(base_dir) else {
@@ -169,9 +186,10 @@ pub fn render_for_invocation(
         )
     };
     Ok(format!(
-        "<skill_content name=\"{}\" base=\"skill://{}\">\n{}\n</skill_content>{resources}",
+        "<skill_content name=\"{}\" base=\"skill://{}\" dir=\"{}\">\n{}\n</skill_content>{resources}",
         skill.name,
         skill.name,
+        escape_attr(&skill.base_dir.to_string_lossy()),
         parsed.body.trim()
     ))
 }
@@ -229,13 +247,22 @@ mod tests {
             "---\nname: demo\ndescription: 演示\n---\n# 步骤\n照做。",
         )
         .unwrap();
-        load_skill_text(&skill, &loaded).await.unwrap();
+        let first = load_skill_text(&skill, &loaded).await.unwrap();
+        let ToolOutput::Text(first_text) = &first.content else {
+            panic!("首次加载返回文本");
+        };
+        assert!(first_text.contains(&format!("dir=\"{}\"", escape_attr(&base.to_string_lossy()))));
         assert!(loaded.read().contains("demo"));
         let again = load_skill_text(&skill, &loaded).await.unwrap();
         let ToolOutput::Text(text) = &again.content else {
             panic!("重复加载返回文本提示");
         };
         assert!(text.contains("already loaded"));
+    }
+
+    #[test]
+    fn attribute_values_escape_xml_specials() {
+        assert_eq!(escape_attr(r#"a&b"c<d>"#), "a&amp;b&quot;c&lt;d&gt;");
     }
 
     #[test]
@@ -274,6 +301,10 @@ mod tests {
         let mut loaded: LoadedSkills = HashSet::new();
         let rendered = render_for_invocation(&index, "demo", &mut loaded).unwrap();
         assert!(rendered.starts_with("<skill_content name=\"demo\""));
+        assert!(rendered.contains(&format!(
+            "dir=\"{}\"",
+            escape_attr(&dir.path().join("demo").to_string_lossy())
+        )));
         assert!(rendered.contains("# 步骤"));
         assert!(!rendered.contains("description: 演示"));
         assert!(loaded.contains("demo"));
