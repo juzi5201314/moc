@@ -104,6 +104,10 @@ pub struct App {
     pub mode_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
     pub plan_model_area: Rect,
+    /// 消息回退时间线区域（鼠标滚动/点击换算用）。
+    pub rewind_timeline_area: Rect,
+    /// 消息回退详情区域（鼠标滚动换算用）。
+    pub rewind_detail_area: Rect,
     /// 就地模式菜单；`None` = 关闭。
     pub mode_menu: Option<ModeMenu>,
     /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
@@ -330,6 +334,8 @@ impl App {
             context_area: Rect::default(),
             mode_area: Rect::default(),
             plan_model_area: Rect::default(),
+            rewind_timeline_area: Rect::default(),
+            rewind_detail_area: Rect::default(),
             mode_menu: None,
             transient_mode: None,
             context_usage: None,

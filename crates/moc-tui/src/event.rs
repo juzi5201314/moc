@@ -933,6 +933,10 @@ fn handle_mouse_with_connection(
             handle_context_content_mouse(app, mouse);
             return;
         }
+        if matches!(app.modal, Some(Modal::Rewind { .. })) {
+            handle_rewind_mouse(app, mouse);
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && app
                 .plan_model_area
@@ -1047,6 +1051,56 @@ fn handle_context_content_mouse(app: &mut App, mouse: crossterm::event::MouseEve
             }
         }
         MouseEventKind::Up(MouseButton::Left) => state.drag = None,
+        _ => {}
+    }
+}
+
+/// 消息回退视图的鼠标处理：滚动时间线列表或详情预览、点击直接选择时间线节点。
+fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let timeline_area = app.rewind_timeline_area;
+    let detail_area = app.rewind_detail_area;
+    let Some(Modal::Rewind { state }) = app.modal.as_mut() else {
+        return;
+    };
+    let pos = (mouse.column, mouse.row).into();
+    let in_detail = detail_area.contains(pos);
+    let in_timeline = timeline_area.contains(pos);
+
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            if in_detail {
+                state.scroll_detail(-3);
+            } else {
+                state.step(-1);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if in_detail {
+                state.scroll_detail(3);
+            } else {
+                state.step(1);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if in_timeline && timeline_area.height > 2 {
+                let inner_y = timeline_area.y + 1;
+                if mouse.row >= inner_y {
+                    let rel_row = (mouse.row - inner_y) as usize;
+                    let item_height = if timeline_area.height.saturating_sub(2) >= 14 {
+                        2
+                    } else {
+                        1
+                    };
+                    let item_click = rel_row / item_height + state.list_scroll;
+                    let matches = state.filtered_indices();
+                    if item_click < matches.len() {
+                        state.selected = matches[item_click];
+                        state.sync_prompt_item_from_selected();
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -1926,42 +1980,107 @@ fn handle_modal_key(
                 _ => {}
             }
         }
-        Modal::Rewind { state } => match (code, modifiers) {
-            (KeyCode::Up, _) => state.move_vertical(-1),
-            (KeyCode::Down, _) => state.move_vertical(1),
-            (KeyCode::Left, _) => state.move_horizontal(-1),
-            (KeyCode::Right, _) => state.move_horizontal(1),
-            (KeyCode::Enter, KeyModifiers::NONE) => {
-                if state.loading {
-                    return;
+        Modal::Rewind { state } => {
+            if state.filtering {
+                match (code, modifiers) {
+                    (KeyCode::Esc, _) => {
+                        if state.query.is_empty() {
+                            state.filtering = false;
+                        } else {
+                            state.clear_filter();
+                        }
+                    }
+                    (KeyCode::Backspace, _) => {
+                        state.backspace();
+                    }
+                    (KeyCode::Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        state.input_char(c);
+                    }
+                    (KeyCode::Up, _) => state.step(-1),
+                    (KeyCode::Down, _) => state.step(1),
+                    (KeyCode::Left, _) => state.jump_user(-1),
+                    (KeyCode::Right, _) => state.jump_user(1),
+                    (KeyCode::PageUp, _) => state.scroll_detail(-6),
+                    (KeyCode::PageDown, _) => state.scroll_detail(6),
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if !state.loading {
+                            let Some(selected) = state.selected().cloned() else {
+                                state.error = Some("当前会话没有可回退的消息".into());
+                                return;
+                            };
+                            let Some(session_id) = session_id.clone() else {
+                                state.error = Some("当前没有活动会话".into());
+                                return;
+                            };
+                            state.loading = true;
+                            state.error = None;
+                            let client = connection.client.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = client
+                                    .call::<SessionRewind>(SessionRewindParams {
+                                        session_id,
+                                        entry_id: selected.id.clone(),
+                                    })
+                                    .await
+                                    .map_err(anyhow::Error::from);
+                                let _ = events.send(AppEvent::Rewound { selected, result });
+                            });
+                        }
+                    }
+                    _ => {}
                 }
-                let Some(selected) = state.selected().cloned() else {
-                    state.error = Some("当前会话没有可回退的消息".into());
-                    return;
-                };
-                let Some(session_id) = session_id.clone() else {
-                    state.error = Some("当前没有活动会话".into());
-                    return;
-                };
-                state.loading = true;
-                state.error = None;
-                let client = connection.client.clone();
-                let events = events.clone();
-                tokio::spawn(async move {
-                    let result = client
-                        .call::<SessionRewind>(SessionRewindParams {
-                            session_id,
-                            entry_id: selected.id.clone(),
-                        })
-                        .await
-                        .map_err(anyhow::Error::from);
-                    let _ = events.send(AppEvent::Rewound { selected, result });
-                });
+            } else {
+                match (code, modifiers) {
+                    (KeyCode::Up, _) | (KeyCode::Char('k' | 'K'), KeyModifiers::NONE) => {
+                        state.step(-1);
+                    }
+                    (KeyCode::Down, _) | (KeyCode::Char('j' | 'J'), KeyModifiers::NONE) => {
+                        state.step(1);
+                    }
+                    (KeyCode::Left, _) | (KeyCode::Char('h' | 'H'), KeyModifiers::NONE) => {
+                        state.jump_user(-1);
+                    }
+                    (KeyCode::Right, _) | (KeyCode::Char('l' | 'L'), KeyModifiers::NONE) => {
+                        state.jump_user(1);
+                    }
+                    (KeyCode::Char('f' | 'F' | '/'), KeyModifiers::NONE) => {
+                        state.start_filter();
+                    }
+                    (KeyCode::PageUp, _) => state.scroll_detail(-6),
+                    (KeyCode::PageDown, _) => state.scroll_detail(6),
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        if !state.loading {
+                            let Some(selected) = state.selected().cloned() else {
+                                state.error = Some("当前会话没有可回退的消息".into());
+                                return;
+                            };
+                            let Some(session_id) = session_id.clone() else {
+                                state.error = Some("当前没有活动会话".into());
+                                return;
+                            };
+                            state.loading = true;
+                            state.error = None;
+                            let client = connection.client.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = client
+                                    .call::<SessionRewind>(SessionRewindParams {
+                                        session_id,
+                                        entry_id: selected.id.clone(),
+                                    })
+                                    .await
+                                    .map_err(anyhow::Error::from);
+                                let _ = events.send(AppEvent::Rewound { selected, result });
+                            });
+                        }
+                    }
+                    (KeyCode::Esc, _) if state.loading && !state.items.is_empty() => {}
+                    (KeyCode::Esc, _) => close = true,
+                    _ => {}
+                }
             }
-            (KeyCode::Esc, _) if state.loading && !state.prompts.is_empty() => {}
-            (KeyCode::Esc, _) => close = true,
-            _ => {}
-        },
+        }
         Modal::Model {
             entries,
             picker,

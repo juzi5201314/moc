@@ -195,13 +195,53 @@ impl PickerState {
         self.offset = self.offset.min(count.saturating_sub(page));
     }
 }
-/// 消息回退选择器状态；每个用户消息是一列，列内按 transcript 顺序上下移动。
+/// 单个回退目标条目（Turn / Entry）
+#[derive(Debug, Clone)]
+pub struct RewindItem {
+    pub entry_id: String,
+    pub role: Role,
+    pub is_user: bool,
+    pub at_ms: u64,
+    pub preview: String,
+    pub full_text: String,
+    pub tool_calls: Vec<String>,
+    pub prompt_index: usize,
+    pub item_index: usize,
+    pub entry: TranscriptEntry,
+}
+
+impl RewindItem {
+    pub fn role_label(&self) -> &'static str {
+        match self.role {
+            Role::User => "用户提问",
+            Role::Assistant => "模型回复",
+            Role::Tool => "工具结果",
+            Role::System | Role::Developer => "系统消息",
+        }
+    }
+}
+
+/// 消息回退选择器状态；支持 omp 风格的线性时间线、提问快速跳转与关键词搜索过滤。
+#[derive(Debug, Clone)]
 pub struct RewindState {
     pub prompts: Vec<Vec<TranscriptEntry>>,
     pub selected_prompt: usize,
     pub selected_item: usize,
     pub loading: bool,
     pub error: Option<String>,
+
+    /// 扁平化的时间线目标序列
+    pub items: Vec<RewindItem>,
+    /// 当前在 items 中的选中项下标
+    pub selected: usize,
+    /// 是否处于搜索过滤态
+    pub filtering: bool,
+    /// 搜索过滤关键词
+    pub query: String,
+    /// 列表滚动偏移
+    pub list_scroll: usize,
+    /// 详情预览滚动偏移
+    pub detail_scroll: usize,
 }
 
 impl Default for RewindState {
@@ -212,6 +252,12 @@ impl Default for RewindState {
             selected_item: 0,
             loading: true,
             error: None,
+            items: Vec::new(),
+            selected: 0,
+            filtering: false,
+            query: String::new(),
+            list_scroll: 0,
+            detail_scroll: 0,
         }
     }
 }
@@ -219,6 +265,7 @@ impl Default for RewindState {
 impl RewindState {
     pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>) {
         self.prompts.clear();
+        self.items.clear();
         for entry in entries {
             // `!!` 命令与代理消息都不是人类提问，不作为回退边界。
             if entry.bash.is_some() || entry.agent.is_some() {
@@ -230,19 +277,202 @@ impl RewindState {
                 prompt.push(entry);
             }
         }
+
+        for (p_idx, prompt) in self.prompts.iter().enumerate() {
+            for (i_idx, entry) in prompt.iter().enumerate() {
+                let is_user = entry.message.role == Role::User;
+                let text = entry.message.text();
+                let tool_calls: Vec<String> = entry
+                    .message
+                    .tool_calls()
+                    .map(|call| call.name.clone())
+                    .collect();
+
+                let preview = if is_user {
+                    let first_line = text
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim();
+                    if first_line.is_empty() {
+                        "（用户提问）".to_string()
+                    } else {
+                        first_line.to_string()
+                    }
+                } else if !tool_calls.is_empty() {
+                    format!("调用工具：{}", tool_calls.join("、"))
+                } else {
+                    let first_line = text
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim();
+                    if first_line.is_empty() {
+                        if entry.message.role == Role::Tool {
+                            "工具结果返回".to_string()
+                        } else {
+                            "（模型回复）".to_string()
+                        }
+                    } else {
+                        first_line.to_string()
+                    }
+                };
+
+                let full_text = if !text.trim().is_empty() {
+                    text
+                } else if !tool_calls.is_empty() {
+                    let mut s = format!("调用工具：{}\n", tool_calls.join("、"));
+                    for call in entry.message.tool_calls() {
+                        s.push_str(&format!(
+                            "\n• 工具 [{}] 参数：\n{}\n",
+                            call.name, call.arguments
+                        ));
+                    }
+                    s
+                } else {
+                    entry
+                        .message
+                        .tool_results()
+                        .map(|res| res.content.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                self.items.push(RewindItem {
+                    entry_id: entry.id.clone(),
+                    role: entry.message.role,
+                    is_user,
+                    at_ms: entry.at_ms,
+                    preview,
+                    full_text,
+                    tool_calls,
+                    prompt_index: p_idx,
+                    item_index: i_idx,
+                    entry: entry.clone(),
+                });
+            }
+        }
+
         self.selected_prompt = self.prompts.len().saturating_sub(1);
         self.selected_item = self
             .prompts
             .last()
             .map_or(0, |prompt| prompt.len().saturating_sub(1));
+        self.sync_selected_from_prompt_item();
         self.loading = false;
         self.error = None;
+        self.filtering = false;
+        self.query.clear();
+        self.list_scroll = 0;
+        self.detail_scroll = 0;
+    }
+
+    pub fn sync_selected_from_prompt_item(&mut self) {
+        if let Some(pos) = self.items.iter().position(|it| {
+            it.prompt_index == self.selected_prompt && it.item_index == self.selected_item
+        }) {
+            self.selected = pos;
+        } else {
+            self.selected = self.items.len().saturating_sub(1);
+        }
+        self.detail_scroll = 0;
+    }
+
+    pub fn sync_prompt_item_from_selected(&mut self) {
+        if let Some(item) = self.items.get(self.selected) {
+            self.selected_prompt = item.prompt_index;
+            self.selected_item = item.item_index;
+        }
+        self.detail_scroll = 0;
     }
 
     pub fn selected(&self) -> Option<&TranscriptEntry> {
-        self.prompts
-            .get(self.selected_prompt)
-            .and_then(|prompt| prompt.get(self.selected_item))
+        if let Some(item) = self.items.get(self.selected) {
+            Some(&item.entry)
+        } else {
+            self.prompts
+                .get(self.selected_prompt)
+                .and_then(|prompt| prompt.get(self.selected_item))
+        }
+    }
+
+    pub fn selected_item_ref(&self) -> Option<&RewindItem> {
+        self.items.get(self.selected)
+    }
+
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        let q = self.query.trim().to_lowercase();
+        if q.is_empty() {
+            return (0..self.items.len()).collect();
+        }
+        let words: Vec<&str> = q.split_whitespace().collect();
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                let target_str = format!("{} {}", it.preview, it.full_text).to_lowercase();
+                words.iter().all(|w| target_str.contains(w))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn step(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let matches = self.filtered_indices();
+        if matches.is_empty() {
+            return;
+        }
+        let curr_pos = matches.iter().position(|&idx| idx == self.selected);
+        let new_pos = match curr_pos {
+            Some(p) => (p as i32 + delta).clamp(0, matches.len() as i32 - 1) as usize,
+            None => {
+                if delta < 0 {
+                    matches
+                        .iter()
+                        .rposition(|&idx| idx < self.selected)
+                        .unwrap_or(0)
+                } else {
+                    matches
+                        .iter()
+                        .position(|&idx| idx > self.selected)
+                        .unwrap_or(matches.len() - 1)
+                }
+            }
+        };
+        self.selected = matches[new_pos];
+        self.sync_prompt_item_from_selected();
+    }
+
+    pub fn jump_user(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let matches = self.filtered_indices();
+        if matches.is_empty() {
+            return;
+        }
+        if delta < 0 {
+            if let Some(&prev_idx) = matches
+                .iter()
+                .filter(|&&idx| idx < self.selected && self.items[idx].is_user)
+                .next_back()
+            {
+                self.selected = prev_idx;
+                self.sync_prompt_item_from_selected();
+            }
+        } else if delta > 0 {
+            if let Some(&next_idx) = matches
+                .iter()
+                .filter(|&&idx| idx > self.selected && self.items[idx].is_user)
+                .next()
+            {
+                self.selected = next_idx;
+                self.sync_prompt_item_from_selected();
+            }
+        }
     }
 
     pub fn move_vertical(&mut self, delta: i32) {
@@ -256,6 +486,7 @@ impl RewindState {
         } else {
             self.selected_item.saturating_add(delta as usize).min(max)
         };
+        self.sync_selected_from_prompt_item();
     }
 
     pub fn move_horizontal(&mut self, delta: i32) {
@@ -272,6 +503,48 @@ impl RewindState {
         self.selected_item = self
             .selected_item
             .min(self.prompts[self.selected_prompt].len().saturating_sub(1));
+        self.sync_selected_from_prompt_item();
+    }
+
+    pub fn start_filter(&mut self) {
+        self.filtering = true;
+    }
+
+    pub fn input_char(&mut self, c: char) {
+        self.query.push(c);
+        let matches = self.filtered_indices();
+        if !matches.is_empty() && !matches.contains(&self.selected) {
+            self.selected = matches[0];
+            self.sync_prompt_item_from_selected();
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if !self.query.is_empty() {
+            self.query.pop();
+            let matches = self.filtered_indices();
+            if !matches.is_empty() && !matches.contains(&self.selected) {
+                self.selected = matches[0];
+                self.sync_prompt_item_from_selected();
+            }
+        } else {
+            self.filtering = false;
+        }
+    }
+
+    pub fn clear_filter(&mut self) {
+        self.query.clear();
+        self.filtering = false;
+    }
+
+    pub fn scroll_detail(&mut self, delta: i32) {
+        if delta < 0 {
+            self.detail_scroll = self
+                .detail_scroll
+                .saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            self.detail_scroll = self.detail_scroll.saturating_add(delta as usize);
+        }
     }
 }
 
@@ -1018,6 +1291,81 @@ mod tests {
         state.move_horizontal(1);
         assert_eq!((state.selected_prompt, state.selected_item), (1, 0));
         assert_eq!(state.selected().expect("选中条目").message.role, Role::User);
+    }
+
+    #[test]
+    fn test_rewind_omp_style_navigation_and_filtering() {
+        let entry = |id: &str, message: Message| TranscriptEntry {
+            id: id.into(),
+            at_ms: 1700000000000,
+            message,
+            tool: None,
+            bash: None,
+            agent: None,
+        };
+        let mut state = RewindState::default();
+        state.set_entries(vec![
+            entry("u1", Message::user_text("帮我实现一个快排")),
+            entry("a1", Message::assistant_text("好的，这是快速排序（快排）实现")),
+            entry("u2", Message::user_text("加几个单元测试")),
+            entry("a2", Message::assistant_text("测试已增加并全部通过")),
+            entry("u3", Message::user_text("改成双轴快排")),
+        ]);
+
+        // Total 5 items in timeline
+        assert_eq!(state.items.len(), 5);
+        assert_eq!(state.selected, 4); // Default to last item
+        assert_eq!(state.selected_item_ref().unwrap().preview, "改成双轴快排");
+
+        // 1. Up / Down linear stepping (↑↓ / jk)
+        state.step(-1);
+        assert_eq!(state.selected, 3);
+        assert!(!state.selected_item_ref().unwrap().is_user);
+
+        state.step(-1);
+        assert_eq!(state.selected, 2);
+        assert!(state.selected_item_ref().unwrap().is_user);
+
+        // 2. Jump between User turns (←→ / hl)
+        state.jump_user(-1);
+        assert_eq!(state.selected, 0); // Jumps to u1
+        assert_eq!(state.selected_item_ref().unwrap().entry_id, "u1");
+
+        state.jump_user(1);
+        assert_eq!(state.selected, 2); // Jumps to u2
+        assert_eq!(state.selected_item_ref().unwrap().entry_id, "u2");
+
+        state.jump_user(1);
+        assert_eq!(state.selected, 4); // Jumps to u3
+
+        // 3. Search and filtering mode
+        state.start_filter();
+        state.input_char('快');
+        state.input_char('排');
+        let matches = state.filtered_indices();
+        // u1 ("快排"), a1 ("快速排序"), u3 ("双轴快排")
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches, vec![0, 1, 4]);
+
+        // Stepping within filtered matches
+        state.selected = 4;
+        state.step(-1);
+        assert_eq!(state.selected, 1);
+        state.step(-1);
+        assert_eq!(state.selected, 0);
+
+        // Clear filter
+        state.clear_filter();
+        assert!(!state.filtering);
+        assert!(state.query.is_empty());
+        assert_eq!(state.filtered_indices().len(), 5);
+
+        // 4. Detail scroll
+        assert_eq!(state.detail_scroll, 0);
+        state.scroll_detail(3);
+        assert_eq!(state.detail_scroll, 3);
+        state.scroll_detail(-2);
+        assert_eq!(state.detail_scroll, 1);
     }
 
     /// 错误只能落在有显示位置的模态上；其余模态返回 `false` 由调用方回落到通知。

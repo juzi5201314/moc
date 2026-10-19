@@ -15,6 +15,7 @@ pub mod subagent;
 pub mod wrap;
 
 pub(crate) mod context_content;
+pub(crate) mod rewind;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};

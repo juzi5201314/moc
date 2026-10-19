@@ -181,6 +181,10 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     frame
         .buffer_mut()
         .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
+    if matches!(app.modal, Some(Modal::Rewind { .. })) {
+        crate::render::rewind::draw(frame, app, area);
+        return;
+    }
     if matches!(app.modal, Some(Modal::ContextContent { .. })) {
         // 正文窗按自己的列宽折行、按整行滚动，并自带滚动条与命中几何，
         // 不走 `modal_lines` 的「一次性铺满」路径。
@@ -2541,6 +2545,67 @@ mod tests {
         assert!(
             compact.iter().any(|text| text.contains("esc取消")),
             "底部按键行应留在卡片内：{compact:#?}"
+        );
+    }
+
+    /// 回退模态：在终端缓冲里正确绘制时间线分界、回退横幅与底部 dock 操作栏。
+    #[test]
+    fn rewind_modal_draws_omp_timeline_and_dock_in_buffer() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use moc_protocol::{Message, TranscriptEntry};
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+
+        let mut rewind_state = crate::modal::RewindState::default();
+        rewind_state.set_entries(vec![
+            TranscriptEntry {
+                id: "u1".into(),
+                at_ms: 1700000000000,
+                message: Message::user_text("第一句提问：实现快速排序"),
+                tool: None,
+                bash: None,
+                agent: None,
+            },
+            TranscriptEntry {
+                id: "a1".into(),
+                at_ms: 1700000001000,
+                message: Message::assistant_text("好的，已为你实现快排"),
+                tool: None,
+                bash: None,
+                agent: None,
+            },
+        ]);
+        app.modal = Some(Modal::Rewind { state: rewind_state });
+
+        let (width, height) = (120u16, 32u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+
+        let rows: Vec<String> = (0..height)
+            .map(|row| {
+                (0..width)
+                .filter_map(|x| terminal.backend().buffer().cell((x, row)))
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+            })
+            .collect();
+        let full_output: String = rows.join("\n").replace(' ', "");
+
+        assert!(
+            full_output.contains("回退"),
+            "应包含回退标识：{full_output}"
+        );
+        assert!(
+            full_output.contains("回退到此处") || full_output.contains("从此处继续"),
+            "应包含 omp 风格的回退横幅或按钮动作：{full_output}"
+        );
+        assert!(
+            full_output.contains("第一句提问"),
+            "时间线应渲染用户提问：{full_output}"
         );
     }
 
