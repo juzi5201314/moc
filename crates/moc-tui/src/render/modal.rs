@@ -2357,7 +2357,12 @@ mod tests {
         else {
             unreachable!("测试模态应为 ask");
         };
+        // 多星号只可能出现在多选问题；多选不支持预览，先把 fixture 的预览清掉。
+        params.questions[0].multi = true;
         params.questions[0].recommended = vec![0, 1];
+        for option in &mut params.questions[0].options {
+            option.preview = None;
+        }
         selected[0] = vec!["上中下".to_owned()];
 
         let texts: Vec<String> = modal_lines(&app, &modal, 80, 24)

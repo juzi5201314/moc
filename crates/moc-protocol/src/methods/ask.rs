@@ -35,7 +35,8 @@ pub struct AskQuestion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
     pub multi: bool,
-    /// 模型推荐的选项下标；空集合表示没有推荐项，多选问题可包含多个下标。
+    /// 模型推荐的选项下标；空集合表示没有推荐项。下标必须落在选项范围内且
+    /// 不得重复，单选问题最多一个，多选问题可包含多个。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recommended: Vec<u32>,
     pub options: Vec<AskOption>,

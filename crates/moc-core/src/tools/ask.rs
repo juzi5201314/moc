@@ -41,7 +41,7 @@ impl Tool for AskTool {
         "ask"
     }
     fn description(&self) -> &'static str {
-        "Ask the user decision questions; use only when the answer changes the implementation. Set recommended to 0-based option indexes to mark the model's preferred choices; multi-select questions may include multiple recommended indexes. Options may carry a preview, a monospace frame shown beside the focused option for visual comparison (single-select only)."
+        "Ask the user decision questions; use only when the answer changes the implementation. Set recommended to 0-based option indexes to mark the model's preferred choices; single-select questions accept at most one index, multi-select questions may include multiple recommended indexes. Options may carry a preview, a monospace frame shown beside the focused option for visual comparison (single-select only)."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -61,7 +61,7 @@ impl Tool for AskTool {
                             "question":{"type":"string"},
                             "header":{"type":"string"},
                             "multi":{"type":"boolean"},
-                            "recommended":{"type":"array","items":{"type":"integer","minimum":0},"description":"Recommended option indexes, 0-based; multi-select questions may include multiple indexes"},
+                            "recommended":{"type":"array","items":{"type":"integer","minimum":0},"uniqueItems":true,"description":"Recommended option indexes, 0-based; single-select questions accept at most one, multi-select questions may include multiple indexes"},
                             "options":{"type":"array","minItems":2,"items":{
                                 "type":"object","properties":{
                                     "label":{"type":"string","description":"Display text, 1-5 words"},
@@ -149,8 +149,8 @@ fn preview_text(preview: &Option<String>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// 解析并校验 ask 参数：逐题检查必填项、保留标签和「预览只用于单选」的限制，
-/// 再把选项转成协议结构。
+/// 解析并校验 ask 参数：逐题检查必填项、保留标签、「预览只用于单选」与推荐
+/// 下标的限制，再把选项转成协议结构。
 fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
     let args: AskArgs = serde_json::from_value(args)
         .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
@@ -199,6 +199,24 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
                 "recommended must point to existing options",
+            ));
+        }
+        // 推荐下标不得重复：重复项会让前端的默认选中出现重复标签。
+        let mut seen = vec![false; input.options.len()];
+        for &index in &input.recommended {
+            let slot = &mut seen[index as usize];
+            if *slot {
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    "recommended must not repeat an option index",
+                ));
+            }
+            *slot = true;
+        }
+        if !multi && input.recommended.len() > 1 {
+            return Err(ToolError::new(
+                "E_BAD_PAYLOAD",
+                "single-select questions accept at most one recommended index",
             ));
         }
         questions.push(AskQuestion {
@@ -319,6 +337,51 @@ mod tests {
         );
     }
 
+    /// 单选问题最多一个推荐下标：多个推荐会让前端预选多个答案并整包提交。
+    #[test]
+    fn single_select_rejects_multiple_recommendations() {
+        let error = normalize_questions(json!({
+            "questions": [{
+                "id": "choice",
+                "question": "选哪个？",
+                "recommended": [0, 1],
+                "options": [{"label": "A"}, {"label": "B"}]
+            }]
+        }))
+        .expect_err("单选问题多个推荐下标应被拒绝");
+
+        assert_eq!(error.code, "E_BAD_PAYLOAD");
+        assert!(
+            error
+                .message
+                .contains("single-select questions accept at most one"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// 重复的推荐下标会让默认选中出现重复标签，整包拒绝。
+    #[test]
+    fn recommendations_reject_duplicate_indexes() {
+        let error = normalize_questions(json!({
+            "questions": [{
+                "id": "features",
+                "question": "开启哪些特性？",
+                "multi": true,
+                "recommended": [1, 0, 1],
+                "options": [{"label": "A"}, {"label": "B"}]
+            }]
+        }))
+        .expect_err("重复推荐下标应被拒绝");
+
+        assert_eq!(error.code, "E_BAD_PAYLOAD");
+        assert!(
+            error.message.contains("recommended must not repeat"),
+            "{}",
+            error.message
+        );
+    }
+
     /// 工具 schema 暴露推荐下标数组、预览字段及其格式说明。
     #[test]
     fn schema_exposes_recommendations_and_preview_fields() {
@@ -327,10 +390,13 @@ mod tests {
         let recommended = &question["properties"]["recommended"];
         assert_eq!(recommended["type"], json!("array"));
         assert_eq!(recommended["items"]["type"], json!("integer"));
+        assert_eq!(recommended["uniqueItems"], json!(true));
         assert!(
             recommended["description"]
                 .as_str()
-                .is_some_and(|text| text.contains("0-based") && text.contains("multiple indexes"))
+                .is_some_and(|text| text.contains("0-based")
+                    && text.contains("single-select")
+                    && text.contains("multiple indexes"))
         );
         let option = &question["properties"]["options"]["items"];
         assert_eq!(option["properties"]["preview"]["type"], json!("string"));
