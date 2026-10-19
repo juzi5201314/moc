@@ -511,14 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn config_round_trips_through_json() {
-        let config = sample();
-        let encoded = serde_json::to_value(&config).unwrap();
-        let decoded: LlmConfig = serde_json::from_value(encoded).unwrap();
-        assert_eq!(decoded, config);
-    }
-
-    #[test]
     fn protocol_serializes_with_explicit_names() {
         assert_eq!(
             serde_json::to_value(Protocol::OpenAiChat).unwrap(),

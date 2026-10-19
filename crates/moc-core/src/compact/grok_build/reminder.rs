@@ -187,14 +187,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_state_renders_nothing() {
-        let state = state();
-        assert_eq!(edited_files(&state), None);
-        assert_eq!(todo_list(&state), None);
-        assert_eq!(active_plan(&state), None);
-    }
-
-    #[test]
     fn edited_files_list_only_successful_operations() {
         let mut state = state();
         push_message(

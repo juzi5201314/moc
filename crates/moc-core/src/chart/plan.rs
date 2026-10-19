@@ -509,13 +509,15 @@ mod tests {
     fn plans_grouped_for_same_dimension_measures() {
         let raw = table(
             &["方案", "Q1", "Q2"],
-            &[&["C1", "10", "20"], &["C2", "12", "18"], &["C3", "9", "25"]],
+            &[&["C3", "10", "20"], &["C1", "12", "18"], &["C2", "9", "25"]],
         );
         let (planned, spec) = chart(&raw);
         assert_eq!(planned.kind, ChartKind::Grouped);
         assert_eq!(planned.series, vec![1, 2]);
         assert_eq!(spec.series.len(), 2);
         assert_eq!(spec.series[0].name, "Q1");
+        // 类别顺序不重排：规划只做映射，排序由绘制层决定。
+        assert_eq!(spec.categories, vec!["C3", "C1", "C2"]);
     }
 
     #[test]
@@ -650,26 +652,5 @@ mod tests {
         // 只有一行数据
         let raw = table(&["地区", "耗时 ms"], &[&["北", "12"]]);
         assert!(plan(&analyze(&raw)).is_none());
-    }
-
-    #[test]
-    fn keeps_order_and_prefers_composition_over_grouped() {
-        // 类别顺序不重排：规划只做映射，排序由绘制层决定
-        let raw = table(
-            &["方案", "Q1", "Q2"],
-            &[&["C3", "1", "2"], &["C1", "3", "4"], &["C2", "5", "6"]],
-        );
-        let (planned, spec) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Grouped);
-        assert_eq!(spec.categories, vec!["C3", "C1", "C2"]);
-
-        // 份额组合存在时走堆叠，而不是分组条形
-        let raw = table(
-            &["服务", "读", "写", "合计"],
-            &[&["A", "1", "2", "3"], &["B", "2", "5", "7"]],
-        );
-        let (planned, _) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Stacked);
-        assert_eq!(planned.series, vec![1, 2]);
     }
 }

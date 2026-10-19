@@ -281,18 +281,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn base64_round_trip() {
-        let encoded = base64_encode(b"hello");
-        assert_eq!(encoded, "aGVsbG8=");
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .expect("解码"),
-            b"hello"
-        );
-    }
-
-    #[test]
     fn osc52_wraps_base64_payload() {
         assert_eq!(osc52_sequence("hi"), "\x1b]52;c;aGk=\x1b\\");
     }

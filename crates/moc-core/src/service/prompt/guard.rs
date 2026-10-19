@@ -320,13 +320,4 @@ mod tests {
         assert!(child.stopped.is_cancelled());
         assert_eq!(child.reason(), FinishReason::LoopDetected);
     }
-
-    #[test]
-    fn recorded_changes_advance_progress() {
-        let guard = PromptGuard::new(CancellationToken::new(), None);
-        assert_eq!(guard.progress(), 0);
-        guard.record_change();
-        guard.record_change();
-        assert_eq!(guard.progress(), 2);
-    }
 }

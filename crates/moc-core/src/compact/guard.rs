@@ -431,29 +431,24 @@ mod tests {
     }
 
     #[test]
-    fn unwrap_strips_analysis_and_summary_tags() {
-        let raw = "<analysis>draft</analysis>\n<summary>\n## A\nbody\n</summary>";
-        assert_eq!(unwrap_checkpoint(raw), "## A\nbody");
-    }
-
-    #[test]
-    fn unwrap_keeps_plain_text() {
-        assert_eq!(unwrap_checkpoint("  ## A\nbody  "), "## A\nbody");
-    }
-
-    #[test]
-    fn unwrap_strips_code_fence() {
-        let raw = "```markdown\n## A\nbody\n```";
-        assert_eq!(unwrap_checkpoint(raw), "## A\nbody");
-    }
-
-    #[test]
-    fn unwrap_handles_unclosed_analysis() {
-        assert_eq!(unwrap_checkpoint("<analysis>only draft"), "");
-        assert_eq!(
-            unwrap_checkpoint("<analysis>draft<summary>## A\nkeep</summary>"),
-            "## A\nkeep"
-        );
+    fn unwrap_checkpoint_strips_wrappers_and_keeps_plain_text() {
+        let fence = "`".repeat(3);
+        let cases = [
+            (
+                "<analysis>draft</analysis>\n<summary>\n## A\nbody\n</summary>",
+                "## A\nbody",
+            ),
+            ("  ## A\nbody  ", "## A\nbody"),
+            (
+                &format!("{fence}markdown\n## A\nbody\n{fence}"),
+                "## A\nbody",
+            ),
+            ("<analysis>only draft", ""),
+            ("<analysis>draft<summary>## A\nkeep</summary>", "## A\nkeep"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(unwrap_checkpoint(raw), expected, "{raw}");
+        }
     }
 
     #[test]

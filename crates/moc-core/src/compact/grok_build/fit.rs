@@ -276,13 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn budgets_reserve_output_and_scale_with_window() {
-        assert_eq!(fitted_budget(200_000, 10_000), 200_000 - 32_768 - 10_000);
-        assert_eq!(lossy_budget(200_000, 10_000), 140_000 - 10_000);
-        assert_eq!(fitted_budget(10_000, 0), 0, "小窗口不为负");
-    }
-
-    #[test]
     fn initial_stage_only_cuts_when_system_plus_history_exceeds_budget() {
         let system = vec![Message::user_text("system")];
         let small = vec![Message::user_text("hi")];

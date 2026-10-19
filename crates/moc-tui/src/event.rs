@@ -4698,41 +4698,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_tab_accepts_the_selected_command() {
-        // 初始选中第 0 项：Tab 直接接受，而不是切换焦点。
-        let mut app = app_with_completion();
-        assert!(handle_completion_key(
-            &mut app,
-            KeyModifiers::NONE,
-            KeyCode::Tab
-        ));
-        assert_eq!(app.prompt.text, "/model ");
-        assert!(app.completion.is_none());
-        assert_eq!(app.focus, Focus::Prompt);
-
-        // 方向键切换选中项后，Tab 接受当前项。
-        let mut app = app_with_completion();
-        assert!(handle_completion_key(
-            &mut app,
-            KeyModifiers::NONE,
-            KeyCode::Down
-        ));
-        assert_eq!(
-            app.completion
-                .as_ref()
-                .map(|completion| completion.chosen().value.as_str()),
-            Some("/mode")
-        );
-        assert!(handle_completion_key(
-            &mut app,
-            KeyModifiers::NONE,
-            KeyCode::Tab
-        ));
-        assert_eq!(app.prompt.text, "/mode ");
-        assert!(app.completion.is_none());
-    }
-
-    #[test]
     fn completion_navigation_wraps_and_accepts_with_enter() {
         let mut app = app_with_completion();
         assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
@@ -4761,6 +4726,28 @@ mod tests {
         ));
         assert_eq!(app.prompt.text, "/model ");
         assert!(app.completion.is_none());
+
+        // Tab 与 Enter 共用确认分支：切换选中项后同样接受当前项。
+        let mut app = app_with_completion();
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Down
+        ));
+        assert_eq!(
+            app.completion
+                .as_ref()
+                .map(|completion| completion.chosen().value.as_str()),
+            Some("/mode")
+        );
+        assert!(handle_completion_key(
+            &mut app,
+            KeyModifiers::NONE,
+            KeyCode::Tab
+        ));
+        assert_eq!(app.prompt.text, "/mode ");
+        assert!(app.completion.is_none());
+        assert_eq!(app.focus, Focus::Prompt);
     }
 
     async fn setup_test_app() -> (std::sync::Arc<moc_core::Core>, EmbeddedConnection, App) {

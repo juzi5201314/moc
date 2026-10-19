@@ -1394,12 +1394,6 @@ async fn compaction_failure_keeps_entries_appended_by_the_failed_method() {
         })
         .await
         .expect("会话用量");
-    let disk_usage = support::transcript_entries(&h, &id)
-        .await
-        .iter()
-        .filter(|entry| matches!(entry, moc_core::session::entries::Entry::Usage { .. }))
-        .count();
-    eprintln!("DBGUSAGE memory={} disk={disk_usage}", usage.total.calls);
     // soft 的空摘要失败发生在记录用量之后：整表 rewrite 不得丢掉期间追加的用量 entry。
     assert!(
         usage.total.calls >= 2,

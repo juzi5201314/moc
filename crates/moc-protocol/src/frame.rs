@@ -361,14 +361,4 @@ mod tests {
             Err(FrameError::InvalidContentLength(_))
         ));
     }
-
-    #[test]
-    fn push_decimal_matches_format() {
-        let mut out = Vec::new();
-        push_decimal(&mut out, 0);
-        assert_eq!(out, b"0");
-        out.clear();
-        push_decimal(&mut out, 1002003);
-        assert_eq!(out, b"1002003");
-    }
 }

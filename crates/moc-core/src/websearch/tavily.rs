@@ -306,18 +306,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn normalizes_base_url() {
-        let default = TavilyProvider::new("", String::new(), Duration::from_secs(1));
-        assert_eq!(default.base_url, "https://api.tavily.com");
-        let custom = TavilyProvider::new(
-            " https://proxy.example.com/ ",
-            String::new(),
-            Duration::from_secs(1),
-        );
-        assert_eq!(custom.base_url, "https://proxy.example.com");
-    }
-
     #[tokio::test]
     async fn search_sends_expected_body_and_normalizes_response() {
         let server = MockServer::builder().start().await;

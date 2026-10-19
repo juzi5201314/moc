@@ -397,10 +397,8 @@ mod tests {
             err.to_string(),
             "构建请求失败: assistant 消息中的工具调用 [get_weather, get_date] 缺少对应的工具结果消息（缺失: get_date）"
         );
-    }
 
-    #[test]
-    fn assistant_tool_calls_without_any_result_report_all_names() {
+        // 一个结果都没有时，错误里同样点名全部调用。
         let messages = vec![
             assistant_with_calls(&[("call_1", "get_weather")]),
             Message::user_text("算了"),

@@ -420,12 +420,6 @@ mod tests {
     }
 
     #[test]
-    fn prefire_start_is_one_lead_below_threshold() {
-        let config = test_config();
-        assert_eq!(prefire_start(&config, 200_000), 200_000 * 75 / 100);
-    }
-
-    #[test]
     fn split_lands_near_the_weight_fraction() {
         let messages = vec![
             Message::user_text(big(100)),

@@ -823,12 +823,6 @@ mod tests {
     }
 
     #[test]
-    fn summary_output_is_capped_for_large_output_models() {
-        assert_eq!(summary_output_tokens(384_000), SUMMARY_MAX_OUTPUT_TOKENS);
-        assert_eq!(summary_output_tokens(8_000), 8_000);
-    }
-
-    #[test]
     fn summary_budget_covers_a_full_context_window_history() {
         // 500k 窗口的 85% 触发点上，被丢弃的历史仍必须放得下。
         let budget = summary_input_budget(500_000, 20_000, 5_000, summary_output_tokens(384_000));

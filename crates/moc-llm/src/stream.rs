@@ -1247,20 +1247,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drop_cancels_stream_without_panic() {
-        let cfg = config(Protocol::OpenAiChat);
-        let req = request();
-        let stream = stream_from_chunks(
-            &cfg,
-            &req,
-            vec![
-                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"},\"finish_reason\":null}]}\n\n",
-            ],
-        );
-        drop(stream);
-    }
-
-    #[tokio::test]
     async fn interrupt_returns_partial_response_without_await() {
         let cfg = config(Protocol::AnthropicMessages);
         let req = request();

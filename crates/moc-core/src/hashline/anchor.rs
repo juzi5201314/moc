@@ -154,12 +154,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn content_ids_are_independent_of_line_number() {
+    fn content_ids_ignore_line_but_punctuation_ids_use_capped_line() {
         assert_eq!(id_of(1, "fn main() {}"), id_of(99, "fn main() {}"));
-    }
-
-    #[test]
-    fn punctuation_ids_use_line_number_but_cap_the_seed() {
         assert_ne!(id_of(1, "}"), id_of(2, "}"));
         assert_eq!(id_of(40_000, "}"), id_of(40_001, "}"));
         assert_eq!(id_of(40_001, "}"), id_of(80_000, "}"));

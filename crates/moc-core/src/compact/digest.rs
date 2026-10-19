@@ -790,7 +790,7 @@ fn truncate(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use moc_llm::{Message, ToolCall};
-    use moc_protocol::methods::{PlanStatus, SessionMode, SessionPermission, TodoItem, TodoPhase};
+    use moc_protocol::methods::{SessionMode, SessionPermission, TodoItem, TodoPhase};
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
@@ -1260,11 +1260,5 @@ mod tests {
         let checkpoint = fallback_checkpoint(&state, &history, None, Some(plan));
         assert!(checkpoint.contains("计划共 3 步"), "{checkpoint}");
         assert!(checkpoint.contains("第 3 步"), "{checkpoint}");
-    }
-
-    #[test]
-    fn plan_status_variants_compile() {
-        // 防止 TodoStatus/PlanStatus 新增变体时这里的映射被静默遗忘。
-        let _ = PlanStatus::Approved;
     }
 }

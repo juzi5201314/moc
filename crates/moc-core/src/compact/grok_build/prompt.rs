@@ -196,27 +196,31 @@ mod tests {
     }
 
     #[test]
-    fn leading_analysis_draft_is_stripped() {
-        let raw = "<analysis>先想想怎么写</analysis>\n\n<summary>\n1. Primary Request and Intent: 做事\n</summary>";
-        assert_eq!(
-            clean_summary(raw),
-            "Summary:\n1. Primary Request and Intent: 做事"
-        );
-    }
-
-    #[test]
-    fn nested_analysis_inside_summary_is_stripped() {
-        let raw = "<summary># 草稿\n<analysis>中间推理</analysis>\n1. Primary: 做事</summary>";
-        assert_eq!(clean_summary(raw), "Summary:\n1. Primary: 做事");
-        let numbered = "<summary>1. Primary: 做事</summary>";
-        assert_eq!(clean_summary(numbered), "Summary:\n1. Primary: 做事");
-    }
-
-    #[test]
-    fn unclosed_analysis_does_not_panic_and_drops_to_summary() {
-        let raw = "<analysis>没有闭合\n\n<summary>正文</summary>";
-        assert_eq!(clean_summary(raw), "Summary:\n正文");
-        assert_eq!(clean_summary("<analysis>只剩草稿"), "");
+    fn clean_summary_strips_wrappers_and_normalizes_text() {
+        let cases = [
+            (
+                "<analysis>先想想怎么写</analysis>\n\n<summary>\n1. Primary Request and Intent: 做事\n</summary>",
+                "Summary:\n1. Primary Request and Intent: 做事",
+            ),
+            (
+                "<summary># 草稿\n<analysis>中间推理</analysis>\n1. Primary: 做事</summary>",
+                "Summary:\n1. Primary: 做事",
+            ),
+            (
+                "<summary>1. Primary: 做事</summary>",
+                "Summary:\n1. Primary: 做事",
+            ),
+            (
+                "<analysis>没有闭合\n\n<summary>正文</summary>",
+                "Summary:\n正文",
+            ),
+            ("<analysis>只剩草稿", ""),
+            ("第一段\n\n\n\n第二段\n", "第一段\n\n第二段"),
+            ("没有标签的纯文本", "没有标签的纯文本"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(clean_summary(raw), expected, "{raw}");
+        }
     }
 
     #[test]
@@ -228,12 +232,6 @@ mod tests {
         assert!(cleaned.contains("6. All User Messages"), "{cleaned}");
         assert!(!cleaned.contains("</analysis>"), "{cleaned}");
         assert!(!cleaned.contains("<summary_request>"), "{cleaned}");
-    }
-
-    #[test]
-    fn blank_line_runs_collapse_and_plain_text_passes_through() {
-        assert_eq!(clean_summary("第一段\n\n\n\n第二段\n"), "第一段\n\n第二段");
-        assert_eq!(clean_summary("没有标签的纯文本"), "没有标签的纯文本");
     }
 
     #[test]

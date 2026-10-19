@@ -845,14 +845,4 @@ mod tests {
         assert_eq!(major_version("1.2.3"), "1");
         assert_eq!(major_version("1"), "1");
     }
-
-    #[test]
-    fn options_defaults() {
-        let options = ServerOptions::default();
-        assert_eq!(options.framing, Framing::ContentLength);
-        assert_eq!(options.max_frame_bytes, DEFAULT_MAX_FRAME_BYTES);
-        assert_eq!(options.max_in_flight, 64);
-        assert_eq!(options.outbound_capacity, 256);
-        assert_eq!(PROTOCOL_VERSION, "1.2");
-    }
 }

@@ -189,6 +189,25 @@ mod tests {
         assert!(!responses.keeps(&ReasoningBlock::Redacted {
             data: "opaque".into()
         }));
+
+        // Never 模式对三种协议都剔除全部思维链变体。
+        for protocol in [
+            Protocol::OpenAiChat,
+            Protocol::OpenAiResponses,
+            Protocol::AnthropicMessages,
+        ] {
+            let plan = plan(&config(protocol), &request(ReasoningEcho::Never, 2));
+            assert_eq!(plan, ReasoningEchoPlan::Strip, "{protocol:?}");
+            for block in [
+                text_block(),
+                ReasoningBlock::Redacted {
+                    data: "opaque".into(),
+                },
+                ReasoningBlock::Item(Box::new(serde_json::json!({"type": "reasoning"}))),
+            ] {
+                assert!(!plan.keeps(&block), "{protocol:?} 应剔除 {block:?}");
+            }
+        }
     }
 
     /// 自定义 `reasoning_field` 必须真的决定 assistant 消息的线上字段名。
@@ -202,6 +221,7 @@ mod tests {
             },
             ..Default::default()
         };
+
         let req = ChatRequest {
             messages: vec![Message {
                 role: crate::types::Role::Assistant,
@@ -220,27 +240,5 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&encoded.body).expect("请求体是 JSON");
         assert_eq!(body["messages"][0]["reasoning"], serde_json::json!("思路"));
         assert!(body["messages"][0].get("reasoning_content").is_none());
-    }
-
-    #[test]
-    fn never_mode_drops_reasoning_blocks_for_all_protocols() {
-        for protocol in [
-            Protocol::OpenAiChat,
-            Protocol::OpenAiResponses,
-            Protocol::AnthropicMessages,
-        ] {
-            let cfg = config(protocol);
-            let plan = plan(&cfg, &request(ReasoningEcho::Never, 2));
-            assert_eq!(plan, ReasoningEchoPlan::Strip, "{protocol:?}");
-            for block in [
-                text_block(),
-                ReasoningBlock::Redacted {
-                    data: "opaque".into(),
-                },
-                ReasoningBlock::Item(Box::new(serde_json::json!({"type": "reasoning"}))),
-            ] {
-                assert!(!plan.keeps(&block), "{protocol:?} 应剔除 {block:?}");
-            }
-        }
     }
 }
