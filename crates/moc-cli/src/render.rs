@@ -240,6 +240,7 @@ impl Renderer {
             }
             SessionUpdate::PermissionResolved { .. }
             | SessionUpdate::PromptStarted { .. }
+            | SessionUpdate::SteeringApplied { .. }
             | SessionUpdate::LockChanged { .. } => {}
         }
     }

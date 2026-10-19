@@ -20,7 +20,7 @@ use moc_protocol::methods::{
     SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
     SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
     SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
-    SessionUsageResult,
+    SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -590,6 +590,16 @@ impl AgentService for Core {
         params: moc_protocol::SteerParams,
     ) -> Result<moc_protocol::SteerResult, RpcError> {
         management::steer(&self.inner, params).await.map_err(to_rpc)
+    }
+
+    async fn session_unsteer(
+        &self,
+        _ctx: RequestContext,
+        params: UnsteerParams,
+    ) -> Result<UnsteerResult, RpcError> {
+        management::unsteer(&self.inner, params)
+            .await
+            .map_err(to_rpc)
     }
 
     async fn agent_spawn(

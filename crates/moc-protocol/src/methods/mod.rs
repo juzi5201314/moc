@@ -14,6 +14,7 @@
 //! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
+//! | [`management::SessionSteer`] / [`management::SessionUnsteer`] | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`permission::SessionRequestPermission`] / [`ask::SessionRequestAsk`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
@@ -58,8 +59,8 @@ pub use initialize::{
 };
 pub use management::{
     CatalogModel, ChoiceOption, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope,
-    FieldKind, MaintenanceReport, SessionSteer, SettingsDocument, SteerParams, SteerResult,
-    WorkspaceBinding,
+    FieldKind, MaintenanceReport, SessionSteer, SessionUnsteer, SettingsDocument, SteerParams,
+    SteerResult, UnsteerParams, UnsteerResult, WorkspaceBinding,
 };
 pub use openviking::{
     OpenVikingDelete, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingEntry,
@@ -143,6 +144,7 @@ mod tests {
             (<SessionSetModel as Method>::NAME, "session/set_model"),
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionSteer as Method>::NAME, "session/steer"),
+            (<SessionUnsteer as Method>::NAME, "session/unsteer"),
             (<SessionCompact as Method>::NAME, "session/compact"),
             (<SessionContext as Method>::NAME, "session/context"),
             (

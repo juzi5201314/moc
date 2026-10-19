@@ -272,6 +272,17 @@ pub enum SessionUpdate {
         /// 每一处不一致；至少一项（空列表没有任何意义，core 不会发送）。
         fields: Vec<UpstreamFieldMismatch>,
     },
+    /// 一条补充消息已经由 core 写入当前会话。
+    ///
+    /// 前端在收到它之前只能把消息放在待发送区；收到后应把对应项移入转写。
+    /// `id` 是 `session/steer` 返回的 core ID，`text` 仅用于事件先于 RPC
+    /// 响应到达时兜底展示。
+    SteeringApplied {
+        /// core 分配的 steering ID。
+        id: u64,
+        /// 已写入会话的正文字本；图片消息可能为空。
+        text: String,
+    },
     /// 提示内不可恢复错误。
     Error {
         prompt_id: String,
@@ -683,6 +694,13 @@ mod tests {
                         "elapsed_ms": 1200
                     }]
                 }),
+            ),
+            (
+                SessionUpdate::SteeringApplied {
+                    id: 7,
+                    text: "先保留原文件".into(),
+                },
+                json!({ "type": "steering_applied", "id": 7, "text": "先保留原文件" }),
             ),
             (
                 SessionUpdate::Error {

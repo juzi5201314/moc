@@ -73,28 +73,151 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         }
         AppEvent::SteerReturned {
             session,
-            prompt,
+            prompt_id,
             result,
         } => {
+            let current = app
+                .session
+                .as_ref()
+                .is_some_and(|current| current.id == session);
             match result {
-                Ok(true) => {
+                Ok(result) if result.accepted => {
+                    let Some(core_id) = result.id else {
+                        // 旧核心没有 SteeringApplied 与撤回 ID：退回一次乐观显示，
+                        // 避免消息永久留在待发送区并挡住后续派发。
+                        if let Some(pending) = crate::queue::take_steer(app, &session, prompt_id) {
+                            if current {
+                                let body = if pending.display_text.is_empty() {
+                                    "[图片]".to_owned()
+                                } else {
+                                    pending.display_text
+                                };
+                                app.push_user(body);
+                            }
+                            if pending.withdrawal.is_some() {
+                                app.set_notice("内核未返回撤回 ID，消息已加入且无法撤回");
+                            }
+                        }
+                        crate::queue::dispatch(app, connection);
+                        return;
+                    };
+                    // 事件可能先于 RPC 响应到达：已经写过转写，只清本地账。
                     if app
-                        .session
-                        .as_ref()
-                        .is_some_and(|current| current.id == session)
+                        .resolved_steers
+                        .get(&session)
+                        .is_some_and(|seen| seen.contains(&core_id))
                     {
-                        app.push_user(prompt.draft.text);
-                        app.set_notice("已收到补充要求，会在安全时机交给模型");
+                        let withdrawn = crate::queue::take_steer(app, &session, prompt_id)
+                            .is_some_and(|pending| pending.withdrawal.is_some());
+                        if withdrawn {
+                            app.set_notice("消息已进入本轮上下文，无法撤回");
+                        }
+                        crate::queue::dispatch(app, connection);
+                        return;
+                    }
+                    let withdrawal = match crate::queue::steer_mut(app, &session, prompt_id) {
+                        Some(pending) => {
+                            pending.core_id = Some(core_id);
+                            pending.withdrawal
+                        }
+                        None => return,
+                    };
+                    if let Some(action) = withdrawal {
+                        crate::queue::request_unsteer(
+                            app, connection, session, prompt_id, core_id, action,
+                        );
                     }
                 }
-                Ok(false) => {
-                    // UI 发送与提示关闭相遇：消息没有进入当前提示，转为下一条正常请求。
-                    app.queues.entry(session).or_default().push_front(prompt);
+                Ok(_) => {
+                    let Some(pending) = crate::queue::take_steer(app, &session, prompt_id) else {
+                        return;
+                    };
+                    let prompt = crate::queue::QueuedPrompt {
+                        id: pending.id,
+                        draft: pending.draft,
+                        mode: None,
+                    };
+                    if let Some(action) = pending.withdrawal {
+                        if action == crate::queue::WithdrawAction::Edit {
+                            if current {
+                                crate::queue::restore_or_requeue(app, &session, prompt);
+                            } else {
+                                app.queues.entry(session).or_default().push_front(prompt);
+                            }
+                            app.set_notice("补充消息未送达，草稿已恢复");
+                        }
+                    } else {
+                        // UI 发送与提示关闭相遇：消息没有进入当前提示，转为下一条正常请求。
+                        app.queues.entry(session).or_default().push_front(prompt);
+                        app.set_notice("补充消息未进入当前提示，已排到待发送");
+                    }
                     crate::queue::dispatch(app, connection);
                 }
                 Err(error) => {
-                    app.queues.entry(session).or_default().push_front(prompt);
-                    app.set_notice(format!("未能送达，已排到待发送：{error}"));
+                    let Some(pending) = crate::queue::take_steer(app, &session, prompt_id) else {
+                        return;
+                    };
+                    let prompt = crate::queue::QueuedPrompt {
+                        id: pending.id,
+                        draft: pending.draft,
+                        mode: None,
+                    };
+                    if let Some(action) = pending.withdrawal {
+                        if action == crate::queue::WithdrawAction::Edit {
+                            if current {
+                                crate::queue::restore_or_requeue(app, &session, prompt);
+                            } else {
+                                app.queues.entry(session).or_default().push_front(prompt);
+                            }
+                            app.set_notice(format!("撤回完成：消息未送达（{error}）"));
+                        }
+                    } else {
+                        app.queues.entry(session).or_default().push_front(prompt);
+                        app.set_notice(format!("未能送达，已排到待发送：{error}"));
+                    }
+                    crate::queue::dispatch(app, connection);
+                }
+            }
+        }
+        AppEvent::UnsteerReturned {
+            session,
+            prompt_id,
+            action,
+            result,
+        } => {
+            let current = app
+                .session
+                .as_ref()
+                .is_some_and(|current| current.id == session);
+            match result {
+                Ok(true) => {
+                    let Some(pending) = crate::queue::take_steer(app, &session, prompt_id) else {
+                        return;
+                    };
+                    if action == crate::queue::WithdrawAction::Edit {
+                        let prompt = crate::queue::QueuedPrompt {
+                            id: pending.id,
+                            draft: pending.draft,
+                            mode: None,
+                        };
+                        if current {
+                            crate::queue::restore_or_requeue(app, &session, prompt);
+                        } else {
+                            app.queues.entry(session).or_default().push_front(prompt);
+                        }
+                    }
+                    app.set_notice("已撤回待发送的补充消息");
+                    crate::queue::dispatch(app, connection);
+                }
+                Ok(false) => {
+                    // steering 已被 drain：等 SteeringApplied 到达后由它移入转写。
+                    app.set_notice("消息已进入本轮上下文，无法撤回");
+                }
+                Err(error) => {
+                    if let Some(pending) = crate::queue::steer_mut(app, &session, prompt_id) {
+                        pending.withdrawal = None;
+                    }
+                    app.set_notice(format!("撤回失败：{error}"));
                 }
             }
         }

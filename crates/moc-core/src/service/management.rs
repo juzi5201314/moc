@@ -6,13 +6,30 @@ use crate::{
     config::{discovery, editor},
     workspace::registry,
 };
-use moc_protocol::{ConfigAction, ConfigReply, RequestContext, SteerParams, SteerResult};
+use moc_protocol::{
+    ConfigAction, ConfigReply, RequestContext, SteerParams, SteerResult, UnsteerParams,
+    UnsteerResult,
+};
 use std::{collections::VecDeque, path::Path, sync::Arc};
+
+/// 一条已接受、但还没在安全边界写入会话的补充消息。
+pub(crate) struct PendingSteering {
+    /// 本次提示内单调递增的 ID；前端用它撤回。
+    pub id: u64,
+    pub message: moc_llm::Message,
+}
+
+/// 一条已经写入会话的补充消息；前端据此把待发送项移入转写。
+pub(crate) struct AppliedSteering {
+    pub id: u64,
+    pub text: String,
+}
 
 #[derive(Default)]
 pub(crate) struct Steering {
     pub accepting: bool,
-    pub messages: VecDeque<moc_llm::Message>,
+    pub next_id: u64,
+    pub messages: VecDeque<PendingSteering>,
     /// 补充消息入队时唤醒 `wait_agent`，让它立刻返回。
     pub notify: Arc<tokio::sync::Notify>,
 }
@@ -37,18 +54,46 @@ pub(super) async fn steer(
     let runtime = inner.runtime(&params.session_id).await;
     let mut steering = runtime.steering.lock().await;
     if !steering.accepting {
-        return Ok(SteerResult { accepted: false });
+        return Ok(SteerResult {
+            accepted: false,
+            id: None,
+        });
     }
-    steering.messages.push_back(message);
+    steering.next_id += 1;
+    let id = steering.next_id;
+    steering.messages.push_back(PendingSteering { id, message });
     steering.notify.notify_waiters();
-    Ok(SteerResult { accepted: true })
+    Ok(SteerResult {
+        accepted: true,
+        id: Some(id),
+    })
+}
+
+/// 撤回一条尚未写入会话的补充消息；写入之后返回 false。
+pub(super) async fn unsteer(
+    inner: &CoreInner,
+    params: UnsteerParams,
+) -> Result<UnsteerResult, CoreError> {
+    let runtime = inner.runtime(&params.session_id).await;
+    let mut steering = runtime.steering.lock().await;
+    let Some(index) = steering
+        .messages
+        .iter()
+        .position(|entry| entry.id == params.id)
+    else {
+        return Ok(UnsteerResult { removed: false });
+    };
+    steering.messages.remove(index);
+    // 等待中的 `wait_agent` 需要重新看到「已无待投递消息」。
+    steering.notify.notify_waiters();
+    Ok(UnsteerResult { removed: true })
 }
 
 pub(super) async fn drain_steering(
     inner: &CoreInner,
     session: &str,
     closing: bool,
-) -> Result<usize, CoreError> {
+) -> Result<Vec<AppliedSteering>, CoreError> {
     let runtime = inner.runtime(session).await;
     let pending = {
         let mut steering = runtime.steering.lock().await;
@@ -57,14 +102,16 @@ pub(super) async fn drain_steering(
         }
         std::mem::take(&mut steering.messages)
     };
-    let count = pending.len();
-    for message in pending {
+    let mut applied = Vec::with_capacity(pending.len());
+    for entry in pending {
+        let text = entry.message.text();
         inner
             .sessions
-            .append_message(session, message, None, None)
+            .append_message(session, entry.message, None, None)
             .await?;
+        applied.push(AppliedSteering { id: entry.id, text });
     }
-    Ok(count)
+    Ok(applied)
 }
 
 pub(super) async fn manage(

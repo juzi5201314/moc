@@ -160,9 +160,21 @@ pub(crate) async fn run_prompt_with_lock(
     repair_pending_calls(&inner, &session_id, &record)
         .await
         .map_err(to_rpc)?;
-    super::management::drain_steering(&inner, &session_id, true)
+    for entry in super::management::drain_steering(&inner, &session_id, true)
         .await
-        .map_err(to_rpc)?;
+        .map_err(to_rpc)?
+    {
+        // 收尾阶段的推送失败只影响前端能否看到，不能跳过后面的清理与解锁。
+        let _ = update
+            .emit(
+                session_id.clone(),
+                SessionUpdate::SteeringApplied {
+                    id: entry.id,
+                    text: entry.text,
+                },
+            )
+            .await;
+    }
     // 结束阶段收到的代理消息照样写入会话：模型这轮看不到，但界面和下次唤醒要能看到。
     crate::agents::drain_inbox(&inner, &update, &session_id, true)
         .await
@@ -453,9 +465,21 @@ async fn run_prompt_locked(
             final_reason = FinishReason::Cancelled;
             break;
         }
-        super::management::drain_steering(&inner, &params.session_id, false)
+        for entry in super::management::drain_steering(&inner, &params.session_id, false)
             .await
-            .map_err(to_rpc)?;
+            .map_err(to_rpc)?
+        {
+            update
+                .emit(
+                    params.session_id.clone(),
+                    SessionUpdate::SteeringApplied {
+                        id: entry.id,
+                        text: entry.text,
+                    },
+                )
+                .await
+                .map_err(protocol_to_rpc)?;
+        }
         crate::agents::drain_inbox(&inner, &update, &params.session_id, false)
             .await
             .map_err(to_rpc)?;

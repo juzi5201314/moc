@@ -996,6 +996,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::JobFinished { .. } => "job_finished",
         SessionUpdate::WorkspaceChanged { .. } => "workspace_changed",
         SessionUpdate::UpstreamMismatch { .. } => "upstream_mismatch",
+        SessionUpdate::SteeringApplied { .. } => "steering_applied",
         SessionUpdate::Error { .. } => "error",
     }
 }

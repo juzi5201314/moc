@@ -41,7 +41,7 @@ use crate::methods::{
     SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
     SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
     SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
-    SessionUsageParams, SessionUsageResult,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -79,6 +79,16 @@ pub trait AgentService: Send + Sync + 'static {
     ) -> impl Future<Output = Result<crate::SteerResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
+
+    /// 撤回一条尚未写入会话的 steering 消息；不支持时明确拒绝。
+    fn session_unsteer(
+        &self,
+        _ctx: RequestContext,
+        _params: UnsteerParams,
+    ) -> impl Future<Output = Result<UnsteerResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     fn agent_spawn(
         &self,
         _ctx: RequestContext,

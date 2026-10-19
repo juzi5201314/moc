@@ -204,6 +204,10 @@ pub struct App {
     /// 双击 `←` 返回的第一次按键时刻。
     pub left_tap_pending: Option<std::time::Instant>,
     pub queues: HashMap<String, std::collections::VecDeque<crate::queue::QueuedPrompt>>,
+    /// 已提交给 core、但还没在安全边界写入会话的补充消息，按会话隔离。
+    pub steers: HashMap<String, std::collections::VecDeque<crate::queue::PendingSteer>>,
+    /// 已收到 `SteeringApplied` 的 core ID；用于处理事件先于 RPC 响应的竞态。
+    pub resolved_steers: HashMap<String, std::collections::HashSet<u64>>,
     pub inflight_prompts: std::collections::HashSet<String>,
     /// 本前端发起、会占住会话提示锁的操作（模型切换、手动压缩）在飞的会话。
     ///
@@ -391,6 +395,8 @@ impl App {
             subagent_hits: Vec::new(),
             subagent_generation: 0,
             queues: HashMap::new(),
+            steers: HashMap::new(),
+            resolved_steers: HashMap::new(),
             inflight_prompts: std::collections::HashSet::new(),
             inflight_session_ops: std::collections::HashSet::new(),
             next_queue_id: 0,

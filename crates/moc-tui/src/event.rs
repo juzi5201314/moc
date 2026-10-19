@@ -657,6 +657,7 @@ async fn event_loop(
                 match app_event {
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
                         | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..}
+                        | AppEvent::UnsteerReturned { .. }
                         | AppEvent::PlanApproval(_) | AppEvent::PlanExecutionLoaded { .. }
                         | AppEvent::ModelSwitchConfirm { .. }
                         | AppEvent::SessionControlSettled { .. })) => {
@@ -994,9 +995,9 @@ fn handle_mouse_with_connection(
             .cloned()
         {
             if cancel.contains(position.into()) {
-                crate::queue::remove(app, id);
+                crate::queue::remove(app, connection, id);
             } else {
-                crate::queue::edit(app, id);
+                crate::queue::edit(app, connection, id);
             }
             return;
         }
@@ -1411,14 +1412,23 @@ fn handle_key(
             return;
         }
         Some("queue_edit") => {
-            if let Some(id) = app
-                .session
-                .as_ref()
-                .and_then(|session| app.queues.get(&session.id))
+            let Some(session) = app.session.as_ref().map(|session| session.id.clone()) else {
+                return;
+            };
+            let steer_id = app.steers.get(&session).and_then(|entries| {
+                entries
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.withdrawal.is_none())
+                    .map(|entry| entry.id)
+            });
+            let queue_id = app
+                .queues
+                .get(&session)
                 .and_then(|queue| queue.front())
-                .map(|entry| entry.id)
-            {
-                crate::queue::edit(app, id);
+                .map(|entry| entry.id);
+            if let Some(id) = steer_id.or(queue_id) {
+                crate::queue::edit(app, connection, id);
             }
             return;
         }
@@ -2952,6 +2962,15 @@ fn apply_update_and_refresh(
         .session
         .as_ref()
         .is_some_and(|session| session.id == session_id);
+    // 补充消息的落位事件对所有会话都要处理，否则切走期间回来的回执会留下幽灵项。
+    if let SessionUpdate::SteeringApplied { id, text } = &update {
+        crate::queue::steering_applied(app, &session_id, *id, text, is_current);
+        if is_current {
+            // pending 清空后才能安全启动下一条提示，保证用户块先于新提示落地。
+            crate::queue::dispatch(app, connection);
+        }
+        return;
+    }
     if !is_current {
         // 聚焦子代理时主会话不再是当前会话，但代理面仍挂靠在它上面：
         // 主会话发出的状态事件与新建代理照旧更新名册，避免侧栏在聚焦期间僵住。
@@ -3040,6 +3059,8 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
     use crate::transcript::Block;
     match update {
         SessionUpdate::AgentStarted { .. } | SessionUpdate::AgentStatusChanged { .. } => {}
+        // 在主循环的 apply_update_and_refresh 里单独处理（需要会话上下文）。
+        SessionUpdate::SteeringApplied { .. } => {}
         SessionUpdate::AgentMessage { meta, body } => {
             app.push_block(Block::AgentMessage { meta, body })
         }
@@ -5787,6 +5808,159 @@ mod tests {
         assert!(!app.interrupt_pending.contains(&old_session));
         assert!(app.blocks.is_empty(), "旧会话内容不得落到新会话转写");
 
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn interrupt_submit_still_cancels_immediately() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let session = app.session.as_ref().expect("测试会话").id.clone();
+        app.preferences.active_submit = crate::config::ActiveSubmit::Interrupt;
+        app.prompt_running = true;
+        app.prompt.insert_text("中断消息");
+        crate::queue::submit(&mut app, &connection, false);
+        assert_eq!(app.queues[&session].len(), 1);
+        assert!(app.interrupt_pending.contains(&session));
+        assert!(app.cancel_requested);
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn steer_returned_keeps_message_pending_until_applied() {
+        use crate::transcript::Block;
+
+        let (core, connection, mut app) = setup_test_app().await;
+        let session = app.session.as_ref().expect("测试会话").id.clone();
+        app.steers
+            .entry(session.clone())
+            .or_default()
+            .push_back(crate::queue::PendingSteer {
+                id: 1,
+                draft: crate::widgets::prompt::PromptState::from_text("先保留原文件".into()),
+                display_text: "先保留原文件".into(),
+                core_id: None,
+                withdrawal: None,
+            });
+        crate::interaction::handle_event(
+            &mut app,
+            &connection,
+            AppEvent::SteerReturned {
+                session: session.clone(),
+                prompt_id: 1,
+                result: Ok(moc_protocol::SteerResult {
+                    accepted: true,
+                    id: Some(5),
+                }),
+            },
+        );
+        assert!(
+            app.blocks.is_empty(),
+            "accepted 不等于已写入，不能提前写转写"
+        );
+        assert_eq!(app.steers[&session][0].core_id, Some(5));
+        apply_update_and_refresh(
+            &mut app,
+            &connection,
+            session.clone(),
+            SessionUpdate::SteeringApplied {
+                id: 5,
+                text: "先保留原文件".into(),
+            },
+        );
+        assert!(app.steers[&session].is_empty());
+        assert!(matches!(
+            &app.blocks[0].block,
+            Block::User { text } if text == "先保留原文件"
+        ));
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn withdrawn_steer_edit_restores_draft() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let session = app.session.as_ref().expect("测试会话").id.clone();
+        app.steers
+            .entry(session.clone())
+            .or_default()
+            .push_back(crate::queue::PendingSteer {
+                id: 1,
+                draft: crate::widgets::prompt::PromptState::from_text("撤回的草稿".into()),
+                display_text: "撤回的草稿".into(),
+                core_id: Some(5),
+                withdrawal: Some(crate::queue::WithdrawAction::Edit),
+            });
+        crate::interaction::handle_event(
+            &mut app,
+            &connection,
+            AppEvent::UnsteerReturned {
+                session: session.clone(),
+                prompt_id: 1,
+                action: crate::queue::WithdrawAction::Edit,
+                result: Ok(true),
+            },
+        );
+        assert!(app.steers[&session].is_empty());
+        assert_eq!(app.prompt_text(), "撤回的草稿");
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pending_steer_blocks_dispatch_until_steering_applied() {
+        use crate::transcript::Block;
+
+        let (core, connection, mut app) = setup_test_app().await;
+        let session = app.session.as_ref().expect("测试会话").id.clone();
+        app.steers
+            .entry(session.clone())
+            .or_default()
+            .push_back(crate::queue::PendingSteer {
+                id: 1,
+                draft: crate::widgets::prompt::PromptState::from_text("补充内容".into()),
+                display_text: "补充内容".into(),
+                core_id: Some(5),
+                withdrawal: None,
+            });
+        app.queues
+            .entry(session.clone())
+            .or_default()
+            .push_back(crate::queue::QueuedPrompt {
+                id: 2,
+                draft: crate::widgets::prompt::PromptState::from_text("排队内容".into()),
+                mode: None,
+            });
+        crate::queue::dispatch(&mut app, &connection);
+        assert_eq!(
+            app.queues[&session].len(),
+            1,
+            "pending steering 必须挡住下一条提示"
+        );
+        apply_update_and_refresh(
+            &mut app,
+            &connection,
+            session.clone(),
+            SessionUpdate::SteeringApplied {
+                id: 5,
+                text: "补充内容".into(),
+            },
+        );
+        let users: Vec<&str> = app
+            .blocks
+            .iter()
+            .filter_map(|entry| match &entry.block {
+                Block::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            users,
+            vec!["补充内容", "排队内容"],
+            "用户块必须按注入顺序落地"
+        );
+        assert!(app.queues[&session].is_empty());
         connection.shutdown().await;
         core.shutdown().await;
     }

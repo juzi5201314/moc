@@ -35,7 +35,15 @@ pub enum AppEvent {
     },
     SteerReturned {
         session: String,
-        prompt: crate::queue::QueuedPrompt,
+        /// 本地待发送项 ID（不是 core 分配的消息 ID）。
+        prompt_id: u64,
+        result: anyhow::Result<moc_protocol::SteerResult>,
+    },
+    UnsteerReturned {
+        session: String,
+        /// 本地待发送项 ID。
+        prompt_id: u64,
+        action: crate::queue::WithdrawAction,
         result: anyhow::Result<bool>,
     },
     PlanApproval(anyhow::Result<moc_protocol::methods::SessionPlanApproveResult>),

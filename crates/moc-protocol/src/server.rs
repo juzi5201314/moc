@@ -40,7 +40,7 @@ use crate::methods::{
     SessionCompact, SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
     SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
-    SessionUnlock, SessionUsage,
+    SessionUnlock, SessionUnsteer, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -471,6 +471,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .session_steer(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <SessionUnsteer as Method>::NAME => {
+                let params = params_from_value::<SessionUnsteer>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_unsteer(self.context(client, cancel), params)
                         .await?,
                 )
             }

@@ -155,6 +155,11 @@ impl ClientRequest for ConfigManage {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteerResult {
     pub accepted: bool,
+    /// 接受后由 core 分配的稳定 ID；前端据此撤回仍在 steering 队列里的消息。
+    ///
+    /// 旧核心不返回该字段，新前端仍可正常处理；新核心的 accepted 结果总是带 ID。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
 }
 
 /// Steering 在下一安全工具边界加入当前提示；队列由前端等待前一次提示完成后提交。
@@ -173,3 +178,29 @@ impl Method for SessionSteer {
     type Result = SteerResult;
 }
 impl ClientRequest for SessionSteer {}
+
+/// 撤回一条尚未被 core 写入会话的 steering 消息。
+///
+/// 消息只有在下一轮请求前 drain 时才算真正写入；写入之后撤回返回
+/// `removed: false`，前端应保留该消息在转写中的位置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnsteerParams {
+    pub session_id: String,
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnsteerResult {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SessionUnsteer;
+impl Method for SessionUnsteer {
+    const NAME: &'static str = "session/unsteer";
+    type Params = UnsteerParams;
+    type Result = UnsteerResult;
+}
+impl ClientRequest for SessionUnsteer {}
