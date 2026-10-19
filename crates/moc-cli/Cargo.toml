@@ -3,6 +3,7 @@ name = "moc-cli"
 version = "0.1.0"
 edition = "2024"
 authors = ["soeur@soeur.dev@gmail.com"]
+default-run = "moc"
 
 [dependencies]
 moc-core = { path = "../moc-core" }
