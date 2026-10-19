@@ -7,6 +7,7 @@ authors = ["soeur@soeur.dev@gmail.com"]
 [dependencies]
 moc-core = { path = "../moc-core" }
 moc-protocol = { path = "../moc-protocol" }
+moc-ptc-worker = { path = "../moc-ptc-worker" }
 moc-tui = { path = "../moc-tui" }
 anyhow.workspace = true
 clap.workspace = true
@@ -29,3 +30,7 @@ libc.workspace = true
 [[bin]]
 name = "moc"
 path = "src/main.rs"
+
+[[bin]]
+name = "moc-ptc-worker"
+path = "src/bin/moc_ptc_worker.rs"

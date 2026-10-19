@@ -1,9 +1,8 @@
 //! 调度脚本发起的宿主调用：按提交顺序进入有上限的队列；不能并行的操作充当屏障；取消后让进行中的事务完整结束。
 use super::{
+    process::Guest,
     result::{script_result, status},
-    runtime::Guest,
     state::error,
-    wire::*,
 };
 use crate::{
     session::entries::EntryPayload,
@@ -14,6 +13,7 @@ use futures_util::{
     stream::{FuturesUnordered, StreamExt},
 };
 use moc_protocol::{SessionUpdate, ToolStatus, methods::session::TranscriptChildCall};
+use moc_ptc_protocol::wire::*;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -319,6 +319,7 @@ pub(super) async fn run(
             images.append(&mut tool.images);
         }
     }
+    guest.shutdown().await;
     outcome.images.extend(images);
     outcome
 }

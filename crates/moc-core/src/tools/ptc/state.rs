@@ -1,5 +1,4 @@
 //! PTC 的 `state.*`：显式保存会话级 JSON 状态，配额按当前状态计算。
-use super::wire::{Operation, ScriptError};
 use crate::{
     session::{
         entries::{EntryPayload, PtcStateChange},
@@ -7,6 +6,7 @@ use crate::{
     },
     tools::ToolCtx,
 };
+use moc_ptc_protocol::wire::{Operation, ScriptError};
 use serde_json::{Value, json};
 
 pub(super) fn error(code: &str, message: impl ToString) -> ScriptError {

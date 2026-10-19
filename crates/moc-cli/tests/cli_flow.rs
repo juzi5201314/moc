@@ -315,3 +315,61 @@ async fn sigint_cancels_a_running_shell_and_repl_still_accepts_quit() {
             .contains("Cancelled")
     );
 }
+
+#[tokio::test]
+async fn print_runs_code_in_worker_process() {
+    let upstream = MockServer::builder().start().await;
+    let counter = Arc::new(AtomicUsize::new(0));
+    let seen = counter.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let response = match seen.fetch_add(1, Ordering::SeqCst) {
+                0 => call(
+                    "run",
+                    "run_code",
+                    json!({"code":"return [1,2,3].reduce((a,b)=>a+b,0);"}),
+                ),
+                _ => text("worker 结果 6"),
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let project = Project::new(&upstream.uri());
+    let output = project.run(&["--print"], "计算 1+2+3").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "worker 结果 6\n");
+}
+
+#[tokio::test]
+async fn run_code_timeout_kills_worker_and_keeps_prompt_alive() {
+    let upstream = MockServer::builder().start().await;
+    let counter = Arc::new(AtomicUsize::new(0));
+    let seen = counter.clone();
+    Mock::given(method("POST"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let response = match seen.fetch_add(1, Ordering::SeqCst) {
+                0 => call(
+                    "run",
+                    "run_code",
+                    json!({"code":"while(true) {}","timeout_secs":1}),
+                ),
+                _ => text("超时处理完成"),
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let project = Project::new(&upstream.uri());
+    let output = project.run(&["--print"], "跑一个死循环").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "超时处理完成\n");
+}

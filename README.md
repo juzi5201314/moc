@@ -20,7 +20,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 cargo build --release
 ```
 
-需要 Rust 1.85+。构建产物位于 `target/release/moc`。
+需要 Rust 1.85+。构建产物为 `target/release/moc` 与 `target/release/moc-ptc-worker`；PTC 的 `run_code` 依赖同目录的 worker。`cargo install --path crates/moc-cli` 会同时安装两者。
 
 ## 快速开始
 
@@ -80,7 +80,9 @@ cargo build         # 调试构建
 ## Workspace 结构
 
 - `crates/moc-core` — Agent 内核：会话、提示调度、工具执行、循环保护
+- `crates/moc-ptc-protocol` — PTC 宿主与 worker 共用的 JSON 协议和 prelude
+- `crates/moc-ptc-worker` — 独立 QuickJS worker 的执行循环
 - `crates/moc-protocol` — JSON-RPC 协议层
 - `crates/moc-llm` — LLM 传输与编解码
 - `crates/moc-tui` — 终端 TUI 前端
-- `crates/moc-cli` — 命令行入口
+- `crates/moc-cli` — 命令行入口与 `moc-ptc-worker` 二进制

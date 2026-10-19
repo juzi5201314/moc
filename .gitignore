@@ -1,6 +1,5 @@
 /target
 /.zcode/
-/tools/ptc-guest/target
 
 # Python 缓存（scripts/ 下的辅助脚本）
 __pycache__/

@@ -1,10 +1,8 @@
 //! 子工具结果：JS 拿到完整结果，模型看到的部分受展示预算限制。
-use super::{
-    state::error,
-    wire::{ScriptError, ScriptToolResult},
-};
+use super::state::error;
 use crate::tools::{ToolCtx, ToolOutcome, ToolOutput};
 use moc_protocol::ToolStatus;
+use moc_ptc_protocol::wire::{ScriptError, ScriptToolResult};
 use tokio::io::AsyncReadExt;
 
 pub(super) fn status(outcome: &ToolOutcome) -> ToolStatus {

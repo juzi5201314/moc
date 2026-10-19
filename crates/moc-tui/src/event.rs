@@ -3683,6 +3683,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, receiver) = unbounded_channel();
@@ -3872,6 +3873,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, mut receiver) = unbounded_channel();
@@ -4053,6 +4055,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, mut receiver) = unbounded_channel();
@@ -4156,6 +4159,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, mut receiver) = unbounded_channel();
@@ -4329,6 +4333,7 @@ mod tests {
                 overlays: Vec::new(),
                 session_dir: Some(root.path().join("sessions")),
                 client: Default::default(),
+                ptc_worker: None,
             })
             .unwrap();
             let (events, events_rx) = unbounded_channel();
@@ -4559,6 +4564,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = unbounded_channel();
@@ -4779,6 +4785,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = unbounded_channel();
@@ -5070,6 +5077,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = unbounded_channel();
@@ -5133,6 +5141,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = unbounded_channel();
@@ -5221,6 +5230,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = unbounded_channel();
@@ -6166,6 +6176,7 @@ mod config_picker_tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = unbounded_channel();

@@ -1616,6 +1616,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .unwrap();
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();

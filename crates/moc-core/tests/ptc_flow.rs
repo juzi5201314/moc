@@ -1,4 +1,4 @@
-//! PTC 入口的真实 guest 与提示闭环验收。
+//! PTC 入口的真实 worker 进程与提示闭环验收。
 
 #[path = "support/mod.rs"]
 mod support;
@@ -16,7 +16,11 @@ use wiremock::{
 };
 
 #[tokio::test]
-async fn ptc_run_code_executes_real_guest_in_normal_mode() {
+async fn ptc_run_code_executes_worker_in_normal_mode() {
+    if std::env::var_os("MOC_PTC_WORKER_BIN").is_none() {
+        eprintln!("skip PTC flow: set MOC_PTC_WORKER_BIN to moc-ptc-worker");
+        return;
+    }
     let upstream = MockServer::builder().start().await;
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);

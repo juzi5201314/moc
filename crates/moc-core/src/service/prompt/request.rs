@@ -386,6 +386,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),
+            ptc_worker: None,
         };
         let config = crate::ResolvedConfig::load(&core)
             .expect("载入配置")
@@ -434,6 +435,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),
+            ptc_worker: None,
         };
         let config = crate::ResolvedConfig::load(&core)
             .expect("载入配置")

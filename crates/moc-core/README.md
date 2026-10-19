@@ -109,13 +109,14 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 代码编排（PTC）
 
-`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在随宿主内嵌的固定 QuickJS/WASM guest 中，工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
+`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在独立的 `moc-ptc-worker` 进程中（QuickJS-NG/rquickjs 原生执行，无 WASM、无 JIT），worker 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
 
 脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。失败会 reject 带 `code`、`message`、`result` 的错误。`state.store/load/remove/keys` 提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
 
-PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_concurrent_calls`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。WASM 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
+PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_concurrent_calls`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
 
-普通宿主构建直接使用 `crates/moc-core/assets/ptc-guest.wasm`，不需要安装 WASI SDK、Node 或 Wasmtime CLI。Linux/WSL 维护 guest 资产时运行 `bash scripts/build-ptc-guest.sh`；脚本只使用已安装的 Rust `wasm32-unknown-unknown` 目标、支持 WASM 的 clang 和 llvm-ar，并更新同目录的 `ptc-guest-build.txt`。Windows x86_64 MSVC 和 macOS aarch64 使用内嵌资产编译宿主，不需要现场重建 guest。
+`moc-ptc-worker` 随 `moc-cli` 包一起构建并安装，`moc` 启动时查找同目录的 worker 二进制；找不到时 `run_code` 返回 `E_PTC_WORKER`。worker 崩溃或提前退出只影响本次脚本，core 收到 `E_PTC_WORKER` 并继续；超时或取消会终止子进程。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。worker 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
+
 ### 上下文压缩与解释
 
 `compaction.threshold` 表示开始压缩的触发阈值，默认 `{ mode = "percent", value = 85 }`；固定 token 可写为 `{ mode = "tokens", value = 120000 }`。百分比只乘上下文窗口，不扣除模型 `max_output_tokens`。自动压缩完成还必须进入触发阈值的 80% recovery band；例如 200k 窗口的 170k 触发线要求压缩后不高于 136k，避免在临界线附近反复压缩。上下文溢出恢复只要求压缩后重新放入可用窗口，再继续请求。

@@ -469,6 +469,7 @@ mod tests {
             overlays,
             session_dir: None,
             client: moc_llm::Client::new(),
+            ptc_worker: None,
         }
     }
 

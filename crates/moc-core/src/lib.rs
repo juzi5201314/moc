@@ -40,6 +40,15 @@ pub struct CoreConfig {
     pub session_dir: Option<std::path::PathBuf>,
     /// 可注入的 LLM 客户端。
     pub client: moc_llm::Client,
+    /// `run_code` 使用的独立 QuickJS worker 可执行文件；未配置时 PTC 不可用。
+    pub ptc_worker: Option<PtcWorkerCommand>,
+}
+
+/// 启动 `moc-ptc-worker` 的命令。CLI 默认指向同目录的 worker 二进制。
+#[derive(Clone, Debug)]
+pub struct PtcWorkerCommand {
+    pub program: std::path::PathBuf,
+    pub args: Vec<std::ffi::OsString>,
 }
 
 impl Default for CoreConfig {
@@ -55,6 +64,7 @@ impl Default for CoreConfig {
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),
+            ptc_worker: None,
         }
     }
 }

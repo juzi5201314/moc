@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
-use moc_core::{Core, CoreConfig, resolve_models};
+use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
 use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, ModelSwitchOverflow,
     PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, SessionCancel,
@@ -141,6 +141,9 @@ fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {
     let cwd = cwd
         .canonicalize()
         .with_context(|| format!("无法打开工作目录 {}", cwd.display()))?;
+    let worker = std::env::current_exe()
+        .context("无法定位 moc 可执行文件")?
+        .with_file_name(format!("moc-ptc-worker{}", std::env::consts::EXE_SUFFIX));
     Ok(CoreConfig {
         cwd: cwd.clone(),
         overlays: args
@@ -152,6 +155,10 @@ fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {
             .session_dir
             .as_ref()
             .map(|path| absolute_path(path, &cwd)),
+        ptc_worker: Some(PtcWorkerCommand {
+            program: worker,
+            args: Vec::new(),
+        }),
         ..CoreConfig::default()
     })
 }

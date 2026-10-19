@@ -1,16 +1,16 @@
-//! run_code 工具：在内嵌的 WASM guest 里执行 PTC 脚本；工具调用和会话权限仍由宿主负责。
+//! run_code 工具：在独立 QuickJS worker 进程里执行 PTC 脚本；工具调用和会话权限仍由宿主负责。
 
+mod process;
 mod result;
-pub(crate) mod runtime;
 mod scheduler;
 mod state;
-mod wire;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
+use moc_ptc_protocol::wire::StartRequest;
 use serde_json::Value;
-use wire::StartRequest;
+use std::time::Duration;
 
 pub struct RunCodeTool;
 
@@ -19,7 +19,7 @@ impl Tool for RunCodeTool {
         "run_code"
     }
     fn description(&self) -> &str {
-        "Run JavaScript in an isolated QuickJS/WASM sandbox; call tools with await tools.<name>(args)."
+        "Run JavaScript in a separate QuickJS worker process; call tools with await tools.<name>(args)."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -60,28 +60,26 @@ impl Tool for RunCodeTool {
                 .and_then(Value::as_u64)
                 .unwrap_or(ctx.config.tools.ptc.default_timeout_secs)
                 .min(ctx.config.tools.ptc.max_timeout_secs);
-            let deadline =
-                tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-            let runtime = ctx
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+            let worker = ctx
                 .core
+                .boot
+                .ptc_worker
+                .clone()
+                .ok_or_else(|| ToolError::new("E_PTC_WORKER", "PTC worker 未配置"))?;
+            let guest = process::Guest::spawn(&worker)?;
+            let max_message_bytes = ctx
+                .config
+                .tools
                 .ptc
-                .get_or_try_init(|| async {
-                    tokio::task::spawn_blocking(runtime::PtcRuntime::compile)
-                        .await
-                        .map_err(|err| ToolError::new("E_PTC_RUNTIME", err.to_string()))
-                        .and_then(std::convert::identity)
-                })
-                .await?;
-            let guest = tokio::select! {
-                biased;
-                _ = ctx.cancel.cancelled() => return Err(ToolError::new("E_CANCELLED", "script cancelled")),
-                _ = tokio::time::sleep_until(deadline) => return Err(ToolError::new("E_TIMEOUT", "script timed out")),
-                result = runtime.instantiate(ctx.config.tools.ptc.memory_limit_bytes) => result?,
-            };
+                .max_result_bytes
+                .max(limit)
+                .saturating_add(4096);
             let input = serde_json::to_vec(&StartRequest {
                 code: code.to_owned(),
                 memory_limit_bytes: ctx.config.tools.ptc.memory_limit_bytes,
                 max_output_bytes: limit,
+                max_message_bytes,
                 max_pending_calls: ctx.config.tools.ptc.max_pending_calls,
             })
             .expect("启动参数可序列化");

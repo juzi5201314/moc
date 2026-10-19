@@ -43,6 +43,7 @@ impl PlanHarness {
             overlays: Vec::new(),
             session_dir: Some(root.path().join("sessions")),
             client: Default::default(),
+            ptc_worker: None,
         })
         .expect("测试内核");
         let (tx, events) = unbounded_channel();

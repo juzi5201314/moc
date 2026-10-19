@@ -1,9 +1,7 @@
-//! 宿主和内嵌 WASM guest 共用的 JSON 通信协议。
+//! 宿主和 worker 共用的 JSON 通信协议。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-pub const ABI_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -11,6 +9,7 @@ pub struct StartRequest {
     pub code: String,
     pub memory_limit_bytes: usize,
     pub max_output_bytes: usize,
+    pub max_message_bytes: usize,
     pub max_pending_calls: usize,
 }
 

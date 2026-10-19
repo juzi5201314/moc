@@ -1,0 +1,12 @@
+[package]
+name = "moc-ptc-worker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+moc-ptc-protocol = { path = "../moc-ptc-protocol" }
+rquickjs = "=0.14.0"
+serde_json.workspace = true
+
+[dev-dependencies]
+serde.workspace = true

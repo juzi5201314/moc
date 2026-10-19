@@ -211,7 +211,7 @@ pub fn pieces(
         name: PIECE_PTC_RUNTIME,
         scope: PieceScope::Static,
         text: format!(
-            "run_code works in every mode; in PTC mode it is the only native tool. MCP tools are reachable only inside run_code: `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`; discovery grants no permission.\n\nResults are `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent, else `JSON.parse(r.content)` for JSON text. Failures reject with serializable `code`, `message`, `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls up to {}. Writes, bash approval, and session-state updates are barriers. Await all calls before returning and return only final information; intermediate results never reach model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, `state.keys()` persist session JSON (missing key: undefined); writes commit immediately and later failures do not roll them back. JS globals do not persist. WASM has no file, network, process, or timer APIs; use host tools.",
+            "run_code works in every mode; in PTC mode it is the only native tool. MCP tools are reachable only inside run_code: `await catalog.search({{query:\"\"}})`, then `await catalog.describe(name)`, then `await tools[name](args)`; discovery grants no permission.\n\nResults are `{{content,summary,structuredContent,isError,status,artifact}}`; prefer structuredContent, else `JSON.parse(r.content)` for JSON text. Failures reject with serializable `code`, `message`, `result`; use try/catch or Promise.allSettled. Example: `const r = await tools.read({{path:\"README.md\"}}); return r.content;`\n\nIndependent read-only calls may use Promise.all. Standard tool batches allow up to {} concurrent calls; run_code child calls up to {}. Writes, bash approval, and session-state updates are barriers. Await all calls before returning and return only final information; intermediate results never reach model history. `state.store(key,json)`, `state.load(key)`, `state.remove(key)`, `state.keys()` persist session JSON (missing key: undefined); writes commit immediately and later failures do not roll them back. JS globals do not persist. The worker has no file, network, process, or timer APIs; use host tools.",
             config.tools.max_concurrent_calls,
             config.tools.ptc.max_concurrent_calls,
         ),
@@ -354,6 +354,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),
+            ptc_worker: None,
         };
         ResolvedConfig::load(&core)
             .expect("load config")
@@ -579,6 +580,7 @@ mod tests {
             overlays: Vec::new(),
             session_dir: None,
             client: moc_llm::Client::new(),
+            ptc_worker: None,
         };
         let error = ResolvedConfig::load(&core)
             .and_then(|config| config.for_project(&cwd))

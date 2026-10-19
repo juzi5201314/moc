@@ -8,7 +8,7 @@
 // 实测会把别的用例的 mock 应答到当前用例（压缩摘要随机串台）。
 pub mod content;
 
-use moc_core::{Core, CoreConfig};
+use moc_core::{Core, CoreConfig, PtcWorkerCommand};
 use moc_protocol::{ClientBuilder, ClientHandle, Server, ServerConnection, methods::*, transport};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -53,6 +53,10 @@ impl Harness {
             overlays: vec![],
             session_dir: Some(root.path().join("sessions")),
             client: moc_llm::Client::new(),
+            ptc_worker: std::env::var_os("MOC_PTC_WORKER_BIN").map(|program| PtcWorkerCommand {
+                program: program.into(),
+                args: Vec::new(),
+            }),
         })
         .unwrap();
         let server = Server::new((*core).clone());

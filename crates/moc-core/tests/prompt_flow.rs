@@ -103,6 +103,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -596,6 +597,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -774,6 +776,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -1053,6 +1056,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -1223,6 +1227,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -1405,6 +1410,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -1563,6 +1569,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
@@ -1700,6 +1707,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
         overlays: Vec::new(),
         session_dir: None,
         client: Client::new(),
+        ptc_worker: None,
     })
     .expect("construct core");
     let (core_side, frontend_side) = transport::duplex(64 * 1024);
