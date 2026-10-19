@@ -70,29 +70,35 @@ impl Process {
         log: JobLog,
         permission: SessionPermission,
     ) -> Result<Self, ToolError> {
+        let shell = crate::shell::detect().ok_or_else(|| {
+            ToolError::new("E_BASH_SHELL", "no supported shell found on this platform")
+        })?;
+        let (program, arguments) = crate::shell::command_line(shell, &args.command);
         let mut command = match permission {
-            SessionPermission::Full => Command::new(shell_program()),
+            SessionPermission::Full => Command::new(&program),
             SessionPermission::Workspace => {
                 let mut command = Command::new("bwrap");
                 for argument in sandbox_arguments(&cwd, &workspace) {
                     command.arg(argument);
                 }
-                command.arg("--").arg(shell_program());
+                command.arg("--").arg(&program);
                 command
             }
         };
-        for argument in shell_arguments(&args.command) {
-            command.arg(argument);
-        }
+        command.args(arguments);
         command
             .current_dir(cwd)
             .envs(args.env.unwrap_or_default())
+            // 非交互 bash/sh 仍会读取 BASH_ENV/ENV；清掉它们，避免用户脚本改变行为。
+            .env_remove("BASH_ENV")
+            .env_remove("ENV")
             .stdin(if args.stdin.is_some() {
                 Stdio::piped()
             } else {
                 Stdio::null()
             })
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
         let group = ProcessGroup::for_suspended_spawn(&mut command)?;
@@ -121,6 +127,7 @@ impl Process {
         let deadline = timeout.map(|duration| tokio::time::Instant::now() + duration);
         let input = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout 已配置为管道");
+        let stderr = child.stderr.take().expect("stderr 已配置为管道");
         let output_group = completion_group.clone();
         let reader_log = log.clone();
         let mut reader = tokio::spawn(async move {
@@ -135,11 +142,13 @@ impl Process {
                 }
                 Ok::<_, std::io::Error>(())
             };
-            let (output, input) = tokio::join!(
-                super::super::job::copy_output(stdout, reader_log, output_group),
+            let (output, errors, input) = tokio::join!(
+                super::super::job::copy_output(stdout, reader_log.clone(), output_group.clone()),
+                super::super::job::copy_output(stderr, reader_log, output_group),
                 write_input
             );
-            output.and_then(|truncated| input.map(|()| (truncated, ())))
+            let truncated = output.and_then(|first| errors.map(|second| first || second))?;
+            input.map(|()| truncated)
         });
         let completion = Box::pin(async move {
             let (waited, timed_out) = tokio::select! {
@@ -153,17 +162,16 @@ impl Process {
                 }
             };
             drop(completion_group);
-            let (output_truncated, _input) =
-                match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader).await {
-                    Ok(joined) => joined
-                        .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
-                        .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
-                    Err(_) => {
-                        tracing::warn!("子进程已退出但 stdout 仍被占用，停止读取输出");
-                        reader.abort();
-                        (false, ())
-                    }
-                };
+            let output_truncated = match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader).await {
+                Ok(joined) => joined
+                    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
+                    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
+                Err(_) => {
+                    tracing::warn!("子进程已退出但 stdout 仍被占用，停止读取输出");
+                    reader.abort();
+                    false
+                }
+            };
             let status =
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
             log.finish()
@@ -234,16 +242,6 @@ impl Process {
 }
 
 #[cfg(unix)]
-fn shell_program() -> OsString {
-    std::env::var_os("SHELL").unwrap_or_else(|| "/bin/bash".into())
-}
-
-#[cfg(windows)]
-fn shell_program() -> OsString {
-    std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into())
-}
-
-#[cfg(unix)]
 fn sandbox_arguments(cwd: &std::path::Path, workspace: &std::path::Path) -> Vec<OsString> {
     vec![
         "--die-with-parent".into(),
@@ -273,63 +271,6 @@ fn sandbox_arguments(_cwd: &std::path::Path, _workspace: &std::path::Path) -> Ve
     Vec::new()
 }
 
-#[cfg(unix)]
-fn shell_arguments(command: &str) -> Vec<String> {
-    vec!["-lc".into(), format!("exec 2>&1\n{command}")]
-}
-
-#[cfg(windows)]
-fn shell_arguments(command: &str) -> Vec<String> {
-    vec![
-        "/D".into(),
-        "/S".into(),
-        "/C".into(),
-        format!("chcp 65001>nul & ({command}) 2>&1"),
-    ]
-}
-
-#[cfg(windows)]
-// portable-pty 不支持以挂起状态创建进程：先启动一个关闭 AutoRun 的空闲 cmd，加入 Job 后再发送命令。
-fn pty_shell_arguments(_command: &str) -> Vec<String> {
-    vec![
-        "/D".into(),
-        "/Q".into(),
-        "/K".into(),
-        "chcp 65001>nul & prompt $S".into(),
-    ]
-}
-
-#[cfg(unix)]
-fn pty_shell_arguments(command: &str) -> Vec<String> {
-    shell_arguments(command)
-}
-
-#[cfg(windows)]
-fn pty_input(command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> {
-    if command.contains('\0') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Windows shell commands cannot contain NUL bytes",
-        ));
-    }
-    let command = if command.trim().is_empty() {
-        "rem"
-    } else {
-        command
-    };
-    let command = command
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', "\r");
-    // exit 和用户命令写在同一行，免得没读完的 stdin 被外层 cmd 当成命令执行。
-    Ok(format!("({command}) 2>&1 & exit\r{}", stdin.unwrap_or_default()).into_bytes())
-}
-
-#[cfg(unix)]
-fn pty_input(_command: &str, stdin: Option<String>) -> std::io::Result<Vec<u8>> {
-    Ok(stdin.unwrap_or_default().into_bytes())
-}
-
 fn run_pty(
     args: BashArgs,
     cwd: PathBuf,
@@ -348,25 +289,36 @@ fn run_pty(
             pixel_height: 0,
         })
         .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let program = match permission {
-        SessionPermission::Full => shell_program(),
-        SessionPermission::Workspace => "bwrap".into(),
-    };
-    let mut builder = CommandBuilder::new(program);
+    let shell = crate::shell::detect()
+        .ok_or_else(|| std::io::Error::other("no supported shell found on this platform"))?;
+    #[cfg(unix)]
+    let (program, arguments) = crate::shell::command_line(shell, &args.command);
+    #[cfg(windows)]
+    let (program, arguments) = crate::shell::pty_idle_command(shell);
+    let mut builder = CommandBuilder::new(program.clone().into_os_string());
     if permission == SessionPermission::Workspace {
         for argument in sandbox_arguments(&cwd, &workspace) {
             builder.arg(argument);
         }
         builder.arg("--");
-        builder.arg(shell_program());
+        builder.arg(&program);
     }
-    for argument in pty_shell_arguments(&args.command) {
+    for argument in arguments {
         builder.arg(argument);
     }
     builder.cwd(cwd);
+    #[cfg(windows)]
+    if matches!(
+        shell.kind,
+        crate::shell::ShellKind::Bash | crate::shell::ShellKind::GitBash
+    ) {
+        builder.env("PS1", "");
+    }
     for (key, value) in args.env.unwrap_or_default() {
         builder.env(key, value);
     }
+    builder.env_remove("BASH_ENV");
+    builder.env_remove("ENV");
     let mut reader = pair
         .master
         .try_clone_reader()
@@ -399,7 +351,17 @@ fn run_pty(
     #[cfg(unix)]
     let group = ProcessGroup::new(pid).map_err(|error| std::io::Error::other(error.to_string()))?;
     drop(pair.slave);
-    let input = pty_input(&args.command, args.stdin)?;
+    #[cfg(windows)]
+    if args.command.contains('\0') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows shell commands cannot contain NUL bytes",
+        ));
+    }
+    #[cfg(unix)]
+    let input = args.stdin.unwrap_or_default().into_bytes();
+    #[cfg(windows)]
+    let input = crate::shell::pty_input(shell, &args.command, args.stdin.as_deref());
     let writer_thread = std::thread::spawn(move || writer.write_all(&input));
     let began = std::time::Instant::now();
     let _ = started.send((pid, group.clone()));
@@ -550,26 +512,31 @@ mod unix_tests {
             .expect("等待 shell");
         assert_eq!(result.code, Some(0));
     }
-}
 
-#[cfg(all(test, windows))]
-mod windows_tests {
-    use super::{pty_input, pty_shell_arguments};
-
-    #[test]
-    fn pty_defers_the_user_command_until_the_shell_is_ready() {
-        assert_eq!(
-            pty_shell_arguments("echo ready"),
-            vec![
-                String::from("/D"),
-                String::from("/Q"),
-                String::from("/K"),
-                String::from("chcp 65001>nul & prompt $S"),
-            ],
-        );
-        assert_eq!(
-            String::from_utf8(pty_input("echo ready", Some("stdin-data".into())).unwrap()).unwrap(),
-            "(echo ready) 2>&1 & exit\rstdin-data",
-        );
+    #[tokio::test]
+    async fn bash_env_is_not_sourced() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let marker = directory.path().join("bash-env-ran");
+        let script = directory.path().join("env.sh");
+        std::fs::write(&script, format!("touch {}\n", marker.display())).expect("写入 BASH_ENV");
+        let mut args = bash_args("printf ok");
+        args.env = Some(std::collections::BTreeMap::from([(
+            "BASH_ENV".to_owned(),
+            script.display().to_string(),
+        )]));
+        let log = test_log(directory.path().join("env.log")).await;
+        let process = Process::spawn(
+            args,
+            directory.path().to_owned(),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(5)),
+            log,
+            SessionPermission::Full,
+        )
+        .await
+        .expect("启动 shell");
+        let result = process.completion.await.expect("等待 shell");
+        assert_eq!(result.code, Some(0));
+        assert!(!marker.exists(), "BASH_ENV 不应被执行");
     }
 }

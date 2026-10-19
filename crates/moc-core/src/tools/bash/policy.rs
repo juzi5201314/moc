@@ -28,21 +28,21 @@ pub(crate) fn allowed_in_sandbox(
         return Ok(!mentions_external_path(command, cwd, workspace));
     }
 
-    let Some(segments) = split_segments(command) else {
+    let Some(scan) = super::syntax::scan(command) else {
         return Ok(false);
     };
-    if segments.is_empty() {
+    if scan.commands.is_empty() {
         return Ok(false);
     }
 
-    for segment in segments {
-        if contains_unsafe_shell_syntax(&segment) {
+    for segment in &scan.commands {
+        if segment.unsafe_syntax || segment.asynchronous {
             return Ok(false);
         }
-        let Ok(words) = shell_words::split(&segment) else {
+        let Some((name, args)) = segment.argv.split_first() else {
             return Ok(false);
         };
-        let Some((name, args)) = command_words(&words) else {
+        let Some(name) = Path::new(name).file_name().and_then(|name| name.to_str()) else {
             return Ok(false);
         };
         if !builtin_allowed(name, args) {
@@ -74,124 +74,6 @@ fn configured_allow(config: &BashConfig, command: &str) -> Result<bool, ToolErro
                 )
             })?;
             Ok(matcher.is_match(command.as_bytes()).unwrap_or(false))
-        })
-}
-
-fn split_segments(command: &str) -> Option<Vec<String>> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    let mut chars = command.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if escaped {
-            current.push(ch);
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && quote != Some('\'') {
-            current.push(ch);
-            escaped = true;
-            continue;
-        }
-        if let Some(active) = quote {
-            current.push(ch);
-            if ch == active {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '\'' | '"' => {
-                quote = Some(ch);
-                current.push(ch);
-            }
-            ';' | '\n' | '|' => {
-                push_segment(&mut segments, &mut current);
-                if ch == '|' && chars.peek() == Some(&'|') {
-                    chars.next();
-                }
-            }
-            '&' => {
-                if chars.peek() == Some(&'&') {
-                    chars.next();
-                    push_segment(&mut segments, &mut current);
-                } else {
-                    return None;
-                }
-            }
-            _ => current.push(ch),
-        }
-    }
-    if quote.is_some() || escaped {
-        return None;
-    }
-    push_segment(&mut segments, &mut current);
-    Some(segments)
-}
-
-fn push_segment(segments: &mut Vec<String>, current: &mut String) {
-    if !current.trim().is_empty() {
-        segments.push(std::mem::take(current));
-    }
-}
-
-fn contains_unsafe_shell_syntax(segment: &str) -> bool {
-    let mut quote = None;
-    let mut escaped = false;
-    let mut chars = segment.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if ch == '\\' && quote != Some('\'') {
-            escaped = true;
-            continue;
-        }
-        if let Some(active) = quote {
-            if ch == active {
-                quote = None;
-            } else if active == '"' && matches!(ch, '$' | '`') {
-                // 双引号里同样会做命令替换和参数展开（echo "$(id)"）；
-                // 单引号里的 `$`、`` ` `` 是字面量，照常放行。
-                return true;
-            }
-            continue;
-        }
-        match ch {
-            '\'' | '"' => quote = Some(ch),
-            '>' | '<' | '`' | '$' | '(' | ')' | '{' | '}' => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-fn command_words(words: &[String]) -> Option<(&str, &[String])> {
-    let mut index = 0;
-    while let Some(word) = words.get(index)
-        && is_assignment(word)
-    {
-        index += 1;
-    }
-    let command = words.get(index)?;
-    let name = Path::new(command).file_name()?.to_str()?;
-    Some((name, &words[index + 1..]))
-}
-
-fn is_assignment(word: &str) -> bool {
-    let Some((name, _)) = word.split_once('=') else {
-        return false;
-    };
-    !name.is_empty()
-        && name.bytes().enumerate().all(|(index, byte)| {
-            if index == 0 {
-                byte == b'_' || byte.is_ascii_alphabetic()
-            } else {
-                byte == b'_' || byte.is_ascii_alphanumeric()
-            }
         })
 }
 
@@ -595,17 +477,16 @@ fn go_allowed(args: &[String]) -> bool {
 }
 
 fn mentions_external_path(command: &str, cwd: &Path, workspace: &Path) -> bool {
-    let Some(segments) = split_segments(command) else {
+    let Some(scan) = super::syntax::scan(command) else {
         return true;
     };
-    segments.into_iter().any(|segment| {
-        let Ok(words) = shell_words::split(&segment) else {
-            return true;
-        };
-        let Some((_, args)) = command_words(&words) else {
-            return true;
-        };
-        mentions_external_path_words(args, cwd, workspace)
+    scan.commands.iter().any(|segment| {
+        segment.unsafe_syntax
+            || segment.asynchronous
+            || segment
+                .argv
+                .split_first()
+                .is_none_or(|(_, args)| mentions_external_path_words(args, cwd, workspace))
     })
 }
 
@@ -790,6 +671,24 @@ mod tests {
                 "命令应留在沙盒：{command}"
             );
         }
+    }
+
+    #[test]
+    fn ast_policy_keeps_quotes_and_rejects_dynamic_or_complex_commands() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = config();
+        let allowed = |command: &str| {
+            allowed_in_sandbox(&config, command, workspace.path(), workspace.path())
+                .expect("判定命令")
+        };
+        assert!(allowed("echo '$HOME'"));
+        assert!(allowed("FOO=1 ls"));
+        assert!(!allowed("echo \"$HOME\""));
+        assert!(!allowed("echo \"unterminated"));
+        assert!(!allowed("cat <<EOF\nhi\nEOF"));
+        assert!(!allowed("echo hi &"));
+        assert!(!allowed("(echo hi)"));
+        assert!(!allowed("FOO=$BAR ls"));
     }
 
     #[test]

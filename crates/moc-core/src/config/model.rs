@@ -665,21 +665,13 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
     result
 }
 
-fn shell_command(command: &str) -> Command {
-    #[cfg(unix)]
-    {
-        let mut shell = Command::new(std::env::var_os("SHELL").unwrap_or_else(|| "sh".into()));
-        shell.args(["-lc", command]);
-        shell
-    }
-    #[cfg(windows)]
-    {
-        let mut shell =
-            Command::new(std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into()));
-        shell.args(["/D", "/S", "/C"]);
-        shell.arg(format!("chcp 65001>nul & ({command})"));
-        shell
-    }
+fn shell_command(command: &str) -> Result<Command, CoreError> {
+    let shell = crate::shell::detect()
+        .ok_or_else(|| CoreError::Config("没有可用的 shell，无法解析以 ! 开头的密钥命令".into()))?;
+    let (program, args) = crate::shell::command_line(shell, command);
+    let mut process = Command::new(program);
+    process.args(args);
+    Ok(process)
 }
 
 /// 解析密钥描述：空 → None；`env:NAME` → 环境变量；`!command` → 命令输出；否则字面量。
@@ -693,7 +685,7 @@ pub(crate) fn resolve_secret(label: &str, spec: &str) -> Result<Option<String>, 
         std::env::var(name)
             .map_err(|_| CoreError::Config(format!("{label} 环境变量 {name} 不存在")))?
     } else if let Some(command) = spec.strip_prefix('!') {
-        let output = shell_command(command)
+        let output = shell_command(command)?
             .output()
             .map_err(|error| CoreError::Config(format!("{label} 命令无法启动: {error}")))?;
         if !output.status.success() {

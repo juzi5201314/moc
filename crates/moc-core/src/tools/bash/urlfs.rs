@@ -21,9 +21,6 @@ use std::fs;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
-use super::scan_words;
-
 /// 把命令里没加引号的内部 URI 词换成 urlfs 路径；没有这类词时返回 `None`。
 pub(crate) fn prepare(
     paths: &SessionPaths,
@@ -38,15 +35,20 @@ pub(crate) fn prepare(
     }
     #[cfg(unix)]
     {
+        let Some(scan) = super::syntax::scan(command) else {
+            return Ok(None);
+        };
         let mut targets = Vec::new();
-        for word in scan_words(command) {
-            if word.quoted {
-                continue;
-            }
-            let Some((scheme, remainder)) = split_scheme(word.text) else {
+        for word in scan.bare_words {
+            let Some((scheme, remainder)) = split_scheme(&word.text) else {
                 continue;
             };
-            targets.push((word.start, word.end, scheme, remainder));
+            targets.push((
+                word.start,
+                word.end,
+                scheme.to_owned(),
+                remainder.to_owned(),
+            ));
         }
         if targets.is_empty() {
             return Ok(None);
@@ -55,10 +57,10 @@ pub(crate) fn prepare(
             .map_err(|error| ToolError::new("E_URLFS", error.to_string()))?;
         let mut rewrites = Vec::with_capacity(targets.len());
         for (start, end, scheme, remainder) in targets {
-            let (head, tail) = split_glob(remainder);
+            let (head, tail) = split_glob(&remainder);
             let mut target = farm.to_string_lossy().into_owned();
             target.push('/');
-            target.push_str(scheme);
+            target.push_str(&scheme);
             target.push('/');
             target.push_str(head);
             rewrites.push((start, end, format!("{}{tail}", quote(&target))));
@@ -287,6 +289,40 @@ mod tests {
         assert_eq!(
             rewritten,
             format!("ls '{farm}/artifact/jobs/'*.log '{farm}/local/a.md' '{farm}/local/b.md'")
+        );
+    }
+
+    #[test]
+    fn heredoc_comments_redirections_and_assignments_stay_literal() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = paths(root.path());
+        let skills = SkillIndex::empty();
+        for command in [
+            "cat <<EOF\nartifact://jobs/x.log\nEOF",
+            "echo hi # artifact://jobs/x.log",
+            "echo hi > artifact://jobs/x.log",
+            "FOO=artifact://jobs/x.log",
+        ] {
+            assert!(
+                prepare(&paths, &skills, command).expect("解析").is_none(),
+                "不应改写：{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn multibyte_prefix_keeps_byte_offsets() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let paths = paths(root.path());
+        let skills = SkillIndex::empty();
+        let command = "echo 中文 artifact://jobs/x.log";
+        let rewritten = prepare(&paths, &skills, command)
+            .expect("改写")
+            .expect("有 URI");
+        let farm = paths.sidecar.join("urlfs");
+        assert_eq!(
+            rewritten,
+            format!("echo 中文 '{}/artifact/jobs/x.log'", farm.display())
         );
     }
 }

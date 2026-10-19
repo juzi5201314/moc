@@ -159,7 +159,7 @@ fn create_windows_job() -> Result<std::os::windows::io::OwnedHandle, ToolError> 
         SetInformationJobObject(
             job.as_raw_handle(),
             JobObjectExtendedLimitInformation,
-            (&limits as *const _).cast::<std::ffi::c_void>(),
+            std::ptr::from_ref(&limits).cast::<std::ffi::c_void>(),
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
     };

@@ -306,7 +306,9 @@ impl ToolRegistry {
             })
             .map(|tool| {
                 let mut definition = tool.def();
-                definition.description = Some(tool.description().to_owned());
+                if definition.description.is_none() {
+                    definition.description = Some(tool.description().to_owned());
+                }
                 definition
             })
             .collect()

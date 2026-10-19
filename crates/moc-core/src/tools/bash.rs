@@ -19,6 +19,7 @@ pub(crate) use super::job_log::{JobLog, JobLogMode};
 pub(crate) use group::ProcessGroup;
 mod process;
 pub(crate) use process::{Process, ProcessExit};
+mod syntax;
 pub(crate) mod urlfs;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -90,7 +91,7 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &'static str {
-        "Run a shell command. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own."
+        "Run a shell command in the platform shell; see the environment section for the active shell and dialect."
     }
     fn tier(&self) -> Tier {
         Tier::Exec
@@ -99,6 +100,15 @@ impl Tool for BashTool {
         false
     }
     fn def(&self) -> ToolDef {
+        let description = match crate::shell::detect() {
+            Some(shell) => format!(
+                "Run a shell command. The active shell is {} ({}); write {} commands. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.",
+                shell.label(),
+                shell.program.display(),
+                crate::shell::dialect(shell),
+            ),
+            None => "Run a shell command. No supported shell was found on this platform. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.".to_owned(),
+        };
         ToolDef::new(
             "bash",
             schema(
@@ -115,6 +125,7 @@ impl Tool for BashTool {
                 &["command"],
             ),
         )
+        .with_description(description)
     }
     fn run<'a>(
         &'a self,
@@ -377,79 +388,6 @@ pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), To
     Ok(())
 }
 
-/// 命令里的一个词：`text` 是原文切片（保留引号和转义），`quoted` 表示这个词是否以引号开头，
-/// `start..end` 是它在命令里的字节范围。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Word<'a> {
-    text: &'a str,
-    quoted: bool,
-    start: usize,
-    end: usize,
-}
-
-/// 按 shell 词法切分命令：引号和转义留在词内，未加引号的空白、`;|&()<>` 和换行结束当前词。
-/// 只用于改写 URI，不做展开，也不解析变量和重定向。
-fn scan_words(command: &str) -> Vec<Word<'_>> {
-    let mut words = Vec::new();
-    let mut start = None;
-    let mut quote = None;
-    let mut escaped = false;
-    let mut quoted = false;
-    for (index, ch) in command.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match quote {
-            Some(active) => {
-                if ch == '\\' && active != '\'' {
-                    escaped = true;
-                } else if ch == active {
-                    quote = None;
-                }
-            }
-            None => {
-                if ch == '\\' {
-                    escaped = true;
-                    if start.is_none() {
-                        start = Some(index);
-                        quoted = false;
-                    }
-                } else if matches!(ch, '\'' | '"') {
-                    quote = Some(ch);
-                    if start.is_none() {
-                        start = Some(index);
-                        quoted = true;
-                    }
-                } else if ch.is_whitespace()
-                    || matches!(ch, ';' | '|' | '&' | '(' | ')' | '<' | '>')
-                {
-                    if let Some(word_start) = start.take() {
-                        words.push(Word {
-                            text: &command[word_start..index],
-                            quoted,
-                            start: word_start,
-                            end: index,
-                        });
-                    }
-                } else if start.is_none() {
-                    start = Some(index);
-                    quoted = false;
-                }
-            }
-        }
-    }
-    if let Some(word_start) = start {
-        words.push(Word {
-            text: &command[word_start..],
-            quoted,
-            start: word_start,
-            end: command.len(),
-        });
-    }
-    words
-}
-
 pub(crate) fn resolve_cwd(base: &Path, requested: Option<&str>) -> Result<PathBuf, ToolError> {
     let cwd = requested
         .map(Path::new)
@@ -539,6 +477,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tool_definition_names_the_active_shell() {
+        let definition = BashTool.def();
+        let description = definition.description.expect("bash 工具必须有描述");
+        let shell = crate::shell::detect().expect("测试环境必须有 shell");
+        assert!(description.contains("The active shell is"));
+        assert!(
+            description.contains(shell.label()),
+            "描述必须点名实际 shell：{description}"
+        );
+    }
+
+    #[test]
     fn dangerous_patterns_preempt_all_execution_modes() {
         let patterns = vec![r"rm\s+-rf\s+/(\s|$)".into()];
         assert!(reject_denied(&patterns, "rm -rf /").is_err());
@@ -553,37 +503,6 @@ mod tests {
         assert!(reject_denied(&patterns, "FORMAT C:").is_err());
         assert!(reject_denied(&patterns, "Remove-Item C:\\data -Recurse").is_err());
         assert!(reject_denied(&patterns, "printf safe").is_ok());
-    }
-
-    #[test]
-    fn scan_words_keeps_quotes_escapes_and_byte_offsets() {
-        let command = "a 'b c' \"d\" e\\ f;g|h";
-        let words = scan_words(command);
-        assert_eq!(
-            words
-                .iter()
-                .map(|word| (word.text, word.quoted))
-                .collect::<Vec<_>>(),
-            [
-                ("a", false),
-                ("'b c'", true),
-                ("\"d\"", true),
-                ("e\\ f", false),
-                ("g", false),
-                ("h", false),
-            ]
-        );
-        for word in words {
-            assert_eq!(&command[word.start..word.end], word.text);
-        }
-        // 重定向与 here-doc 定界符都不是词的一部分。
-        assert_eq!(
-            scan_words("tail -3 x.log 2>/dev/null")
-                .into_iter()
-                .map(|word| word.text)
-                .collect::<Vec<_>>(),
-            ["tail", "-3", "x.log", "2", "/dev/null"]
-        );
     }
 
     #[test]

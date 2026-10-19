@@ -267,13 +267,19 @@ pub fn pieces(
         title: "system",
         name: PIECE_ENVIRONMENT,
         scope: PieceScope::Project,
-        text: format!(
-            "<env>\ncwd: {}\nplatform: {} {}\nmodel: {}\n</env>",
-            cwd.display(),
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            model.id,
-        ),
+        text: {
+            let shell = crate::shell::detect()
+                .map(crate::shell::ShellChoice::summary)
+                .unwrap_or_else(|| "unavailable".to_owned());
+            format!(
+                "<env>\ncwd: {}\nplatform: {} {}\nshell: {}\nmodel: {}\n</env>",
+                cwd.display(),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                shell,
+                model.id,
+            )
+        },
     });
     // 追加指令放在最后，让用户为本会话写的指令紧挨着对话。
     if !config.system_prompt.append.trim().is_empty() {
@@ -533,6 +539,7 @@ mod tests {
         assert!(system.starts_with(DEFAULT_INTRO));
         assert!(system.contains("<mcp-servers>"));
         assert!(system.contains("model: p/model"));
+        assert!(system.contains("shell: "), "环境块必须声明实际 shell");
         assert!(!system.contains(TOOL_POLICY), "工具政策不得留在 system 组");
         let user = prompt.messages[1].text();
         assert!(user.starts_with(TOOL_POLICY));

@@ -16,6 +16,7 @@ mod paths;
 pub mod resources;
 pub mod service;
 pub mod session;
+pub mod shell;
 pub mod skills;
 pub mod system_prompt;
 pub mod tools;

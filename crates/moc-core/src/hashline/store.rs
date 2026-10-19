@@ -40,13 +40,13 @@ impl SnapshotId {
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            // 卷序列号与文件索引标识文件；写入时间检测常规内容修改。
-            // 稳定版 MetadataExt 不提供 ChangeTime，创建时间补充文件代际信息。
+            // 稳定版 MetadataExt 不提供卷序列号、文件索引和 ChangeTime；创建时间
+            // 代替文件代际标识，变化检测由时间戳、大小和内容哈希承担。
             let modified = metadata.last_write_time();
             let created = metadata.creation_time();
             Self {
-                device: u64::from(metadata.volume_serial_number().unwrap_or_default()),
-                inode: metadata.file_index().unwrap_or(created),
+                device: 0,
+                inode: created,
                 modified_secs: i64::try_from(modified / 10_000_000).unwrap_or(i64::MAX),
                 modified_nanos: i64::try_from((modified % 10_000_000) * 100).unwrap_or(i64::MAX),
                 changed_secs: i64::try_from(created / 10_000_000).unwrap_or(i64::MAX),
