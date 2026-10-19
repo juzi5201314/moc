@@ -668,9 +668,8 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
 fn shell_command(command: &str) -> Result<Command, CoreError> {
     let shell = crate::shell::detect()
         .ok_or_else(|| CoreError::Config("没有可用的 shell，无法解析以 ! 开头的密钥命令".into()))?;
-    let (program, args) = crate::shell::command_line(shell, command);
-    let mut process = Command::new(program);
-    process.args(args);
+    let mut process = Command::new(&shell.program);
+    crate::shell::apply_arguments(&mut process, shell, command);
     Ok(process)
 }
 

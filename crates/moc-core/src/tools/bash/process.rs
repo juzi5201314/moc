@@ -73,19 +73,18 @@ impl Process {
         let shell = crate::shell::detect().ok_or_else(|| {
             ToolError::new("E_BASH_SHELL", "no supported shell found on this platform")
         })?;
-        let (program, arguments) = crate::shell::command_line(shell, &args.command);
         let mut command = match permission {
-            SessionPermission::Full => Command::new(&program),
+            SessionPermission::Full => Command::new(&shell.program),
             SessionPermission::Workspace => {
                 let mut command = Command::new("bwrap");
                 for argument in sandbox_arguments(&cwd, &workspace) {
                     command.arg(argument);
                 }
-                command.arg("--").arg(&program);
+                command.arg("--").arg(&shell.program);
                 command
             }
         };
-        command.args(arguments);
+        crate::shell::apply_arguments(command.as_std_mut(), shell, &args.command);
         command
             .current_dir(cwd)
             .envs(args.env.unwrap_or_default())

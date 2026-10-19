@@ -89,6 +89,8 @@ pub fn resolve(
 }
 
 /// 生成非交互执行参数。返回程序路径和除程序名以外的参数。
+///
+/// cmd 的带引号命令不能直接使用这里的参数，必须走 `apply_arguments` 的 raw_arg 路径。
 pub fn command_line(choice: &ShellChoice, command: &str) -> (PathBuf, Vec<OsString>) {
     let mut args = Vec::new();
     match choice.kind {
@@ -113,11 +115,29 @@ pub fn command_line(choice: &ShellChoice, command: &str) -> (PathBuf, Vec<OsStri
         }
         ShellKind::Cmd => {
             args.extend(["/D", "/S", "/C"].map(OsString::from));
-            // chcp 让 cmd 的内建命令与重定向使用 UTF-8；括号隔离用户命令里的 &。
-            args.push(format!("chcp 65001>nul & ({command})").into());
+            args.push(wrap_cmd(command).into());
         }
     }
     (choice.program.clone(), args)
+}
+
+/// 把非交互命令写到进程上。cmd 的 `/C` 字符串必须原样交给系统：Rust 对普通参数
+/// 的 CRT 转义会把内层引号写成 `\"`，cmd 不认这种转义，带空格的路径会被拆坏。
+pub fn apply_arguments(command: &mut std::process::Command, choice: &ShellChoice, text: &str) {
+    #[cfg(windows)]
+    if choice.kind == ShellKind::Cmd {
+        use std::os::windows::process::CommandExt;
+        command.args(["/D", "/S", "/C"]);
+        command.raw_arg(wrap_cmd(text));
+        return;
+    }
+    let (_, args) = command_line(choice, text);
+    command.args(args);
+}
+
+/// chcp 让 cmd 的内建命令与重定向使用 UTF-8；括号隔离用户命令里的 &。
+fn wrap_cmd(command: &str) -> String {
+    format!("chcp 65001>nul & ({command})")
 }
 
 /// Windows PTY 先起一个空闲 shell：portable-pty 不能在挂起状态创建进程，
