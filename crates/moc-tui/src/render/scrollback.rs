@@ -1535,7 +1535,10 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             summary
         }
         "ask" => args
-            .get("question")
+            .get("questions")
+            .and_then(Value::as_array)
+            .and_then(|questions| questions.first())
+            .and_then(|question| question.get("question"))
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned(),
@@ -2279,6 +2282,29 @@ mod tests {
         assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
         assert!(!text_of(&hidden).contains("line-"), "隐藏档无正文");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
+    }
+
+    /// ask 的标题摘要取首问的 question 字段，而不是根上不存在的 question。
+    #[test]
+    fn ask_tool_summary_names_the_first_question() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_tool_block(ToolCallStart {
+            id: "call_ask".into(),
+            name: "ask".into(),
+            parent_id: None,
+            arguments: r#"{"questions":[{"id":"q1","question":"先修哪个缺陷？","options":[{"label":"A"},{"label":"B"}]},{"id":"q2","question":"第二个问题","options":[{"label":"A"},{"label":"B"}]}]}"#.into(),
+        });
+
+        let lines = render_entry(0, &app.blocks[0], &app, 80, true).lines;
+        let title = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(title.contains("ask"), "标题行应带工具名：{title}");
+        assert!(title.contains("先修哪个缺陷？"), "摘要应取首问：{title}");
+        assert!(!title.contains("第二个问题"), "摘要不展开其余问题：{title}");
     }
 
     /// read 这类「回显参数」工具在任何档位都只占一行，且摘要带行号范围。
