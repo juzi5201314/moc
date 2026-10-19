@@ -46,3 +46,12 @@ fontdue = "0.9"
 fontdb = "0.24"
 flate2 = "1"
 rustix = { version = "1", features = ["event"] }
+
+# 测试/开发构建只需要行号，不需要完整 DWARF：
+# 完整调试信息会让单个集成测试二进制达到 0.4–0.65GB，
+# 多个目标并行链接时峰值内存被放大。
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
