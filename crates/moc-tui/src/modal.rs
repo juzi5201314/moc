@@ -942,7 +942,7 @@ mod tests {
             question: "选哪个？".into(),
             header: None,
             multi: false,
-            recommended: None,
+            recommended: Vec::new(),
             options: previews
                 .into_iter()
                 .enumerate()

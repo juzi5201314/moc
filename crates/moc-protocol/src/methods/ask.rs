@@ -35,8 +35,9 @@ pub struct AskQuestion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
     pub multi: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recommended: Option<u32>,
+    /// 模型推荐的选项下标；空集合表示没有推荐项，多选问题可包含多个下标。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommended: Vec<u32>,
     pub options: Vec<AskOption>,
 }
 
@@ -87,7 +88,7 @@ mod tests {
                 question: "选哪个？".into(),
                 header: Some("方案".into()),
                 multi: false,
-                recommended: Some(1),
+                recommended: vec![1],
                 options: vec![AskOption {
                     label: "A".into(),
                     description: Some("首选".into()),
@@ -101,7 +102,7 @@ mod tests {
                 "session_id": "ses_1", "prompt_id": "prompt_2", "request_id": "ask_3",
                 "questions": [{
                     "id": "choice", "question": "选哪个？", "header": "方案",
-                    "multi": false, "recommended": 1,
+                    "multi": false, "recommended": [1],
                     "options": [{
                         "label": "A", "description": "首选", "preview": "```\n[ A ]\n```"
                     }]

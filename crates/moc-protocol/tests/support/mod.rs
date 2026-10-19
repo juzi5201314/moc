@@ -877,7 +877,7 @@ impl AgentService for ScriptedService {
                         question: "选择语言".to_owned(),
                         header: Some("语言".to_owned()),
                         multi: false,
-                        recommended: Some(0),
+                        recommended: vec![0],
                         options: vec![AskOption {
                             label: "Rust".to_owned(),
                             description: Some("系统语言".to_owned()),

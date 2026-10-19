@@ -722,6 +722,11 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     " "
                 };
                 let check = if chosen { "☑" } else { "☐" };
+                let recommendation = if current.recommended.contains(&(index as u32)) {
+                    " *"
+                } else {
+                    ""
+                };
                 let style = if index == highlight[*question] {
                     Style::new()
                         .fg(theme.accent_user)
@@ -731,7 +736,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     Style::new().fg(theme.text_secondary)
                 };
                 body.push(Line::from(Span::styled(
-                    format!(" {marker} {check} {}", option.label),
+                    format!(" {marker} {check} {}{recommendation}", option.label),
                     style,
                 )));
             }
@@ -2340,6 +2345,43 @@ mod tests {
         assert!(last_line.starts_with("  Esc 关闭"), "{:?}", last_line);
     }
 
+    /// 推荐项在标签后显示星号；星号与用户当前勾选状态相互独立，多选可显示多个星号。
+    #[test]
+    fn ask_recommendations_render_after_option_labels() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let mut modal = ask_modal(0, 0);
+        let Modal::Ask {
+            params, selected, ..
+        } = &mut modal
+        else {
+            unreachable!("测试模态应为 ask");
+        };
+        params.questions[0].recommended = vec![0, 1];
+        selected[0] = vec!["上中下".to_owned()];
+
+        let texts: Vec<String> = modal_lines(&app, &modal, 80, 24)
+            .iter()
+            .map(line_text)
+            .collect();
+        let first = texts
+            .iter()
+            .find(|text| text.contains("上中下 *"))
+            .expect("第一个推荐项应带星号");
+        assert!(
+            first.contains("☑ 上中下 *"),
+            "已选推荐项仍应保留星号：{first}"
+        );
+        let second = texts
+            .iter()
+            .find(|text| text.contains("左右 *"))
+            .expect("第二个推荐项应带星号");
+        assert!(
+            second.contains("☐ 左右 *"),
+            "未选推荐项也应显示星号：{second}"
+        );
+    }
+
     /// 提问预览：宽内容宽度并排（左选项、右预览），窄内容宽度落到选项下方；
     /// 预览内容跟随聚焦项。
     #[test]
@@ -2509,7 +2551,7 @@ mod tests {
                     question: "选哪个布局？".into(),
                     header: None,
                     multi: false,
-                    recommended: None,
+                    recommended: Vec::new(),
                     options: vec![
                         AskOption {
                             label: "上中下".into(),

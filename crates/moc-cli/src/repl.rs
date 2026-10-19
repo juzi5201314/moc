@@ -751,7 +751,7 @@ async fn ask_prompt(
             println!("{}", question.question);
         }
         for (index, option) in question.options.iter().enumerate() {
-            let recommended = question.recommended == Some(index as u32);
+            let recommended = question.recommended.contains(&(index as u32));
             println!(
                 "  {}. {}{}",
                 index + 1,
@@ -785,11 +785,12 @@ async fn ask_prompt(
         let mut selected = Vec::new();
         let mut custom = None;
         if raw.is_empty() {
-            if let Some(index) = question
+            for option in question
                 .recommended
-                .and_then(|index| question.options.get(index as usize))
+                .iter()
+                .filter_map(|&index| question.options.get(index as usize))
             {
-                selected.push(index.label.clone());
+                selected.push(option.label.clone());
             }
         } else {
             let choices: Vec<_> = if question.multi {

@@ -21,7 +21,8 @@ struct QuestionInput {
     question: String,
     header: Option<String>,
     multi: Option<bool>,
-    recommended: Option<u32>,
+    #[serde(default)]
+    recommended: Vec<u32>,
     options: Vec<OptionInput>,
 }
 
@@ -40,7 +41,7 @@ impl Tool for AskTool {
         "ask"
     }
     fn description(&self) -> &'static str {
-        "Ask the user decision questions; use only when the answer changes the implementation. Options may carry a preview, a monospace frame shown beside the focused option for visual comparison (single-select only)."
+        "Ask the user decision questions; use only when the answer changes the implementation. Set recommended to 0-based option indexes to mark the model's preferred choices; multi-select questions may include multiple recommended indexes. Options may carry a preview, a monospace frame shown beside the focused option for visual comparison (single-select only)."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -60,7 +61,7 @@ impl Tool for AskTool {
                             "question":{"type":"string"},
                             "header":{"type":"string"},
                             "multi":{"type":"boolean"},
-                            "recommended":{"type":"integer","minimum":0},
+                            "recommended":{"type":"array","items":{"type":"integer","minimum":0},"description":"Recommended option indexes, 0-based; multi-select questions may include multiple indexes"},
                             "options":{"type":"array","minItems":2,"items":{
                                 "type":"object","properties":{
                                     "label":{"type":"string","description":"Display text, 1-5 words"},
@@ -192,11 +193,12 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
         }
         if input
             .recommended
-            .is_some_and(|index| index as usize >= input.options.len())
+            .iter()
+            .any(|&index| index as usize >= input.options.len())
         {
             return Err(ToolError::new(
                 "E_BAD_PAYLOAD",
-                "recommended must point to an existing option",
+                "recommended must point to existing options",
             ));
         }
         questions.push(AskQuestion {
@@ -274,11 +276,63 @@ mod tests {
         );
     }
 
-    /// 工具 schema 暴露预览字段及其格式说明。
+    /// 多选问题的多个推荐下标会原样透传给协议层。
     #[test]
-    fn schema_exposes_preview_field() {
+    fn multiple_recommendations_survive_normalization() {
+        let questions = normalize_questions(json!({
+            "questions": [{
+                "id": "features",
+                "question": "开启哪些特性？",
+                "multi": true,
+                "recommended": [0, 2],
+                "options": [
+                    {"label": "缓存"},
+                    {"label": "日志"},
+                    {"label": "监控"}
+                ]
+            }]
+        }))
+        .expect("载荷可归一化");
+
+        assert_eq!(questions[0].recommended, vec![0, 2]);
+    }
+
+    /// 推荐下标越界时拒绝整个 ask 载荷。
+    #[test]
+    fn recommendations_reject_out_of_range_index() {
+        let error = normalize_questions(json!({
+            "questions": [{
+                "id": "choice",
+                "question": "选哪个？",
+                "multi": true,
+                "recommended": [0, 2],
+                "options": [{"label": "A"}, {"label": "B"}]
+            }]
+        }))
+        .expect_err("越界推荐下标应被拒绝");
+
+        assert_eq!(error.code, "E_BAD_PAYLOAD");
+        assert!(
+            error
+                .message
+                .contains("recommended must point to existing options")
+        );
+    }
+
+    /// 工具 schema 暴露推荐下标数组、预览字段及其格式说明。
+    #[test]
+    fn schema_exposes_recommendations_and_preview_fields() {
         let schema = AskTool.def().parameters;
-        let option = &schema["properties"]["questions"]["items"]["properties"]["options"]["items"];
+        let question = &schema["properties"]["questions"]["items"];
+        let recommended = &question["properties"]["recommended"];
+        assert_eq!(recommended["type"], json!("array"));
+        assert_eq!(recommended["items"]["type"], json!("integer"));
+        assert!(
+            recommended["description"]
+                .as_str()
+                .is_some_and(|text| text.contains("0-based") && text.contains("multiple indexes"))
+        );
+        let option = &question["properties"]["options"]["items"];
         assert_eq!(option["properties"]["preview"]["type"], json!("string"));
         assert!(
             option["properties"]["preview"]["description"]
@@ -286,6 +340,7 @@ mod tests {
                 .is_some_and(|text| text.contains("Supported only for single-select questions")),
             "{option}"
         );
+        assert!(AskTool.description().contains("recommended"));
         assert!(AskTool.description().contains("preview"));
     }
 }

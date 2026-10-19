@@ -155,6 +155,7 @@ async fn request_ask_round_trips_through_frontend_handler() {
     assert_eq!(request.session_id, "ses_1");
     assert_eq!(request.prompt_id, "prompt_1");
     assert_eq!(request.questions[0].id, "choice");
+    assert_eq!(request.questions[0].recommended, [0]);
     assert_eq!(service.state().ask_results[0].answers[0].selected, ["Rust"]);
 }
 

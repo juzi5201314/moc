@@ -564,6 +564,16 @@ fn restore_user_message(
     }
 }
 
+/// 取出问题的默认推荐答案。
+fn recommended_labels(question: &moc_protocol::AskQuestion) -> Vec<String> {
+    question
+        .recommended
+        .iter()
+        .filter_map(|&index| question.options.get(index as usize))
+        .map(|option| option.label.clone())
+        .collect()
+}
+
 /// 主循环。
 ///
 /// 绘制节流：帧预算 16ms（~60fps）。事件到达时若已过预算立即绘制，否则
@@ -685,16 +695,7 @@ async fn event_loop(
                         let per_question = params.questions.len();
                         // 先算推荐选择（借用 params），再整体 move 进模态
                         let highlight = vec![0; per_question];
-                        let selected = params
-                            .questions
-                            .iter()
-                            .map(|question| {
-                                question
-                                    .recommended
-                                    .and_then(|index| question.options.get(index as usize))
-                                    .map_or_else(Vec::new, |option| vec![option.label.clone()])
-                            })
-                            .collect();
+                        let selected = params.questions.iter().map(recommended_labels).collect();
                         app.modal = Some(Modal::Ask {
                             params,
                             highlight,
@@ -4575,7 +4576,7 @@ mod tests {
             question: "选哪个布局？".into(),
             header: None,
             multi: false,
-            recommended: None,
+            recommended: Vec::new(),
             options: (0..2)
                 .map(|index| moc_protocol::methods::AskOption {
                     label: format!("选项{index}"),
@@ -5856,6 +5857,58 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 推荐下标按顺序映射成默认选中标签，越界下标被跳过。
+    #[test]
+    fn ask_recommended_labels_map_indexes_to_labels() {
+        let mut question = multi_ask_question();
+        assert_eq!(
+            recommended_labels(&question),
+            vec!["缓存".to_owned(), "监控".to_owned()]
+        );
+
+        question.recommended = vec![99];
+        assert!(recommended_labels(&question).is_empty());
+    }
+
+    /// 多选按空格切换多个选项，取消后保留顺序并提交所选标签。
+    #[tokio::test]
+    async fn ask_multi_select_toggles_multiple_options() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(vec![multi_ask_question()], Some(reply_tx)));
+
+        for key in [
+            KeyCode::Char(' '),
+            KeyCode::Down,
+            KeyCode::Char(' '),
+            KeyCode::Down,
+            KeyCode::Char(' '),
+            KeyCode::Char(' '),
+        ] {
+            handle_key(&mut app, &connection, KeyModifiers::NONE, key);
+        }
+
+        match app.modal.as_ref() {
+            Some(Modal::Ask { selected, .. }) => assert_eq!(
+                selected[0],
+                vec!["缓存".to_owned(), "日志".to_owned()],
+                "取消最后一项后保留之前的选择顺序"
+            ),
+            _ => unreachable!("ask 模态应保持打开"),
+        }
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        let result = reply_rx
+            .try_recv()
+            .expect("提交后应收到 ask 回执")
+            .expect("提问结果");
+        assert_eq!(result.answers[0].selected, ["缓存", "日志"]);
+        assert!(app.modal.is_none(), "提交后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 单问 ask 模态：选项一个 + 自定义行（`z` 进入编辑态）。
     fn ask_modal() -> Modal {
         ask_modal_with(vec![ask_question("q1")], None)
@@ -5867,12 +5920,39 @@ mod tests {
             question: "选哪个？".into(),
             header: None,
             multi: false,
-            recommended: None,
+            recommended: Vec::new(),
             options: vec![AskOption {
                 label: "选项一".into(),
                 description: None,
                 preview: None,
             }],
+        }
+    }
+
+    fn multi_ask_question() -> AskQuestion {
+        AskQuestion {
+            id: "features".into(),
+            question: "开启哪些特性？".into(),
+            header: None,
+            multi: true,
+            recommended: vec![0, 2],
+            options: vec![
+                AskOption {
+                    label: "缓存".into(),
+                    description: None,
+                    preview: None,
+                },
+                AskOption {
+                    label: "日志".into(),
+                    description: None,
+                    preview: None,
+                },
+                AskOption {
+                    label: "监控".into(),
+                    description: None,
+                    preview: None,
+                },
+            ],
         }
     }
 
