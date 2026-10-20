@@ -148,6 +148,13 @@ impl Entry {
         self.generation += 1;
     }
 
+    /// 丢弃单块覆盖，让该块重新跟随所在层的全局档位。
+    pub fn clear_level_override(&mut self) {
+        if self.level_override.take().is_some() {
+            self.generation += 1;
+        }
+    }
+
     /// 续写流式文本（Assistant / Thinking）。
     ///
     /// 追加正文会让表格序号与内容漂移，已展开的图表必须整表作废（回到表格形态），

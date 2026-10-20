@@ -836,14 +836,27 @@ impl App {
     }
 
     /// 思考块档位循环一档并使视图缓存失效。
+    ///
+    /// 手动展开的单块也要交还档位控制：否则全局切到隐藏／简略后，
+    /// 它仍停在完整档，看起来像快捷键失灵。
     pub fn cycle_thinking_detail(&mut self) {
         self.thinking_detail = self.thinking_detail.next();
+        for entry in &mut self.blocks {
+            if matches!(entry.block, Block::Thinking { .. }) {
+                entry.clear_level_override();
+            }
+        }
         self.view_gen += 1;
     }
 
     /// 工具块档位循环一档并使视图缓存失效。
     pub fn cycle_tool_detail(&mut self) {
         self.tool_detail = self.tool_detail.next();
+        for entry in &mut self.blocks {
+            if matches!(entry.block, Block::Tool(_)) {
+                entry.clear_level_override();
+            }
+        }
         self.view_gen += 1;
     }
 
@@ -1344,6 +1357,72 @@ mod streaming_budget_tests {
         };
         assert!(text.len() <= 32);
         assert!(text.is_char_boundary(text.len()));
+    }
+}
+
+#[cfg(test)]
+mod detail_control_tests {
+    use super::*;
+    use moc_protocol::methods::ToolStatus;
+
+    fn thinking() -> Block {
+        Block::Thinking {
+            text: "思考".into(),
+            reasoning_tokens: None,
+            duration_ms: None,
+        }
+    }
+
+    fn tool() -> Block {
+        Block::Tool(ToolCallBlock {
+            id: "call_1".into(),
+            batch_id: None,
+            parent_id: None,
+            name: "bash".into(),
+            arguments: "{}".into(),
+            status: Some(ToolStatus::Completed),
+            result: Some("done".into()),
+            diff: None,
+            duration_ms: None,
+            running: false,
+            progress: None,
+            images: Vec::new(),
+        })
+    }
+
+    /// Ctrl+T / Ctrl+O 切换全局档位时收回该层的手动展开，另一层不受影响。
+    #[test]
+    fn cycling_detail_reclaims_manual_expansion() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.push_block(thinking());
+        app.push_block(tool());
+        app.blocks[0].toggle_level(app.thinking_detail);
+        app.blocks[1].toggle_level(app.tool_detail);
+        assert_eq!(app.blocks[0].level_override, Some(DetailLevel::Full));
+        assert_eq!(app.blocks[1].level_override, Some(DetailLevel::Full));
+
+        // 转一圈回到简略：手动展开必须被收回，块跟随全局档位。
+        for _ in 0..3 {
+            app.cycle_thinking_detail();
+        }
+        assert_eq!(app.thinking_detail, DetailLevel::Brief);
+        assert_eq!(app.blocks[0].level_override, None);
+        assert_eq!(app.blocks[0].level(app.thinking_detail), DetailLevel::Brief);
+        assert_eq!(
+            app.blocks[1].level_override,
+            Some(DetailLevel::Full),
+            "Ctrl+T 不该碰工具块"
+        );
+
+        app.blocks[0].toggle_level(app.thinking_detail);
+        app.cycle_tool_detail();
+        assert_eq!(app.blocks[1].level_override, None);
+        assert_eq!(
+            app.blocks[0].level_override,
+            Some(DetailLevel::Full),
+            "Ctrl+O 不该碰思考块"
+        );
     }
 }
 
