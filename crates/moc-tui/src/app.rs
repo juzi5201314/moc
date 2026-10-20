@@ -57,6 +57,25 @@ pub enum CtrlCPending {
 /// Ctrl+C 二次确认有效窗口（3 秒内）。
 pub const CTRL_C_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// 进行中的上下文压缩提示：记录它属于哪个会话与已显示的秒数。
+#[derive(Debug, Clone)]
+pub struct CompactionProgress {
+    /// 发起压缩的会话；切到别的会话后不再更新它。
+    pub session_id: String,
+    /// 压缩开始时刻（前端计时）。
+    pub started_at: std::time::Instant,
+    /// 已经写进提示的整秒数。
+    pub shown_secs: u64,
+}
+
+/// 进行中提示的前缀；完成时按它找回同一条提示原位替换。
+const COMPACTION_RUNNING_PREFIX: &str = "上下文压缩中";
+
+/// 进行中提示的文案。
+fn compaction_running_note(secs: u64) -> String {
+    format!("{COMPACTION_RUNNING_PREFIX}…({secs}s)")
+}
+
 /// 应用状态。
 pub struct App {
     pub theme: &'static Theme,
@@ -130,6 +149,8 @@ pub struct App {
     pub cancel_requested: bool,
     /// 当前提示开始时间（statusline 计时）。
     pub prompt_started_at: Option<std::time::Instant>,
+    /// 进行中的上下文压缩提示；`None` = 当前没有压缩在等模型。
+    pub compaction_progress: Option<CompactionProgress>,
     /// 当前 thinking block 开始时间（用于计算 duration_ms）。
     pub thinking_started_at: Option<std::time::Instant>,
     pub usage: Usage,
@@ -368,6 +389,7 @@ impl App {
             prompt_running: false,
             cancel_requested: false,
             prompt_started_at: None,
+            compaction_progress: None,
             thinking_started_at: None,
             usage: Usage::default(),
             usage_samples: Vec::new(),
@@ -648,6 +670,64 @@ impl App {
     /// 追加一条系统提示。
     pub fn push_note(&mut self, text: String, error: bool) {
         self.blocks.push(Entry::new(Block::Note { text, error }));
+    }
+
+    /// 上下文压缩开始：插入进行中提示；换方法重试时沿用同一条计时。
+    pub fn start_compaction(&mut self) {
+        if self.compaction_progress.is_some() {
+            return;
+        }
+        let Some(session_id) = self.session.as_ref().map(|session| session.id.clone()) else {
+            return;
+        };
+        self.push_note(compaction_running_note(0), false);
+        self.compaction_progress = Some(CompactionProgress {
+            session_id,
+            started_at: std::time::Instant::now(),
+            shown_secs: 0,
+        });
+    }
+
+    /// 刷新进行中提示的秒数；返回提示是否变化（供事件循环决定重绘）。
+    pub fn tick_compaction(&mut self) -> bool {
+        let Some(current) = self.session.as_ref().map(|session| session.id.clone()) else {
+            self.compaction_progress = None;
+            return false;
+        };
+        let Some(progress) = self.compaction_progress.as_mut() else {
+            return false;
+        };
+        if progress.session_id != current {
+            self.compaction_progress = None;
+            return false;
+        }
+        let secs = u64::try_from(progress.started_at.elapsed().as_secs()).unwrap_or(u64::MAX);
+        if secs == progress.shown_secs {
+            return false;
+        }
+        progress.shown_secs = secs;
+        self.replace_compaction_note(compaction_running_note(secs), false);
+        true
+    }
+
+    /// 压缩收尾：把进行中提示原位替换为终态；没有进行中提示时追加一条。
+    pub fn finish_compaction(&mut self, text: String, error: bool) {
+        self.compaction_progress = None;
+        self.replace_compaction_note(text, error);
+    }
+
+    /// 用终态文案替换最近一条进行中提示；找不到时追加，不留下两条。
+    fn replace_compaction_note(&mut self, text: String, error: bool) {
+        let existing = self.blocks.iter_mut().rev().find(|entry| {
+            matches!(&entry.block, Block::Note { text, .. } if text.starts_with(COMPACTION_RUNNING_PREFIX))
+        });
+        match existing {
+            Some(entry) => {
+                entry.block = Block::Note { text, error };
+                entry.touch();
+            }
+            None => self.blocks.push(Entry::new(Block::Note { text, error })),
+        }
     }
 
     /// 隐式 todo 提醒：按工具样式插入一条占位块，让用户知道刚刚注入了一次提醒。
@@ -1078,6 +1158,7 @@ impl App {
         let clm_active = info.mode == SessionMode::ClmExperimental;
         let session_id = info.id.clone();
         self.reset_prompt_state();
+        self.compaction_progress = None;
         self.prompt_running = self.inflight_prompts.contains(&session_id);
         self.usage = Usage::default();
         self.usage_samples.clear();

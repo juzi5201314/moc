@@ -203,7 +203,18 @@ async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
     assert!(retried.to_string().contains("compaction-summary"));
     assert!(retried.to_string().contains("继续实现"));
     assert_eq!(failed["messages"][0], retried["messages"][0]);
-    assert!(h.updates.lock().iter().any(|update| matches!(update, SessionUpdate::ContextCompacted { method, tokens_before, tokens_after } if method == "soft" && tokens_before > tokens_after)));
+    let updates = h.updates.lock().clone();
+    let started = updates
+        .iter()
+        .position(|update| matches!(update, SessionUpdate::ContextCompactionStarted))
+        .expect("摘要压缩应先报开始");
+    let compacted = updates
+        .iter()
+        .position(|update| {
+            matches!(update, SessionUpdate::ContextCompacted { method, tokens_before, tokens_after, full } if method == "soft" && *full && tokens_before > tokens_after)
+        })
+        .expect("摘要压缩应报完成");
+    assert!(started < compacted, "开始必须早于完成：{updates:?}");
     h.close().await;
 }
 
@@ -844,6 +855,21 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         .await
         .unwrap();
     assert!(compacted.tokens_after < compacted.tokens_before / 2);
+    let updates = h.updates.lock().clone();
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::ContextCompacted { tokens_before, tokens_after, full: false, .. }
+                if tokens_before > tokens_after
+        )),
+        "本地裁剪应标记为非全量压缩：{updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompactionStarted)),
+        "本地裁剪瞬时可成，不应出现等待模型中的提示：{updates:?}"
+    );
     let loaded = h.load(&id).await;
     let outputs: Vec<_> = loaded
         .entries
@@ -1163,6 +1189,22 @@ async fn failed_manual_compaction_preserves_upstream_error_and_history() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("压缩模型拒绝输入"));
+    let updates = h.updates.lock().clone();
+    let started = updates
+        .iter()
+        .position(|update| matches!(update, SessionUpdate::ContextCompactionStarted))
+        .expect("压缩开始事件");
+    let failure = updates
+        .iter()
+        .position(|update| matches!(update, SessionUpdate::ContextCompactionFailed { .. }))
+        .expect("压缩失败事件");
+    assert!(started < failure, "开始必须早于失败：{updates:?}");
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompacted { .. })),
+        "失败时不能报完成：{updates:?}"
+    );
     let after = h.load(&id).await;
     assert_eq!(after.entries, before.entries);
     assert!(after.session.lock.is_none());
@@ -1245,6 +1287,68 @@ async fn shake_archives_the_full_pre_compaction_history() {
     assert!(
         !archive.contains("[tool output pruned]"),
         "归档不得记录剪枝后的占位内容"
+    );
+    h.close().await;
+}
+
+/// 裁剪没腾出空间时会继续走摘要；整条链只报一个终态，且按全量压缩呈现。
+#[tokio::test]
+async fn shake_without_headroom_rolls_into_soft_and_reports_one_terminal_event() {
+    let workspace = tempfile::tempdir().expect("临时目录");
+    let long_file = workspace.path().join("long.txt");
+    let content = format!("{}\n{}", support::PRUNE_MARKER, "长输出".repeat(800));
+    std::fs::write(&long_file, &content).expect("写长文件");
+    let upstream = MockServer::builder().start().await;
+    support::mount_read_round(&upstream, &long_file, &support::soft_checkpoint("压缩摘要")).await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nauto=false\nmethod_order=['shake','soft']\n\
+         threshold={mode='tokens',value=1}\nprotect_recent_tool_tokens=0\n\
+         [compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    let loaded = h.prompt(&id, "读取长文件").await;
+    assert_eq!(loaded.message.text(), "已读取");
+
+    let compacted = h
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("先裁剪后摘要");
+    assert_eq!(compacted.method, "soft", "裁剪没腾出空间时应继续摘要");
+    assert!(compacted.full);
+
+    let updates = h.updates.lock().clone();
+    let completed: Vec<_> = updates
+        .iter()
+        .filter_map(|update| match update {
+            SessionUpdate::ContextCompacted { method, full, .. } => Some((method.as_str(), *full)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        completed,
+        vec![("soft", true)],
+        "一次压缩只报一个终态：{updates:?}"
+    );
+    assert_eq!(
+        updates
+            .iter()
+            .filter(|update| matches!(update, SessionUpdate::ContextCompactionStarted))
+            .count(),
+        1,
+        "开始事件只发一次：{updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::ContextCompactionFailed { .. })),
+        "成功的压缩不应报失败：{updates:?}"
     );
     h.close().await;
 }

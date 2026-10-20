@@ -169,15 +169,29 @@ impl Renderer {
                     "\n[计划已提交：{title} ({plan_id})，{path}]\n{markdown}"
                 );
             }
+            SessionUpdate::ContextCompactionStarted => {
+                let _ = writeln!(out, "\n[上下文压缩中…]");
+            }
             SessionUpdate::ContextCompacted {
                 method,
                 tokens_before,
                 tokens_after,
+                full,
             } => {
-                let _ = writeln!(
-                    out,
-                    "\n[上下文压缩：{method}，{tokens_before} → {tokens_after} token]"
-                );
+                if full {
+                    let _ = writeln!(
+                        out,
+                        "\n[上下文压缩：{method}，{tokens_before} → {tokens_after} token]"
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "\n[上下文裁剪：{tokens_before} → {tokens_after} token（未生成摘要）]"
+                    );
+                }
+            }
+            SessionUpdate::ContextCompactionFailed { message } => {
+                let _ = writeln!(out, "\n[上下文压缩失败：{message}]");
             }
             SessionUpdate::JobFinished {
                 job_id,

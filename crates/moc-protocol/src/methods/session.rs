@@ -635,6 +635,8 @@ pub struct CompactResult {
     pub method: String,
     pub tokens_before: u64,
     pub tokens_after: u64,
+    /// 本次是否由模型重新生成了摘要；`false` 表示只裁剪了历史（`shake`）。
+    pub full: bool,
     pub summary_chars: u32,
 }
 

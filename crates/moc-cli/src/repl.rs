@@ -498,10 +498,17 @@ async fn run_command(
                     instructions: None,
                 })
                 .await?;
-            println!(
-                "上下文压缩：{}，{} → {} token",
-                result.method, result.tokens_before, result.tokens_after
-            );
+            if result.full {
+                println!(
+                    "上下文压缩：{}，{} → {} token",
+                    result.method, result.tokens_before, result.tokens_after
+                );
+            } else {
+                println!(
+                    "上下文裁剪：{} → {} token（未生成摘要）",
+                    result.tokens_before, result.tokens_after
+                );
+            }
         }
         "usage" => {
             let result = client

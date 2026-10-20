@@ -243,11 +243,23 @@ pub enum SessionUpdate {
         path: String,
         markdown: String,
     },
+    /// 上下文压缩开始：前端应开始计时，并在完成或失败时原位替换这条提示。
+    ///
+    /// 只有需要等待上游模型的压缩（`remote` / `soft`）才发这条；纯本地裁剪
+    /// （`shake`）瞬时可成，不单独占用一条进行中提示。
+    ContextCompactionStarted,
     /// 上下文压缩完成。
     ContextCompacted {
         method: String,
         tokens_before: u64,
         tokens_after: u64,
+        /// 本次是否由模型重新生成了摘要；`false` 表示只裁剪了历史（`shake`）。
+        full: bool,
+    },
+    /// 上下文压缩失败，用来终止一次 [`SessionUpdate::ContextCompactionStarted`]。
+    ContextCompactionFailed {
+        /// 失败原因。
+        message: String,
     },
     /// 后台任务结束。
     JobFinished {
@@ -592,12 +604,32 @@ mod tests {
                 json!({ "type": "plan_submitted", "plan_id": "plan_1", "title": "标题", "path": "/tmp/plan.md", "markdown": "# 计划" }),
             ),
             (
+                SessionUpdate::ContextCompactionStarted,
+                json!({ "type": "context_compaction_started" }),
+            ),
+            (
                 SessionUpdate::ContextCompacted {
                     method: "soft".into(),
                     tokens_before: 10,
                     tokens_after: 4,
+                    full: true,
                 },
-                json!({ "type": "context_compacted", "method": "soft", "tokens_before": 10, "tokens_after": 4 }),
+                json!({ "type": "context_compacted", "method": "soft", "tokens_before": 10, "tokens_after": 4, "full": true }),
+            ),
+            (
+                SessionUpdate::ContextCompacted {
+                    method: "shake".into(),
+                    tokens_before: 10,
+                    tokens_after: 7,
+                    full: false,
+                },
+                json!({ "type": "context_compacted", "method": "shake", "tokens_before": 10, "tokens_after": 7, "full": false }),
+            ),
+            (
+                SessionUpdate::ContextCompactionFailed {
+                    message: "上游不可用".into(),
+                },
+                json!({ "type": "context_compaction_failed", "message": "上游不可用" }),
             ),
             (
                 SessionUpdate::JobFinished {

@@ -4,12 +4,10 @@ use super::{CompactionBudget, messages_tokens, record_compaction};
 use crate::session::{entries::Entry, state::SessionState};
 use crate::{config::ResolvedConfig, error::CoreError, service::CoreInner};
 use moc_llm::{ContentPart, Role};
-use moc_protocol::RequestContext;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) async fn compact(
     inner: &CoreInner,
-    ctx: &RequestContext,
     state: &SessionState,
     config: &ResolvedConfig,
     model: &crate::ResolvedModel,
@@ -53,7 +51,6 @@ pub(crate) async fn compact(
     };
     record_compaction(
         inner,
-        ctx,
         &state.session.id,
         super::Checkpoint {
             method,
@@ -68,6 +65,7 @@ pub(crate) async fn compact(
             first_kept_id: first_kept,
             tokens_before,
             tokens_after,
+            full: false,
             instructions: None,
             native: state
                 .native_input

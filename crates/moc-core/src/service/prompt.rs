@@ -1029,9 +1029,9 @@ async fn run_prompt_locked(
                 .saturating_add(compact::messages_tokens(&reminder_messages))
                 .saturating_add(retained_tokens)
                 .saturating_add(native_tokens);
+            let tokens_before = response.usage.input_tokens;
             compact::record_compaction(
                 &inner,
-                ctx,
                 &params.session_id,
                 compact::Checkpoint {
                     method: "remote".to_owned(),
@@ -1039,8 +1039,9 @@ async fn run_prompt_locked(
                     summary: compact::remote::checkpoint_summary(&compact_state),
                     reminder: None,
                     first_kept_id,
-                    tokens_before: response.usage.input_tokens,
+                    tokens_before,
                     tokens_after,
+                    full: true,
                     instructions: None,
                     native: Some(Box::new(native)),
                     archive: compact::HistoryArchive::Write,
@@ -1048,6 +1049,18 @@ async fn run_prompt_locked(
             )
             .await
             .map_err(to_rpc)?;
+            update
+                .emit(
+                    params.session_id.clone(),
+                    SessionUpdate::ContextCompacted {
+                        method: "remote".to_owned(),
+                        tokens_before,
+                        tokens_after,
+                        full: true,
+                    },
+                )
+                .await
+                .map_err(protocol_to_rpc)?;
         }
 
         let calls: Vec<_> = response.message.tool_calls().cloned().collect();

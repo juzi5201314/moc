@@ -362,7 +362,6 @@ pub(crate) async fn compact(
         .saturating_add(retained);
     record_compaction(
         inner,
-        ctx,
         &state.session.id,
         super::Checkpoint {
             method: "soft".to_owned(),
@@ -372,6 +371,7 @@ pub(crate) async fn compact(
             first_kept_id: first_kept,
             tokens_before,
             tokens_after,
+            full: true,
             instructions: instructions.map(str::to_owned),
             native: None,
             archive: super::HistoryArchive::Write,

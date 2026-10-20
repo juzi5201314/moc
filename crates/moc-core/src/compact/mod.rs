@@ -299,95 +299,157 @@ pub(crate) async fn compact(
             .saturating_add(context.additional_tokens),
     };
     let required_tokens = required_tokens(&config, model.context_window, reason);
-    if instructions.is_some() {
-        let result = run_soft(SoftInput {
-            inner,
-            ctx,
-            state: &state,
-            config: &config,
-            model: &model,
-            system: &measured.system,
-            static_prefix: &measured.static_prefix,
-            tools: &measured.tools,
-            instructions,
-            plan,
-            budget,
-        })
-        .await?;
-        return Ok(CompactReport {
-            created_headroom: result.tokens_after <= required_tokens,
-            result,
-        });
-    }
+    // 只有真正要等上游模型的压缩才让前端开始计时；纯本地裁剪瞬时可成。
+    let mut started = false;
+    let outcome: Result<CompactReport, CoreError> = async {
+        if instructions.is_some() {
+            emit_compaction_started(ctx, session_id).await?;
+            started = true;
+            let result = run_soft(SoftInput {
+                inner,
+                ctx,
+                state: &state,
+                config: &config,
+                model: &model,
+                system: &measured.system,
+                static_prefix: &measured.static_prefix,
+                tools: &measured.tools,
+                instructions,
+                plan,
+                budget,
+            })
+            .await?;
+            return Ok(CompactReport {
+                created_headroom: result.tokens_after <= required_tokens,
+                result,
+            });
+        }
 
-    let mut failures = Vec::with_capacity(config.compaction.method_order.len());
-    let mut last_result = None;
-    for method in &config.compaction.method_order {
-        let result = match method {
-            CompactionMethod::Remote => {
-                remote::compact(
-                    inner,
-                    ctx,
-                    &state,
-                    &config,
-                    &model,
-                    &measured.messages,
-                    budget,
-                )
-                .await
+        let mut failures = Vec::with_capacity(config.compaction.method_order.len());
+        let mut last_result = None;
+        for method in &config.compaction.method_order {
+            // 只有真正要等上游模型的方法才值得让前端开始计时：不支持原生压缩的
+            // remote 会立刻失败，shake 是本地裁剪，都不该先闪一条“压缩中”。
+            let waits_for_model = match method {
+                CompactionMethod::Remote => remote::available(inner, &config, &model),
+                CompactionMethod::Soft => true,
+                CompactionMethod::Shake => false,
+            };
+            if waits_for_model && !started {
+                emit_compaction_started(ctx, session_id).await?;
+                started = true;
             }
-            CompactionMethod::Shake => {
-                shake::compact(inner, ctx, &state, &config, &model, budget).await
-            }
-            CompactionMethod::Soft => {
-                run_soft(SoftInput {
-                    inner,
-                    ctx,
-                    state: &state,
-                    config: &config,
-                    model: &model,
-                    system: &measured.system,
-                    static_prefix: &measured.static_prefix,
-                    tools: &measured.tools,
-                    instructions,
-                    plan,
-                    budget,
-                })
-                .await
-            }
-        };
-        match result {
-            Ok(result) => {
-                let report = CompactReport {
-                    created_headroom: result.tokens_after <= required_tokens,
-                    result,
-                };
-                if report.created_headroom || *method == CompactionMethod::Soft {
-                    return Ok(report);
+            let result = match method {
+                CompactionMethod::Remote => {
+                    remote::compact(
+                        inner,
+                        ctx,
+                        &state,
+                        &config,
+                        &model,
+                        &measured.messages,
+                        budget,
+                    )
+                    .await
                 }
-                last_result = Some(report);
-                state = record.state.lock().await.clone();
-                measured.messages = replay::model_messages(&state, None, Some(&model));
-            }
-            Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => return Err(error),
-            Err(error @ CoreError::Llm(moc_llm::LlmError::Guard(_))) => return Err(error),
-            Err(error) => {
-                tracing::warn!(session_id, method = ?method, %error, "压缩方法失败，改用下一个方法");
-                failures.push(format!("{method:?}: {error}"));
-                // 失败的方法可能已经改写了 transcript（shake 会整体重写）或写入了 usage：
-                // 后面的方法必须基于当前状态，否则会用旧快照覆盖这期间追加的 entry。
-                state = record.state.lock().await.clone();
-                measured.messages = replay::model_messages(&state, None, Some(&model));
+                CompactionMethod::Shake => {
+                    shake::compact(inner, &state, &config, &model, budget).await
+                }
+                CompactionMethod::Soft => {
+                    run_soft(SoftInput {
+                        inner,
+                        ctx,
+                        state: &state,
+                        config: &config,
+                        model: &model,
+                        system: &measured.system,
+                        static_prefix: &measured.static_prefix,
+                        tools: &measured.tools,
+                        instructions,
+                        plan,
+                        budget,
+                    })
+                    .await
+                }
+            };
+            match result {
+                Ok(result) => {
+                    let report = CompactReport {
+                        created_headroom: result.tokens_after <= required_tokens,
+                        result,
+                    };
+                    if report.created_headroom || *method == CompactionMethod::Soft {
+                        return Ok(report);
+                    }
+                    last_result = Some(report);
+                    state = record.state.lock().await.clone();
+                    measured.messages = replay::model_messages(&state, None, Some(&model));
+                }
+                Err(error @ (CoreError::Protocol(_) | CoreError::Cancelled)) => {
+                    return Err(error);
+                }
+                Err(error @ CoreError::Llm(moc_llm::LlmError::Guard(_))) => return Err(error),
+                Err(error) => {
+                    tracing::warn!(session_id, method = ?method, %error, "压缩方法失败，改用下一个方法");
+                    failures.push(format!("{method:?}: {error}"));
+                    // 失败的方法可能已经改写了 transcript（shake 会整体重写）或写入了 usage：
+                    // 后面的方法必须基于当前状态，否则会用旧快照覆盖这期间追加的 entry。
+                    state = record.state.lock().await.clone();
+                    measured.messages = replay::model_messages(&state, None, Some(&model));
+                }
             }
         }
+        if let Some(report) = last_result {
+            return Ok(report);
+        }
+        Err(CoreError::ContextOverflow(format!(
+            "所有压缩方法都失败了（{reason:?}）：{}",
+            failures.join("；")
+        )))
     }
-    if let Some(report) = last_result {
-        return Ok(report);
+    .await;
+
+    // 一次压缩尝试只报一个终态：中间方法（例如 shake）成功了但没腾出空间时，
+    // 不提前替换进行中提示，等最终结果出来再收尾。
+    match &outcome {
+        Ok(report) => {
+            let update = SessionUpdate::ContextCompacted {
+                method: report.result.method.clone(),
+                tokens_before: report.result.tokens_before,
+                tokens_after: report.result.tokens_after,
+                full: report.result.full,
+            };
+            if let Err(emit_error) = ctx.updates().emit(session_id.to_owned(), update).await {
+                tracing::warn!(session_id, %emit_error, "上下文压缩完成事件下发失败");
+            }
+        }
+        Err(error) if started => {
+            let message = error.to_string();
+            if let Err(emit_error) = ctx
+                .updates()
+                .emit(
+                    session_id.to_owned(),
+                    SessionUpdate::ContextCompactionFailed { message },
+                )
+                .await
+            {
+                tracing::warn!(session_id, %emit_error, "上下文压缩失败事件下发失败");
+            }
+        }
+        Err(_) => {}
     }
-    Err(CoreError::ContextOverflow(format!(
-        "所有压缩方法都失败了（{reason:?}）：{}",
-        failures.join("；")
-    )))
+    outcome
+}
+
+/// 通知前端压缩已进入等待上游模型的阶段；本地裁剪不调用它。
+async fn emit_compaction_started(ctx: &RequestContext, session_id: &str) -> Result<(), CoreError> {
+    ctx.updates()
+        .emit(
+            session_id.to_owned(),
+            SessionUpdate::ContextCompactionStarted,
+        )
+        .await
+        .map_err(|error| CoreError::Protocol(error.to_string()))
 }
 
 /// soft 压缩的公共输入；两种实现只在摘要提示词和提交方式上不同。
@@ -477,6 +539,8 @@ pub(crate) struct Checkpoint {
     pub first_kept_id: Option<String>,
     pub tokens_before: u64,
     pub tokens_after: u64,
+    /// 本次压缩是否重新生成了摘要；`false` 表示只裁剪历史（`shake`）。
+    pub full: bool,
     pub instructions: Option<String>,
     pub native: Option<Box<serde_json::Value>>,
     pub archive: HistoryArchive,
@@ -484,7 +548,6 @@ pub(crate) struct Checkpoint {
 
 pub(crate) async fn record_compaction(
     inner: &CoreInner,
-    ctx: &RequestContext,
     session_id: &str,
     checkpoint: Checkpoint,
 ) -> Result<CompactResult, CoreError> {
@@ -496,6 +559,7 @@ pub(crate) async fn record_compaction(
         first_kept_id,
         tokens_before,
         tokens_after,
+        full,
         instructions,
         native,
         archive,
@@ -522,21 +586,11 @@ pub(crate) async fn record_compaction(
         .await?;
     // 本次压缩已经提交，提前生成的摘要对后续压缩都不再有效。
     inner.runtime(session_id).await.grok_prefire.clear();
-    ctx.updates()
-        .emit(
-            session_id.to_owned(),
-            SessionUpdate::ContextCompacted {
-                method: method.clone(),
-                tokens_before,
-                tokens_after,
-            },
-        )
-        .await
-        .map_err(|error| CoreError::Protocol(error.to_string()))?;
     Ok(CompactResult {
         method,
         tokens_before,
         tokens_after,
+        full,
         summary_chars,
     })
 }

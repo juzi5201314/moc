@@ -630,7 +630,7 @@ async fn event_loop(
         }
         // 空闲（无 dirty）时完全 park 在事件上；dirty 但未到预算点才等待
         let need_frame_wait = dirty && tokio::time::Instant::now() < next_frame;
-        let activity_tick_enabled = app.prompt_running;
+        let activity_tick_enabled = app.prompt_running || app.compaction_progress.is_some();
         // notice / warning 显示中：安排 TTL 到点重绘，擦除浮层
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
@@ -646,7 +646,12 @@ async fn event_loop(
             }
             _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
                 next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
-                dirty = true;
+                if app.prompt_running {
+                    dirty = true;
+                }
+                if app.tick_compaction() {
+                    dirty = true;
+                }
             }
             input_event = input.recv() => {
                 dirty = true;
@@ -3131,6 +3136,17 @@ fn apply_update_and_refresh(
     }
 }
 
+/// 压缩完成提示：全量摘要与仅裁剪用不同措辞，避免把裁剪说成完整压缩。
+fn compaction_done_note(full: bool, tokens_before: u64, tokens_after: u64) -> String {
+    let before = crate::render::tokens_k(tokens_before);
+    let after = crate::render::tokens_k(tokens_after);
+    if full {
+        format!("上下文已压缩：{before} → {after}")
+    } else {
+        format!("上下文已裁剪：{before} → {after}（未生成摘要）")
+    }
+}
+
 /// 把协议更新折叠进块序列：流式增量续写活动块，工具调用按 ID 归组。
 fn apply_update(app: &mut App, update: SessionUpdate) {
     use crate::transcript::Block;
@@ -3298,19 +3314,18 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 },
             );
         }
+        SessionUpdate::ContextCompactionStarted => app.start_compaction(),
         SessionUpdate::ContextCompacted {
+            method: _,
             tokens_before,
             tokens_after,
-            ..
-        } => {
-            app.push_note(
-                format!(
-                    "上下文已压缩：{} → {}",
-                    crate::render::tokens_k(tokens_before),
-                    crate::render::tokens_k(tokens_after)
-                ),
-                false,
-            );
+            full,
+        } => app.finish_compaction(
+            compaction_done_note(full, tokens_before, tokens_after),
+            false,
+        ),
+        SessionUpdate::ContextCompactionFailed { message } => {
+            app.finish_compaction(format!("上下文压缩失败：{message}"), true);
         }
         SessionUpdate::JobFinished {
             command, exit_code, ..
@@ -4288,6 +4303,153 @@ mod tests {
             },
         );
         assert_eq!(app.warning.as_deref(), Some("effort high → medium"));
+    }
+
+    /// 压缩提示从 0s 开始计时，完成后原位替换，不追加第二条。
+    #[test]
+    fn compaction_note_ticks_then_replaces_in_place() {
+        use crate::transcript::Block;
+        use moc_protocol::{SessionInfo, SessionMode};
+
+        let mut app = app();
+        app.session = Some(SessionInfo {
+            id: "ses_compact".into(),
+            title: "压缩".into(),
+            model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            mode: SessionMode::Normal,
+            parent_session_id: None,
+            forked_from: None,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+        let note = |app: &App| match app.blocks.last().map(|entry| &entry.block) {
+            Some(Block::Note { text, error }) => (text.clone(), *error),
+            other => panic!("压缩提示应为 Note：{other:?}"),
+        };
+
+        apply_update(&mut app, SessionUpdate::ContextCompactionStarted);
+        assert_eq!(note(&app), ("上下文压缩中…(0s)".into(), false));
+
+        // 3 秒后同一条提示只改秒数。
+        app.compaction_progress
+            .as_mut()
+            .expect("压缩在飞")
+            .started_at -= std::time::Duration::from_secs(3);
+        assert!(app.tick_compaction());
+        assert_eq!(note(&app), ("上下文压缩中…(3s)".into(), false));
+        assert_eq!(app.blocks.len(), 1, "计时不应追加新块");
+
+        apply_update(
+            &mut app,
+            SessionUpdate::ContextCompacted {
+                method: "soft".into(),
+                tokens_before: 426_070,
+                tokens_after: 247_960,
+                full: true,
+            },
+        );
+        assert_eq!(
+            note(&app),
+            ("上下文已压缩：426.07k → 247.96k".into(), false)
+        );
+        assert_eq!(app.blocks.len(), 1, "完成时应原位替换");
+        assert!(app.compaction_progress.is_none());
+    }
+
+    /// 仅裁剪历史时不能说成「已压缩」：措辞与全量摘要区分开。
+    #[test]
+    fn pruning_compaction_is_labelled_as_trim() {
+        use crate::transcript::Block;
+        use moc_protocol::{SessionInfo, SessionMode};
+
+        let mut app = app();
+        app.session = Some(SessionInfo {
+            id: "ses_prune".into(),
+            title: "裁剪".into(),
+            model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            mode: SessionMode::Normal,
+            parent_session_id: None,
+            forked_from: None,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+
+        apply_update(&mut app, SessionUpdate::ContextCompactionStarted);
+        apply_update(
+            &mut app,
+            SessionUpdate::ContextCompacted {
+                method: "soft".into(),
+                tokens_before: 426_070,
+                tokens_after: 247_960,
+                full: false,
+            },
+        );
+        let Some(Block::Note { text, error }) = app.blocks.last().map(|entry| &entry.block) else {
+            panic!("裁剪提示应为 Note");
+        };
+        assert_eq!(text, "上下文已裁剪：426.07k → 247.96k（未生成摘要）");
+        assert!(!error);
+        assert_eq!(app.blocks.len(), 1, "裁剪只留一条终态提示");
+        assert!(app.compaction_progress.is_none());
+
+        // 本地裁剪没有进行中提示：完成事件直接落一条终态，不留下“压缩中”。
+        app.blocks.clear();
+        apply_update(
+            &mut app,
+            SessionUpdate::ContextCompacted {
+                method: "shake".into(),
+                tokens_before: 426_070,
+                tokens_after: 247_960,
+                full: false,
+            },
+        );
+        let Some(Block::Note { text, .. }) = app.blocks.last().map(|entry| &entry.block) else {
+            panic!("裁剪完成应为 Note");
+        };
+        assert_eq!(text, "上下文已裁剪：426.07k → 247.96k（未生成摘要）");
+        assert_eq!(app.blocks.len(), 1);
+    }
+
+    /// 压缩失败同样收掉进行中提示，不留一条永远计时的挂起块。
+    #[test]
+    fn failed_compaction_ends_the_running_note() {
+        use crate::transcript::Block;
+        use moc_protocol::{SessionInfo, SessionMode};
+
+        let mut app = app();
+        app.session = Some(SessionInfo {
+            id: "ses_failed".into(),
+            title: "失败".into(),
+            model: "test/model".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            mode: SessionMode::Normal,
+            parent_session_id: None,
+            forked_from: None,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+
+        apply_update(&mut app, SessionUpdate::ContextCompactionStarted);
+        apply_update(
+            &mut app,
+            SessionUpdate::ContextCompactionFailed {
+                message: "上游不可用".into(),
+            },
+        );
+        let Some(Block::Note { text, error }) = app.blocks.last().map(|entry| &entry.block) else {
+            panic!("失败提示应为 Note");
+        };
+        assert_eq!(text, "上下文压缩失败：上游不可用");
+        assert!(error);
+        assert!(app.compaction_progress.is_none());
     }
 
     #[tokio::test]

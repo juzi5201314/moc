@@ -13,6 +13,18 @@ use crate::session::state::SessionState;
 
 use super::{CompactionBudget, messages_tokens, record_compaction};
 
+/// 该模型当前是否会真的尝试 Responses 原生压缩：端点支持且未被标记不可用。
+pub(crate) fn available(
+    inner: &CoreInner,
+    config: &ResolvedConfig,
+    model: &crate::ResolvedModel,
+) -> bool {
+    config.compaction.remote.enabled
+        && model.remote_compaction
+        && model.llm.protocol == Protocol::OpenAiResponses
+        && !inner.remote_unavailable.read().contains(&model.selector)
+}
+
 pub(crate) async fn compact(
     inner: &CoreInner,
     ctx: &RequestContext,
@@ -26,11 +38,7 @@ pub(crate) async fn compact(
         tokens_before,
         fixed_tokens,
     } = budget;
-    if !config.compaction.remote.enabled
-        || !model.remote_compaction
-        || model.llm.protocol != Protocol::OpenAiResponses
-        || inner.remote_unavailable.read().contains(&model.selector)
-    {
+    if !available(inner, config, model) {
         return Err(CoreError::Tool(
             "Responses native compaction is not supported for this model".into(),
         ));
@@ -151,7 +159,6 @@ pub(crate) async fn compact(
     let summary = checkpoint_summary(state);
     record_compaction(
         inner,
-        ctx,
         &state.session.id,
         super::Checkpoint {
             method: "remote".to_owned(),
@@ -161,6 +168,7 @@ pub(crate) async fn compact(
             first_kept_id,
             tokens_before,
             tokens_after,
+            full: true,
             instructions: None,
             native,
             archive: super::HistoryArchive::Write,

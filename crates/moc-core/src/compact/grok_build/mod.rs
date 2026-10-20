@@ -214,7 +214,6 @@ pub(crate) async fn compact(
             Ok(raw) if !prompt::is_degenerate_summary(&raw) => {
                 return finish(
                     &sampler,
-                    ctx,
                     state,
                     instructions,
                     prompt::clean_summary(&raw),
@@ -245,7 +244,6 @@ pub(crate) async fn compact(
                 Ok(raw) if !prompt::is_degenerate_summary(&raw) => {
                     return finish(
                         &sampler,
-                        ctx,
                         state,
                         instructions,
                         prompt::clean_summary(&raw),
@@ -299,7 +297,6 @@ pub(crate) async fn compact(
 /// 提交 checkpoint：full-replace 历史 + 运行时提醒，不写历史归档。
 async fn finish(
     sampler: &Sampler<'_>,
-    ctx: &RequestContext,
     state: &SessionState,
     instructions: Option<&str>,
     summary: String,
@@ -318,7 +315,6 @@ async fn finish(
     }
     record_compaction(
         sampler.inner,
-        ctx,
         &state.session.id,
         super::Checkpoint {
             method: "grok_build".to_owned(),
@@ -328,6 +324,7 @@ async fn finish(
             first_kept_id: None,
             tokens_before: budget.tokens_before,
             tokens_after,
+            full: true,
             instructions: instructions.map(str::to_owned),
             native: None,
             archive: HistoryArchive::None,
