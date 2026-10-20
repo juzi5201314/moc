@@ -77,10 +77,13 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.statusline_template = preferences.statusline.clone();
     app.keymap = crate::config::KeyMap::compile(&preferences)?;
     app.preferences = preferences;
+    app.load_input_history(&core.config_home());
     app.tui_store = Some(tui_store);
     app.startup_mode = opts.mode;
     app.startup_pending = opts.initial_prompt.clone();
     bootstrap(&connection.client, &mut app, &opts).await;
+    // 启动目录在 bootstrap 才拿到；无会话时按它过滤「按项目」历史。
+    app.refresh_input_history();
     if app.session.is_none() && app.models.is_empty() {
         crate::settings::open(&mut app, &connection);
     }
@@ -1753,7 +1756,14 @@ fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     }
     let first_line = app.prompt_text().lines().next().unwrap_or_default();
     if first_line.starts_with('/') {
-        let line = app.prompt.take_committed_text();
+        if app.prompt.has_attached_images() {
+            app.set_notice("斜杠命令不支持图片，请移除图片后执行");
+            return;
+        }
+        let (line, history) = app.prompt.take_committed_text();
+        if let Some(text) = history {
+            app.record_input_history(&text);
+        }
         execute_command(app, connection, line.trim().to_owned());
         return;
     }
@@ -6159,6 +6169,95 @@ mod tests {
         assert_eq!(app.queues[&session].len(), 1);
         assert!(app.interrupt_pending.contains(&session));
         assert!(app.cancel_requested);
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 普通提示（非 `/` 命令）发送后必须能按 ↑ 召回，不能只有斜杠命令进历史。
+    #[tokio::test]
+    async fn submitted_prompt_enters_input_history() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt_running = true;
+        app.prompt.insert_str_raw("继续");
+        crate::queue::submit(&mut app, &connection, false);
+        assert!(app.prompt.is_empty(), "提交后输入框清空");
+        assert!(app.prompt.history_up(), "刚发送的提示应在历史里");
+        assert_eq!(app.prompt.text, "继续");
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 提交历史会落盘；重新挂载（等价重启）后仍能召回。
+    #[tokio::test]
+    async fn submitted_history_survives_restart() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let home = core.config_home();
+        app.load_input_history(&home);
+        app.prompt.insert_str_raw("继续");
+        crate::queue::submit(&mut app, &connection, false);
+        assert!(app.prompt.is_empty());
+
+        let mut restarted = App::new(Theme::global(), app.events.clone());
+        restarted.load_input_history(&home);
+        assert!(restarted.prompt.history_up(), "重启后仍应召回上次的提示");
+        assert_eq!(restarted.prompt.text, "继续");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 「按项目」范围只召回当前会话目录的提示。
+    #[tokio::test]
+    async fn project_history_scope_filters_by_session_cwd() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let home = core.config_home();
+        let mut history = crate::history::InputHistory::load(&home);
+        history.record("A 项目的提示", "/project/a");
+        history.record("B 项目的提示", "/project/b");
+        app.history = history;
+        app.preferences.history_scope = crate::history::HistoryScope::Project;
+        app.session.as_mut().expect("测试会话").cwd = "/project/a".into();
+        app.refresh_input_history();
+
+        assert!(app.prompt.history_up());
+        assert_eq!(app.prompt.text, "A 项目的提示");
+        assert!(!app.prompt.history_up(), "只允许当前项目的条目");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 没有会话时提交不能把草稿吃掉。
+    #[tokio::test]
+    async fn submitting_without_session_keeps_the_draft() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.session = None;
+        app.prompt.insert_str_raw("别丢了我");
+        crate::queue::submit(&mut app, &connection, false);
+        assert_eq!(app.prompt.text, "别丢了我", "被拒绝的草稿要回到输入框");
+        assert_eq!(app.notice.as_deref(), Some("请先在 /config 配置一个主模型"));
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 斜杠命令不吃附件：带图片时拒绝执行并原样保留输入，删掉占位后同一条命令可执行。
+    #[tokio::test]
+    async fn slash_command_with_image_keeps_input() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_str_raw("/help ");
+        app.prompt.insert_image("image/png".into(), "AAAA".into());
+        commit_prompt(&mut app, &connection);
+        assert!(app.modal.is_none(), "带图片时不得执行命令");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("斜杠命令不支持图片，请移除图片后执行")
+        );
+        assert_eq!(app.prompt.text, "/help [image#1]", "输入原样保留");
+
+        app.prompt.backspace();
+        commit_prompt(&mut app, &connection);
+        assert!(matches!(app.modal, Some(Modal::Help)));
+        assert!(app.prompt.is_empty());
         connection.shutdown().await;
         core.shutdown().await;
     }

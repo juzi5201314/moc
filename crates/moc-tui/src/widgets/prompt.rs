@@ -8,12 +8,12 @@ use moc_protocol::ImageSource;
 use moc_protocol::methods::InputPart;
 use unicode_width::UnicodeWidthChar;
 
+use crate::history::HISTORY_MAX;
+
 /// 粘贴超过该行数时 chip 化。
 const PASTE_CHIP_LINES: usize = 4;
 /// 粘贴超过该字节数时 chip 化。
 const PASTE_CHIP_BYTES: usize = 10_000;
-/// 历史上限。
-const HISTORY_MAX: usize = 200;
 
 /// 把字节偏移吸附到最近的字符边界。
 ///
@@ -116,6 +116,18 @@ impl PromptState {
         }
     }
 
+    /// 提交输入：把可复用的最终文本记入历史，再把草稿移交给调用方。
+    ///
+    /// 历史留在输入框自身（[`Self::take_draft`] 不带走历史）：草稿发送后即被丢弃，
+    /// 在草稿上记历史等于没记。返回的文本是本次真正写进历史的那条，供调用方落盘；
+    /// 连续重复或空输入返回 `None`。
+    pub fn take_submitted_draft(&mut self) -> (Self, Option<String>) {
+        let history = self.history_text();
+        let draft = self.take_draft();
+        let recorded = self.record_history(&history).then_some(history);
+        (draft, recorded)
+    }
+
     pub fn restore_draft(&mut self, mut draft: Self) {
         std::mem::swap(&mut self.histories, &mut draft.histories);
         *self = draft;
@@ -134,7 +146,14 @@ impl PromptState {
         .build_input_parts()
     }
     pub fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.images.is_empty()
+        self.text.trim().is_empty() && !self.has_attached_images()
+    }
+
+    /// 当前文本里真正带着图片占位：`images` 可能留有占位已被删掉的 chip。
+    pub fn has_attached_images(&self) -> bool {
+        self.images
+            .iter()
+            .any(|chip| self.text.contains(&format!("[image#{}]", chip.id)))
     }
 
     fn chip_id(&mut self) -> u32 {
@@ -479,18 +498,42 @@ impl PromptState {
         }
     }
 
-    /// 发送：把当前输入压入历史并清空，返回展开后的文本。
-    pub fn take_committed_text(&mut self) -> String {
+    /// 可复用的历史文本：粘贴占位展开成原文，图片占位丢掉（图片字节随草稿走）。
+    fn history_text(&self) -> String {
+        let mut text = self.expand_all_chips(self.text.clone());
+        for chip in &self.images {
+            text = text.replace(&format!("[image#{}]", chip.id), "");
+        }
+        text
+    }
+
+    /// 记入历史：最新在前，连续重复只留一条，超出上限裁掉最旧的。
+    ///
+    /// 返回是否真的新增了一条（空输入与连续重复返回 `false`）。
+    fn record_history(&mut self, text: &str) -> bool {
+        if text.trim().is_empty() || self.histories.first().map(String::as_str) == Some(text) {
+            return false;
+        }
+        self.histories.insert(0, text.to_owned());
+        self.histories.truncate(HISTORY_MAX);
+        true
+    }
+
+    /// 用持久化历史重建内存历史（最新在前）；切换展示范围或会话后调用。
+    pub fn seed_history(&mut self, entries: Vec<String>) {
+        self.histories = entries;
+        self.histories.truncate(HISTORY_MAX);
+        self.break_history_browse();
+    }
+
+    /// 发送：把当前输入压入历史并清空，返回展开后的文本与本次新增的历史条目。
+    pub fn take_committed_text(&mut self) -> (String, Option<String>) {
+        let history = self.history_text();
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
         self.break_history_browse();
-        if !text.trim().is_empty()
-            && self.histories.first().map(|h| h.as_str()) != Some(text.as_str())
-        {
-            self.histories.insert(0, text.clone());
-            self.histories.truncate(HISTORY_MAX);
-        }
-        self.expand_all_chips(text)
+        let recorded = self.record_history(&history).then_some(history);
+        (self.expand_all_chips(text), recorded)
     }
 
     /// 展开文本里的全部占位。
@@ -504,7 +547,7 @@ impl PromptState {
 
     /// 构造发送的 `InputPart` 序列：文本按图片占位切分。
     pub fn build_input_parts(&mut self) -> Vec<InputPart> {
-        let text = self.take_committed_text();
+        let (text, _) = self.take_committed_text();
         let mut parts = Vec::new();
         let mut plain = String::new();
         let mut rest = text.as_str();
@@ -629,5 +672,73 @@ mod tests {
         assert_eq!(prompt.text, "my current long prompt");
         assert!(prompt.up());
         assert_eq!(prompt.text, "old_command");
+    }
+
+    #[test]
+    fn submitting_prompt_records_reusable_history_text() {
+        let mut prompt = PromptState::default();
+        prompt.insert_image("image/png".into(), "AAAA".into());
+        prompt.insert_str_raw("看这个 ");
+        prompt.insert_text("第一行\n第二行\n第三行\n第四行");
+        assert_eq!(prompt.text, "[image#1]看这个 [paste#2]");
+
+        let (draft, history) = prompt.take_submitted_draft();
+        assert_eq!(draft.images.len(), 1, "图片随草稿走");
+        assert_eq!(draft.pastes.len(), 1, "粘贴随草稿走");
+        assert_eq!(
+            history.as_deref(),
+            Some("看这个 第一行\n第二行\n第三行\n第四行"),
+            "落盘用展开后的文本，不能带占位"
+        );
+        assert!(prompt.history_up());
+        assert_eq!(
+            prompt.text, "看这个 第一行\n第二行\n第三行\n第四行",
+            "历史里不能留下已随草稿消失的占位"
+        );
+    }
+
+    #[test]
+    fn stashing_draft_keeps_it_out_of_history() {
+        let mut prompt = PromptState::default();
+        prompt.insert_str_raw("未发送的草稿");
+        assert_eq!(prompt.take_draft().text, "未发送的草稿");
+        assert!(!prompt.history_up(), "暂存不是提交，不能进历史");
+    }
+
+    #[test]
+    fn deleting_image_placeholder_detaches_the_chip() {
+        let mut prompt = PromptState::default();
+        prompt.insert_image("image/png".into(), "AAAA".into());
+        assert!(prompt.has_attached_images());
+        assert!(!prompt.is_empty());
+
+        prompt.backspace();
+        assert!(prompt.text.is_empty());
+        assert!(!prompt.has_attached_images(), "占位删掉后 chip 不算附件");
+        assert!(prompt.is_empty(), "只剩陈旧 chip 的输入框算空");
+    }
+
+    #[test]
+    fn seeded_history_is_recalled_newest_first() {
+        let mut prompt = PromptState::default();
+        prompt.seed_history(vec!["新提示".into(), "更旧".into()]);
+        assert!(prompt.history_up());
+        assert_eq!(prompt.text, "新提示");
+        assert!(prompt.history_up());
+        assert_eq!(prompt.text, "更旧");
+        assert!(prompt.history_down());
+        assert_eq!(prompt.text, "新提示");
+    }
+
+    #[test]
+    fn identical_consecutive_prompts_are_recorded_once() {
+        let mut prompt = PromptState::default();
+        for _ in 0..2 {
+            prompt.insert_str_raw("继续");
+            let _ = prompt.take_submitted_draft();
+        }
+        assert!(prompt.history_up());
+        assert_eq!(prompt.text, "继续");
+        assert!(!prompt.history_up(), "连续重复只留一条");
     }
 }

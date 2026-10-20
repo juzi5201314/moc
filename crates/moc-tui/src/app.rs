@@ -111,6 +111,8 @@ pub struct App {
     pub view_gen: u64,
     /// 输入框状态（多行编辑、历史、chip）。
     pub prompt: PromptState,
+    /// 持久化输入历史；展示范围按偏好过滤。
+    pub history: crate::history::InputHistory,
     /// 斜杠补全菜单；`None` = 关闭。
     pub completion: Option<CompletionState>,
     /// 输入文本变更代次；异步资源补全只接受最新代次。
@@ -350,6 +352,16 @@ impl App {
     pub fn focused_agent(&self) -> bool {
         self.focused.is_some()
     }
+
+    /// 取当前会话 ID；没有会话时提示先去配置模型。
+    pub fn require_session(&mut self) -> Option<String> {
+        let Some(session) = self.session.as_ref() else {
+            self.set_notice("请先在 /config 配置一个主模型");
+            return None;
+        };
+        Some(session.id.clone())
+    }
+
     pub fn new(theme: &'static Theme, events: UnboundedSender<AppEvent>) -> Self {
         let images = crate::render::image::ImageStore::new(events.clone());
         Self {
@@ -371,6 +383,7 @@ impl App {
             tool_detail: DetailLevel::default(),
             view_gen: 0,
             prompt: PromptState::default(),
+            history: crate::history::InputHistory::default(),
             completion: None,
             prompt_revision: 0,
             completion_prefix: None,
@@ -1188,6 +1201,8 @@ impl App {
         self.history_load_requested = false;
         self.scroll_max_offset = 0;
         self.view_gen += 1;
+        // 「按项目」范围下，召回历史要跟着会话的 cwd 走。
+        self.refresh_input_history();
     }
 
     /// 收掉与「当前提示」绑定的本地状态；[`App::finish_prompt`] 与会话切换共用。
@@ -1311,6 +1326,35 @@ impl App {
     /// 输入框当前文本快照。
     pub fn prompt_text(&self) -> &str {
         &self.prompt.text
+    }
+
+    // ---------- 输入历史 ----------
+
+    /// 挂载持久化输入历史，并按当前展示范围填充输入框。
+    pub fn load_input_history(&mut self, home: &std::path::Path) {
+        self.history = crate::history::InputHistory::load(home);
+        self.refresh_input_history();
+    }
+
+    /// 把一条已提交文本写进持久化历史；内存历史由输入框在提交时维护。
+    pub fn record_input_history(&mut self, text: &str) {
+        let project = self.history_project();
+        self.history.record(text, &project);
+    }
+
+    /// 按当前偏好与项目重新填充输入历史；切换范围或会话时调用。
+    pub fn refresh_input_history(&mut self) {
+        let entries = self
+            .history
+            .visible(self.preferences.history_scope, &self.history_project());
+        self.prompt.seed_history(entries);
+    }
+
+    /// 历史归属的项目目录：有会话时用会话 cwd，否则用启动目录。
+    fn history_project(&self) -> String {
+        self.session
+            .as_ref()
+            .map_or_else(|| self.startup_cwd.clone(), |session| session.cwd.clone())
     }
 
     // ---------- statusline 数据 ----------

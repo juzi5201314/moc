@@ -46,15 +46,22 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if app.prompt.is_empty() {
         return;
     }
-    if app.prompt.is_bash_command() && !app.prompt.images.is_empty() {
+    if app.prompt.is_bash_command() && app.prompt.has_attached_images() {
         app.set_notice("Bash 命令不支持图片，请移除图片后执行");
         return;
     }
-    let draft = app.prompt.take_draft();
+    // 先确认会话存在，再动输入框：被拒绝的草稿要原样留在用户手里。
+    let Some(session) = app.require_session() else {
+        return;
+    };
+    let (draft, history) = app.prompt.take_submitted_draft();
+    if let Some(text) = history {
+        app.record_input_history(&text);
+    }
+    enqueue(app, connection, session, draft, queued, None);
     if let Some(stash) = app.prompt_stash.take() {
         app.prompt.restore_draft(stash);
     }
-    enqueue(app, connection, draft, queued, None);
 }
 
 /// 直接投递一条现成草稿并指定本次提示模式（`/ask <提示词>` 用），不经输入框。
@@ -67,20 +74,21 @@ pub fn submit_with_mode(
     draft: PromptState,
     mode: SessionMode,
 ) {
-    enqueue(app, connection, draft, true, Some(mode));
+    let Some(session) = app.require_session() else {
+        return;
+    };
+    enqueue(app, connection, session, draft, true, Some(mode));
 }
 
+/// 把草稿投递到 `session` 的待发送区（补充、排队或直接派发）。
 fn enqueue(
     app: &mut App,
     connection: &EmbeddedConnection,
+    session: String,
     draft: PromptState,
     queued: bool,
     mode: Option<SessionMode>,
 ) {
-    let Some(session) = app.session.as_ref().map(|session| session.id.clone()) else {
-        app.set_notice("请先在 /config 配置一个主模型");
-        return;
-    };
     app.next_queue_id += 1;
     let prompt = QueuedPrompt {
         id: app.next_queue_id,

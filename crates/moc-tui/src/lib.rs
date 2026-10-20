@@ -14,6 +14,7 @@ pub mod app;
 pub mod clipboard;
 pub mod config;
 pub mod event;
+pub mod history;
 pub mod input;
 pub mod interaction;
 pub mod modal;

@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::history::HistoryScope;
 use crate::transcript::DetailLevel;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,8 @@ pub struct TuiConfig {
     pub notify_complete: bool,
     pub notify_waiting: bool,
     pub active_submit: ActiveSubmit,
+    /// ↑/↓ 召回输入历史的范围：全局共享，或只看当前项目目录。
+    pub history_scope: HistoryScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statusline: Option<String>,
     pub keybindings: BTreeMap<String, Vec<String>>,
@@ -40,6 +43,7 @@ impl Default for TuiConfig {
             notify_complete: true,
             notify_waiting: true,
             active_submit: ActiveSubmit::Steering,
+            history_scope: HistoryScope::Global,
             statusline: None,
             keybindings: actions()
                 .iter()
@@ -339,6 +343,15 @@ pub fn fields() -> Vec<ConfigField> {
             ]),
         ),
         (
+            "history_scope",
+            "输入历史范围",
+            "↑/↓ 召回的历史：全局共享，或只看当前项目目录；提交内容始终写入同一份历史。",
+            FieldKind::Choice(vec![
+                ChoiceOption::new("global", "全局"),
+                ChoiceOption::new("project", "当前项目"),
+            ]),
+        ),
+        (
             "statusline",
             "状态栏模板",
             "自定义底部状态栏；留空使用默认样式。可用 {model} {mode} {workdir} {branch} {context} {context_percent} {todo} {tokens_in} {tokens_out} {tok_s} {prompt_elapsed} {cost}。",
@@ -434,11 +447,13 @@ mod tests {
         preferences.thinking_detail = DetailLevel::Full;
         preferences.tool_detail = DetailLevel::Hidden;
         preferences.active_submit = ActiveSubmit::Interrupt;
+        preferences.history_scope = HistoryScope::Project;
         store.save(&preferences).unwrap();
         let (_, reloaded) = TuiStore::load(root.path()).unwrap();
         assert_eq!(reloaded.thinking_detail, DetailLevel::Full);
         assert_eq!(reloaded.tool_detail, DetailLevel::Hidden);
         assert_eq!(reloaded.active_submit, ActiveSubmit::Interrupt);
+        assert_eq!(reloaded.history_scope, HistoryScope::Project);
         assert_eq!(
             std::fs::read_to_string(root.path().join("config.toml")).unwrap(),
             "# core 不应被前端保存覆盖\n"

@@ -383,8 +383,12 @@ impl SettingsPanel {
         app.thinking_detail = preferences.thinking_detail;
         app.tool_detail = preferences.tool_detail;
         app.statusline_template = preferences.statusline.clone();
+        let scope_changed = app.preferences.history_scope != preferences.history_scope;
         self.tui = serde_json::to_value(&preferences)?;
         app.preferences = preferences;
+        if scope_changed {
+            app.refresh_input_history();
+        }
         app.keymap = keys;
         app.view_gen = app.view_gen.wrapping_add(1);
         Ok(())
