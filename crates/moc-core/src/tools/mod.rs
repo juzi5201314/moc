@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use crate::config::ResolvedConfig;
 use crate::hashline::AnchorStore;
+use crate::sandbox::{SandboxGrants, SandboxPolicy, SandboxScratch, SandboxSupport};
 use crate::session::SessionTable;
 use crate::session::state::SessionState;
 use crate::session::store::SessionPaths;
@@ -181,8 +182,30 @@ pub struct ToolCtx {
     pub tool_call_id: String,
     /// 本会话已加载的 skill 名。
     pub loaded_skills: Arc<parking_lot::RwLock<crate::skills::LoadedSkills>>,
+    /// 当前平台的沙盒能力。
+    pub(crate) sandbox_support: SandboxSupport,
+    /// 本会话累积的沙盒路径/命令授权。
+    pub(crate) sandbox_grants: Arc<parking_lot::RwLock<SandboxGrants>>,
+    /// 本次工具调用新获得的授权；父代理与子代理默认不继承。
+    pub(crate) call_grants: SandboxGrants,
+    /// 会话级 scratch；创建失败时为 `None`，非 full 模式会报错。
+    pub(crate) sandbox_scratch: Option<Arc<SandboxScratch>>,
 }
 impl ToolCtx {
+    /// 用当前会话模式、配置、会话授权与本次调用授权构造沙盒策略。
+    pub(crate) fn sandbox_policy(&self) -> SandboxPolicy {
+        let session = self.sandbox_grants.read();
+        let mut policy = SandboxPolicy::new(
+            self.permission,
+            self.cwd.clone(),
+            &self.config.sandbox,
+            &session,
+            &self.call_grants,
+            self.sandbox_scratch.clone(),
+        );
+        policy.overlay_home &= self.sandbox_support.home_overlay;
+        policy
+    }
     pub fn resource_context(&self) -> crate::resources::ResourceContext<'_> {
         crate::resources::ResourceContext {
             session_id: &self.session_id,
@@ -391,49 +414,48 @@ pub fn workspace_escape(
     } else {
         cwd.join(supplied)
     };
-    let landing = resolve_landing(&joined)?;
+    let landing = crate::sandbox::resolve_landing(&joined)?;
     (!landing.starts_with(&root)).then_some(landing)
 }
 
-/// canonicalize 路径中已存在的最深前缀，再按文件系统语义词法折叠剩余部分。
-///
-/// 剩余部分在写入前还不存在，其中的 `..` 只会抵消这些待创建的组件，所以词法折叠的结果
-/// 与 `create_dir_all` 之后的实际路径一致；已存在部分里的符号链接由 canonicalize 展开，
-/// 不能借链接逃出工作区。
-fn resolve_landing(joined: &std::path::Path) -> Option<PathBuf> {
-    let mut existing = joined;
-    loop {
-        if let Ok(resolved) = std::fs::canonicalize(existing) {
-            let tail = joined.strip_prefix(existing).ok()?;
-            let mut landing = resolved;
-            for component in tail.components() {
-                match component {
-                    std::path::Component::Normal(part) => landing.push(part),
-                    std::path::Component::ParentDir => {
-                        landing.pop();
-                    }
-                    std::path::Component::CurDir => {}
-                    std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                        return None;
-                    }
-                }
-            }
-            return Some(landing);
-        }
-        existing = existing.parent()?;
+/// 执行阶段复校验：授权入口与工具执行共用同一份沙盒策略。
+pub(crate) fn ensure_path_access(
+    ctx: &ToolCtx,
+    value: &str,
+    access: crate::sandbox::Access,
+) -> Result<(), ToolError> {
+    if ctx.permission == SessionPermission::Full || crate::resources::is_resource_uri(value) {
+        return Ok(());
+    }
+    let path = std::path::Path::new(value);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        ctx.cwd.join(path)
+    };
+    match ctx.sandbox_policy().check(&path, access) {
+        crate::sandbox::Decision::Allow => Ok(()),
+        crate::sandbox::Decision::Ask | crate::sandbox::Decision::Deny => Err(ToolError::new(
+            "E_SANDBOX_DENIED",
+            format!(
+                "[sandbox: file access denied under {} mode] {} is outside the allowed roots and was not approved",
+                ctx.permission.as_str(),
+                path.display()
+            ),
+        )),
     }
 }
 
 /// 执行写入前再校验一次工作区边界，防止绕过授权入口的调用越界写入。
 ///
-/// 与授权阶段共用 [`workspace_escape`]，两边判断和路径解析完全一致。`full` 权限（yolo，
-/// 或本次调用已获一次性授权）不受限制。
+/// `full` 不受限制；`workspace` 与 `workspace-only` 都拒绝工作区外目标。生产路径使用
+/// [`ensure_path_access`]，本函数保留给只检查工作区边界的调用方和测试。
 pub fn ensure_workspace_write(
     cwd: &std::path::Path,
     permission: SessionPermission,
     value: impl AsRef<std::path::Path>,
 ) -> Result<(), ToolError> {
-    if permission != SessionPermission::Workspace {
+    if permission == SessionPermission::Full {
         return Ok(());
     }
     let Some(landing) = workspace_escape(cwd, value) else {
@@ -471,7 +493,7 @@ mod tests {
         assert!(workspace_escape(&root, "src/new/deep.rs").is_none());
         assert!(workspace_escape(&root, "src/../src/main.rs").is_none());
         assert!(workspace_escape(&root, ".").is_none());
-        let absolute = workspace_escape(&root, &outside.join("notes.txt").display().to_string())
+        let absolute = workspace_escape(&root, outside.join("notes.txt").display().to_string())
             .expect("绝对路径越界");
         assert_eq!(absolute, outside.join("notes.txt"));
         let parent = workspace_escape(&root, "../outside/notes.txt").expect("相对路径越界");
@@ -522,6 +544,15 @@ mod tests {
                 outside.join("absolute.txt")
             )
             .is_err()
+        );
+        assert!(
+            ensure_workspace_write(
+                &root,
+                SessionPermission::WorkspaceOnly,
+                outside.join("absolute.txt")
+            )
+            .is_err(),
+            "workspace-only 也必须拒绝工作区外写入"
         );
         // full 权限（yolo 或本次调用已获授权）以及工作区内的目标都不受限制。
         assert!(ensure_workspace_write(&root, SessionPermission::Full, "z/../../x").is_ok());

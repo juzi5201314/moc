@@ -50,10 +50,18 @@ pub(crate) struct SessionRuntime {
     pub guard: parking_lot::Mutex<Option<Arc<prompt::guard::PromptGuard>>>,
     /// Grok Build 两遍压缩中提前摘要（prefire）的状态；用同步原语实现，不跨任务持有异步锁。
     pub grok_prefire: crate::compact::grok_build::prefire::PrefireState,
+    /// 本会话累积的沙盒授权；模式切换或 `clear_grants` 时清空。
+    pub sandbox_grants: Arc<RwLock<crate::sandbox::SandboxGrants>>,
+    /// 会话级临时目录与 HOME overlay；runner 不可用时为空。
+    pub sandbox_scratch: Option<Arc<crate::sandbox::SandboxScratch>>,
 }
 
 impl SessionRuntime {
-    fn new(slots: Arc<crate::concurrency::Gate>) -> Self {
+    fn new(slots: Arc<crate::concurrency::Gate>, support: &crate::sandbox::SandboxSupport) -> Self {
+        let scratch = support
+            .runner
+            .and_then(|_| crate::sandbox::SandboxScratch::new().ok())
+            .map(Arc::new);
         Self {
             anchors: Arc::new(crate::hashline::AnchorStore::new()),
             jobs: Arc::new(JobManager::with_slots(slots)),
@@ -67,6 +75,8 @@ impl SessionRuntime {
             agent_inbox: Mutex::new(crate::agents::AgentInbox::default()),
             guard: parking_lot::Mutex::new(None),
             grok_prefire: crate::compact::grok_build::prefire::PrefireState::default(),
+            sandbox_grants: Arc::new(RwLock::new(crate::sandbox::SandboxGrants::default())),
+            sandbox_scratch: scratch,
         }
     }
 }
@@ -96,14 +106,10 @@ pub(crate) struct CoreInner {
     pub agent_tasks: Mutex<tokio::task::JoinSet<()>>,
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
-    pub bwrap_available: bool,
+    pub sandbox_support: crate::sandbox::SandboxSupport,
 }
 
 impl CoreInner {
-    pub(crate) fn workspace_sandbox_available(&self) -> bool {
-        self.bwrap_available
-    }
-
     pub(crate) fn effective_permission(&self, permission: SessionPermission) -> SessionPermission {
         permission
     }
@@ -174,11 +180,12 @@ impl CoreInner {
     }
     pub(crate) async fn runtime(&self, session_id: &str) -> Arc<SessionRuntime> {
         let mut runtimes = self.runtimes.lock().await;
-        Arc::clone(
-            runtimes
-                .entry(session_id.to_owned())
-                .or_insert_with(|| Arc::new(SessionRuntime::new(Arc::clone(&self.job_slots)))),
-        )
+        Arc::clone(runtimes.entry(session_id.to_owned()).or_insert_with(|| {
+            Arc::new(SessionRuntime::new(
+                Arc::clone(&self.job_slots),
+                &self.sandbox_support,
+            ))
+        }))
     }
     pub(crate) async fn reset_loaded_skills(&self, session_id: &str) {
         if let Some(runtime) = self.runtimes.lock().await.get(session_id).cloned() {
@@ -319,33 +326,6 @@ impl CoreInner {
     }
 }
 
-fn probe_bwrap() -> bool {
-    #[cfg(unix)]
-    {
-        std::process::Command::new("bwrap")
-            .args([
-                "--die-with-parent",
-                "--new-session",
-                "--unshare-user",
-                "--unshare-pid",
-                "--unshare-ipc",
-                "--unshare-uts",
-                "--disable-userns",
-                "--ro-bind",
-                "/",
-                "/",
-                "--",
-                "true",
-            ])
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
-}
-
 /// 代理运行时，通过协议层的 [`AgentService`] 对外提供服务。
 #[derive(Clone)]
 pub struct Core {
@@ -356,9 +336,31 @@ impl Core {
     pub fn config_home(&self) -> PathBuf {
         self.inner.config().home.clone()
     }
+
+    /// 当前平台的沙盒能力；前端据此只展示可用的权限模式。
+    pub fn sandbox_support(&self) -> crate::sandbox::SandboxSupport {
+        self.inner.sandbox_support.clone()
+    }
+
     /// 加载配置、校验供应商，并创建会话存储目录。
     pub fn new(config: CoreConfig) -> anyhow::Result<Arc<Self>> {
+        Self::new_with_sandbox_support(config, crate::sandbox::detect())
+    }
+
+    /// 以显式沙盒能力创建 core；测试或嵌入方可注入，避免依赖宿主机 runner。
+    pub fn new_with_sandbox_support(
+        config: CoreConfig,
+        sandbox_support: crate::sandbox::SandboxSupport,
+    ) -> anyhow::Result<Arc<Self>> {
         let mut resolved = ResolvedConfig::load(&config)?;
+        if resolved.sandbox.default_mode != moc_protocol::SessionPermission::Full
+            && !sandbox_support.supports(resolved.sandbox.default_mode)
+        {
+            anyhow::bail!(
+                "sandbox.default_mode={} 在当前平台不可用；请改用 full，或在 WSL2/macOS 中提供 sandbox runner",
+                resolved.sandbox.default_mode.as_str()
+            );
+        }
         if let Some(session_dir) = &config.session_dir {
             resolved.session.dir = session_dir.clone();
         }
@@ -387,7 +389,7 @@ impl Core {
                 agent_tasks: Mutex::new(tokio::task::JoinSet::new()),
                 prompts: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
-                bwrap_available: probe_bwrap(),
+                sandbox_support,
             }),
         }))
     }
@@ -883,6 +885,13 @@ impl AgentService for Core {
                 "available_models": selectors,
             }))
         })?;
+        let permission = config.sandbox.default_mode;
+        if !self.inner.sandbox_support.supports(permission) {
+            return Err(invalid_params(format!(
+                "sandbox.default_mode={} 在当前平台不可用，请改用 full 或调整配置",
+                permission.as_str()
+            )));
+        }
         let mut info = self
             .inner
             .sessions
@@ -890,7 +899,7 @@ impl AgentService for Core {
                 &cwd,
                 &model.selector,
                 params.mode,
-                SessionPermission::Full,
+                permission,
                 params.title.as_deref(),
                 SessionOrigin::root(),
             )
@@ -1108,10 +1117,19 @@ impl AgentService for Core {
         ctx: RequestContext,
         params: SessionSetPermissionParams,
     ) -> Result<SessionInfo, RpcError> {
-        if params.permission == SessionPermission::Workspace
-            && !self.inner.workspace_sandbox_available()
-        {
-            return Err(invalid_params("当前环境没有可用的 bwrap，只能使用 full 权限"));
+        if !self.inner.sandbox_support.supports(params.permission) {
+            let available = self
+                .inner
+                .sandbox_support
+                .modes
+                .iter()
+                .map(|mode| mode.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(invalid_params(format!(
+                "当前平台不支持 {} 权限；可用模式：{available}",
+                params.permission.as_str()
+            )));
         }
         let record = self
             .inner
@@ -1119,6 +1137,7 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
+        let old_permission = record.state.lock().await.permission;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
         let file_lock = self
             .inner
@@ -1132,6 +1151,14 @@ impl AgentService for Core {
             .set_permission(&params.session_id, params.permission)
             .await
             .map_err(to_rpc)?;
+        if params.clear_grants || old_permission != params.permission {
+            self.inner
+                .runtime(&params.session_id)
+                .await
+                .sandbox_grants
+                .write()
+                .clear();
+        }
         drop(file_lock);
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);

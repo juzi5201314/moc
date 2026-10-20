@@ -12,14 +12,12 @@ use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
-mod policy;
-pub(crate) use policy::allowed_in_sandbox;
 mod group;
 pub(crate) use super::job_log::{JobLog, JobLogMode};
 pub(crate) use group::ProcessGroup;
 mod process;
 pub(crate) use process::{Process, ProcessExit};
-mod syntax;
+pub(crate) mod syntax;
 pub(crate) mod urlfs;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -47,6 +45,9 @@ struct BashArgs {
     stdin: Option<String>,
     #[serde(default, rename = "async")]
     asynchronous: bool,
+    /// 模型申请更宽的执行模式；必须与 `justification` 同时出现。
+    sandbox_permissions: Option<moc_protocol::SessionPermission>,
+    justification: Option<String>,
 }
 
 fn resolve_timeout(
@@ -82,6 +83,43 @@ fn resolve_timeout(
         )),
         BashLifecycle::Persistent => None,
     })
+}
+
+fn validate_escalation(
+    args: &BashArgs,
+    current: moc_protocol::SessionPermission,
+) -> Result<(), ToolError> {
+    match (&args.sandbox_permissions, &args.justification) {
+        (None, None) => Ok(()),
+        (Some(_), None) | (None, Some(_)) => Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "sandbox_permissions and justification must be provided together",
+        )),
+        (Some(target), Some(justification)) => {
+            if *target == moc_protocol::SessionPermission::WorkspaceOnly
+                || target.width() < current.width()
+            {
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    "sandbox_permissions must name workspace or full, never a narrower mode",
+                ));
+            }
+            let justification = justification.trim();
+            if justification.is_empty() {
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    "justification must explain why the wider mode is needed",
+                ));
+            }
+            if justification.len() > 500 {
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    "justification must be at most 500 bytes",
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 pub struct BashTool;
@@ -120,7 +158,17 @@ impl Tool for BashTool {
                     "lifecycle":{"type":"string","enum":["monitored","persistent"]},
                     "pty":{"type":"boolean"},
                     "stdin":{"type":"string"},
-                    "async":{"type":"boolean"}
+                    "async":{"type":"boolean"},
+                    "sandbox_permissions":{
+                        "type":"string",
+                        "enum":["workspace","full"],
+                        "description":"Request a wider sandbox mode after a denial. Must be paired with justification and is only honored with user approval."
+                    },
+                    "justification":{
+                        "type":"string",
+                        "maxLength":500,
+                        "description":"Why this command needs the wider mode; shown to the user in the approval prompt."
+                    }
                 }),
                 &["command"],
             ),
@@ -135,6 +183,7 @@ impl Tool for BashTool {
         Box::pin(async move {
             let args: BashArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            validate_escalation(&args, ctx.permission)?;
             if args.command.trim().is_empty() {
                 return Err(ToolError::new("E_BAD_PAYLOAD", "command must not be empty"));
             }
@@ -166,15 +215,8 @@ impl Tool for BashTool {
             } else {
                 None
             };
-            let process = Process::spawn(
-                args,
-                cwd,
-                ctx.cwd.clone(),
-                timeout,
-                log.clone(),
-                ctx.permission,
-            )
-            .await?;
+            let process =
+                Process::spawn(args, cwd, timeout, log.clone(), ctx.sandbox_policy()).await?;
             if asynchronous {
                 ctx.jobs.start(
                     ctx.clone(),
@@ -222,6 +264,9 @@ impl Tool for BashTool {
                 output_path,
                 result,
                 timeout.map_or(0, |value| value.as_secs()),
+                ctx.permission,
+                ctx.config.sandbox.on_denied,
+                ctx.config.sandbox.allow_unsandboxed,
             ))
         })
     }
@@ -259,19 +304,27 @@ pub(crate) async fn run_manual(
         pty: Some(false),
         stdin: None,
         asynchronous: false,
+        sandbox_permissions: None,
+        justification: None,
     };
     let mut process = Process::spawn(
         args,
         cwd.clone(),
-        cwd,
         Some(timeout),
         log,
-        moc_protocol::SessionPermission::Full,
+        crate::sandbox::SandboxPolicy::full(cwd),
     )
     .await?;
     tokio::select! {
         biased;
-        result = &mut process.completion => Ok(exit_outcome(output_path, result?, timeout.as_secs())),
+        result = &mut process.completion => Ok(exit_outcome(
+            output_path,
+            result?,
+            timeout.as_secs(),
+            moc_protocol::SessionPermission::Full,
+            crate::config::OnDenied::Ask,
+            true,
+        )),
         _ = cancel.cancelled() => {
             process.group.kill()?;
             process.completion.await?;
@@ -287,15 +340,41 @@ pub(crate) async fn run_manual(
     }
 }
 
-fn exit_outcome(output_path: PathBuf, result: ProcessExit, timeout: u64) -> ToolOutcome {
+fn exit_outcome(
+    output_path: PathBuf,
+    result: ProcessExit,
+    timeout: u64,
+    permission: moc_protocol::SessionPermission,
+    on_denied: crate::config::OnDenied,
+    allow_unsandboxed: bool,
+) -> ToolOutcome {
+    let mut suffix = render_exit(
+        result.code.unwrap_or(-1),
+        result.timed_out,
+        result.output_truncated,
+        timeout,
+    );
+    if result.sandbox_denied
+        && result.code != Some(0)
+        && permission != moc_protocol::SessionPermission::Full
+    {
+        suffix.push_str(&format!(
+            "\n\n[sandbox: file access denied under {} mode]",
+            permission.as_str()
+        ));
+        if allow_unsandboxed && on_denied == crate::config::OnDenied::Ask {
+            suffix.push_str(
+                "\n[sandbox: escalation available — retry this exact command once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the user is asked]",
+            );
+        } else {
+            suffix.push_str(
+                "\n[sandbox: escalation disabled by policy; adjust sandbox settings or use a permitted path]",
+            );
+        }
+    }
     let mut outcome = ToolOutcome::success(ToolOutput::File {
         path: output_path,
-        suffix: render_exit(
-            result.code.unwrap_or(-1),
-            result.timed_out,
-            result.output_truncated,
-            timeout,
-        ),
+        suffix,
     });
     outcome.is_error = result.timed_out || result.output_truncated || result.code != Some(0);
     outcome.error_code = if result.timed_out {
@@ -503,6 +582,32 @@ mod tests {
         assert!(reject_denied(&patterns, "FORMAT C:").is_err());
         assert!(reject_denied(&patterns, "Remove-Item C:\\data -Recurse").is_err());
         assert!(reject_denied(&patterns, "printf safe").is_ok());
+    }
+
+    #[test]
+    fn escalation_validates_target_against_the_execution_mode() {
+        let mut args = BashArgs {
+            command: "cargo build".into(),
+            cwd: None,
+            env: None,
+            timeout: None,
+            lifecycle: None,
+            pty: None,
+            stdin: None,
+            asynchronous: false,
+            sandbox_permissions: Some(moc_protocol::SessionPermission::Full),
+            justification: Some("cargo needs the network and host toolchain".into()),
+        };
+        // 授权通过后执行上下文已经是目标模式；同宽必须放行，否则升级成功也会被工具拒绝。
+        assert!(validate_escalation(&args, moc_protocol::SessionPermission::Full).is_ok());
+        assert!(validate_escalation(&args, moc_protocol::SessionPermission::Workspace).is_ok());
+        assert!(validate_escalation(&args, moc_protocol::SessionPermission::WorkspaceOnly).is_ok());
+        args.sandbox_permissions = Some(moc_protocol::SessionPermission::WorkspaceOnly);
+        assert!(validate_escalation(&args, moc_protocol::SessionPermission::Workspace).is_err());
+        args.sandbox_permissions = Some(moc_protocol::SessionPermission::Workspace);
+        assert!(validate_escalation(&args, moc_protocol::SessionPermission::WorkspaceOnly).is_ok());
+        args.justification = None;
+        assert!(validate_escalation(&args, moc_protocol::SessionPermission::Workspace).is_err());
     }
 
     #[test]

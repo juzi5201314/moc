@@ -1,11 +1,10 @@
 //! 管道和 PTY 进程共用的完成句柄。转为后台任务只转移所有权，不会重置 monitored 超时。
 
 use super::{BashArgs, JobLog, ProcessGroup, ToolError};
+use crate::sandbox::{SandboxPolicy, WrappedCommand, wrap_command};
 use futures_util::future::BoxFuture;
-use moc_protocol::SessionPermission;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::{
-    ffi::OsString,
     io::{Read, Write},
     path::PathBuf,
     process::Stdio,
@@ -22,6 +21,8 @@ pub(crate) struct ProcessExit {
     pub code: Option<i32>,
     pub timed_out: bool,
     pub output_truncated: bool,
+    /// stderr 命中沙盒拒绝签名；仅作提示，不改变退出码。
+    pub sandbox_denied: bool,
 }
 
 pub(crate) struct Process {
@@ -35,15 +36,14 @@ impl Process {
     pub(super) async fn spawn(
         args: BashArgs,
         cwd: PathBuf,
-        workspace: PathBuf,
         timeout: Option<Duration>,
         log: JobLog,
-        permission: SessionPermission,
+        policy: SandboxPolicy,
     ) -> Result<Self, ToolError> {
-        if cfg!(not(unix)) && permission == SessionPermission::Workspace {
+        if policy.mode != moc_protocol::SessionPermission::Full && cfg!(not(unix)) {
             return Err(ToolError::new(
                 "E_SANDBOX_UNAVAILABLE",
-                "workspace permissions require a Unix bwrap environment",
+                "sandboxed permissions require a Unix sandbox runner",
             ));
         }
         if timeout.is_some()
@@ -56,38 +56,37 @@ impl Process {
             ));
         }
         if args.pty.unwrap_or(false) {
-            Self::pty(args, cwd, workspace, timeout, log, permission).await
+            Self::pty(args, cwd, timeout, log, policy).await
         } else {
-            Self::pipe(args, cwd, workspace, timeout, log, permission)
+            Self::pipe(args, cwd, timeout, log, policy)
         }
     }
 
     fn pipe(
         args: BashArgs,
         cwd: PathBuf,
-        workspace: PathBuf,
         timeout: Option<Duration>,
         log: JobLog,
-        permission: SessionPermission,
+        policy: SandboxPolicy,
     ) -> Result<Self, ToolError> {
         let shell = crate::shell::detect().ok_or_else(|| {
             ToolError::new("E_BASH_SHELL", "no supported shell found on this platform")
         })?;
-        let mut command = match permission {
-            SessionPermission::Full => Command::new(&shell.program),
-            SessionPermission::Workspace => {
-                let mut command = Command::new("bwrap");
-                for argument in sandbox_arguments(&cwd, &workspace) {
-                    command.arg(argument);
-                }
-                command.arg("--").arg(&shell.program);
-                command
-            }
-        };
-        crate::shell::apply_arguments(command.as_std_mut(), shell, &args.command);
+        let wrapped = wrap_command(shell, &args.command, &cwd, &policy)?;
+        let WrappedCommand {
+            program,
+            args: sandbox_args,
+            envs: sandbox_envs,
+            scratch,
+            overlay_work,
+        } = wrapped;
+        let keepalive = (scratch, overlay_work);
+        let mut command = Command::new(program);
+        command.args(&sandbox_args);
         command
             .current_dir(cwd)
             .envs(args.env.unwrap_or_default())
+            .envs(sandbox_envs)
             // 非交互 bash/sh 仍会读取 BASH_ENV/ENV；清掉它们，避免用户脚本改变行为。
             .env_remove("BASH_ENV")
             .env_remove("ENV")
@@ -150,6 +149,7 @@ impl Process {
             input.map(|()| truncated)
         });
         let completion = Box::pin(async move {
+            let _keepalive = keepalive;
             let (waited, timed_out) = tokio::select! {
                 status = child.wait() => (status, false),
                 _ = async {
@@ -175,10 +175,15 @@ impl Process {
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
             log.finish()
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
+            let sandbox_denied = log
+                .read_tail(80)
+                .map(|(text, _)| crate::sandbox::denial_in(&text))
+                .unwrap_or(false);
             Ok(ProcessExit {
                 code: status.code(),
                 timed_out,
                 output_truncated,
+                sandbox_denied,
             })
         });
         Ok(Self {
@@ -192,24 +197,15 @@ impl Process {
     async fn pty(
         args: BashArgs,
         cwd: PathBuf,
-        workspace: PathBuf,
         timeout: Option<Duration>,
         log: JobLog,
-        permission: SessionPermission,
+        policy: SandboxPolicy,
     ) -> Result<Self, ToolError> {
-        if cfg!(not(unix)) && permission == SessionPermission::Workspace {
-            return Err(ToolError::new(
-                "E_SANDBOX_UNAVAILABLE",
-                "workspace permissions require a Unix bwrap environment",
-            ));
-        }
         let cancel = CancellationToken::new();
         let cancel_on_drop = cancel.clone().drop_guard();
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
-            run_pty(
-                args, cwd, workspace, timeout, log, permission, cancel, started,
-            )
+            run_pty(args, cwd, timeout, log, policy, cancel, started)
         });
         let (pid, group) = match ready.await {
             Ok((pid, group)) => (pid, group),
@@ -240,43 +236,12 @@ impl Process {
     }
 }
 
-#[cfg(unix)]
-fn sandbox_arguments(cwd: &std::path::Path, workspace: &std::path::Path) -> Vec<OsString> {
-    vec![
-        "--die-with-parent".into(),
-        "--new-session".into(),
-        "--unshare-user".into(),
-        "--unshare-pid".into(),
-        "--unshare-ipc".into(),
-        "--unshare-uts".into(),
-        "--disable-userns".into(),
-        "--ro-bind".into(),
-        "/".into(),
-        "/".into(),
-        "--bind".into(),
-        workspace.as_os_str().to_owned(),
-        workspace.as_os_str().to_owned(),
-        "--proc".into(),
-        "/proc".into(),
-        "--dev".into(),
-        "/dev".into(),
-        "--chdir".into(),
-        cwd.as_os_str().to_owned(),
-    ]
-}
-
-#[cfg(not(unix))]
-fn sandbox_arguments(_cwd: &std::path::Path, _workspace: &std::path::Path) -> Vec<OsString> {
-    Vec::new()
-}
-
 fn run_pty(
     args: BashArgs,
     cwd: PathBuf,
-    workspace: PathBuf,
     timeout: Option<Duration>,
     log: JobLog,
-    permission: SessionPermission,
+    policy: SandboxPolicy,
     cancel: CancellationToken,
     started: tokio::sync::oneshot::Sender<(Option<u32>, ProcessGroup)>,
 ) -> std::io::Result<ProcessExit> {
@@ -290,18 +255,30 @@ fn run_pty(
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     let shell = crate::shell::detect()
         .ok_or_else(|| std::io::Error::other("no supported shell found on this platform"))?;
+    let user_env = args.env.clone().unwrap_or_default();
     #[cfg(unix)]
-    let (program, arguments) = crate::shell::command_line(shell, &args.command);
+    let (program, arguments, sandbox_envs, _pty_keepalive) = {
+        let wrapped = wrap_command(shell, &args.command, &cwd, &policy)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let WrappedCommand {
+            program,
+            args,
+            envs,
+            scratch,
+            overlay_work,
+        } = wrapped;
+        (program, args, envs, (scratch, overlay_work))
+    };
     #[cfg(windows)]
-    let (program, arguments) = crate::shell::pty_idle_command(shell);
-    let mut builder = CommandBuilder::new(program.clone().into_os_string());
-    if permission == SessionPermission::Workspace {
-        for argument in sandbox_arguments(&cwd, &workspace) {
-            builder.arg(argument);
-        }
-        builder.arg("--");
-        builder.arg(&program);
-    }
+    let (program, arguments, sandbox_envs): (
+        std::ffi::OsString,
+        Vec<std::ffi::OsString>,
+        Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    ) = {
+        let (program, arguments) = crate::shell::pty_idle_command(shell);
+        (program.into_os_string(), arguments, Vec::new())
+    };
+    let mut builder = CommandBuilder::new(program);
     for argument in arguments {
         builder.arg(argument);
     }
@@ -313,7 +290,10 @@ fn run_pty(
     ) {
         builder.env("PS1", "");
     }
-    for (key, value) in args.env.unwrap_or_default() {
+    for (key, value) in user_env {
+        builder.env(key, value);
+    }
+    for (key, value) in sandbox_envs {
         builder.env(key, value);
     }
     builder.env_remove("BASH_ENV");
@@ -365,6 +345,7 @@ fn run_pty(
     let began = std::time::Instant::now();
     let _ = started.send((pid, group.clone()));
     let output_group = group.clone();
+    let tail_log = log.clone();
     let reader_thread = std::thread::spawn(move || -> std::io::Result<bool> {
         let mut buffer = [0u8; 16 * 1024];
         loop {
@@ -400,17 +381,25 @@ fn run_pty(
         .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
     let status = waited?;
     let code = status.exit_code().min(i32::MAX as u32) as i32;
+    let sandbox_denied = tail_log
+        .read_tail(80)
+        .map(|(text, _)| crate::sandbox::denial_in(&text))
+        .unwrap_or(false);
     Ok(ProcessExit {
         code: Some(if status.success() { code } else { code.max(1) }),
         timed_out,
         output_truncated,
+        sandbox_denied,
     })
 }
 
 #[cfg(all(test, unix))]
 mod unix_tests {
     use super::*;
+    use crate::config::{OnDenied, ResolvedSandboxConfig};
+    use crate::sandbox::{SandboxGrants, SandboxPolicy, SandboxScratch};
     use std::fs;
+    use std::sync::Arc;
 
     fn bash_args(command: &str) -> BashArgs {
         BashArgs {
@@ -422,34 +411,51 @@ mod unix_tests {
             pty: Some(false),
             stdin: None,
             asynchronous: false,
+            sandbox_permissions: None,
+            justification: None,
         }
     }
     async fn test_log(path: PathBuf) -> JobLog {
         JobLog::create(path, super::super::JobLogMode::Monitored, 1024).expect("创建测试日志")
     }
 
-    #[test]
-    fn workspace_arguments_allow_workspace_bind_and_isolate_namespaces() {
-        let cwd = std::path::Path::new("/tmp/workspace/src");
-        let workspace = std::path::Path::new("/tmp/workspace");
-        let arguments = sandbox_arguments(cwd, workspace);
-        let values: Vec<_> = arguments
-            .iter()
-            .map(|argument| argument.to_string_lossy())
-            .collect();
-        assert!(values.iter().any(|value| value == "--ro-bind"));
-        assert!(values.iter().any(|value| value == "--bind"));
-        assert!(values.iter().any(|value| value == "--unshare-user"));
-        assert!(values.iter().any(|value| value == "--unshare-pid"));
-        assert!(values.iter().any(|value| value == "--unshare-ipc"));
-        assert!(values.iter().any(|value| value == "--unshare-uts"));
-        assert!(values.iter().any(|value| value == "--disable-userns"));
-        assert!(values.iter().any(|value| value == "--chdir"));
-        assert!(!values.iter().any(|value| value == "--unshare-net"));
+    fn policy(mode: moc_protocol::SessionPermission, workspace: &std::path::Path) -> SandboxPolicy {
+        policy_with(mode, workspace, false)
+    }
+
+    fn policy_with(
+        mode: moc_protocol::SessionPermission,
+        workspace: &std::path::Path,
+        overlay_home: bool,
+    ) -> SandboxPolicy {
+        let config = ResolvedSandboxConfig {
+            default_mode: mode,
+            network: true,
+            on_denied: OnDenied::Ask,
+            allow_unsandboxed: true,
+            overlay_home,
+            extra_read_paths: Vec::new(),
+            extra_write_paths: Vec::new(),
+            deny_read_paths: Vec::new(),
+            deny_write_paths: Vec::new(),
+        };
+        let scratch = (mode != moc_protocol::SessionPermission::Full)
+            .then(|| Arc::new(SandboxScratch::new().expect("scratch")));
+        SandboxPolicy::new(
+            mode,
+            workspace.to_path_buf(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            scratch,
+        )
     }
 
     #[tokio::test]
     async fn workspace_shell_writes_workspace_but_not_external_paths() {
+        if !crate::sandbox::detect().supports(moc_protocol::SessionPermission::Workspace) {
+            return;
+        }
         let directory = tempfile::tempdir().expect("临时目录");
         let marker = directory.path().join("marker");
         fs::write(&marker, "keep").expect("写入 marker");
@@ -458,10 +464,9 @@ mod unix_tests {
         let process = Process::spawn(
             bash_args("printf x > workspace-marker"),
             directory.path().to_owned(),
-            directory.path().to_owned(),
             Some(Duration::from_secs(5)),
             log,
-            SessionPermission::Workspace,
+            policy(moc_protocol::SessionPermission::Workspace, directory.path()),
         )
         .await
         .expect("启动 workspace shell");
@@ -473,22 +478,226 @@ mod unix_tests {
             "x"
         );
 
-        let external = directory.path().join("..").join("moc-external-marker");
+        let external =
+            std::path::PathBuf::from(format!("/moc-external-marker-{}", std::process::id()));
         let path = directory.path().join("external.log");
         let log = test_log(path).await;
         let process = Process::spawn(
             bash_args(&format!("printf x > {}", external.display())),
             directory.path().to_owned(),
-            directory.path().to_owned(),
             Some(Duration::from_secs(5)),
             log,
-            SessionPermission::Workspace,
+            policy(moc_protocol::SessionPermission::Workspace, directory.path()),
         )
         .await
         .expect("启动 external shell");
         let result = process.completion.await.expect("等待 external shell");
         assert_ne!(result.code, Some(0));
+        assert!(result.sandbox_denied);
         assert!(!external.exists(), "沙盒不能写入工作区外");
+    }
+
+    #[tokio::test]
+    async fn denied_file_writes_fail_instead_of_being_discarded() {
+        if !crate::sandbox::detect().supports(moc_protocol::SessionPermission::Workspace) {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("临时目录");
+        let denied = directory.path().join("denied.txt");
+        fs::write(&denied, "keep").expect("写入 denied");
+        let config = ResolvedSandboxConfig {
+            default_mode: moc_protocol::SessionPermission::Workspace,
+            network: true,
+            on_denied: OnDenied::Ask,
+            allow_unsandboxed: true,
+            overlay_home: false,
+            extra_read_paths: Vec::new(),
+            extra_write_paths: Vec::new(),
+            deny_read_paths: Vec::new(),
+            deny_write_paths: vec![std::fs::canonicalize(&denied).expect("canonical denied")],
+        };
+        let policy = SandboxPolicy::new(
+            moc_protocol::SessionPermission::Workspace,
+            directory.path().to_path_buf(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            Some(Arc::new(SandboxScratch::new().expect("scratch"))),
+        );
+        let log = test_log(directory.path().join("denied.log")).await;
+        let process = Process::spawn(
+            bash_args(&format!("printf overwritten > {}", denied.display())),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(5)),
+            log,
+            policy,
+        )
+        .await
+        .expect("启动 deny shell");
+        let result = process.completion.await.expect("等待 deny shell");
+        assert_ne!(result.code, Some(0), "deny_write 必须让写入失败");
+        assert_eq!(
+            fs::read_to_string(&denied).expect("读取 denied"),
+            "keep",
+            "deny_write 不能把内容写丢"
+        );
+    }
+
+    #[tokio::test]
+    async fn denied_directory_writes_fail() {
+        if !crate::sandbox::detect().supports(moc_protocol::SessionPermission::Workspace) {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("临时目录");
+        let denied = directory.path().join("denied-dir");
+        fs::create_dir(&denied).expect("创建 denied 目录");
+        let config = ResolvedSandboxConfig {
+            default_mode: moc_protocol::SessionPermission::Workspace,
+            network: true,
+            on_denied: OnDenied::Ask,
+            allow_unsandboxed: true,
+            overlay_home: false,
+            extra_read_paths: Vec::new(),
+            extra_write_paths: Vec::new(),
+            deny_read_paths: Vec::new(),
+            deny_write_paths: vec![std::fs::canonicalize(&denied).expect("canonical denied")],
+        };
+        let policy = SandboxPolicy::new(
+            moc_protocol::SessionPermission::Workspace,
+            directory.path().to_path_buf(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            Some(Arc::new(SandboxScratch::new().expect("scratch"))),
+        );
+        let log = test_log(directory.path().join("denied-dir.log")).await;
+        let process = Process::spawn(
+            bash_args(&format!("printf x > {}/new-file", denied.display())),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(5)),
+            log,
+            policy,
+        )
+        .await
+        .expect("启动 deny dir shell");
+        let result = process.completion.await.expect("等待 deny dir shell");
+        assert_ne!(result.code, Some(0), "deny_write 目录必须让写入失败");
+        assert!(!denied.join("new-file").exists(), "deny 目录不能写丢文件");
+    }
+
+    #[tokio::test]
+    async fn denied_read_directory_is_empty() {
+        if !crate::sandbox::detect().supports(moc_protocol::SessionPermission::Workspace) {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("临时目录");
+        let denied = directory.path().join("denied-dir");
+        fs::create_dir(&denied).expect("创建 denied 目录");
+        fs::write(denied.join("secret"), "secret").expect("写入 secret");
+        let config = ResolvedSandboxConfig {
+            default_mode: moc_protocol::SessionPermission::Workspace,
+            network: true,
+            on_denied: OnDenied::Ask,
+            allow_unsandboxed: true,
+            overlay_home: false,
+            extra_read_paths: Vec::new(),
+            extra_write_paths: Vec::new(),
+            deny_read_paths: vec![std::fs::canonicalize(&denied).expect("canonical denied")],
+            deny_write_paths: Vec::new(),
+        };
+        let policy = SandboxPolicy::new(
+            moc_protocol::SessionPermission::Workspace,
+            directory.path().to_path_buf(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            Some(Arc::new(SandboxScratch::new().expect("scratch"))),
+        );
+        let log = test_log(directory.path().join("denied-read.log")).await;
+        let process = Process::spawn(
+            bash_args(&format!("test ! -e {}/secret", denied.display())),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(5)),
+            log,
+            policy,
+        )
+        .await
+        .expect("启动 deny read shell");
+        let result = process.completion.await.expect("等待 deny read shell");
+        assert_eq!(result.code, Some(0), "deny_read 目录必须为空");
+    }
+
+    #[tokio::test]
+    async fn workspace_overlay_writes_home_in_sandbox_not_host() {
+        let support = crate::sandbox::detect();
+        if !support.supports(moc_protocol::SessionPermission::Workspace) || !support.home_overlay {
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        if !home.is_dir() {
+            return;
+        }
+        let name = format!(".moc-overlay-test-{}", std::process::id());
+        let host_path = home.join(&name);
+        if host_path.exists() {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = test_log(directory.path().join("overlay.log")).await;
+        let command = format!(r#"printf x > "$HOME/{name}" && cat "$HOME/{name}""#);
+        let process = Process::spawn(
+            bash_args(&command),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(5)),
+            log,
+            policy_with(
+                moc_protocol::SessionPermission::Workspace,
+                directory.path(),
+                true,
+            ),
+        )
+        .await
+        .expect("启动 overlay shell");
+        let result = process.completion.await.expect("等待 overlay shell");
+        let host_exists = host_path.exists();
+        if host_exists {
+            let _ = fs::remove_file(&host_path);
+        }
+        assert_eq!(result.code, Some(0));
+        assert!(!host_exists, "overlay 写入不能落到宿主 HOME");
+    }
+
+    #[tokio::test]
+    async fn workspace_only_hides_host_home() {
+        if !crate::sandbox::detect().supports(moc_protocol::SessionPermission::WorkspaceOnly) {
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let marker = home.join(format!(".moc-hidden-test-{}", std::process::id()));
+        fs::write(&marker, "hidden").expect("写入宿主 marker");
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = test_log(directory.path().join("hidden.log")).await;
+        let process = Process::spawn(
+            bash_args(&format!("cat {}", marker.display())),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(5)),
+            log,
+            policy(
+                moc_protocol::SessionPermission::WorkspaceOnly,
+                directory.path(),
+            ),
+        )
+        .await
+        .expect("启动 workspace-only shell");
+        let result = process.completion.await.expect("等待 workspace-only shell");
+        let host_marker_still_there = marker.exists();
+        let _ = fs::remove_file(&marker);
+        assert_ne!(result.code, Some(0), "workspace-only 不能读宿主 HOME");
+        assert!(host_marker_still_there, "宿主文件不能被沙盒删除或改写");
     }
 
     #[tokio::test]
@@ -498,10 +707,9 @@ mod unix_tests {
         let process = Process::spawn(
             bash_args("sleep 20 & echo done"),
             directory.path().to_owned(),
-            directory.path().to_owned(),
             Some(Duration::from_secs(60)),
             log,
-            SessionPermission::Full,
+            policy(moc_protocol::SessionPermission::Full, directory.path()),
         )
         .await
         .expect("启动 shell");
@@ -527,10 +735,9 @@ mod unix_tests {
         let process = Process::spawn(
             args,
             directory.path().to_owned(),
-            directory.path().to_owned(),
             Some(Duration::from_secs(5)),
             log,
-            SessionPermission::Full,
+            policy(moc_protocol::SessionPermission::Full, directory.path()),
         )
         .await
         .expect("启动 shell");

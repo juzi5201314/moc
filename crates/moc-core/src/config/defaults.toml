@@ -18,6 +18,24 @@ plan = "inherit"
 # 项目级 .moc/config.toml 能改写全局设置并触发其中的 !命令，默认关闭。
 project_config = false
 
+[sandbox]
+# 新会话默认模式：full（不隔离）、workspace（工作区可写、外部只读）、workspace_only（外部不可读写）
+default_mode = "full"
+# 仅约束沙盒内 bash；web_fetch/web_search/MCP 不受影响
+network = true
+# ask：越界时向用户申请；deny：直接拒绝
+on_denied = "ask"
+# 是否允许模型申请 full（沙盒外）执行一次
+allow_unsandboxed = true
+# Linux：把 $HOME 挂成会话级 copy-on-write 层，包管理器缓存可写但不落盘
+overlay_home = true
+# 额外只读/读写路径；支持 ~，必须存在
+extra_read_paths = []
+extra_write_paths = []
+# 强制拒绝路径；优先于允许列表
+deny_read_paths = []
+deny_write_paths = []
+
 [tools]
 max_concurrent_calls = 16
 [tools.ptc]
@@ -42,7 +60,6 @@ slow_warning_interval_secs = 180
 max_timeout_secs = 3600
 max_output_bytes = 16777216
 persistent_log_bytes = 16777216
-allow_patterns = []
 deny_patterns = [
     "(?i)rm\\s+-rf\\s+/(\\s|$)",
     ":\\(\\)\\s*\\{\\s*:\\|\\s*:\\s*&\\s*\\};:",

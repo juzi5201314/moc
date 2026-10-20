@@ -88,6 +88,8 @@ pub enum SessionPermission {
     #[default]
     Full,
     Workspace,
+    /// 工作区可写；工作区外的宿主路径不可读也不可写（运行时只读路径与会话 scratch 除外）。
+    WorkspaceOnly,
 }
 
 impl SessionPermission {
@@ -96,7 +98,22 @@ impl SessionPermission {
         match self {
             Self::Full => "full",
             Self::Workspace => "workspace",
+            Self::WorkspaceOnly => "workspace-only",
         }
+    }
+
+    /// 模式严格性排序：越宽的数字越大。用于校验只能申请更宽的模式。
+    pub const fn width(self) -> u8 {
+        match self {
+            Self::WorkspaceOnly => 0,
+            Self::Workspace => 1,
+            Self::Full => 2,
+        }
+    }
+
+    /// 当前模式能否升级到 `target`；相同模式视为无需升级。
+    pub const fn can_widen_to(self, target: Self) -> bool {
+        target.width() >= self.width()
     }
 }
 
@@ -543,6 +560,9 @@ pub struct SessionSetModeParams {
 pub struct SessionSetPermissionParams {
     pub session_id: String,
     pub permission: SessionPermission,
+    /// 清空本会话已积累的沙盒路径/命令授权；模式变化时 core 也会自动清空。
+    #[serde(default)]
+    pub clear_grants: bool,
 }
 
 /// `session/set_model` 的参数：按选择器切换会话模型。
@@ -825,6 +845,21 @@ mod tests {
         assert_eq!(
             serde_json::to_value(SessionPermission::Workspace).unwrap(),
             "workspace"
+        );
+        assert_eq!(
+            serde_json::to_value(SessionPermission::WorkspaceOnly).unwrap(),
+            "workspace_only"
+        );
+        assert_eq!(SessionPermission::WorkspaceOnly.as_str(), "workspace-only");
+        assert!(SessionPermission::Workspace.can_widen_to(SessionPermission::Full));
+        assert!(!SessionPermission::Full.can_widen_to(SessionPermission::Workspace));
+        assert!(SessionPermission::Workspace.can_widen_to(SessionPermission::Workspace));
+        assert!(
+            !serde_json::from_value::<SessionSetPermissionParams>(serde_json::json!({
+                "session_id": "ses_1", "permission": "workspace_only"
+            }))
+            .expect("clear_grants 可缺省")
+            .clear_grants
         );
     }
 }

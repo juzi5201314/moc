@@ -437,13 +437,25 @@ async fn execute_tool(
             Err(error) => return Ok(error.into_outcome()),
         }
     }
-    let execution_permission = match authorize(ctx, &call.id, name, &args).await? {
+    let execution = match authorize(ctx, &call.id, name, &args).await? {
         Authorization::Denied => {
             return Ok(ToolOutcome {
                 content: "[E_PERMISSION_DENIED] The user denied this operation".into(),
                 is_error: true,
                 structured_content: None,
                 error_code: Some("E_PERMISSION_DENIED".into()),
+                images: Vec::new(),
+                control: ToolControl::Continue,
+                status: Some(ToolStatus::Denied),
+                diff: None,
+            });
+        }
+        Authorization::SandboxDenied(message) => {
+            return Ok(ToolOutcome {
+                content: format!("[E_SANDBOX_DENIED] {message}").into(),
+                is_error: true,
+                structured_content: None,
+                error_code: Some("E_SANDBOX_DENIED".into()),
                 images: Vec::new(),
                 control: ToolControl::Continue,
                 status: Some(ToolStatus::Denied),
@@ -462,13 +474,14 @@ async fn execute_tool(
                 diff: None,
             });
         }
-        Authorization::Allowed(permission) => permission,
+        Authorization::Allowed(execution) => execution,
     };
     if ctx.cancel.is_cancelled() {
         return Ok(cancelled_outcome());
     }
     let mut execution_ctx = ctx.clone();
-    execution_ctx.permission = execution_permission;
+    execution_ctx.permission = execution.permission;
+    execution_ctx.call_grants = execution.call_grants;
     execution_ctx.tool_call_id = call.id.clone();
     let execution = AssertUnwindSafe(tool.run(&execution_ctx, args)).catch_unwind();
     let result = if tool.parallel_safe() || name == "ask" {
@@ -511,6 +524,9 @@ pub(crate) async fn execute_nested_tool(
     }
     let mut nested = ctx.clone();
     nested.nested = true;
+    nested.call_grants = crate::sandbox::SandboxGrants::default();
+    // 一次性的 bash 升级只属于那次调用，不能泄漏给 PTC 嵌套工具。
+    nested.permission = ctx.state.lock().await.permission;
     let mode = if ctx.mode == moc_protocol::SessionMode::Ptc {
         moc_protocol::SessionMode::Normal
     } else {
@@ -520,69 +536,96 @@ pub(crate) async fn execute_nested_tool(
 }
 
 enum Authorization {
-    Allowed(moc_protocol::SessionPermission),
+    Allowed(AllowedExecution),
     /// 用户拒绝了本次操作。
     Denied,
+    /// 沙盒策略硬拒绝；不发起权限询问。
+    SandboxDenied(String),
     /// 前端不支持权限询问，拿不到一次性授权。
     Unavailable,
 }
 
-/// 授权入口：`full` 不询问（yolo）；`workspace` 下 bash 和写入工具都要检查工作区边界。
-///
-/// 工作区外写入和「在沙盒外执行命令」走同一条审批流程：前端能弹出权限询问时向用户
-/// 要一次授权，否则直接拒绝。只读工具不设边界：沙盒对工作区外本来就是只读的，
-/// read/find/grep 的能力与沙盒内的命令保持一致。
+struct AllowedExecution {
+    permission: moc_protocol::SessionPermission,
+    call_grants: crate::sandbox::SandboxGrants,
+}
+
+impl AllowedExecution {
+    fn current(ctx: &ToolCtx) -> Self {
+        Self {
+            permission: ctx.permission,
+            call_grants: crate::sandbox::SandboxGrants::default(),
+        }
+    }
+}
+
+/// 授权入口：`full` 不询问（yolo）；其余模式按沙盒策略检查读/写路径，bash 的
+/// 升级由模型显式带 `sandbox_permissions` + `justification` 发起。
 async fn authorize(
     ctx: &ToolCtx,
     tool_call_id: &str,
     tool_name: &str,
     arguments: &Value,
 ) -> Result<Authorization, CoreError> {
-    if ctx.permission != moc_protocol::SessionPermission::Workspace {
-        return Ok(Authorization::Allowed(ctx.permission));
-    }
+    let policy = ctx.sandbox_policy();
     match tool_name {
         "bash" => authorize_bash(ctx, tool_call_id, arguments).await,
-        "write" | "edit" => authorize_write_tools(ctx, tool_call_id, tool_name, arguments).await,
-        _ => Ok(Authorization::Allowed(ctx.permission)),
+        "read" | "find" | "grep" => {
+            authorize_read(ctx, tool_call_id, tool_name, arguments, &policy).await
+        }
+        "write" | "edit" => authorize_write(ctx, tool_call_id, tool_name, arguments, &policy).await,
+        _ => Ok(Authorization::Allowed(AllowedExecution::current(ctx))),
     }
 }
 
-/// bash：能在沙盒内执行的命令直接放行，其余命令先问用户。
-async fn authorize_bash(
+async fn authorize_read(
     ctx: &ToolCtx,
     tool_call_id: &str,
+    tool_name: &str,
     arguments: &Value,
+    policy: &crate::sandbox::SandboxPolicy,
 ) -> Result<Authorization, CoreError> {
-    let Some(command) = arguments.get("command").and_then(Value::as_str) else {
-        return Ok(Authorization::Allowed(ctx.permission));
+    let Some(target) = arguments.get("path").and_then(Value::as_str) else {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
     };
-    let requested_cwd = arguments.get("cwd").and_then(Value::as_str);
-    let cwd = crate::tools::bash::resolve_cwd(&ctx.cwd, requested_cwd)
-        .map_err(|error| CoreError::Tool(error.to_string()))?;
-    if crate::tools::bash::allowed_in_sandbox(&ctx.config.tools.bash, command, &cwd, &ctx.cwd)
-        .map_err(|error| CoreError::Tool(error.to_string()))?
-    {
-        return Ok(Authorization::Allowed(ctx.permission));
+    if crate::resources::is_resource_uri(target) {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
     }
-    request_permission(
-        ctx,
-        tool_call_id,
-        "bash",
-        format!(
-            "允许在沙盒外执行命令：{}",
-            command.lines().next().unwrap_or(command)
-        ),
-        Some(command.to_owned()),
-        None,
-    )
-    .await
+    let path = absolute_target(&ctx.cwd, std::path::Path::new(target));
+    match policy.check(&path, crate::sandbox::Access::Read) {
+        crate::sandbox::Decision::Allow => {
+            Ok(Authorization::Allowed(AllowedExecution::current(ctx)))
+        }
+        crate::sandbox::Decision::Deny => Ok(Authorization::SandboxDenied(format!(
+            "read access to {} is denied by sandbox.deny_read_paths",
+            path.display()
+        ))),
+        crate::sandbox::Decision::Ask => {
+            request_paths(
+                ctx,
+                tool_call_id,
+                tool_name,
+                vec![path],
+                crate::sandbox::Access::Read,
+                format!("允许在沙盒外读取：{target}"),
+                None,
+                None,
+            )
+            .await
+        }
+    }
 }
 
-/// 找出写入工具（write/edit）中越出工作区的目标；返回空表示不需要审批。
-///
-/// 参数解析与执行阶段共用一套；解析失败交给工具自己返回 `E_BAD_PAYLOAD`。
-fn outside_workspace_targets(
+fn absolute_target(cwd: &std::path::Path, target: &std::path::Path) -> std::path::PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        cwd.join(target)
+    }
+}
+
+/// 找出 write/edit 的全部目标；解析失败留给工具自己返回 `E_BAD_PAYLOAD`。
+fn write_targets(
     cwd: &std::path::Path,
     tool_name: &str,
     arguments: &Value,
@@ -601,22 +644,38 @@ fn outside_workspace_targets(
             .collect()
     };
     Ok(targets
-        .iter()
-        .filter_map(|target| crate::tools::workspace_escape(cwd, target))
+        .into_iter()
+        .filter(|target| !crate::resources::is_resource_uri(target))
+        .map(|target| absolute_target(cwd, std::path::Path::new(&target)))
         .collect())
 }
 
-/// write/edit：目标都在工作区内就直接放行；有目标越界（包括经符号链接逃出）先问用户。
-async fn authorize_write_tools(
+async fn authorize_write(
     ctx: &ToolCtx,
     tool_call_id: &str,
     tool_name: &str,
     arguments: &Value,
+    policy: &crate::sandbox::SandboxPolicy,
 ) -> Result<Authorization, CoreError> {
-    let outside = outside_workspace_targets(&ctx.cwd, tool_name, arguments)
-        .map_err(|error| CoreError::Tool(error.to_string()))?;
+    let targets = match write_targets(&ctx.cwd, tool_name, arguments) {
+        Ok(targets) => targets,
+        Err(_) => return Ok(Authorization::Allowed(AllowedExecution::current(ctx))),
+    };
+    let mut outside = Vec::new();
+    for target in targets {
+        match policy.check(&target, crate::sandbox::Access::Write) {
+            crate::sandbox::Decision::Allow => {}
+            crate::sandbox::Decision::Deny => {
+                return Ok(Authorization::SandboxDenied(format!(
+                    "write access to {} is denied by sandbox.deny_write_paths",
+                    target.display()
+                )));
+            }
+            crate::sandbox::Decision::Ask => outside.push(target),
+        }
+    }
     if outside.is_empty() {
-        return Ok(Authorization::Allowed(ctx.permission));
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
     }
     let paths = outside
         .iter()
@@ -634,7 +693,8 @@ async fn authorize_write_tools(
         _ => (crate::tools::edit::preview_arguments(ctx, arguments), None),
     };
     let mut body = format!(
-        "以下写入目标在会话工作区之外：\n{paths}\n工作区外的写入不受沙盒保护，请确认目标无误。"
+        "以下写入目标在沙盒允许范围之外：\n{paths}\n\n当前权限：{}。允许后本次写入会真实落盘。",
+        ctx.permission.as_str()
     );
     if let Some(content) = &content {
         body.push_str(&format!(
@@ -643,22 +703,191 @@ async fn authorize_write_tools(
             write_preview(content)
         ));
     }
-    request_permission(
+    let title = format!(
+        "允许在工作区外写入：{}",
+        outside
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    request_paths(
         ctx,
         tool_call_id,
         tool_name,
-        format!(
-            "允许在工作区外写入：{}",
-            outside
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        outside,
+        crate::sandbox::Access::Write,
+        title,
         Some(body),
         diff,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn request_paths(
+    ctx: &ToolCtx,
+    tool_call_id: &str,
+    tool_name: &str,
+    targets: Vec<std::path::PathBuf>,
+    access: crate::sandbox::Access,
+    title: String,
+    body: Option<String>,
+    diff: Option<moc_protocol::methods::ToolDiff>,
+) -> Result<Authorization, CoreError> {
+    if ctx.config.sandbox.on_denied == crate::config::OnDenied::Deny {
+        return Ok(Authorization::SandboxDenied(format!(
+            "sandbox.on_denied=deny；已拒绝以下路径的访问：\n{}",
+            targets
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        )));
+    }
+    match ask_permission(
+        ctx,
+        tool_call_id,
+        tool_name,
+        title,
+        body,
+        diff,
+        moc_protocol::methods::path_options(),
+    )
+    .await?
+    {
+        PermissionAnswer::Unavailable => Ok(Authorization::Unavailable),
+        PermissionAnswer::Dismissed => Ok(Authorization::Denied),
+        PermissionAnswer::Selected(option) if option == "allow_once" => {
+            let mut grants = crate::sandbox::SandboxGrants::default();
+            for target in &targets {
+                grants.grant_path(target, access);
+            }
+            Ok(Authorization::Allowed(AllowedExecution {
+                permission: ctx.permission,
+                call_grants: grants,
+            }))
+        }
+        PermissionAnswer::Selected(option) if option == "allow_session" => {
+            let mut grants = ctx.sandbox_grants.write();
+            for target in &targets {
+                grants.grant_path(target, access);
+            }
+            Ok(Authorization::Allowed(AllowedExecution::current(ctx)))
+        }
+        PermissionAnswer::Selected(_) => Ok(Authorization::Denied),
+    }
+}
+
+async fn authorize_bash(
+    ctx: &ToolCtx,
+    tool_call_id: &str,
+    arguments: &Value,
+) -> Result<Authorization, CoreError> {
+    let Some(command) = arguments.get("command").and_then(Value::as_str) else {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
+    };
+    let target = arguments
+        .get("sandbox_permissions")
+        .and_then(Value::as_str)
+        .and_then(parse_permission);
+    let Some(target) = target else {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
+    };
+    let Some(justification) = arguments.get("justification").and_then(Value::as_str) else {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
+    };
+    if justification.trim().is_empty() || justification.len() > 500 {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
+    }
+    // 非法或变窄的目标交给 bash 工具返回 E_BAD_PAYLOAD，不在授权层重复报错。
+    if target == moc_protocol::SessionPermission::WorkspaceOnly
+        || target.width() <= ctx.permission.width()
+    {
+        return Ok(Authorization::Allowed(AllowedExecution::current(ctx)));
+    }
+    if ctx.config.sandbox.on_denied == crate::config::OnDenied::Deny {
+        return Ok(Authorization::SandboxDenied(format!(
+            "sandbox.on_denied=deny；命令不能升级到 {} 执行",
+            target.as_str()
+        )));
+    }
+    if target == moc_protocol::SessionPermission::Full && !ctx.config.sandbox.allow_unsandboxed {
+        return Ok(Authorization::SandboxDenied(
+            "sandbox.allow_unsandboxed=false；不能申请沙盒外执行".into(),
+        ));
+    }
+    if let Some(granted) = ctx.sandbox_grants.read().mode_for_command(command)
+        && granted.width() >= target.width()
+    {
+        return Ok(Authorization::Allowed(AllowedExecution {
+            permission: target,
+            call_grants: crate::sandbox::SandboxGrants::default(),
+        }));
+    }
+
+    let prefix = crate::sandbox::command_prefix(command);
+    let body = format!(
+        "命令：\n{command}\n\n理由：\n{justification}\n\n当前权限：{}；申请权限：{}。",
+        ctx.permission.as_str(),
+        target.as_str()
+    );
+    match ask_permission(
+        ctx,
+        tool_call_id,
+        "bash",
+        format!(
+            "允许以 {} 执行命令：{}",
+            target.as_str(),
+            command.lines().next().unwrap_or(command)
+        ),
+        Some(body),
+        None,
+        moc_protocol::methods::command_options(prefix.as_deref()),
+    )
+    .await?
+    {
+        PermissionAnswer::Unavailable => Ok(Authorization::Unavailable),
+        PermissionAnswer::Dismissed => Ok(Authorization::Denied),
+        PermissionAnswer::Selected(option) if option == "allow_once" => {
+            Ok(Authorization::Allowed(AllowedExecution {
+                permission: target,
+                call_grants: crate::sandbox::SandboxGrants::default(),
+            }))
+        }
+        PermissionAnswer::Selected(option) if option == "allow_session" => {
+            ctx.sandbox_grants
+                .write()
+                .grant_command(command, false, target);
+            Ok(Authorization::Allowed(AllowedExecution {
+                permission: target,
+                call_grants: crate::sandbox::SandboxGrants::default(),
+            }))
+        }
+        PermissionAnswer::Selected(option)
+            if option == "allow_session_prefix" && prefix.is_some() =>
+        {
+            ctx.sandbox_grants.write().grant_command(
+                prefix.as_deref().unwrap_or_default(),
+                true,
+                target,
+            );
+            Ok(Authorization::Allowed(AllowedExecution {
+                permission: target,
+                call_grants: crate::sandbox::SandboxGrants::default(),
+            }))
+        }
+        PermissionAnswer::Selected(_) => Ok(Authorization::Denied),
+    }
+}
+
+fn parse_permission(value: &str) -> Option<moc_protocol::SessionPermission> {
+    match value {
+        "full" => Some(moc_protocol::SessionPermission::Full),
+        "workspace" => Some(moc_protocol::SessionPermission::Workspace),
+        "workspace_only" | "workspace-only" => Some(moc_protocol::SessionPermission::WorkspaceOnly),
+        _ => None,
+    }
 }
 
 /// 权限弹窗中写入内容预览的行数与字节上限。
@@ -668,31 +897,36 @@ const WRITE_PREVIEW_BYTES: usize = 4096;
 /// 生成写入内容预览：取开头若干行，超出上限时注明已截断。
 fn write_preview(content: &str) -> String {
     let mut preview = String::new();
-    let mut lines = 0usize;
     let mut bytes = 0usize;
-    for line in content.lines() {
+    for (line_index, line) in content.lines().enumerate() {
         let width = line.len() + 1;
-        if lines >= WRITE_PREVIEW_LINES || bytes + width > WRITE_PREVIEW_BYTES {
+        if line_index >= WRITE_PREVIEW_LINES || bytes + width > WRITE_PREVIEW_BYTES {
             preview.push_str("\n[...]");
             break;
         }
         preview.push_str(line);
         preview.push('\n');
-        lines += 1;
         bytes += width;
     }
     preview
 }
 
-/// 发起一次权限询问；无法询问或用户未选择 `allow_once` 都按拒绝处理。
-async fn request_permission(
+enum PermissionAnswer {
+    Unavailable,
+    Selected(String),
+    Dismissed,
+}
+
+/// 发起一次权限询问；前端不支持时返回 Unavailable，用户关闭弹窗按 Dismissed。
+async fn ask_permission(
     ctx: &ToolCtx,
     tool_call_id: &str,
     tool_name: &str,
     title: String,
     body: Option<String>,
     diff: Option<moc_protocol::methods::ToolDiff>,
-) -> Result<Authorization, CoreError> {
+    options: Vec<moc_protocol::methods::PermissionOption>,
+) -> Result<PermissionAnswer, CoreError> {
     let request = &ctx.request;
     if !ctx
         .core
@@ -701,7 +935,7 @@ async fn request_permission(
         .get(&request.connection_id())
         .is_some_and(|caps| caps.permission_requests)
     {
-        return Ok(Authorization::Unavailable);
+        return Ok(PermissionAnswer::Unavailable);
     }
     let request_id = crate::ids::entry_id();
     request
@@ -726,7 +960,7 @@ async fn request_permission(
             title,
             body,
             diff,
-            options: moc_protocol::methods::default_options(),
+            options,
         })
         .await;
     let selected = answer.ok().map(|answer| answer.option_id);
@@ -742,13 +976,10 @@ async fn request_permission(
         )
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
-    if selected.as_deref() == Some("allow_once") {
-        Ok(Authorization::Allowed(
-            moc_protocol::SessionPermission::Full,
-        ))
-    } else {
-        Ok(Authorization::Denied)
-    }
+    Ok(match selected {
+        None => PermissionAnswer::Dismissed,
+        Some(option) => PermissionAnswer::Selected(option),
+    })
 }
 
 pub(super) async fn persist_tool_result(
@@ -832,6 +1063,17 @@ mod tests {
             root.canonicalize().unwrap(),
             outside.canonicalize().unwrap(),
         )
+    }
+
+    fn outside_workspace_targets(
+        cwd: &std::path::Path,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<Vec<std::path::PathBuf>, crate::tools::ToolError> {
+        Ok(write_targets(cwd, tool_name, arguments)?
+            .into_iter()
+            .filter(|path| crate::tools::workspace_escape(cwd, path).is_some())
+            .collect())
     }
 
     #[test]

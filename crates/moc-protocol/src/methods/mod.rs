@@ -70,7 +70,7 @@ pub use openviking::{
 };
 pub use permission::{
     PermissionOption, PermissionOptionKind, PermissionRequestParams, PermissionResult,
-    SessionRequestPermission, default_options,
+    SessionRequestPermission, command_options, default_options, path_options,
 };
 pub use plan::{
     PlanAction, PlanInfo, PlanStatus, SessionPlanApprove, SessionPlanApproveParams,

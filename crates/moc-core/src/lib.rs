@@ -14,6 +14,7 @@ pub mod hashline;
 pub mod ids;
 mod paths;
 pub mod resources;
+pub mod sandbox;
 pub mod service;
 pub mod session;
 pub mod shell;

@@ -64,7 +64,7 @@ impl Tool for WriteTool {
         Box::pin(async move {
             let args = parse_args(args)?;
             // 绕过授权入口的调用也要检查：解析路径前先按词法结果判断一次。
-            crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &args.path)?;
+            crate::tools::ensure_path_access(ctx, &args.path, crate::sandbox::Access::Write)?;
             ResourceRouter::write(&args.path)
                 .map_err(|error| ToolError::new(error.code, error.message))?;
             if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
@@ -101,7 +101,11 @@ impl Tool for WriteTool {
             let path = resolve_tool_path(&ctx.cwd, &args.path)?;
             // create_dir_all 可能会创建末尾缺失的目录：按当前解析结果再判断一次边界，
             // 没获授权的越界写入在这里拦下，不会写到磁盘上。
-            crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &path)?;
+            crate::tools::ensure_path_access(
+                ctx,
+                &path.to_string_lossy(),
+                crate::sandbox::Access::Write,
+            )?;
             let max_file_bytes = ctx.config.tools.output.max_file_bytes;
             if args.content.len() as u64 > max_file_bytes {
                 return Err(ToolError::new(

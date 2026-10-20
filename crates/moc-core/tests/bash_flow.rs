@@ -36,7 +36,12 @@ async fn manual_bash_context_survives_resume_and_compaction_without_private_outp
         })
         .mount(&upstream)
         .await;
-    let harness = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=1\n[tools.bash]\nallow_patterns=[]\n").await;
+    let harness = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=1\n",
+    )
+    .await;
     let id = harness.session(SessionMode::Plan).await;
     let before = harness
         .client

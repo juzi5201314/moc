@@ -77,6 +77,8 @@ pub struct PermissionOption {
 pub enum PermissionOptionKind {
     /// 允许这一次。
     AllowOnce,
+    /// 本会话内始终允许同一操作。
+    AllowSession,
     /// 拒绝这一次。
     RejectOnce,
 }
@@ -103,6 +105,56 @@ pub fn default_options() -> Vec<PermissionOption> {
             kind: PermissionOptionKind::RejectOnce,
         },
     ]
+}
+
+/// 文件路径越界时的选项：允许一次 / 本会话始终允许该路径 / 拒绝。
+pub fn path_options() -> Vec<PermissionOption> {
+    vec![
+        PermissionOption {
+            id: "allow_once".to_owned(),
+            label: "允许一次".to_owned(),
+            kind: PermissionOptionKind::AllowOnce,
+        },
+        PermissionOption {
+            id: "allow_session".to_owned(),
+            label: "本会话始终允许该路径".to_owned(),
+            kind: PermissionOptionKind::AllowSession,
+        },
+        PermissionOption {
+            id: "reject_once".to_owned(),
+            label: "拒绝".to_owned(),
+            kind: PermissionOptionKind::RejectOnce,
+        },
+    ]
+}
+
+/// bash 升级时的选项；`prefix` 只在命令足够简单时给出，展示将写入的规则。
+pub fn command_options(prefix: Option<&str>) -> Vec<PermissionOption> {
+    let mut options = vec![
+        PermissionOption {
+            id: "allow_once".to_owned(),
+            label: "允许一次".to_owned(),
+            kind: PermissionOptionKind::AllowOnce,
+        },
+        PermissionOption {
+            id: "allow_session".to_owned(),
+            label: "本会话始终允许该命令".to_owned(),
+            kind: PermissionOptionKind::AllowSession,
+        },
+    ];
+    if let Some(prefix) = prefix {
+        options.push(PermissionOption {
+            id: "allow_session_prefix".to_owned(),
+            label: format!("本会话始终允许 {prefix} * 命令"),
+            kind: PermissionOptionKind::AllowSession,
+        });
+    }
+    options.push(PermissionOption {
+        id: "reject_once".to_owned(),
+        label: "拒绝".to_owned(),
+        kind: PermissionOptionKind::RejectOnce,
+    });
+    options
 }
 
 #[cfg(test)]
@@ -152,6 +204,38 @@ mod tests {
         assert!(
             serde_json::from_value::<PermissionRequestParams>(json!({ "session_id": "s" }))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn path_and_command_options_expose_session_grants() {
+        let path = path_options();
+        assert!(path.iter().any(|option| option.id == "allow_session"
+            && option.kind == PermissionOptionKind::AllowSession));
+        assert!(
+            !path
+                .iter()
+                .any(|option| option.id == "allow_session_prefix")
+        );
+
+        let command = command_options(Some("cargo"));
+        assert!(command.iter().any(|option| option.id == "allow_session"));
+        let prefix = command
+            .iter()
+            .find(|option| option.id == "allow_session_prefix")
+            .expect("简单命令提供前缀授权");
+        assert_eq!(prefix.label, "本会话始终允许 cargo * 命令");
+        assert_eq!(prefix.kind, PermissionOptionKind::AllowSession);
+
+        let exact = command_options(None);
+        assert!(
+            !exact
+                .iter()
+                .any(|option| option.id == "allow_session_prefix")
+        );
+        assert_eq!(
+            serde_json::to_value(PermissionOptionKind::AllowSession).unwrap(),
+            "allow_session"
         );
     }
 }

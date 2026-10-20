@@ -287,7 +287,11 @@ async fn apply_one(
     reject_resource_path(&request.path)?;
     let source_path = resolve_tool_path(&ctx.cwd, &request.path)?;
     // 绕过授权入口的调用也要检查，判断方式与授权阶段相同。
-    crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &source_path)?;
+    crate::tools::ensure_path_access(
+        ctx,
+        &source_path.to_string_lossy(),
+        crate::sandbox::Access::Write,
+    )?;
     request.path = source_path.to_string_lossy().into_owned();
     let target_path = request
         .move_lines
@@ -295,7 +299,11 @@ async fn apply_one(
         .map(|movement| {
             reject_resource_path(&movement.target_path)?;
             let path = resolve_tool_path(&ctx.cwd, &movement.target_path)?;
-            crate::tools::ensure_workspace_write(&ctx.cwd, ctx.permission, &path)?;
+            crate::tools::ensure_path_access(
+                ctx,
+                &path.to_string_lossy(),
+                crate::sandbox::Access::Write,
+            )?;
             Ok(path)
         })
         .transpose()?;
@@ -465,7 +473,8 @@ mod tests {
 
     #[test]
     fn rejects_files_field_and_unknown_fields() {
-        let error = parse_requests(serde_json::json!({"files": []})).expect_err("应拒绝 files 字段");
+        let error =
+            parse_requests(serde_json::json!({"files": []})).expect_err("应拒绝 files 字段");
         assert!(error.message.contains("takes one file per call"));
         let error = parse_requests(serde_json::json!({
             "path": "file.txt",

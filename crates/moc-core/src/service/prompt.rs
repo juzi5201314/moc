@@ -5,7 +5,7 @@ use crate::{
     compact::replay::model_messages,
     service::{CoreInner, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
-    system_prompt::{build, merge_reminders, mode_contract, reminder_message},
+    system_prompt::{build, merge_reminders, mode_contract, reminder_message, sandbox_contract},
     tools::ToolCtx,
 };
 use moc_llm::{FinishReason, Message, Usage};
@@ -528,6 +528,7 @@ async fn run_prompt_locked(
         if let Some(contract) = mode_contract(mode) {
             reminder_messages.push(contract);
         }
+        reminder_messages.push(sandbox_contract(permission, &project_config.sandbox));
         if let Some(roster) = &roster {
             reminder_messages.push(reminder_message(format!(
                 "<system-reminder>{roster}</system-reminder>"
@@ -1167,6 +1168,10 @@ async fn run_prompt_locked(
             skills: Arc::clone(&skills),
             tool_call_id: String::new(),
             loaded_skills: Arc::clone(&runtime.loaded_skills),
+            sandbox_support: inner.sandbox_support.clone(),
+            sandbox_grants: Arc::clone(&runtime.sandbox_grants),
+            call_grants: crate::sandbox::SandboxGrants::default(),
+            sandbox_scratch: runtime.sandbox_scratch.clone(),
         };
         let batch = execute_tool_batch(&inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
         let control_end = batch.control_end;

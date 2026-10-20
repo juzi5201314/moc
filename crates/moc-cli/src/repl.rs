@@ -444,18 +444,26 @@ async fn run_command(
             println!("CLM 实验模式已启用；本会话首次请求后不可退出 CLM");
         }
         "permission" => {
+            let clear = argument == "clear";
             let permission = match argument {
                 "full" => SessionPermission::Full,
                 "workspace" => SessionPermission::Workspace,
-                _ => bail!("用法：/permission <full|workspace>"),
+                "workspace-only" | "workspace_only" => SessionPermission::WorkspaceOnly,
+                "clear" => session.permission,
+                _ => bail!("用法：/permission <full|workspace|workspace-only|clear>"),
             };
             *session = client
                 .call::<SessionSetPermission>(SessionSetPermissionParams {
                     session_id: session.id.clone(),
                     permission,
+                    clear_grants: clear,
                 })
                 .await?;
-            println!("权限已切换为 {}", session.permission.as_str());
+            if clear {
+                println!("已清空本会话的沙盒授权");
+            } else {
+                println!("权限已切换为 {}", session.permission.as_str());
+            }
         }
         "plan" => {
             if argument.is_empty() {
@@ -594,7 +602,7 @@ const HELP_TEXT: &str = "\
 /cancel                   取消当前提示（运行中按 Ctrl+C）
 /mode <normal|plan|ptc|clm-experimental>  切换工作模式
 /clm-experimental         启用 CLM 实验模式；首次请求后本会话固定为 CLM
-/permission <full|workspace> 切换命令权限（workspace 需要 bwrap）
+/permission <full|workspace|workspace-only|clear> 切换命令权限或清空本会话沙盒授权
 /plan <提示词>            切换计划模式并发送提示词
 /ask <问题>               仅本条消息按问答模式（只读）处理
 /approve <execute|compact|new|reject>  处理已提交的计划

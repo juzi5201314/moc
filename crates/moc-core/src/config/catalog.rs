@@ -1,6 +1,6 @@
 //! /config 的字段目录：字段说明与类型来自此处，值仍由配置 schema 校验。
 
-use moc_protocol::{ChoiceOption, ConfigField, FieldKind};
+use moc_protocol::{ChoiceOption, ConfigField, FieldKind, SessionPermission};
 use serde_json::{Value, json};
 
 pub fn provider_template() -> Value {
@@ -83,6 +83,16 @@ pub fn fields(effective: &Value) -> Vec<ConfigField> {
 /// 同一分组内的展示顺序：越靠前的越常用、越关键；同档内保持字母序。
 fn rank(key: &str) -> usize {
     match key {
+        // 沙盒：先模式与网络，再越界策略与路径
+        "default_mode" => 0,
+        "network" => 1,
+        "on_denied" => 2,
+        "allow_unsandboxed" => 3,
+        "overlay_home" => 4,
+        "extra_read_paths" => 5,
+        "extra_write_paths" => 6,
+        "deny_read_paths" => 7,
+        "deny_write_paths" => 8,
         // 供应商：先地址与密钥，再协议与缓存
         "base_url" => 0,
         "api_key" => 1,
@@ -226,6 +236,9 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 | "line_max_bytes"
                 | "connect_deadline_secs"
                 | "request_warn_secs"
+                | "overlay_home"
+                | "deny_read_paths"
+                | "deny_write_paths"
         );
     let tab = if path.first().is_some_and(|part| part == "providers") {
         if path.get(2).is_some_and(|part| part == "models") {
@@ -238,6 +251,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
     } else {
         match path.first().map_or("", String::as_str) {
             "tools" | "workspace" | "web_search" | "web_fetch" => "工具",
+            "sandbox" => "沙盒",
             "compaction" | "limits" => "上下文",
             "context_files" | "system_prompt" | "sources" => "指令",
             "defaults" => "模型",
@@ -285,6 +299,28 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             &[("percent", "按上下文比例"), ("tokens", "按固定长度")]
         }
         "soft_method" => &[("moc", "Moc（当前实现）"), ("grok_build", "Grok Build")],
+        "default_mode" if path.first().is_some_and(|part| part == "sandbox") => {
+            let support = crate::sandbox::detect();
+            if support.supports(SessionPermission::Workspace)
+                && support.supports(SessionPermission::WorkspaceOnly)
+            {
+                &[
+                    ("full", "full（无沙盒）"),
+                    ("workspace", "workspace（工作区可写，外部只读）"),
+                    ("workspace_only", "workspace-only（仅工作区可写）"),
+                ]
+            } else if support.supports(SessionPermission::Workspace) {
+                &[
+                    ("full", "full（无沙盒）"),
+                    ("workspace", "workspace（工作区可写，外部只读）"),
+                ]
+            } else {
+                &[("full", "full（当前平台无沙盒 runner）")]
+            }
+        }
+        "on_denied" if path.first().is_some_and(|part| part == "sandbox") => {
+            &[("ask", "向用户申请授权"), ("deny", "直接拒绝")]
+        }
         _ => &[],
     };
     let kind = if !options.is_empty() {
@@ -328,7 +364,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
         path: path.clone(),
         tab: tab.into(),
         label: label.into(),
-        description: description.into(),
+        description,
         kind,
         advanced,
     });
@@ -357,6 +393,42 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "sources.project_config" => (
             "允许项目配置",
             "允许项目里的 .moc/config.toml 覆盖全局设置；默认关闭，开启即信任该仓库。",
+        ),
+        "sandbox.default_mode" => (
+            "默认沙盒模式",
+            "新会话的初始模式。full 不隔离；workspace 工作区可写、工作区外只读；workspace-only 工作区外不可读写。原生 Windows 仅支持 full。",
+        ),
+        "sandbox.network" => (
+            "允许沙盒网络",
+            "仅约束沙盒内 bash；关闭后 Linux 使用独立网络命名空间，macOS 拒绝所有网络。web_fetch、web_search 与 MCP 不受影响。",
+        ),
+        "sandbox.on_denied" => (
+            "越界处理",
+            "沙盒拒绝文件访问或命令升级时：ask 向用户申请一次或本会话授权；deny 直接拒绝且不弹窗。",
+        ),
+        "sandbox.allow_unsandboxed" => (
+            "允许沙盒外重试",
+            "允许模型在执行失败后申请以 full 在沙盒外重试一次；关闭后只能调整配置或使用允许路径。",
+        ),
+        "sandbox.overlay_home" => (
+            "HOME 写时复制",
+            "Linux 专属：把 $HOME 挂成会话级 copy-on-write 层，cargo/npm/uv 等写缓存不会失败也不会污染真实主目录，会话结束丢弃。关闭后 HOME 只读。",
+        ),
+        "sandbox.extra_read_paths" => (
+            "额外只读路径",
+            "逐行填写目录或文件；支持 ~，必须存在。工作区外仍可读，但不能写。",
+        ),
+        "sandbox.extra_write_paths" => (
+            "额外可写路径",
+            "逐行填写目录或文件；支持 ~，必须存在。写入会真实落盘；权限高于 HOME overlay。",
+        ),
+        "sandbox.deny_read_paths" => (
+            "强制拒绝读取",
+            "逐行填写路径；优先于允许列表，即使位于工作区内也会被拒绝。不存在的路径无法在 bash 沙盒中遮蔽。",
+        ),
+        "sandbox.deny_write_paths" => (
+            "强制拒绝写入",
+            "逐行填写路径；优先于允许列表，即使位于工作区内也无法写入。不存在的路径无法在 bash 沙盒中遮蔽。",
         ),
         "compaction.threshold.mode" => (
             "压缩触发方式",
@@ -461,13 +533,9 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "价格（每百万 token）",
                 "JSON：input/output 必填，cache_read/cache_write 可选，单位美元。",
             ),
-            "allow_patterns" => (
-                "沙盒白名单命令",
-                "逐行填写完整命令正则；命中后直接在 workspace 沙盒执行，否则向用户询问并在获准后以 full 执行。",
-            ),
             "deny_patterns" => (
                 "禁止执行的命令",
-                "逐行填写正则表达式，匹配到的命令始终拒绝执行。",
+                "逐行填写正则表达式，匹配到的命令始终拒绝执行，与沙盒模式无关。",
             ),
             "head_bytes" => (
                 "超长输出保留开头",

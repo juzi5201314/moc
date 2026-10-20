@@ -65,6 +65,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
         .context("连接后台服务失败")?;
 
     let mut app = App::new(theme, events.clone());
+    app.sandbox_modes = connection.sandbox_modes.clone();
     // 图形能力只探测一次：必须早于输入线程启动（探测要直接读 fd 0 的应答）
     app.graphics = crate::render::graphics::probe();
     app.thinking_detail = preferences.thinking_detail;
@@ -3644,14 +3645,50 @@ fn set_mode(app: &mut App, connection: &EmbeddedConnection, mode: SessionMode) {
 }
 
 fn set_permission(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
-    let permission = match rest.trim() {
-        "full" => SessionPermission::Full,
-        "workspace" => SessionPermission::Workspace,
+    let available = app
+        .sandbox_modes
+        .iter()
+        .map(|mode| mode.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let rest = rest.trim();
+    let (permission, clear_grants) = match rest {
+        "" => {
+            let current = app
+                .session
+                .as_ref()
+                .map(|session| session.permission.as_str())
+                .unwrap_or("none");
+            app.set_notice(format!(
+                "当前权限：{current}；可用模式：{available}；/permission clear 清空本会话沙盒授权"
+            ));
+            return;
+        }
+        "clear" => {
+            let Some(session) = app.session.as_ref() else {
+                app.set_notice("当前没有活动会话");
+                return;
+            };
+            (session.permission, true)
+        }
+        "full" => (SessionPermission::Full, false),
+        "workspace" => (SessionPermission::Workspace, false),
+        "workspace-only" | "workspace_only" => (SessionPermission::WorkspaceOnly, false),
         _ => {
-            app.set_notice("用法：/permission <full|workspace>");
+            app.set_notice(format!(
+                "用法：/permission <{}|clear>",
+                available.replace(", ", "|")
+            ));
             return;
         }
     };
+    if !app.sandbox_modes.contains(&permission) {
+        app.set_notice(format!(
+            "当前平台不支持 {}；可用模式：{available}",
+            permission.as_str()
+        ));
+        return;
+    }
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
@@ -3664,9 +3701,13 @@ fn set_permission(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
             .call::<SessionSetPermission>(SessionSetPermissionParams {
                 session_id,
                 permission,
+                clear_grants,
             })
             .await
         {
+            Ok(_) if clear_grants => {
+                let _ = events.send(AppEvent::Notice("已清空本会话的沙盒授权".into()));
+            }
             Ok(_) => {}
             Err(error) => {
                 let _ = events.send(AppEvent::Notice(format!("切换权限失败：{error}")));

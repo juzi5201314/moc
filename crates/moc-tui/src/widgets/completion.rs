@@ -48,7 +48,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/permission",
-        description: "切换 full / workspace 命令权限",
+        description: "切换 full / workspace / workspace-only 权限，或清空会话授权",
     },
     SlashCommand {
         name: "/ask",

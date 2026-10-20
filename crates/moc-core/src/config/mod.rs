@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 
 use globset::GlobBuilder;
 use moc_llm::LlmConfig;
+use moc_protocol::SessionPermission;
 use toml::Value;
 
 use crate::CoreConfig;
 use crate::error::CoreError;
 use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
-use schema::{ConfigDocument, validate_compaction, validate_skills};
+use schema::{ConfigDocument, SandboxConfig, validate_compaction, validate_skills};
 
 pub mod catalog;
 pub mod discovery;
@@ -22,10 +23,10 @@ mod schema;
 pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
-    EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig, OutputConfig,
-    ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig, SoftMethod,
-    SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig, WebSearchConfig,
-    WorkspaceConfig, WriteConfig,
+    EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig, OnDenied,
+    OutputConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig,
+    SoftMethod, SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig,
+    WebSearchConfig, WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -67,6 +68,20 @@ pub struct ResolvedWebFetch {
     pub max_chars: usize,
 }
 
+/// 已展开、去重并校验过的沙盒配置。
+#[derive(Debug, Clone)]
+pub struct ResolvedSandboxConfig {
+    pub default_mode: SessionPermission,
+    pub network: bool,
+    pub on_denied: OnDenied,
+    pub allow_unsandboxed: bool,
+    pub overlay_home: bool,
+    pub extra_read_paths: Vec<PathBuf>,
+    pub extra_write_paths: Vec<PathBuf>,
+    pub deny_read_paths: Vec<PathBuf>,
+    pub deny_write_paths: Vec<PathBuf>,
+}
+
 /// 一次完成路径合并、密钥解析与 provider/model 校验的运行时配置。
 #[derive(Clone)]
 pub struct ResolvedConfig {
@@ -75,6 +90,7 @@ pub struct ResolvedConfig {
     pub roles: ModelRoles,
     pub sources: SourcesConfig,
     pub tools: ToolsConfig,
+    pub sandbox: ResolvedSandboxConfig,
     pub compaction: CompactionConfig,
     pub limits: LimitsConfig,
     pub system_prompt: SystemPromptConfig,
@@ -211,12 +227,15 @@ impl ResolvedConfig {
             return Err(CoreError::Config("后台进程上限必须大于 0".into()));
         }
         let session_dir = expand_config_path(&document.session.dir, &home)?;
+        let sandbox = resolve_sandbox(&document.sandbox)?;
+        validate_sandbox_boundaries(&sandbox, &cwd)?;
         Ok(Self {
             home,
             cwd,
             roles: document.models.roles,
             sources: document.sources,
             tools: document.tools,
+            sandbox,
             compaction: document.compaction,
             limits: document.limits,
             system_prompt: document.system_prompt,
@@ -355,6 +374,87 @@ fn expand_config_path(value: &str, moc_home: &Path) -> Result<PathBuf, CoreError
     })
 }
 
+/// 展开沙盒路径列表：支持 `~`，展开后必须是绝对路径；允许路径必须存在。
+fn resolve_sandbox(config: &SandboxConfig) -> Result<ResolvedSandboxConfig, CoreError> {
+    Ok(ResolvedSandboxConfig {
+        default_mode: config.default_mode,
+        network: config.network,
+        on_denied: config.on_denied,
+        allow_unsandboxed: config.allow_unsandboxed,
+        overlay_home: config.overlay_home,
+        extra_read_paths: resolve_sandbox_paths(
+            "sandbox.extra_read_paths",
+            &config.extra_read_paths,
+            true,
+        )?,
+        extra_write_paths: resolve_sandbox_paths(
+            "sandbox.extra_write_paths",
+            &config.extra_write_paths,
+            true,
+        )?,
+        deny_read_paths: resolve_sandbox_paths(
+            "sandbox.deny_read_paths",
+            &config.deny_read_paths,
+            false,
+        )?,
+        deny_write_paths: resolve_sandbox_paths(
+            "sandbox.deny_write_paths",
+            &config.deny_write_paths,
+            false,
+        )?,
+    })
+}
+
+fn validate_sandbox_boundaries(
+    sandbox: &ResolvedSandboxConfig,
+    cwd: &Path,
+) -> Result<(), CoreError> {
+    let workspace = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    for (field, paths) in [
+        ("sandbox.deny_read_paths", &sandbox.deny_read_paths),
+        ("sandbox.deny_write_paths", &sandbox.deny_write_paths),
+    ] {
+        for path in paths {
+            if path == &workspace || crate::sandbox::is_within(&workspace, path) {
+                return Err(CoreError::Config(format!(
+                    "{field}: 不能等于或包含会话工作区 {}（{path}）",
+                    workspace.display(),
+                    path = path.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_sandbox_paths(
+    field: &str,
+    values: &[String],
+    must_exist: bool,
+) -> Result<Vec<PathBuf>, CoreError> {
+    let mut paths = Vec::with_capacity(values.len());
+    for value in values {
+        let expanded = expand_home_path(Path::new(value));
+        if !expanded.is_absolute() {
+            return Err(CoreError::Config(format!(
+                "{field}: 路径必须是绝对路径或 ~ 开头：{value}"
+            )));
+        }
+        if must_exist && !expanded.exists() {
+            return Err(CoreError::Config(format!(
+                "{field}: 路径不存在：{}",
+                expanded.display()
+            )));
+        }
+        let canonical = std::fs::canonicalize(&expanded).unwrap_or(expanded);
+        if !paths.contains(&canonical) {
+            paths.push(canonical);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
 fn merge_optional_file(target: &mut Value, path: &Path) -> Result<(), CoreError> {
     if path.exists() {
         merge_required_file(target, path)?;
@@ -480,6 +580,88 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_paths_are_expanded_and_allow_paths_must_exist() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        let extra = dir.path().join("extra");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::create_dir_all(&cwd).expect("创建 cwd");
+        fs::create_dir_all(&extra).expect("创建 extra");
+        let config_path = home.join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                "{}\n[sandbox]\ndefault_mode='workspace_only'\nnetwork=false\non_denied='deny'\nextra_read_paths=[{:?}]\ndeny_read_paths=['/definitely-not-existing']\n",
+                provider_config("literal"),
+                extra.display().to_string()
+            ),
+        )
+        .expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("沙盒配置可解析");
+        assert_eq!(
+            config.sandbox.default_mode,
+            SessionPermission::WorkspaceOnly
+        );
+        assert!(!config.sandbox.network);
+        assert_eq!(config.sandbox.on_denied, OnDenied::Deny);
+        assert_eq!(
+            config.sandbox.extra_read_paths,
+            vec![extra.canonicalize().unwrap()]
+        );
+        assert_eq!(
+            config.sandbox.deny_read_paths,
+            vec![PathBuf::from("/definitely-not-existing")]
+        );
+
+        fs::write(
+            &config_path,
+            format!(
+                "{}\n[sandbox]\nextra_read_paths=['relative/path']\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写相对路径配置");
+        assert!(ResolvedConfig::load(&core_config(&home, &cwd, vec![])).is_err());
+
+        fs::write(
+            &config_path,
+            format!(
+                "{}\n[sandbox]\nextra_read_paths=['/definitely/not/existing']\n",
+                provider_config("literal")
+            ),
+        )
+        .expect("写不存在路径配置");
+        assert!(ResolvedConfig::load(&core_config(&home, &cwd, vec![])).is_err());
+    }
+
+    #[test]
+    fn deny_paths_cannot_cover_the_workspace() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::create_dir_all(&cwd).expect("创建 cwd");
+        let config_path = home.join("config.toml");
+        for denied in [cwd.clone(), dir.path().to_path_buf()] {
+            fs::write(
+                &config_path,
+                format!(
+                    "{}\n[sandbox]\ndeny_write_paths=[{:?}]\n",
+                    provider_config("literal"),
+                    denied.display().to_string()
+                ),
+            )
+            .expect("写配置");
+            assert!(
+                ResolvedConfig::load(&core_config(&home, &cwd, vec![])).is_err(),
+                "deny 路径 {denied:?} 覆盖工作区时必须报错"
+            );
+        }
+    }
+
+    #[test]
     fn merges_global_project_and_cli_tables_in_precedence_order() {
         let dir = tempfile::tempdir().expect("临时目录");
         let home = dir.path().join("home");
@@ -490,19 +672,19 @@ mod tests {
         fs::write(
             home.join("config.toml"),
             format!(
-                "{}\n[sources]\nproject_config=true\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n[tools.bash]\nallow_patterns=['^python3\\s+build\\.py$']\n",
+                "{}\n[sources]\nproject_config=true\n[sandbox]\nnetwork=false\non_denied=\"deny\"\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n",
                 provider_config("literal")
             ),
         )
         .expect("写全局配置");
         fs::write(
             project.join(".moc/config.toml"),
-            "[tools.read]\ndefault_limit=600\nline_max_bytes=12345\n",
+            "[tools.read]\ndefault_limit=600\nline_max_bytes=12345\n\n[sandbox]\nnetwork=true\n",
         )
         .expect("写项目配置");
         fs::write(
             &overlay,
-            "[tools.read]\ndefault_limit=700\nmax_bytes=8192\n",
+            "[tools.read]\ndefault_limit=700\nmax_bytes=8192\n\n[sandbox]\nallow_unsandboxed=false\n",
         )
         .expect("写 CLI 覆盖层");
 
@@ -511,10 +693,9 @@ mod tests {
             .for_project(&project)
             .expect("项目配置可合并");
 
-        assert_eq!(
-            config.tools.bash.allow_patterns,
-            vec![r"^python3\s+build\.py$".to_owned()]
-        );
+        assert!(config.sandbox.network);
+        assert_eq!(config.sandbox.on_denied, OnDenied::Deny);
+        assert!(!config.sandbox.allow_unsandboxed);
         // 项目配置覆盖全局、CLI 覆盖层再覆盖项目：三层的值都能看出来。
         assert_eq!(config.tools.read.default_limit, 700);
         assert_eq!(config.tools.read.line_max_bytes, 12345);

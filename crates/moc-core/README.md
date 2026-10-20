@@ -34,8 +34,16 @@ max_output_tokens = 32000
 max_request_bytes = 52428800
 input = ["text"]
 
-[tools.bash]
-allow_patterns = ["^mkdir\\s+-p\\s+[^/]+$", "^git\\s+(add|commit)\\b.*$"]
+[sandbox]
+default_mode = "full"
+network = true
+on_denied = "ask"
+allow_unsandboxed = true
+overlay_home = true
+extra_read_paths = []
+extra_write_paths = []
+deny_read_paths = []
+deny_write_paths = []
 
 ```
 
@@ -80,7 +88,7 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 子代理
 
-模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；任务原文同时写入其系统提示的 `<subagent>` 块（权威顺序高于通用仓库规则），可通信的父／兄弟名册则以尾部提醒注入、不进系统前缀。父子共享工作目录、工具、MCP 与继承的会话权限，不创建 worktree 或额外沙盒。子代理不可创建、停止或等待其它子代理。
+模型可通过 `spawn_agent` 创建独立上下文的直接子代理，并用 `list_agents`、`message_agent`、`stop_agent`、`wait_agent` 管理。`model` 仅接受 `inherit`、`default`、`explore`、`plan`；`inherit` 使用父会话当前模型，角色从 `[models.roles]` 解析。子代理从任务文本开始，不复制父 transcript；任务原文同时写入其系统提示的 `<subagent>` 块（权威顺序高于通用仓库规则），可通信的父／兄弟名册则以尾部提醒注入、不进系统前缀。父子共享工作目录、工具、MCP 与继承的会话权限；子代理不继承父会话的沙盒路径/命令授权，需要时重新向用户申请。子代理不可创建、停止或等待其它子代理。
 
 `message_agent` 是唯一的通信入口，`target` 接受代理 ID、`"parent"`（仅子代理）或 `"all"`（顶层是全部运行中的直接子代理，子代理是全部运行中的兄弟）；运行中的目标在下一次安全边界收到消息，空闲目标被唤醒新回合，工具为每个目标返回 `injected`／`woken`／`failed` 回执。`wait_agent` 支持批量：省略 `agent_ids` 即等待全部运行中的直接子代理，任一个进入终态、或消息到达、或窗口（默认 180 秒）到期即返回快照，运行期间以 `tool_progress` 推送进度行。
 
@@ -144,11 +152,12 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/help`、`/quit`（`/exit` 同义）、`/cancel`、`/mode`、`/clm-experimental`、`/permission full|workspace`、`/plan`、`/ask`、`/approve execute|compact|new|reject`、`/agents`、`/compact`、`/usage`、`/new`、`/sessions` 和 `/model`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` 权限要求 core 启动时探测到可用的 Unix `bwrap`；启用后 bash 在工作区内可写、工作区外只读，不隔离网络。`edit` / `write` 越出工作区时需一次性授权，`read` / `find` / `grep` 不设读边界；细则见「行为与安全边界」。
+交互命令包括 `/help`、`/quit`（`/exit` 同义）、`/cancel`、`/mode`、`/clm-experimental`、`/permission full|workspace|workspace-only|clear`、`/plan`、`/ask`、`/approve execute|compact|new|reject`、`/agents`、`/compact`、`/usage`、`/new`、`/sessions` 和 `/model`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` / `workspace-only` 要求 core 启动时探测到可用的 OS sandbox runner（Linux `bwrap`、macOS `sandbox-exec`）；原生 Windows 只提供 `full`，WSL2 走 Linux 实现。包管理器写 `$HOME` 缓存由 Linux HOME overlay 或 workspace-only 合成 HOME 兜住，不需要枚举缓存目录；细则见「行为与安全边界」。
 
 ## 嵌入接口
 
 - `Core::new(CoreConfig)` 加载配置并建立会话目录，返回 `Arc<Core>`；允许尚未配置模型，以便前端完成首次引导，创建会话时再要求可用主模型。
+- `Core::new_with_sandbox_support(CoreConfig, SandboxSupport)` 用于测试或嵌入方注入沙盒能力；`Core::sandbox_support()` 返回当前平台可用模式。
 - `CoreConfig` 包含 `home`、`cwd`、`overlays`、`session_dir` 与可注入的 `moc_llm::Client`。
 - 将 `Core` 交给 `moc_protocol::Server`，通过协议客户端调用会话和提示方法。
 - 前端退出时调用 `Core::shutdown().await`，等待取消收尾并回收后台进程。
@@ -156,8 +165,10 @@ cargo run -p moc-cli -- --resume SESSION_ID
 
 ## 行为与安全边界
 
-- `full` 是 yolo：bash 不做授权询问，但危险命令拒绝规则始终生效。
-- `workspace` 是 bash 的操作系统级沙盒：工作区可写、工作区外只读，不隔离网络、不清理继承环境。bash 白名单由内置常见命令与 `[tools.bash].allow_patterns` 组成；无法确认的命令在执行前询问用户，拒绝则不执行，允许则以 full 执行一次。`edit` / `write` 由 core 直接写入，边界按解析后的真实落点判定（展开符号链接、折叠新建路径里的 `..`）：越出工作区（含 `ov://` / `viking://` 写入）复用同一条一次性授权链，弹窗携带写入内容预览与 diff，授权只对本次调用有效；无法弹窗或拒绝则不写入，执行阶段还会按同源判定复校验一次。`read` / `find` / `grep` 是只读工具，不设读边界，能力与沙盒外只读挂载一致。
+- `full` 是 yolo：bash 不做文件系统/网络隔离，但危险命令拒绝规则始终生效。
+- `[tools.bash].allow_patterns` 已移除，旧配置中的该字段会触发未知字段错误；删除即可。非 full 命令不再有“批准后以 full 执行”的旁路。
+- 非 full 模式下一律先跑 OS 沙盒：`workspace` 以只读方式挂载宿主根，工作区、会话 scratch、`[sandbox].extra_write_paths` 可写，`$HOME` 在 Linux 上是会话级 copy-on-write 层；`workspace-only` 只挂载运行时只读系统路径、工作区、scratch 与合成 HOME，宿主 HOME 不存在。`[sandbox].network=false` 时 Linux 使用独立网络命名空间，macOS 拒绝网络。没有白名单旁路：命令失败后由模型带 `sandbox_permissions` + `justification` 申请更宽模式，用户可允许一次、本会话始终允许该命令/该前缀或拒绝；路径越界同理，可授权单次或本会话路径。授权只存在内存，切换模式或 `/permission clear` 即清空。`read` / `find` / `grep` 与 `write` / `edit` 共用同一套路径策略，执行阶段还会复校验一次。
+- `workspace` 仍可读宿主文件（除 `[sandbox].deny_read_paths`），不是保密边界；`workspace-only` 才隐藏宿主 HOME。MCP、`web_fetch`、`web_search` 与 PTC worker 在 core 进程执行，不受 OS 沙盒约束。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - 计划模式进入时应用 `models.roles.plan`（`none` 时沿用当前模型），手动退出时恢复进入前的模型；审批退出改用选定执行模型。`session/new` 直接以计划模式创建会话同样应用计划角色模型。
 - `write_plan` 只保存会话计划文件和 Submitted entry；`exit_plan({})` 触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话以选定模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。

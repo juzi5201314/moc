@@ -36,6 +36,19 @@ impl Harness {
     /// `plan` 传 `none` 表示进入计划模式不切换模型；`extra` 追加在配置末尾，只能
     /// 新增表，不能重复定义已有的表。
     pub async fn with_roles(url: &str, api: &str, default: &str, plan: &str, extra: &str) -> Self {
+        Self::with_sandbox_support(url, api, default, plan, extra, moc_core::sandbox::detect())
+            .await
+    }
+
+    /// 与 [`Self::with_roles`] 相同，但显式注入沙盒能力，避免测试依赖宿主机 runner。
+    pub async fn with_sandbox_support(
+        url: &str,
+        api: &str,
+        default: &str,
+        plan: &str,
+        extra: &str,
+        sandbox_support: moc_core::sandbox::SandboxSupport,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let cwd = root.path().join("work");
@@ -47,17 +60,22 @@ impl Harness {
              [providers.test.models.gpt-test]\ncontext_window=1000000\nmax_output_tokens=4096\n\
              [workspace]\nwatch=false\n[context_files]\nenabled=false\n{extra}\n"
         )).unwrap();
-        let core = Core::new(CoreConfig {
-            home,
-            cwd,
-            overlays: vec![],
-            session_dir: Some(root.path().join("sessions")),
-            client: moc_llm::Client::new(),
-            ptc_worker: std::env::var_os("MOC_PTC_WORKER_BIN").map(|program| PtcWorkerCommand {
-                program: program.into(),
-                args: Vec::new(),
-            }),
-        })
+        let core = Core::new_with_sandbox_support(
+            CoreConfig {
+                home,
+                cwd,
+                overlays: vec![],
+                session_dir: Some(root.path().join("sessions")),
+                client: moc_llm::Client::new(),
+                ptc_worker: std::env::var_os("MOC_PTC_WORKER_BIN").map(|program| {
+                    PtcWorkerCommand {
+                        program: program.into(),
+                        args: Vec::new(),
+                    }
+                }),
+            },
+            sandbox_support,
+        )
         .unwrap();
         let server = Server::new((*core).clone());
         let (server_side, client_side) = transport::duplex(65536);

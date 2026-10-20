@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 
 use moc_protocol::methods::TodoPhase;
-use moc_protocol::{ContextUsageResult, ModelInfo, SessionInfo, SessionMode, Usage};
+use moc_protocol::{
+    ContextUsageResult, ModelInfo, SessionInfo, SessionMode, SessionPermission, Usage,
+};
 
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
@@ -62,6 +64,8 @@ pub struct App {
     pub events: UnboundedSender<AppEvent>,
     /// 当前会话信息（模型、模式、cwd 都从这里读）。
     pub session: Option<SessionInfo>,
+    /// 当前平台可用的沙盒模式；`/permission` 与设置页据此过滤。
+    pub sandbox_modes: Vec<SessionPermission>,
     /// 可选模型集合（`config/get` 拉取，/model 菜单与 statusline 用）。
     pub models: Vec<ModelInfo>,
     /// 转写条目（用户消息、回复、工具调用、todo……）。
@@ -331,6 +335,7 @@ impl App {
             theme,
             events,
             session: None,
+            sandbox_modes: vec![SessionPermission::Full],
             models: Vec::new(),
             blocks: Vec::new(),
             generation_start: None,

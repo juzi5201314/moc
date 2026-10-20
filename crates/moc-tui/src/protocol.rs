@@ -156,6 +156,8 @@ pub struct EmbeddedConnection {
     pub client: ClientHandle,
     /// 流式更新使用有界队列；队列满时阻塞协议读循环，向 core 传播背压。
     pub updates: Receiver<SessionUpdateParams>,
+    /// 当前平台可用的沙盒模式，由 core 探测后下发。
+    pub sandbox_modes: Vec<moc_protocol::SessionPermission>,
     server_connection: ServerConnection,
 }
 
@@ -174,6 +176,7 @@ pub async fn connect_embedded(
     events: UnboundedSender<AppEvent>,
 ) -> anyhow::Result<EmbeddedConnection> {
     let (update_tx, update_rx) = channel(256);
+    let sandbox_modes = core.sandbox_support().modes;
     let (core_side, frontend_side) = moc_protocol::transport::duplex(64 * 1024);
     let server = Server::with_options((*core).clone(), ServerOptions::default());
     let server_connection = server.spawn(core_side);
@@ -253,6 +256,7 @@ pub async fn connect_embedded(
     Ok(EmbeddedConnection {
         client,
         updates: update_rx,
+        sandbox_modes,
         server_connection,
     })
 }

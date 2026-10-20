@@ -25,9 +25,11 @@ pub mod reminder;
 use std::path::Path;
 
 use moc_llm::{ContentPart, Message, Role};
+use moc_protocol::SessionPermission;
 use moc_protocol::methods::SessionMode;
 
 use crate::config::ResolvedConfig;
+use crate::config::ResolvedSandboxConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
@@ -316,6 +318,46 @@ pub fn mode_contract(mode: SessionMode) -> Option<Message> {
     Some(reminder_message(format!(
         "<system-reminder>{text}</system-reminder>"
     )))
+}
+
+/// 当前沙盒模式的事实提醒；每轮都发，因为模式与路径授权会随用户操作变化。
+///
+/// 这里只写模型需要据此调整行为的边界与升级方式，不重复配置项的逐字段说明。
+pub fn sandbox_contract(permission: SessionPermission, config: &ResolvedSandboxConfig) -> Message {
+    let filesystem = match permission {
+        SessionPermission::Full => {
+            "Commands run directly on the host with no filesystem isolation."
+        }
+        SessionPermission::Workspace => {
+            "Shell commands see the host filesystem read-only except the workspace, session temporary directories, and extra paths; `$HOME` writes use a session copy-on-write layer on Linux when `overlay_home` is enabled, otherwise `$HOME` is read-only. File tools read host files except configured deny paths and can write only allowed roots."
+        }
+        SessionPermission::WorkspaceOnly => {
+            "Shell commands see the workspace, session temporary directories, a synthetic `$HOME`, and read-only runtime system paths; the host home and other host data are absent. File tools can read only those roots and configured extras."
+        }
+    };
+    let network = if config.network || permission == SessionPermission::Full {
+        "Shell network access is enabled."
+    } else {
+        "Shell network access is blocked; web tools are unaffected."
+    };
+    let approval = if permission == SessionPermission::Full {
+        ""
+    } else if config.on_denied == crate::config::OnDenied::Deny {
+        "Sandbox denials are final; no approval prompt is shown."
+    } else {
+        "Out-of-bound access asks the user; one-time and session grants are possible."
+    };
+    let escalation = if permission == SessionPermission::Full {
+        ""
+    } else if config.allow_unsandboxed {
+        "After a sandbox denial, retry the exact command once with `sandbox_permissions` (workspace or full) plus `justification`; the user approves."
+    } else {
+        "Escalation to full is disabled; use allowed paths or change settings."
+    };
+    reminder_message(format!(
+        "<system-reminder>Sandbox mode: {}. {filesystem} {network} {approval} {escalation}</system-reminder>",
+        permission.as_str()
+    ))
 }
 
 /// 把易变信息包成一条 user 消息，放在回放的历史之后，稳定前缀因此可以缓存。
@@ -686,7 +728,9 @@ mod tests {
                 ["<clm-experimental>", "clm_context"].as_slice(),
             ),
         ] {
-            let text = mode_contract(mode).expect("非普通模式必须有模式提醒").text();
+            let text = mode_contract(mode)
+                .expect("非普通模式必须有模式提醒")
+                .text();
             assert!(
                 text.starts_with("<system-reminder>") && text.ends_with("</system-reminder>"),
                 "{mode:?}: {text}"
@@ -699,5 +743,26 @@ mod tests {
                 "{mode:?} 不能只报模式名、让模型去上文找规则：{text}"
             );
         }
+    }
+
+    #[test]
+    fn sandbox_contract_states_mode_network_and_escalation() {
+        let config = ResolvedSandboxConfig {
+            default_mode: SessionPermission::WorkspaceOnly,
+            network: false,
+            on_denied: crate::config::OnDenied::Ask,
+            allow_unsandboxed: true,
+            overlay_home: true,
+            extra_read_paths: Vec::new(),
+            extra_write_paths: Vec::new(),
+            deny_read_paths: Vec::new(),
+            deny_write_paths: Vec::new(),
+        };
+        let text = sandbox_contract(SessionPermission::WorkspaceOnly, &config).text();
+        assert!(text.starts_with("<system-reminder>Sandbox mode: workspace-only."));
+        assert!(text.contains("host home and other host data are absent"));
+        assert!(text.contains("Shell network access is blocked"));
+        assert!(text.contains("sandbox_permissions"));
+        assert!(text.contains("justification"));
     }
 }

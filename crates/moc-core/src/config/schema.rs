@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use super::model::ModelCatalog;
 use crate::error::CoreError;
+use moc_protocol::SessionPermission;
 
 #[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -14,6 +15,7 @@ pub(super) struct ConfigDocument {
     pub providers: BTreeMap<String, super::model::ProviderDocument>,
     pub sources: SourcesConfig,
     pub tools: ToolsConfig,
+    pub sandbox: SandboxConfig,
     pub compaction: CompactionConfig,
     pub limits: LimitsConfig,
     pub system_prompt: SystemPromptConfig,
@@ -189,8 +191,6 @@ pub struct BashConfig {
     pub max_output_bytes: u64,
     pub persistent_log_bytes: u64,
     pub deny_patterns: Vec<String>,
-    /// 允许直接留在 workspace 沙盒执行的完整命令正则。
-    pub allow_patterns: Vec<String>,
 }
 
 impl Default for BashConfig {
@@ -211,7 +211,57 @@ impl Default for BashConfig {
                 r"(?i)\b(remove-item|clear-disk|initialize-disk|remove-partition)\b".into(),
                 r">\s*/etc/passwd".into(),
             ],
-            allow_patterns: Vec::new(),
+        }
+    }
+}
+
+/// 沙盒拒绝访问时的策略。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDenied {
+    /// 向用户申请一次（或本会话）授权。
+    #[default]
+    Ask,
+    /// 直接拒绝，不发起权限询问。
+    Deny,
+}
+
+/// 沙盒与路径权限配置。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxConfig {
+    /// 新会话的默认模式；`full` 表示不隔离。
+    pub default_mode: SessionPermission,
+    /// 沙盒内 bash 是否允许网络。关闭后 Linux 使用独立网络命名空间，macOS 拒绝所有网络。
+    pub network: bool,
+    /// 沙盒拒绝时的策略。
+    pub on_denied: OnDenied,
+    /// 是否允许模型申请 `full`（沙盒外）执行一次。
+    pub allow_unsandboxed: bool,
+    /// Linux 下是否把 `$HOME` 挂成会话级 copy-on-write 层。
+    pub overlay_home: bool,
+    /// 额外只读路径；支持 `~`，加载时必须存在。
+    pub extra_read_paths: Vec<String>,
+    /// 额外可读写路径；支持 `~`，加载时必须存在。
+    pub extra_write_paths: Vec<String>,
+    /// 强制拒绝读取的路径；优先于允许列表。
+    pub deny_read_paths: Vec<String>,
+    /// 强制拒绝写入的路径；优先于允许列表。
+    pub deny_write_paths: Vec<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: SessionPermission::Full,
+            network: true,
+            on_denied: OnDenied::Ask,
+            allow_unsandboxed: true,
+            overlay_home: true,
+            extra_read_paths: Vec::new(),
+            extra_write_paths: Vec::new(),
+            deny_read_paths: Vec::new(),
+            deny_write_paths: Vec::new(),
         }
     }
 }
