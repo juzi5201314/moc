@@ -93,6 +93,26 @@ pub fn str_width(text: &str) -> usize {
     text.chars().map(|ch| ch.width().unwrap_or(0)).sum()
 }
 
+/// 从第 `start_chars` 个字符起，按显示宽度最多取 `max_width` 列。
+///
+/// 不切开宽字符：边界上的宽字符整体跳过，结果可能比 `max_width` 少一列。
+pub(crate) fn display_window(text: &str, start_chars: usize, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut width = 0usize;
+    for ch in text.chars().skip(start_chars) {
+        let ch_width = ch.width().unwrap_or(0);
+        if width + ch_width > max_width {
+            break;
+        }
+        width += ch_width;
+        out.push(ch);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +137,22 @@ mod tests {
     #[test]
     fn zero_width_returns_single_line() {
         assert_eq!(wrap_text("abc", 0), vec!["abc"]);
+    }
+
+    #[test]
+    fn display_window_is_display_width_aware() {
+        assert_eq!(display_window("abcdef", 0, 3), "abc");
+        assert_eq!(display_window("abcdef", 3, 3), "def");
+        assert_eq!(display_window("中文abc", 0, 3), "中");
+        assert_eq!(display_window("中文abc", 1, 3), "文a");
+        assert_eq!(display_window("中文abc", 2, 3), "abc");
+        assert_eq!(display_window("中文", 0, 1), "", "放不下的宽字符整体跳过");
+        assert_eq!(display_window("abc", 0, 0), "");
+        assert_eq!(display_window("abc", 9, 3), "");
+        for start in 0..6 {
+            let window = display_window("中文ab🙂cd", start, 5);
+            assert!(str_width(&window) <= 5);
+        }
     }
 
     /// 纯空格行不入列：断行位置的空格已被消耗，空行只会放大高度。

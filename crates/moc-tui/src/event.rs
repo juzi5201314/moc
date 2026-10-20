@@ -417,7 +417,9 @@ fn apply_focus_loaded(
     let has_more = page.has_more;
     let before_entry_id = page.entries.first().map(|entry| entry.id.clone());
     let cwd = page.session.cwd.clone();
+    let todos = page.todos;
     app.switch_session(page.session, blocks);
+    app.todos = todos;
     if returning && let Some((draft, scroll)) = app.focus_restore.take() {
         if !draft.is_empty() {
             app.prompt.insert_str_raw(&draft);
@@ -591,6 +593,7 @@ async fn event_loop(
     let mut view = render::ScrollbackView::new();
     let mut next_frame = tokio::time::Instant::now();
     let mut next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
+    let mut next_marquee_tick = tokio::time::Instant::now() + render::todo_hud::MARQUEE_TICK;
     let mut dirty = true;
     loop {
         if app.should_quit {
@@ -630,11 +633,16 @@ async fn event_loop(
         // notice / warning 显示中：安排 TTL 到点重绘，擦除浮层
         let notice_deadline = app.notice_deadline().map(tokio::time::Instant::from_std);
         let warning_deadline = app.warning_deadline().map(tokio::time::Instant::from_std);
+        let marquee_tick_enabled = app.todo_hud.marquee_active;
         tokio::select! {
             biased;
             _ = tokio::time::sleep_until(next_frame), if need_frame_wait => {}
             _ = tokio::time::sleep_until(notice_deadline.unwrap_or_else(tokio::time::Instant::now)), if notice_deadline.is_some() => dirty = true,
             _ = tokio::time::sleep_until(warning_deadline.unwrap_or_else(tokio::time::Instant::now)), if warning_deadline.is_some() => dirty = true,
+            _ = tokio::time::sleep_until(next_marquee_tick), if marquee_tick_enabled => {
+                next_marquee_tick = tokio::time::Instant::now() + render::todo_hud::MARQUEE_TICK;
+                dirty = true;
+            }
             _ = tokio::time::sleep_until(next_activity_tick), if activity_tick_enabled => {
                 next_activity_tick = tokio::time::Instant::now() + ACTIVITY_TICK;
                 dirty = true;
@@ -828,11 +836,13 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
-                    Some(AppEvent::Loaded(info, blocks, has_more, before_entry_id)) => {
+                    Some(AppEvent::Loaded(info, blocks, has_more, before_entry_id, todos)) => {
                         app.modal = None;
                         let cwd = info.cwd.clone();
                         let id = info.id.clone();
                         app.switch_session(info, blocks);
+                        // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
+                        app.todos = todos;
                         app.set_history_cursor(has_more, before_entry_id);
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
@@ -883,9 +893,12 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
             app.prompt_changed();
             request_resource_completion(app, connection);
         }
-        Event::Resize(_, _) => {}
+        Event::Resize(_, _) => app.todo_hud.on_resize(),
         Event::FocusGained => app.terminal_focused = true,
-        Event::FocusLost => app.terminal_focused = false,
+        Event::FocusLost => {
+            app.terminal_focused = false;
+            app.todo_hud.on_focus_lost();
+        }
         _ => {}
     }
 }
@@ -989,6 +1002,9 @@ fn handle_mouse_with_connection(
             _ => {}
         }
     }
+    if handle_todo_hud_mouse(app, &mouse) {
+        return;
+    }
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         let position = (mouse.column, mouse.row);
         if let Some((agent_id, _)) = app
@@ -1030,6 +1046,37 @@ fn handle_mouse_with_connection(
         }
     }
     handle_mouse(app, mouse);
+}
+
+/// todo HUD：悬停展开、点击固定、按住卡片拖动。
+fn handle_todo_hud_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let position = (mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Moved => {
+            let inside = app.todo_hud.pointer_moved(position);
+            if inside {
+                // 卡片盖住图表入口时，别留下过期的行高亮。
+                app.hover_chart = None;
+            }
+            inside
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if app.todo_hud.pointer_down(position) {
+                // 点击 HUD 不落到转写：不进入点击/拖选状态。
+                app.pending_click = None;
+                app.selection = None;
+                true
+            } else {
+                false
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            app.todo_hud.pointer_drag(position, app.scrollback_area)
+        }
+        MouseEventKind::Up(MouseButton::Left) => app.todo_hud.pointer_up(position),
+        _ => false,
+    }
 }
 
 /// 上下文正文窗的鼠标：滚轮滚动、点击分块展开收起、拖拽滚动条。
@@ -2524,6 +2571,7 @@ fn handle_modal_key(
                                     ),
                                     loaded.truncated,
                                     before_entry_id,
+                                    loaded.todos,
                                 ));
                             }
                             Err(error) => {
@@ -3431,7 +3479,13 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                     .await
                 {
                     Ok(info) => {
-                        let _ = events.send(AppEvent::Loaded(info, Vec::new(), false, None));
+                        let _ = events.send(AppEvent::Loaded(
+                            info,
+                            Vec::new(),
+                            false,
+                            None,
+                            Vec::new(),
+                        ));
                     }
                     Err(error) => {
                         let _ = events.send(AppEvent::Notice(format!("新建会话失败：{error}")));
@@ -5031,6 +5085,57 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// HUD 鼠标：悬停展开、点击固定、拖动改位置；HUD 上的按下不启动转写点击。
+    #[test]
+    fn todo_hud_mouse_captures_hover_click_and_drag() {
+        let mut app = app();
+        app.scrollback_area = ratatui::layout::Rect::new(0, 2, 80, 20);
+        app.todo_hud.chip_area = ratatui::layout::Rect::new(60, 2, 15, 1);
+        let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.hover_chart = Some((0, 0));
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Moved, 62, 2)
+        ));
+        assert!(app.todo_hud.is_open());
+        assert!(app.hover_chart.is_none(), "悬停 HUD 时清掉图表高亮");
+
+        // 卡片在下一帧出现后，点击固定；不进入转写点击/拖选状态。
+        app.todo_hud.card_area = ratatui::layout::Rect::new(40, 2, 35, 10);
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Down(MouseButton::Left), 42, 3)
+        ));
+        assert!(app.pending_click.is_none());
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Up(MouseButton::Left), 42, 3)
+        ));
+        assert!(app.todo_hud.pinned);
+
+        // 按住卡片拖过阈值：自动固定并更新记忆位置。
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Down(MouseButton::Left), 42, 3)
+        ));
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Drag(MouseButton::Left), 45, 6)
+        ));
+        assert_eq!(app.todo_hud.drag_origin, Some((43, 5)));
+        assert!(handle_todo_hud_mouse(
+            &mut app,
+            &mouse(MouseEventKind::Up(MouseButton::Left), 45, 6)
+        ));
+        assert!(app.todo_hud.pinned);
     }
 
     #[tokio::test]

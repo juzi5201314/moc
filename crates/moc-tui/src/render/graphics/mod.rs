@@ -17,6 +17,8 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use ratatui::layout::Rect;
+
 use crate::app::{App, Focus, ImageSlot, Placed, SlotSource};
 use crate::render::chart::{layout, rasterize, with_fonts};
 
@@ -303,6 +305,21 @@ fn apply_csi(params: &[u8], final_byte: u8, replies: &mut Replies) {
     }
 }
 
+/// 浮层是否遮住了图像：模态、toast、告警、拖选，或与图像槽位相交的 todo 卡片。
+///
+/// 卡片只在与图像相交时触发；整屏撤图会让每次 hover 都闪一下。
+fn image_covered(app: &App) -> bool {
+    let card_covers_image = app.todo_hud.card_visible
+        && app.image_slots.iter().any(|slot| {
+            Rect::new(slot.x, slot.y, slot.cols, slot.rows).intersects(app.todo_hud.card_area)
+        });
+    app.modal.is_some()
+        || app.notice_visible()
+        || app.warning_visible()
+        || app.selection.is_some()
+        || card_covers_image
+}
+
 /// 每帧放置图像：在 `terminal.draw()` 之后调用。
 ///
 /// 位置与内容都没变就跳过；kitty 换位时先删旧放置，永久消失的图像按图像 ID
@@ -313,10 +330,7 @@ pub fn emit(app: &mut App, out: &mut impl Write) -> std::io::Result<()> {
     let Some(support) = app.graphics else {
         return Ok(());
     };
-    let covered = app.modal.is_some()
-        || app.notice_visible()
-        || app.warning_visible()
-        || app.selection.is_some();
+    let covered = image_covered(app);
     let mut wrote = false;
     if covered != app.image_covered {
         app.image_covered = covered;
@@ -1008,5 +1022,30 @@ mod pipeline_tests {
             }
             assert!(app.image_placed.is_empty());
         }
+    }
+
+    /// todo 卡片只在与图像槽位相交时才触发撤图，避免每次 hover 整屏闪图。
+    #[test]
+    fn todo_card_only_holds_back_intersecting_images() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.image_slots.push(ImageSlot {
+            entry: 0,
+            source: SlotSource::Chart { table: 0 },
+            x: 10,
+            y: 5,
+            cols: 20,
+            rows: 10,
+            px: (0, 0),
+            hash: 0,
+            placement_id: 0,
+        });
+        app.todo_hud.card_visible = true;
+        app.todo_hud.card_area = Rect::new(25, 8, 30, 10);
+        assert!(image_covered(&app), "卡片盖住图像时应撤图");
+        app.todo_hud.card_area = Rect::new(50, 8, 20, 10);
+        assert!(!image_covered(&app), "不相交时不能整屏闪图");
+        app.todo_hud.card_visible = false;
+        assert!(!image_covered(&app));
     }
 }

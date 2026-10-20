@@ -5,7 +5,8 @@
 自上而下：
 
 - 顶部信息条（品牌 · git 分支 · 工作目录 ｜ 上下文进度条 · 费用）
-- 转写区（markdown 渲染、工具调用盒、diff、todo 树）
+- 转写区（markdown 渲染、工具调用盒、diff、todo 树；右上角浮动 todo HUD）
+- todo HUD（折叠为一行胶囊；悬停展开卡片，点击固定，卡片可拖动）
 - 圆角输入框（斜杠补全、历史、粘贴 chip、图片 chip；多行输入自动长高，下边框左端是帮助键提示、右端是模型 · 模式）
 - statusline
 
@@ -98,9 +99,18 @@ markdown 只解析本地文件与 `file://`（支持 `~/` 与 `%20` 这类百分
 
 `Ctrl+V` 粘贴剪贴板里的图片，没有图片时粘贴文本；Linux 下图片需要 `wl-paste`（Wayland）或 `xclip`（X11），WSL 直接读 Windows 剪贴板，Windows Terminal 里按 `Ctrl+V` 即可，无需额外配置。`y` 复制拖选内容到终端与系统剪贴板（OSC52）。
 
+## Todo HUD
+
+todo 非空时，转写区首行右端常驻一行胶囊：`▌ ◆ 任务 2/9 · ▶ 当前任务`。当前任务按「进行中 → 阻塞 → 待办 → 已完成」选取；标题放不下时横向循环滚动，不截断中文。胶囊会盖住该行右端少量正文。
+
+- 鼠标移入展开卡片，移出收起；点击胶囊/卡片固定，再次点击取消固定。
+- 按住卡片可拖到转写区内任意位置，拖动后自动固定；位置在本次会话内保留。
+- 卡片内容与转写 todo 树同源（`☑ ▶ ☐ ⚠ ✗`），超出高度时截断并显示 `… 还有 N 行`；与内联图片重叠时暂时撤下图片。
+- warning 胶囊出现时，折叠胶囊下移一行；终端高 ≤9 行、宽 <28 列或转写区过矮时 HUD 隐藏。
+
 ## Statusline
 
-内置渲染是「左侧 todo 进度 + 右侧统计」两段：`☑ 2/9 … ⇅ 输入 › 输出 › tok/s › 提示计时 › 费用`；模型与模式在输入框下边框右端，工作目录/分支/上下文进度在顶部信息条（费用需要模型 pricing 配置）。
+内置渲染是「左侧运行状态 + 右侧统计」两段：`Working · 3s … ⇅ 输入 › 输出 › tok/s › 提示计时 › 费用`；模型与模式在输入框下边框右端，工作目录/分支/上下文进度在顶部信息条（费用需要模型 pricing 配置）。
 
 可在 `~/.moc/tui.toml` 用模板自定义（占位符按语义着色）：
 
@@ -108,7 +118,7 @@ markdown 只解析本地文件与 `file://`（支持 `~/` 与 `%20` 这类百分
 statusline = "{model} * {mode} -> {workdir}"
 ```
 
-可用占位符：`{model}` `{mode}` `{context}` `{context_percent}` `{workdir}` `{branch}` `{todo}` `{tokens_in}` `{tokens_out}` `{tok_s}` `{prompt_elapsed}` `{cost}`。
+可用占位符：`{model}` `{mode}` `{context}` `{context_percent}` `{workdir}` `{branch}` `{todo}` `{tokens_in}` `{tokens_out}` `{tok_s}` `{prompt_elapsed}` `{cost}`。`{todo}` 仍可用在自定义模板里（内置渲染不再显示 todo）。
 
 ## 上下文占用窗
 

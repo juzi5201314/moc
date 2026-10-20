@@ -14,6 +14,7 @@ pub mod markdown;
 pub mod modal;
 pub mod scrollback;
 pub mod subagent;
+pub mod todo_hud;
 pub mod wrap;
 
 pub(crate) mod context_content;
@@ -82,8 +83,10 @@ fn prompt_content_rows(app: &App, width: u16) -> usize {
 
 pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.plan_model_area = Rect::default();
+    app.todo_hud.begin_frame();
     let saving = app.saving_config();
     if let Some(panel) = &mut app.settings {
+        app.todo_hud.on_hidden();
         crate::settings::draw(frame, panel, saving, app.theme);
         if app.modal.is_some() {
             modal::draw_modal(frame, app);
@@ -174,10 +177,16 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     );
     view.trim_outside(window.skip_rows, viewport);
     highlight_selection(frame, app, scroll_area);
-    draw_notice(frame, app, scroll_area);
-    draw_warning(frame, app, scroll_area);
     // 滚动条贴终端右缘：与内容边距无关，避免压住正文
     draw_scrollbar(frame, app, scroll_area, window.max_offset);
+    // todo HUD 在转写之上；notice/warning 最后画，临时提示始终可读。
+    if app.modal.is_none() {
+        todo_hud::draw(frame, app, scroll_area, header_rows > 0);
+    } else {
+        app.todo_hud.on_hidden();
+    }
+    draw_notice(frame, app, scroll_area);
+    draw_warning(frame, app, scroll_area);
 
     draw_header(frame, app, inset(header_area, MARGIN_X));
     draw_prompt(frame, app, prompt_area);
@@ -957,12 +966,11 @@ fn spinner_frame(app: &App) -> &'static str {
     SPINNER_FRAMES[index]
 }
 
-/// 内置渲染：左侧运行状态与 todo 进度，右侧 token 统计。
+/// 内置渲染：左侧运行状态，右侧 token 统计。
 fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     let theme = app.theme;
     let data = statusline_data(app);
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut has_left = false;
     if let Some(activity) = activity(app) {
         spans.push(Span::styled(
             spinner_frame(app),
@@ -979,21 +987,6 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
                 Style::new().fg(theme.gray),
             ));
         }
-        has_left = true;
-    }
-    if let Some((done, total)) = data.todo {
-        if has_left {
-            spans.push(Span::styled(" · ", Style::new().fg(theme.border)));
-        }
-        spans.push(Span::styled("☑ ", Style::new().fg(theme.border)));
-        spans.push(Span::styled(
-            format!("{done}/{total}"),
-            Style::new().fg(if done == total {
-                theme.accent_success
-            } else {
-                theme.text_secondary
-            }),
-        ));
     }
     // 右侧统计段
     let right = format!(
@@ -1354,5 +1347,277 @@ mod tests {
                 .fg,
             Theme::global().accent_success
         );
+    }
+
+    fn todo_phases(
+        items: Vec<(moc_protocol::methods::TodoStatus, &str)>,
+    ) -> Vec<moc_protocol::methods::TodoPhase> {
+        vec![moc_protocol::methods::TodoPhase {
+            phase: "阶段".into(),
+            items: items
+                .into_iter()
+                .map(|(status, task)| moc_protocol::methods::TodoItem {
+                    status,
+                    task: task.into(),
+                    reason: None,
+                })
+                .collect(),
+        }]
+    }
+
+    /// 胶囊贴转写区首行右端，转写区宽度不因 HUD 改变。
+    #[test]
+    fn todo_hud_chip_sits_in_scroll_top_right() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::TodoStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = todo_phases(vec![(TodoStatus::InProgress, "实现右上角 todo HUD")]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        let chip = app.todo_hud.chip_area;
+        assert_eq!(chip.height, 1);
+        assert_eq!(chip.y, app.scrollback_area.y);
+        assert_eq!(chip.right(), app.scrollback_area.right());
+        assert_eq!(app.scrollback_area.width, 74, "转写区宽度保持不变");
+        // TestBackend 会给宽字符的尾部补空格格位，比较前先去掉空格。
+        let row: String = (chip.x..chip.right())
+            .filter_map(|x| terminal.backend().buffer().cell((x, chip.y)))
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .chars()
+            .filter(|ch| *ch != ' ')
+            .collect();
+        assert!(row.contains("任务"), "{row:?}");
+        assert!(row.contains("0/1"), "{row:?}");
+        assert!(row.contains("实现右上角"), "{row:?}");
+    }
+
+    /// 无 todo、矮终端（header 消失）与过窄终端都不绘制 HUD。
+    #[test]
+    fn todo_hud_hides_without_space_or_todos() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::TodoStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let mut view = ScrollbackView::new();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert!(app.todo_hud.chip_area.is_empty());
+
+        app.todos = todo_phases(vec![(TodoStatus::Pending, "任务")]);
+        let mut short = Terminal::new(TestBackend::new(80, 9)).expect("构造测试终端");
+        short
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert!(app.todo_hud.chip_area.is_empty(), "header 隐藏时不叠加浮层");
+
+        let mut narrow = Terminal::new(TestBackend::new(27, 24)).expect("构造测试终端");
+        narrow
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert!(app.todo_hud.chip_area.is_empty(), "过窄时不绘制");
+    }
+
+    /// warning 也占首行右端：todo 胶囊自动下移一行。
+    #[test]
+    fn todo_hud_chip_moves_below_warning() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::TodoStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = todo_phases(vec![(TodoStatus::InProgress, "任务")]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        let base = app.todo_hud.chip_area.y;
+
+        app.set_warning("model model → model-lite");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert_eq!(app.todo_hud.chip_area.y, base + 1);
+    }
+
+    /// 侧栏出现时 HUD 对齐主转写区右缘，不盖住侧栏。
+    #[test]
+    fn todo_hud_stays_left_of_sidebar() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::{AgentInfo, AgentStatus, TodoStatus};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = todo_phases(vec![(TodoStatus::InProgress, "任务")]);
+        app.subagents.insert(
+            "agent".into(),
+            crate::subagent::SubagentView::new(AgentInfo {
+                id: "agent".into(),
+                parent_id: "root".into(),
+                title: "子代理".into(),
+                model: "test/model".into(),
+                cwd: "/tmp".into(),
+                status: AgentStatus::Running,
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                last_message: None,
+            }),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        assert_eq!(app.subagent_area.width, 30);
+        assert_eq!(app.todo_hud.chip_area.right(), app.scrollback_area.right());
+        assert!(app.todo_hud.chip_area.right() <= app.subagent_area.x);
+    }
+
+    /// 内置 statusline 不再显示 todo；模板占位符 `{todo}` 保持兼容。
+    #[test]
+    fn builtin_statusline_drops_todo_but_template_keeps_it() {
+        use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = vec![TodoPhase {
+            phase: "阶段".into(),
+            items: vec![
+                TodoItem {
+                    status: TodoStatus::Completed,
+                    task: "一".into(),
+                    reason: None,
+                },
+                TodoItem {
+                    status: TodoStatus::Pending,
+                    task: "二".into(),
+                    reason: None,
+                },
+            ],
+        }];
+        let rendered = |line: Line<'static>| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let builtin = rendered(statusline_builtin(&app, 80));
+        assert!(!builtin.contains("☑"), "{builtin}");
+        assert!(!builtin.contains("1/2"), "{builtin}");
+        let templated = rendered(statusline_from_template(&app, "{todo}"));
+        assert!(templated.contains("☑ 1/2"), "{templated}");
+    }
+
+    /// 任务名超宽时只有折叠态滚动；展开卡片后停掉定时重绘。
+    #[test]
+    fn todo_hud_marquee_runs_only_when_collapsed() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::TodoStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let long = "很长的任务".repeat(20);
+        app.todos = todo_phases(vec![(TodoStatus::InProgress, long.as_str())]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert!(app.todo_hud.marquee_active);
+
+        app.todo_hud.pinned = true;
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        assert!(!app.todo_hud.marquee_active, "卡片展开时胶囊不滚动");
+        assert!(app.todo_hud.card_visible);
+    }
+
+    /// 卡片默认贴转写区右上角；固定后使用拖动记忆的位置并夹在区内。
+    #[test]
+    fn todo_hud_card_defaults_top_right_and_uses_drag_origin() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::TodoStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = todo_phases(vec![(TodoStatus::InProgress, "任务")]);
+        app.todo_hud.pinned = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        let card = app.todo_hud.card_area;
+        assert!(app.todo_hud.card_visible);
+        assert_eq!(card.right(), app.scrollback_area.right());
+        assert_eq!(card.y, app.scrollback_area.y);
+        assert!(card.bottom() <= app.scrollback_area.bottom());
+
+        app.todo_hud.drag_origin = Some((5, 7));
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+        let card = app.todo_hud.card_area;
+        assert_eq!((card.x, card.y), (5, 7));
+        assert!(card.right() <= app.scrollback_area.right());
+    }
+
+    /// 条目过多时卡片不越过转写区底边，并给出截断提示。
+    #[test]
+    fn todo_hud_card_caps_height_and_reports_overflow() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use moc_protocol::methods::TodoStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = todo_phases((0..30).map(|_| (TodoStatus::Pending, "条目")).collect());
+        app.todo_hud.pinned = true;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        let card = app.todo_hud.card_area;
+        assert!(card.height <= app.scrollback_area.height);
+        assert!(card.bottom() <= app.scrollback_area.bottom());
+        let mut text = String::new();
+        for y in card.y..card.bottom() {
+            for x in card.x..card.right() {
+                if let Some(cell) = terminal.backend().buffer().cell((x, y)) {
+                    text.push_str(cell.symbol());
+                }
+            }
+        }
+        let compact: String = text.chars().filter(|ch| *ch != ' ').collect();
+        assert!(compact.contains("还有"), "{compact}");
     }
 }

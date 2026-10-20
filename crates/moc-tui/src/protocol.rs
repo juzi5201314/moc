@@ -91,6 +91,7 @@ pub enum AppEvent {
         Vec<crate::transcript::Entry>,
         bool,
         Option<String>,
+        Vec<moc_protocol::methods::TodoPhase>,
     ),
     /// 会话回退完成；保留选中的消息以便用户消息恢复到输入框。
     Rewound {

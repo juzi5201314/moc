@@ -1921,6 +1921,31 @@ fn indent_line(line: Line<'static>) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Todo 状态符号与样式：转写树与 HUD 卡片共用。
+///
+/// 返回 `(符号, 符号样式, 任务文本样式)`；Completed 只给文本加删除线，
+/// 保留符号本身可读。
+pub(crate) fn todo_status_marker(
+    status: moc_protocol::methods::TodoStatus,
+    theme: &Theme,
+) -> (&'static str, Style, Style) {
+    use moc_protocol::methods::TodoStatus;
+    let (glyph, color) = match status {
+        TodoStatus::Completed => ("☑ ", theme.accent_success),
+        TodoStatus::InProgress => ("▶ ", theme.accent_running),
+        TodoStatus::Pending => ("☐ ", theme.gray),
+        TodoStatus::Blocked => ("⚠ ", theme.accent_warning),
+        TodoStatus::Abandoned => ("✗ ", theme.gray_dim),
+    };
+    let marker = Style::new().fg(color);
+    let text = if status == TodoStatus::Completed {
+        marker.add_modifier(Modifier::CROSSED_OUT)
+    } else {
+        marker
+    };
+    (glyph, marker, text)
+}
+
 /// Todo 树（omp 风格）：阶段行带完成进度，条目按状态给符号与颜色。
 fn render_todo(
     phases: &[moc_protocol::methods::TodoPhase],
@@ -1964,17 +1989,7 @@ fn render_todo(
         ]));
         let item_branch = if is_last_phase { "    " } else { "│   " };
         for item in &phase.items {
-            let (marker, color) = match item.status {
-                TodoStatus::Completed => ("☑ ", theme.accent_success),
-                TodoStatus::InProgress => ("▶ ", theme.accent_running),
-                TodoStatus::Pending => ("☐ ", theme.gray),
-                TodoStatus::Blocked => ("⚠ ", theme.accent_warning),
-                TodoStatus::Abandoned => ("✗ ", theme.gray_dim),
-            };
-            let mut style = Style::new().fg(color);
-            if item.status == TodoStatus::Completed {
-                style = style.add_modifier(Modifier::CROSSED_OUT);
-            }
+            let (marker, marker_style, text_style) = todo_status_marker(item.status, theme);
             let indent = format!("{item_branch}  ");
             let budget = width.saturating_sub(TITLE_INDENT + indent.len() + 4).max(8);
             for (index, row) in wrap_text(&item.task, budget).into_iter().enumerate() {
@@ -1982,15 +1997,15 @@ fn render_todo(
                     lines.push(Line::from(vec![
                         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
                         Span::styled(item_branch.to_owned(), Style::new().fg(theme.border)),
-                        Span::styled(marker.to_owned(), Style::new().fg(color)),
-                        Span::styled(row, style),
+                        Span::styled(marker.to_owned(), marker_style),
+                        Span::styled(row, text_style),
                     ]));
                 } else {
                     lines.push(Line::from(vec![
                         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
                         Span::styled(item_branch.to_owned(), Style::new().fg(theme.border)),
                         Span::styled("    ".to_owned(), Style::new()),
-                        Span::styled(row, style),
+                        Span::styled(row, text_style),
                     ]));
                 }
             }

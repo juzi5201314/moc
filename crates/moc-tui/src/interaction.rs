@@ -33,7 +33,13 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         .await
                     {
                         Ok(session) => {
-                            let _ = events.send(AppEvent::Loaded(session, Vec::new(), false, None));
+                            let _ = events.send(AppEvent::Loaded(
+                                session,
+                                Vec::new(),
+                                false,
+                                None,
+                                Vec::new(),
+                            ));
                         }
                         Err(error) => {
                             let _ = events.send(AppEvent::Notice(format!(

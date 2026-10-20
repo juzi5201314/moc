@@ -78,6 +78,8 @@ pub struct App {
     pub scroll_max_offset: usize,
     /// Todo 清单（`TodoChanged` 最新快照）。
     pub todos: Vec<TodoPhase>,
+    /// 右上角 todo HUD 的交互与命中状态。
+    pub todo_hud: TodoHudState,
     /// 思考块的显示档位（ctrl+t 循环）。
     pub thinking_detail: DetailLevel,
     /// 工具块的显示档位（ctrl+o 循环）。
@@ -338,6 +340,7 @@ impl App {
             history_load_requested: false,
             scroll_max_offset: 0,
             todos: Vec::new(),
+            todo_hud: TodoHudState::default(),
             thinking_detail: DetailLevel::default(),
             tool_detail: DetailLevel::default(),
             view_gen: 0,
@@ -873,6 +876,9 @@ impl App {
     /// Todo 快照更新：转写里替换最后一个 Todo 块（避免重复树），否则追加。
     pub fn update_todos(&mut self, phases: Vec<TodoPhase>) {
         self.todos = phases.clone();
+        if self.todos.is_empty() {
+            self.todo_hud.reset();
+        }
         let has_todo_block = self
             .blocks
             .iter()
@@ -1072,6 +1078,7 @@ impl App {
         self.usage_samples.clear();
         self.cost_usd = 0.0;
         self.todos.clear();
+        self.todo_hud.reset();
         self.session = Some(info);
         self.blocks = blocks;
         self.context_usage = None;
@@ -1521,6 +1528,212 @@ pub const MODES: [SessionMode; 4] = [
     SessionMode::ClmExperimental,
 ];
 
+/// Todo HUD 的一次左键按下：区分单击固定与拖动卡片。
+#[derive(Debug, Clone, Copy)]
+pub struct TodoHudPress {
+    start: (u16, u16),
+    card_origin: (u16, u16),
+    from_card: bool,
+    dragging: bool,
+}
+
+/// 右上角 todo HUD 的交互与命中状态。
+#[derive(Debug, Default)]
+pub struct TodoHudState {
+    /// 上一帧折叠胶囊的屏幕命中区。
+    pub chip_area: Rect,
+    /// 上一帧展开卡片的屏幕命中区；关闭时为空。
+    pub card_area: Rect,
+    /// 指针在胶囊或展开卡片内。
+    pub hovered: bool,
+    /// 点击固定：指针移出仍保持展开。
+    pub pinned: bool,
+    /// 取消固定后需先离开胶囊/卡片，hover 才允许重新展开。
+    ///
+    /// 两个命中区分开判断；用包围盒会把卡片与胶囊之间的大片区域变成死区。
+    pub suppress: Option<(Rect, Rect)>,
+    /// 左键按下信息。
+    press: Option<TodoHudPress>,
+    /// 拖动后的卡片原点；仅 pinned 时用于绘制，hover 展开固定用右上角。
+    pub drag_origin: Option<(u16, u16)>,
+    /// marquee 当前任务文本；变化时重置起点。
+    pub marquee_key: String,
+    /// marquee 起始时刻；`None` = 不滚动。
+    pub marquee_start: Option<std::time::Instant>,
+    /// 本帧胶囊是否在滚动；事件循环据此安排 tick。
+    pub marquee_active: bool,
+    /// 本帧卡片是否已绘制；图像悬挂判定使用。
+    pub card_visible: bool,
+}
+
+/// 左键位移超过该格数才算拖动，否则按单击处理。
+const TODO_DRAG_THRESHOLD: u16 = 2;
+
+impl TodoHudState {
+    /// 每帧绘制开头：清命中区与帧标志，保留交互状态。
+    pub fn begin_frame(&mut self) {
+        self.chip_area = Rect::default();
+        self.card_area = Rect::default();
+        self.card_visible = false;
+        self.marquee_active = false;
+    }
+
+    /// 模态、设置页或空间不足时收起；保留固定与记忆位置。
+    pub fn on_hidden(&mut self) {
+        self.hovered = false;
+        self.suppress = None;
+        self.press = None;
+        self.card_area = Rect::default();
+        self.card_visible = false;
+        self.marquee_active = false;
+    }
+
+    /// 空清单或切换会话：全部复位。
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn on_resize(&mut self) {
+        self.hovered = false;
+        self.suppress = None;
+        self.press = None;
+        self.card_area = Rect::default();
+        self.card_visible = false;
+        self.marquee_key.clear();
+        self.marquee_start = None;
+        self.marquee_active = false;
+    }
+
+    pub fn on_focus_lost(&mut self) {
+        self.hovered = false;
+        self.press = None;
+        self.marquee_active = false;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.pinned || (self.hovered && self.suppress.is_none())
+    }
+
+    /// 命中胶囊或展开中的卡片。
+    pub fn hit(&self, pos: (u16, u16)) -> bool {
+        self.chip_area.contains(pos.into())
+            || (self.is_open() && self.card_area.contains(pos.into()))
+    }
+
+    /// 鼠标移动：更新 hover 与 suppression；返回是否落在 HUD 上。
+    pub fn pointer_moved(&mut self, pos: (u16, u16)) -> bool {
+        // 按住卡片时卡片随光标移动，旧命中区不能拿来判定离开。
+        if self.press.is_some_and(|press| press.from_card) {
+            return true;
+        }
+        if let Some((chip, card)) = self.suppress {
+            if chip.contains(pos.into()) || card.contains(pos.into()) {
+                self.hovered = false;
+                return true;
+            }
+            self.suppress = None;
+        }
+        let inside = self.hit(pos);
+        self.hovered = inside;
+        inside
+    }
+
+    /// 左键按下：命中则记录单击/拖动起点并消费。
+    pub fn pointer_down(&mut self, pos: (u16, u16)) -> bool {
+        if self.is_open() && self.card_area.contains(pos.into()) {
+            self.press = Some(TodoHudPress {
+                start: pos,
+                card_origin: (self.card_area.x, self.card_area.y),
+                from_card: true,
+                dragging: false,
+            });
+            return true;
+        }
+        if self.chip_area.contains(pos.into()) {
+            self.press = Some(TodoHudPress {
+                start: pos,
+                card_origin: (self.card_area.x, self.card_area.y),
+                from_card: false,
+                dragging: false,
+            });
+            return true;
+        }
+        false
+    }
+
+    /// 左键拖动：卡片按下后越过阈值即移动卡片并自动固定。
+    pub fn pointer_drag(&mut self, pos: (u16, u16), area: Rect) -> bool {
+        let Some(press) = self.press.as_mut() else {
+            return false;
+        };
+        if !press.from_card {
+            return false;
+        }
+        if !press.dragging {
+            let dx = pos.0.abs_diff(press.start.0);
+            let dy = pos.1.abs_diff(press.start.1);
+            if dx.max(dy) <= TODO_DRAG_THRESHOLD {
+                return true;
+            }
+            press.dragging = true;
+            self.pinned = true;
+            self.hovered = true;
+            self.suppress = None;
+        }
+        let dx = i32::from(pos.0) - i32::from(press.start.0);
+        let dy = i32::from(pos.1) - i32::from(press.start.1);
+        let origin = (
+            i32::from(press.card_origin.0) + dx,
+            i32::from(press.card_origin.1) + dy,
+        );
+        let size = (self.card_area.width, self.card_area.height);
+        self.drag_origin = Some(clamp_todo_origin(origin, size, area));
+        true
+    }
+
+    /// 左键抬起：拖动结束，或单击切换固定。
+    pub fn pointer_up(&mut self, pos: (u16, u16)) -> bool {
+        let Some(press) = self.press.take() else {
+            return false;
+        };
+        if press.from_card && press.dragging {
+            return true;
+        }
+        if !self.hit(pos) {
+            if !self.pinned {
+                self.hovered = false;
+            }
+            return true;
+        }
+        if self.pinned {
+            self.pinned = false;
+            self.hovered = false;
+            self.suppress = Some((self.chip_area, self.card_area));
+            self.card_area = Rect::default();
+        } else {
+            self.pinned = true;
+            self.hovered = true;
+            self.suppress = None;
+            if press.from_card {
+                self.drag_origin = Some((self.card_area.x, self.card_area.y));
+            }
+        }
+        true
+    }
+}
+
+/// 把卡片原点夹在转写区内；尺寸大于区域时退回区域原点。
+fn clamp_todo_origin(origin: (i32, i32), size: (u16, u16), area: Rect) -> (u16, u16) {
+    let max_x = area.right().saturating_sub(size.0).max(area.x);
+    let max_y = area.bottom().saturating_sub(size.1).max(area.y);
+    let x = origin.0.clamp(i32::from(area.x), i32::from(max_x));
+    let y = origin.1.clamp(i32::from(area.y), i32::from(max_y));
+    (
+        u16::try_from(x).unwrap_or(area.x),
+        u16::try_from(y).unwrap_or(area.y),
+    )
+}
+
 /// 点击图例模式名后就地弹出的菜单。
 pub struct ModeMenu {
     /// 键盘 / 悬停高亮的条目下标（[`MODES`] 顺序）。
@@ -1599,6 +1812,9 @@ mod tests {
                 reason: None,
             }],
         }];
+        app.todo_hud.pinned = true;
+        app.todo_hud.drag_origin = Some((4, 5));
+        app.todo_hud.chip_area = Rect::new(1, 2, 3, 1);
         app.inflight_prompts.insert("ses_a".into());
         app.inflight_session_ops.insert("ses_a".into());
         app.interrupt_pending.insert("ses_a".into());
@@ -1615,6 +1831,9 @@ mod tests {
         assert_eq!(app.usage, Usage::default());
         assert_eq!(app.cost_usd, 0.0);
         assert!(app.todos.is_empty());
+        assert!(!app.todo_hud.pinned, "todo HUD 状态不跨会话");
+        assert!(app.todo_hud.drag_origin.is_none());
+        assert!(app.todo_hud.chip_area.is_empty());
         assert!(app.tool_batches.is_empty(), "批次暂存不跨会话留存");
         assert!(app.inflight_prompts.contains("ses_a"), "在飞记账按会话保留");
         assert!(app.inflight_session_ops.contains("ses_a"));
@@ -1663,6 +1882,86 @@ mod tests {
         app.open_mode_menu();
         assert!(app.mode_menu.is_none());
         assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
+    }
+
+    /// HUD 交互：悬停展开、点击固定、取消固定后的抑制区、移出再进入重开。
+    #[test]
+    fn todo_hud_hover_pin_and_suppression() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.todo_hud.chip_area = Rect::new(70, 2, 10, 1);
+        app.todo_hud.card_area = Rect::new(10, 2, 50, 10);
+
+        assert!(app.todo_hud.pointer_moved((72, 2)));
+        assert!(app.todo_hud.is_open(), "悬停胶囊应展开");
+
+        assert!(app.todo_hud.pointer_down((12, 3)));
+        assert!(app.todo_hud.pointer_up((12, 3)));
+        assert!(app.todo_hud.pinned, "点击卡片应固定");
+        assert!(!app.todo_hud.pointer_moved((5, 20)));
+        assert!(app.todo_hud.is_open(), "固定后移出仍保持展开");
+
+        assert!(app.todo_hud.pointer_down((12, 3)));
+        assert!(app.todo_hud.pointer_up((12, 3)));
+        assert!(!app.todo_hud.pinned);
+        assert!(!app.todo_hud.is_open());
+        assert!(app.todo_hud.pointer_moved((13, 4)));
+        assert!(!app.todo_hud.is_open(), "指针未离开抑制区时不得重开");
+
+        // 两个命中区分别判断：卡片与胶囊之间的空白不属于抑制区。
+        assert!(!app.todo_hud.pointer_moved((65, 6)));
+        assert!(!app.todo_hud.is_open());
+        assert!(app.todo_hud.pointer_moved((72, 2)));
+        assert!(app.todo_hud.is_open(), "离开后再进入胶囊可重新展开");
+    }
+
+    /// 拖动阈值：小位移仍是单击；越过阈值自动固定并夹在转写区内。
+    #[test]
+    fn todo_hud_drag_threshold_and_clamp() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.todo_hud.card_area = Rect::new(10, 2, 40, 8);
+        app.todo_hud.hovered = true;
+        let area = Rect::new(0, 0, 80, 24);
+
+        assert!(app.todo_hud.pointer_down((12, 3)));
+        // 按住卡片期间 Moved 落在旧命中区外也不能收起。
+        assert!(app.todo_hud.pointer_moved((70, 20)));
+        assert!(app.todo_hud.is_open());
+        assert!(app.todo_hud.pointer_drag((14, 5), area));
+        assert!(app.todo_hud.drag_origin.is_none(), "两格内不算拖动");
+        assert!(!app.todo_hud.pinned);
+
+        assert!(app.todo_hud.pointer_drag((200, 30), area));
+        assert!(app.todo_hud.pinned, "拖动自动固定");
+        assert_eq!(app.todo_hud.drag_origin, Some((40, 16)), "原点夹在转写区内");
+        assert!(app.todo_hud.pointer_up((200, 30)));
+        assert!(app.todo_hud.pinned, "拖动结束保持固定");
+    }
+
+    /// 非空更新保留固定；清空 todo 时 HUD 全量复位。
+    #[test]
+    fn todo_hud_resets_only_when_todos_clear() {
+        use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.todo_hud.pinned = true;
+        app.todo_hud.drag_origin = Some((4, 5));
+        app.update_todos(vec![TodoPhase {
+            phase: "阶段".into(),
+            items: vec![TodoItem {
+                status: TodoStatus::Pending,
+                task: "任务".into(),
+                reason: None,
+            }],
+        }]);
+        assert!(app.todo_hud.pinned, "todo 仍在时保留固定");
+        assert_eq!(app.todo_hud.drag_origin, Some((4, 5)));
+
+        app.update_todos(Vec::new());
+        assert!(!app.todo_hud.pinned);
+        assert!(app.todo_hud.drag_origin.is_none());
     }
 
     #[test]
