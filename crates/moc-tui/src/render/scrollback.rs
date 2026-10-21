@@ -785,6 +785,8 @@ const BATCH_BODY_INDENT: usize = TITLE_INDENT + 4;
 ///
 /// 档位取组首块的层档位（组内其余成员不单独渲染标题行，不参与档位判定）；
 /// 每个成员是否追加正文、追加几行，由该成员的工具策略与档位共同决定。
+/// 耗时挂在成员行尾、右对齐到行宽，与单工具卡片的 `⏱` 尾注同源，不额外占行；
+/// 与单卡片同样只给有正文的工具，`todo` 一类的记账调用不报耗时。
 fn render_tool_batch(
     app: &App,
     tools: &[&ToolCallBlock],
@@ -816,11 +818,24 @@ fn render_tool_batch(
             "├─"
         };
         let args = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        lines.push(Line::from(vec![
-            Span::raw(format!("  {branch} ")),
-            Span::styled(tool_summary(tool, &args), Style::new().fg(theme.path)),
-        ]));
-        if !tool.has_body() {
+        let has_body = tool.has_body();
+        let prefix = format!("  {branch} ");
+        let summary = tool_summary(tool, &args);
+        let used = str_width(&prefix).saturating_add(str_width(&summary));
+        let mut spans = vec![
+            Span::raw(prefix),
+            Span::styled(summary, Style::new().fg(theme.path)),
+        ];
+        // 无正文的工具（todo／skill 等）是记账而不是干活，与单卡片一致不报耗时。
+        if has_body && let Some(duration) = tool.duration_ms {
+            let duration = format!("⏱ {}", format_duration(duration));
+            // 摘要过长时耗时会被行宽裁掉，与助手尾注的时钟同一处理：至少留两格间距。
+            let gap = width.saturating_sub(used + str_width(&duration)).max(2);
+            spans.push(Span::styled(" ".repeat(gap), Style::new()));
+            spans.push(Span::styled(duration, Style::new().fg(theme.gray_dim)));
+        }
+        lines.push(Line::from(spans));
+        if !has_body {
             continue;
         }
         let indent = Span::raw(" ".repeat(BATCH_BODY_INDENT));
@@ -3310,6 +3325,136 @@ mod tests {
         let full_text = text_of(&full);
         assert!(full_text.contains("secret-a") && full_text.contains("secret-b"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+    }
+
+    /// 批次成员的耗时挂在摘要行尾、右对齐到行宽；运行中的成员没有终态，不写假耗时。
+    #[test]
+    fn batch_members_carry_duration_on_summary_line() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        app.register_tool_batch(
+            "batch".into(),
+            [
+                "call_a".to_owned(),
+                "call_b".to_owned(),
+                "call_c".to_owned(),
+            ],
+        );
+        for (id, duration_ms) in [
+            ("call_a", Some(1_500u64)),
+            ("call_b", Some(12)),
+            ("call_c", None),
+        ] {
+            let arguments = r#"{"command":"print ok"}"#.to_owned();
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "bash".into(),
+                parent_id: None,
+                arguments: arguments.clone(),
+            });
+            let Some(duration_ms) = duration_ms else {
+                continue;
+            };
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: "bash".into(),
+                parent_id: None,
+                arguments,
+                status: ToolStatus::Completed,
+                result: ToolResult {
+                    tool_call_id: id.into(),
+                    content: "ok".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(duration_ms),
+                diff: None,
+            });
+        }
+
+        app.tool_detail = DetailLevel::Brief;
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let members: Vec<_> = lines
+            .iter()
+            .filter(|line| {
+                line.spans.first().is_some_and(|span| {
+                    span.content.starts_with("  ├─") || span.content.starts_with("  └─")
+                })
+            })
+            .collect();
+        assert_eq!(members.len(), 3, "三个成员各一行摘要");
+        let timed: Vec<_> = members
+            .iter()
+            .filter(|line| line.spans.iter().any(|span| span.content.contains('⏱')))
+            .collect();
+        assert_eq!(timed.len(), 2, "只有跑完的成员带耗时");
+        for line in &timed {
+            assert_eq!(line.width(), usize::from(width), "耗时右对齐到行宽");
+        }
+        assert!(
+            timed
+                .iter()
+                .any(|line| line.spans.iter().any(|span| span.content == "⏱ 1.5s")),
+            "1.5 秒写法与单工具卡片一致"
+        );
+        assert!(
+            timed
+                .iter()
+                .any(|line| line.spans.iter().any(|span| span.content == "⏱ 12 ms")),
+            "亚秒仍用毫秒"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+    }
+
+    /// `todo` 这类无正文的工具只记账，批次里也不报耗时（与单卡片同一套策略）。
+    #[test]
+    fn batch_members_without_body_skip_duration() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        app.register_tool_batch("batch".into(), ["call_a".to_owned(), "call_b".to_owned()]);
+        for id in ["call_a", "call_b"] {
+            let arguments = r#"{"phases":[]}"#.to_owned();
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "todo".into(),
+                parent_id: None,
+                arguments: arguments.clone(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: "todo".into(),
+                parent_id: None,
+                arguments,
+                status: ToolStatus::Completed,
+                result: ToolResult {
+                    tool_call_id: id.into(),
+                    content: "已更新".into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(3),
+                diff: None,
+            });
+        }
+
+        app.tool_detail = DetailLevel::Brief;
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("更新任务清单"), "摘要照旧：{text}");
+        assert!(!text.contains('⏱'), "记账工具不报耗时：{text}");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
     /// 没有 description 的手动 bash 仍用命令首行做标题。
