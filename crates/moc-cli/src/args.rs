@@ -47,6 +47,12 @@ pub struct CliArgs {
     /// 覆盖会话存储目录。
     #[arg(long)]
     pub session_dir: Option<PathBuf>,
+    /// `moc web` 的监听端口；只绑定 127.0.0.1。
+    #[arg(long, default_value_t = 7432)]
+    pub port: u16,
+    /// `moc web` 的访问令牌；缺省随机生成并打印在启动信息里。
+    #[arg(long)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

@@ -46,6 +46,10 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     if app.prompt.is_empty() {
         return;
     }
+    if app.read_only {
+        app.set_notice("会话只读：另一个 moc 进程正在写入，关闭它或退出后才能操作");
+        return;
+    }
     if app.prompt.is_bash_command() && app.prompt.has_attached_images() {
         app.set_notice("Bash 命令不支持图片，请移除图片后执行");
         return;

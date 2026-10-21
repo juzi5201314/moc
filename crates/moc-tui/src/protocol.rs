@@ -92,6 +92,8 @@ pub enum AppEvent {
         bool,
         Option<String>,
         Vec<moc_protocol::methods::TodoPhase>,
+        /// 只读打开：另一个 core 进程持有写租约。
+        bool,
     ),
     /// 会话回退完成；保留选中的消息以便用户消息恢复到输入框。
     Rewound {

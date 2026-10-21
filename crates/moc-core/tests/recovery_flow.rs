@@ -247,7 +247,15 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
         .await;
     assert!(result.is_err());
     assert!(h.updates.lock().iter().any(|update| matches!(update, SessionUpdate::Error { message, retryable: false, .. } if message.contains("bad request"))));
-    assert!(h.load(&id).await.session.lock.is_none());
+    // 失败请求不释放写租约；租约随会话卸载或进程退出释放，后续操作仍可继续。
+    assert!(
+        h.load(&id)
+            .await
+            .session
+            .lock
+            .as_ref()
+            .is_some_and(|lock| lock.pid == std::process::id())
+    );
     h.client
         .call::<SessionSetMode>(SessionSetModeParams {
             session_id: id,
@@ -506,7 +514,10 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
     let paths = store.find(&id).await.unwrap().unwrap();
     let entries = store.read_entries(&paths).await.unwrap();
     assert!(entries.iter().any(|entry| matches!(entry, moc_core::session::entries::Entry::Message { message, finish_reason: Some(FinishReason::Cancelled), .. } if message.text() == "断线前正文")));
-    assert!(!paths.lock_file(&id).exists());
+    assert!(
+        paths.lock_file(&id).exists(),
+        "锁文件持久保留，持有状态由内核锁判定"
+    );
     let _ = release.send(());
     upstream.await.unwrap();
     h.core.shutdown().await;
@@ -1148,7 +1159,14 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
     assert_eq!(result.finish_reason, FinishReason::Cancelled);
     let loaded = h.load(&id).await;
     assert_eq!(loaded.entries[0].message.text(), "压缩时取消");
-    assert!(loaded.session.lock.is_none());
+    // 取消不释放写租约。
+    assert!(
+        loaded
+            .session
+            .lock
+            .as_ref()
+            .is_some_and(|lock| lock.pid == std::process::id())
+    );
     release.send(()).unwrap();
     upstream.await.unwrap();
     h.close().await;
@@ -1207,7 +1225,14 @@ async fn failed_manual_compaction_preserves_upstream_error_and_history() {
     );
     let after = h.load(&id).await;
     assert_eq!(after.entries, before.entries);
-    assert!(after.session.lock.is_none());
+    // 压缩失败同样不释放写租约。
+    assert!(
+        after
+            .session
+            .lock
+            .as_ref()
+            .is_some_and(|lock| lock.pid == std::process::id())
+    );
     h.close().await;
 }
 

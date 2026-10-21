@@ -76,9 +76,9 @@ pub async fn approve_plan(
         .await
         .map_err(to_rpc)?;
     let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-    let _file_lock = inner
+    inner
         .sessions
-        .acquire_lock(&params.session_id, &ctx.client().frontend)
+        .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
     let state = record.state.lock().await.clone();

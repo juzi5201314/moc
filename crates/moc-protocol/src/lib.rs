@@ -356,7 +356,7 @@ pub use moc_llm::{
 ///
 /// `initialize` 只比较第一个 `.` 之前的 major 段，不一致回
 /// [`RpcErrorCode::UnsupportedProtocolVersion`] 并在 `data.server_version` 给出服务端版本。
-pub const PROTOCOL_VERSION: &str = "1.2";
+pub const PROTOCOL_VERSION: &str = "1.3";
 
 /// 取版本号的 major 段（第一个 `.` 之前）；没有 `.` 时整串就是 major。
 pub(crate) fn major_version(version: &str) -> &str {

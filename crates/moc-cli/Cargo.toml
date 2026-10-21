@@ -10,12 +10,14 @@ moc-core = { path = "../moc-core" }
 moc-protocol = { path = "../moc-protocol" }
 moc-ptc-worker = { path = "../moc-ptc-worker" }
 moc-tui = { path = "../moc-tui" }
+moc-web = { path = "../moc-web" }
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 # 与 moc-tui 同一份版本与 features：依赖树里只应存在一个 tracing-subscriber
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "fmt",

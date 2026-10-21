@@ -1,0 +1,18 @@
+[package]
+name = "moc-web"
+version = "0.1.0"
+edition = "2024"
+authors = ["soeur@soeur.dev@gmail.com"]
+
+[dependencies]
+moc-core = { path = "../moc-core" }
+moc-protocol = { path = "../moc-protocol" }
+axum = { version = "0.8", features = ["ws"] }
+anyhow.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

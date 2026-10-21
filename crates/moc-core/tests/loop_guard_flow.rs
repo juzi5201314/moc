@@ -41,7 +41,14 @@ async fn loops_discard_failed_generation_release_lock_and_do_not_poison_next_pro
         assert_eq!(requests.load(Ordering::SeqCst), 1);
         assert!(!h.root.path().join("work/bad.txt").exists());
         let loaded = h.load(&id).await;
-        assert!(loaded.session.lock.is_none());
+        // 循环中止的提示不能毒化下一次提示；写租约本身持有到会话卸载。
+        assert!(
+            loaded
+                .session
+                .lock
+                .as_ref()
+                .is_some_and(|lock| lock.pid == std::process::id())
+        );
         assert!(
             loaded
                 .entries

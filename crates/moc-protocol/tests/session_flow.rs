@@ -526,6 +526,7 @@ async fn session_lock_blocks_writes_but_allows_reads() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: "ses_1".to_owned(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("被锁也能读");
@@ -608,6 +609,7 @@ async fn load_honors_max_entries() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: "ses_1".to_owned(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("全量读取");
@@ -622,6 +624,7 @@ async fn load_honors_max_entries() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: "ses_1".to_owned(),
             max_entries: Some(2),
+            read_only: false,
         })
         .await
         .expect("截断读取");
@@ -643,6 +646,7 @@ async fn load_honors_max_entries() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: "ses_不存在".to_owned(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect_err("未知会话");

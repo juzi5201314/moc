@@ -38,7 +38,7 @@ fn input_reader() -> Input {
     Arc::new(AsyncMutex::new(receiver))
 }
 
-pub async fn run(args: CliArgs) -> anyhow::Result<()> {
+pub async fn run(args: CliArgs, web: bool) -> anyhow::Result<()> {
     let config = make_core_config(&args)?;
     if args.models {
         for model in resolve_models(&config)? {
@@ -54,7 +54,7 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
     // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
     // 保证 raw mode、MCP 子进程与 OpenViking commit 都不因信号退出而丢失。
     let result = tokio::select! {
-        result = run_frontend(Arc::clone(&core), args) => result,
+        result = run_frontend(Arc::clone(&core), args, web) => result,
         signal = termination_signal() => {
             eprintln!("收到 {signal}，正在退出");
             Ok(())
@@ -64,8 +64,16 @@ pub async fn run(args: CliArgs) -> anyhow::Result<()> {
     result
 }
 
-/// 跑选定的前端：TUI（默认）或行式 REPL / print。
-async fn run_frontend(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
+/// 跑选定的前端：`moc web`、TUI（默认）或行式 REPL / print。
+async fn run_frontend(core: Arc<Core>, args: CliArgs, web: bool) -> anyhow::Result<()> {
+    if web {
+        let token = args
+            .token
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::now_v7().simple().to_string());
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
+        return moc_web::run(core, moc_web::WebOptions { addr, token }).await;
+    }
     if use_tui(&args) {
         moc_tui::run(core, tui_options(&args)).await
     } else {
@@ -268,6 +276,7 @@ async fn run_repl(
             .call::<SessionLoad>(SessionLoadParams {
                 session_id: id.clone(),
                 max_entries: None,
+                read_only: false,
             })
             .await?
             .session
@@ -634,6 +643,7 @@ async fn approve_plan(
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await?;
     let plan = load
@@ -661,6 +671,7 @@ async fn approve_plan(
         .call::<SessionLoad>(SessionLoadParams {
             session_id: approved.session_id,
             max_entries: None,
+            read_only: false,
         })
         .await?;
     *session = next.session;

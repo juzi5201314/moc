@@ -22,9 +22,9 @@ pub(super) async fn run(
     let record = inner.sessions.get(session_id).await.map_err(to_rpc)?;
     let _operation = record.try_prompt_lock().map_err(to_rpc)?;
     let _epoch = inner.config_epoch.read().await;
-    let file_lock = inner
+    inner
         .sessions
-        .acquire_lock(session_id, &ctx.client().frontend)
+        .ensure_write_lease(session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
     let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
@@ -101,7 +101,6 @@ pub(super) async fn run(
         )
         .await
         .map_err(to_rpc)?;
-    drop(file_lock);
     update
         .emit(
             session_id.clone(),

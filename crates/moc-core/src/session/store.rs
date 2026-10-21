@@ -351,13 +351,34 @@ impl SessionStore {
     }
 
     /// 读取并反序列化完整的 JSONL 历史。
+    ///
+    /// 最后一段不以换行结束时视为写者追加到一半，直接丢弃；中间行损坏仍然报错。
     pub async fn read_entries(&self, paths: &SessionPaths) -> Result<Vec<Entry>, CoreError> {
-        let mut lines = super::maintenance::reader(&paths.transcript).await?.lines();
+        let mut reader = super::maintenance::reader(&paths.transcript).await?;
         let mut entries = Vec::new();
         let mut line_number = 0usize;
-        while let Some(line) = lines.next_line().await? {
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            let read = reader.read_until(b'\n', &mut buffer).await?;
+            if read == 0 {
+                break;
+            }
             line_number += 1;
-            let entry = serde_json::from_str(&line).map_err(|error| {
+            if buffer.last() != Some(&b'\n') {
+                break;
+            }
+            buffer.pop();
+            if buffer.last() == Some(&b'\r') {
+                buffer.pop();
+            }
+            let line = std::str::from_utf8(&buffer).map_err(|error| {
+                CoreError::Session(format!(
+                    "解析 {} 第 {line_number} 行失败: {error}",
+                    paths.transcript.display()
+                ))
+            })?;
+            let entry = serde_json::from_str(line).map_err(|error| {
                 CoreError::Session(format!(
                     "解析 {} 第 {line_number} 行失败: {error}",
                     paths.transcript.display()

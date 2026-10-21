@@ -325,9 +325,11 @@ impl SessionInfo {
 
 /// 会话锁的投影。
 ///
-/// 只用于**展示与强夺**：锁的判定与持有在 core，协议层不参与互斥。前端看到
-/// `Some(_)` 时应当把该会话渲染为只读，并把 `unlock{force:true}` 提供给用户
-/// 处理崩溃进程留下的陈旧锁。
+/// 只用于**展示**：锁的判定与持有在 core，协议层不参与互斥。前端看到
+/// `Some(_)` 时应当把该会话渲染为只读，并提示持有者（进程名与 pid）。
+///
+/// 内核文件锁没有安全的跨进程抢占方式，core 不会因为 `unlock` 而清除别人的锁：
+/// 要接管会话，请让持有者 `session/unload` 或退出进程。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionLockInfo {
@@ -364,6 +366,15 @@ pub struct SessionLoadParams {
     /// 最多返回多少条 transcript 条目（从最新往前数）；`None` 表示全部。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_entries: Option<u32>,
+    /// 只读打开：不取跨进程写租约，写操作会被 core 拒绝。
+    ///
+    /// 另一个 core 进程持有写租约时，只有只读打开能成功。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// `session/load_page` 的参数。
@@ -542,7 +553,8 @@ pub struct SessionDeleteParams {
 pub struct SessionUnlockParams {
     /// 目标会话。
     pub session_id: String,
-    /// `false` 只释放本进程持有的锁；`true` 无条件清除锁记录（强夺）。
+    /// 兼容字段：旧前端曾用它强夺他人锁。新语义下 core 只释放本进程持有的租约，
+    /// 传 `true` 也不会跨进程抢占；别人持有时返回 `-32015`。
     pub force: bool,
 }
 
@@ -794,10 +806,20 @@ mod tests {
         let params = SessionLoadParams {
             session_id: "ses_1".into(),
             max_entries: None,
+            read_only: false,
         };
         assert_eq!(
             serde_json::to_value(&params).expect("可序列化"),
             serde_json::json!({ "session_id": "ses_1" })
+        );
+        let readonly = SessionLoadParams {
+            session_id: "ses_1".into(),
+            max_entries: None,
+            read_only: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&readonly).expect("可序列化"),
+            serde_json::json!({ "session_id": "ses_1", "read_only": true })
         );
         let lock = SessionLockInfo {
             pid: 4242,

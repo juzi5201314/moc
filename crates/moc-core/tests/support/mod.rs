@@ -142,6 +142,7 @@ impl Harness {
             .call::<SessionLoad>(SessionLoadParams {
                 session_id: id.into(),
                 max_entries: None,
+                read_only: false,
             })
             .await
             .unwrap()

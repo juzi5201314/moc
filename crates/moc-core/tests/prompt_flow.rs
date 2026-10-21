@@ -178,6 +178,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("resume session");
@@ -650,6 +651,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load durable transcript");
@@ -668,11 +670,11 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             })
             .expect("prompt_finished update");
         assert_eq!(finished, &result.message);
-        assert!(
-            updates
-                .iter()
-                .any(|update| matches!(update, SessionUpdate::LockChanged { lock: None }))
-        );
+        // 提示开始会广播一次写租约，提示结束后租约仍由本进程持有。
+        assert!(updates.iter().any(|update| matches!(
+            update,
+            SessionUpdate::LockChanged { lock: Some(lock) } if lock.pid == std::process::id()
+        )));
     }
     assert_eq!(
         upstream
@@ -859,6 +861,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load submitted plan");
@@ -903,6 +906,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: approved.session_id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load child session");
@@ -1111,6 +1115,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load persisted tool history");
@@ -1277,6 +1282,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load plan session after shell");
@@ -1479,6 +1485,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load session");
@@ -1655,6 +1662,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("load session after ask-once prompt");

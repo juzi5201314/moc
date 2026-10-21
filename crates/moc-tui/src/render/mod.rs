@@ -960,6 +960,10 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     let theme = app.theme;
     let data = statusline_data(app);
     let mut spans: Vec<Span<'static>> = Vec::new();
+    if app.read_only {
+        spans.push(Span::styled("只读", Style::new().fg(theme.accent_warning)));
+        spans.push(Span::styled(" · ", Style::new().fg(theme.gray)));
+    }
     if let Some(activity) = activity(app) {
         spans.push(Span::styled(
             spinner_frame(app),

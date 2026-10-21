@@ -94,7 +94,7 @@ markdown 只解析本地文件与 `file://`（支持 `~/` 与 `%20` 这类百分
 | `←` `←` | 聚焦子代理时连按两次返回主会话 |
 | `Ctrl+C` | Cancel while running; press again to exit |
 
-斜杠命令包括 `/help` `/new` `/model` `/resume` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/compact` `/usage` `/config` `/settings` `/memories` `/context` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。`/context` 打开上下文正文窗（见下文），顶部信息条右端的进度条点击打开的是上下文占用窗，两者看的是同一份上下文。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 与模型选择器把目标模型和思考等级一起选中：切到别的模型时用该模型支持的最高等级，停在同一个模型时沿用配置或会话里写的等级；目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
+斜杠命令包括 `/help` `/new` `/resume` `/close` `/model` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/compact` `/usage` `/config` `/settings` `/memories` `/context` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/close` 卸载当前会话并释放跨进程写租约：另一个 `moc` 或 `moc web` 进程随后就能以写模式打开它；不关闭也不影响本进程继续使用。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。`/context` 打开上下文正文窗（见下文），顶部信息条右端的进度条点击打开的是上下文占用窗，两者看的是同一份上下文。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 与模型选择器把目标模型和思考等级一起选中：切到别的模型时用该模型支持的最高等级，停在同一个模型时沿用配置或会话里写的等级；目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
 
 ### 子代理
 

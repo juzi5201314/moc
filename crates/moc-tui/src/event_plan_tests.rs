@@ -98,6 +98,7 @@ impl PlanHarness {
             .call::<SessionLoad>(SessionLoadParams {
                 session_id: id,
                 max_entries: None,
+                read_only: false,
             })
             .await
             .expect("计划加载")
@@ -153,6 +154,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .call::<SessionLoad>(SessionLoadParams {
             session_id: id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("历史")
@@ -234,6 +236,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .call::<SessionLoad>(SessionLoadParams {
             session_id: id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("历史");
@@ -260,6 +263,7 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
         .call::<SessionLoad>(SessionLoadParams {
             session_id: id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("审批后会话");
@@ -336,6 +340,7 @@ async fn plan_review_approval_loads_new_session() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: child,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("执行历史");
@@ -349,6 +354,7 @@ async fn plan_review_approval_loads_new_session() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: parent,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("父会话");
@@ -383,6 +389,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: session.id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("待审状态");

@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use moc_llm::{ContentPart, FinishReason, Message, ReasoningBlock, Role, ToolCall, ToolResult};
 use moc_protocol::methods::{
-    SessionInfo, SessionLoadPageResult, SessionLoadResult, SessionMode, SessionPermission,
-    SessionRenameParams, ToolExecution, TranscriptChildCall, TranscriptEntry,
+    SessionInfo, SessionLoadPageResult, SessionLoadResult, SessionLockInfo, SessionMode,
+    SessionPermission, SessionRenameParams, ToolExecution, TranscriptChildCall, TranscriptEntry,
 };
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -50,6 +50,12 @@ pub struct SessionRecord {
     /// 磁盘上还没有 transcript 文件时为 `None`；第一次 append 时才写入磁盘。
     file: Mutex<Option<SessionFile>>,
     header: Entry,
+    /// 跨进程写租约；`None` 表示本进程只读打开或尚未打开写模式。
+    ///
+    /// 用同步锁包装：只在取/放租约的短临界区里访问，不跨 `await`。
+    lease: parking_lot::Mutex<Option<lock::SessionLockGuard>>,
+    /// 串行化「检查 → 取租约 → 对齐磁盘」的整个流程，避免两个并发请求同时去抢内核锁。
+    lease_gate: Mutex<()>,
 }
 
 impl SessionRecord {
@@ -131,6 +137,8 @@ impl SessionTable {
                 file: Mutex::new(None),
                 header,
                 paths,
+                lease: parking_lot::Mutex::new(None),
+                lease_gate: Mutex::new(()),
             }),
         );
         Ok(info)
@@ -146,8 +154,7 @@ impl SessionTable {
             .find(session_id)
             .await?
             .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {session_id}")))?;
-        // 恢复归档同样是写操作，所以和其它进程的归档、追加共用同一把会话锁。
-        let _disk = lock::SessionLockGuard::acquire(paths.lock_file(session_id), "load")?;
+        // 只读加载不碰写租约：写者持锁期间读者仍可查看已落盘的完整行。
         let entries = self.store.read_entries(&paths).await?;
         let state = SessionState::from_entries(entries)?;
         if state.session.id != session_id {
@@ -170,6 +177,8 @@ impl SessionTable {
             file: Mutex::new(Some(file)),
             header,
             paths,
+            lease: parking_lot::Mutex::new(None),
+            lease_gate: Mutex::new(()),
         });
         let mut records = self.records.write();
         Ok(Arc::clone(
@@ -550,7 +559,6 @@ impl SessionTable {
             ));
         }
         let record = self.get(session_id).await?;
-        self.reject_foreign_lock(session_id, &record.paths)?;
         let title = sanitize_title(&params.title);
         if title.is_empty() {
             return Err(CoreError::Session("INVALID_PARAMS: 标题不能为空".into()));
@@ -569,7 +577,6 @@ impl SessionTable {
         mode: SessionMode,
     ) -> Result<SessionInfo, CoreError> {
         let record = self.get(session_id).await?;
-        self.reject_foreign_lock(session_id, &record.paths)?;
         let state = record.state.lock().await;
         // CLM 会话在「第一次请求后」锁定模式（见 README）。实时上下文 entry 只在 CLM
         // 模式下产生，所以还要求当前模式是 CLM；否则在其它模式写入一条伪造 entry 就会
@@ -599,7 +606,6 @@ impl SessionTable {
         permission: SessionPermission,
     ) -> Result<SessionInfo, CoreError> {
         let record = self.get(session_id).await?;
-        self.reject_foreign_lock(session_id, &record.paths)?;
         self.append(session_id, EntryPayload::PermissionChange { permission })
             .await?;
         let mut session = record.state.lock().await.session_info();
@@ -613,7 +619,6 @@ impl SessionTable {
         model: String,
     ) -> Result<SessionInfo, CoreError> {
         let record = self.get(session_id).await?;
-        self.reject_foreign_lock(session_id, &record.paths)?;
         self.append(session_id, EntryPayload::ModelChange { model })
             .await?;
         let mut session = record.state.lock().await.session_info();
@@ -621,21 +626,31 @@ impl SessionTable {
         Ok(session)
     }
 
-    /// 尝试获取跨进程写锁。
-    pub async fn acquire_lock(
+    /// 取会话写租约；已持有则直接返回。
+    ///
+    /// 只读打开过的会话升级为写模式时，先拿到租约再对齐磁盘：租约之前的写入可能来自
+    /// 其它进程，内存状态必须重新从 transcript 重建。
+    pub async fn ensure_write_lease(
         &self,
         session_id: &str,
+        record: &Arc<SessionRecord>,
         frontend: &str,
-    ) -> Result<Option<lock::SessionLockGuard>, CoreError> {
-        let record = self.get(session_id).await?;
+    ) -> Result<(), CoreError> {
         if !self.locking {
-            return Ok(None);
+            return Ok(());
+        }
+        if record.lease.lock().is_some() {
+            return Ok(());
+        }
+        let _gate = record.lease_gate.lock().await;
+        if record.lease.lock().is_some() {
+            return Ok(());
         }
         // 锁文件和 transcript 在同一目录；延迟写盘时目录可能还不存在，先创建。
         if let Some(directory) = record.paths.transcript.parent() {
             tokio::fs::create_dir_all(directory).await?;
         }
-        let guard = lock::SessionLockGuard::acquire(record.paths.lock_file(session_id), frontend)?;
+        let lease = lock::SessionLockGuard::acquire(record.paths.lock_file(session_id), frontend)?;
         let _append = record.append_lock.lock().await;
         let file_slot = record.file.lock().await;
         if let Some(file) = file_slot.as_ref()
@@ -650,17 +665,26 @@ impl SessionTable {
             fresh.server_compaction_disabled = current.server_compaction_disabled;
             *current = fresh;
         }
-        Ok(Some(guard))
+        *record.lease.lock() = Some(lease);
+        Ok(())
     }
 
-    /// 释放本进程的锁，或强制清除过期锁、他人的锁。
-    pub async fn unlock(&self, session_id: &str, force: bool) -> Result<bool, CoreError> {
-        let paths = self
-            .store
-            .find(session_id)
-            .await?
-            .ok_or_else(|| CoreError::Session(format!("SESSION_NOT_FOUND: {session_id}")))?;
-        lock::unlock(paths.lock_file(session_id), force)
+    /// 释放本进程持有的写租约；返回是否确实持有。
+    ///
+    /// 不允许跨进程强夺：内核锁没有安全抢占方式，删掉别人正在用的锁文件只会让两个
+    /// 进程同时写。需要写入就请持有者卸载会话或退出进程。
+    pub fn release_lease(&self, record: &SessionRecord) -> bool {
+        record.lease.lock().take().is_some()
+    }
+
+    /// 会话当前写租约的持有者投影：本进程持有则直接给出，否则探测其它进程。
+    pub fn lease_info(&self, session_id: &str, record: &SessionRecord) -> Option<SessionLockInfo> {
+        let held = record
+            .lease
+            .lock()
+            .as_ref()
+            .map(lock::SessionLockGuard::info);
+        held.or_else(|| lock::read(record.paths.lock_file(session_id)))
     }
 
     /// 从内存表里卸载会话，不删除 JSONL 和 sidecar。
@@ -674,13 +698,15 @@ impl SessionTable {
     /// 调用者必须持有该 record 的提示锁，防止已经拿到句柄的请求继续写入。
     pub(crate) fn unload_locked(&self, session_id: &str, record: &SessionRecord) {
         record.active.store(false, Ordering::Release);
+        self.release_lease(record);
         self.records.write().remove(session_id);
     }
 
     pub async fn delete(&self, session_id: &str) -> Result<(), CoreError> {
         let record = self.get(session_id).await?;
         let _prompt = record.try_prompt_lock()?;
-        let _file_lock = self.acquire_lock(session_id, "moc-core").await?;
+        self.ensure_write_lease(session_id, &record, "moc-core")
+            .await?;
         self.delete_locked(session_id, &record).await
     }
 
@@ -690,22 +716,11 @@ impl SessionTable {
         record: &SessionRecord,
     ) -> Result<(), CoreError> {
         let _append = record.append_lock.lock().await;
-        self.reject_foreign_lock(session_id, &record.paths)?;
-        lock::unlock(record.paths.lock_file(session_id), false)?;
+        // 删除期间保持租约：先让文件从磁盘消失，再放开内核锁，否则另一个进程
+        // 可能在 release 与 delete 之间抢到租约并开始写一个正在被删除的会话。
         self.store.delete(session_id, &record.paths).await?;
+        self.release_lease(record);
         self.unload_locked(session_id, record);
-        Ok(())
-    }
-
-    fn reject_foreign_lock(&self, session_id: &str, paths: &SessionPaths) -> Result<(), CoreError> {
-        if let Some(info) = lock::read(paths.lock_file(session_id))
-            && info.pid != std::process::id()
-        {
-            return Err(CoreError::Session(format!(
-                "SESSION_LOCKED: pid {} 正在使用会话",
-                info.pid
-            )));
-        }
         Ok(())
     }
 
@@ -1075,14 +1090,77 @@ mod tests {
         let record = table.get(&info.id).await.expect("取会话");
         let _prompt = record.try_prompt_lock().expect("取得提示锁");
         assert!(record.try_prompt_lock().is_err());
-        let guard = table
-            .acquire_lock(&info.id, "tui")
+        table
+            .ensure_write_lease(&info.id, &record, "tui")
             .await
-            .expect("取得文件锁");
-        assert!(guard.is_some());
-        assert!(table.acquire_lock(&info.id, "webui").await.is_err());
-        drop(guard);
-        assert!(table.acquire_lock(&info.id, "webui").await.is_ok());
+            .expect("取得写租约");
+        // 同进程重复取租约是幂等的：跨进程互斥由内核文件锁负责，进程内写互斥由提示锁负责。
+        table
+            .ensure_write_lease(&info.id, &record, "webui")
+            .await
+            .expect("重复取租约");
+        assert!(table.release_lease(&record));
+        assert!(!table.release_lease(&record));
+        table
+            .ensure_write_lease(&info.id, &record, "webui")
+            .await
+            .expect("释放后可再取");
+    }
+
+    #[tokio::test]
+    async fn a_second_table_cannot_take_the_write_lease_while_the_first_holds_it() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let first = SessionTable::new(directory.path(), true);
+        let info = first
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+            )
+            .await
+            .expect("创建会话");
+        first
+            .append_message(&info.id, Message::user_text("写者"), None, None)
+            .await
+            .expect("追加消息");
+        let first_record = first.get(&info.id).await.expect("取会话");
+        first
+            .ensure_write_lease(&info.id, &first_record, "tui")
+            .await
+            .expect("取得写租约");
+
+        // 只读加载不取租约，因此在别人持锁时仍然成功。
+        let second = SessionTable::new(directory.path(), true);
+        let loaded = second.load(&info.id, None).await.expect("只读加载");
+        assert_eq!(loaded.entries[0].message.text(), "写者");
+        assert_eq!(
+            loaded
+                .session
+                .lock
+                .as_ref()
+                .map(|lock| lock.frontend.as_str()),
+            Some("tui"),
+            "只读加载能看到持有者投影"
+        );
+
+        let second_record = second.get(&info.id).await.expect("取第二份会话");
+        let error = second
+            .ensure_write_lease(&info.id, &second_record, "webui")
+            .await
+            .expect_err("第二份会话不能取得写租约");
+        assert!(
+            error.to_string().contains("SESSION_LOCKED"),
+            "错误码要能让前端降到只读：{error}"
+        );
+
+        assert!(first.release_lease(&first_record));
+        second
+            .ensure_write_lease(&info.id, &second_record, "webui")
+            .await
+            .expect("释放后可以接管");
     }
 
     #[tokio::test]
@@ -1106,7 +1184,11 @@ mod tests {
             .unwrap();
         let second = SessionTable::new(directory.path(), true);
         second.load(&info.id, None).await.unwrap();
-        let guard = first.acquire_lock(&info.id, "first").await.unwrap();
+        let first_record = first.get(&info.id).await.unwrap();
+        first
+            .ensure_write_lease(&info.id, &first_record, "first")
+            .await
+            .unwrap();
         first
             .append_message(&info.id, Message::user_text("外部追加"), None, None)
             .await
@@ -1122,29 +1204,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.list().await.unwrap()[0].title, "跨进程新标题");
-        let entries = first
-            .get(&info.id)
-            .await
-            .unwrap()
-            .state
-            .lock()
-            .await
-            .entries
-            .clone();
+        let entries = first_record.state.lock().await.entries.clone();
         first.rewrite(&info.id, entries).await.unwrap();
-        drop(guard);
-        let guard = second.acquire_lock(&info.id, "second").await.unwrap();
+        assert!(first.release_lease(&first_record));
+        let second_record = second.get(&info.id).await.unwrap();
+        second
+            .ensure_write_lease(&info.id, &second_record, "second")
+            .await
+            .unwrap();
         let loaded = second.load(&info.id, None).await.unwrap();
         assert_eq!(
             loaded.entries[1].message.text(),
             "外部追加",
-            "锁刷新后应看到 other 进程追加的消息"
+            "取租约后应看到 other 进程追加的消息"
         );
         second
             .append_message(&info.id, Message::assistant_text("续写"), None, None)
             .await
             .unwrap();
-        drop(guard);
+        assert!(second.release_lease(&second_record));
         let restored = SessionTable::new(directory.path(), true)
             .load(&info.id, None)
             .await
@@ -1173,6 +1251,10 @@ mod tests {
             .await
             .expect("追加消息");
         let record = table.get(&info.id).await.expect("取会话");
+        table
+            .ensure_write_lease(&info.id, &record, "tui")
+            .await
+            .expect("取得写租约");
         let transcript = record.paths.transcript.clone();
         // 外部维护把可写日志压缩归档后删掉了原文件。
         let archive = transcript.with_extension("jsonl.gz");
@@ -1192,17 +1274,16 @@ mod tests {
         tokio::fs::remove_file(&transcript)
             .await
             .expect("删除可写日志");
-        // 刷新时必须先恢复可写日志再重新打开，否则会话无法再追加记录。
-        let guard = table
-            .acquire_lock(&info.id, "tui")
+        assert!(table.release_lease(&record));
+        // 重新取租约时必须先恢复可写日志再重新打开，否则会话无法再追加记录。
+        table
+            .ensure_write_lease(&info.id, &record, "tui")
             .await
-            .expect("归档后仍能取得锁");
-        assert!(guard.is_some());
+            .expect("归档后仍能取得租约");
         table
             .append_message(&info.id, Message::assistant_text("归档后追加"), None, None)
             .await
             .expect("归档后仍能追加");
-        drop(guard);
         let loaded = table.load(&info.id, None).await.expect("加载会话");
         assert_eq!(loaded.entries.len(), 2);
         assert_eq!(loaded.entries[1].message.text(), "归档后追加");

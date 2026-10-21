@@ -78,6 +78,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         name: "/confirm-plan",
         description: "计划模式下重新审阅已写入的待审计划",
     },
+    SlashCommand {
+        name: "/close",
+        description: "卸载当前会话并释放跨进程写租约",
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -23,6 +23,7 @@ ignore.workspace = true
 libc.workspace = true
 memchr.workspace = true
 parking_lot.workspace = true
+fs4.workspace = true
 portable-pty.workspace = true
 serde.workspace = true
 serde_json.workspace = true

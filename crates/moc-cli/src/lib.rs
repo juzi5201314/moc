@@ -10,13 +10,13 @@ mod repl;
 
 pub use args::CliArgs;
 
-pub async fn run(config: CliArgs) -> anyhow::Result<()> {
+pub async fn run(config: CliArgs, web: bool) -> anyhow::Result<()> {
     // TUI 有 moc-tui 自己的文件日志；行式前端（REPL / print / --list）此前没有订阅者，
     // 内核的 warn/error（例如 MCP 配置解析失败）会直接消失。
-    if !repl::use_tui(&config) {
+    if web || !repl::use_tui(&config) {
         init_logging();
     }
-    repl::run(config).await
+    repl::run(config, web).await
 }
 
 /// 给行式前端装 stderr 订阅者；已经装过（库被其它前端嵌入）就沿用。

@@ -845,11 +845,26 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
-                    Some(AppEvent::Loaded(info, blocks, has_more, before_entry_id, todos)) => {
+                    Some(AppEvent::Loaded(
+                        info,
+                        blocks,
+                        has_more,
+                        before_entry_id,
+                        todos,
+                        read_only,
+                    )) => {
                         app.modal = None;
                         let cwd = info.cwd.clone();
                         let id = info.id.clone();
+                        let lock_holder = info.lock.clone();
                         app.switch_session(info, blocks);
+                        app.read_only = read_only;
+                        if read_only {
+                            let holder = lock_holder
+                                .map(|lock| format!("{} (pid {})", lock.frontend, lock.pid))
+                                .unwrap_or_else(|| "另一个 moc 进程".into());
+                            app.set_notice(format!("会话被 {holder} 占用，已只读打开"));
+                        }
                         // 恢复会话的 todo 快照：HUD 立刻可见，不必等下一次 TodoChanged。
                         app.todos = todos;
                         app.set_history_cursor(has_more, before_entry_id);
@@ -2626,13 +2641,32 @@ fn handle_modal_key(
                     let session_id = session.id.clone();
                     let events = events.clone();
                     tokio::spawn(async move {
-                        match client
+                        let first = client
                             .call::<SessionLoad>(SessionLoadParams {
-                                session_id,
+                                session_id: session_id.clone(),
                                 max_entries: Some(64),
+                                read_only: false,
                             })
-                            .await
-                        {
+                            .await;
+                        // 被另一个 core 进程持有写租约时降级为只读打开，让用户至少能看历史。
+                        let (loaded, read_only) = match first {
+                            Ok(loaded) => (Ok(loaded), false),
+                            Err(error)
+                                if error.code()
+                                    == Some(moc_protocol::RpcErrorCode::SessionLocked.code()) =>
+                            {
+                                let retry = client
+                                    .call::<SessionLoad>(SessionLoadParams {
+                                        session_id,
+                                        max_entries: Some(64),
+                                        read_only: true,
+                                    })
+                                    .await;
+                                (retry, true)
+                            }
+                            Err(error) => (Err(error), false),
+                        };
+                        match loaded {
                             Ok(loaded) => {
                                 let before_entry_id =
                                     loaded.entries.first().map(|entry| entry.id.clone());
@@ -2645,6 +2679,7 @@ fn handle_modal_key(
                                     loaded.truncated,
                                     before_entry_id,
                                     loaded.todos,
+                                    read_only,
                                 ));
                             }
                             Err(error) => {
@@ -2896,6 +2931,7 @@ fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
                 .call::<SessionLoad>(SessionLoadParams {
                     session_id,
                     max_entries: None,
+                    read_only: false,
                 })
                 .await?;
             anyhow::ensure!(
@@ -2966,6 +3002,7 @@ pub(crate) fn apply_plan_approval(
                         .call::<SessionLoad>(SessionLoadParams {
                             session_id: result.session_id,
                             max_entries: None,
+                            read_only: false,
                         })
                         .await
                         .map_err(anyhow::Error::from);
@@ -3540,6 +3577,30 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     match name {
         "/confirm-plan" => confirm_plan(app, connection),
+        "/close" => {
+            let Some(session_id) = session_id else {
+                app.set_notice("当前没有活动会话");
+                return;
+            };
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                match client
+                    .call::<moc_protocol::SessionUnload>(moc_protocol::SessionUnloadParams {
+                        session_id,
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        let _ =
+                            events.send(AppEvent::Notice("会话已卸载，写租约已释放".to_owned()));
+                    }
+                    Err(error) => {
+                        let _ = events.send(AppEvent::Notice(format!("卸载会话失败：{error}")));
+                    }
+                }
+            });
+        }
         "/agents" => open_subagents(app, connection),
         "/config" | "/settings" => crate::settings::open(app, connection),
         "/new" => {
@@ -3573,6 +3634,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                             false,
                             None,
                             Vec::new(),
+                            false,
                         ));
                     }
                     Err(error) => {
@@ -4296,6 +4358,7 @@ mod tests {
             .call::<SessionLoad>(SessionLoadParams {
                 session_id: id,
                 max_entries: None,
+                read_only: false,
             })
             .await
             .unwrap();
@@ -4603,6 +4666,7 @@ mod tests {
             .call::<SessionLoad>(SessionLoadParams {
                 session_id: id,
                 max_entries: None,
+                read_only: false,
             })
             .await
             .unwrap();
@@ -4920,6 +4984,7 @@ mod tests {
                 .call::<SessionLoad>(SessionLoadParams {
                     session_id: self.session.clone(),
                     max_entries: None,
+                    read_only: false,
                 })
                 .await
                 .unwrap();
@@ -5656,6 +5721,7 @@ mod tests {
                     .call::<SessionLoad>(SessionLoadParams {
                         session_id: session_id.clone(),
                         max_entries: None,
+                        read_only: false,
                     })
                     .await
                     .unwrap()
@@ -5753,6 +5819,7 @@ mod tests {
                         .call::<SessionLoad>(SessionLoadParams {
                             session_id: session_id.to_owned(),
                             max_entries: None,
+                            read_only: false,
                         })
                         .await
                         .unwrap()

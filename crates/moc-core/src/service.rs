@@ -446,10 +446,9 @@ impl Core {
     pub async fn undo(&self, session_id: &str) -> anyhow::Result<String> {
         let record = self.inner.sessions.get(session_id).await?;
         let _prompt = record.try_prompt_lock()?;
-        let _file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(session_id, "moc-cli")
+            .ensure_write_lease(session_id, &record, "moc-cli")
             .await?;
         let cwd = record.state.lock().await.session.cwd.clone();
         let config = self.inner.project_config(Path::new(&cwd))?;
@@ -861,7 +860,7 @@ impl AgentService for Core {
 
     async fn session_new(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: SessionNewParams,
     ) -> Result<SessionInfo, RpcError> {
         let cwd = params
@@ -905,6 +904,12 @@ impl AgentService for Core {
             )
             .await
             .map_err(to_rpc)?;
+        let record = self.inner.sessions.get(&info.id).await.map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&info.id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &info.id, &record, error))?;
         // 以计划模式创建会话：header 记下会话本来的模型，随后立即切到计划模型，
         // 退出计划模式时再切回。
         if params.mode == SessionMode::Plan
@@ -945,9 +950,22 @@ impl AgentService for Core {
 
     async fn session_load(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: SessionLoadParams,
     ) -> Result<SessionLoadResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        if !params.read_only {
+            self.inner
+                .sessions
+                .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+                .await
+                .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        }
         let mut result = self
             .inner
             .sessions
@@ -990,18 +1008,24 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let _file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let mut loaded = self
             .inner
             .sessions
             .rewind(&params.session_id, &entry_id)
             .await
             .map_err(to_rpc)?;
+        let child_id = loaded.session.id.clone();
+        let child = self.inner.sessions.get(&child_id).await.map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&child_id, &child, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &child_id, &child, error))?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
         Ok(loaded)
@@ -1040,19 +1064,17 @@ impl AgentService for Core {
         let session_id = params.session_id.clone();
         let record = self.inner.sessions.get(&session_id).await.map_err(to_rpc)?;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&session_id, &ctx.client().frontend)
+            .ensure_write_lease(&session_id, &record, &ctx.client().frontend)
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &session_id, &record, error))?;
         let mut info = self
             .inner
             .sessions
             .rename(&session_id, params)
             .await
             .map_err(to_rpc)?;
-        drop(file_lock);
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
         ctx.updates()
@@ -1079,12 +1101,11 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let _file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&params.session_id, "moc-core")
+            .ensure_write_lease(&params.session_id, &record, "moc-core")
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let runtime = self.inner.runtime(&params.session_id).await;
         runtime.jobs.kill_all().await;
         self.inner
@@ -1104,11 +1125,24 @@ impl AgentService for Core {
         if !self.inner.sessions.locking_enabled() {
             return Err(RpcError::of(RpcErrorCode::NotSupported));
         }
-        self.inner
+        let record = self
+            .inner
             .sessions
-            .unlock(&params.session_id, params.force)
+            .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
+        if !self.inner.sessions.release_lease(&record)
+            && let Some(info) = self.inner.sessions.lease_info(&params.session_id, &record)
+        {
+            return Err(RpcError::new(
+                RpcErrorCode::SessionLocked.code(),
+                format!(
+                    "会话正被 pid {} ({}) 持有；请先让持有者卸载或退出",
+                    info.pid, info.frontend
+                ),
+            )
+            .with_data(json!({ "lock": info })));
+        }
         Ok(Empty {})
     }
 
@@ -1139,12 +1173,11 @@ impl AgentService for Core {
             .map_err(to_rpc)?;
         let old_permission = record.state.lock().await.permission;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let mut info = self
             .inner
             .sessions
@@ -1159,7 +1192,6 @@ impl AgentService for Core {
                 .write()
                 .clear();
         }
-        drop(file_lock);
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
         ctx.updates()
@@ -1186,12 +1218,11 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let (cwd, from) = {
             let state = record.state.lock().await;
             (PathBuf::from(state.session.cwd.clone()), state.mode)
@@ -1221,7 +1252,6 @@ impl AgentService for Core {
         )
         .await
         .map_err(to_rpc)?;
-        drop(file_lock);
         if switched.is_some() {
             info = record.state.lock().await.session_info();
         }
@@ -1256,12 +1286,11 @@ impl AgentService for Core {
             .project_config(std::path::Path::new(&cwd))
             .map_err(to_rpc)?;
         let model = config.resolve_model(&params.selector).map_err(to_rpc)?;
-        let file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let outcome = model::switch(
             &self.inner,
             &ctx,
@@ -1271,7 +1300,6 @@ impl AgentService for Core {
         )
         .await
         .map_err(to_rpc)?;
-        drop(file_lock);
         let mut session = outcome.session;
         session.lock = None;
         session.permission = self.inner.effective_permission(session.permission);
@@ -1302,12 +1330,11 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let _file_lock = self
-            .inner
+        self.inner
             .sessions
-            .acquire_lock(&params.session_id, &ctx.client().frontend)
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
-            .map_err(to_rpc)?;
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
         let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
         let result = compact::manual(
             &self.inner,
@@ -1417,6 +1444,22 @@ fn openviking_rpc(error: moc_openviking::OpenVikingError) -> RpcError {
         | moc_openviking::OpenVikingError::PendingIo(_) => RpcErrorCode::InternalError,
     };
     RpcError::new(code.code(), error.to_string())
+}
+
+/// 写租约失败时把持有者投影一并返回，前端不用再发一次 `session/list` 才能提示。
+fn write_lease_error(
+    core: &Core,
+    session_id: &str,
+    record: &Arc<crate::session::SessionRecord>,
+    error: CoreError,
+) -> RpcError {
+    let message = error.to_string();
+    if message.contains("SESSION_LOCKED") {
+        return RpcError::new(RpcErrorCode::SessionLocked.code(), message).with_data(json!({
+            "lock": core.inner.sessions.lease_info(session_id, record),
+        }));
+    }
+    to_rpc(error)
 }
 
 fn to_rpc(error: CoreError) -> RpcError {

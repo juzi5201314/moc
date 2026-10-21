@@ -1,18 +1,20 @@
-//! 用 create_new 实现的跨进程会话锁。
+//! 跨进程独占锁：POSIX `flock(2)` / Windows `LockFileEx`。
+//!
+//! 锁绑定打开的文件句柄，**进程死亡时由内核释放**，因此不需要 pid 存活检测、不需要
+//! 过期回收，也不存在「删掉别人正在持有的锁」这种竞态。锁文件本身常驻不删：文件内容
+//! 只是持有者投影（pid / frontend / 进程名 / 上锁时间），判定以内核锁为准。
+//!
+//! 会话使用它做**写租约**：一个 core 进程打开会话写模式即持有，直到卸载或进程退出；
+//! 其它进程只能只读打开。`read` 通过尝试共享锁判断是否有人持有，而不是看文件是否存在。
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use moc_protocol::methods::SessionLockInfo;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-
-/// 回收过期锁时使用的认领文件后缀。
-const RECLAIM_SUFFIX: &str = ".reclaim";
-/// 认领文件被其它进程占用时，重读锁记录的次数。
-const RECLAIM_RETRIES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,194 +36,115 @@ impl From<LockRecord> for SessionLockInfo {
     }
 }
 
-/// 只在创建它的进程里释放对应的锁文件。
+/// 一个持有中的独占锁；`Drop` 关闭句柄即由内核释放。
 pub struct SessionLockGuard {
+    file: File,
     path: PathBuf,
     record: LockRecord,
-    identity: crate::hashline::SnapshotId,
 }
 
 impl SessionLockGuard {
-    /// 原子地创建锁；遇到已退出进程留下的锁就回收并重试一次。
+    /// 非阻塞地获取独占锁；被其它进程持有时返回 `SESSION_LOCKED`。
+    ///
+    /// 同一进程对同一文件再次 `open` 得到的是另一个 open file description，
+    /// 因此也会按「被持有」失败——会话层必须自己保证每个会话只取一次租约。
     pub fn acquire(path: impl AsRef<Path>, frontend: &str) -> Result<Self, CoreError> {
         let path = path.as_ref().to_owned();
-        for _ in 0..2 {
-            let record = LockRecord {
-                pid: std::process::id(),
-                frontend: frontend.to_owned(),
-                process_name: process_name(),
-                acquired_at_ms: crate::session::store::now_ms(),
-            };
-            let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let current = read_record(&path)?;
-                    let Some(current) = current else {
-                        return Err(CoreError::Session(
-                            "SESSION_LOCKED: 锁正在写入或已经损坏，需要显式 force 解锁".into(),
-                        ));
-                    };
-                    if pid_is_alive(current.pid) {
-                        return Err(CoreError::Session(format!(
-                            "SESSION_LOCKED: pid {} ({}) 正在使用会话",
-                            current.pid, current.frontend
-                        )));
-                    }
-                    reclaim(&path)?;
-                    continue;
-                }
-                Err(error) => return Err(CoreError::Io(error)),
-            };
-            let write_result = match serde_json::to_writer(&mut file, &record) {
-                Ok(()) => file.write_all(b"\n").map_err(CoreError::Io),
-                Err(error) => Err(CoreError::Session(format!("写入会话锁失败: {error}"))),
-            }
-            .and_then(|()| file.sync_all().map_err(CoreError::Io));
-            if let Err(error) = write_result {
-                drop(file);
-                let _ = fs::remove_file(&path);
-                return Err(error);
-            }
-            let identity = crate::hashline::SnapshotId::from_metadata(&file.metadata()?);
-            return Ok(Self {
-                path,
-                record,
-                identity,
-            });
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        Err(CoreError::Session(
-            "SESSION_LOCKED: 无法回收会话锁，需要显式 force 解锁".into(),
-        ))
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        match fs4::FileExt::try_lock(&file) {
+            Ok(()) => {}
+            Err(fs4::TryLockError::WouldBlock) => {
+                let holder = read_record(&mut file);
+                return Err(conflict(holder));
+            }
+            Err(fs4::TryLockError::Error(error)) => return Err(CoreError::Io(error)),
+        }
+        let record = LockRecord {
+            pid: std::process::id(),
+            frontend: frontend.to_owned(),
+            process_name: process_name(),
+            acquired_at_ms: crate::session::store::now_ms(),
+        };
+        if let Err(error) = write_record(&mut file, &record) {
+            let _ = fs4::FileExt::unlock(&file);
+            return Err(error);
+        }
+        Ok(Self { file, path, record })
     }
 
     pub fn info(&self) -> SessionLockInfo {
         self.record.clone().into()
     }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Drop for SessionLockGuard {
     fn drop(&mut self) {
-        let identity = fs::metadata(&self.path)
-            .ok()
-            .map(|metadata| crate::hashline::SnapshotId::from_metadata(&metadata));
-        if identity == Some(self.identity)
-            && read_record(&self.path).ok().flatten().as_ref() == Some(&self.record)
-        {
-            let _ = fs::remove_file(&self.path);
-        }
+        // 关闭句柄同样释放；显式解锁让语义在 Drop 期间就确定下来。
+        let _ = fs4::FileExt::unlock(&self.file);
     }
 }
 
-/// 回收过期锁；调用前已经确认这条锁记录属于已退出的进程。
+/// 当前锁的持有者投影；无人持有（或文件不存在）时为 `None`。
 ///
-/// 回收分两步：先用 `create_new` 建立固定名字的认领文件（同一时刻只有一个进程能
-/// 成功），拿到认领权后**重新读取**锁记录，确认它仍然过期才删除。只按先前的快照
-/// 直接 unlink，会让两个同时读到过期记录的进程依次删掉对方刚建好的锁，然后同时
-/// 持有同一个会话锁。认领把「复查 + 删除」串行化，落败的一方只会重新读到仍然有效的
-/// 锁并报 `SESSION_LOCKED`。
-///
-/// 认领文件内容读不出来时（回收途中崩溃，还没来得及写进程号），保守地按「认领仍然
-/// 有效」处理，避免误删别人正在使用的认领；这种情况下获取锁会失败，需要显式 force 解锁。
-fn reclaim(path: &Path) -> Result<(), CoreError> {
-    let claim = claim_path(path);
-    for _ in 0..RECLAIM_RETRIES {
-        match OpenOptions::new().write(true).create_new(true).open(&claim) {
-            Ok(mut file) => {
-                // 认领文件里记录持有者进程号；回收途中崩溃时，其它进程可以按进程是否存活来清理。
-                let _ = file.write_all(std::process::id().to_string().as_bytes());
-                let _ = file.sync_all();
-                let result = reclaim_claimed(path);
-                drop(file);
-                let _ = fs::remove_file(&claim);
-                return result;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                // 认领者已死在回收途中时清理它的认领文件，其余情况让出本轮重试。
-                if read_claim_pid(&claim).is_some_and(|pid| !pid_is_alive(pid)) {
-                    let _ = fs::remove_file(&claim);
-                }
-                std::hint::spin_loop();
-            }
-            Err(error) => return Err(CoreError::Io(error)),
+/// 用共享锁探测而不是看文件是否存在：锁文件常驻，存在性不代表被持有。
+pub fn read(path: impl AsRef<Path>) -> Option<SessionLockInfo> {
+    let mut file = OpenOptions::new().read(true).open(path.as_ref()).ok()?;
+    match fs4::FileExt::try_lock_shared(&file) {
+        Ok(()) => {
+            let _ = fs4::FileExt::unlock(&file);
+            None
         }
+        Err(fs4::TryLockError::WouldBlock) => read_record(&mut file),
+        Err(fs4::TryLockError::Error(_)) => None,
     }
-    // 认领仍被占用：交回外层重试，由它读取当前锁并报告持有者。
+}
+
+/// 读取锁文件里的持有者记录；内容损坏时按「未知持有者」处理。
+fn read_record(file: &mut File) -> Option<SessionLockInfo> {
+    file.seek(SeekFrom::Start(0)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let line = bytes.split(|byte| *byte == b'\n').next()?;
+    serde_json::from_slice::<LockRecord>(line)
+        .ok()
+        .map(Into::into)
+}
+
+/// 覆盖写入持有者记录并落盘；锁已经持有，截断期间不会有其它写者。
+fn write_record(file: &mut File, record: &LockRecord) -> Result<(), CoreError> {
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    serde_json::to_writer(&mut *file, record)
+        .map_err(|error| CoreError::Session(format!("写入会话锁失败: {error}")))?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
     Ok(())
 }
 
-/// 持有认领权时的实际回收：复查锁记录仍然陈旧后才删除。
-fn reclaim_claimed(path: &Path) -> Result<(), CoreError> {
-    match read_record(path)? {
-        Some(lock) if pid_is_alive(lock.pid) => Ok(()),
-        Some(_) => match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(CoreError::Io(error)),
-        },
-        // 文件已经消失：另一进程完成了回收。
-        None => Ok(()),
+fn conflict(holder: Option<SessionLockInfo>) -> CoreError {
+    match holder {
+        Some(info) => CoreError::Session(format!(
+            "SESSION_LOCKED: pid {} ({}) 正在使用会话",
+            info.pid, info.frontend
+        )),
+        None => CoreError::Session("SESSION_LOCKED: 会话正被其它进程使用".into()),
     }
-}
-
-fn claim_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    path.with_file_name(format!("{name}{RECLAIM_SUFFIX}"))
-}
-
-fn read_claim_pid(path: &Path) -> Option<u32> {
-    fs::read_to_string(path).ok()?.trim().parse().ok()
-}
-
-/// 当前锁元信息；损坏或缺失的文件不作为有效锁投影。
-pub fn read(path: impl AsRef<Path>) -> Option<SessionLockInfo> {
-    read_record(path.as_ref()).ok().flatten().map(Into::into)
-}
-
-/// 释放锁；非 force 模式只允许锁的拥有进程执行。
-pub fn unlock(path: impl AsRef<Path>, force: bool) -> Result<bool, CoreError> {
-    let path = path.as_ref();
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(CoreError::Io(error)),
-    };
-    if force {
-        // 回收途中崩溃会留下认领文件；force 解锁同时清理它，否则后续会话无法取得锁。
-        let _ = fs::remove_file(claim_path(path));
-        return match fs::remove_file(path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(CoreError::Io(error)),
-        };
-    }
-    let record: LockRecord = serde_json::from_slice(&bytes)
-        .map_err(|_| CoreError::Session("SESSION_LOCKED: 锁记录损坏，需要 force 解锁".into()))?;
-    if record.pid != std::process::id() {
-        return Err(CoreError::Session(format!(
-            "SESSION_LOCKED: 锁由进程 {} 持有",
-            record.pid
-        )));
-    }
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(CoreError::Io(error)),
-    }
-}
-
-fn read_record(path: &Path) -> Result<Option<LockRecord>, CoreError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(CoreError::Io(error)),
-    };
-    Ok(serde_json::from_slice(&bytes).ok())
 }
 
 fn process_name() -> Option<String> {
-    fs::read_to_string("/proc/self/comm")
+    std::fs::read_to_string("/proc/self/comm")
         .ok()
         .map(|name| name.trim().to_owned())
         .filter(|name| !name.is_empty())
@@ -233,153 +156,79 @@ fn process_name() -> Option<String> {
         })
 }
 
-#[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else {
-        return false;
-    };
-    if pid <= 0 {
-        return false;
-    }
-    // SAFETY: `pid` is positive and range-checked; signal 0 checks process existence without sending a signal.
-    let result = unsafe { libc::kill(pid, 0) };
-    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-#[cfg(windows)]
-fn pid_is_alive(pid: u32) -> bool {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, SYNCHRONIZATION_SYNCHRONIZE, WaitForSingleObject,
-    };
-
-    if pid == 0 {
-        return false;
-    }
-    // SAFETY: 只请求等待权限，PID 来自锁文件并作为 Windows 进程标识传入。
-    let raw_process = unsafe { OpenProcess(SYNCHRONIZATION_SYNCHRONIZE, 0, pid) };
-    if raw_process.is_null() {
-        return std::io::Error::last_os_error().raw_os_error()
-            != Some(ERROR_INVALID_PARAMETER as i32);
-    }
-    // SAFETY: OpenProcess 返回的非空句柄由当前函数独占，交给 OwnedHandle 接管。
-    let process = unsafe { OwnedHandle::from_raw_handle(raw_process) };
-    // 只有进程句柄变为 signaled 才能确认退出；等待失败时保守地保持锁有效。
-    unsafe { WaitForSingleObject(process.as_raw_handle(), 0) != 0 }
-}
-
-#[cfg(all(not(unix), not(windows)))]
-fn pid_is_alive(pid: u32) -> bool {
-    pid == std::process::id()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn lock_is_exclusive_and_only_its_owner_can_unlock() {
+    fn lock_is_exclusive_and_released_on_drop() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("ses_123.lock");
         let guard = SessionLockGuard::acquire(&path, "tui").expect("取得锁");
-        assert_eq!(read(&path).expect("锁投影").pid, std::process::id());
-        assert!(SessionLockGuard::acquire(&path, "webui").is_err());
-        assert!(unlock(&path, false).expect("拥有者释放"));
-        assert!(read(&path).is_none());
-        drop(guard);
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn stale_lock_reclaim_never_removes_a_lock_created_meanwhile() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("ses_123.lock");
-        let stale = LockRecord {
-            pid: std::process::id().saturating_add(1_000_000),
-            frontend: "crashed".into(),
-            process_name: None,
-            acquired_at_ms: 1,
-        };
-        fs::write(&path, serde_json::to_vec(&stale).expect("锁记录 JSON")).expect("写陈旧锁");
-        // 进程 A 读到陈旧记录；随后进程 B 完成回收并建立自己的锁。
-        let observed = read_record(&path).expect("读取").expect("陈旧记录");
-        assert!(!pid_is_alive(observed.pid));
-        let guard = SessionLockGuard::acquire(&path, "webui").expect("进程 B 取得锁");
-        assert_eq!(read(&path).expect("锁投影").pid, std::process::id());
-        // 进程 A 依据旧快照发起回收：必须识别出 B 的存活锁并放弃。
-        reclaim(&path).expect("回收请求完成");
+        assert_eq!(guard.info().pid, std::process::id());
+        assert_eq!(guard.info().frontend, "tui");
         assert!(
-            read(&path).is_some_and(|lock| lock.pid == std::process::id()),
-            "落败的回收不得删除持有者的锁文件"
+            SessionLockGuard::acquire(&path, "webui").is_err(),
+            "同一文件只允许一个写租约"
         );
-        let error = SessionLockGuard::acquire(&path, "tui")
-            .err()
-            .expect("B 持锁时 A 不得取得锁");
-        assert!(error.to_string().contains("SESSION_LOCKED"), "{error}");
-        assert!(read(&path).is_some(), "失败的取得不得删除持有者的锁文件");
         drop(guard);
-        assert!(!path.exists());
-        assert!(!claim_path(&path).exists());
-    }
-
-    #[test]
-    fn force_unlock_removes_a_claim_left_by_a_crashed_reclaim() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("ses_123.lock");
-        let stale = LockRecord {
-            pid: std::process::id().saturating_add(1_000_000),
-            frontend: "crashed".into(),
-            process_name: None,
-            acquired_at_ms: 1,
-        };
-        fs::write(&path, serde_json::to_vec(&stale).expect("锁记录 JSON")).expect("写陈旧锁");
-        fs::write(claim_path(&path), stale.pid.to_string()).expect("写认领文件");
-        assert!(unlock(&path, true).expect("强制释放"));
-        assert!(!path.exists());
         assert!(
-            !claim_path(&path).exists(),
-            "force 解锁必须清理残留认领文件"
+            SessionLockGuard::acquire(&path, "webui").is_ok(),
+            "释放后可以重新取得"
         );
     }
 
     #[test]
-    fn reclaim_leaves_a_stale_lock_that_cannot_be_claimed_untouched() {
+    fn read_reports_the_live_holder_and_nothing_after_release() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("ses_123.lock");
+        let guard = SessionLockGuard::acquire(&path, "tui").expect("取得锁");
+        let projected = read(&path).expect("有人持有时必须给出投影");
+        assert_eq!(projected.pid, std::process::id());
+        assert_eq!(projected.frontend, "tui");
+        drop(guard);
+        assert!(read(&path).is_none(), "释放后不得再报持有者");
+        assert!(path.exists(), "锁文件应当常驻，不随释放删除");
+    }
+
+    #[test]
+    fn leftover_record_without_a_holder_is_not_reported_as_locked() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("ses_123.lock");
         let stale = LockRecord {
             pid: std::process::id().saturating_add(1_000_000),
             frontend: "crashed".into(),
-            process_name: None,
-            acquired_at_ms: 1,
-        };
-        fs::write(&path, serde_json::to_vec(&stale).expect("锁记录 JSON")).expect("写陈旧锁");
-        // 认领文件内容不可读时保守失败：宁可要求 force 解锁，也不能误删他人认领。
-        fs::write(claim_path(&path), b"").expect("写空认领文件");
-        reclaim(&path).expect("回收请求完成");
-        assert!(read(&path).is_some(), "无法认领时不得删除陈旧锁");
-        fs::remove_file(claim_path(&path)).expect("清理认领文件");
-        reclaim(&path).expect("回收请求完成");
-        assert!(read(&path).is_none(), "认领成功后必须删除陈旧锁");
-    }
-
-    #[test]
-    fn force_unlock_removes_foreign_and_stale_records() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("ses_123.lock");
-        let foreign = LockRecord {
-            pid: std::process::id().saturating_add(1_000_000),
-            frontend: "desktop".into(),
             process_name: Some("dead".into()),
             acquired_at_ms: 1,
         };
-        fs::write(&path, serde_json::to_vec(&foreign).expect("锁记录 JSON")).expect("写陈旧锁");
-        assert!(unlock(&path, false).is_err());
-        assert!(unlock(&path, true).expect("强制释放"));
-        fs::write(&path, b"not json").expect("写损坏锁");
-        assert!(unlock(&path, false).is_err());
-        assert!(unlock(&path, true).expect("强制删除损坏锁"));
-        assert!(!path.exists());
-        assert!(read(&path).is_none());
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("写陈旧锁");
+        write_record(&mut file, &stale).expect("写记录");
+        drop(file);
+        assert!(
+            read(&path).is_none(),
+            "没有内核锁的残留记录不得被当成持有者"
+        );
+        let guard = SessionLockGuard::acquire(&path, "webui").expect("残留文件不阻塞新租约");
+        assert_eq!(read(&path).expect("新租约投影").frontend, "webui");
+        drop(guard);
+    }
+
+    #[test]
+    fn damaged_record_still_blocks_and_reports_unknown_holder() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("ses_123.lock");
+        let guard = SessionLockGuard::acquire(&path, "tui").expect("取得锁");
+        std::fs::write(&path, b"not json").expect("写坏记录");
+        let error = SessionLockGuard::acquire(&path, "webui")
+            .err()
+            .expect("锁仍然有效");
+        assert!(error.to_string().contains("SESSION_LOCKED"), "{error}");
+        drop(guard);
     }
 }

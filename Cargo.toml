@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-openviking", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui"]
+members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-openviking", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
 default-members = ["crates/moc-cli", "crates/moc-tui"]
 
 [workspace.dependencies]
@@ -35,6 +35,8 @@ libc = "0.2"
 windows-sys = "0.61.2"
 uuid = { version = "1", features = ["v7"] }
 parking_lot = "0.12"
+# 跨进程文件锁：会话写租约走 flock/LockFileEx，进程死亡由内核释放。
+fs4 = { version = "1.1", features = ["sync"] }
 futures-util = "0.3"
 rayon = "1"
 tempfile = "3"

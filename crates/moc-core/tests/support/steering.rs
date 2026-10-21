@@ -267,6 +267,7 @@ async fn unsteer_removes_pending_steering_before_boundary() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .unwrap();

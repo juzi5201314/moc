@@ -149,6 +149,7 @@ async fn spawn_wait_returns_yield_report() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: child_id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("child transcript 可加载");
@@ -240,6 +241,7 @@ async fn missing_yield_reminds_three_times_then_falls_back() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: child_id,
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("child transcript 可加载");
@@ -390,6 +392,7 @@ async fn message_routes_running_as_injected_and_idle_as_woken() {
         .call::<SessionLoad>(SessionLoadParams {
             session_id: child_id.clone(),
             max_entries: None,
+            read_only: false,
         })
         .await
         .expect("child transcript 可加载");

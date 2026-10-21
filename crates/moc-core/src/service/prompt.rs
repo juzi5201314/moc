@@ -56,9 +56,9 @@ pub(crate) async fn run_prompt_with_lock(
     let session_id = params.session_id.clone();
     let _prompt = prompt;
     let _epoch = inner.config_epoch.read().await;
-    let mut file_lock = inner
+    inner
         .sessions
-        .acquire_lock(&params.session_id, &ctx.client().frontend)
+        .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
         .await
         .map_err(to_rpc)?;
     let update = ctx.updates();
@@ -66,9 +66,7 @@ pub(crate) async fn run_prompt_with_lock(
         .emit(
             params.session_id.clone(),
             SessionUpdate::LockChanged {
-                lock: file_lock
-                    .as_ref()
-                    .map(crate::session::lock::SessionLockGuard::info),
+                lock: inner.sessions.lease_info(&params.session_id, &record),
             },
         )
         .await
@@ -179,21 +177,11 @@ pub(crate) async fn run_prompt_with_lock(
     crate::agents::drain_inbox(&inner, &update, &session_id, true)
         .await
         .map_err(to_rpc)?;
-    file_lock.take();
-    let unlocked = update
-        .emit(
-            session_id.clone(),
-            SessionUpdate::LockChanged { lock: None },
-        )
-        .await
-        .map_err(protocol_to_rpc);
+    // 写租约不随提示结束释放：它属于「这个 core 进程打开了该会话」，由 unload 或进程
+    // 退出释放，否则另一个进程可以在两次提示之间抢走会话。
     match result {
         Err(error) => Err(error),
-        Ok(outcome) => {
-            // 完成推送和解锁广播都是通知，任何一个失败都要告诉客户端本次提示没有完整交付。
-            unlocked?;
-            finished.map_or(Ok(outcome), Err)
-        }
+        Ok(outcome) => finished.map_or(Ok(outcome), Err),
     }
 }
 

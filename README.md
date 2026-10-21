@@ -1,10 +1,11 @@
 # moc
 
-Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降级为行式交互；也支持一次性非交互输出，方便脚本与 CI 集成。
+Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降级为行式交互；`moc web` 提供浏览器前端，`--print` 支持一次性非交互输出，方便脚本与 CI 集成。
 
 ## 特性
 
-- **双前端**：TUI（默认）与行式交互按需切换；`--print` 支持脚本化调用
+- **多前端**：TUI（默认）、浏览器（`moc web`）与行式交互按需切换；每个前端进程内嵌一个 core
+- **多进程安全**：同一会话可以被多个进程打开，写租约保证同一时刻只有一个写者，其余前端只读降级
 - **多供应商**：OpenAI、Anthropic 及兼容 OpenAI 协议的网关均可接入
 - **代码工具**：`read` / `edit` / `write` / `bash` / `grep` / `find`，编辑前带结构化 diff 预览与确认
 - **联网工具**：`web_search`（Tavily）与 `web_fetch`（本地抓取，HTML 转 Markdown；无需密钥，GitHub/docs.rs/MDN/arXiv/npm/PyPI 结构化）
@@ -42,12 +43,14 @@ shell 选择：Unix 上只接受 bash/zsh（fish/nushell 等回退 bash）；Win
 
 ```bash
 moc                           # 启动 TUI（默认）
+moc web                       # 启动浏览器前端（默认 127.0.0.1:7432）
 moc --print "问题"            # 一次性非交互输出
 moc --list                    # 查看会话列表
 moc --resume <id>             # 恢复历史会话
 ```
 
 行式前端的日志写 stderr，stdout 只输出应答正文。需要调试时设置 `RUST_LOG=debug`。
+浏览器前端的架构、令牌与跨进程写租约见 [docs/web.md](docs/web.md)。
 
 ## 常用交互
 
@@ -87,4 +90,5 @@ cargo build         # 调试构建
 - `crates/moc-protocol` — JSON-RPC 协议层
 - `crates/moc-llm` — LLM 传输与编解码
 - `crates/moc-tui` — 终端 TUI 前端
+- `crates/moc-web` — 浏览器前端（axum + WebSocket 桥）
 - `crates/moc-cli` — 命令行入口与 `moc-ptc-worker` 二进制

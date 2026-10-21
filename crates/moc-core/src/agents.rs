@@ -229,6 +229,11 @@ pub(crate) async fn spawn(
             SessionOrigin::spawned(session_id.clone()),
         )
         .await?;
+    let record = inner.sessions.get(&session.id).await?;
+    inner
+        .sessions
+        .ensure_write_lease(&session.id, &record, &request.client().frontend)
+        .await?;
     let info = info_from_session(&session, AgentStatus::Queued);
     let cancel = child_cancel(&inner, &session_id).await;
     prepare_agent(&inner, &info, cancel.clone()).await;

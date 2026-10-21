@@ -136,6 +136,8 @@ pub struct App {
     pub events: UnboundedSender<AppEvent>,
     /// 当前会话信息（模型、模式、cwd 都从这里读）。
     pub session: Option<SessionInfo>,
+    /// 当前会话是只读打开：另一个 core 进程持有写租约，本前端不能发提示或改状态。
+    pub read_only: bool,
     /// 当前平台可用的沙盒模式；`/permission` 与设置页据此过滤。
     pub sandbox_modes: Vec<SessionPermission>,
     /// 可选模型集合（`config/get` 拉取，/model 菜单与 statusline 用）。
@@ -428,6 +430,7 @@ impl App {
             theme,
             events,
             session: None,
+            read_only: false,
             sandbox_modes: vec![SessionPermission::Full],
             models: Vec::new(),
             blocks: Vec::new(),
@@ -1257,6 +1260,8 @@ impl App {
         let clm_active = info.mode == SessionMode::ClmExperimental;
         let session_id = info.id.clone();
         self.reset_prompt_state();
+        // 默认按可写处理；只读加载由 `AppEvent::Loaded` 在处理完本函数后标回。
+        self.read_only = false;
         self.compaction_progress = None;
         self.prompt_running = self.inflight_prompts.contains(&session_id);
         self.usage = Usage::default();
