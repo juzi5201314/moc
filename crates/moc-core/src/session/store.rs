@@ -61,45 +61,48 @@ impl SessionFile {
 
     /// 在目标路径创建 transcript 文件，并把 header 写成第一行。
     ///
-    /// 供延迟写盘使用：目录按需创建，`create_new` 保证并发时只有一个写入者成功，
-    /// 另一个因文件已存在而报错（上层互斥锁会避免这种情况）。
+    /// 供延迟写盘使用：目录按需创建，header 先写临时文件再 rename 发布，崩溃不会留下
+    /// 打不开的半条 header。同 id 并发创建由目标已存在的检查拒绝（上层互斥锁会避免）。
     pub async fn create_with_header(path: &Path, header: &Entry) -> Result<Self, CoreError> {
         let parent = path
             .parent()
             .ok_or_else(|| CoreError::Session("transcript 路径缺少父目录".into()))?;
         fs::create_dir_all(parent).await?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create_new(true)
-            .open(path)
-            .await?;
-        let mut revision = crate::hashline::SnapshotId {
-            device: 0,
-            inode: 0,
-            modified_secs: 0,
-            modified_nanos: 0,
-            changed_secs: 0,
-            changed_nanos: 0,
-            size: 0,
-            content_hash: 0,
-        };
-        let mut line = serde_json::to_vec(header).map_err(|error| {
-            CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
-        })?;
-        line.push(b'\n');
-        let write_result = async {
+        if fs::try_exists(path).await? {
+            return Err(CoreError::Session(format!(
+                "transcript 已存在：{}",
+                path.display()
+            )));
+        }
+        let temp = path.with_extension(format!("jsonl.{}.tmp", crate::ids::entry_id()));
+        let result = async {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .await?;
+            let mut line = serde_json::to_vec(header).map_err(|error| {
+                CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
+            })?;
+            line.push(b'\n');
             file.write_all(&line).await?;
             file.flush().await?;
-            revision = crate::hashline::SnapshotId::from_metadata(&file.metadata().await?);
+            file.sync_data().await?;
+            drop(file);
+            fs::rename(&temp, path).await?;
             Ok::<(), CoreError>(())
         }
         .await;
-        if let Err(error) = write_result {
-            drop(file);
-            let _ = fs::remove_file(path).await;
-            return Err(error);
+        if result.is_err() {
+            let _ = fs::remove_file(&temp).await;
         }
+        result?;
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path)
+            .await?;
+        let revision = crate::hashline::SnapshotId::from_metadata(&file.metadata().await?);
         Ok(Self {
             path: path.to_owned(),
             file: tokio::sync::Mutex::new(Some(file)),
@@ -135,6 +138,9 @@ impl SessionFile {
     }
 
     /// 追加一条完整的 JSONL 记录并 flush；磁盘文件不存在时先用 header 重建。
+    ///
+    /// 写入或刷写失败时把文件截回写入前的长度：调用方会重试同一个批次，留下半条记录
+    /// 会让下一次追加粘到残尾，产生无法解析的中间行。
     pub async fn append(&self, entry: &Entry, header: Option<&Entry>) -> Result<(), CoreError> {
         let mut line = serde_json::to_vec(entry).map_err(|error| {
             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
@@ -166,11 +172,62 @@ impl SessionFile {
             }
         }
         let handle = file.as_mut().expect("延迟创建之后一定已有句柄");
-        handle.write_all(&line).await?;
-        handle.flush().await?;
+        let before = handle.metadata().await?.len();
+        if let Err(error) = async {
+            handle.write_all(&line).await?;
+            handle.flush().await?;
+            Ok::<(), std::io::Error>(())
+        }
+        .await
+        {
+            handle.set_len(before).await?;
+            handle.flush().await?;
+            return Err(error.into());
+        }
         *self.revision.write() =
             crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
         Ok(())
+    }
+
+    /// 截掉最后一个不完整行，返回是否发生截断。
+    ///
+    /// 只在调用方持有写租约时使用：崩溃可能留下半条记录，读取时忽略它并不代表文件可以
+    /// 继续追加，残留字节会让下一条记录粘成坏行。最后一个完整行之后的字节一律丢弃。
+    pub async fn truncate_partial_tail(&self) -> Result<bool, CoreError> {
+        const SCAN_CHUNK: u64 = 64 * 1024;
+        let mut file = self.file.lock().await;
+        let Some(handle) = file.as_mut() else {
+            return Ok(false);
+        };
+        let length = handle.metadata().await?.len();
+        if length == 0 {
+            return Ok(false);
+        }
+        let mut reader = handle.try_clone().await?;
+        let mut end = length;
+        let newline = loop {
+            let start = end.saturating_sub(SCAN_CHUNK);
+            let mut chunk =
+                vec![0u8; usize::try_from(end - start).expect("块大小可落入 usize")];
+            tokio::io::AsyncSeekExt::seek(&mut reader, std::io::SeekFrom::Start(start)).await?;
+            tokio::io::AsyncReadExt::read_exact(&mut reader, &mut chunk).await?;
+            if let Some(offset) = chunk.iter().rposition(|byte| *byte == b'\n') {
+                break Some(start + offset as u64);
+            }
+            if start == 0 {
+                break None;
+            }
+            end = start;
+        };
+        let keep = newline.map_or(0, |offset| offset + 1);
+        if keep == length {
+            return Ok(false);
+        }
+        handle.set_len(keep).await?;
+        handle.flush().await?;
+        *self.revision.write() =
+            crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+        Ok(true)
     }
 
     /// 原子替换整个 transcript；rename 前先刷写并 fsync 临时文件。
@@ -774,6 +831,67 @@ mod tests {
         assert_eq!(broken.title, "损坏行之后的标题");
         assert_eq!(broken.updated_at_ms, 4);
         assert!(listed.iter().any(|info| info.id == "ses_healthy0001"));
+    }
+
+    /// 崩溃留下的半条记录：读取时忽略，拿到写租约后截掉才能继续追加。
+    #[tokio::test]
+    async fn truncate_partial_tail_discards_an_unterminated_record() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let store = SessionStore::new(directory.path());
+        let paths = store.paths_for(Path::new("/tmp/project"), "ses_partial00001", 1);
+        write_session(&paths, "ses_partial00001").await;
+
+        let mut bytes = std::fs::read(&paths.transcript).expect("读取 JSONL");
+        let complete = bytes.len() as u64;
+        // 半条 UTF-8 记录：模拟进程在 write_all 中途退出。
+        bytes.extend_from_slice("{\"type\":\"message\",\"text\":\"半".as_bytes());
+        std::fs::write(&paths.transcript, &bytes).expect("写入残尾");
+
+        let entries = store.read_entries(&paths).await.expect("读取完整前缀");
+        assert_eq!(entries.len(), 2, "残尾不参与解析");
+        assert_eq!(
+            std::fs::metadata(&paths.transcript).unwrap().len(),
+            bytes.len() as u64,
+            "只读读取不得修改文件"
+        );
+
+        let file = store.open(&paths).await.expect("打开可写日志");
+        assert!(file.truncate_partial_tail().await.expect("截尾"));
+        assert_eq!(
+            std::fs::metadata(&paths.transcript).unwrap().len(),
+            complete
+        );
+        assert!(
+            !file.truncate_partial_tail().await.expect("再截一次"),
+            "完整文件无需修复"
+        );
+
+        let header = Entry::header(
+            "ses_partial00001".into(),
+            "/tmp/project".into(),
+            "p/m".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "续写".into(),
+            20,
+        );
+        let appended = Entry::from_payload(
+            crate::session::entries::EntryPayload::Message {
+                message: moc_llm::Message::user_text("续写"),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            entries[1].id().to_owned(),
+            21,
+        );
+        file.append(&appended, Some(&header))
+            .await
+            .expect("截尾后继续追加");
+        let after = store.read_entries(&paths).await.expect("重新解析");
+        assert_eq!(after.len(), 3, "续写记录没有粘到残尾上");
+        crate::session::state::SessionState::from_entries(after).expect("parent 链完整");
     }
 
     /// 写一份最小可列出的会话日志：header 加一条消息。
