@@ -19,13 +19,18 @@ use super::wrap::{str_width, wrap_text};
 use super::{PROSE_INDENT, TITLE_INDENT};
 use crate::app::{App, ChartHit, ImageSlot, SlotSource};
 use crate::theme::Theme;
-use crate::transcript::{Block, DetailLevel, Entry, MAX_TOOL_IMAGES, ToolCallBlock};
+use crate::transcript::{
+    Block, DetailLevel, Entry, MAX_TOOL_IMAGES, ToolBody, ToolCallBlock, tool_body_policy,
+};
 
 /// 简略档的思考预览行数（取正文末尾若干行）。
 pub(crate) const BRIEF_THINKING_ROWS: usize = 4;
 
 /// 简略档的工具正文行数上限（超出补一行省略提示）。
 const BRIEF_BODY_ROWS: usize = 6;
+
+/// 简略档 bash 结果保留的末尾输出行数（命令行独占一行，不计入这里）。
+const BASH_BRIEF_OUTPUT_ROWS: usize = 4;
 
 /// 完整档的正文行数上限：等同于「不截断」（core 侧输出预算与
 /// [`diff::MAX_RENDERED_ROWS`] 已先行收窄），只用来把不限变成有限的算术上界，
@@ -493,17 +498,13 @@ fn estimate_tool_batch_height(
     width: usize,
 ) -> usize {
     let mut rows = tools.len() + 3 + usize::from(!first);
-    if level == DetailLevel::Hidden {
-        return rows;
-    }
     let inner_width = width.saturating_sub(BATCH_BODY_INDENT);
-    let limit = brief_limit(level);
     for tool in tools {
         if !tool.has_body() {
             continue;
         }
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        rows += tool_body_rows(tool, &args, app, inner_width, limit);
+        rows += tool_body_rows(tool, &args, app, inner_width, level);
     }
     rows
 }
@@ -667,7 +668,7 @@ fn estimate_todo_height(phases: &[moc_protocol::methods::TodoPhase], width: usiz
 }
 
 /// 工具块高度：无正文工具有一行标题；有正文工具是
-/// 标题 +（隐藏档无正文）+（耗时尾注）+ 尾随留白，与 [`render_tool`] 同规则。
+/// 标题 + 正文行 +（耗时尾注）+ 尾随留白，与 [`render_tool`] 同规则。
 fn estimate_tool_height(
     tool: &ToolCallBlock,
     app: &App,
@@ -677,15 +678,24 @@ fn estimate_tool_height(
     if !tool.has_body() {
         return 1;
     }
-    let body = if level == DetailLevel::Hidden {
-        0
-    } else {
-        let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        tool_body_rows(tool, &args, app, width, brief_limit(level))
-    };
+    // read 的成功结果只在完整档展开；隐藏／简略档收起为单行标题（不留给白与耗时）。
+    if tool_body_policy(&tool.name) == ToolBody::FullOnly
+        && !tool_is_error(tool)
+        && level != DetailLevel::Full
+    {
+        return 1;
+    }
+    let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
+    let body = tool_body_rows(tool, &args, app, width, level);
     body.saturating_add(1)
         .saturating_add(usize::from(tool.duration_ms.is_some()))
         .saturating_add(1)
+}
+
+/// 工具是否以失败终态结束；运行中（`status: None`）不算失败。
+fn tool_is_error(tool: &ToolCallBlock) -> bool {
+    tool.status
+        .is_some_and(|status| status != moc_protocol::methods::ToolStatus::Completed)
 }
 
 /// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
@@ -774,7 +784,7 @@ const BATCH_BODY_INDENT: usize = TITLE_INDENT + 4;
 /// 同一模型响应中的同名工具合并为一个树形批次。
 ///
 /// 档位取组首块的层档位（组内其余成员不单独渲染标题行，不参与档位判定）；
-/// `Hidden` 时只留摘要行。
+/// 每个成员是否追加正文、追加几行，由该成员的工具策略与档位共同决定。
 fn render_tool_batch(
     app: &App,
     tools: &[&ToolCallBlock],
@@ -799,7 +809,6 @@ fn render_tool_batch(
             Style::new().fg(theme.gray_bright),
         ),
     ]));
-    let limit = brief_limit(level);
     for (offset, tool) in tools.iter().enumerate() {
         let branch = if offset + 1 == tools.len() {
             "└─"
@@ -811,7 +820,7 @@ fn render_tool_batch(
             Span::raw(format!("  {branch} ")),
             Span::styled(tool_summary(tool, &args), Style::new().fg(theme.path)),
         ]));
-        if level == DetailLevel::Hidden {
+        if !tool.has_body() {
             continue;
         }
         let indent = Span::raw(" ".repeat(BATCH_BODY_INDENT));
@@ -821,7 +830,7 @@ fn render_tool_batch(
             &args,
             app,
             width.saturating_sub(BATCH_BODY_INDENT),
-            limit,
+            level,
             spawn_images,
         );
         for line in body {
@@ -849,8 +858,8 @@ fn render_tool_batch(
     }
 }
 
-/// 该档位的正文行上限（隐藏档没有正文）。
-fn brief_limit(level: DetailLevel) -> usize {
+/// 普通正文的展示行上限；隐藏档为 0（计数型工具走独立的计数分支）。
+fn content_limit(level: DetailLevel) -> usize {
     match level {
         DetailLevel::Hidden => 0,
         DetailLevel::Brief => BRIEF_BODY_ROWS,
@@ -1236,7 +1245,7 @@ fn indent_tool_lines(mut lines: Vec<Line<'static>>, depth: usize) -> Vec<Line<'s
     lines
 }
 
-/// 工具块：标题行 + 正文（隐藏档或无正文工具只留标题行）。
+/// 工具块：标题行 + 正文；正文行数与耗时尾注由工具策略和档位共同决定。
 fn render_tool(
     tool: &ToolCallBlock,
     app: &App,
@@ -1279,20 +1288,22 @@ fn render_tool(
     if !tool.has_body() {
         return EntryLines::plain(indent_tool_lines(lines, depth));
     }
-    let mut images = Vec::new();
-    if level != DetailLevel::Hidden {
-        let base = lines.len();
-        let (body, mut placements) =
-            tool_body(tool, &args, app, width, brief_limit(level), spawn_images);
-        lines.extend(body);
-        for placement in &mut placements {
-            placement.row += base;
-            // 嵌套调用（PTC）整体右移，图片跟着正文一起缩进
-            placement.x = placement
-                .x
-                .saturating_add(u16::try_from(depth * 2).unwrap_or(u16::MAX));
-        }
-        images = placements;
+    // read 的成功结果只在完整档展开；隐藏／简略档收起为单行标题，不留给白与耗时。
+    if tool_body_policy(&tool.name) == ToolBody::FullOnly
+        && !tool_is_error(tool)
+        && level != DetailLevel::Full
+    {
+        return EntryLines::plain(indent_tool_lines(lines, depth));
+    }
+    let base = lines.len();
+    let (body, mut placements) = tool_body(tool, &args, app, width, level, spawn_images);
+    lines.extend(body);
+    for placement in &mut placements {
+        placement.row += base;
+        // 嵌套调用（PTC）整体右移，图片跟着正文一起缩进
+        placement.x = placement
+            .x
+            .saturating_add(u16::try_from(depth * 2).unwrap_or(u16::MAX));
     }
     // 尾注：耗时；尾随留白（失败原因由正文承载）
     if let Some(duration) = tool.duration_ms {
@@ -1305,28 +1316,51 @@ fn render_tool(
     EntryLines {
         lines: indent_tool_lines(lines, depth),
         tables: Vec::new(),
-        images,
+        images: placements,
     }
 }
 
 /// 工具正文行（不含标题、耗时尾注与留白，无缩进）。
 ///
-/// `limit` 是**内容行**上限，由 [`brief_limit`] 按档位给出；被略去的内容折算成
-/// 一行 `⋯ 还有 N 行` 追在最后（`N` 按各分支的原生度量：结果文本按源行、
-/// diff 按 diff 行）。`bash`／`grep` 的结果取**尾部**（最新输出），命令行走首行。
+/// 档位与工具策略共同决定正文：`Count` 在隐藏／简略档只报数量，`FullOnly`
+/// 只在完整档展开；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
+/// `⋯ 还有 N 行`（`bash` 结果取尾部最新输出，`grep` 等文本结果取开头）。
 fn tool_body(
     tool: &ToolCallBlock,
     args: &Value,
     app: &App,
     width: usize,
-    limit: usize,
+    level: DetailLevel,
     spawn_images: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let theme = app.theme;
     let inner_width = width.saturating_sub(4);
-    let is_error = tool
-        .status
-        .is_some_and(|status| status != moc_protocol::methods::ToolStatus::Completed);
+    let is_error = tool_is_error(tool);
+    let policy = tool_body_policy(&tool.name);
+
+    // 计数型工具：隐藏、简略档只报结果数量；失败时仍回落到错误正文。
+    if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
+        let mut lines = Vec::new();
+        if let Some(result) = tool.result.as_deref()
+            && let Some(text) = tool_count_text(tool, result)
+        {
+            lines.push(Line::from(Span::styled(
+                truncate_to_width(format!("  {text}"), width),
+                Style::new().fg(theme.gray_dim),
+            )));
+        }
+        return (lines, Vec::new());
+    }
+    // read 的隐藏、简略档没有正文。
+    if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
+        return (Vec::new(), Vec::new());
+    }
+    // 其余工具在隐藏档没有正文（计数型已在上面返回）。
+    if level == DetailLevel::Hidden {
+        return (Vec::new(), Vec::new());
+    }
+
+    let limit = content_limit(level);
     let mut lines = Vec::new();
     let mut dropped = 0usize;
 
@@ -1340,19 +1374,33 @@ fn tool_body(
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let (shown_command, command_dropped) = head_lines(command, limit);
-        for (index, row) in wrap_text(&shown_command, inner_width.saturating_sub(2))
-            .into_iter()
-            .enumerate()
-        {
+        if level == DetailLevel::Full {
+            let (shown_command, command_dropped) = head_lines(command, limit);
+            for (index, row) in wrap_text(&shown_command, inner_width.saturating_sub(2))
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("{}{}", if index == 0 { "  $ " } else { "    " }, row),
+                    Style::new().fg(theme.command),
+                )));
+            }
+            dropped += command_dropped;
+        } else {
             lines.push(Line::from(Span::styled(
-                format!("{}{}", if index == 0 { "  $ " } else { "    " }, row),
+                format!(
+                    "  $ {}",
+                    single_line_command(command, inner_width.saturating_sub(4))
+                ),
                 Style::new().fg(theme.command),
             )));
         }
-        dropped += command_dropped;
         if let Some(result) = &tool.result {
-            let budget = limit.saturating_sub(lines.len());
+            let budget = if level == DetailLevel::Full {
+                limit.saturating_sub(lines.len())
+            } else {
+                BASH_BRIEF_OUTPUT_ROWS
+            };
             let rows = clamp_rows(
                 result,
                 inner_width.saturating_sub(2),
@@ -1373,7 +1421,7 @@ fn tool_body(
         }
     } else if tool.name == "grep" {
         if let Some(result) = &tool.result {
-            let rows = clamp_rows(result, inner_width.saturating_sub(2), limit, BodyEdge::Tail);
+            let rows = clamp_rows(result, inner_width.saturating_sub(2), limit, BodyEdge::Head);
             dropped += rows.dropped;
             lines.extend(rows.rows.into_iter().map(|text| {
                 Line::from(Span::styled(
@@ -1411,6 +1459,91 @@ fn tool_body(
     }
     let placements = tool_images(tool, app, width, spawn_images, &mut lines);
     (lines, placements)
+}
+
+/// grep／find 在隐藏、简略档的计数行文本；其它工具返回 `None`。
+fn tool_count_text(tool: &ToolCallBlock, result: &str) -> Option<String> {
+    match tool.name.as_str() {
+        "grep" => {
+            let (matches, files) = grep_counts(result);
+            Some(format!(
+                "{} · {}",
+                format_count(matches, "match", "matches"),
+                format_count(files, "file", "files")
+            ))
+        }
+        "find" => Some(format_count(find_file_count(result), "file", "files")),
+        _ => None,
+    }
+}
+
+/// 数量标签：单数用 `1 file`，其余用 `N files`。
+fn format_count(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// grep 结果里的匹配行与文件数。
+///
+/// 行格式由 core 固定为 `路径:行号:文本`（匹配）与 `路径-行号-文本`（上下文）。
+/// 从行首找第一个「分隔符 + 数字 + 同一分隔符」前缀：`:` 计为匹配，`-` 计为
+/// 上下文；这样上下文文本里的 `12:34:56` 不会被误当成匹配。`[` 开头的提示行跳过。
+fn grep_counts(result: &str) -> (usize, usize) {
+    let mut matches = 0usize;
+    let mut files = std::collections::BTreeSet::new();
+    for line in result.lines() {
+        if line.starts_with('[') {
+            continue;
+        }
+        if let Some((path, marker)) = grep_row_prefix(line)
+            && marker == b':'
+        {
+            matches += 1;
+            files.insert(path);
+        }
+    }
+    (matches, files.len())
+}
+
+/// 找 grep 结果行的「路径 + 分隔符 + 行号 + 分隔符」前缀。
+fn grep_row_prefix(line: &str) -> Option<(&str, u8)> {
+    let bytes = line.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if !matches!(*byte, b':' | b'-') {
+            continue;
+        }
+        let mut end = index + 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        if end > index + 1 && bytes.get(end) == Some(byte) {
+            return Some((&line[..index], *byte));
+        }
+    }
+    None
+}
+
+/// find 结果里的路径数；跳过空行与 core 追加的提示行。
+fn find_file_count(result: &str) -> usize {
+    result
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            !line.is_empty()
+                && line != "No files found matching pattern"
+                && !line.starts_with("[limit ")
+                && !line.starts_with("[Scan incomplete")
+        })
+        .count()
+}
+
+/// 把命令折成单行预览：换行与连续空白折叠成一个空格，再按宽度截断。
+fn single_line_command(command: &str, width: usize) -> String {
+    let flattened = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_to_width(flattened, width)
 }
 
 /// 把工具结果里的图片追加到正文行后，返回它们的落位。
@@ -1500,9 +1633,23 @@ fn tool_body_rows(
     args: &Value,
     app: &App,
     width: usize,
-    limit: usize,
+    level: DetailLevel,
 ) -> usize {
     let inner_width = width.saturating_sub(4);
+    let is_error = tool_is_error(tool);
+    let policy = tool_body_policy(&tool.name);
+
+    if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
+        return usize::from(tool.result.is_some());
+    }
+    if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
+        return 0;
+    }
+    if level == DetailLevel::Hidden {
+        return 0;
+    }
+
+    let limit = content_limit(level);
     let mut rows = 0usize;
     let mut dropped = 0usize;
 
@@ -1515,14 +1662,23 @@ fn tool_body_rows(
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let (shown_command, command_dropped) = head_lines(command, limit);
-        rows += wrap_text(&shown_command, inner_width.saturating_sub(2)).len();
-        dropped += command_dropped;
+        if level == DetailLevel::Full {
+            let (shown_command, command_dropped) = head_lines(command, limit);
+            rows += wrap_text(&shown_command, inner_width.saturating_sub(2)).len();
+            dropped += command_dropped;
+        } else {
+            rows += 1;
+        }
         if let Some(result) = &tool.result {
+            let budget = if level == DetailLevel::Full {
+                limit.saturating_sub(rows)
+            } else {
+                BASH_BRIEF_OUTPUT_ROWS
+            };
             let clamped = clamp_rows(
                 result,
                 inner_width.saturating_sub(2),
-                limit.saturating_sub(rows),
+                budget,
                 BodyEdge::Tail,
             );
             rows = rows.saturating_add(clamped.shown);
@@ -1530,7 +1686,7 @@ fn tool_body_rows(
         }
     } else if tool.name == "grep" {
         if let Some(result) = &tool.result {
-            let clamped = clamp_rows(result, inner_width.saturating_sub(2), limit, BodyEdge::Tail);
+            let clamped = clamp_rows(result, inner_width.saturating_sub(2), limit, BodyEdge::Head);
             rows += clamped.shown;
             dropped += clamped.dropped;
         }
@@ -1691,6 +1847,12 @@ fn wait_agent_rows_count(tool: &ToolCallBlock, limit: usize) -> (usize, usize) {
     (total.min(limit), total.saturating_sub(limit))
 }
 
+/// 模型给的 UI 描述：只取首个非空行，空串视为未提供。
+fn ui_description(args: &Value) -> Option<&str> {
+    let text = args.get("description").and_then(Value::as_str)?;
+    text.lines().map(str::trim).find(|line| !line.is_empty())
+}
+
 /// 标题行的参数摘要。
 fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
     match tool.name.as_str() {
@@ -1706,12 +1868,15 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                 .unwrap_or_default();
             format!("{path}{counts}")
         }
-        "bash" => args
-            .get("command")
-            .and_then(Value::as_str)
-            .and_then(|command| command.lines().next())
-            .unwrap_or_default()
-            .to_owned(),
+        "bash" => ui_description(args)
+            .map(str::to_owned)
+            .or_else(|| {
+                args.get("command")
+                    .and_then(Value::as_str)
+                    .and_then(|command| command.lines().next())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default(),
         "read" => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
             let offset = args.get("offset").and_then(Value::as_u64);
@@ -1808,6 +1973,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             .unwrap_or_default()
             .to_owned(),
         "job" | "write_plan" | "exit_plan" => String::new(),
+        "run_code" => ui_description(args).unwrap_or_default().to_owned(),
         _ => {
             // 未知工具：参数截断展示
             let text = tool.arguments.replace('\n', " ");
@@ -1821,7 +1987,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
 enum BodyEdge {
     /// 保留开头（命令预览等）。
     Head,
-    /// 保留结尾（bash／grep 结果的事件日志语义）。
+    /// 保留结尾（bash 输出只看最新几行）。
     Tail,
 }
 
@@ -1834,8 +2000,8 @@ struct TextRows {
 
 /// 结果文本的折行（每源行按宽度折行，`limit` 为展示行上限）。
 ///
-/// [`BodyEdge::Head`] 保留前段、[`BodyEdge::Tail`] 保留后段（bash／grep 的
-/// 输出只看最新几行）；渲染与懒渲染估算共用同一条截断规则，两条路径必须
+/// [`BodyEdge::Head`] 保留前段、[`BodyEdge::Tail`] 保留后段（bash 的输出
+/// 只看最新几行）；渲染与懒渲染估算共用同一条截断规则，两条路径必须
 /// 得出同一个行数。
 fn clamp_rows(result: &str, width: usize, limit: usize, edge: BodyEdge) -> TextRows {
     let width = width.max(8);
@@ -2584,19 +2750,19 @@ mod tests {
 
         app.tool_detail = DetailLevel::Brief;
         let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
-        // 标题 + 命令行 1 + 结果尾 5 + 省略提示 1 + 耗时 1 + 留白 1
-        assert_eq!(brief.len(), 10, "简略档行数固定");
+        // 标题 + 命令行 1 + 结果尾 4 + 省略提示 1 + 耗时 1 + 留白 1
+        assert_eq!(brief.len(), 9, "简略档行数固定");
         let brief_text = text_of(&brief);
         assert!(
-            brief_text.contains("⋯ 还有 195 行"),
+            brief_text.contains("⋯ 还有 196 行"),
             "略去行数按源行计：{brief_text}"
         );
         assert!(
-            brief_text.contains("line-195") && brief_text.contains("line-199"),
-            "bash 只留尾部最新几行：{brief_text}"
+            brief_text.contains("line-196") && brief_text.contains("line-199"),
+            "bash 只留尾部最新四行：{brief_text}"
         );
         assert!(
-            !brief_text.contains("line-194") && !brief_text.contains("line-0"),
+            !brief_text.contains("line-195") && !brief_text.contains("line-0"),
             "更早的输出被省略：{brief_text}"
         );
         assert_eq!(
@@ -2646,9 +2812,9 @@ mod tests {
         assert!(!title.contains("第二个问题"), "摘要不展开其余问题：{title}");
     }
 
-    /// read 这类「回显参数」工具在任何档位都只占一行，且摘要带行号范围。
+    /// read 在隐藏／简略档严格一行；完整档才展开正文。
     #[test]
-    fn read_tool_stays_one_line_at_every_level() {
+    fn read_tool_stays_one_line_until_full() {
         use moc_protocol::ToolResult;
         use moc_protocol::methods::ToolStatus;
 
@@ -2681,11 +2847,12 @@ mod tests {
             duration_ms: Some(5),
             diff: None,
         });
+        assert!(app.blocks[0].block.foldable(), "read 应可展开查看正文");
 
-        for level in [DetailLevel::Hidden, DetailLevel::Brief, DetailLevel::Full] {
+        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
             app.tool_detail = level;
             let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
-            assert_eq!(lines.len(), 1, "{level:?} 档 read 只占一行");
+            assert_eq!(lines.len(), 1, "{level:?} 档 read 严格一行");
             let text = lines[0]
                 .spans
                 .iter()
@@ -2697,6 +2864,36 @@ mod tests {
             );
             assert_eq!(estimate_entry_height_at(&app, 0, width), 1);
         }
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        assert_eq!(full.len(), 200 + 3, "完整档 = 标题 + 200 行 + 耗时 + 留白");
+        let full_text = full
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(full_text.contains("line-0") && full_text.contains("line-199"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+
+        // 简略档点击标题：就地展开为完整，再点一次收回。
+        app.tool_detail = DetailLevel::Brief;
+        app.blocks[0].toggle_level(DetailLevel::Brief);
+        assert_eq!(app.blocks[0].level_override, Some(DetailLevel::Full));
+        assert_eq!(
+            render_entry(0, &app.blocks[0], &app, width, true)
+                .lines
+                .len(),
+            full.len()
+        );
+        app.blocks[0].toggle_level(DetailLevel::Brief);
+        assert_eq!(app.blocks[0].level_override, None);
+        assert_eq!(
+            render_entry(0, &app.blocks[0], &app, width, true)
+                .lines
+                .len(),
+            1
+        );
 
         // 失败时正文是错误原因，仍可展开。
         app.finish_tool_block(ToolCallFinish {
@@ -2728,7 +2925,434 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
-    /// 嵌套调用与普通调用共用同一套块与摘要：参数进摘要，父调用决定缩进。
+    /// grep 在隐藏／简略档只报匹配数和文件数，不显示匹配正文。
+    #[test]
+    fn grep_brief_reports_counts_only() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        let arguments = r#"{"pattern":"alpha"}"#;
+        let result = "src/a.rs:1:alpha\nsrc/a.rs-2-2026-10-19 12:34:56\nsrc/b.rs:3:alpha beta\n[1 files, 2 matches shown; limit reached]";
+        app.start_tool_block(ToolCallStart {
+            id: "call_grep".into(),
+            name: "grep".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_grep".into(),
+            name: "grep".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_grep".into(),
+                content: result.into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(5),
+            diff: None,
+        });
+        assert!(app.blocks[0].block.foldable(), "grep 现在可以展开看正文");
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+            app.tool_detail = level;
+            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+            let text = text_of(&lines);
+            assert!(
+                text.contains("2 matches · 2 files"),
+                "{level:?} 档只报计数：{text}"
+            );
+            assert!(!text.contains("alpha beta"), "{level:?} 档不显示匹配正文");
+            assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+        }
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full_text = text_of(&full);
+        assert!(full_text.contains("alpha beta"), "完整档显示匹配正文");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+
+        // 零匹配同样给出计数行。
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_grep".into(),
+            name: "grep".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_grep".into(),
+                content: "No matches found".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(5),
+            diff: None,
+        });
+        app.tool_detail = DetailLevel::Brief;
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        assert!(text_of(&lines).contains("0 matches · 0 files"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+    }
+
+    /// find 在隐藏／简略档只报路径数，完整档才显示路径。
+    #[test]
+    fn find_brief_reports_file_count() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        let arguments = r#"{"glob":["**/*.rs"]}"#;
+        let result = "src/a.rs\nsrc/b.rs\nsrc/[weird].rs\n[limit 200 reached; narrow the glob]\n[Scan incomplete (time limit, scan-entry limit)]";
+        app.start_tool_block(ToolCallStart {
+            id: "call_find".into(),
+            name: "find".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_find".into(),
+            name: "find".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_find".into(),
+                content: result.into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(5),
+            diff: None,
+        });
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+            app.tool_detail = level;
+            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+            let text = text_of(&lines);
+            assert!(text.contains("3 files"), "{level:?} 档只报文件数：{text}");
+            assert!(!text.contains("src/a.rs"), "{level:?} 档不显示路径");
+            assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+        }
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        assert!(text_of(&full).contains("src/a.rs"), "完整档显示路径");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_find".into(),
+            name: "find".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_find".into(),
+                content: "No files found matching pattern".into(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(5),
+            diff: None,
+        });
+        app.tool_detail = DetailLevel::Brief;
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        assert!(text_of(&lines).contains("0 files"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+    }
+
+    /// bash 简略档 = description 标题 + 单行命令 + 末尾 4 行输出。
+    #[test]
+    fn bash_brief_uses_description_and_single_line_command() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        let arguments =
+            r#"{"description":"Search the renderer","command":"rg -n foo\n  crates/moc-tui/src"}"#;
+        let result = (0..10)
+            .map(|index| format!("out-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.start_tool_block(ToolCallStart {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_bash".into(),
+                content: result.clone(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(5),
+            diff: None,
+        });
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        app.tool_detail = DetailLevel::Brief;
+        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let brief_text = text_of(&brief);
+        assert_eq!(
+            brief.len(),
+            9,
+            "标题 + 命令 + 4 行输出 + 省略 + 耗时 + 留白"
+        );
+        assert!(
+            brief_text.contains("Search the renderer"),
+            "标题取 description"
+        );
+        assert!(
+            brief_text.contains("$ rg -n foo crates/moc-tui/src"),
+            "命令折成单行：{brief_text}"
+        );
+        assert!(
+            brief_text.contains("out-6") && brief_text.contains("out-9"),
+            "只留末尾 4 行：{brief_text}"
+        );
+        assert!(!brief_text.contains("out-5"), "更早输出被省略");
+        assert!(brief_text.contains("⋯ 还有 6 行"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
+
+        app.tool_detail = DetailLevel::Hidden;
+        let hidden = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let hidden_text = text_of(&hidden);
+        assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
+        assert!(hidden_text.contains("Search the renderer"));
+        assert!(!hidden_text.contains("rg -n"), "隐藏档不显示命令与输出");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full_text = text_of(&full);
+        assert!(
+            full_text.contains("crates/moc-tui/src"),
+            "完整档显示命令全文"
+        );
+        assert!(full_text.contains("out-0") && full_text.contains("out-9"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+    }
+
+    /// run_code 的标题只取 description，不再把脚本参数塞进标题。
+    #[test]
+    fn run_code_title_uses_description_not_script() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_tool_block(ToolCallStart {
+            id: "call_run".into(),
+            name: "run_code".into(),
+            parent_id: None,
+            arguments:
+                r#"{"code":"await tools.read({path:'x'})","description":"Read x for the summary"}"#
+                    .into(),
+        });
+        let lines = render_entry(0, &app.blocks[0], &app, 80, true).lines;
+        let title = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(title.contains("Read x for the summary"), "{title}");
+        assert!(!title.contains("await tools"), "标题不得回显脚本：{title}");
+        assert_eq!(estimate_entry_height_at(&app, 0, 80), lines.len());
+    }
+
+    /// 同批 grep 在隐藏／简略档逐成员报计数，不泄漏匹配正文。
+    #[test]
+    fn grep_batch_reports_counts_per_member() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        app.register_tool_batch("batch".into(), ["call_a".to_owned(), "call_b".to_owned()]);
+        for (id, pattern, result) in [
+            ("call_a", "alpha", "src/a.rs:1:alpha"),
+            ("call_b", "beta", "src/b.rs:2:beta\nsrc/c.rs:3:beta"),
+        ] {
+            let arguments = format!(r#"{{"pattern":"{pattern}"}}"#);
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "grep".into(),
+                parent_id: None,
+                arguments: arguments.clone(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: "grep".into(),
+                parent_id: None,
+                arguments,
+                status: ToolStatus::Completed,
+                result: ToolResult {
+                    tool_call_id: id.into(),
+                    content: result.into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(1),
+                diff: None,
+            });
+        }
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+            app.tool_detail = level;
+            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+            let text = text_of(&lines);
+            assert!(text.contains("1 match · 1 file"), "{level:?}：{text}");
+            assert!(text.contains("2 matches · 2 files"), "{level:?}：{text}");
+            assert!(!text.contains("src/a.rs"), "{level:?} 不泄漏正文：{text}");
+            assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+        }
+    }
+
+    /// 同批 read 在简略／隐藏档也保持单行，不把正文漏进批次。
+    #[test]
+    fn read_batch_stays_one_line_per_member() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        app.register_tool_batch("batch".into(), ["call_a".to_owned(), "call_b".to_owned()]);
+        for (id, path, content) in [
+            ("call_a", "a.rs", "secret-a"),
+            ("call_b", "b.rs", "secret-b"),
+        ] {
+            let arguments = format!(r#"{{"path":"{path}"}}"#);
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "read".into(),
+                parent_id: None,
+                arguments: arguments.clone(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: "read".into(),
+                parent_id: None,
+                arguments,
+                status: ToolStatus::Completed,
+                result: ToolResult {
+                    tool_call_id: id.into(),
+                    content: content.into(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(1),
+                diff: None,
+            });
+        }
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        for level in [DetailLevel::Hidden, DetailLevel::Brief] {
+            app.tool_detail = level;
+            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+            let text = text_of(&lines);
+            assert!(text.contains("a.rs") && text.contains("b.rs"));
+            assert!(
+                !text.contains("secret-a") && !text.contains("secret-b"),
+                "{level:?} 档不得漏出 read 正文：{text}"
+            );
+            assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
+        }
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full_text = text_of(&full);
+        assert!(full_text.contains("secret-a") && full_text.contains("secret-b"));
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+    }
+
+    /// 没有 description 的手动 bash 仍用命令首行做标题。
+    #[test]
+    fn bash_title_falls_back_to_command_without_description() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.start_tool_block(ToolCallStart {
+            id: "call_bash".into(),
+            name: "bash".into(),
+            parent_id: None,
+            arguments: r#"{"command":"rg -n foo\ncrates/moc-tui/src"}"#.into(),
+        });
+        let lines = render_entry(0, &app.blocks[0], &app, 80, true).lines;
+        let title = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(title.contains("rg -n foo"), "回落到命令首行：{title}");
+        assert!(
+            !title.contains("crates/moc-tui/src"),
+            "摘要只取首行：{title}"
+        );
+    }
+
+    /// grep 结果计数：上下文行与提示行都不算匹配。
+    #[test]
+    fn grep_counts_match_rows_and_ignore_context() {
+        let result = "src/a.rs:1:alpha\nsrc/a.rs-2-2026-10-19 12:34:56\nsrc/b.rs:3:beta\n[1 files, 2 matches shown; limit reached]";
+        assert_eq!(grep_counts(result), (2, 2));
+        assert_eq!(grep_counts("No matches found"), (0, 0));
+        assert_eq!(grep_counts("src/a.rs:1:only"), (1, 1));
+    }
+
+    /// find 计数跳过 core 追加的提示行，但不误伤 `[` 开头的真实路径。
+    #[test]
+    fn find_count_skips_core_notices() {
+        let result = "src/a.rs\nsrc/[weird].rs\n[limit 200 reached; narrow the glob]\n[Scan incomplete (time limit)]";
+        assert_eq!(find_file_count(result), 2);
+        assert_eq!(find_file_count("No files found matching pattern"), 0);
+    }
+
     #[test]
     fn nested_tool_call_renders_like_a_normal_one() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();

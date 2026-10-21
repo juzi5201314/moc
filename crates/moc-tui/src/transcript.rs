@@ -400,13 +400,39 @@ impl Block {
 }
 
 impl ToolCallBlock {
-    /// 是否有值得展开的正文：无正文工具成功时只占一行；失败时正文是错误原因，仍可展开。
+    /// 是否可能在某个档位显示正文：决定块能否展开。
+    ///
+    /// 无正文工具成功时只占一行；失败时正文是错误原因，仍可展开。
     pub fn has_body(&self) -> bool {
-        tool_body_allowed(&self.name)
+        tool_body_policy(&self.name) != ToolBody::None
             || !self.images.is_empty()
             || self
                 .status
                 .is_some_and(|status| status != ToolStatus::Completed)
+    }
+}
+
+/// 工具正文在三个档位下的显示策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolBody {
+    /// 成功且无图片时不显示正文（回显参数／致谢／模型向载荷类工具）。
+    None,
+    /// 隐藏、简略档无正文，完整档才显示（read）。
+    FullOnly,
+    /// 隐藏、简略档只报结果数量，完整档才显示正文（grep／find）。
+    Count,
+    /// 简略档给预览，完整档全文（bash、edit 等有输出的工具）。
+    Preview,
+}
+
+/// 工具名 → 正文策略。未知工具默认走预览，只有明确无正文或只报数量的才单列。
+pub(crate) fn tool_body_policy(name: &str) -> ToolBody {
+    match name {
+        "read" => ToolBody::FullOnly,
+        "grep" | "find" => ToolBody::Count,
+        "todo" | "TodoReminder" | "skill" | "clm_context" | "spawn_agent" | "list_agents"
+        | "stop_agent" | "yield" | "write_plan" | "exit_plan" => ToolBody::None,
+        _ => ToolBody::Preview,
     }
 }
 
@@ -430,23 +456,4 @@ fn sanitize_media_type(raw: &str) -> String {
     } else {
         out
     }
-}
-
-/// 正文策略：成功的「回显参数／致谢／模型向载荷」类工具不渲染正文。
-fn tool_body_allowed(name: &str) -> bool {
-    !matches!(
-        name,
-        "read"
-            | "find"
-            | "todo"
-            | "TodoReminder"
-            | "skill"
-            | "clm_context"
-            | "spawn_agent"
-            | "list_agents"
-            | "stop_agent"
-            | "yield"
-            | "write_plan"
-            | "exit_plan"
-    )
 }
