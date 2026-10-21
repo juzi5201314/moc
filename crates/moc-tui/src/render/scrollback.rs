@@ -1503,24 +1503,51 @@ fn format_count(count: usize, singular: &str, plural: &str) -> String {
 
 /// grep 结果里的匹配行与文件数。
 ///
-/// 行格式由 core 固定为 `路径:行号:文本`（匹配）与 `路径-行号-文本`（上下文）。
-/// 从行首找第一个「分隔符 + 数字 + 同一分隔符」前缀：`:` 计为匹配，`-` 计为
-/// 上下文；这样上下文文本里的 `12:34:56` 不会被误当成匹配。`[` 开头的提示行跳过。
+/// 行格式由 core 固定，每个文件是两种形态之一：单行文件写成 `路径:行号:文本`
+/// （匹配）或 `路径-行号-文本`（上下文）；多行文件写成 `路径` 标题行加若干
+/// 「两个空格 + 行号 + 分隔符 + 文本」的行。缩进行只从行首解析，正文里的
+/// `12:34:56` 不会参与判断；`[` 开头的提示行跳过。
 fn grep_counts(result: &str) -> (usize, usize) {
     let mut matches = 0usize;
     let mut files = std::collections::BTreeSet::new();
+    let mut current: Option<&str> = None;
     for line in result.lines() {
         if line.starts_with('[') {
             continue;
         }
-        if let Some((path, marker)) = grep_row_prefix(line)
-            && marker == b':'
-        {
-            matches += 1;
-            files.insert(path);
+        if let Some(marker) = grouped_row_marker(line) {
+            if marker == b':' {
+                matches += 1;
+                if let Some(path) = current {
+                    files.insert(path);
+                }
+            }
+            continue;
         }
+        if let Some((path, marker)) = grep_row_prefix(line) {
+            current = Some(path);
+            if marker == b':' {
+                matches += 1;
+                files.insert(path);
+            }
+            continue;
+        }
+        current = Some(line);
     }
     (matches, files.len())
+}
+
+/// 分组结果行的「行号 + 分隔符」前缀：`  12: 文本` 与 `  12- 文本`。
+///
+/// 只解析行首，避免把正文里的 `12:34:56` 当成行号前缀。返回分隔符。
+fn grouped_row_marker(line: &str) -> Option<u8> {
+    let rest = line.strip_prefix("  ")?;
+    let digits = rest.find(|ch: char| !ch.is_ascii_digit())?;
+    if digits == 0 {
+        return None;
+    }
+    let marker = *rest.as_bytes().get(digits)?;
+    matches!(marker, b':' | b'-').then_some(marker)
 }
 
 /// 找 grep 结果行的「路径 + 分隔符 + 行号 + 分隔符」前缀。
@@ -3481,13 +3508,17 @@ mod tests {
         );
     }
 
-    /// grep 结果计数：上下文行与提示行都不算匹配。
+    /// grep 结果计数：上下文行与提示行都不算匹配，旧的一行式与新的分组式都要认。
     #[test]
     fn grep_counts_match_rows_and_ignore_context() {
-        let result = "src/a.rs:1:alpha\nsrc/a.rs-2-2026-10-19 12:34:56\nsrc/b.rs:3:beta\n[1 files, 2 matches shown; limit reached]";
-        assert_eq!(grep_counts(result), (2, 2));
+        // 一行式（历史会话回放仍然是这个形态）。
+        let legacy = "src/a.rs:1:alpha\nsrc/a.rs-2-2026-10-19 12:34:56\nsrc/b.rs:3:beta\n[1 files, 2 matches shown; limit reached]";
+        assert_eq!(grep_counts(legacy), (2, 2));
         assert_eq!(grep_counts("No matches found"), (0, 0));
         assert_eq!(grep_counts("src/a.rs:1:only"), (1, 1));
+        // 分组式：标题行加缩进行，正文里的 12:34:56 不能被当成命中。
+        let grouped = "src/a.rs\n  1:alpha\n  2-2026-10-19 12:34:56\n  3:beta\nsrc/b.rs:4:gamma\n[1 files, 3 matches shown; limit reached]";
+        assert_eq!(grep_counts(grouped), (3, 2));
     }
 
     /// find 计数跳过 core 追加的提示行，但不误伤 `[` 开头的真实路径。

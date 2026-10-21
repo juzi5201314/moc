@@ -853,7 +853,11 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         .mount(&upstream)
         .await;
     let h = Harness::new(&upstream.uri(), "openai_chat", "[compaction]\nmethod_order=['shake']\nprotect_recent_tool_tokens=0\nthreshold={mode='tokens',value=900000}\n[compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=64").await;
-    std::fs::write(h.root.path().join("work/large.txt"), "内容".repeat(2500)).unwrap();
+    std::fs::write(
+        h.root.path().join("work/large.txt"),
+        format!("{}\n", "内容".repeat(250)).repeat(10),
+    )
+    .unwrap();
     let id = h.session(SessionMode::Normal).await;
     h.prompt(&id, "第一次读取").await;
     h.prompt(&id, "再次读取").await;

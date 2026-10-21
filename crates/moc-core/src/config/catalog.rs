@@ -163,6 +163,7 @@ fn rank(key: &str) -> usize {
         "max_file_bytes" => 7,
         "max_candidate_files" => 8,
         "cross_filesystems" => 9,
+        "output_bytes" => 10,
         "head_bytes" => 0,
         "tail_bytes" => 1,
         // OpenViking
@@ -234,6 +235,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
                 | "catalog_budget_min_tokens"
                 | "description_max_chars"
                 | "line_max_bytes"
+                | "output_bytes"
                 | "connect_deadline_secs"
                 | "request_warn_secs"
                 | "overlay_home"
@@ -587,6 +589,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "line_max_chars" => ("搜索行长度上限", "搜索结果每行最多显示的字符数。"),
             "context_before" => ("匹配前附带行数", "每处匹配上方附带的行数。"),
             "context_after" => ("匹配后附带行数", "每处匹配下方附带的行数。"),
+            "output_bytes" => (
+                "搜索输出字节上限",
+                "一次搜索最多返回多少字节的结果；超出后用 skip 继续。",
+            ),
             "timeout_ms" => ("搜索超时（毫秒）", "一次搜索允许运行的最长时间。"),
             "max_concurrent_calls" => (
                 "工具并发上限",

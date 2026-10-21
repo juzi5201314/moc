@@ -279,7 +279,7 @@ impl Default for ReadConfig {
         Self {
             default_limit: 300,
             max_bytes: 51_200,
-            line_max_bytes: 204_800,
+            line_max_bytes: 4_096,
         }
     }
 }
@@ -321,6 +321,7 @@ pub struct GrepConfig {
     pub max_matches_per_file: usize,
     pub max_matches_total: usize,
     pub line_max_chars: usize,
+    pub output_bytes: usize,
     pub context_before: usize,
     pub context_after: usize,
     pub max_file_bytes: u64,
@@ -334,9 +335,10 @@ impl Default for GrepConfig {
             max_files: 20,
             max_matches_per_file: 20,
             max_matches_total: 200,
-            line_max_chars: 512,
-            context_before: 1,
-            context_after: 3,
+            line_max_chars: 200,
+            output_bytes: 24_576,
+            context_before: 0,
+            context_after: 0,
             max_file_bytes: 4_194_304,
             timeout_ms: 30_000,
             max_candidate_files: 20_000,

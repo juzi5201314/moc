@@ -40,7 +40,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &'static str {
-        "Search file contents with Rust regex. Does not cross mounts below the root unless cross_filesystems=true."
+        "Search file contents with Rust regex. Returns matching lines without surrounding context unless context_before/context_after are set. Does not cross mounts below the root unless cross_filesystems=true."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -59,8 +59,8 @@ impl Tool for GrepTool {
                     "case":{"type":"boolean","description":"Case-sensitive; default true"},
                     "gitignore":{"type":"boolean"},
                     "hidden":{"type":"boolean","description":"Include dotfiles and .git; default false"},
-                    "context_before":{"type":"integer","minimum":0},
-                    "context_after":{"type":"integer","minimum":0},
+                    "context_before":{"type":"integer","minimum":0,"description":"Lines of context before each match; default 0"},
+                    "context_after":{"type":"integer","minimum":0,"description":"Lines of context after each match; default 0"},
                     "skip":{"type":"integer","minimum":0,"description":"Matched files to skip, for paging"},
                     "cross_filesystems":{"type":"boolean","description":"Default false"}
                 }),
@@ -253,20 +253,19 @@ fn collect_resource_matches(
         .build(&args.pattern)
         .map_err(|error| ToolError::new("E_BAD_REGEX", error.to_string()))?;
     let lines: Vec<&str> = text.lines().collect();
-    let mut matches = Vec::new();
+    let mut matched = vec![false; lines.len()];
+    let mut hits = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         if matcher
             .is_match(line.as_bytes())
             .map_err(|error| ToolError::new("E_GREP", error.to_string()))?
         {
-            matches.push(index);
+            matched[index] = true;
+            hits.push(index);
         }
     }
     let skip = args.skip.unwrap_or(0);
-    let selected = matches
-        .into_iter()
-        .skip(skip)
-        .take(config.max_matches_total);
+    let selected = hits.into_iter().skip(skip).take(config.max_matches_total);
     let mut rows = std::collections::BTreeSet::new();
     for index in selected {
         let before = args.context_before.unwrap_or(config.context_before);
@@ -276,21 +275,98 @@ fn collect_resource_matches(
             .min(lines.len().saturating_sub(1));
         rows.extend(index.saturating_sub(before)..=end);
     }
-    let mut output = String::new();
-    for index in rows {
-        let marker = if matcher
-            .is_match(lines[index].as_bytes())
-            .map_err(|error| ToolError::new("E_GREP", error.to_string()))?
-        {
-            ':'
-        } else {
-            '-'
-        };
-        use std::fmt::Write;
-        writeln!(output, "{uri}{marker}{}{marker}{}", index + 1, lines[index])
-            .expect("写入 String 不会失败");
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .map(|index| Row {
+            number: index as u64 + 1,
+            text: preview_line(
+                lines[index],
+                config.line_max_chars,
+                matched[index]
+                    .then(|| match_span(&matcher, lines[index].as_bytes()))
+                    .flatten(),
+            ),
+            matched: matched[index],
+        })
+        .collect();
+    Ok(render_group(uri, &rows))
+}
+
+/// 命中在本行里的字节区间，用来把长行截断的窗口对准命中处。
+///
+/// 绕回 `None` 时退化为从头截断：正则在这行上没找到（理论上不该发生，可能是
+/// 字节与字符边界不一致），或者调用方拿不到命中位置（上下文行）。
+fn match_span(matcher: &grep_regex::RegexMatcher, haystack: &[u8]) -> Option<(usize, usize)> {
+    matcher
+        .find(haystack)
+        .ok()
+        .flatten()
+        .map(|found| (found.start(), found.end()))
+}
+
+/// 追加一行提示：已有内容时先补一个换行，空结果（扫描被取消等情况）不会以空行开头。
+fn push_notice(output: &mut String, notice: &str) {
+    if !output.is_empty() {
+        output.push('\n');
     }
-    Ok(output.trim_end_matches('\n').to_owned())
+    output.push_str(notice);
+}
+
+/// 一行结果里的单个文件分组：单行文件写成 `路径:行号:正文`，多行文件写成
+/// 「路径标题 + 2 空格缩进的行」。路径只写一次是这套格式省 token 的来源；
+/// 缩进固定 2 个空格，让标题行与结果行可以按列区分，正文里的 `12:34:56`
+/// 也不会被当成行号前缀。
+fn render_group(path: &str, rows: &[Row]) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
+    match rows {
+        [] => return output,
+        [row] => {
+            let marker = if row.matched { ':' } else { '-' };
+            write!(output, "{path}{marker}{}{marker}{}", row.number, row.text)
+                .expect("写入 String 不会失败");
+        }
+        rows => {
+            output.push_str(path);
+            for row in rows {
+                let marker = if row.matched { ':' } else { '-' };
+                write!(output, "\n  {}{marker}{}", row.number, row.text)
+                    .expect("写入 String 不会失败");
+            }
+        }
+    }
+    output
+}
+
+/// 截断一行结果，并尽量让命中处留在窗口里。
+///
+/// 命中行以命中位置为中心取窗口（命中前留 `max_chars / 4` 个字符），这样长行
+/// 被截断时模型仍能看见命中的那一段；上下文行没有命中位置，退化为从头截断。
+/// 省略号计入 `max_chars`，因此返回值不会超过预算。
+fn preview_line(text: &str, max_chars: usize, span: Option<(usize, usize)>) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_owned();
+    }
+    let head = span
+        .and_then(|(start, _)| text.get(..start))
+        .map_or(0, |prefix| {
+            prefix.chars().count().saturating_sub(max_chars / 4)
+        });
+    let lead = head > 0;
+    let mut room = max_chars.saturating_sub(usize::from(lead));
+    let tail = head + room < total;
+    room = room.saturating_sub(usize::from(tail));
+    let kept: String = text.chars().skip(head).take(room).collect();
+    let mut output = String::with_capacity(kept.len() + 6);
+    if lead {
+        output.push('…');
+    }
+    output.push_str(&kept);
+    if tail {
+        output.push('…');
+    }
+    output
 }
 
 struct Search {
@@ -401,6 +477,7 @@ impl Search {
         let mut shown_files = 0usize;
         let mut shown_matches = 0usize;
         let mut limited = false;
+        let mut capped = false;
         let mut skipped_large_files = 0usize;
         let skip = self.args.skip.unwrap_or(0);
         // 分块搜索：块内并行，输出上限较低时不必搜完全部候选文件。
@@ -449,27 +526,28 @@ impl Search {
                     self.args.context_after.unwrap_or(self.config.context_after) as u64,
                 );
                 let relative = path.strip_prefix(&self.cwd).unwrap_or(path);
+                let mut rows = Vec::new();
                 let mut emitted_matches = 0usize;
                 for row in result.rows {
                     if row.number > last_line || (row.matched && emitted_matches == count) {
                         break;
                     }
-                    let marker = if row.matched {
+                    if row.matched {
                         emitted_matches += 1;
-                        ':'
-                    } else {
-                        '-'
-                    };
-                    use std::fmt::Write;
-                    writeln!(
-                        output,
-                        "{}{marker}{}{marker}{}",
-                        relative.display(),
-                        row.number,
-                        row.text
-                    )
-                    .expect("写入 String 不会失败");
+                    }
+                    rows.push(row);
                 }
+                let group = render_group(&relative.display().to_string(), &rows);
+                let needed = group.len() + usize::from(!output.is_empty());
+                // 整组判断，不切半个文件：预算封顶时的 skip 才是精确的。
+                if !output.is_empty() && output.len() + needed > self.config.output_bytes {
+                    capped = true;
+                    break 'blocks;
+                }
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&group);
                 shown_files += 1;
                 shown_matches += count;
                 limited |= result.truncated || result.matches > count;
@@ -480,24 +558,42 @@ impl Search {
             }
         }
         if output.is_empty() && !incomplete.load(Ordering::Relaxed) && !self.stopped() {
-            output.push_str("No matches found\n");
+            output.push_str("No matches found");
         }
-        if limited {
-            output.push_str(&format!(
-                "[{shown_files} files, {shown_matches} matches shown; limit reached. Continue with skip={}; narrow the pattern if a single file hits its limit]\n",
-                skip + shown_files
-            ));
+        if capped {
+            push_notice(
+                &mut output,
+                &format!(
+                    "[{shown_files} files, {shown_matches} matches shown; output capped at {} bytes. Continue with skip={}; narrow the pattern if a single file hits its limit]",
+                    self.config.output_bytes,
+                    skip + shown_files
+                ),
+            );
+        } else if limited {
+            push_notice(
+                &mut output,
+                &format!(
+                    "[{shown_files} files, {shown_matches} matches shown; limit reached. Continue with skip={}; narrow the pattern if a single file hits its limit]",
+                    skip + shown_files
+                ),
+            );
         }
         if skipped_large_files > 0 {
-            output.push_str(&format!(
-                "[{skipped_large_files} files exceeded the {}-byte limit and were not searched]\n",
-                self.config.max_file_bytes
-            ));
+            push_notice(
+                &mut output,
+                &format!(
+                    "[{skipped_large_files} files exceeded the {}-byte limit and were not searched]",
+                    self.config.max_file_bytes
+                ),
+            );
         }
         if incomplete.load(Ordering::Relaxed) || self.stopped() {
-            output.push_str("[Scan incomplete (time limit, candidate-file limit, cancellation, unreadable path, or oversized file); results may be incomplete, so a miss does not prove absence. Narrow path or glob, or set cross_filesystems=true to include mounts below the root]\n");
+            push_notice(
+                &mut output,
+                "[Scan incomplete (time limit, candidate-file limit, cancellation, unreadable path, or oversized file); results may be incomplete, so a miss does not prove absence. Narrow path or glob, or set cross_filesystems=true to include mounts below the root]",
+            );
         }
-        Ok(output.trim_end_matches('\n').to_owned())
+        Ok(output)
     }
     fn search_file(&self, path: &Path) -> std::io::Result<Matches> {
         let mut sink = Matches::default();
@@ -553,17 +649,16 @@ struct MatchSink<'a> {
 }
 
 impl MatchSink<'_> {
-    fn push(&mut self, number: Option<u64>, bytes: &[u8], matched: bool) {
+    fn push(
+        &mut self,
+        number: Option<u64>,
+        bytes: &[u8],
+        matched: bool,
+        span: Option<(usize, usize)>,
+    ) {
         let text = String::from_utf8_lossy(bytes);
         let text = text.trim_end_matches(['\r', '\n']);
-        let mut chars = text.chars();
-        let mut text: String = chars
-            .by_ref()
-            .take(self.search.config.line_max_chars)
-            .collect();
-        if chars.next().is_some() {
-            text.push('…');
-        }
+        let text = preview_line(text, self.search.config.line_max_chars, span);
         self.result.rows.push(Row {
             number: number.expect("搜索器已启用行号"),
             text,
@@ -583,14 +678,15 @@ impl Sink for MatchSink<'_> {
             return Ok(false);
         }
         self.result.matches += 1;
-        self.push(line.line_number(), line.bytes(), true);
+        let span = match_span(&self.search.matcher, line.bytes());
+        self.push(line.line_number(), line.bytes(), true, span);
         Ok(true)
     }
     fn context(&mut self, _: &Searcher, line: &SinkContext<'_>) -> Result<bool, Self::Error> {
         if self.search.stopped() {
             return Ok(false);
         }
-        self.push(line.line_number(), line.bytes(), false);
+        self.push(line.line_number(), line.bytes(), false, None);
         Ok(true)
     }
     fn binary_data(&mut self, _: &Searcher, _: u64) -> Result<bool, Self::Error> {
@@ -635,8 +731,68 @@ mod tests {
         );
         assert_eq!(
             output,
-            "src/a.rs-1-context: colon\nsrc/a.rs:2:hit one\nsrc/a.rs-3-context: colon\nsrc/a.rs:4:hit two\nsrc/a.rs-5-tail"
+            "src/a.rs\n  1-context: colon\n  2:hit one\n  3-context: colon\n  4:hit two\n  5-tail"
         );
+    }
+    #[test]
+    fn multi_row_file_groups_under_one_path_and_single_row_file_stays_inline() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.rs"), "hit\nhit\n").unwrap();
+        std::fs::write(root.path().join("b.rs"), "hit\n").unwrap();
+        let config = crate::config::GrepConfig {
+            context_before: 0,
+            context_after: 0,
+            ..Default::default()
+        };
+        let output = run(root.path(), serde_json::json!({"pattern":"hit"}), config);
+        assert_eq!(output, "a.rs\n  1:hit\n  2:hit\nb.rs:1:hit");
+    }
+    #[test]
+    fn long_line_preview_keeps_the_match_visible() {
+        let root = tempfile::tempdir().unwrap();
+        let line = format!("{}NEEDLE{}", "a".repeat(700), "b".repeat(700));
+        std::fs::write(root.path().join("long.txt"), format!("{line}\n")).unwrap();
+        let config = crate::config::GrepConfig::default();
+        let output = run(root.path(), serde_json::json!({"pattern":"NEEDLE"}), config);
+        let row = output.lines().next().expect("至少一行结果");
+        assert!(row.contains("NEEDLE"), "命中必须留在窗口里：{row}");
+        let text = output.splitn(3, ':').nth(2).expect("预览正文");
+        assert!(
+            text.chars().count() <= crate::config::GrepConfig::default().line_max_chars,
+            "预览超过行长度预算：{}",
+            text.chars().count()
+        );
+        assert!(text.starts_with('…') && text.ends_with('…'), "{text}");
+    }
+    #[test]
+    fn output_budget_caps_whole_files_and_reports_skip() {
+        let root = tempfile::tempdir().unwrap();
+        for path in ["a.rs", "b.rs"] {
+            std::fs::write(root.path().join(path), "hit hit hit hit\n").unwrap();
+        }
+        let config = crate::config::GrepConfig {
+            output_bytes: 40,
+            context_before: 0,
+            context_after: 0,
+            ..Default::default()
+        };
+        let output = run(
+            root.path(),
+            serde_json::json!({"pattern":"hit"}),
+            config.clone(),
+        );
+        assert_eq!(
+            output,
+            "a.rs:1:hit hit hit hit\n[1 files, 1 matches shown; output capped at 40 bytes. Continue with skip=1; narrow the pattern if a single file hits its limit]"
+        );
+        // 第一个文件哪怕自己就超过预算也要照常输出，否则搜索永远没有进展。
+        let tiny = crate::config::GrepConfig {
+            output_bytes: 1,
+            ..config
+        };
+        let output = run(root.path(), serde_json::json!({"pattern":"hit"}), tiny);
+        assert!(output.starts_with("a.rs:1:hit hit hit hit\n"), "{output}");
+        assert!(output.contains("output capped at 1 bytes"), "{output}");
     }
     #[test]
     fn pagination_is_path_ordered_and_binary_files_are_not_returned() {
@@ -676,7 +832,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             output,
-            "skill://demo/SKILL.md-1-first\nskill://demo/SKILL.md:2:hit\nskill://demo/SKILL.md-3-last"
+            "skill://demo/SKILL.md\n  1-first\n  2:hit\n  3-last"
         );
     }
 
@@ -692,13 +848,14 @@ mod tests {
         std::fs::write(jobs.join("nested/job_3.log"), "error: nested\n").unwrap();
         let config = crate::config::GrepConfig::default();
         let args: GrepArgs =
-            serde_json::from_value(serde_json::json!({"pattern":"error"})).unwrap();
+            serde_json::from_value(serde_json::json!({"pattern":"error","context_before":1}))
+                .unwrap();
         let entries = vec![("artifact://jobs/".to_owned(), jobs.clone())];
         let output = search_resource_namespace(&entries, &args, &config).unwrap();
-        // 默认前后各一行上下文，上下文行也带所在文件的 URI 前缀。
+        // 显式要一行上文；同一个文件的 URI 只写一次，单行文件仍是一行式。
         assert_eq!(
             output,
-            "artifact://jobs/job_1.log-2-beta\nartifact://jobs/job_1.log:3:error: boom\nartifact://jobs/nested/job_3.log:1:error: nested"
+            "artifact://jobs/job_1.log\n  2-beta\n  3:error: boom\nartifact://jobs/nested/job_3.log:1:error: nested"
         );
         assert_eq!(
             search_resource_namespace(&[], &args, &config).unwrap(),

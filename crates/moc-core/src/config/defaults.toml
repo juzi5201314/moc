@@ -73,7 +73,7 @@ deny_patterns = [
 [tools.read]
 default_limit = 300
 max_bytes = 51200
-line_max_bytes = 204800
+line_max_bytes = 4096
 
 [tools.edit]
 max_edits = 32
@@ -86,9 +86,10 @@ hash_echo_min_hits = 2
 max_files = 20
 max_matches_per_file = 20
 max_matches_total = 200
-line_max_chars = 512
-context_before = 1
-context_after = 3
+line_max_chars = 200
+output_bytes = 24576
+context_before = 0
+context_after = 0
 max_file_bytes = 4194304
 timeout_ms = 30000
 max_candidate_files = 20000

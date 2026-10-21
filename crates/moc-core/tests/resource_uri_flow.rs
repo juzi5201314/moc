@@ -126,7 +126,7 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
                 1 => support::tool_stream(vec![(
                     "call_grep",
                     "grep",
-                    json!({"pattern": "middle", "path": grep_uri}),
+                    json!({"pattern": "middle", "path": grep_uri, "context_before": 1}),
                 )]),
                 _ => support::text_stream("roundtrip complete"),
             };
@@ -140,7 +140,8 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
     let transcript = serde_json::to_string(&loaded.entries).expect("transcript");
     assert!(transcript.contains(&uri));
     assert!(transcript.contains("middle line"));
-    assert!(transcript.contains(&format!("{uri}:2:middle line")));
+    // 同一个文件的多行结果分组成「URI 标题 + 缩进行」；transcript 是 JSON，换行转义成 \n。
+    assert!(transcript.contains(&format!("{uri}\\n  1-first line\\n  2:middle line")));
 
     harness.close().await;
 }
