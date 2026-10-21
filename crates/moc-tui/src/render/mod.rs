@@ -29,7 +29,7 @@ use ratatui::widgets::{Block, Paragraph};
 pub use scrollback::ScrollbackView;
 
 use self::wrap::str_width;
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, ScrollbackScrollbar};
 use crate::modal::Modal;
 use crate::transcript::Block as TranscriptBlock;
 
@@ -327,50 +327,39 @@ fn draw_chip(
     );
 }
 
-/// 滚动条滑块顶端行号（0 = 轨道顶）。
+/// 右缘自绘滚动条：轨道常暗，滑块常亮。
 ///
-/// 位置语义与 [`App::scroll_offset`] 相反：`scroll_offset == 0` 表示视口跟随尾部，
-/// 滑块应贴底；`scroll_offset == max_offset` 表示停在历史顶端，滑块贴顶。
-fn scrollbar_thumb_top(
-    track: u16,
-    thumb_height: u16,
-    max_offset: usize,
-    scroll_offset: usize,
-) -> u16 {
-    debug_assert!(max_offset > 0, "无溢出空间时不应绘制滑块");
-    debug_assert!(thumb_height <= track);
-    let travel = f64::from(track - thumb_height);
-    // 距历史顶端的比例：行数规模远小于 2^53，f64 表示无精度损失
-    let distance_from_top = max_offset.saturating_sub(scroll_offset) as f64 / max_offset as f64;
-    // 结果已 clamp 到 [0, travel]，且 travel ≤ u16::MAX，窄化不会截断
-    (travel * distance_from_top).round().clamp(0.0, travel) as u16
-}
-
-/// 右缘自绘滚动条：跟随态半暗，浏览态亮起。
-fn draw_scrollbar(frame: &mut Frame, app: &App, area: Rect, max_offset: usize) {
+/// 滑块行数按视口占全文的比例定长，只有位置随滚动偏移移动——滚动时长度不变。
+/// 几何写回 [`App::scrollbar`]，鼠标点击与拖拽按同一份几何换算滚动位置。
+fn draw_scrollbar(frame: &mut Frame, app: &mut App, area: Rect, max_offset: usize) {
+    app.scrollbar = ScrollbackScrollbar::default();
     if max_offset == 0 || area.width < 2 || area.height < 2 {
         return;
     }
     let theme = app.theme;
-    let track = area.height;
-    let total = (max_offset as u32) + area.height as u32;
-    let thumb_height =
-        ((area.height as u32 * area.height as u32) / total.max(1)).clamp(1, track as u32) as u16;
-    let thumb_top = scrollbar_thumb_top(track, thumb_height, max_offset, app.scroll_offset);
+    let track_height = area.height;
+    let total = (max_offset as u32) + track_height as u32;
+    let thumb = ((track_height as u32 * track_height as u32) / total.max(1))
+        .clamp(1, track_height as u32) as u16;
     // 贴终端右缘（在内容边距之外），不压内容
     let x = frame.area().width.saturating_sub(1);
-    let color = if app.scroll_offset == 0 {
-        theme.scrollbar_bg
-    } else {
-        theme.scrollbar_fg
+    app.scrollbar = ScrollbackScrollbar {
+        track: Rect::new(x, area.y, 1, track_height),
+        thumb,
+        max_offset,
     };
-    for row in 0..track {
-        let in_thumb = row >= thumb_top && row < thumb_top + thumb_height;
+    let thumb_top = app.scrollbar.thumb_top(app.scroll_offset);
+    for row in 0..track_height {
+        let in_thumb = row >= thumb_top && row < thumb_top.saturating_add(thumb);
         frame.buffer_mut().set_string(
             x,
             area.y + row,
             "▐",
-            Style::new().fg(if in_thumb { theme.scrollbar_fg } else { color }),
+            Style::new().fg(if in_thumb {
+                theme.scrollbar_fg
+            } else {
+                theme.scrollbar_bg
+            }),
         );
     }
 }
@@ -1115,20 +1104,155 @@ mod tests {
         assert_eq!(prompt_content_rows(&app, 60), PROMPT_MAX_ROWS, "再长也封顶");
     }
 
-    /// 滑块方向：跟随尾部贴底，滚向历史顶端时上移；滚轮上滚让滑块上移。
+    /// 滑块方向：跟随尾部贴底，滚向历史顶端时上移；拖拽按同一份几何换算。
     #[test]
     fn scrollbar_thumb_tracks_offset_from_history_top() {
+        let bar = |track: u16, thumb: u16, max_offset: usize| ScrollbackScrollbar {
+            track: Rect::new(0, 0, 1, track),
+            thumb,
+            max_offset,
+        };
         // 轨道 20 行、滑块 4 行 → 可移动 16 行
-        assert_eq!(scrollbar_thumb_top(20, 4, 100, 0), 16, "跟随尾部时滑块贴底");
-        assert_eq!(
-            scrollbar_thumb_top(20, 4, 100, 100),
-            0,
-            "历史顶端时滑块贴顶"
-        );
-        assert_eq!(scrollbar_thumb_top(20, 4, 100, 50), 8);
-        assert!(scrollbar_thumb_top(20, 4, 100, 75) < scrollbar_thumb_top(20, 4, 100, 25));
+        assert_eq!(bar(20, 4, 100).thumb_top(0), 16, "跟随尾部时滑块贴底");
+        assert_eq!(bar(20, 4, 100).thumb_top(100), 0, "历史顶端时滑块贴顶");
+        assert_eq!(bar(20, 4, 100).thumb_top(50), 8);
+        assert!(bar(20, 4, 100).thumb_top(75) < bar(20, 4, 100).thumb_top(25));
         // 滑块与轨道等高（无溢出空间）时位置恒定
-        assert_eq!(scrollbar_thumb_top(10, 10, 3, 3), 0);
+        assert_eq!(bar(10, 10, 3).thumb_top(3), 0);
+    }
+
+    /// 拖拽换算：轨道顶端对应历史顶端，轨道末端对应跟随尾部；抓取点保持。
+    #[test]
+    fn scrollbar_drag_maps_rows_to_offsets() {
+        let bar = ScrollbackScrollbar {
+            track: Rect::new(79, 4, 1, 10),
+            thumb: 3,
+            max_offset: 20,
+        };
+        // 轨道 10 行、滑块 3 行 → 可移动 7 行
+        assert_eq!(bar.offset_at(4, 0), 20, "轨道顶端 = 历史顶端");
+        assert_eq!(bar.offset_at(11, 0), 0, "轨道末端 = 跟随尾部");
+        assert_eq!(bar.offset_at(8, 0), 9, "轨道中线落在中间偏移附近");
+        // 抓取点：按在滑块第 2 行时，该行保持指向原偏移。
+        assert_eq!(bar.offset_at(9, 1), 9);
+        // 轨道之外的行夹到两端，不越界。
+        assert_eq!(bar.offset_at(0, 0), 20);
+        assert_eq!(bar.offset_at(30, 0), 0);
+        // 滑块与轨道等高：永远回到底部（无溢出空间）。
+        let flat = ScrollbackScrollbar {
+            track: Rect::new(79, 4, 1, 10),
+            thumb: 10,
+            max_offset: 0,
+        };
+        assert_eq!(flat.offset_at(8, 4), 0);
+    }
+
+    /// 滚动只移动滑块，不改它的长度：整列仍是「一行亮滑块 + 九行暗轨道」。
+    #[test]
+    fn scrollbar_thumb_keeps_length_when_scrolled() {
+        use crate::theme::ColorLevel;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        fn paint(
+            terminal: &mut Terminal<TestBackend>,
+            app: &mut App,
+            area: Rect,
+            max_offset: usize,
+        ) {
+            terminal
+                .draw(|frame| draw_scrollbar(frame, app, area, max_offset))
+                .expect("绘制成功");
+        }
+        fn column(terminal: &Terminal<TestBackend>, area: Rect) -> Vec<Color> {
+            (area.y..area.y + area.height)
+                .map(|row| {
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell((79, row))
+                        .expect("滚动条贴在终端右缘")
+                        .fg
+                })
+                .collect()
+        }
+
+        // 终端能力固定为真彩色：无色能力下轨道与滑块都退化成默认前景色。
+        let theme: &'static Theme = Box::leak(Box::new(Theme::resolved(ColorLevel::TrueColor)));
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(theme, events);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let area = Rect::new(3, 2, 60, 10);
+        // 总量 100 行、视口 10 行 → 滑块 1 行。
+        let max_offset = 90;
+
+        paint(&mut terminal, &mut app, area, max_offset);
+        assert_eq!(app.scrollbar.track, Rect::new(79, area.y, 1, area.height));
+        assert_eq!(app.scrollbar.thumb, 1);
+        let following = column(&terminal, area);
+        assert_eq!(
+            following
+                .iter()
+                .filter(|fg| **fg == theme.scrollbar_fg)
+                .count(),
+            1,
+            "跟随尾部时只有滑块是亮色"
+        );
+        assert_eq!(following[9], theme.scrollbar_fg, "滑块贴底");
+        assert!(
+            following[..9].iter().all(|fg| *fg == theme.scrollbar_bg),
+            "轨道保持暗色"
+        );
+
+        app.scroll_offset = max_offset / 2;
+        paint(&mut terminal, &mut app, area, max_offset);
+        let scrolled = column(&terminal, area);
+        assert_eq!(
+            scrolled
+                .iter()
+                .filter(|fg| **fg == theme.scrollbar_fg)
+                .count(),
+            1,
+            "滚动后滑块长度不变"
+        );
+        assert_eq!(scrolled[5], theme.scrollbar_fg, "滑块移到轨道中部");
+        assert_eq!(
+            scrolled
+                .iter()
+                .filter(|fg| **fg == theme.scrollbar_bg)
+                .count(),
+            9,
+            "轨道其余行仍是暗色，不随滚动整列点亮"
+        );
+    }
+
+    /// 整帧绘制把滚动条几何写回 `App`：命中区与拖拽换算读的就是这份几何。
+    #[test]
+    fn frame_draw_records_scrollbar_geometry() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let text = (0..200)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.push_block(TranscriptBlock::Assistant { text });
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let mut view = ScrollbackView::new();
+        terminal
+            .draw(|frame| draw(frame, &mut app, &mut view))
+            .expect("绘制成功");
+
+        assert!(app.scroll_max_offset > 0, "长内容应可滚动");
+        assert_eq!(app.scrollbar.track.x, 79, "滚动条贴在终端右缘");
+        assert_eq!(app.scrollbar.track.height, app.scrollback_area.height);
+        assert_eq!(app.scrollbar.max_offset, app.scroll_max_offset);
+        assert!(
+            app.scrollbar.thumb < app.scrollbar.track.height,
+            "滑块只占视口比例，不铺满轨道"
+        );
     }
 
     /// 模式图例的命中区正好盖住模式名；就地菜单右上对齐图例、整体贴在其上方。

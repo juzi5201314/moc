@@ -76,6 +76,59 @@ fn compaction_running_note(secs: u64) -> String {
     format!("{COMPACTION_RUNNING_PREFIX}…({secs}s)")
 }
 
+/// 转写区右缘滚动条上一帧的几何：点击与拖拽都按它换算滚动位置。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScrollbackScrollbar {
+    /// 轨道区域（屏幕坐标，一列宽）。
+    pub track: Rect,
+    /// 滑块行数。
+    pub thumb: u16,
+    /// 上一帧的最大滚动偏移（距尾部行数）。
+    pub max_offset: usize,
+}
+
+impl ScrollbackScrollbar {
+    /// 滑块顶端相对轨道顶端的行数。
+    ///
+    /// `scroll_offset` 是距尾部的行数：0（跟随尾部）时滑块贴底，等于
+    /// `max_offset` 时贴顶。
+    pub fn thumb_top(&self, scroll_offset: usize) -> u16 {
+        let travel = self.track.height.saturating_sub(self.thumb);
+        if self.max_offset == 0 || travel == 0 {
+            return travel;
+        }
+        // 距历史顶端的比例：行数规模远小于 2^53，f64 表示无精度损失
+        let from_top =
+            self.max_offset.saturating_sub(scroll_offset) as f64 / self.max_offset as f64;
+        // 结果已 clamp 到 [0, travel]，且 travel ≤ u16::MAX，窄化不会截断
+        (f64::from(travel) * from_top)
+            .round()
+            .clamp(0.0, f64::from(travel)) as u16
+    }
+
+    /// 光标行对应的滚动偏移（距尾部行数）；`grab` 是按下点到滑块顶端的行差。
+    ///
+    /// 按在轨道空白处时滑块中线跟到光标（`grab` 取滑块行数的一半），与
+    /// `/context` 正文窗的滚动条一致。
+    pub fn offset_at(&self, row: u16, grab: i32) -> usize {
+        let travel = i32::from(self.track.height.saturating_sub(self.thumb));
+        if self.max_offset == 0 || travel <= 0 {
+            return 0;
+        }
+        let top = (i32::from(row).saturating_sub(i32::from(self.track.y)) - grab).clamp(0, travel);
+        // 乘积按 u64 计算：32 位目标上 top × max_offset 会超出 usize。
+        let distance = top as u64 * self.max_offset as u64 / travel as u64;
+        self.max_offset - distance as usize
+    }
+}
+
+/// 转写区滚动条的拖拽状态。
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollbackDrag {
+    /// 按下时光标到滑块顶端的行差。
+    pub grab: i32,
+}
+
 /// 应用状态。
 pub struct App {
     pub theme: &'static Theme,
@@ -166,6 +219,8 @@ pub struct App {
     pub statusline_template: Option<String>,
     /// 最近一次绘制的转写区，用于鼠标选区的绝对坐标换算。
     pub scrollback_area: Rect,
+    /// 转写区右缘滚动条的上一帧几何（点击与拖拽换算用）。
+    pub scrollbar: ScrollbackScrollbar,
     /// 视口命中表（点击折叠用）：`(块下标, 标题行, 标题后行)`。
     pub mouse_hits: Vec<(usize, u16, u16)>,
     /// 视口行文本（`(行, 文本)`，选择复制用）。
@@ -194,6 +249,8 @@ pub struct App {
     pub selection: Option<((u16, u16), (u16, u16))>,
     /// 按下未抬起的位置（区分点击与拖选）。
     pub pending_click: Option<(u16, u16)>,
+    /// 滚动条拖拽；`Some` 时左键拖动只改滚动偏移，不进入文本选区。
+    pub scrollbar_drag: Option<ScrollbackDrag>,
     /// ctrl+c 二次确认状态及触发时刻（3 秒内有效）。
     pub ctrl_c_pending: Option<(CtrlCPending, std::time::Instant)>,
     /// Esc 二次确认状态。
@@ -410,6 +467,7 @@ impl App {
             git_branch: None,
             statusline_template: None,
             scrollback_area: Rect::default(),
+            scrollbar: ScrollbackScrollbar::default(),
             mouse_hits: Vec::new(),
             paint_lines: Vec::new(),
             graphics: None,
@@ -423,6 +481,7 @@ impl App {
             hover_chart: None,
             selection: None,
             pending_click: None,
+            scrollbar_drag: None,
             ctrl_c_pending: None,
             clear_pending: false,
             notice: None,

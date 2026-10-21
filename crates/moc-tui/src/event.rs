@@ -25,7 +25,7 @@ use moc_protocol::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, ChartHit, CtrlCPending, Focus, MODES};
+use crate::app::{App, ChartHit, CtrlCPending, Focus, MODES, ScrollbackDrag};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, SessionScope};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
@@ -1269,9 +1269,61 @@ fn handle_completion_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) 
     }
 }
 
+/// 转写区右缘滚动条：按在滑块上保持抓取点拖动，按在轨道空白处把滑块中线挪过来。
+///
+/// 几何来自上一帧绘制（[`App::scrollbar`]），这里只做换算；命中滚动条的按下与
+/// 拖动不进入文本选区。
+fn handle_scrollbar_mouse(app: &mut App, mouse: &crossterm::event::MouseEvent) -> bool {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let bar = app.scrollbar;
+    let on_track = bar.max_offset > 0
+        && mouse.column == bar.track.x
+        && mouse.row >= bar.track.y
+        && mouse.row < bar.track.y.saturating_add(bar.track.height);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) if on_track => {
+            let top = bar.track.y.saturating_add(bar.thumb_top(app.scroll_offset));
+            let on_thumb = mouse.row >= top && mouse.row < top.saturating_add(bar.thumb);
+            // 按在轨道空白处时滑块中线跟到光标，和正文窗的滚动条一致。
+            let grab = if on_thumb {
+                i32::from(mouse.row - top)
+            } else {
+                i32::from(bar.thumb) / 2
+            };
+            app.scrollbar_drag = Some(ScrollbackDrag { grab });
+            if !on_thumb {
+                drag_scroll(app, mouse.row, grab);
+            }
+            true
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            let Some(drag) = app.scrollbar_drag else {
+                return false;
+            };
+            drag_scroll(app, mouse.row, drag.grab);
+            true
+        }
+        MouseEventKind::Up(MouseButton::Left) => app.scrollbar_drag.take().is_some(),
+        _ => false,
+    }
+}
+
+/// 滚动条拖拽：光标行换算成滚动偏移，贴到历史顶端时请求更早的一页。
+fn drag_scroll(app: &mut App, row: u16, grab: i32) {
+    app.scroll_offset = app.scrollbar.offset_at(row, grab);
+    request_history_if_at_edge(app);
+}
+
 /// 鼠标：滚轮滚动、点击折叠、拖选复制。
 fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    // 新的一次按下总是结束上一轮滚动条拖拽：拖拽途中弹出模态时抬起事件会被吞掉。
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        app.scrollbar_drag = None;
+    }
+    if handle_scrollbar_mouse(app, &mouse) {
+        return;
+    }
     let position = (mouse.column, mouse.row);
     match mouse.kind {
         MouseEventKind::ScrollUp => {
@@ -1431,9 +1483,14 @@ fn scroll(app: &mut App, delta: i32) {
             .saturating_sub(delta.unsigned_abs() as usize);
     } else {
         app.scroll_offset = app.scroll_offset.saturating_add(delta as usize);
-        if app.scroll_offset >= app.scroll_max_offset && app.history_has_more {
-            app.history_load_requested = true;
-        }
+        request_history_if_at_edge(app);
+    }
+}
+
+/// 滚到历史边缘且还有未加载的页时，请求下一页。
+fn request_history_if_at_edge(app: &mut App) {
+    if app.scroll_offset >= app.scroll_max_offset && app.history_has_more {
+        app.history_load_requested = true;
     }
 }
 
@@ -5849,6 +5906,83 @@ mod tests {
         app.scroll_offset = 1;
         handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
         assert_eq!(app.scroll_offset, 0, "已在尾部时下滚饱和为 0");
+    }
+
+    /// 右缘滚动条：按在滑块上保持抓取点拖动，按在轨道空白处把滑块中线挪过来；
+    /// 命中滚动条的按下与拖动不进入文本选区。
+    #[test]
+    fn scrollbar_click_and_drag_move_the_viewport() {
+        use crate::app::ScrollbackScrollbar;
+        use ratatui::layout::Rect;
+
+        fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+            MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            }
+        }
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        // 终端 80 列、轨道占滚动区 4..14 行：右缘 79 列，10 行里滑块 3 行。
+        app.scrollbar = ScrollbackScrollbar {
+            track: Rect::new(79, 4, 1, 10),
+            thumb: 3,
+            max_offset: 20,
+        };
+        app.scroll_max_offset = 20;
+
+        // 跟随尾部时滑块贴底（第 11 行起）：按在它上面不跳动，只进入拖拽。
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 79, 11),
+        );
+        assert_eq!(app.scroll_offset, 0, "按在滑块上不改变偏移");
+        assert!(app.scrollbar_drag.is_some());
+        assert!(app.pending_click.is_none(), "滚动条按下不进入文本选区");
+
+        // 拖到轨道顶端：走满历史。
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Drag(MouseButton::Left), 79, 4),
+        );
+        assert_eq!(app.scroll_offset, 20);
+        assert!(app.selection.is_none(), "拖动滚动条不产生选区");
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Up(MouseButton::Left), 79, 4),
+        );
+        assert!(app.scrollbar_drag.is_none(), "抬起后结束拖拽");
+
+        // 按在轨道空白处：滑块中线（3/2 行）挪到光标所在行。
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 79, 8),
+        );
+        assert_eq!(app.scroll_offset, 12);
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Up(MouseButton::Left), 79, 8),
+        );
+
+        // 轨道之外的按下仍走普通点击路径。
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 40, 8),
+        );
+        assert!(app.pending_click.is_some());
+
+        // 内容不溢出（没有画过滚动条）时，右缘不构成命中区。
+        app.scrollbar = ScrollbackScrollbar::default();
+        app.pending_click = None;
+        handle_mouse(
+            &mut app,
+            mouse(MouseEventKind::Down(MouseButton::Left), 79, 8),
+        );
+        assert!(app.scrollbar_drag.is_none());
+        assert!(app.pending_click.is_some(), "没有滚动条时右缘仍是普通点击");
     }
 
     #[tokio::test]
