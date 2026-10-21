@@ -946,6 +946,27 @@ async fn run_prompt_locked(
             }
             continue 'turns;
         };
+        final_reason = if interrupted {
+            FinishReason::Cancelled
+        } else {
+            response.finish_reason.clone()
+        };
+        last_message = response.message.clone();
+        if guard.violation().is_some() {
+            final_reason = guard.reason();
+            break 'turns;
+        }
+        // 完整响应先落库，再发通知和记用量：辅助步骤失败不能吞掉已经完整收到的模型响应。
+        inner
+            .sessions
+            .append_message(
+                &params.session_id,
+                response.message.clone(),
+                None,
+                Some(final_reason.clone()),
+            )
+            .await
+            .map_err(to_rpc)?;
         let mismatches = upstream_mismatches(&model, &request, &response);
         if !mismatches.is_empty() {
             update
@@ -977,26 +998,6 @@ async fn run_prompt_locked(
             .output_tokens
             .saturating_add(response.usage.output_tokens);
         usage.total_tokens = Some(usage.input_tokens.saturating_add(usage.output_tokens));
-        final_reason = if interrupted {
-            FinishReason::Cancelled
-        } else {
-            response.finish_reason.clone()
-        };
-        last_message = response.message.clone();
-        if guard.violation().is_some() {
-            final_reason = guard.reason();
-            break 'turns;
-        }
-        inner
-            .sessions
-            .append_message(
-                &params.session_id,
-                response.message.clone(),
-                None,
-                Some(final_reason.clone()),
-            )
-            .await
-            .map_err(to_rpc)?;
         if mode == moc_protocol::methods::SessionMode::ClmExperimental {
             crate::tools::clm::append_message(
                 &inner.sessions,

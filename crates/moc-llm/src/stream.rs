@@ -346,6 +346,8 @@ pub struct ChatStream {
     error: Option<LlmError>,
     /// 是否已停止读取（终态或 body 耗尽）。
     finished: bool,
+    /// 协议是否给出过明确终态。EOF 时解码器会补一个 `Done`，那不算完整响应。
+    terminal_seen: bool,
     /// 协议，决定中断时的修剪规则。
     protocol: Protocol,
     guard: StreamGuard,
@@ -367,6 +369,7 @@ impl ChatStream {
             accumulator: Accumulator::default(),
             error: None,
             finished: false,
+            terminal_seen: false,
             protocol: cfg.protocol,
             guard: StreamGuard::new(req.options.stream_guard),
         }
@@ -378,10 +381,16 @@ impl ChatStream {
     }
 
     /// 读完剩余事件并折叠为完整响应；流中发生过错误则返回该错误。
+    ///
+    /// 上游没有给出协议终态就关闭连接时，解码器补出的 `Done` 不能当成完整响应：
+    /// 那样的内容既无法证明完整，也可能带着半截工具参数，落库后整条会话再发不出请求。
     pub async fn finish(mut self) -> Result<ChatResponse, LlmError> {
         while self.next_event().await.is_some() {}
         match self.error {
             Some(error) => Err(error),
+            None if !self.terminal_seen => Err(LlmError::Stream(
+                "上游响应在协议终态之前结束，本次响应不完整".into(),
+            )),
             None => Ok(self.accumulator.fold(self.protocol, false)),
         }
     }
@@ -450,6 +459,7 @@ impl ChatStream {
             }
             if self.decoder.is_terminated() {
                 // 终态：不再读网络，连接随 drop 关闭。
+                self.terminal_seen = true;
                 self.finished = true;
                 return;
             }
@@ -1188,6 +1198,67 @@ mod tests {
                 .collect(),
         };
         ChatStream::new(Box::pin(body), cfg, req)
+    }
+
+    /// 测试替身：吐完固定字节后正常 EOF（上游没给终态就关连接）。
+    struct EndedStream {
+        chunks: VecDeque<Bytes>,
+    }
+
+    impl Stream for EndedStream {
+        type Item = reqwest::Result<Bytes>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(self.chunks.pop_front().map(Ok))
+        }
+    }
+
+    fn stream_ending_after(
+        cfg: &LlmConfig,
+        req: &ChatRequest,
+        chunks: Vec<&'static str>,
+    ) -> ChatStream {
+        let body = EndedStream {
+            chunks: chunks
+                .into_iter()
+                .map(|chunk| Bytes::from_static(chunk.as_bytes()))
+                .collect(),
+        };
+        ChatStream::new(Box::pin(body), cfg, req)
+    }
+
+    #[tokio::test]
+    async fn finish_rejects_a_stream_that_ends_without_a_terminal_event() {
+        let cfg = config(Protocol::OpenAiChat);
+        let req = request();
+        let stream = stream_ending_after(
+            &cfg,
+            &req,
+            vec![
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"半截\"},\"finish_reason\":null}]}\n\n",
+            ],
+        );
+        let error = stream.finish().await.unwrap_err();
+        assert!(matches!(error, LlmError::Stream(_)), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn finish_accepts_a_stream_that_reaches_the_terminal_event() {
+        let cfg = config(Protocol::OpenAiChat);
+        let req = request();
+        let stream = stream_ending_after(
+            &cfg,
+            &req,
+            vec![
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"完整\"},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            ],
+        );
+        let response = stream.finish().await.expect("有终态的响应");
+        assert!(matches!(
+            &response.message.content[0],
+            crate::ContentPart::Text(text) if text == "完整"
+        ));
     }
 
     #[tokio::test]
