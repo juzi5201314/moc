@@ -1397,7 +1397,14 @@ pub(super) fn display_value(value: &Value, field: &ConfigField) -> String {
             )
         })
     {
-        return format!("{} ({})", format_number(num), crate::render::tokens_k(num));
+        let compact = crate::render::format_tokens(num);
+        let plain = format_number(num);
+        // 不足 1000 时两者相同，没必要写成「512 (512)」。
+        return if compact == plain {
+            plain
+        } else {
+            format!("{plain} ({compact})")
+        };
     }
     // 大于等于一万的整数加上千分位。
     if let Some(num) = value.as_u64()

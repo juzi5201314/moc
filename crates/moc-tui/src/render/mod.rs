@@ -731,7 +731,7 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(bar_color),
         ));
         right.push(Span::styled(
-            format!(" {} / {}", tokens_k(data.context_used), tokens_k(window)),
+            format!(" {} / {}", format_tokens(data.context_used), format_tokens(window)),
             Style::new().fg(theme.gray),
         ));
     }
@@ -795,8 +795,11 @@ struct StatuslineData {
     workdir: String,
     branch: Option<String>,
     todo: Option<(usize, usize)>,
+    /// 会话累计输入 token（与 `/usage` 同源）。
     tokens_in: u64,
+    /// 会话累计输出 token（与 `/usage` 同源）。
     tokens_out: u64,
+    /// 会话累计输出速率：输出 token 总量 / 模型激活时间。
     tok_s: f64,
     prompt_elapsed: Option<std::time::Duration>,
     cost: Option<f64>,
@@ -821,6 +824,8 @@ fn statusline_data(app: &App) -> StatuslineData {
         None
     };
     let cost = (app.cost_usd > 0.0).then_some(app.cost_usd);
+    // 右下角统计是整个会话的累计值（与 `/usage` 同源），不是单次调用。
+    let (tokens_in, tokens_out) = app.session_tokens();
     StatuslineData {
         model: app.model_display().to_owned(),
         mode,
@@ -833,9 +838,9 @@ fn statusline_data(app: &App) -> StatuslineData {
             let (done, total) = app.todo_progress();
             (total > 0).then_some((done, total))
         },
-        tokens_in: app.usage.input_tokens,
-        tokens_out: app.usage.output_tokens,
-        tok_s: app.tokens_per_second(),
+        tokens_in,
+        tokens_out,
+        tok_s: app.session_tokens_per_second(),
         prompt_elapsed,
         cost,
     }
@@ -878,21 +883,36 @@ fn context_bar_color(percent: f64, theme: &crate::theme::Theme) -> ratatui::styl
     }
 }
 
-/// token 数统一以 k 为单位显示：`3000 → 3k`、`30 → 0.03k`、`0 → 0k`。
+/// 数量分档：`(一单位多少 token, 后缀)`，按升序排列。
+const TOKEN_UNITS: [(u64, &str); 3] = [(1_000, "k"), (1_000_000, "m"), (1_000_000_000, "b")];
+
+/// token 数按 1k / 1m / 1b 分档显示：`999 → 999`、`1500 → 1.5k`、`1_200_000 → 1.2m`。
 ///
-/// 全院统一单位便于横向比较；`0` 之外不足 10 token 的按 `<0.01k` 显示，
-/// 既不谎报成 0k 也不夸大成 0.01k。四舍五入在整数上完成，不引入浮点误差。
-pub fn tokens_k(value: u64) -> String {
-    // 以 0.01k 为单位四舍五入：token 数除以 10 即两位小数的 k 值
-    let hundredths = value.saturating_add(5) / 10;
+/// 够得着下一个单位就换单位，绝不写成 `1200k`；不足 1000 直接给原数。进位后
+/// 保留两位小数并去掉多余的 0（`1m`、`1.5k`）；舍入把 `999.99k` 抬成 1000 时
+/// 一并完成跨档进位（`999_999 → 1m`）。四舍五入在整数上完成，不引入浮点误差。
+pub fn format_tokens(value: u64) -> String {
+    if value < TOKEN_UNITS[0].0 {
+        return value.to_string();
+    }
+    let index = TOKEN_UNITS
+        .iter()
+        .rposition(|(scale, _)| value >= *scale)
+        .unwrap_or(0);
+    let (scale, unit) = TOKEN_UNITS[index];
+    // 以 0.01 个当前单位为步长四舍五入。
+    let hundredths = (u128::from(value) * 100 + u128::from(scale) / 2) / u128::from(scale);
+    let (hundredths, unit) = match TOKEN_UNITS.get(index + 1) {
+        // 各档之间正好差 1000 倍，跨档时直接少三位小数。
+        Some((_, next)) if hundredths >= 100_000 => (hundredths / 1_000, *next),
+        _ => (hundredths, unit),
+    };
     let whole = hundredths / 100;
     let frac = hundredths % 100;
-    match (value, frac) {
-        (0, _) => "0k".to_owned(),
-        (1..10, _) => "<0.01k".to_owned(),
-        (_, 0) => format!("{whole}k"),
-        (_, frac) if frac.is_multiple_of(10) => format!("{whole}.{}k", frac / 10),
-        (_, frac) => format!("{whole}.{frac:02}k"),
+    match frac {
+        0 => format!("{whole}{unit}"),
+        frac if frac.is_multiple_of(10) => format!("{whole}.{}{unit}", frac / 10),
+        frac => format!("{whole}.{frac:02}{unit}"),
     }
 }
 
@@ -955,7 +975,7 @@ fn spinner_frame(app: &App) -> &'static str {
     SPINNER_FRAMES[index]
 }
 
-/// 内置渲染：左侧运行状态，右侧 token 统计。
+/// 内置渲染：左侧运行状态，右侧会话累计 token 统计（与 `/usage` 同源）。
 fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     let theme = app.theme;
     let data = statusline_data(app);
@@ -984,8 +1004,8 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     // 右侧统计段
     let right = format!(
         " ⇅ {} › {} › {:.0} tok/s",
-        tokens_k(data.tokens_in),
-        tokens_k(data.tokens_out),
+        format_tokens(data.tokens_in),
+        format_tokens(data.tokens_out),
         data.tok_s,
     );
     let mut right_cost = data
@@ -1028,7 +1048,7 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "mode" => Some((data.mode.clone(), theme.accent_tool)),
             "context" => data
                 .context_percent
-                .map(|_| (tokens_k(data.context_used), theme.text_secondary)),
+                .map(|_| (format_tokens(data.context_used), theme.text_secondary)),
             "context_percent" => data
                 .context_percent
                 .map(|percent| (format_context_percent(percent), theme.text_secondary)),
@@ -1040,8 +1060,8 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
             "todo" => data
                 .todo
                 .map(|(done, total)| (format!("☑ {done}/{total}"), theme.accent_success)),
-            "tokens_in" => Some((tokens_k(data.tokens_in), theme.text_secondary)),
-            "tokens_out" => Some((tokens_k(data.tokens_out), theme.text_secondary)),
+            "tokens_in" => Some((format_tokens(data.tokens_in), theme.text_secondary)),
+            "tokens_out" => Some((format_tokens(data.tokens_out), theme.text_secondary)),
             "tok_s" => Some((format!("{:.1} tok/s", data.tok_s), theme.accent_running)),
             "prompt_elapsed" => Some((
                 data.prompt_elapsed
@@ -1388,20 +1408,84 @@ mod tests {
         assert!(rendered.contains("Stopping"));
     }
 
-    /// token 统一按 k 显示：两位小数、去掉多余的 0，0 与非零小值各有明确写法。
+    /// 右下角统计读会话累计（与 `/usage` 同源），单次请求的 usage 不能冒充总量。
     #[test]
-    fn tokens_share_one_k_unit() {
-        assert_eq!(tokens_k(0), "0k");
-        assert_eq!(tokens_k(9), "<0.01k", "不足 0.01k 不谎报为 0k");
-        assert_eq!(tokens_k(10), "0.01k");
-        assert_eq!(tokens_k(30), "0.03k");
-        assert_eq!(tokens_k(150), "0.15k");
-        assert_eq!(tokens_k(999), "1k", "0.999k 四舍五入到 1k");
-        assert_eq!(tokens_k(1_000), "1k");
-        assert_eq!(tokens_k(1_500), "1.5k");
-        assert_eq!(tokens_k(12_345), "12.35k");
-        assert_eq!(tokens_k(500_000), "500k");
-        assert_eq!(tokens_k(1_200_000), "1200k", "超过百万仍用 k，不换单位");
+    fn statusline_reports_session_totals_not_last_call() {
+        use moc_protocol::{ModelUsageSummary, SessionUsageResult};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.usage = moc_protocol::Usage {
+            input_tokens: 400,
+            output_tokens: 80,
+            ..Default::default()
+        };
+        let rendered = |app: &App| {
+            statusline_builtin(app, 80)
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let initial = rendered(&app);
+        assert!(initial.contains("⇅ 0 › 0 › 0 tok/s"), "{initial}");
+        assert!(
+            !initial.contains("400"),
+            "单次调用不能当会话总量：{initial}"
+        );
+
+        let request = app.begin_usage_request();
+        app.apply_session_usage(
+            request,
+            SessionUsageResult {
+                models: Vec::new(),
+                total: ModelUsageSummary {
+                    model: "total".into(),
+                    calls: 3,
+                    input_tokens: 1_200_000,
+                    output_tokens: 12_345,
+                    cached_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                    reasoning_tokens: None,
+                    active_ms: 60_000,
+                },
+            },
+        );
+        let line = rendered(&app);
+        assert!(
+            line.contains("⇅ 1.2m › 12.35k › 206 tok/s"),
+            "会话累计与单位：{line}"
+        );
+    }
+
+    /// token 按 k/m/b 分档：两位小数、去掉多余的 0，不足 1000 给原数，
+    /// 舍入抬到下一档时直接换单位（不写 `1000k`）。
+    #[test]
+    fn tokens_pick_the_largest_unit() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(9), "9");
+        assert_eq!(format_tokens(150), "150");
+        assert_eq!(format_tokens(999), "999", "不足 1000 不换单位");
+        assert_eq!(format_tokens(1_000), "1k");
+        assert_eq!(format_tokens(1_500), "1.5k");
+        assert_eq!(format_tokens(12_345), "12.35k");
+        assert_eq!(format_tokens(500_000), "500k");
+        assert_eq!(format_tokens(999_950), "999.95k");
+        assert_eq!(format_tokens(999_999), "1m", "0.999999m 舍入后直接进位到 m");
+        assert_eq!(format_tokens(1_000_000), "1m");
+        assert_eq!(
+            format_tokens(1_200_000),
+            "1.2m",
+            "超过百万改用 m，不写 1200k"
+        );
+        assert_eq!(format_tokens(12_345_678), "12.35m");
+        assert_eq!(
+            format_tokens(999_999_999),
+            "1b",
+            "不足 1b 但舍入到 1000m 时进位"
+        );
+        assert_eq!(format_tokens(1_000_000_000), "1b");
+        assert_eq!(format_tokens(1_234_567_890), "1.23b");
     }
 
     /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。

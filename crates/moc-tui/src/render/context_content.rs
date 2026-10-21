@@ -179,13 +179,13 @@ fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, th
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                crate::render::tokens_k(content.total_tokens),
+                crate::render::format_tokens(content.total_tokens),
                 Style::new()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" / {}", crate::render::tokens_k(content.context_window)),
+                format!(" / {}", crate::render::format_tokens(content.context_window)),
                 Style::new().fg(theme.gray),
             ),
             Span::styled(
@@ -335,7 +335,7 @@ fn title_line(
         Some(false) => "▾ ",
     };
     let name = format!("{marker}{}", section.name);
-    let tokens = crate::render::tokens_k(section.tokens);
+    let tokens = crate::render::format_tokens(section.tokens);
     let head = 1 + str_width(&name);
     let pad = width.saturating_sub(head + CONTEXT_TITLE_GAP + str_width(&tokens));
     let style = Style::new()

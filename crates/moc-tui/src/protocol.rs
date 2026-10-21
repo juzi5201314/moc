@@ -73,7 +73,13 @@ pub enum AppEvent {
     /// OpenViking 正文保存完成。
     MemorySaved(String),
     /// 当前会话的模型调用用量。
-    Usage(moc_protocol::SessionUsageResult),
+    Usage {
+        /// 发起刷新时取的请求序号，用于丢弃乱序或跨会话迟到的旧回执。
+        request: u64,
+        result: moc_protocol::SessionUsageResult,
+        /// 是否把明细写进转写（`/usage`）；状态栏刷新为后台静默。
+        show: bool,
+    },
     /// 上下文估算完成。
     ContextUsage(ContextUsageResult),
     /// 上下文正文读取完成。

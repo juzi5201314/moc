@@ -30,6 +30,7 @@ use crate::input::{InputEvent, InputThread};
 use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, SessionScope};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
 use crate::render;
+use crate::render::wrap::str_width;
 use crate::terminal::TerminalGuard;
 use crate::theme::Theme;
 use crate::transcript::{DetailLevel, ToolCallFinish, ToolCallStart};
@@ -82,6 +83,8 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.startup_mode = opts.mode;
     app.startup_pending = opts.initial_prompt.clone();
     bootstrap(&connection.client, &mut app, &opts).await;
+    // 启动时把会话累计用量拉回来，第一帧的右下角就是整个会话的 total。
+    refresh_usage(&mut app, &connection, false);
     // 启动目录在 bootstrap 才拿到；无会话时按它过滤「按项目」历史。
     app.refresh_input_history();
     if app.session.is_none() && app.models.is_empty() {
@@ -250,6 +253,36 @@ fn refresh_context(app: &App, connection: &EmbeddedConnection, notify_failure: b
             }
             Err(error) if notify_failure => {
                 let _ = events.send(AppEvent::Notice(format!("读取上下文占用失败：{error}")));
+            }
+            Err(_) => {}
+        }
+    });
+}
+
+/// 刷新会话累计用量：状态栏与 `/usage` 读同一份 core replay 出的统计。
+///
+/// `show` 为真时把明细写进转写（`/usage`），否则只后台更新状态栏数字。
+fn refresh_usage(app: &mut App, connection: &EmbeddedConnection, show: bool) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let request = app.begin_usage_request();
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<SessionUsage>(SessionUsageParams { session_id })
+            .await
+        {
+            Ok(result) => {
+                let _ = events.send(AppEvent::Usage {
+                    request,
+                    result,
+                    show,
+                });
+            }
+            Err(error) if show => {
+                let _ = events.send(AppEvent::Notice(format!("读取用量失败：{error}")));
             }
             Err(_) => {}
         }
@@ -434,6 +467,7 @@ fn apply_focus_loaded(
     app.set_history_cursor(has_more, before_entry_id);
     refresh_git_branch(app, &cwd);
     refresh_context(app, connection, false);
+    refresh_usage(app, connection, false);
     load_subagents(app, connection);
 }
 
@@ -538,12 +572,13 @@ fn apply_rewound(
     app.prompt_changed();
     app.focus = Focus::Prompt;
     app.usage = Default::default();
-    app.usage_samples.clear();
     app.set_notice(match source_title {
         Some(title) => format!("已从「{title}」分叉出新会话"),
         None => "会话已回退".to_owned(),
     });
     refresh_context(app, connection, false);
+    // 回退会截断历史，重放出来的累计用量随之缩水，必须重新取一次。
+    refresh_usage(app, connection, false);
     load_subagents_for_parent(
         app,
         &connection.client,
@@ -749,8 +784,18 @@ async fn event_loop(
                     Some(AppEvent::MemorySaved(uri)) => {
                         apply_memory_saved(app, connection, uri);
                     }
-                    Some(AppEvent::Usage(result)) => {
-                        app.push_note(format_usage(&result), false);
+                    Some(AppEvent::Usage {
+                        request,
+                        result,
+                        show,
+                    }) => {
+                        // 表格按当前转写区宽度排版，免得 80 列终端里被折行拆散。
+                        let width = usize::from(app.scrollback_area.width);
+                        let note = show.then(|| format_usage(&result, width));
+                        app.apply_session_usage(request, result);
+                        if let Some(note) = note {
+                            app.push_note(note, false);
+                        }
                     }
                     Some(AppEvent::ContextUsage(usage)) => {
                         app.context_usage = Some(usage.clone());
@@ -870,6 +915,7 @@ async fn event_loop(
                         app.set_history_cursor(has_more, before_entry_id);
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
+                        refresh_usage(app, connection, false);
                         load_subagents_for_parent(app, &connection.client, Some(id));
                         if let Some(text) = app.startup_pending.take() {
                             app.prompt.insert_str_raw(&text);
@@ -3046,6 +3092,7 @@ pub(crate) fn apply_plan_execution_loaded(
             app.set_history_cursor(loaded.truncated, before);
             refresh_git_branch(app, &cwd);
             refresh_context(app, connection, false);
+            refresh_usage(app, connection, false);
             load_subagents_for_parent(app, &connection.client, Some(id));
             start_plan_execution(app, connection, auto_prompt);
         }
@@ -3231,6 +3278,11 @@ fn apply_update_and_refresh(
             | SessionUpdate::PermissionChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
     ) || matches!(&update, SessionUpdate::ToolFinished { prompt_id, .. } if prompt_id.starts_with("bash_"));
+    // 用量只在这些事件后变化：一次提示（含工具轮次）结束，或压缩本身花掉一次调用。
+    let usage_changed = matches!(
+        &update,
+        SessionUpdate::PromptFinished { .. } | SessionUpdate::ContextCompacted { .. }
+    );
     apply_update(app, update);
     if prompt_started && app.cancel_requested {
         cancel_prompt(&connection.client, app);
@@ -3238,12 +3290,15 @@ fn apply_update_and_refresh(
     if refresh {
         refresh_context(app, connection, false);
     }
+    if usage_changed {
+        refresh_usage(app, connection, false);
+    }
 }
 
 /// 压缩完成提示：全量摘要与仅裁剪用不同措辞，避免把裁剪说成完整压缩。
 fn compaction_done_note(full: bool, tokens_before: u64, tokens_after: u64) -> String {
-    let before = crate::render::tokens_k(tokens_before);
-    let after = crate::render::tokens_k(tokens_after);
+    let before = crate::render::format_tokens(tokens_before);
+    let after = crate::render::format_tokens(tokens_after);
     if full {
         format!("上下文已压缩：{before} → {after}")
     } else {
@@ -3513,34 +3568,106 @@ fn spawn_clipboard_paste(events: UnboundedSender<AppEvent>) {
     });
 }
 
-fn format_usage(result: &moc_protocol::SessionUsageResult) -> String {
-    result
+/// `/usage` 明细：模型 × 指标的对齐表格，末行是全部模型的合计。
+///
+/// 表格宽度按转写区收敛（去掉 note 的行首缩进与标记）：模型名过长时截断，
+/// 数字列右对齐；token 数走全 UI 统一的 k/m/b 分档，激活时间按时长量级换单位。
+/// `area_width` 是转写区宽度，首次绘制前为 0 时按 80 列终端估算。
+fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) -> String {
+    const COLUMNS: [&str; 8] = [
+        "模型",
+        "调用",
+        "输入",
+        "输出",
+        "缓存率",
+        "思考",
+        "激活",
+        "TPS",
+    ];
+    // note 每行扣掉 1 格缩进与 2 格行首标记（标记或对齐空白）。
+    let content_width = if area_width == 0 {
+        71
+    } else {
+        area_width.saturating_sub(3)
+    };
+    // 再窄也先保住模型列，超出部分交给 note 折行（极窄终端才会发生）。
+    let max_width = content_width.max(40);
+
+    let mut rows: Vec<[String; 8]> = result
         .models
         .iter()
-        .chain(std::iter::once(&result.total))
-        .map(|summary| {
-            let cache = summary.cached_input_tokens.unwrap_or(0);
-            let cache_rate = if summary.input_tokens == 0 {
-                0.0
-            } else {
-                cache as f64 * 100.0 / summary.input_tokens as f64
-            };
-            format!(
-                "{}：{} 次，输入 {}，输出 {}，缓存 {:.1}%，思考 {}，激活 {}，TPS {:.2}",
-                summary.model,
-                summary.calls,
-                summary.input_tokens,
-                summary.output_tokens,
-                cache_rate,
-                summary
-                    .reasoning_tokens
-                    .map_or_else(|| "未知".into(), |value| value.to_string()),
-                format_duration(summary.active_ms),
-                tokens_per_second(summary.output_tokens, summary.active_ms),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|summary| usage_row(summary, &summary.model))
+        .collect();
+    rows.push(usage_row(&result.total, "合计"));
+
+    let mut widths = COLUMNS.map(str_width);
+    for row in &rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(str_width(cell));
+        }
+    }
+    // 模型列吃掉剩余预算，其余列按内容宽定宽。
+    let fixed: usize = widths[1..].iter().map(|width| width + 2).sum();
+    widths[0] = widths[0]
+        .min(max_width.saturating_sub(fixed))
+        .max(str_width(COLUMNS[0]));
+    for row in &mut rows {
+        row[0] = crate::render::scrollback::truncate_to_width(row[0].clone(), widths[0]);
+    }
+
+    let line = |cells: &[String]| {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                let gap = widths[index].saturating_sub(str_width(cell));
+                // 模型列左对齐，数字列右对齐。
+                if index == 0 {
+                    format!("{cell}{}", " ".repeat(gap))
+                } else {
+                    format!("{}{cell}", " ".repeat(gap))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let header = line(&COLUMNS.map(str::to_owned));
+    let rule = "─".repeat(str_width(&header));
+    let mut lines = vec![header, rule.clone()];
+    let total = rows.pop().expect("合计行总会入列");
+    for row in rows {
+        lines.push(line(&row));
+    }
+    if !result.models.is_empty() {
+        lines.push(rule);
+    }
+    lines.push(line(&total));
+    lines.join("\n")
+}
+
+/// 表格里的一行：`[模型, 调用, 输入, 输出, 缓存率, 思考, 激活, TPS]`。
+fn usage_row(summary: &moc_protocol::ModelUsageSummary, label: &str) -> [String; 8] {
+    let cached = summary.cached_input_tokens.unwrap_or(0);
+    let cache_rate = if summary.input_tokens == 0 {
+        0.0
+    } else {
+        cached as f64 * 100.0 / summary.input_tokens as f64
+    };
+    [
+        label.to_owned(),
+        summary.calls.to_string(),
+        crate::render::format_tokens(summary.input_tokens),
+        crate::render::format_tokens(summary.output_tokens),
+        format!("{cache_rate:.1}%"),
+        summary
+            .reasoning_tokens
+            .map_or_else(|| "未知".to_owned(), crate::render::format_tokens),
+        format_active(summary.active_ms),
+        format!(
+            "{:.2}",
+            tokens_per_second(summary.output_tokens, summary.active_ms)
+        ),
+    ]
 }
 
 fn tokens_per_second(output_tokens: u64, active_ms: u64) -> f64 {
@@ -3551,11 +3678,18 @@ fn tokens_per_second(output_tokens: u64, active_ms: u64) -> f64 {
     }
 }
 
-fn format_duration(active_ms: u64) -> String {
+/// 激活时间：毫秒级给毫秒，分钟以上用 `1m02s` / `1h05m`，
+/// 免得长会话在表格里写成 `3723.00 s` 撑爆列宽。
+fn format_active(active_ms: u64) -> String {
+    let secs = active_ms / 1_000;
     if active_ms < 1_000 {
         format!("{active_ms} ms")
+    } else if secs < 60 {
+        format!("{secs}.{}s", active_ms % 1_000 / 100)
+    } else if secs < 3_600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
     } else {
-        format!("{:.2} s", active_ms as f64 / 1000.0)
+        format!("{}h{:02}m", secs / 3_600, secs % 3_600 / 60)
     }
 }
 
@@ -3679,25 +3813,11 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             });
         }
         "/usage" => {
-            let Some(session_id) = session_id else {
+            if app.session.is_none() {
                 app.set_notice("当前没有活动会话");
                 return;
-            };
-            let client = connection.client.clone();
-            let events = app.events.clone();
-            tokio::spawn(async move {
-                match client
-                    .call::<SessionUsage>(SessionUsageParams { session_id })
-                    .await
-                {
-                    Ok(result) => {
-                        let _ = events.send(AppEvent::Usage(result));
-                    }
-                    Err(error) => {
-                        let _ = events.send(AppEvent::Notice(format!("读取用量失败：{error}")));
-                    }
-                }
-            });
+            }
+            refresh_usage(app, connection, true);
         }
         "/help" => app.modal = Some(Modal::Help),
         "/context" => open_context_content(app, connection),
@@ -4072,6 +4192,120 @@ mod tests {
     fn app() -> App {
         let (events, _receiver) = unbounded_channel::<AppEvent>();
         App::new(Theme::global(), events)
+    }
+
+    /// `/usage` 输出对齐表格：列宽一致、数字右对齐、token 走 k/m/b 单位，
+    /// 超宽模型名截断，末行是全部模型的合计。
+    #[test]
+    fn usage_table_aligns_columns_with_units() {
+        use moc_protocol::{ModelUsageSummary, SessionUsageResult};
+
+        let summary = |model: &str, calls| ModelUsageSummary {
+            model: model.into(),
+            calls,
+            input_tokens: 1_200_000,
+            output_tokens: 12_345,
+            cached_input_tokens: Some(1_100_000),
+            cache_creation_input_tokens: None,
+            reasoning_tokens: Some(1_200),
+            active_ms: 62_000,
+        };
+        let result = SessionUsageResult {
+            models: vec![
+                summary("cpa-chat/deepseek-v4.1-flash:max", 12),
+                summary("p/m", 3),
+            ],
+            total: summary("total", 15),
+        };
+        let table = format_usage(&result, 74);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(
+            lines.len(),
+            6,
+            "表头、分隔线、两个模型、分隔线、合计：\n{table}"
+        );
+        let width = str_width(lines[0]);
+        for line in &lines {
+            assert_eq!(str_width(line), width, "列宽必须一致：{table}");
+            assert!(
+                str_width(line) <= 71,
+                "表格不得超过 80 列终端里 note 的可用宽度：{table}"
+            );
+        }
+        assert!(lines[0].contains("模型") && lines[0].contains("TPS"));
+        assert!(
+            table.contains("1.2m") && table.contains("12.35k"),
+            "{table}"
+        );
+        assert!(table.contains('…'), "超宽模型名应截断：{table}");
+        let total = lines.last().expect("合计行");
+        assert!(total.trim_start().starts_with("合计"), "{table}");
+        assert!(total.contains("15"), "合计行用 total 的调用次数：{table}");
+        // note 渲染时按 71 列折行：换行必须是硬断行，表格才能逐行保持对齐。
+        assert_eq!(
+            crate::render::wrap::wrap_text(&table, 71),
+            lines
+                .iter()
+                .map(|line| (*line).to_owned())
+                .collect::<Vec<_>>(),
+            "表格在 note 里不得被折行拆散：{table}"
+        );
+
+        // 新会话没有明细：表头、分隔线、合计三行，不出现两条相邻分隔线。
+        let empty = format_usage(
+            &SessionUsageResult {
+                models: Vec::new(),
+                total: summary("total", 0),
+            },
+            74,
+        );
+        assert_eq!(empty.lines().count(), 3, "{empty}");
+    }
+
+    /// `/usage` 与状态栏后台刷新走同一条 core 统计：回执带请求序号，
+    /// `show` 决定是否把明细写进转写。
+    #[tokio::test]
+    async fn usage_refresh_reads_session_totals_from_core() {
+        let (_core, connection, mut app, mut receiver, _root) = app_with_core().await;
+
+        execute_command(&mut app, &connection, "/usage".into());
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("用量回执应在超时前返回")
+            .expect("事件队列未关闭");
+        let AppEvent::Usage {
+            request,
+            result,
+            show,
+        } = event
+        else {
+            panic!("应收到用量事件");
+        };
+        assert!(show, "/usage 要把明细写进转写");
+        assert_eq!(request, 1, "回执带回发起时的请求序号");
+        assert_eq!(result.total.calls, 0, "新会话还没有模型调用");
+        app.apply_session_usage(request, result);
+        assert_eq!(app.session_tokens(), (0, 0));
+
+        // 提示收尾后的后台刷新同样取统计，但不写转写。
+        let blocks = app.blocks.len();
+        refresh_usage(&mut app, &connection, false);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("后台用量回执应在超时前返回")
+            .expect("事件队列未关闭");
+        let AppEvent::Usage {
+            request,
+            result,
+            show,
+        } = event
+        else {
+            panic!("应收到用量事件");
+        };
+        assert!(!show, "后台刷新静默");
+        assert!(request > 1);
+        app.apply_session_usage(request, result);
+        assert_eq!(app.blocks.len(), blocks, "静默刷新不写转写");
     }
 
     /// 搭一个连到真 core 的 app，并把事件接收端一并交出（用例要观察回执）。

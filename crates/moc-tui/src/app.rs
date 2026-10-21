@@ -6,14 +6,12 @@ use std::collections::HashMap;
 
 use moc_protocol::methods::TodoPhase;
 use moc_protocol::{
-    ContextUsageResult, ModelInfo, SessionInfo, SessionMode, SessionPermission, Usage,
+    ContextUsageResult, ModelInfo, SessionInfo, SessionMode, SessionPermission, SessionUsageResult,
+    Usage,
 };
 
 use ratatui::layout::Rect;
 use tokio::sync::mpsc::UnboundedSender;
-
-/// tok/s 滑动窗口长度。
-pub const SPEED_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
 use crate::modal::{Modal, SessionScope};
 use crate::protocol::AppEvent;
@@ -214,8 +212,11 @@ pub struct App {
     /// 没有思考块的响应（如纯工具调用）不得动上一响应的块。
     thinking_has_block: bool,
     pub usage: Usage,
-    /// 输出 token 采样（tok/s 滑动窗口）。
-    pub usage_samples: Vec<(std::time::Instant, u64)>,
+    /// 会话累计用量（`/usage` 与状态栏共用，由 core replay 出的权威统计刷新）。
+    pub session_usage: Option<SessionUsageResult>,
+    /// 用量刷新请求序号；回执按它丢弃乱序或跨会话迟到的结果。
+    usage_request: u64,
+    usage_applied: u64,
     /// 会话累计费用（美元；需要模型 pricing 配置）。
     pub cost_usd: f64,
     /// git 分支（异步刷新）。
@@ -469,7 +470,9 @@ impl App {
             thinking_started_at: None,
             thinking_has_block: false,
             usage: Usage::default(),
-            usage_samples: Vec::new(),
+            session_usage: None,
+            usage_request: 0,
+            usage_applied: 0,
             cost_usd: 0.0,
             git_branch: None,
             statusline_template: None,
@@ -1265,7 +1268,9 @@ impl App {
         self.compaction_progress = None;
         self.prompt_running = self.inflight_prompts.contains(&session_id);
         self.usage = Usage::default();
-        self.usage_samples.clear();
+        // 用量统计按会话重取；在飞请求都属于上一个会话，水位线一抬就直接作废。
+        self.session_usage = None;
+        self.usage_applied = self.usage_request;
         self.cost_usd = 0.0;
         self.todos.clear();
         self.todo_hud.reset();
@@ -1483,7 +1488,7 @@ impl App {
         }
     }
 
-    /// 应用一次 usage 刷新：费用累计 + tok/s 窗口采样。
+    /// 应用一次请求级 usage 刷新：费用累计与上下文占用读它。
     pub fn apply_usage(&mut self, usage: Usage) {
         let previous = &self.usage;
         let delta_in = usage.input_tokens.saturating_sub(previous.input_tokens);
@@ -1501,10 +1506,6 @@ impl App {
                     + delta_out as f64 / 1e6 * pricing.output
                     + delta_cached as f64 / 1e6 * cache_price;
             }
-            self.usage_samples
-                .push((std::time::Instant::now(), usage.output_tokens));
-            let cutoff = std::time::Instant::now() - SPEED_WINDOW;
-            self.usage_samples.retain(|(at, _)| *at >= cutoff);
         }
         self.usage = usage;
         // reasoning_tokens 属于本次响应：没有思考块的响应（上游可能报 0）
@@ -1528,19 +1529,39 @@ impl App {
         }
     }
 
-    /// 滑动窗口内的输出速率（tok/s）。
-    pub fn tokens_per_second(&self) -> f64 {
-        let Some((oldest, first_tokens)) = self.usage_samples.first() else {
-            return 0.0;
-        };
-        let Some((newest, last_tokens)) = self.usage_samples.last() else {
-            return 0.0;
-        };
-        let elapsed = newest.saturating_duration_since(*oldest).as_secs_f64();
-        if elapsed <= 0.0 {
-            return 0.0;
+    /// 发出一次会话用量刷新，返回请求序号；回执带回序号以丢弃迟到的旧结果。
+    pub fn begin_usage_request(&mut self) -> u64 {
+        self.usage_request = self.usage_request.wrapping_add(1);
+        self.usage_request
+    }
+
+    /// 应用一次会话用量回执：比已应用结果更旧的（乱序或跨会话迟到）直接丢弃。
+    pub fn apply_session_usage(&mut self, request: u64, usage: SessionUsageResult) {
+        if request <= self.usage_applied {
+            return;
         }
-        last_tokens.saturating_sub(*first_tokens) as f64 / elapsed
+        self.usage_applied = request;
+        self.session_usage = Some(usage);
+    }
+
+    /// 会话累计输入／输出 token；统计还没回来时按 0 处理。
+    pub fn session_tokens(&self) -> (u64, u64) {
+        self.session_usage.as_ref().map_or((0, 0), |usage| {
+            (usage.total.input_tokens, usage.total.output_tokens)
+        })
+    }
+
+    /// 会话累计平均输出速率（tok/s），与 `/usage` 的 TPS 同源：
+    /// 输出 token 总量除以模型激活时间（工具执行与等待不计入）。
+    pub fn session_tokens_per_second(&self) -> f64 {
+        let Some(usage) = &self.session_usage else {
+            return 0.0;
+        };
+        if usage.total.active_ms == 0 {
+            0.0
+        } else {
+            usage.total.output_tokens as f64 * 1000.0 / usage.total.active_ms as f64
+        }
     }
 
     /// todo 完成进度 `(done, total)`。
@@ -2232,6 +2253,72 @@ mod tests {
             ..Usage::default()
         });
         assert_eq!(tokens(&app), Some(120), "没有思考块的响应不能覆盖上一块");
+    }
+
+    /// 会话累计用量：请求级 usage 与累计统计分开存，状态栏的 in/out/tps 只读后者。
+    #[test]
+    fn session_usage_is_authoritative_and_ordered() {
+        use super::{App, Usage};
+        use moc_protocol::{ModelUsageSummary, SessionUsageResult};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let summary = |output: u64, active_ms: u64| ModelUsageSummary {
+            model: "p/m".into(),
+            calls: 2,
+            input_tokens: 12_000,
+            output_tokens: output,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+            reasoning_tokens: None,
+            active_ms,
+        };
+        let usage = |output: u64, active_ms: u64| SessionUsageResult {
+            models: Vec::new(),
+            total: summary(output, active_ms),
+        };
+
+        let first = app.begin_usage_request();
+        app.apply_session_usage(first, usage(1_200, 60_000));
+        assert_eq!(app.session_tokens(), (12_000, 1_200));
+        assert!((app.session_tokens_per_second() - 20.0).abs() < 1e-9);
+
+        // 请求级 usage 不参与累计口径。
+        app.apply_usage(Usage {
+            input_tokens: 400,
+            output_tokens: 80,
+            ..Usage::default()
+        });
+        assert_eq!(app.session_tokens(), (12_000, 1_200));
+
+        // 更旧的请求迟到：不得回退统计。
+        app.apply_session_usage(first, usage(1, 1));
+        assert_eq!(app.session_tokens(), (12_000, 1_200));
+
+        let second = app.begin_usage_request();
+        app.apply_session_usage(second, usage(2_400, 120_000));
+        assert_eq!(app.session_tokens(), (12_000, 2_400));
+
+        // 切会话：旧统计清空，在飞回执作废。
+        app.switch_session(
+            moc_protocol::SessionInfo {
+                id: "ses_next".into(),
+                title: "下一个".into(),
+                model: "p/m".into(),
+                permission: moc_protocol::SessionPermission::Full,
+                mode: moc_protocol::SessionMode::Normal,
+                parent_session_id: None,
+                forked_from: None,
+                cwd: "/tmp".into(),
+                created_at_ms: 0,
+                updated_at_ms: 0,
+                lock: None,
+            },
+            Vec::new(),
+        );
+        assert_eq!(app.session_tokens(), (0, 0));
+        app.apply_session_usage(second, usage(9_999, 1_000));
+        assert_eq!(app.session_tokens(), (0, 0), "跨会话迟到的回执必须丢弃");
     }
 
     /// 告警与 notice 的 TTL：期内可见且给出未来的截止时刻，过期后两者都消失。

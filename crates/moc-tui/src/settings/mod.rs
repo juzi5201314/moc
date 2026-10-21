@@ -753,10 +753,10 @@ impl SettingsPanel {
         };
         let mut parts = Vec::new();
         if let Some(window) = value.get("context_window").and_then(Value::as_u64) {
-            parts.push(format!("上下文 {}", crate::render::tokens_k(window)));
+            parts.push(format!("上下文 {}", crate::render::format_tokens(window)));
         }
         if let Some(output) = value.get("max_output_tokens").and_then(Value::as_u64) {
-            parts.push(format!("回复 {}", crate::render::tokens_k(output)));
+            parts.push(format!("回复 {}", crate::render::format_tokens(output)));
         }
         if value
             .get("reasoning")

@@ -457,13 +457,13 @@ fn context_lines(usage: &ContextUsageResult, width: usize, theme: &Theme) -> Vec
     lines.push(Line::from(vec![
         Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
         Span::styled(
-            crate::render::tokens_k(total),
+            crate::render::format_tokens(total),
             Style::new()
                 .fg(theme.text_primary)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" / {}", crate::render::tokens_k(window)),
+            format!(" / {}", crate::render::format_tokens(window)),
             Style::new().fg(theme.gray),
         ),
         Span::styled(
@@ -483,7 +483,7 @@ fn context_lines(usage: &ContextUsageResult, width: usize, theme: &Theme) -> Vec
             Span::styled(
                 format!(
                     "{:>CONTEXT_VALUE_COL$}",
-                    crate::render::tokens_k(section.tokens)
+                    crate::render::format_tokens(section.tokens)
                 ),
                 Style::new().fg(theme.text_primary),
             ),
@@ -560,14 +560,14 @@ fn context_scale_line(
             &mut taken,
             &mut placed,
             boundary,
-            crate::render::tokens_k(total),
+            crate::render::format_tokens(total),
             theme.chart(marks.len() - 1),
         );
     }
-    let cap = crate::render::tokens_k(window);
+    let cap = crate::render::format_tokens(window);
     push_label(&mut taken, &mut placed, cells, cap, theme.gray_dim);
     for (index, &(cumulative, boundary)) in marks.iter().enumerate() {
-        let text = crate::render::tokens_k(cumulative);
+        let text = crate::render::format_tokens(cumulative);
         if placed.iter().any(|(_, existing, _)| *existing == text) {
             continue;
         }
@@ -938,7 +938,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     } else {
                         entry
                             .context_window
-                            .map(|window| format!("  {}", crate::render::tokens_k(window)))
+                            .map(|window| format!("  {}", crate::render::format_tokens(window)))
                             .unwrap_or_default()
                     };
                     let label = ellipsize(
@@ -1021,19 +1021,19 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             error,
             ..
         } => {
-            let window = crate::render::tokens_k(overflow.context_window);
+            let window = crate::render::format_tokens(overflow.context_window);
             // 思考关闭时省掉 `:off` 后缀，与其他位置的选择器写法一致。
             let selector = crate::app::model_selector_label(selector);
             let leading = if overflow.tokens > overflow.context_window {
                 format!(
                     "当前上下文 {} 超过 {selector} 的窗口 {window}",
-                    crate::render::tokens_k(overflow.tokens)
+                    crate::render::format_tokens(overflow.tokens)
                 )
             } else {
                 format!(
                     "当前上下文 {} 超过 {selector} 的压缩触发线 {}（窗口 {window}）",
-                    crate::render::tokens_k(overflow.tokens),
-                    crate::render::tokens_k(overflow.threshold)
+                    crate::render::format_tokens(overflow.tokens),
+                    crate::render::format_tokens(overflow.threshold)
                 )
             };
             let mut lines = vec![
@@ -1041,7 +1041,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 Line::from(Span::styled(
                     format!(
                         "确认后先切换到 {selector}，再由它压缩上下文（压缩后不超过 {}）",
-                        crate::render::tokens_k(overflow.target_tokens)
+                        crate::render::format_tokens(overflow.target_tokens)
                     ),
                     Style::new().fg(theme.text_secondary),
                 )),
@@ -1576,12 +1576,12 @@ fn model_meta_lines(
     }
     let mut rows: Vec<(String, String)> = Vec::with_capacity(8);
     if let Some(window) = entry.context_window {
-        rows.push(("context".to_owned(), crate::render::tokens_k(window)));
+        rows.push(("context".to_owned(), crate::render::format_tokens(window)));
     }
     if let Some(tokens) = entry.max_output_tokens {
         rows.push((
             "output".to_owned(),
-            crate::render::tokens_k(u64::from(tokens)),
+            crate::render::format_tokens(u64::from(tokens)),
         ));
     }
     if !entry.inputs.is_empty() {
@@ -2349,7 +2349,7 @@ mod tests {
         assert_eq!(line_width(&texts[7]), line_width(&texts[6]));
     }
 
-    /// 上下文窗：空会话是一整条空窗口，分块与合计都显示 0k。
+    /// 上下文窗：空会话是一整条空窗口，分块与合计都显示 0。
     #[test]
     fn context_modal_shows_empty_window_for_fresh_session() {
         let (events, _receiver) = unbounded_channel();
@@ -2373,15 +2373,22 @@ mod tests {
 
         let lines = modal_lines(&app, &modal, 60, 24);
         let texts: Vec<String> = lines.iter().map(line_text).collect();
-        assert_eq!(texts[0], "  0k / 500k · 0.0%");
-        assert_eq!(texts[2], "  ▌ system               0k    0.0%");
-        assert_eq!(texts[3], "  ▌ messages             0k    0.0%");
+        assert_eq!(texts[0], "  0 / 500k · 0.0%");
+        assert_eq!(
+            texts[2],
+            format!("  ▌ {:<16}{:>7}    0.0%", "system", "0"),
+            "空会话分块也显示 0"
+        );
+        assert_eq!(
+            texts[3],
+            format!("  ▌ {:<16}{:>7}    0.0%", "messages", "0")
+        );
         assert!(
             texts[5].chars().all(|ch| ch == ' ' || ch == '─'),
             "空会话的色条整条都是空窗口：{:?}",
             texts[5]
         );
-        assert!(texts[6].starts_with("  0k"), "{:?}", texts[6]);
+        assert!(texts[6].starts_with("  0 "), "{:?}", texts[6]);
         assert!(texts[6].ends_with("500k"), "{:?}", texts[6]);
     }
 
