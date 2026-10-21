@@ -980,8 +980,11 @@ fn prompt_footer(entry: &Entry, width: usize, theme: &Theme) -> Option<Line<'sta
     Some(Line::from(spans))
 }
 
-/// 思维链：隐藏档只留 `◆ 思考耗时 X.Xs (Yt)`；简略档预览正文末尾若干行；
+/// 思维链：标题行 `◆ Thought X.Xs (Yt/s)`；简略档预览正文末尾若干行；
 /// 完整档显示全部正文（低对比度引文带）。
+///
+/// 耗时与速率只在本地测到数据时出现：历史恢复的块没有这两项，
+/// 不拿 `0.0s` 充数，否则会与「瞬间想完」混淆。
 fn thinking_block(
     text: &str,
     reasoning_tokens: Option<u64>,
@@ -991,23 +994,29 @@ fn thinking_block(
     level: DetailLevel,
 ) -> Vec<Line<'static>> {
     let theme = app.theme;
-    let duration = duration_ms.map_or_else(|| "0.0s".to_owned(), format_duration);
     let mut spans = vec![
         Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
         Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_thinking)),
         Span::styled(
-            "思考耗时".to_owned(),
+            "Thought".to_owned(),
             Style::new()
                 .fg(theme.gray_bright)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {duration}"), Style::new().fg(theme.gray_dim)),
     ];
-    if let Some(tokens) = reasoning_tokens {
+    if let Some(ms) = duration_ms {
         spans.push(Span::styled(
-            format!(" ({tokens}t)"),
+            format!(" {:.1}s", ms as f64 / 1_000.0),
             Style::new().fg(theme.gray_dim),
         ));
+        if let Some(tokens) = reasoning_tokens
+            && let Some(rate) = thinking_tokens_per_second(tokens, ms)
+        {
+            spans.push(Span::styled(
+                format!(" ({rate}t/s)"),
+                Style::new().fg(theme.gray_dim),
+            ));
+        }
     }
     spans.push(Span::styled("  ".to_owned(), Style::new()));
     if level == DetailLevel::Hidden {
@@ -1032,6 +1041,13 @@ fn thinking_block(
     }
     lines.push(Line::from(String::new()));
     lines
+}
+
+/// 思考速率：思考 token 数 / 思考耗时，四舍五入到整 token/s。
+/// 耗时为 0 表示没测到有效时长，此时不给速率。
+fn thinking_tokens_per_second(tokens: u64, duration_ms: u64) -> Option<u64> {
+    (duration_ms > 0)
+        .then(|| tokens.saturating_mul(1_000).saturating_add(duration_ms / 2) / duration_ms)
 }
 
 /// 思考正文的引文带行（markdown 渲染后逐行加低对比度前缀）。
@@ -2482,6 +2498,46 @@ mod tests {
         let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
         assert_eq!(full.len(), 2 + 12, "完整档 = 全部正文");
         assert!(text_of(&full).contains("思考第 0 行"));
+    }
+
+    /// 思考标题：`Thought 秒数 (t/s)`；没测到耗时就不写假 0。
+    #[test]
+    fn thinking_header_reports_duration_and_rate() {
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.thinking_detail = DetailLevel::Hidden;
+        app.push_block(Block::Thinking {
+            text: "想".into(),
+            reasoning_tokens: Some(120),
+            duration_ms: Some(1_500),
+        });
+        app.push_block(Block::Thinking {
+            text: "想".into(),
+            reasoning_tokens: Some(50),
+            duration_ms: None,
+        });
+        let header = |index: usize| {
+            render_entry(index, &app.blocks[index], &app, 60, true)
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        let timed = header(0);
+        assert!(
+            timed.contains("◆ Thought 1.5s (80t/s)"),
+            "耗时与速率同一行：{timed}"
+        );
+
+        let unknown = header(1);
+        assert!(unknown.contains("◆ Thought"), "{unknown}");
+        assert!(
+            !unknown.contains("0.0s"),
+            "没测到耗时不能写 0.0s：{unknown}"
+        );
+        assert!(!unknown.contains("t/s"), "没有耗时就无法给速率：{unknown}");
     }
 
     /// 工具正文的简略预算：6 行内容 + 一行省略提示；完整档不截断。

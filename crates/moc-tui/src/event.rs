@@ -3261,15 +3261,20 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 );
             }
             moc_protocol::methods::AssistantDelta::Reasoning { delta } => {
+                // 只有仍在流式中的思考块才续写：已定稿的块属于上一响应，
+                // 新响应要另起一块并重新计时。
                 if !delta.is_empty()
-                    && !app.has_streaming(|block| matches!(block, Block::Thinking { .. }))
+                    && !app.has_streaming(|block| {
+                        matches!(
+                            block,
+                            Block::Thinking {
+                                duration_ms: None,
+                                ..
+                            }
+                        )
+                    })
                 {
-                    app.thinking_started_at = Some(std::time::Instant::now());
-                    app.push_block(Block::Thinking {
-                        text: String::new(),
-                        reasoning_tokens: None,
-                        duration_ms: None,
-                    });
+                    app.start_thinking();
                 }
                 app.append_streaming_limited(
                     |block| match block {
@@ -6290,6 +6295,71 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// 思考耗时按「一段思考」定稿：工具调用与下一轮生成都必须先收掉上一块，
+    /// 否则工具循环里除最后一段之外全是没测到的 0。
+    #[test]
+    fn thinking_duration_is_stamped_per_response() {
+        use crate::transcript::Block;
+        use moc_protocol::methods::{AssistantDelta, SessionUpdate};
+        use std::time::{Duration, Instant};
+
+        let mut app = app();
+        let duration_of = |app: &App, index: usize| match &app.blocks[index].block {
+            Block::Thinking { duration_ms, .. } => *duration_ms,
+            _ => panic!("下标 {index} 不是思考块"),
+        };
+
+        // 第一响应：思考后直接调工具。
+        app.start_thinking();
+        app.thinking_started_at = Some(Instant::now() - Duration::from_millis(1_200));
+        apply_update(
+            &mut app,
+            SessionUpdate::ToolStarted {
+                prompt_id: "prompt_1".into(),
+                tool_call_id: "call_1".into(),
+                name: "read".into(),
+                parent_tool_call_id: None,
+                arguments: "{}".into(),
+            },
+        );
+        assert!(
+            duration_of(&app, 0).is_some_and(|ms| ms >= 1_000),
+            "工具开始即定稿第一段思考"
+        );
+
+        // 第二响应：生成开始后另起一块，正文到达时定稿。
+        apply_update(
+            &mut app,
+            SessionUpdate::GenerationStarted {
+                prompt_id: "prompt_1".into(),
+            },
+        );
+        apply_update(
+            &mut app,
+            SessionUpdate::AssistantDelta {
+                prompt_id: "prompt_1".into(),
+                delta: AssistantDelta::Reasoning {
+                    delta: "再想".into(),
+                },
+            },
+        );
+        assert_eq!(app.blocks.len(), 3, "新响应另起思考块");
+        app.thinking_started_at = Some(Instant::now() - Duration::from_millis(900));
+        apply_update(
+            &mut app,
+            SessionUpdate::AssistantDelta {
+                prompt_id: "prompt_1".into(),
+                delta: AssistantDelta::Text {
+                    delta: "答案".into(),
+                },
+            },
+        );
+        assert!(
+            duration_of(&app, 2).is_some_and(|ms| ms >= 800),
+            "正文开始即定稿第二段思考"
+        );
     }
 
     #[tokio::test]

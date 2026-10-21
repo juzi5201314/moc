@@ -208,6 +208,9 @@ pub struct App {
     pub compaction_progress: Option<CompactionProgress>,
     /// 当前 thinking block 开始时间（用于计算 duration_ms）。
     pub thinking_started_at: Option<std::time::Instant>,
+    /// 本次模型响应是否已有思考块：usage 的 reasoning_tokens 只回填它，
+    /// 没有思考块的响应（如纯工具调用）不得动上一响应的块。
+    thinking_has_block: bool,
     pub usage: Usage,
     /// 输出 token 采样（tok/s 滑动窗口）。
     pub usage_samples: Vec<(std::time::Instant, u64)>,
@@ -461,6 +464,7 @@ impl App {
             prompt_started_at: None,
             compaction_progress: None,
             thinking_started_at: None,
+            thinking_has_block: false,
             usage: Usage::default(),
             usage_samples: Vec::new(),
             cost_usd: 0.0,
@@ -655,6 +659,8 @@ impl App {
     /// 模型直发的调用与 `run_code` 沙盒里的嵌套调用共用这里，形状只差 `parent_id`
     /// （嵌套调用据此在滚动区缩进）；批次归属在批次开始时就登记好了。
     pub fn start_tool_block(&mut self, call: ToolCallStart) {
+        // 工具调用开始即思考流结束：耗时不能把随后的工具执行算进去。
+        self.finish_thinking();
         let ToolCallStart {
             id,
             name,
@@ -709,6 +715,8 @@ impl App {
         if let Some(entry) = self.tool_entry_mut(&id) {
             entry.finish_tool(status, result, duration_ms, diff);
         } else {
+            // 前端中途接入时没有配对的开始更新：补建终态块前同样先定稿思考流。
+            self.finish_thinking();
             let index = self.blocks.len();
             self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
                 batch_id: self.tool_batches.remove(&id),
@@ -937,6 +945,9 @@ impl App {
     }
 
     pub fn start_generation(&mut self) {
+        // 新一轮生成开始：上一响应若没有正文/工具收尾，思考块在这里定稿。
+        self.finish_thinking();
+        self.thinking_has_block = false;
         self.generation_start = Some(self.blocks.len());
     }
 
@@ -952,8 +963,24 @@ impl App {
         self.tool_indices
             .retain(|_, index| *index < self.blocks.len());
         self.thinking_started_at = None;
+        self.thinking_has_block = false;
     }
-    /// 结束当前思考块并记录实际思考时长。
+
+    /// 开始新的思考块：定稿上一块，并登记计时与 usage 回填目标。
+    pub fn start_thinking(&mut self) {
+        self.finish_thinking();
+        self.thinking_has_block = true;
+        self.thinking_started_at = Some(std::time::Instant::now());
+        self.push_block(Block::Thinking {
+            text: String::new(),
+            reasoning_tokens: None,
+            duration_ms: None,
+        });
+    }
+
+    /// 结束当前思考块的流式增量并记录实际思考时长。
+    ///
+    /// 只在思考流真正结束的边界调用：正文/工具开始、下一轮生成开始、提示收尾。
     pub fn finish_thinking(&mut self) {
         let Some(started_at) = self.thinking_started_at.take() else {
             return;
@@ -1269,6 +1296,7 @@ impl App {
     /// `prompt_running` 不在其中：提示收尾要清它，切会话则按会话级在飞记账重算。
     fn reset_prompt_state(&mut self) {
         self.thinking_started_at = None;
+        self.thinking_has_block = false;
         self.generation_start = None;
         self.prompt_started_at = None;
         self.cancel_requested = false;
@@ -1474,8 +1502,11 @@ impl App {
             self.usage_samples.retain(|(at, _)| *at >= cutoff);
         }
         self.usage = usage;
-        // 将 reasoning_tokens 更新到最近的 Thinking block
-        if let Some(reasoning_tokens) = usage.reasoning_tokens
+        // reasoning_tokens 属于本次响应：没有思考块的响应（上游可能报 0）
+        // 不能按「最近一块」写回，否则会把上一响应的 token 数抹掉。
+        if self.thinking_has_block
+            && let Some(reasoning_tokens) = usage.reasoning_tokens
+            && reasoning_tokens > 0
             && let Some(entry) = self
                 .blocks
                 .iter_mut()
@@ -2164,6 +2195,38 @@ mod tests {
         assert!(!app.prompt_running);
         assert!(!app.cancel_requested);
         assert_eq!(app.notice.as_deref(), Some("Stopped"));
+    }
+
+    /// 思考 token 只回填本次响应的思考块：下一响应若没有思考块，
+    /// 上游报 0 不得把上一块已记下的 token 数抹掉。
+    #[test]
+    fn usage_reasoning_tokens_stay_with_their_response() {
+        use super::{App, Usage};
+        use crate::transcript::Block;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let tokens = |app: &App| match &app.blocks[0].block {
+            Block::Thinking {
+                reasoning_tokens, ..
+            } => *reasoning_tokens,
+            _ => panic!("期望思考块"),
+        };
+
+        app.start_thinking();
+        app.finish_thinking();
+        app.apply_usage(Usage {
+            reasoning_tokens: Some(120),
+            ..Usage::default()
+        });
+        assert_eq!(tokens(&app), Some(120));
+
+        app.start_generation();
+        app.apply_usage(Usage {
+            reasoning_tokens: Some(0),
+            ..Usage::default()
+        });
+        assert_eq!(tokens(&app), Some(120), "没有思考块的响应不能覆盖上一块");
     }
 
     /// 告警与 notice 的 TTL：期内可见且给出未来的截止时刻，过期后两者都消失。
