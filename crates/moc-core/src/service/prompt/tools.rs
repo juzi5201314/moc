@@ -18,7 +18,138 @@ use moc_protocol::{
 };
 use serde_json::Value;
 use std::{panic::AssertUnwindSafe, sync::Arc, time::Instant};
-type PendingTool<'a> = BoxFuture<'a, (usize, Result<ToolOutcome, CoreError>, u64)>;
+type PendingTool<'a> = BoxFuture<'a, (usize, Result<CommittedTool, CoreError>)>;
+
+/// 一个已经持久化的工具步骤。
+///
+/// 完整结果在提交时已经写入 transcript，这里只在批次收尾前短暂保留发送通知所需的副本；
+/// 批次里先完成的工具不再等待后一个工具结束。
+struct CommittedTool {
+    status: ToolStatus,
+    duration_ms: u64,
+    diff: Option<moc_protocol::methods::ToolDiff>,
+    end_turn: bool,
+    observation: Option<(u128, bool, bool)>,
+    /// 上游协议错误：本步骤仍以失败结果入库，但必须终止本批次。
+    protocol_fault: Option<String>,
+    result: moc_llm::ToolResult,
+}
+
+fn note_protocol_fault(stop_reason: &mut Option<RpcError>, committed: &CommittedTool) {
+    if committed.protocol_fault.is_some() && stop_reason.is_none() {
+        *stop_reason = Some(RpcError::of(RpcErrorCode::InternalError));
+    }
+}
+
+/// 执行一次工具并把完成的结果立即提交，只有持久化失败才返回错误。
+async fn run_step(
+    inner: &CoreInner,
+    ctx: &ToolCtx,
+    mode: moc_protocol::methods::SessionMode,
+    call: &moc_llm::ToolCall,
+    start: Instant,
+) -> Result<CommittedTool, CoreError> {
+    let (outcome, protocol_fault) = match execute_tool(inner, ctx, mode, call).await {
+        Ok(outcome) => (outcome, None),
+        Err(CoreError::Protocol(message)) => (
+            ToolOutcome::failure("E_PROTOCOL", message.clone()),
+            Some(message),
+        ),
+        Err(error) => (ToolOutcome::failure("E_TOOL", error.to_string()), None),
+    };
+    let duration_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let mut committed = commit_outcome(inner, ctx, call, outcome, duration_ms).await?;
+    committed.protocol_fault = protocol_fault;
+    Ok(committed)
+}
+
+/// 把一次执行结果归档、格式化并追加到 transcript；返回通知前端所需的小结构。
+async fn commit_outcome(
+    inner: &CoreInner,
+    ctx: &ToolCtx,
+    call: &moc_llm::ToolCall,
+    outcome: ToolOutcome,
+    duration_ms: u64,
+) -> Result<CommittedTool, CoreError> {
+    let observation = if ctx.config.limits.loop_detection {
+        Some(super::guard::observe_tool(ctx, call, &outcome).await?)
+    } else {
+        None
+    };
+    commit_prepared(inner, ctx, call, outcome, duration_ms, observation).await
+}
+
+/// 工具执行本身失败（例如未注册）时也留下配对结果，错误文本进入模型可见内容。
+async fn commit_failure(
+    inner: &CoreInner,
+    ctx: &ToolCtx,
+    call: &moc_llm::ToolCall,
+    error: CoreError,
+    duration_ms: u64,
+) -> Result<CommittedTool, CoreError> {
+    let outcome = ToolOutcome::failure("E_TOOL", error.to_string());
+    commit_outcome(inner, ctx, call, outcome, duration_ms).await
+}
+
+async fn commit_prepared(
+    inner: &CoreInner,
+    ctx: &ToolCtx,
+    call: &moc_llm::ToolCall,
+    mut outcome: ToolOutcome,
+    duration_ms: u64,
+    observation: Option<(u128, bool, bool)>,
+) -> Result<CommittedTool, CoreError> {
+    let content = match crate::tools::output::prepare_outcome(
+        &outcome,
+        &ctx.config.tools.output,
+        &ctx.artifact_store(),
+    )
+    .await
+    {
+        Ok(content) => content,
+        Err(error) => {
+            outcome.is_error = true;
+            outcome.error_code = Some("E_ARTIFACT".into());
+            format!("[E_ARTIFACT] Tool ran, but its output could not be delivered: {error}")
+        }
+    };
+    let status = outcome.status.unwrap_or(if outcome.is_error {
+        ToolStatus::Error
+    } else {
+        ToolStatus::Completed
+    });
+    let result = moc_llm::ToolResult {
+        tool_call_id: call.id.clone(),
+        content,
+        is_error: outcome.is_error,
+        images: outcome.images.clone(),
+    };
+    inner
+        .sessions
+        .append_message(
+            &ctx.session_id,
+            Message {
+                role: Role::Tool,
+                content: vec![ContentPart::ToolResult(result.clone())],
+            },
+            Some(ToolExecution {
+                tool_call_id: call.id.clone(),
+                status,
+                duration_ms: Some(duration_ms),
+            }),
+            None,
+        )
+        .await?;
+    Ok(CommittedTool {
+        status,
+        duration_ms,
+        diff: outcome.diff,
+        end_turn: outcome.control == ToolControl::EndTurn,
+        observation,
+        protocol_fault: None,
+        result,
+    })
+}
 
 pub(super) struct ToolBatchResult {
     pub control_end: bool,
@@ -74,7 +205,9 @@ pub(super) async fn execute_tool_batch(
     } else {
         None
     };
-    let mut results: Vec<Option<(Result<ToolOutcome, CoreError>, u64)>> =
+    // 每一步在自身完成时就提交到磁盘：并行批次里先完成的工具不再等慢工具，
+    // 崩溃最多丢失尚未完成的那一步。完整结果只在通知前端时短暂保留。
+    let mut slots: Vec<Option<CommittedTool>> =
         std::iter::repeat_with(|| None).take(calls.len()).collect();
     let mut started = vec![false; calls.len()];
     let mut pending: FuturesUnordered<PendingTool<'_>> = FuturesUnordered::new();
@@ -82,13 +215,12 @@ pub(super) async fn execute_tool_batch(
 
     'calls: for (index, call) in calls.iter().enumerate() {
         if call.name.starts_with("mcp__") {
-            results[index] = Some((
-                Ok(ToolOutcome::failure(
-                    "E_MODE",
-                    "Call MCP tools through run_code",
-                )),
-                0,
-            ));
+            let outcome = ToolOutcome::failure("E_MODE", "Call MCP tools through run_code");
+            slots[index] = Some(
+                commit_outcome(inner, tool_ctx, call, outcome, 0)
+                    .await
+                    .map_err(to_rpc)?,
+            );
             continue;
         }
         let Some(tool) = inner.tools.get(&call.name) else {
@@ -96,14 +228,20 @@ pub(super) async fn execute_tool_batch(
                 "E_TOOL_NOT_FOUND: tool `{}` is not registered",
                 call.name
             ));
-            results[index] = Some((Err(error), 0));
+            slots[index] = Some(
+                commit_failure(inner, tool_ctx, call, error, 0)
+                    .await
+                    .map_err(to_rpc)?,
+            );
             continue;
         };
         let parallel = tool.parallel_safe();
 
         if !parallel {
-            while let Some((done, result, elapsed)) = pending.next().await {
-                results[done] = Some((result, elapsed));
+            while let Some((done, committed)) = pending.next().await {
+                let committed = committed.map_err(to_rpc)?;
+                note_protocol_fault(&mut stop_reason, &committed);
+                slots[done] = Some(committed);
             }
         }
         started[index] = true;
@@ -126,42 +264,33 @@ pub(super) async fn execute_tool_batch(
         let start = Instant::now();
         if parallel {
             pending.push(Box::pin(async move {
-                let result = execute_tool(inner, tool_ctx, mode, call).await;
-                (
-                    index,
-                    result,
-                    start.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                )
+                (index, run_step(inner, tool_ctx, mode, call, start).await)
             }));
             if pending.len() == parallel_limit
-                && let Some((done, result, elapsed)) = pending.next().await
+                && let Some((done, committed)) = pending.next().await
             {
-                results[done] = Some((result, elapsed));
+                let committed = committed.map_err(to_rpc)?;
+                note_protocol_fault(&mut stop_reason, &committed);
+                slots[done] = Some(committed);
             }
         } else {
-            let result = execute_tool(inner, tool_ctx, mode, call).await;
-            let elapsed = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-            if matches!(result, Err(CoreError::Protocol(_))) {
-                stop_reason = Some(RpcError::of(RpcErrorCode::InternalError));
-            }
-            results[index] = Some((result, elapsed));
-            if stop_reason.is_some() {
-                break 'calls;
-            }
-            if results[index].as_ref().is_some_and(|(result, _)| {
-                matches!(result, Ok(outcome) if outcome.control == ToolControl::EndTurn)
-            }) {
+            let committed = run_step(inner, tool_ctx, mode, call, start)
+                .await
+                .map_err(to_rpc)?;
+            note_protocol_fault(&mut stop_reason, &committed);
+            let end_turn = committed.end_turn;
+            slots[index] = Some(committed);
+            if stop_reason.is_some() || end_turn {
                 break 'calls;
             }
         }
     }
 
     if stop_reason.is_none() {
-        while let Some((done, result, elapsed)) = pending.next().await {
-            if matches!(result, Err(CoreError::Protocol(_))) {
-                stop_reason = Some(RpcError::of(RpcErrorCode::InternalError));
-            }
-            results[done] = Some((result, elapsed));
+        while let Some((done, committed)) = pending.next().await {
+            let committed = committed.map_err(to_rpc)?;
+            note_protocol_fault(&mut stop_reason, &committed);
+            slots[done] = Some(committed);
         }
     }
 
@@ -184,81 +313,36 @@ pub(super) async fn execute_tool_batch(
         {
             stop_reason = Some(protocol_to_rpc(error));
         }
-        let (result, duration_ms) = results[index].take().unwrap_or_else(|| {
-            let (code, message) = if stop_reason.is_some() {
-                ("E_CANCELLED", "Prompt aborted; this call was not executed.")
-            } else {
-                (
-                    "E_TURN_ENDED",
-                    "The plan was submitted; later calls were not executed.",
-                )
-            };
-            let mut outcome = ToolOutcome::failure(code, message);
-            outcome.status = Some(ToolStatus::Cancelled);
-            (Ok(outcome), 0)
-        });
-        let mut outcome = match result {
-            Ok(outcome) => outcome,
-            Err(CoreError::Protocol(message)) => {
-                if stop_reason.is_none() {
-                    stop_reason = Some(RpcError::new(
-                        RpcErrorCode::InternalError.code(),
-                        message.clone(),
-                    ));
-                }
-                ToolOutcome::failure("E_PROTOCOL", message)
-            }
-            Err(error) => ToolOutcome::failure("E_TOOL", error.to_string()),
-        };
-        if config.limits.loop_detection {
-            observations.push(
-                super::guard::observe_tool(tool_ctx, call, &outcome)
+        // 没执行到的调用在这里补一条结果并提交，保证每个工具调用都有配对结果。
+        let committed = match slots[index].take() {
+            Some(committed) => committed,
+            None => {
+                let (code, message) = if stop_reason.is_some() {
+                    ("E_CANCELLED", "Prompt aborted; this call was not executed.")
+                } else {
+                    (
+                        "E_TURN_ENDED",
+                        "The plan was submitted; later calls were not executed.",
+                    )
+                };
+                let mut outcome = ToolOutcome::failure(code, message);
+                outcome.status = Some(ToolStatus::Cancelled);
+                commit_outcome(inner, tool_ctx, call, outcome, 0)
                     .await
-                    .map_err(|error| to_rpc(error.into()))?,
-            );
-        }
-        let content = match crate::tools::output::prepare_outcome(
-            &outcome,
-            &config.tools.output,
-            &tool_ctx.artifact_store(),
-        )
-        .await
-        {
-            Ok(content) => content,
-            Err(error) => {
-                outcome.is_error = true;
-                outcome.error_code = Some("E_ARTIFACT".into());
-                format!("[E_ARTIFACT] Tool ran, but its output could not be delivered: {error}")
+                    .map_err(to_rpc)?
             }
         };
-        let status = outcome.status.unwrap_or(if outcome.is_error {
-            ToolStatus::Error
-        } else {
-            ToolStatus::Completed
-        });
-        let tool_result = moc_llm::ToolResult {
-            tool_call_id: call.id.clone(),
-            content,
-            is_error: outcome.is_error,
-            images: outcome.images.clone(),
-        };
-        inner
-            .sessions
-            .append_message(
-                session_id,
-                Message {
-                    role: Role::Tool,
-                    content: vec![ContentPart::ToolResult(tool_result.clone())],
-                },
-                Some(ToolExecution {
-                    tool_call_id: call.id.clone(),
-                    status,
-                    duration_ms: Some(duration_ms),
-                }),
-                None,
-            )
-            .await
-            .map_err(to_rpc)?;
+        if let Some(observation) = committed.observation {
+            observations.push(observation);
+        }
+        let CommittedTool {
+            status,
+            duration_ms,
+            diff,
+            end_turn,
+            result: tool_result,
+            ..
+        } = committed;
         if mode == moc_protocol::methods::SessionMode::ClmExperimental {
             let message = Message {
                 role: Role::Tool,
@@ -305,7 +389,7 @@ pub(super) async fn execute_tool_batch(
                     status,
                     result: tool_result,
                     duration_ms: Some(duration_ms),
-                    diff: outcome.diff,
+                    diff,
                 },
             )
             .await
@@ -313,7 +397,7 @@ pub(super) async fn execute_tool_batch(
         {
             stop_reason = Some(protocol_to_rpc(error));
         }
-        end_prompt |= outcome.control == ToolControl::EndTurn;
+        end_prompt |= end_turn;
     }
 
     check_workspace(
@@ -1016,6 +1100,20 @@ fn cancelled_outcome() -> ToolOutcome {
     outcome
 }
 
+/// 恢复时给没有记录的调用补结果。
+///
+/// 进程可能在工具已经产生副作用、但结果还没提交时退出，所以这里不能声称“未执行”：
+/// 模型必须先去核实外部状态，而不是把非幂等操作直接重跑一遍。
+fn unknown_outcome() -> ToolOutcome {
+    let mut outcome = ToolOutcome::failure(
+        "E_OUTCOME_UNKNOWN",
+        "Crash recovery: this call has no recorded result. Its side effects are unknown; \
+         verify external state before retrying non-idempotent operations.",
+    );
+    outcome.status = Some(ToolStatus::Cancelled);
+    outcome
+}
+
 pub(super) async fn repair_pending_calls(
     inner: &CoreInner,
     session_id: &str,
@@ -1033,8 +1131,8 @@ pub(super) async fn repair_pending_calls(
         pending
     };
     for id in pending {
-        let ToolOutput::Text(content) = cancelled_outcome().content else {
-            unreachable!("取消结果必须是文本");
+        let ToolOutput::Text(content) = unknown_outcome().content else {
+            unreachable!("未知结果必须是文本");
         };
         persist_tool_result(
             inner,

@@ -198,7 +198,11 @@ impl SessionState {
                         .context_message()
                         .map_or(0, |message| crate::compact::message_tokens(&message));
                     self.transcript_token_counts.push(tokens);
+                    let is_tool = projected.message.role == Role::Tool;
                     self.transcript.push(projected);
+                    if is_tool {
+                        self.order_tool_group();
+                    }
                 }
             }
             Entry::Compaction {
@@ -361,6 +365,57 @@ impl SessionState {
         self.entries.push(entry);
     }
 
+    /// 把最近这组连续的工具结果按所属 assistant 的调用顺序排列。
+    ///
+    /// 工具结果在实际完成时就落盘（并行批次里先完成的先提交），物理顺序是完成顺序；
+    /// 模型协议要求结果顺序与调用顺序一致，因此只在内存投影里整理，物理日志不动。
+    fn order_tool_group(&mut self) {
+        let end = self.transcript.len();
+        let mut start = end - 1;
+        while start > 0 && self.transcript[start - 1].message.role == Role::Tool {
+            start -= 1;
+        }
+        let Some(owner) = start.checked_sub(1) else {
+            return;
+        };
+        let order: Vec<&str> = self.transcript[owner]
+            .message
+            .tool_calls()
+            .map(|call| call.id.as_str())
+            .collect();
+        if order.is_empty() {
+            return;
+        }
+        let mut ranks = Vec::with_capacity(end - start);
+        for entry in &self.transcript[start..end] {
+            let Some(result) = entry.message.tool_results().next() else {
+                return;
+            };
+            let Some(rank) = order.iter().position(|id| *id == result.tool_call_id) else {
+                return;
+            };
+            ranks.push(rank);
+        }
+        if ranks.windows(2).all(|pair| pair[0] <= pair[1]) {
+            return;
+        }
+        // 组内元素很少（一次并行批次），选择排序比建置换更直白。
+        for offset in 0..ranks.len() {
+            let mut best = offset;
+            for candidate in offset + 1..ranks.len() {
+                if ranks[candidate] < ranks[best] {
+                    best = candidate;
+                }
+            }
+            if best != offset {
+                ranks.swap(offset, best);
+                self.transcript.swap(start + offset, start + best);
+                self.transcript_token_counts
+                    .swap(start + offset, start + best);
+            }
+        }
+    }
+
     /// 当前会话的最新元信息。
     pub fn session_info(&self) -> SessionInfo {
         self.session.clone()
@@ -384,6 +439,79 @@ mod tests {
 
     use super::*;
     use crate::session::entries::{EntryPayload, SessionOrigin};
+
+    /// 工具结果按完成顺序落盘，模型投影必须回到调用顺序。
+    #[test]
+    fn out_of_order_tool_results_project_in_call_order() {
+        use moc_llm::{ContentPart, Role, ToolCall};
+
+        let header = Entry::header(
+            "ses_123456789abc".into(),
+            "/tmp/project".into(),
+            "p/model".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "标题".into(),
+            10,
+        );
+        let assistant = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentPart::ToolCall(ToolCall {
+                            id: "call_a".into(),
+                            name: "read".into(),
+                            arguments: "{}".into(),
+                        }),
+                        ContentPart::ToolCall(ToolCall {
+                            id: "call_b".into(),
+                            name: "read".into(),
+                            arguments: "{}".into(),
+                        }),
+                    ],
+                },
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            header.id().into(),
+            11,
+        );
+        // 先完成的是第二个调用。
+        let second = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::tool_result("call_b", "乙", false),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            assistant.id().into(),
+            12,
+        );
+        let first = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::tool_result("call_a", "甲", false),
+                tool: None,
+                finish_reason: None,
+                agent: None,
+            },
+            second.id().into(),
+            13,
+        );
+
+        let state =
+            SessionState::from_entries(vec![header, assistant, second, first]).expect("记录链完整");
+
+        let ids: Vec<&str> = state.transcript[1..]
+            .iter()
+            .flat_map(|entry| entry.message.tool_results())
+            .map(|result| result.tool_call_id.as_str())
+            .collect();
+        assert_eq!(ids, ["call_a", "call_b"]);
+        assert_eq!(state.transcript.len(), state.transcript_token_counts.len());
+    }
 
     #[test]
     fn replay_restores_metadata_todos_plans_and_transcript() {
@@ -557,8 +685,8 @@ mod tests {
     /// 工具调用用时从 transcript 重放：只累计模型发起的工具，手动 bash 不计入。
     #[test]
     fn replay_sums_model_tool_time_only() {
-        use moc_protocol::methods::{ToolExecution, ToolStatus};
         use moc_protocol::BashCommand;
+        use moc_protocol::methods::{ToolExecution, ToolStatus};
 
         let tool = |id: &str, duration_ms| ToolExecution {
             tool_call_id: id.into(),
