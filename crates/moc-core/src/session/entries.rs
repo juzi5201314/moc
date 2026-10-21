@@ -142,7 +142,7 @@ pub enum Entry {
         parent_tool_call_id: String,
         change: PtcStateChange,
     },
-    /// 一次模型请求的累计用量与激活耗时。
+    /// 一次模型请求的累计用量、激活耗时与首 token 等待。
     Usage {
         id: String,
         parent_id: Option<String>,
@@ -150,6 +150,9 @@ pub enum Entry {
         model: String,
         usage: moc_llm::Usage,
         active_ms: u64,
+        /// 首 token 等待（TTFT）；非流式请求与失败请求为 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttft_ms: Option<u64>,
     },
     /// CLM 模式当前实时上下文的版本快照；不进入普通 transcript。
     ClmContext {
@@ -227,6 +230,7 @@ pub enum EntryPayload {
         model: String,
         usage: moc_llm::Usage,
         active_ms: u64,
+        ttft_ms: Option<u64>,
     },
     ClmContext {
         content: String,
@@ -430,6 +434,7 @@ impl Entry {
                 model,
                 usage,
                 active_ms,
+                ttft_ms,
             } => Self::Usage {
                 id,
                 parent_id,
@@ -437,6 +442,7 @@ impl Entry {
                 model,
                 usage,
                 active_ms,
+                ttft_ms,
             },
             EntryPayload::ClmContext { content } => Self::ClmContext {
                 id,

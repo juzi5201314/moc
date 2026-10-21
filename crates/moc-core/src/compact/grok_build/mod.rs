@@ -137,6 +137,8 @@ impl<'a> Sampler<'a> {
             &self.model.selector,
             response.usage,
             active_ms,
+            // 摘要用非流式 complete，没有可观测的首 token。
+            None,
         )
         .await?;
         Ok(response.message.text())

@@ -3568,22 +3568,13 @@ fn spawn_clipboard_paste(events: UnboundedSender<AppEvent>) {
     });
 }
 
-/// `/usage` 明细：模型 × 指标的对齐表格，末行是全部模型的合计。
+/// `/usage` 明细：会话统计 + 模型 × 指标的对齐表格，末行是全部模型的合计。
 ///
 /// 表格宽度按转写区收敛（去掉 note 的行首缩进与标记）：模型名过长时截断，
-/// 数字列右对齐；token 数走全 UI 统一的 k/m/b 分档，激活时间按时长量级换单位。
-/// `area_width` 是转写区宽度，首次绘制前为 0 时按 80 列终端估算。
+/// 数字列右对齐；token 数走全 UI 统一的 k/m/b 分档，时间按时长量级换单位。
+/// 窄终端按优先级丢列（思考 → 缓存率 → TTFT），至少保住模型、调用、输入、
+/// 输出、生成与 TPS。`area_width` 是转写区宽度，首次绘制前为 0 时按 80 列终端估算。
 fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) -> String {
-    const COLUMNS: [&str; 8] = [
-        "模型",
-        "调用",
-        "输入",
-        "输出",
-        "缓存率",
-        "思考",
-        "激活",
-        "TPS",
-    ];
     // note 每行扣掉 1 格缩进与 2 格行首标记（标记或对齐空白）。
     let content_width = if area_width == 0 {
         71
@@ -3593,7 +3584,77 @@ fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) ->
     // 再窄也先保住模型列，超出部分交给 note 折行（极窄终端才会发生）。
     let max_width = content_width.max(40);
 
-    let mut rows: Vec<[String; 8]> = result
+    let mut lines = usage_summary(result);
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.extend(usage_table(result, max_width));
+    lines.join("\n")
+}
+
+/// 会话级统计：模型用时（生成 + 网络等待）、工具调用用时、平均 TTFT 与输出速度。
+///
+/// 没有模型调用（新会话）时不输出整块，表格自己会给出零值。
+fn usage_summary(result: &moc_protocol::SessionUsageResult) -> Vec<String> {
+    let total = &result.total;
+    if total.calls == 0 {
+        return Vec::new();
+    }
+    let mut rows: Vec<(&str, String)> = Vec::with_capacity(4);
+    let split = if total.gen_ms > 0 {
+        let waiting = total.active_ms.saturating_sub(total.gen_ms);
+        format!(
+            "（生成 {} · 网络等待 {}）",
+            format_active(total.gen_ms),
+            format_active(waiting)
+        )
+    } else {
+        String::new()
+    };
+    rows.push((
+        "模型用时",
+        format!("{}{split}", format_active(total.active_ms)),
+    ));
+    if result.tool_ms > 0 {
+        rows.push(("工具调用用时", format_active(result.tool_ms)));
+    }
+    if let Some(ttft) = average_ttft(total) {
+        rows.push(("首 token 平均（TTFT）", format_active(ttft)));
+    }
+    if let Some(tps) = usage_tps(total) {
+        rows.push(("输出速度", format!("{tps:.1} tok/s")));
+    }
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| str_width(label))
+        .max()
+        .unwrap_or(0);
+    let mut lines = vec!["会话统计".to_owned()];
+    lines.extend(rows.into_iter().map(|(label, value)| {
+        let pad = label_width.saturating_sub(str_width(label));
+        format!("  {label}{}{value}", " ".repeat(pad + 2))
+    }));
+    lines
+}
+
+/// 模型明细表；列宽按 `max_width` 收敛，空间不够时按优先级丢列。
+fn usage_table(result: &moc_protocol::SessionUsageResult, max_width: usize) -> Vec<String> {
+    const COLUMNS: [&str; 9] = [
+        "模型",
+        "调用",
+        "输入",
+        "输出",
+        "缓存率",
+        "思考",
+        "生成",
+        "TTFT",
+        "TPS",
+    ];
+    // 窄终端按顺序丢列：思考 → 缓存率 → TTFT（会话统计里还有平均 TTFT）。
+    const DROP_ORDER: [usize; 3] = [5, 4, 7];
+    const MIN_MODEL_WIDTH: usize = 14;
+
+    let mut rows: Vec<[String; 9]> = result
         .models
         .iter()
         .map(|summary| usage_row(summary, &summary.model))
@@ -3606,8 +3667,30 @@ fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) ->
             widths[index] = widths[index].max(str_width(cell));
         }
     }
+    let mut hidden = [false; COLUMNS.len()];
+    for _ in 0..DROP_ORDER.len() {
+        let fixed: usize = (1..COLUMNS.len())
+            .filter(|index| !hidden[*index])
+            .map(|index| widths[index] + 2)
+            .sum();
+        if max_width.saturating_sub(fixed) >= MIN_MODEL_WIDTH {
+            break;
+        }
+        let Some(index) = DROP_ORDER.iter().copied().find(|&index| !hidden[index]) else {
+            break;
+        };
+        hidden[index] = true;
+    }
+    let visible: Vec<usize> = (0..COLUMNS.len())
+        .filter(|index| !hidden[*index])
+        .collect();
     // 模型列吃掉剩余预算，其余列按内容宽定宽。
-    let fixed: usize = widths[1..].iter().map(|width| width + 2).sum();
+    let fixed: usize = visible
+        .iter()
+        .copied()
+        .filter(|&index| index != 0)
+        .map(|index| widths[index] + 2)
+        .sum();
     widths[0] = widths[0]
         .min(max_width.saturating_sub(fixed))
         .max(str_width(COLUMNS[0]));
@@ -3615,11 +3698,12 @@ fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) ->
         row[0] = crate::render::scrollback::truncate_to_width(row[0].clone(), widths[0]);
     }
 
-    let line = |cells: &[String]| {
-        cells
+    let line = |cells: &[String; 9]| {
+        visible
             .iter()
-            .enumerate()
-            .map(|(index, cell)| {
+            .copied()
+            .map(|index| {
+                let cell = &cells[index];
                 let gap = widths[index].saturating_sub(str_width(cell));
                 // 模型列左对齐，数字列右对齐。
                 if index == 0 {
@@ -3631,7 +3715,8 @@ fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) ->
             .collect::<Vec<_>>()
             .join("  ")
     };
-    let header = line(&COLUMNS.map(str::to_owned));
+    let header_cells = COLUMNS.map(str::to_owned);
+    let header = line(&header_cells);
     let rule = "─".repeat(str_width(&header));
     let mut lines = vec![header, rule.clone()];
     let total = rows.pop().expect("合计行总会入列");
@@ -3642,11 +3727,11 @@ fn format_usage(result: &moc_protocol::SessionUsageResult, area_width: usize) ->
         lines.push(rule);
     }
     lines.push(line(&total));
-    lines.join("\n")
+    lines
 }
 
-/// 表格里的一行：`[模型, 调用, 输入, 输出, 缓存率, 思考, 激活, TPS]`。
-fn usage_row(summary: &moc_protocol::ModelUsageSummary, label: &str) -> [String; 8] {
+/// 表格里的一行：`[模型, 调用, 输入, 输出, 缓存率, 思考, 生成, TTFT, TPS]`。
+fn usage_row(summary: &moc_protocol::ModelUsageSummary, label: &str) -> [String; 9] {
     let cached = summary.cached_input_tokens.unwrap_or(0);
     let cache_rate = if summary.input_tokens == 0 {
         0.0
@@ -3662,23 +3747,37 @@ fn usage_row(summary: &moc_protocol::ModelUsageSummary, label: &str) -> [String;
         summary
             .reasoning_tokens
             .map_or_else(|| "未知".to_owned(), crate::render::format_tokens),
-        format_active(summary.active_ms),
-        format!(
-            "{:.2}",
-            tokens_per_second(summary.output_tokens, summary.active_ms)
-        ),
+        if summary.gen_ms > 0 {
+            format_active(summary.gen_ms)
+        } else {
+            "—".to_owned()
+        },
+        average_ttft(summary).map_or_else(|| "—".to_owned(), format_active),
+        usage_tps(summary).map_or_else(|| "—".to_owned(), |tps| format!("{tps:.1}")),
     ]
 }
 
-fn tokens_per_second(output_tokens: u64, active_ms: u64) -> f64 {
-    if active_ms == 0 {
-        0.0
-    } else {
-        output_tokens as f64 * 1000.0 / active_ms as f64
-    }
+/// 平均首 token 等待；没有请求上报过首 token 时返回 `None`（旧会话或全部失败）。
+fn average_ttft(summary: &moc_protocol::ModelUsageSummary) -> Option<u64> {
+    (summary.ttft_calls > 0).then(|| summary.ttft_ms / summary.ttft_calls)
 }
 
-/// 激活时间：毫秒级给毫秒，分钟以上用 `1m02s` / `1h05m`，
+/// 输出速率：优先用生成阶段耗时；没有可拆分数据（旧会话）时退回整段用时。
+fn usage_tps(summary: &moc_protocol::ModelUsageSummary) -> Option<f64> {
+    if summary.output_tokens == 0 {
+        return None;
+    }
+    let ms = if summary.gen_ms > 0 {
+        summary.gen_ms
+    } else if summary.ttft_calls == 0 {
+        summary.active_ms
+    } else {
+        return None;
+    };
+    (ms > 0).then(|| summary.output_tokens as f64 * 1000.0 / ms as f64)
+}
+
+/// 时长：毫秒级给毫秒，分钟以上用 `1m02s` / `1h05m`，
 /// 免得长会话在表格里写成 `3723.00 s` 撑爆列宽。
 fn format_active(active_ms: u64) -> String {
     let secs = active_ms / 1_000;
@@ -4194,7 +4293,7 @@ mod tests {
         App::new(Theme::global(), events)
     }
 
-    /// `/usage` 输出对齐表格：列宽一致、数字右对齐、token 走 k/m/b 单位，
+    /// `/usage` 输出会话统计与对齐表格：列宽一致、数字右对齐、token 走 k/m/b 单位，
     /// 超宽模型名截断，末行是全部模型的合计。
     #[test]
     fn usage_table_aligns_columns_with_units() {
@@ -4209,6 +4308,9 @@ mod tests {
             cache_creation_input_tokens: None,
             reasoning_tokens: Some(1_200),
             active_ms: 62_000,
+            ttft_ms: 12_000,
+            ttft_calls: 2,
+            gen_ms: 50_000,
         };
         let result = SessionUsageResult {
             models: vec![
@@ -4216,29 +4318,50 @@ mod tests {
                 summary("p/m", 3),
             ],
             total: summary("total", 15),
+            tool_ms: 248_000,
         };
         let table = format_usage(&result, 74);
         let lines: Vec<&str> = table.lines().collect();
         assert_eq!(
             lines.len(),
-            6,
-            "表头、分隔线、两个模型、分隔线、合计：\n{table}"
+            12,
+            "会话统计标题 + 四行统计 + 空行 + 表头/分隔线/两个模型/分隔线/合计：\n{table}"
         );
-        let width = str_width(lines[0]);
-        for line in &lines {
+        assert_eq!(lines[0], "会话统计");
+        assert!(
+            lines[1].contains("1m02s")
+                && lines[1].contains("生成 50.0s")
+                && lines[1].contains("网络等待 12.0s"),
+            "模型用时必须拆成生成与网络等待：{table}"
+        );
+        assert!(lines[2].contains("4m08s"), "工具调用用时：{table}");
+        assert!(lines[3].contains("6.0s"), "平均 TTFT = 12s / 2 次：{table}");
+        assert!(
+            lines[4].contains("246.9 tok/s"),
+            "TPS 只除生成时间：{table}"
+        );
+        assert_eq!(lines[5], "", "统计和表格之间留一个空行");
+        let table_lines = &lines[6..];
+        let width = str_width(table_lines[0]);
+        for line in table_lines {
             assert_eq!(str_width(line), width, "列宽必须一致：{table}");
             assert!(
                 str_width(line) <= 71,
                 "表格不得超过 80 列终端里 note 的可用宽度：{table}"
             );
         }
-        assert!(lines[0].contains("模型") && lines[0].contains("TPS"));
+        assert!(
+            table_lines[0].contains("模型")
+                && table_lines[0].contains("生成")
+                && table_lines[0].contains("TTFT")
+                && table_lines[0].contains("TPS")
+        );
         assert!(
             table.contains("1.2m") && table.contains("12.35k"),
             "{table}"
         );
         assert!(table.contains('…'), "超宽模型名应截断：{table}");
-        let total = lines.last().expect("合计行");
+        let total = table_lines.last().expect("合计行");
         assert!(total.trim_start().starts_with("合计"), "{table}");
         assert!(total.contains("15"), "合计行用 total 的调用次数：{table}");
         // note 渲染时按 71 列折行：换行必须是硬断行，表格才能逐行保持对齐。
@@ -4251,11 +4374,39 @@ mod tests {
             "表格在 note 里不得被折行拆散：{table}"
         );
 
-        // 新会话没有明细：表头、分隔线、合计三行，不出现两条相邻分隔线。
+        // 窄终端按优先级丢列：先丢思考、再丢缓存率，保住模型名与 TTFT。
+        let narrow = format_usage(&result, 60);
+        let narrow_lines: Vec<&str> = narrow.lines().collect();
+        let narrow_table = &narrow_lines[narrow_lines.len() - 6..];
+        for line in narrow_table {
+            assert_eq!(str_width(line), str_width(narrow_table[0]), "{narrow}");
+            assert!(str_width(line) <= 57, "{narrow}");
+        }
+        assert!(
+            narrow_table[0].contains("TTFT")
+                && !narrow_table[0].contains("思考")
+                && !narrow_table[0].contains("缓存率"),
+            "窄终端保留 TTFT，丢掉低优先级列：{narrow}"
+        );
+
+        // 新会话没有明细：不输出会话统计，表头、分隔线、合计三行。
         let empty = format_usage(
             &SessionUsageResult {
                 models: Vec::new(),
-                total: summary("total", 0),
+                total: ModelUsageSummary {
+                    model: "total".into(),
+                    calls: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cached_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                    reasoning_tokens: None,
+                    active_ms: 0,
+                    ttft_ms: 0,
+                    ttft_calls: 0,
+                    gen_ms: 0,
+                },
+                tool_ms: 0,
             },
             74,
         );

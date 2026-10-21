@@ -817,6 +817,22 @@ pub enum StreamEvent {
     },
 }
 
+impl StreamEvent {
+    /// 这个事件是否意味着模型已经产出第一段内容；用于统计首 token 等待（TTFT）。
+    ///
+    /// `Start` 只是 HTTP 流建立，`Usage` 可能早于正文到达，`ToolCallArgumentsDelta`
+    /// 必然跟在 `ToolCallStart` 之后，都不算首 token。
+    pub fn starts_output(&self) -> bool {
+        matches!(
+            self,
+            Self::TextDelta { .. }
+                | Self::ReasoningDelta { .. }
+                | Self::ReasoningItem { .. }
+                | Self::ToolCallStart { .. }
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

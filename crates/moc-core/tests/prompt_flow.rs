@@ -43,7 +43,8 @@ use moc_protocol::methods::{
     SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew,
     SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
     SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
-    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, UpstreamField,
+    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams,
+    UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -2688,5 +2689,56 @@ async fn user_role_instructions_ride_in_a_user_message_with_their_own_breakpoint
             "本轮提醒不落断点：{content:?}"
         );
     }
+    h.close().await;
+}
+
+/// 流式请求把首 token 等待记进 usage：TTFT 包含上游延迟，生成时间 = 总用时 − TTFT，
+/// 且这条记录随 usage entry 落盘，恢复会话后仍能拆分。
+#[tokio::test]
+async fn usage_records_first_token_wait_for_streaming_calls() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(|_request: &wiremock::Request| {
+            ResponseTemplate::new(200)
+                .set_body_raw(text_stream("答复"), "text/event-stream")
+                .set_delay(std::time::Duration::from_millis(60))
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let session = h.session(SessionMode::Normal).await;
+    h.prompt(&session, "你好").await;
+
+    let usage = h
+        .client
+        .call::<SessionUsage>(SessionUsageParams {
+            session_id: session.clone(),
+        })
+        .await
+        .expect("读取会话用量");
+    assert_eq!(usage.total.calls, 1);
+    assert_eq!(usage.total.ttft_calls, 1, "流式请求必须记录首 token");
+    assert!(
+        usage.total.ttft_ms >= 40,
+        "首 token 等待必须包含上游延迟：{}",
+        usage.total.ttft_ms
+    );
+    assert_eq!(
+        usage.total.gen_ms,
+        usage.total.active_ms - usage.total.ttft_ms,
+        "生成时间 = 总用时 − 首 token 等待"
+    );
+
+    // 拆分数落在 usage entry 里，随 JSONL 保存。
+    let ttft = support::transcript_entries(&h, &session)
+        .await
+        .iter()
+        .find_map(|entry| match entry {
+            moc_core::session::entries::Entry::Usage { ttft_ms, .. } => Some(*ttft_ms),
+            _ => None,
+        })
+        .expect("usage entry 已落盘");
+    assert!(ttft.is_some(), "首 token 等待必须随 usage entry 持久化");
     h.close().await;
 }

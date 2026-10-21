@@ -907,8 +907,19 @@ fn print_usage(result: &moc_protocol::SessionUsageResult) {
         let reasoning = summary
             .reasoning_tokens
             .map_or_else(|| "未知".to_owned(), |tokens| tokens.to_string());
+        let split = if summary.gen_ms > 0 {
+            format!(
+                "（生成 {}，网络等待 {}）",
+                format_duration(summary.gen_ms),
+                format_duration(summary.active_ms.saturating_sub(summary.gen_ms))
+            )
+        } else {
+            String::new()
+        };
+        let ttft = average_ttft(summary).map_or_else(|| "—".to_owned(), format_duration);
+        let tps = usage_tps(summary).map_or_else(|| "—".to_owned(), |tps| format!("{tps:.2}"));
         println!(
-            "模型 {}：调用 {} 次，输入 {}，输出 {}，缓存命中 {} ({cache_rate:.1}%)，缓存写入 {}，思考 {}，激活时间 {}，TPS {:.2}",
+            "模型 {}：调用 {} 次，输入 {}，输出 {}，缓存命中 {} ({cache_rate:.1}%)，缓存写入 {}，思考 {}，用时 {}{split}，首 token 平均 {ttft}，TPS {tps}",
             summary.model,
             summary.calls,
             summary.input_tokens,
@@ -917,17 +928,28 @@ fn print_usage(result: &moc_protocol::SessionUsageResult) {
             summary.cache_creation_input_tokens.unwrap_or(0),
             reasoning,
             format_duration(summary.active_ms),
-            tokens_per_second(summary.output_tokens, summary.active_ms),
         );
     }
+    println!("工具调用用时 {}", format_duration(result.tool_ms));
 }
 
-fn tokens_per_second(output_tokens: u64, active_ms: u64) -> f64 {
-    if active_ms == 0 {
-        0.0
-    } else {
-        output_tokens as f64 * 1000.0 / active_ms as f64
+fn average_ttft(summary: &moc_protocol::ModelUsageSummary) -> Option<u64> {
+    (summary.ttft_calls > 0).then(|| summary.ttft_ms / summary.ttft_calls)
+}
+
+/// 输出速率：优先用生成阶段耗时；没有可拆分数据（旧会话）时退回整段用时。
+fn usage_tps(summary: &moc_protocol::ModelUsageSummary) -> Option<f64> {
+    if summary.output_tokens == 0 {
+        return None;
     }
+    let ms = if summary.gen_ms > 0 {
+        summary.gen_ms
+    } else if summary.ttft_calls == 0 {
+        summary.active_ms
+    } else {
+        return None;
+    };
+    (ms > 0).then(|| summary.output_tokens as f64 * 1000.0 / ms as f64)
 }
 
 fn format_duration(active_ms: u64) -> String {

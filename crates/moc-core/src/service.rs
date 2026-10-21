@@ -530,12 +530,16 @@ impl Core {
 }
 
 /// 把一次完成的模型请求计入会话用量统计；统计 entry 不会出现在模型看到的历史里。
+///
+/// `ttft_ms` 是首 token 等待；非流式请求与失败请求没有首 token，传 `None`，
+/// 这样平均值不会被吞掉一次请求的整段等待。
 pub(crate) async fn record_model_usage(
     inner: &CoreInner,
     session_id: &str,
     model: &str,
     usage: moc_llm::Usage,
     active_ms: u64,
+    ttft_ms: Option<u64>,
 ) -> Result<(), CoreError> {
     inner
         .sessions
@@ -545,6 +549,7 @@ pub(crate) async fn record_model_usage(
                 model: model.to_owned(),
                 usage,
                 active_ms,
+                ttft_ms,
             },
         )
         .await
@@ -1383,6 +1388,9 @@ impl AgentService for Core {
             total.calls = total.calls.saturating_add(summary.calls);
             crate::session::state::add_usage(&mut total.usage, summary.usage);
             total.active_ms = total.active_ms.saturating_add(summary.active_ms);
+            total.ttft_ms = total.ttft_ms.saturating_add(summary.ttft_ms);
+            total.ttft_calls = total.ttft_calls.saturating_add(summary.ttft_calls);
+            total.gen_ms = total.gen_ms.saturating_add(summary.gen_ms);
             models.push(ModelUsageSummary {
                 model: model.clone(),
                 calls: summary.calls,
@@ -1392,6 +1400,9 @@ impl AgentService for Core {
                 cache_creation_input_tokens: summary.usage.cache_creation_input_tokens,
                 reasoning_tokens: summary.usage.reasoning_tokens,
                 active_ms: summary.active_ms,
+                ttft_ms: summary.ttft_ms,
+                ttft_calls: summary.ttft_calls,
+                gen_ms: summary.gen_ms,
             });
         }
         Ok(SessionUsageResult {
@@ -1405,7 +1416,11 @@ impl AgentService for Core {
                 cache_creation_input_tokens: total.usage.cache_creation_input_tokens,
                 reasoning_tokens: total.usage.reasoning_tokens,
                 active_ms: total.active_ms,
+                ttft_ms: total.ttft_ms,
+                ttft_calls: total.ttft_calls,
+                gen_ms: total.gen_ms,
             },
+            tool_ms: state.tool_ms,
         })
     }
 

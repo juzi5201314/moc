@@ -718,6 +718,8 @@ async fn run_prompt_locked(
             &prompt_id,
             project_config.limits.request_warn_secs,
         );
+        // 首 token 等待：从发出请求到收到第一个内容增量；每次重试都重新计时。
+        let mut first_token_ms: Option<u64>;
         let (mut stream, request_permit, request_started) = loop {
             let mut llm_config = model.llm.clone();
             if project_config.compaction.enabled
@@ -740,6 +742,7 @@ async fn run_prompt_locked(
                 Err(error) => return Err(to_rpc(error)),
             };
             let request_started = Instant::now();
+            first_token_ms = None;
             let streamed = tokio::select! {
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
                 result = inner.client.stream(&llm_config, &request) => result,
@@ -752,6 +755,7 @@ async fn run_prompt_locked(
                     &model.selector,
                     Usage::default(),
                     request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    None,
                 )
                 .await
                 .map_err(to_rpc)?;
@@ -876,6 +880,12 @@ async fn run_prompt_locked(
                     }
                     match event {
                         Some(Ok(event)) => {
+                            if first_token_ms.is_none() && event.starts_output() {
+                                first_token_ms = Some(
+                                    request_started.elapsed().as_millis().min(u64::MAX as u128)
+                                        as u64,
+                                );
+                            }
                             if let Err(error) = forward_event(&update, &params.session_id, &prompt_id, event).await {
                                 interrupted = true;
                                 connection_error = Some(protocol_to_rpc(error));
@@ -956,6 +966,7 @@ async fn run_prompt_locked(
             &model.selector,
             response.usage,
             active_ms,
+            first_token_ms,
         )
         .await
         .map_err(to_rpc)?;

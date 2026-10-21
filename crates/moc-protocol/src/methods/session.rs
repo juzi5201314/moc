@@ -178,6 +178,15 @@ pub struct ModelUsageSummary {
     pub reasoning_tokens: Option<u64>,
     /// 每次模型请求从开始到结束的耗时之和，单位为毫秒。
     pub active_ms: u64,
+    /// 首 token 等待（TTFT）总时长，单位为毫秒；只统计上报了首 token 的请求。
+    #[serde(default)]
+    pub ttft_ms: u64,
+    /// 上报了首 token 的请求数；平均 TTFT 用它做分母，失败请求与非流式请求不计入。
+    #[serde(default)]
+    pub ttft_calls: u64,
+    /// 首 token 之后的生成总时长，单位为毫秒；只统计上报了首 token 的请求。
+    #[serde(default)]
+    pub gen_ms: u64,
 }
 
 /// 当前会话的模型用量与全部模型总和。
@@ -188,6 +197,9 @@ pub struct SessionUsageResult {
     pub models: Vec<ModelUsageSummary>,
     /// 全部模型的总和；`model` 固定为 `total`。
     pub total: ModelUsageSummary,
+    /// 工具执行耗时之和，单位为毫秒；手动 bash 与嵌套子调用不计入。
+    #[serde(default)]
+    pub tool_ms: u64,
 }
 
 /// `session/context` 的参数。

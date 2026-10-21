@@ -1551,16 +1551,28 @@ impl App {
         })
     }
 
-    /// 会话累计平均输出速率（tok/s），与 `/usage` 的 TPS 同源：
-    /// 输出 token 总量除以模型激活时间（工具执行与等待不计入）。
+    /// 会话累计输出速率（tok/s），与 `/usage` 同源：输出 token 总量除以生成阶段
+    /// 耗时（首 token 等待与工具执行不计入）。没有可拆分数据（旧会话）时退回
+    /// 整段请求用时，与升级前的口径一致。
     pub fn session_tokens_per_second(&self) -> f64 {
         let Some(usage) = &self.session_usage else {
             return 0.0;
         };
-        if usage.total.active_ms == 0 {
+        let total = &usage.total;
+        if total.output_tokens == 0 {
+            return 0.0;
+        }
+        let ms = if total.gen_ms > 0 {
+            total.gen_ms
+        } else if total.ttft_calls == 0 {
+            total.active_ms
+        } else {
+            return 0.0;
+        };
+        if ms == 0 {
             0.0
         } else {
-            usage.total.output_tokens as f64 * 1000.0 / usage.total.active_ms as f64
+            total.output_tokens as f64 * 1000.0 / ms as f64
         }
     }
 
@@ -2272,16 +2284,32 @@ mod tests {
             cache_creation_input_tokens: None,
             reasoning_tokens: None,
             active_ms,
+            ttft_ms: 12_000,
+            ttft_calls: 2,
+            gen_ms: active_ms.saturating_sub(12_000),
         };
         let usage = |output: u64, active_ms: u64| SessionUsageResult {
             models: Vec::new(),
             total: summary(output, active_ms),
+            tool_ms: 0,
         };
 
         let first = app.begin_usage_request();
         app.apply_session_usage(first, usage(1_200, 60_000));
         assert_eq!(app.session_tokens(), (12_000, 1_200));
+        // TPS 只除生成阶段（60s - 12s），不把首 token 等待算进去。
+        assert!((app.session_tokens_per_second() - 25.0).abs() < 1e-9);
+
+        // 旧会话没有首 token 数据：退回整段用时。
+        let mut legacy = usage(1_200, 60_000);
+        legacy.total.gen_ms = 0;
+        legacy.total.ttft_ms = 0;
+        legacy.total.ttft_calls = 0;
+        let legacy_request = app.begin_usage_request();
+        app.apply_session_usage(legacy_request, legacy);
         assert!((app.session_tokens_per_second() - 20.0).abs() < 1e-9);
+        let refreshed = app.begin_usage_request();
+        app.apply_session_usage(refreshed, usage(1_200, 60_000));
 
         // 请求级 usage 不参与累计口径。
         app.apply_usage(Usage {

@@ -45,6 +45,12 @@ pub struct ModelUsage {
     pub calls: u64,
     pub usage: Usage,
     pub active_ms: u64,
+    /// 首 token 等待总时长；只统计上报了首 token 的请求。
+    pub ttft_ms: u64,
+    /// 上报了首 token 的请求数。
+    pub ttft_calls: u64,
+    /// 首 token 之后的生成总时长。
+    pub gen_ms: u64,
 }
 
 /// 一个会话的 transcript 和当前状态。
@@ -82,6 +88,8 @@ pub struct SessionState {
     pub notices: Vec<String>,
     pub usage: Usage,
     pub model_usage: BTreeMap<String, ModelUsage>,
+    /// 工具执行耗时之和（毫秒）；手动 bash 与嵌套子调用不计入。
+    pub tool_ms: u64,
     pub usage_at: usize,
     pub server_compaction_disabled: bool,
     /// CLM 实验模式当前的工作上下文；原始 transcript 始终保留。
@@ -139,6 +147,7 @@ impl SessionState {
             job_sequence: 0,
             usage: Usage::default(),
             model_usage: BTreeMap::new(),
+            tool_ms: 0,
             usage_at: 0,
             server_compaction_disabled: false,
             summary: None,
@@ -170,12 +179,19 @@ impl SessionState {
             Entry::Header { .. } => {}
             Entry::Message {
                 message,
+                tool,
                 bash,
                 agent,
                 ..
             } => {
                 if message.role == Role::User && bash.is_none() && agent.is_none() {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
+                }
+                // 工具耗时随 transcript 持久化；手动 bash 与嵌套子调用不计入。
+                if bash.is_none()
+                    && let Some(duration_ms) = tool.as_ref().and_then(|tool| tool.duration_ms)
+                {
+                    self.tool_ms = self.tool_ms.saturating_add(duration_ms);
                 }
                 if let Some(projected) = entry.transcript_entry() {
                     let tokens = projected
@@ -322,12 +338,23 @@ impl SessionState {
                 model,
                 usage,
                 active_ms,
+                ttft_ms,
                 ..
             } => {
                 let model_usage = self.model_usage.entry(model.clone()).or_default();
                 model_usage.calls = model_usage.calls.saturating_add(1);
                 add_usage(&mut model_usage.usage, *usage);
                 model_usage.active_ms = model_usage.active_ms.saturating_add(*active_ms);
+                // 只有看到过首 token 的请求才能拆分网络等待与生成耗时；失败请求与
+                // 非流式请求（压缩摘要）没有首 token，只计入总用时。
+                if let Some(ttft_ms) = *ttft_ms {
+                    let ttft_ms = ttft_ms.min(*active_ms);
+                    model_usage.ttft_ms = model_usage.ttft_ms.saturating_add(ttft_ms);
+                    model_usage.ttft_calls = model_usage.ttft_calls.saturating_add(1);
+                    model_usage.gen_ms = model_usage
+                        .gen_ms
+                        .saturating_add(active_ms.saturating_sub(ttft_ms));
+                }
             }
         }
         self.last_entry_id = entry.id().to_owned();
@@ -491,6 +518,7 @@ mod tests {
                     ..Usage::default()
                 },
                 active_ms: 500,
+                ttft_ms: Some(120),
             },
             header.id().to_owned(),
             11,
@@ -506,6 +534,8 @@ mod tests {
                     ..Usage::default()
                 },
                 active_ms: 250,
+                // 没有首 token 的请求（失败/非流式）只计入总用时。
+                ttft_ms: None,
             },
             first.id().to_owned(),
             12,
@@ -518,6 +548,57 @@ mod tests {
         assert_eq!(summary.usage.cached_input_tokens, Some(60));
         assert_eq!(summary.usage.reasoning_tokens, Some(12));
         assert_eq!(summary.active_ms, 750);
+        // 只有上报首 token 的请求参与拆分：另一条按整段用时计入 active。
+        assert_eq!(summary.ttft_ms, 120);
+        assert_eq!(summary.ttft_calls, 1);
+        assert_eq!(summary.gen_ms, 380);
+    }
+
+    /// 工具调用用时从 transcript 重放：只累计模型发起的工具，手动 bash 不计入。
+    #[test]
+    fn replay_sums_model_tool_time_only() {
+        use moc_protocol::methods::{ToolExecution, ToolStatus};
+        use moc_protocol::BashCommand;
+
+        let tool = |id: &str, duration_ms| ToolExecution {
+            tool_call_id: id.into(),
+            status: ToolStatus::Completed,
+            duration_ms: Some(duration_ms),
+        };
+        let header = Entry::header(
+            "ses_tooltime1234".into(),
+            "/tmp/project".into(),
+            "p/model".into(),
+            SessionMode::Normal,
+            SessionPermission::Full,
+            SessionOrigin::root(),
+            "标题".into(),
+            10,
+        );
+        let called = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::tool_result("call_1", "ok", false),
+                tool: Some(tool("call_1", 120)),
+                finish_reason: None,
+                agent: None,
+            },
+            header.id().to_owned(),
+            11,
+        );
+        let manual = Entry::from_payload(
+            EntryPayload::Bash {
+                command: BashCommand {
+                    command: "echo hi".into(),
+                    exclude_from_context: false,
+                },
+                output: "hi".into(),
+                tool: tool("bash_1", 50),
+            },
+            called.id().to_owned(),
+            12,
+        );
+        let state = SessionState::from_entries(vec![header, called, manual]).expect("记录链完整");
+        assert_eq!(state.tool_ms, 120);
     }
 
     #[test]

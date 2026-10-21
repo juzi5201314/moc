@@ -1448,12 +1448,17 @@ mod tests {
                     cache_creation_input_tokens: None,
                     reasoning_tokens: None,
                     active_ms: 60_000,
+                    ttft_ms: 12_000,
+                    ttft_calls: 2,
+                    gen_ms: 48_000,
                 },
+                tool_ms: 0,
             },
         );
         let line = rendered(&app);
+        // 12_345 ÷ 48s 的生成时间 ≈ 257 tok/s，首 token 等待不计入。
         assert!(
-            line.contains("⇅ 1.2m › 12.35k › 206 tok/s"),
+            line.contains("⇅ 1.2m › 12.35k › 257 tok/s"),
             "会话累计与单位：{line}"
         );
     }

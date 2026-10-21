@@ -156,6 +156,8 @@ impl SummaryRequest<'_> {
             &self.model.selector,
             response.usage,
             request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            // 摘要用非流式 complete，没有可观测的首 token。
+            None,
         )
         .await?;
         Ok(response.message.text())
