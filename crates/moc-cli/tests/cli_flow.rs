@@ -281,7 +281,7 @@ async fn sigint_cancels_a_running_shell_and_repl_still_accepts_quit() {
             call(
                 "shell",
                 "bash",
-                json!({"command":"printf '%s' $$ > shell.pid; exec sleep 300","timeout":3600}),
+                json!({"description":"Record the shell pid and sleep","command":"printf '%s' $$ > shell.pid; exec sleep 300","timeout":3600}),
             ),
             "text/event-stream",
         ))
@@ -327,7 +327,7 @@ async fn print_runs_code_in_worker_process() {
                 0 => call(
                     "run",
                     "run_code",
-                    json!({"code":"return [1,2,3].reduce((a,b)=>a+b,0);"}),
+                    json!({"description":"Sum numbers in the worker","code":"return [1,2,3].reduce((a,b)=>a+b,0);"}),
                 ),
                 _ => text("worker 结果 6"),
             };
@@ -356,7 +356,7 @@ async fn run_code_timeout_kills_worker_and_keeps_prompt_alive() {
                 0 => call(
                     "run",
                     "run_code",
-                    json!({"code":"while(true) {}","timeout_secs":1}),
+                    json!({"description":"Busy loop until the timeout","code":"while(true) {}","timeout_secs":1}),
                 ),
                 _ => text("超时处理完成"),
             };

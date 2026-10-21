@@ -14,6 +14,24 @@ use std::time::Duration;
 
 pub struct RunCodeTool;
 
+/// `description` 参数的模型可见说明；与 dsh 的 run_code 工具保持同一前端卡片契约。
+const DESCRIPTION_PARAM: &str = "Clear, concise description of what this program does in active voice, 5-10 words (shown in the UI). Examples: \"Count TODO markers across crates\"; \"Read failing test and its fixture\"; \"Rename a config key across files\".";
+
+/// 模型为前端卡片提供的一句话说明；目前只校验非空，展示留给后续 UI 消费。
+fn validate_description(args: &Value) -> Result<(), ToolError> {
+    if args
+        .get("description")
+        .and_then(Value::as_str)
+        .is_none_or(|description| description.trim().is_empty())
+    {
+        return Err(ToolError::new(
+            "E_ARGUMENT",
+            "run_code requires a non-empty description argument",
+        ));
+    }
+    Ok(())
+}
+
 impl Tool for RunCodeTool {
     fn name(&self) -> &str {
         "run_code"
@@ -33,9 +51,10 @@ impl Tool for RunCodeTool {
             schema(
                 serde_json::json!({
                     "code": {"type": "string", "description": "JavaScript to execute"},
+                    "description": {"type": "string", "description": DESCRIPTION_PARAM},
                     "timeout_secs": {"type": "integer", "minimum": 1, "description": "Seconds before the script is stopped"}
                 }),
-                &["code"],
+                &["code", "description"],
             ),
         )
     }
@@ -48,6 +67,7 @@ impl Tool for RunCodeTool {
             let code = args.get("code").and_then(Value::as_str).ok_or_else(|| {
                 ToolError::new("E_ARGUMENT", "run_code requires a string code argument")
             })?;
+            validate_description(&args)?;
             let limit = ctx.config.tools.ptc.max_output_bytes;
             if code.len() > limit {
                 return Err(ToolError::new(
@@ -85,5 +105,44 @@ impl Tool for RunCodeTool {
             .expect("启动参数可序列化");
             Ok(scheduler::run(ctx, guest, input, deadline).await)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_definition_requires_a_ui_description() {
+        let parameters = RunCodeTool.def().parameters;
+        assert_eq!(
+            parameters["required"],
+            serde_json::json!(["code", "description"])
+        );
+        let description = parameters["properties"]["description"]["description"]
+            .as_str()
+            .expect("description 参数必须有说明");
+        assert!(description.contains("shown in the UI"));
+    }
+
+    #[test]
+    fn description_must_be_non_empty() {
+        for (args, ok) in [
+            (
+                serde_json::json!({"code":"return 1","description":"Sum two numbers"}),
+                true,
+            ),
+            (
+                serde_json::json!({"code":"return 1","description":"  "}),
+                false,
+            ),
+            (serde_json::json!({"code":"return 1"}), false),
+            (
+                serde_json::json!({"code":"return 1","description":42}),
+                false,
+            ),
+        ] {
+            assert_eq!(validate_description(&args).is_ok(), ok, "{args}");
+        }
     }
 }

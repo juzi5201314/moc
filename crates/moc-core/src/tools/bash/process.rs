@@ -403,6 +403,7 @@ mod unix_tests {
 
     fn bash_args(command: &str) -> BashArgs {
         BashArgs {
+            description: Some(format!("Run `{command}`")),
             command: command.to_owned(),
             cwd: None,
             env: None,

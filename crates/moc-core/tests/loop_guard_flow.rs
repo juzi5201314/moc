@@ -160,7 +160,7 @@ async fn guard_stop_reaps_background_processes_owned_by_the_failed_prompt() {
                 tool_stream(vec![(
                     "worker",
                     "bash",
-                    json!({"command":"sleep 30", "async":true, "lifecycle":"persistent"}),
+                    json!({"description":"Start an idle background job","command":"sleep 30", "async":true, "lifecycle":"persistent"}),
                 )])
             } else {
                 tool_stream(vec![("read", "read", json!({"path":"sample.txt"}))])

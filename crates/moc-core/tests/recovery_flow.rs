@@ -524,7 +524,7 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
                 0 => tool_stream(vec![(
                     "background",
                     "bash",
-                    json!({"command":"printf '%s' $$ > bg.pid; exec sleep 300","async":true}),
+                    json!({"description":"Hold a background shell open","command":"printf '%s' $$ > bg.pid; exec sleep 300","async":true}),
                 )]),
                 1 => {
                     let result = body["messages"]
@@ -546,12 +546,12 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
                         (
                             "stdin",
                             "bash",
-                            json!({"command":"wc -c","stdin":"a".repeat(200000)}),
+                            json!({"description":"Count stdin bytes","command":"wc -c","stdin":"a".repeat(200000)}),
                         ),
                         (
                             "pty",
                             "bash",
-                            json!({"command":"printf 'terminal-ok'","pty":true,"timeout":5}),
+                            json!({"description":"Print the PTY marker","command":"printf 'terminal-ok'","pty":true,"timeout":5}),
                         ),
                     ])
                 }
@@ -890,16 +890,16 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
     Mock::given(method("POST")).respond_with(move |_: &wiremock::Request| {
         let response = match count.fetch_add(1, Ordering::SeqCst) {
             0 => tool_stream(vec![
-                ("pipe_start", "bash", json!({"command":"printf pipe-ready; exec sleep 60","async":true,"timeout":1})),
-                ("pty_start", "bash", json!({"command":"printf pty-ready; exec sleep 60","async":true,"pty":true,"timeout":1})),
+                ("pipe_start", "bash", json!({"description":"Start a piped job","command":"printf pipe-ready; exec sleep 60","async":true,"timeout":1})),
+                ("pty_start", "bash", json!({"description":"Start a PTY job","command":"printf pty-ready; exec sleep 60","async":true,"pty":true,"timeout":1})),
             ]),
             1 => tool_stream(vec![
                 ("pipe_wait", "job", json!({"op":"wait","job_id":"job_1","timeout_secs":5})),
                 ("pty_wait", "job", json!({"op":"wait","job_id":"job_2","timeout_secs":5})),
             ]),
-            2 => tool_stream(vec![("pty_again", "bash", json!({"command":"exec sleep 60","async":true,"pty":true,"lifecycle":"persistent"}))]),
+            2 => tool_stream(vec![("pty_again", "bash", json!({"description":"Restart the PTY job","command":"exec sleep 60","async":true,"pty":true,"lifecycle":"persistent"}))]),
             3 => tool_stream(vec![("pty_kill", "job", json!({"op":"kill","job_id":"job_3"}))]),
-            5 => tool_stream(vec![("after_resume", "bash", json!({"command":"printf resumed"}))]),
+            5 => tool_stream(vec![("after_resume", "bash", json!({"description":"Print the resume marker","command":"printf resumed"}))]),
             _ => text_stream("已回收"),
         };
         ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")

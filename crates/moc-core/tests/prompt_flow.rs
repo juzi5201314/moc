@@ -1175,7 +1175,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
             "role": "assistant",
             "tool_calls": [{"index": 0, "id": "call_bash", "type": "function", "function": {
                 "name": "bash",
-                "arguments": "{\"command\":\"printf changed > violation.txt\"}",
+                "arguments": "{\"description\":\"Write a workspace violation\",\"command\":\"printf changed > violation.txt\"}",
             }}],
         }, "finish_reason": null}],
     });
@@ -1356,7 +1356,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
             "index": 0,
             "id": "call_name_first",
             "type": "function",
-            "function": {"arguments": "{\"command\":\"printf name-first\"}"},
+            "function": {"arguments": "{\"description\":\"Print the name-first marker\",\"command\":\"printf name-first\"}"},
         }]}, "finish_reason": null}],
     });
     let finalized = json!({
@@ -1494,7 +1494,10 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
         })
         .expect("持久化的工具调用");
     assert_eq!(persisted.name, "bash");
-    assert_eq!(persisted.arguments, "{\"command\":\"printf name-first\"}");
+    assert_eq!(
+        persisted.arguments,
+        "{\"description\":\"Print the name-first marker\",\"command\":\"printf name-first\"}"
+    );
 
     core.shutdown().await;
     drop(client);
@@ -1516,7 +1519,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
             "role": "assistant",
             "tool_calls": [{"index": 0, "id": "call_bash", "type": "function", "function": {
                 "name": "bash",
-                "arguments": "{\"command\":\"printf changed > violation.txt\"}",
+                "arguments": "{\"description\":\"Write a workspace violation\",\"command\":\"printf changed > violation.txt\"}",
             }}],
         }, "finish_reason": null}],
     });

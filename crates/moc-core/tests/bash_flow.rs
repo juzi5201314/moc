@@ -202,7 +202,7 @@ async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
                 support::tool_stream(vec![(
                     "call_1",
                     "bash",
-                    serde_json::json!({"command": "printf foreground-hi"}),
+                    serde_json::json!({"description":"Print test marker","command": "printf foreground-hi"}),
                 )])
             } else {
                 support::text_stream("完成")

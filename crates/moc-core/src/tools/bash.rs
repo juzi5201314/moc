@@ -33,9 +33,14 @@ impl Default for BashLifecycle {
     }
 }
 
+/// `description` 参数的模型可见说明；与 dsh 的 bash 工具保持同一前端卡片契约。
+const DESCRIPTION_PARAM: &str = "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\".";
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BashArgs {
+    /// 前端卡片用的一句话说明；模型调用必须提供，用户手动执行的命令没有。
+    description: Option<String>,
     command: String,
     cwd: Option<String>,
     env: Option<BTreeMap<String, String>>,
@@ -122,6 +127,21 @@ fn validate_escalation(
     }
 }
 
+/// 模型为前端卡片提供的一句话说明；目前只校验非空，展示留给后续 UI 消费。
+fn validate_description(args: &BashArgs) -> Result<(), ToolError> {
+    if args
+        .description
+        .as_deref()
+        .is_none_or(|description| description.trim().is_empty())
+    {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "description must be a non-empty string",
+        ));
+    }
+    Ok(())
+}
+
 pub struct BashTool;
 
 impl Tool for BashTool {
@@ -151,6 +171,7 @@ impl Tool for BashTool {
             "bash",
             schema(
                 serde_json::json!({
+                    "description":{"type":"string","description":DESCRIPTION_PARAM},
                     "command":{"type":"string"},
                     "cwd":{"type":"string"},
                     "env":{"type":"object","additionalProperties":{"type":"string"}},
@@ -170,7 +191,7 @@ impl Tool for BashTool {
                         "description":"Why this command needs the wider mode; shown to the user in the approval prompt."
                     }
                 }),
-                &["command"],
+                &["description", "command"],
             ),
         )
         .with_description(description)
@@ -187,6 +208,7 @@ impl Tool for BashTool {
             if args.command.trim().is_empty() {
                 return Err(ToolError::new("E_BAD_PAYLOAD", "command must not be empty"));
             }
+            validate_description(&args)?;
             let lifecycle = args.lifecycle.unwrap_or_default();
             let timeout = resolve_timeout(&args, lifecycle, &ctx.config.tools.bash)?;
             let cwd = resolve_cwd(&ctx.cwd, args.cwd.as_deref())?;
@@ -296,6 +318,7 @@ pub(crate) async fn run_manual(
     )
     .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
     let args = BashArgs {
+        description: None,
         command,
         cwd: None,
         env: None,
@@ -568,6 +591,32 @@ mod tests {
     }
 
     #[test]
+    fn tool_definition_requires_a_ui_description() {
+        let parameters = BashTool.def().parameters;
+        assert_eq!(
+            parameters["required"],
+            serde_json::json!(["description", "command"])
+        );
+        let description = parameters["properties"]["description"]["description"]
+            .as_str()
+            .expect("description 参数必须有说明");
+        assert!(description.contains("shown in the UI"));
+    }
+
+    #[test]
+    fn description_must_be_non_empty() {
+        let args: BashArgs =
+            serde_json::from_value(serde_json::json!({"description":"List files","command":"ls"}))
+                .unwrap();
+        assert!(validate_description(&args).is_ok());
+        let args: BashArgs =
+            serde_json::from_value(serde_json::json!({"description":"  ","command":"ls"})).unwrap();
+        assert!(validate_description(&args).is_err());
+        let args: BashArgs = serde_json::from_value(serde_json::json!({"command":"ls"})).unwrap();
+        assert!(validate_description(&args).is_err());
+    }
+
+    #[test]
     fn dangerous_patterns_preempt_all_execution_modes() {
         let patterns = vec![r"rm\s+-rf\s+/(\s|$)".into()];
         assert!(reject_denied(&patterns, "rm -rf /").is_err());
@@ -587,6 +636,7 @@ mod tests {
     #[test]
     fn escalation_validates_target_against_the_execution_mode() {
         let mut args = BashArgs {
+            description: Some("Build the project".into()),
             command: "cargo build".into(),
             cwd: None,
             env: None,

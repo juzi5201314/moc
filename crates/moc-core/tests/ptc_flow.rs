@@ -30,11 +30,11 @@ async fn ptc_run_code_executes_worker_in_normal_mode() {
             let response = match counter.fetch_add(1, Ordering::SeqCst) {
                 0 => support::tool_stream(vec![(
                     "call_run", "run_code",
-                    json!({"code":"return {sum: [1,2,3].reduce((a,b)=>a+b,0)};"}),
+                    json!({"description":"Sum numbers in the worker","code":"return {sum: [1,2,3].reduce((a,b)=>a+b,0)};"}),
                 )]),
                 2 => support::tool_stream(vec![(
                     "nested_run", "run_code",
-                    json!({"code":"await tools.write({path:'first.txt', content:'已提交'}); await tools.write({path:'second.txt', content:'同样提交'});"}),
+                    json!({"description":"Write two files","code":"await tools.write({path:'first.txt', content:'已提交'}); await tools.write({path:'second.txt', content:'同样提交'});"}),
                 )]),
                 _ => support::text_stream("guest sum=6"),
             };
