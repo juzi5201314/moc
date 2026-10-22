@@ -1992,6 +1992,20 @@ fn clamp_todo_origin(origin: (i32, i32), size: (u16, u16), area: Rect) -> (u16, 
     )
 }
 
+/// 把拖选的两个端点归一成阅读顺序：先上后下，同一行从左到右。
+///
+/// 坐标是屏幕格 `(列, 行)`；绘制与复制都以同一顺序切片，反向拖选因此
+/// 不需要各自再判方向。
+pub fn ordered_selection(
+    ((ax, ay), (bx, by)): ((u16, u16), (u16, u16)),
+) -> ((u16, u16), (u16, u16)) {
+    if (ay, ax) <= (by, bx) {
+        ((ax, ay), (bx, by))
+    } else {
+        ((bx, by), (ax, ay))
+    }
+}
+
 /// 点击图例模式名后就地弹出的菜单。
 pub struct ModeMenu {
     /// 键盘 / 悬停高亮的条目下标（[`MODES`] 顺序）。

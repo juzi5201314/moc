@@ -65,7 +65,7 @@ moc --resume <id>             # 恢复历史会话
 | 查看上下文内容 | `/context`（顶部进度条点击打开占用明细） |
 | 切换思考显示档位 | `Ctrl+T` |
 | 切换工具显示档位 | `Ctrl+O` |
-| 复制选中文本 | `y`（OSC52） |
+| 复制选中文本 | `Ctrl+C` / 右键 / `y`（有选区时，OSC52） |
 | 计划模式 | `/mode plan` |
 
 完整快捷键与 TUI 行为见 [docs/tui.md](docs/tui.md)。

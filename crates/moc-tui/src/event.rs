@@ -1462,8 +1462,12 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 }
                 app.selection = None;
             } else if app.selection.is_some() {
-                app.set_notice("按 y 复制选中内容");
+                app.set_notice("Ctrl+C / 右键 / y 复制选中内容");
             }
+        }
+        // 与 Windows Terminal 一致：有选区时右键直接复制，不再需要额外按键。
+        MouseEventKind::Up(MouseButton::Right) if app.selection.is_some() => {
+            copy_selection(app);
         }
         MouseEventKind::Moved => {
             // 悬停只做视觉反馈：命中的入口整行提亮
@@ -1633,6 +1637,16 @@ fn handle_key(
     } else {
         (modifiers, code)
     };
+    // 原生终端语义：有选区时 Ctrl+C 先复制，没有选区才走取消/清空输入。
+    if app.selection.is_some()
+        && matches!(code, KeyCode::Char('c' | 'C'))
+        && (modifiers == KeyModifiers::CONTROL
+            || modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT))
+        && copy_selection(app)
+    {
+        app.ctrl_c_pending = None;
+        return;
+    }
     if app.focus == Focus::Scrollback {
         match (code, modifiers) {
             (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
@@ -1723,7 +1737,9 @@ fn handle_key(
                 app.prompt.left();
             }
         }
-        (KeyCode::Char('y'), KeyModifiers::NONE) if app.selection.is_some() => copy_selection(app),
+        (KeyCode::Char('y'), KeyModifiers::NONE) if app.selection.is_some() => {
+            copy_selection(app);
+        }
         (KeyCode::Esc, _) => {
             if app.selection.is_some() {
                 app.selection = None;
@@ -4202,23 +4218,36 @@ fn refresh_git_branch(app: &App, cwd: &str) {
     });
 }
 
-/// 把拖选覆盖的视口行文本复制到系统剪贴板。
-fn copy_selection(app: &mut App) {
-    let Some(((sx, sy), (ex, ey))) = app.selection else {
-        return;
-    };
-    let (start_row, end_row, start_col, end_col) = if sy < ey {
-        (sy, ey, sx, ex)
-    } else if sy > ey {
-        (ey, sy, ex, sx)
-    } else if sx <= ex {
-        (sy, ey, sx, ex)
-    } else {
-        (sy, ey, ex, sx)
+/// 把拖选覆盖的视口行文本复制到系统剪贴板；没有可复制内容时返回 `false`。
+fn copy_selection(app: &mut App) -> bool {
+    let body = selection_text(app);
+    if body.is_empty() {
+        return false;
+    }
+    write_osc52(&body);
+    tokio::spawn(async move {
+        match crate::clipboard::copy_text_to_clipboard(&body).await {
+            Ok(()) => tracing::debug!("选区已复制"),
+            Err(error) => tracing::debug!(%error, "复制选区失败"),
+        }
+    });
+    app.selection = None;
+    app.set_notice("已复制选中内容");
+    true
+}
+
+/// 拖选覆盖的纯文本：端点占的格子都算在选区内，跨行时首尾行按列切片、
+/// 中间行整行保留。
+fn selection_text(app: &App) -> String {
+    let Some(((start_col, start_row), (end_col, end_row))) =
+        app.selection.map(crate::app::ordered_selection)
+    else {
+        return String::new();
     };
     let area_x = app.scrollback_area.x;
     let start_col = usize::from(start_col.saturating_sub(area_x));
-    let end_col = usize::from(end_col.saturating_sub(area_x));
+    // 端点列是格子坐标，切片的右开上界因此取「末列 + 1」。
+    let end_col = usize::from(end_col.saturating_sub(area_x)).saturating_add(1);
     let mut text = String::new();
     for &(row, ref line_text) in &app.paint_lines {
         if row < start_row || row > end_row {
@@ -4235,19 +4264,7 @@ fn copy_selection(app: &mut App) {
         }
         text.push('\n');
     }
-    let body = text.trim_end().to_owned();
-    if body.is_empty() {
-        return;
-    }
-    write_osc52(&body);
-    tokio::spawn(async move {
-        match crate::clipboard::copy_text_to_clipboard(&body).await {
-            Ok(()) => tracing::debug!("选区已复制"),
-            Err(error) => tracing::debug!(%error, "复制选区失败"),
-        }
-    });
-    app.selection = None;
-    app.set_notice("已复制选中内容");
+    text.trim_end().to_owned()
 }
 
 /// 通过 OSC52 把文本交给终端自身的剪贴板；与绘制同线程写出，不会与帧交错。
@@ -6673,6 +6690,86 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// 拖选复制按显示列切片：端点格子包含在内，跨行时首尾行裁边、中间整行。
+    #[test]
+    fn selection_text_slices_columns_inclusively() {
+        let mut app = app();
+        app.scrollback_area = ratatui::layout::Rect::new(2, 1, 20, 4);
+        app.paint_lines = vec![
+            (1, "abcdef".into()),
+            (2, "123456".into()),
+            (3, "ABCDEF".into()),
+        ];
+
+        app.selection = Some(((4, 1), (6, 3)));
+        assert_eq!(selection_text(&app), "cdef\n123456\nABCDE");
+        app.selection = Some(((6, 3), (4, 1)));
+        assert_eq!(
+            selection_text(&app),
+            "cdef\n123456\nABCDE",
+            "反向拖选结果一致"
+        );
+
+        // 宽字符按显示列整字切，不劈开半个字。
+        app.paint_lines = vec![(1, "中文字".into())];
+        app.selection = Some(((2, 1), (5, 1)));
+        assert_eq!(selection_text(&app), "中文");
+        app.selection = Some(((2, 1), (7, 1)));
+        assert_eq!(selection_text(&app), "中文字");
+    }
+
+    /// 原生语义：有选区时 Ctrl+C 复制选区，而不是清空输入或取消。
+    #[tokio::test]
+    async fn ctrl_c_copies_selection_when_present() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt.insert_text("pending text");
+        app.scrollback_area = ratatui::layout::Rect::new(0, 1, 20, 4);
+        app.paint_lines = vec![(1, "copy me".into())];
+        app.selection = Some(((0, 1), (6, 1)));
+
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
+        assert_eq!(app.prompt_text(), "pending text", "复制优先于清空输入");
+        assert!(app.selection.is_none());
+        assert_eq!(app.notice.as_deref(), Some("已复制选中内容"));
+        assert!(!app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
+
+        // 没有选区时恢复 Ctrl+C 原语义：第一次只提示清空输入。
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
+        assert_eq!(app.notice.as_deref(), Some("clear input"));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 右键复制：有选区时与 Windows Terminal 一样直接落剪贴板并清掉选区。
+    #[tokio::test]
+    async fn right_click_copies_selection() {
+        let mut app = app();
+        app.scrollback_area = ratatui::layout::Rect::new(0, 1, 20, 4);
+        app.paint_lines = vec![(1, "copy me".into())];
+        app.selection = Some(((0, 1), (6, 1)));
+        let mouse = |kind| MouseEvent {
+            kind,
+            column: 3,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse(&mut app, mouse(MouseEventKind::Up(MouseButton::Right)));
+        assert!(app.selection.is_none());
+        assert_eq!(app.notice.as_deref(), Some("已复制选中内容"));
     }
 
     /// M17+M18：运行中切会话后，旧会话的更新不得写进新会话，收尾仍回收在飞记账。

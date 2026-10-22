@@ -213,19 +213,36 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     }
 }
 
-/// 拖选高亮：选中行统一使用高对比度前景和 `bg_visual`，避免继承内容底色后变暗。
+/// 拖选高亮：只覆盖选区内的格子；跨行时中间整行、首尾行按列收边。
 fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(((_, sy), (_, ey))) = app.selection else {
+    let Some(((start_col, start_row), (end_col, end_row))) =
+        app.selection.map(crate::app::ordered_selection)
+    else {
         return;
     };
-    let (start_row, end_row) = if sy <= ey { (sy, ey) } else { (ey, sy) };
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     let theme = app.theme;
     let buffer = frame.buffer_mut();
+    let left = area.x;
+    let right = area.x.saturating_add(area.width).saturating_sub(1);
     for row in start_row..=end_row {
-        if row < area.y || row >= area.y + area.height {
+        if row < area.y || row >= area.y.saturating_add(area.height) {
             continue;
         }
-        for col in area.x..area.x + area.width {
+        let (from, to) = if start_row == end_row {
+            (start_col, end_col)
+        } else if row == start_row {
+            (start_col, right)
+        } else if row == end_row {
+            (left, end_col)
+        } else {
+            (left, right)
+        };
+        let from = from.clamp(left, right);
+        let to = to.clamp(left, right);
+        for col in from..=to {
             let Some(cell) = buffer.cell_mut((col, row)) else {
                 continue;
             };
@@ -1344,5 +1361,57 @@ mod tests {
                 .fg,
             Theme::global().accent_success
         );
+    }
+
+    /// 拖选高亮按格子收边：同一行只亮选区内的列，跨行时首尾行才铺到区域边缘。
+    #[test]
+    fn selection_highlight_covers_selected_columns_only() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // 测试环境没有终端配色能力，先给主题塞两个可区分的颜色再交给 App。
+        let mut custom = *Theme::global();
+        custom.bg_visual = ratatui::style::Color::Rgb(10, 20, 30);
+        custom.text_primary = ratatui::style::Color::Rgb(200, 200, 200);
+        let theme: &'static Theme = Box::leak(Box::new(custom));
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(theme, events);
+        let area = Rect::new(2, 1, 20, 5);
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).expect("构造测试终端");
+        let bg = |terminal: &Terminal<TestBackend>, column: u16, row: u16| {
+            terminal
+                .backend()
+                .buffer()
+                .cell((column, row))
+                .expect("格存在")
+                .bg
+        };
+
+        app.selection = Some(((5, 1), (10, 1)));
+        terminal
+            .draw(|frame| highlight_selection(frame, &app, area))
+            .expect("绘制成功");
+        assert_eq!(bg(&terminal, 5, 1), theme.bg_visual, "起点格子高亮");
+        assert_eq!(
+            bg(&terminal, 10, 1),
+            theme.bg_visual,
+            "终点格子包含在选区内"
+        );
+        assert_ne!(bg(&terminal, 4, 1), theme.bg_visual, "选区左侧不铺色");
+        assert_ne!(bg(&terminal, 11, 1), theme.bg_visual, "选区右侧不铺色");
+        assert_ne!(bg(&terminal, 5, 2), theme.bg_visual, "选区外的行不铺色");
+
+        // 反向跨行拖选：首行铺到右缘、末行从左缘铺到终点，中间整行。
+        app.selection = Some(((10, 3), (5, 1)));
+        terminal
+            .draw(|frame| highlight_selection(frame, &app, area))
+            .expect("绘制成功");
+        assert_ne!(bg(&terminal, 4, 1), theme.bg_visual);
+        assert_eq!(bg(&terminal, area.right() - 1, 1), theme.bg_visual);
+        assert_eq!(bg(&terminal, area.x, 2), theme.bg_visual, "中间行整行高亮");
+        assert_eq!(bg(&terminal, area.x, 3), theme.bg_visual);
+        assert_eq!(bg(&terminal, 10, 3), theme.bg_visual);
+        assert_ne!(bg(&terminal, 11, 3), theme.bg_visual);
     }
 }
