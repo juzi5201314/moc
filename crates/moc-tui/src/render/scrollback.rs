@@ -1903,9 +1903,14 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             let counts = tool
                 .diff
                 .as_ref()
-                .map(|diff| {
+                .and_then(|diff| {
                     let stats = diff::stats(diff);
-                    format!(" [+{}/-{}]", stats.insertions, stats.deletions)
+                    // 空 diff 不渲染 [+0/-0]；截断时计数只是已交付的部分，
+                    // 用 … 标明，避免把部分值当成完整统计。
+                    (stats.insertions + stats.deletions > 0).then(|| {
+                        let partial = if diff.truncated { " …" } else { "" };
+                        format!(" [+{}/-{}{partial}]", stats.insertions, stats.deletions)
+                    })
                 })
                 .unwrap_or_default();
             format!("{path}{counts}")
@@ -3644,6 +3649,171 @@ mod tests {
         );
         assert!(!text_of(&full).contains("还有"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+    }
+
+    /// 标题计数只统计真实改动；空 diff 不显示 [+0/-0]。
+    #[test]
+    fn edit_diff_header_hides_zero_counts() {
+        use moc_protocol::methods::{DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        let changed = ToolDiff {
+            files: vec![ToolFileDiff {
+                path: "src/lib.rs".into(),
+                hunks: vec![DiffHunk {
+                    old_start: 1,
+                    new_start: 1,
+                    lines: vec![
+                        DiffLine {
+                            kind: DiffLineKind::Delete,
+                            old_no: Some(1),
+                            new_no: None,
+                            text: "old".into(),
+                        },
+                        DiffLine {
+                            kind: DiffLineKind::Insert,
+                            old_no: None,
+                            new_no: Some(1),
+                            text: "new".into(),
+                        },
+                    ],
+                }],
+            }],
+            truncated: false,
+        };
+        let empty = ToolDiff {
+            files: vec![ToolFileDiff {
+                path: "src/empty.rs".into(),
+                hunks: vec![DiffHunk {
+                    old_start: 1,
+                    new_start: 1,
+                    lines: vec![DiffLine {
+                        kind: DiffLineKind::Equal,
+                        old_no: Some(1),
+                        new_no: Some(1),
+                        text: "same".into(),
+                    }],
+                }],
+            }],
+            truncated: false,
+        };
+        for (id, path, diff) in [
+            ("call_change", "src/lib.rs", changed),
+            ("call_empty", "src/empty.rs", empty),
+        ] {
+            let arguments = format!(r#"{{"path":"{path}"}}"#);
+            app.start_tool_block(ToolCallStart {
+                id: id.into(),
+                name: "edit".into(),
+                parent_id: None,
+                arguments: arguments.clone(),
+            });
+            app.finish_tool_block(ToolCallFinish {
+                id: id.into(),
+                name: "edit".into(),
+                parent_id: None,
+                arguments,
+                status: moc_protocol::methods::ToolStatus::Completed,
+                result: moc_protocol::ToolResult {
+                    tool_call_id: id.into(),
+                    content: String::new(),
+                    is_error: false,
+                    images: Vec::new(),
+                },
+                duration_ms: Some(1),
+                diff: Some(diff),
+            });
+        }
+        let title = |index: usize| {
+            render_entry(index, &app.blocks[index], &app, width, true).lines[0]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        assert!(
+            title(0).contains("[+1/-1]"),
+            "真实改动要有计数：{}",
+            title(0)
+        );
+        assert!(
+            !title(1).contains("[+0/-0]") && !title(1).contains("[+"),
+            "空 diff 不显示计数：{}",
+            title(1)
+        );
+    }
+
+    /// 截断 diff：标题带 …，正文提示只出现一次且不再说“改动过多”。
+    #[test]
+    fn truncated_diff_marks_partial_and_prints_notice_once() {
+        use moc_protocol::methods::{DiffHunk, DiffLine, DiffLineKind, ToolDiff, ToolFileDiff};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        let file = |path: &str| ToolFileDiff {
+            path: path.into(),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Insert,
+                    old_no: None,
+                    new_no: Some(1),
+                    text: "x".into(),
+                }],
+            }],
+        };
+        let arguments = r#"{"path":"a.rs"}"#.to_owned();
+        app.start_tool_block(ToolCallStart {
+            id: "call_truncated".into(),
+            name: "edit".into(),
+            parent_id: None,
+            arguments: arguments.clone(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_truncated".into(),
+            name: "edit".into(),
+            parent_id: None,
+            arguments,
+            status: moc_protocol::methods::ToolStatus::Completed,
+            result: moc_protocol::ToolResult {
+                tool_call_id: "call_truncated".into(),
+                content: String::new(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(1),
+            diff: Some(ToolDiff {
+                files: vec![file("a.rs"), file("b.rs")],
+                truncated: true,
+            }),
+        });
+        app.tool_detail = DetailLevel::Full;
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+        let title = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        let body = text_of(&lines[1..]);
+        assert!(title.contains("[+2/-0 …]"), "部分统计要带 …：{title}");
+        assert_eq!(
+            body.matches("其余改动超出").count(),
+            1,
+            "截断提示只出现一次：{body}"
+        );
+        assert!(!body.contains("改动过多"), "不应再出现误导性措辞：{body}");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
     /// 接收侧 IRC 卡片：标题措辞、默认简略预览、点击后完整／隐藏与估高同源。

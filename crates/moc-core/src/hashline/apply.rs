@@ -11,7 +11,7 @@ use crate::error::CoreError;
 use crate::hashline::{
     AnchorStore, FileSnapshot, ServedFile, anchor_line_token, id_str, parse_anchor,
 };
-use moc_protocol::{ToolDiff, ToolFileDiff};
+use moc_protocol::{LineChange, ToolDiff, ToolFileDiff, build_hunks_from_changes};
 
 #[derive(Debug, Error)]
 pub enum EditError {
@@ -47,6 +47,16 @@ struct VerifiedEdit {
     start: usize,
     end: usize,
     replacement: Vec<String>,
+}
+
+/// `move` 的目标文件计划：除了最终内容，还保留插入位置与搬运行，
+/// 供结构化 diff 直接按「一次纯插入」构造。
+struct MoveTargetPlan {
+    path: PathBuf,
+    snapshot: FileSnapshot,
+    lines: Vec<String>,
+    insert_at: usize,
+    moved_lines: Vec<String>,
 }
 
 /// 一个待提交文件的内容计划：原始快照 + 计算后的最终行。
@@ -162,7 +172,7 @@ pub fn plan_edit(
 
     // `move` 的源删除与目标插入都并入统一位移表：先在原始行号上完成验证，
     // 再与 edits 一起排序、生成一次 moves，避免重基漏掉任一侧的位移。
-    let mut target_plan = None;
+    let mut target_plan: Option<MoveTargetPlan> = None;
     let mut all_edits = edits.clone();
     let mut target_moves = Vec::new();
     if let Some(movement) = &request.move_lines {
@@ -219,8 +229,14 @@ pub fn plan_edit(
             isize::try_from(moved_lines.len()).expect("moved line count must fit in isize"),
         )];
         let mut target_lines = target_snapshot.lines.clone();
-        target_lines.splice(target_position..target_position, moved_lines);
-        target_plan = Some((target_path, target_snapshot, target_lines));
+        target_lines.splice(target_position..target_position, moved_lines.clone());
+        target_plan = Some(MoveTargetPlan {
+            path: target_path,
+            snapshot: target_snapshot,
+            lines: target_lines,
+            insert_at: target_position,
+            moved_lines,
+        });
     }
 
     all_edits.sort_by_key(|edit| (edit.start, edit.end));
@@ -261,35 +277,52 @@ pub fn plan_edit(
         served,
         &mut source_served,
     );
-    let mut files = Vec::new();
-    let mut truncated = push_file_diff(
-        &source_path,
-        &source_snapshot.lines,
-        &source_lines,
-        &mut files,
-    );
-    let target = if let Some((target_path, target_snapshot, target_lines)) = target_plan {
+    // edit 的变更范围在规划阶段已经确定：直接按范围构造完整 hunk，
+    // 不再对整份文件做 LCS，因此文件再大也不会把少量改动误判成截断。
+    let source_refs: Vec<&str> = source_snapshot.lines.iter().map(String::as_str).collect();
+    let source_changes: Vec<LineChange<'_>> = all_edits
+        .iter()
+        .map(|edit| LineChange {
+            start: edit.start,
+            end: edit.end,
+            replacement: &edit.replacement,
+        })
+        .collect();
+    let mut files = vec![ToolFileDiff {
+        path: source_path.display().to_string(),
+        hunks: build_hunks_from_changes(&source_refs, &source_changes),
+    }];
+    let target = if let Some(target_plan) = target_plan {
         let before = target_served.expect("move 目标已验证");
-        let mut after = before.rebased(&target_moves, target_lines.len());
+        let mut after = before.rebased(&target_moves, target_plan.lines.len());
         let rendered = render_diff(
-            &target_path,
-            &target_snapshot,
-            &target_lines,
+            &target_plan.path,
+            &target_plan.snapshot,
+            &target_plan.lines,
             before,
             &mut after,
         );
         output.push('\n');
         output.push_str(&rendered);
-        truncated |= push_file_diff(
-            &target_path,
-            &target_snapshot.lines,
-            &target_lines,
-            &mut files,
-        );
+        let target_refs: Vec<&str> = target_plan
+            .snapshot
+            .lines
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let change = LineChange {
+            start: target_plan.insert_at,
+            end: target_plan.insert_at,
+            replacement: &target_plan.moved_lines,
+        };
+        files.push(ToolFileDiff {
+            path: target_plan.path.display().to_string(),
+            hunks: build_hunks_from_changes(&target_refs, &[change]),
+        });
         Some(EditPlanTarget {
-            path: target_path,
-            snapshot: target_snapshot,
-            lines: target_lines,
+            path: target_plan.path,
+            snapshot: target_plan.snapshot,
+            lines: target_plan.lines,
             served: after,
         })
     } else {
@@ -303,28 +336,14 @@ pub fn plan_edit(
         snapshot: source_snapshot,
         lines: source_lines,
         output,
-        diff: ToolDiff { files, truncated },
+        diff: ToolDiff {
+            files,
+            truncated: false,
+        },
         served: source_served,
         no_changes: false,
         target,
     })
-}
-
-/// 单文件 diff 计算并压入 `files`；返回该文件是否被截断。
-fn push_file_diff(
-    path: &Path,
-    old_lines: &[String],
-    new_lines: &[String],
-    files: &mut Vec<ToolFileDiff>,
-) -> bool {
-    let old_refs: Vec<&str> = old_lines.iter().map(String::as_str).collect();
-    let new_refs: Vec<&str> = new_lines.iter().map(String::as_str).collect();
-    let (hunks, truncated) = moc_protocol::build_hunks(&old_refs, &new_refs);
-    files.push(ToolFileDiff {
-        path: path.display().to_string(),
-        hunks,
-    });
-    truncated
 }
 
 /// `apply_edit` 的成功输出：给模型看的内容 + 给前端看的结构化 diff。
@@ -1325,5 +1344,179 @@ mod tests {
             "临时文件与备份必须清理"
         );
         assert!(store.latest_undo_path().is_none());
+    }
+
+    /// 大文件里的末尾编辑必须生成完整 diff，而不是空 hunk + truncated。
+    #[tokio::test]
+    async fn large_file_edit_diff_is_complete() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("large.txt");
+        let text = (0..2500)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, &text).expect("写大文件");
+        let snapshot = read_snapshot(&path, 1_000_000).expect("读取快照");
+        let mut served = ServedFile::new();
+        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
+        let anchor = served.token(2400).expect("第 2401 行令牌").text();
+        let request = EditRequest {
+            path: "large.txt".into(),
+            edits: vec![[anchor.clone(), anchor, "inserted".into()]],
+            move_lines: None,
+        };
+        let preview =
+            preview_edit(dir.path(), &request, &served, None, 32, 1_000_000).expect("预览成功");
+        assert!(!preview.truncated, "大文件里的单行改动不应截断");
+        fn diff_lines(diff: &ToolDiff) -> Vec<(moc_protocol::DiffLineKind, &str)> {
+            diff.files[0]
+                .hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .map(|line| (line.kind, line.text.as_str()))
+                .collect()
+        }
+        assert!(
+            diff_lines(&preview).contains(&(moc_protocol::DiffLineKind::Insert, "inserted")),
+            "预览 diff 必须包含实际改动"
+        );
+
+        let output = apply_edit(
+            dir.path(),
+            &request,
+            &served,
+            None,
+            &AnchorStore::new(),
+            32,
+            1_000_000,
+        )
+        .await
+        .expect("编辑成功");
+        let diff = output.diff.expect("成功编辑必须携带 diff");
+        assert!(!diff.truncated);
+        let lines = diff_lines(&diff);
+        assert!(lines.contains(&(moc_protocol::DiffLineKind::Insert, "inserted")));
+        assert!(
+            !lines
+                .iter()
+                .any(|(kind, _)| *kind == moc_protocol::DiffLineKind::Delete),
+            "纯插入不应凭空生成删除行"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("读取结果")
+                .contains("line 2400\ninserted\nline 2401")
+        );
+    }
+
+    /// 同一次 edit 调用里相距很远的改动都要进 diff。
+    #[tokio::test]
+    async fn distant_edits_all_appear_in_diff() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("sparse.txt");
+        let text = (0..5000)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&path, &text).expect("写文件");
+        let snapshot = read_snapshot(&path, 1_000_000).expect("读取快照");
+        let mut served = ServedFile::new();
+        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
+        let first = served.token(10).expect("前部令牌").text();
+        let second = served.token(4000).expect("后部令牌").text();
+        let request = EditRequest {
+            path: "sparse.txt".into(),
+            edits: vec![
+                [first.clone(), first, "first".into()],
+                [second.clone(), second, "second".into()],
+            ],
+            move_lines: None,
+        };
+        let output = apply_edit(
+            dir.path(),
+            &request,
+            &served,
+            None,
+            &AnchorStore::new(),
+            32,
+            1_000_000,
+        )
+        .await
+        .expect("编辑成功");
+        let diff = output.diff.expect("成功编辑携带 diff");
+        assert!(!diff.truncated);
+        assert_eq!(diff.files[0].hunks.len(), 2, "相距很远的改动应各自成 hunk");
+        let texts: Vec<&str> = diff.files[0]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .map(|line| line.text.as_str())
+            .collect();
+        assert!(texts.contains(&"first"));
+        assert!(texts.contains(&"second"));
+    }
+
+    /// move 到目标文件的插入也要按已知范围生成完整 diff（目标可以很大）。
+    #[tokio::test]
+    async fn move_target_diff_is_complete() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        std::fs::write(&source, "move\nkeep\n").expect("写源文件");
+        let target_text = (0..2500)
+            .map(|index| format!("target {index}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(&target, &target_text).expect("写目标文件");
+        let source_snapshot = read_snapshot(&source, 1_000_000).expect("读取源文件");
+        let target_snapshot = read_snapshot(&target, 1_000_000).expect("读取目标文件");
+        let mut source_served = ServedFile::new();
+        source_served.serve(
+            source_snapshot.epoch,
+            &source_snapshot.lines,
+            &[0..source_snapshot.lines.len()],
+        );
+        let mut target_served = ServedFile::new();
+        target_served.serve(
+            target_snapshot.epoch,
+            &target_snapshot.lines,
+            &[0..target_snapshot.lines.len()],
+        );
+        let moved = source_served.token(0).expect("搬运行令牌").text();
+        let keep = source_served.token(1).expect("保留行令牌").text();
+        let request = EditRequest {
+            path: "source.txt".into(),
+            edits: vec![[keep.clone(), keep, "after".into()]],
+            move_lines: Some(MoveRequest {
+                from: moved.clone(),
+                to: moved,
+                target_path: "target.txt".into(),
+                target_anchor: None,
+            }),
+        };
+        let output = apply_edit(
+            dir.path(),
+            &request,
+            &source_served,
+            Some(&target_served),
+            &AnchorStore::new(),
+            32,
+            1_000_000,
+        )
+        .await
+        .expect("move 成功");
+        let diff = output.diff.expect("move 必须携带 diff");
+        assert!(!diff.truncated);
+        assert_eq!(diff.files.len(), 2);
+        let moved_insert = diff.files[1]
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .find(|line| line.kind == moc_protocol::DiffLineKind::Insert && line.text == "move")
+            .expect("目标 diff 必须包含搬运行");
+        assert_eq!(moved_insert.new_no, Some(2501), "追加到第 2500 行之后");
     }
 }

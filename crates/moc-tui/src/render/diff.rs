@@ -2,7 +2,8 @@
 //!
 //! 视觉规格参照 omp 的 Edit 盒：单列行号（delete 用旧行号、insert 用新行号、
 //! equal 用新行号），变更行铺 `diff_delete_bg` / `diff_insert_bg`，内容按文件
-//! 扩展名做语法高亮；hunk 之间用 `⋯ N 行未变` 分隔。
+//! 扩展名做语法高亮；hunk 之间用 `⋯ N 行未变` 分隔，整份 diff 超出构造
+//! 上限时在末尾补一行提示（只补一次，不按文件重复）。
 
 use moc_protocol::methods::{DiffLineKind, ToolDiff, ToolFileDiff};
 use ratatui::style::{Modifier, Style};
@@ -40,6 +41,7 @@ pub fn stats(diff: &ToolDiff) -> DiffStats {
 
 /// 渲染 diff 全部文件；`limit` 是内容行上限（`usize::MAX` = 不限，
 /// 内部仍受 [`MAX_RENDERED_ROWS`] 约束），达到上限且还有内容时补一行省略提示。
+/// `diff.truncated` 的提示描述整份 diff，只追加一次。
 pub fn render_diff(
     diff: &ToolDiff,
     width: usize,
@@ -48,10 +50,17 @@ pub fn render_diff(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for file in &diff.files {
-        render_file(file, diff.truncated, width, theme, &mut lines);
+        render_file(file, width, theme, &mut lines);
         if lines.len() >= limit {
             break;
         }
+    }
+    // 截断提示描述的是整份 diff，不能按文件重复打印。
+    if diff.truncated {
+        lines.push(Line::from(Span::styled(
+            "⋯ 其余改动超出 diff 上限，未显示".to_owned(),
+            Style::new().fg(theme.accent_warning),
+        )));
     }
     let rendered = rendered_row_count(diff, limit);
     lines.truncate(rendered);
@@ -72,8 +81,8 @@ pub fn rendered_row_count(diff: &ToolDiff, limit: usize) -> usize {
 
 /// diff 的展示行数（与 [`render_diff`] 同规则，但不做高亮）。
 ///
-/// 懒渲染用它估算工具块高度；hunk 之间的「⋯ N 行未变」与截断提示各占一行。
-/// 行数与宽度无关：diff 行不做换行，超长行交给终端自身折行。
+/// 懒渲染用它估算工具块高度；hunk 之间的「⋯ N 行未变」与整份 diff 的
+/// 截断提示各占一行。行数与宽度无关：diff 行不做换行，超长行交给终端自身折行。
 pub fn row_count(diff: &ToolDiff) -> usize {
     let mut rows = 0usize;
     for file in &diff.files {
@@ -87,18 +96,11 @@ pub fn row_count(diff: &ToolDiff) -> usize {
             .map(|hunk| hunk.lines.len())
             .sum::<usize>();
         rows += file.hunks.len().saturating_sub(1);
-        rows += usize::from(diff.truncated);
     }
-    rows
+    rows + usize::from(diff.truncated)
 }
 
-fn render_file(
-    file: &ToolFileDiff,
-    truncated: bool,
-    width: usize,
-    theme: &Theme,
-    out: &mut Vec<Line<'static>>,
-) {
+fn render_file(file: &ToolFileDiff, width: usize, theme: &Theme, out: &mut Vec<Line<'static>>) {
     let syntax_token = syntax_token_of(&file.path);
     // 整文件共用一个高亮会话：块注释/多行字符串的解析状态跨行延续
     let mut highlighter = highlight::LineHighlighter::new(&syntax_token);
@@ -113,13 +115,20 @@ fn render_file(
         .map_or(1, |max| max.to_string().len())
         .max(1);
     let content_width = width.max(gutter_width + 4).saturating_sub(gutter_width + 4);
+    // 上一个 hunk 在旧文件里覆盖到的最后一行：hunk 间隔只数真正被省略的
+    // 未变行，不能拿两个 hunk 的起点相减（那样会把前一个 hunk 的尾部上下文
+    // 也算进去）。
+    let mut previous_last_old: Option<u32> = None;
 
     for (hunk_index, hunk) in file.hunks.iter().enumerate() {
         if hunk_index > 0 {
-            let gap = hunk
-                .old_start
-                .saturating_sub(file.hunks[hunk_index - 1].old_start)
-                .saturating_sub(1);
+            let first_old = hunk
+                .lines
+                .iter()
+                .find_map(|line| line.old_no)
+                .unwrap_or(hunk.old_start);
+            let previous = previous_last_old.unwrap_or(0);
+            let gap = first_old.saturating_sub(previous).saturating_sub(1);
             out.push(Line::from(Span::styled(
                 format!("{}⋯ {} 行未变", " ".repeat(gutter_width + 1), gap),
                 Style::new().fg(theme.gray_dim),
@@ -208,13 +217,13 @@ fn render_file(
             }
             out.push(Line::from(spans));
         }
-    }
-
-    if truncated {
-        out.push(Line::from(Span::styled(
-            format!("{}⋯ 改动过多，已省略部分内容", " ".repeat(gutter_width + 1)),
-            Style::new().fg(theme.accent_warning),
-        )));
+        previous_last_old = Some(
+            hunk.lines
+                .iter()
+                .rev()
+                .find_map(|line| line.old_no)
+                .unwrap_or_else(|| hunk.old_start.saturating_sub(1)),
+        );
     }
 }
 
@@ -336,5 +345,125 @@ mod tests {
                 "行内差异片段应带下划线标记"
             );
         }
+    }
+
+    /// hunk 间隔只数真正被省略的未变行，不把前一个 hunk 的尾部上下文算进去。
+    #[test]
+    fn hunk_gap_counts_only_omitted_unchanged_lines() {
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let equal = |number: u32| DiffLine {
+            kind: DiffLineKind::Equal,
+            old_no: Some(number),
+            new_no: Some(number),
+            text: format!("line {number}"),
+        };
+        let delete = |number: u32| DiffLine {
+            kind: DiffLineKind::Delete,
+            old_no: Some(number),
+            new_no: None,
+            text: format!("old {number}"),
+        };
+        let insert = |number: u32| DiffLine {
+            kind: DiffLineKind::Insert,
+            old_no: None,
+            new_no: Some(number),
+            text: format!("new {number}"),
+        };
+        let hunk = |old_start: u32, lines: Vec<DiffLine>| DiffHunk {
+            old_start,
+            new_start: old_start,
+            lines,
+        };
+        let diff = ToolDiff {
+            files: vec![ToolFileDiff {
+                path: "src/lib.rs".into(),
+                hunks: vec![
+                    hunk(
+                        2,
+                        vec![
+                            equal(2),
+                            equal(3),
+                            equal(4),
+                            delete(5),
+                            insert(5),
+                            equal(6),
+                            equal(7),
+                            equal(8),
+                        ],
+                    ),
+                    hunk(
+                        17,
+                        vec![
+                            equal(17),
+                            equal(18),
+                            equal(19),
+                            delete(20),
+                            insert(20),
+                            equal(21),
+                            equal(22),
+                            equal(23),
+                        ],
+                    ),
+                ],
+            }],
+            truncated: false,
+        };
+        let lines = render_diff(&diff, 80, &theme, usize::MAX);
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("⋯ 8 行未变"), "只应省略 8 行：{text}");
+        assert!(
+            !text.contains("⋯ 14 行未变"),
+            "不能把前一个 hunk 自身的行也算进去"
+        );
+    }
+
+    /// 截断提示属于整份 diff：多文件也只出现一次，行数估算与渲染一致。
+    #[test]
+    fn truncation_notice_prints_once_for_all_files() {
+        let theme = Theme::resolved(ColorLevel::TrueColor);
+        let file = |path: &str| ToolFileDiff {
+            path: path.into(),
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                new_start: 1,
+                lines: vec![DiffLine {
+                    kind: DiffLineKind::Insert,
+                    old_no: None,
+                    new_no: Some(1),
+                    text: "x".into(),
+                }],
+            }],
+        };
+        let diff = ToolDiff {
+            files: vec![file("a.rs"), file("b.rs")],
+            truncated: true,
+        };
+        let lines = render_diff(&diff, 80, &theme, usize::MAX);
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(
+            text.matches("其余改动超出").count(),
+            1,
+            "截断提示只出现一次：{text}"
+        );
+        assert_eq!(row_count(&diff), lines.len(), "行数估算与渲染同源");
+
+        let limited = render_diff(&diff, 80, &theme, 1);
+        let limited_text = limited
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            limited_text.contains("还有 2 行"),
+            "被行数上限挤掉的行仍要报数：{limited_text}"
+        );
     }
 }
