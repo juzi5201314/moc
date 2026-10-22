@@ -172,6 +172,9 @@ fn rank(key: &str) -> usize {
         "skills" => 8,
         "peer_scope" => 9,
         "max_context_tokens" => 10,
+        // 会话：压缩开关优先于存储目录与保留策略
+        "compress" => 0,
+        "dir" => 1,
         // 通用
         "enabled" => 0,
         "url" => 0,
@@ -667,15 +670,11 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "skills" => ("远程技能", "从 OpenViking 获取技能；本地同名技能优先。"),
             "peer_scope" => ("召回范围", "只召回当前工作区，或允许跨工作区。"),
             "max_context_tokens" => ("记忆注入上限", "每次注入的记忆内容长度（token）。"),
-            "dir" => ("会话存储目录", "会话和运行记录的保存位置；更改后重启生效。"),
-            "archive_after_days" => (
-                "归档超过天数",
-                "这么久没用的会话会被压缩归档，恢复时自动解压。",
+            "compress" => (
+                "压缩会话日志",
+                "新建会话以 zstd 压缩保存（.jsonl.zst）；已有会话保持原格式，读取时自动识别两种格式。",
             ),
-            "retain_newest_global" => ("全局保留最近", "最近这些会话不会被归档或清理。"),
-            "retain_newest_per_workspace" => {
-                ("每个工作区保留最近", "每个工作区最近这些会话始终保留。")
-            }
+            "dir" => ("会话存储目录", "会话和运行记录的保存位置；更改后重启生效。"),
             "artifacts_days" => (
                 "临时产物保留天数",
                 "过期且没有被引用的临时产物会被清理；维护前先预览。",
@@ -763,6 +762,23 @@ mod tests {
             panic!("{key} 应为候选列表");
         };
         options.iter().map(|option| option.value.clone()).collect()
+    }
+
+    #[test]
+    fn session_compression_is_a_bool_field() {
+        let fields = fields(&json!({"session": {"compress": false}}));
+        let field = fields
+            .iter()
+            .find(|field| {
+                field
+                    .path
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["session", "compress"])
+            })
+            .expect("session.compress 出现在配置目录");
+        assert!(matches!(field.kind, FieldKind::Bool));
+        assert!(field.description.contains("zstd"), "{}", field.description);
     }
 
     #[test]

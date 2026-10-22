@@ -161,17 +161,28 @@ fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<Pat
     link(&artifact.join("artifacts"), Path::new("../../artifacts"))?;
     link(&farm.join("local"), Path::new("../plans"))?;
     link(&history.join("compaction"), Path::new("../../compaction"))?;
-    // transcript 在会话目录下、sidecar 之外，所以要往上多走一层。
-    let Some(name) = paths.transcript.file_name() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "transcript path has no file name",
-        ));
-    };
-    link(
-        &history.join("transcript"),
-        &Path::new("../../../").join(name),
-    )?;
+    if paths.compressed() {
+        // 压缩会话把解码后的明文镜像放在 sidecar/history 下，shell 读链接即可。
+        if let Err(error) = crate::session::log::refresh_history_view(paths) {
+            tracing::warn!(%error, "刷新压缩 transcript 的解码镜像失败");
+        }
+        link(
+            &history.join("transcript"),
+            Path::new("../../history/transcript.jsonl"),
+        )?;
+    } else {
+        // transcript 在会话目录下、sidecar 之外，所以要往上多走一层。
+        let Some(name) = paths.transcript.file_name() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "transcript path has no file name",
+            ));
+        };
+        link(
+            &history.join("transcript"),
+            &Path::new("../../../").join(name),
+        )?;
+    }
     sync_skill_links(&skill, skills)?;
     Ok(farm)
 }
@@ -300,6 +311,12 @@ fn direct_target(
                 return Err(bare_namespace_error("history"));
             }
             if remainder == "transcript" {
+                if paths.compressed() {
+                    if let Err(error) = crate::session::log::refresh_history_view(paths) {
+                        return Err(ToolError::new("E_URLFS", error.to_string()));
+                    }
+                    return Ok(crate::session::log::history_view_path(paths));
+                }
                 return Ok(paths.transcript.clone());
             }
             if let Some(rest) = remainder.strip_prefix("transcript/") {
@@ -351,6 +368,27 @@ mod tests {
             transcript: root.join("ses_1.jsonl"),
             sidecar: root.join("ses_1"),
         }
+    }
+
+    #[test]
+    fn compressed_transcript_links_to_the_decoded_mirror() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let mut paths = paths(root.path());
+        paths.transcript = root.path().join("ses_1.jsonl.zst");
+        fs::write(
+            &paths.transcript,
+            crate::session::log::compress_frame(b"{\"a\":1}\n").expect("压缩帧"),
+        )
+        .expect("压缩 transcript");
+        let farm = ensure_farm(&paths, &SkillIndex::empty()).expect("创建 urlfs 目录");
+        assert_eq!(
+            fs::read_link(farm.join("history/transcript")).expect("transcript 链接"),
+            Path::new("../../history/transcript.jsonl")
+        );
+        assert_eq!(
+            fs::read_to_string(farm.join("history/transcript")).expect("通过链接读镜像"),
+            "{\"a\":1}\n"
+        );
     }
 
     #[test]

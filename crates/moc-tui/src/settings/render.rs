@@ -405,16 +405,14 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         View::Maintenance(report) => {
             let mut lines = vec![Line::from(if report.applied {
                 format!(
-                    "维护完成：归档 {} 个会话，清理 {} 个临时文件（{}），保留 {} 项。",
-                    report.archived.len(),
+                    "维护完成：清理 {} 个临时文件（{}），保留 {} 项。",
                     report.removed.len(),
                     short_bytes(report.bytes),
                     report.protected
                 )
             } else {
                 format!(
-                    "预计归档 {} 个会话，清理 {} 个临时文件（{}），保留 {} 项。",
-                    report.archived.len(),
+                    "预计清理 {} 个临时文件（{}），保留 {} 项。",
                     report.removed.len(),
                     short_bytes(report.bytes),
                     report.protected
@@ -422,21 +420,15 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
             })];
             lines.extend(
                 report
-                    .archived
+                    .removed
                     .iter()
-                    .map(|path| Line::from(format!("归档 {path}")))
-                    .chain(
-                        report
-                            .removed
-                            .iter()
-                            .map(|path| Line::from(format!("删除 {path}"))),
-                    )
+                    .map(|path| Line::from(format!("删除 {path}")))
                     .skip(panel.offset)
                     .take(usize::from(body.height)),
             );
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
             (
-                "归档的会话可以恢复；只清理过期且没有被引用的临时文件。".into(),
+                "只清理过期且没有被会话引用的临时文件。".into(),
                 if report.applied {
                     "Esc 返回".into()
                 } else {
@@ -772,7 +764,7 @@ fn group_description(group: &Group) -> String {
             path.get(2).map_or("", String::as_str)
         ),
         Some("mcp") => format!("MCP 服务“{}”。", group.title),
-        Some("session") => "会话的自动归档与清理策略。".into(),
+        Some("session") => "新建会话的压缩选项与临时文件清理策略。".into(),
         Some(_) => format!("“{}”相关的设置。", group.title),
 
         None => "会话使用的各类模型；候选来自已添加的模型。".into(),

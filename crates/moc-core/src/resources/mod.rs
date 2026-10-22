@@ -590,8 +590,18 @@ fn resolve_history(
     let uri =
         InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
     let path = match (uri.authority(), uri.segments()) {
-        ("transcript", []) => fs::canonicalize(&context.paths.transcript)
-            .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?,
+        ("transcript", []) => {
+            let exists = crate::session::log::refresh_history_view(context.paths)
+                .map_err(|error| ResourceError::new("E_HISTORY_READ", error.to_string()))?;
+            if !exists {
+                return Err(ResourceError::new(
+                    "E_HISTORY_NOT_FOUND",
+                    "transcript 尚未落盘",
+                ));
+            }
+            fs::canonicalize(crate::session::log::history_view_path(context.paths))
+                .map_err(|error| ResourceError::new("E_HISTORY_NOT_FOUND", error.to_string()))?
+        }
         ("compaction", []) => return Ok(history_namespace(input, Vec::new(), &compaction)),
         ("compaction", [name]) if name == "INDEX.md" || name.starts_with("segment-") => {
             let candidate =
@@ -1024,6 +1034,37 @@ mod tests {
             wrong.message.contains("history://transcript"),
             "{}",
             wrong.message
+        );
+    }
+
+    #[test]
+    fn compressed_history_transcript_is_decoded_into_a_mirror() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let mut paths = test_paths(root.path());
+        paths.transcript = root.path().join("transcript.jsonl.zst");
+        let mut bytes = crate::session::log::compress_frame(b"{\"a\":1}\n").expect("压缩第一帧");
+        bytes.extend(crate::session::log::compress_frame(b"{\"a\":2}\n").expect("压缩第二帧"));
+        fs::write(&paths.transcript, bytes).expect("压缩 transcript");
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let skills = SkillIndex::empty();
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+
+        let transcript = ResourceRouter::resolve_context(
+            &context,
+            ResourceScheme::History,
+            "history://transcript",
+        )
+        .expect("transcript URI")
+        .expect("transcript 是资源");
+        let mirror = paths.sidecar.join("history/transcript.jsonl");
+        assert_eq!(
+            transcript.backing,
+            ResourceBacking::File(mirror.canonicalize().unwrap())
+        );
+        assert_eq!(
+            fs::read_to_string(&mirror).expect("读取镜像"),
+            "{\"a\":1}\n{\"a\":2}\n",
+            "压缩会话对外暴露完整解码后的日志"
         );
     }
 

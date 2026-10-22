@@ -47,6 +47,7 @@ ttf-parser = "0.25"
 fontdue = "0.9"
 fontdb = "0.24"
 flate2 = "1"
+zstd = "0.13"
 rustix = { version = "1", features = ["event"] }
 
 # 测试/开发构建只需要行号，不需要完整 DWARF：

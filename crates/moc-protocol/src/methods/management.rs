@@ -126,7 +126,6 @@ pub struct WorkspaceBinding {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MaintenanceReport {
-    pub archived: Vec<String>,
     pub removed: Vec<String>,
     pub protected: usize,
     pub bytes: u64,

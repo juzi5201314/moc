@@ -33,6 +33,7 @@ pub use schema::{
 #[derive(Debug, Clone)]
 pub struct SessionSettings {
     pub dir: PathBuf,
+    pub compress: bool,
     pub retention: RetentionConfig,
 }
 
@@ -245,6 +246,7 @@ impl ResolvedConfig {
 
             session: SessionSettings {
                 dir: session_dir,
+                compress: document.session.compress,
                 retention: document.session.retention,
             },
             mcp: document.mcp,
@@ -577,6 +579,29 @@ mod tests {
         format!(
             "[models.roles]\ndefault='p/model:high'\nexplore='p/model:low'\nplan='p/model:max'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\napi_key='{api_key}'\n[providers.p.models.model]\nreasoning=true\ninput=['text','image']\n"
         )
+    }
+
+    #[test]
+    fn session_compression_defaults_off_and_can_be_enabled() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        fs::create_dir_all(&home).expect("创建 home");
+        fs::create_dir_all(&cwd).expect("创建 cwd");
+        let config_path = home.join("config.toml");
+        fs::write(&config_path, provider_config("literal")).expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("默认配置可解析");
+        assert!(!config.session.compress, "会话压缩默认关闭");
+
+        fs::write(
+            &config_path,
+            format!("{}\n[session]\ncompress=true\n", provider_config("literal")),
+        )
+        .expect("写压缩配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("压缩配置可解析");
+        assert!(config.session.compress);
     }
 
     #[test]

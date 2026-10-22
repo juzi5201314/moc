@@ -2,6 +2,7 @@
 
 pub mod entries;
 pub mod lock;
+pub(crate) mod log;
 pub mod maintenance;
 pub mod state;
 pub mod store;
@@ -76,6 +77,8 @@ impl SessionRecord {
 pub struct SessionTable {
     store: SessionStore,
     locking: bool,
+    /// 新建会话是否使用 zstd 压缩；保存配置后即时更新，已有会话不受影响。
+    compress: AtomicBool,
     records: RwLock<HashMap<String, Arc<SessionRecord>>>,
 }
 
@@ -84,8 +87,14 @@ impl SessionTable {
         Self {
             store: SessionStore::new(root),
             locking,
+            compress: AtomicBool::new(false),
             records: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// 设置之后创建的会话是否压缩；读取始终兼容两种格式。
+    pub fn set_compress(&self, enabled: bool) {
+        self.compress.store(enabled, Ordering::Relaxed);
     }
 
     /// 只登记内存状态；transcript 在第一次 append 时才写盘，空会话不会留下文件。
@@ -117,13 +126,17 @@ impl SessionTable {
             created_at_ms,
         );
         let state = SessionState::new(header.clone())?;
+        let compress = self.compress.load(Ordering::Relaxed);
         // 子代理落在父会话目录里，代理树和目录树同构：删除父会话会一并删除整棵子树。
         let paths = match origin_parent.as_deref() {
             Some(parent) => {
                 self.store
-                    .paths_for_child(cwd, parent, &session_id, created_at_ms)
+                    .paths_for_child(cwd, parent, &session_id, created_at_ms, compress)
                     .await?
             }
+            None if compress => self
+                .store
+                .paths_for_compressed(cwd, &session_id, created_at_ms),
             None => self.store.paths_for(cwd, &session_id, created_at_ms),
         };
         let info = state.session_info();
@@ -961,6 +974,164 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compressed_sessions_use_zstd_only_for_new_sessions() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        table.set_compress(true);
+        let compressed = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+            )
+            .await
+            .expect("创建压缩会话");
+        table
+            .append_message(&compressed.id, Message::user_text("压缩消息"), None, None)
+            .await
+            .expect("追加消息");
+        let record = table.get(&compressed.id).await.expect("取会话");
+        assert_eq!(
+            record
+                .paths
+                .transcript
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("zst")
+        );
+        let bytes = std::fs::read(&record.paths.transcript).expect("读取日志");
+        assert_eq!(
+            &bytes[..4],
+            &[0x28, 0xb5, 0x2f, 0xfd],
+            "文件应以 zstd magic 开头"
+        );
+        let loaded = table
+            .load(&compressed.id, None)
+            .await
+            .expect("加载压缩会话");
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].message.text(), "压缩消息");
+        assert_eq!(table.list().await.expect("列出会话").len(), 1);
+        assert!(
+            table
+                .store
+                .find(&compressed.id)
+                .await
+                .expect("查找会话")
+                .is_some(),
+            "压缩日志也要能被 find 发现"
+        );
+
+        // 整表重写仍然是一个压缩文件，格式不能退回明文。
+        let entries = table
+            .store
+            .read_entries(&record.paths)
+            .await
+            .expect("读取 entries");
+        table
+            .rewrite(&compressed.id, entries)
+            .await
+            .expect("压缩会话原子重写");
+        let bytes = std::fs::read(&record.paths.transcript).expect("读取重写后的日志");
+        assert_eq!(&bytes[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+        assert_eq!(
+            table
+                .load(&compressed.id, None)
+                .await
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+
+        // 关闭开关只影响以后创建的会话；已有会话保持压缩格式。
+        table.set_compress(false);
+        let plain = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+            )
+            .await
+            .expect("创建明文会话");
+        table
+            .append_message(&plain.id, Message::user_text("明文消息"), None, None)
+            .await
+            .expect("追加明文消息");
+        let plain_record = table.get(&plain.id).await.expect("取明文会话");
+        assert_eq!(
+            plain_record
+                .paths
+                .transcript
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("jsonl")
+        );
+        assert_eq!(table.list().await.expect("列出会话").len(), 2);
+        table.delete(&compressed.id).await.expect("删除压缩会话");
+        assert!(!record.paths.transcript.exists());
+    }
+
+    #[tokio::test]
+    async fn compressed_write_lease_truncates_a_torn_frame() {
+        use tokio::io::AsyncWriteExt;
+
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        table.set_compress(true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+            )
+            .await
+            .expect("创建压缩会话");
+        table
+            .append_message(&info.id, Message::user_text("第一条"), None, None)
+            .await
+            .expect("追加第一条");
+        let record = table.get(&info.id).await.expect("取会话");
+        table
+            .ensure_write_lease(&info.id, &record, "tui")
+            .await
+            .expect("取得写租约");
+        // 模拟崩溃：只写出下一帧的前半段。
+        let frame = crate::session::log::compress_frame(b"{\"partial\":\n").expect("压缩半帧");
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&record.paths.transcript)
+            .await
+            .expect("打开日志");
+        file.write_all(&frame[..frame.len() / 2])
+            .await
+            .expect("写入半帧");
+        file.sync_all().await.expect("刷写半帧");
+        assert!(table.release_lease(&record));
+        table
+            .ensure_write_lease(&info.id, &record, "tui")
+            .await
+            .expect("重新取得租约时截掉残帧");
+        table
+            .append_message(&info.id, Message::user_text("第二条"), None, None)
+            .await
+            .expect("截断后继续追加");
+        let loaded = table.load(&info.id, None).await.expect("加载");
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].message.text(), "第一条");
+        assert_eq!(loaded.entries[1].message.text(), "第二条");
+    }
+
+    #[tokio::test]
     async fn session_lifecycle_persists_transcript_and_true_truncation() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
@@ -1234,66 +1405,6 @@ mod tests {
             .unwrap();
         assert_eq!(restored.entries.len(), 3);
         assert_eq!(restored.entries[2].message.text(), "续写");
-    }
-
-    #[tokio::test]
-    async fn lock_refresh_restores_an_externally_archived_transcript() {
-        let directory = tempfile::tempdir().expect("临时目录");
-        let table = SessionTable::new(directory.path(), true);
-        let info = table
-            .create(
-                "/tmp/project",
-                "p/model",
-                SessionMode::Normal,
-                SessionPermission::Full,
-                None,
-                SessionOrigin::root(),
-            )
-            .await
-            .expect("创建会话");
-        table
-            .append_message(&info.id, Message::user_text("归档前"), None, None)
-            .await
-            .expect("追加消息");
-        let record = table.get(&info.id).await.expect("取会话");
-        table
-            .ensure_write_lease(&info.id, &record, "tui")
-            .await
-            .expect("取得写租约");
-        let transcript = record.paths.transcript.clone();
-        // 外部维护把可写日志压缩归档后删掉了原文件。
-        let archive = transcript.with_extension("jsonl.gz");
-        {
-            let source =
-                tokio::io::BufReader::new(tokio::fs::File::open(&transcript).await.expect("打开"));
-            let mut encoder = async_compression::tokio::bufread::GzipEncoder::with_quality(
-                source,
-                async_compression::Level::Fastest,
-            );
-            let mut out = tokio::fs::File::create(&archive).await.expect("创建归档");
-            tokio::io::copy(&mut encoder, &mut out)
-                .await
-                .expect("写入归档");
-            out.sync_all().await.expect("刷写归档");
-        }
-        tokio::fs::remove_file(&transcript)
-            .await
-            .expect("删除可写日志");
-        assert!(table.release_lease(&record));
-        // 重新取租约时必须先恢复可写日志再重新打开，否则会话无法再追加记录。
-        table
-            .ensure_write_lease(&info.id, &record, "tui")
-            .await
-            .expect("归档后仍能取得租约");
-        table
-            .append_message(&info.id, Message::assistant_text("归档后追加"), None, None)
-            .await
-            .expect("归档后仍能追加");
-        let loaded = table.load(&info.id, None).await.expect("加载会话");
-        assert_eq!(loaded.entries.len(), 2);
-        assert_eq!(loaded.entries[1].message.text(), "归档后追加");
-        assert!(transcript.exists(), "恢复后的可写日志回到原路径");
-        assert!(!archive.exists(), "归档文件在恢复后移除");
     }
 
     #[tokio::test]

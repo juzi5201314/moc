@@ -161,12 +161,10 @@ max_context_tokens = 1600
 
 [session]
 dir = "~/.moc/sessions"
+compress = false
 
 [session.retention]
 enabled = true
-archive_after_days = 30
-retain_newest_global = 20
-retain_newest_per_workspace = 10
 artifacts_days = 30
 logs_days = 14
 

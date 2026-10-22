@@ -151,7 +151,9 @@ pub(super) async fn manage(
             for manager in managers.into_values() {
                 manager.shutdown().await;
             }
+            let compress = resolved.session.compress;
             *inner.config.write() = Arc::new(resolved);
+            inner.sessions.set_compress(compress);
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();
             inner.openviking_clients.lock().await.clear();

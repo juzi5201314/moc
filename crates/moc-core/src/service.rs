@@ -367,6 +367,7 @@ impl Core {
         let resolved = Arc::new(resolved);
         std::fs::create_dir_all(&resolved.session.dir)?;
         let sessions = Arc::new(SessionTable::new(resolved.session.dir.clone(), true));
+        sessions.set_compress(resolved.session.compress);
         Ok(Arc::new(Self {
             inner: Arc::new(CoreInner {
                 config: RwLock::new(resolved),

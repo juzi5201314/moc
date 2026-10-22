@@ -712,15 +712,14 @@ fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     if code == KeyCode::Enter && !report.applied {
         panel.view = View::Confirm {
             text: format!(
-                "执行维护？预计归档 {} 个会话、删除 {} 个临时文件；正在使用的会话不会处理。",
-                report.archived.len(),
+                "执行维护？预计清理 {} 个临时文件；被会话引用的文件不会处理。",
                 report.removed.len()
             ),
             action: ConfirmAction::Run(ConfigAction::Maintenance { apply: true }),
         };
         return false;
     }
-    let total = report.archived.len() + report.removed.len();
+    let total = report.removed.len();
     match code {
         KeyCode::Down | KeyCode::Char('j') => {
             panel.offset = (panel.offset + 1).min(total);

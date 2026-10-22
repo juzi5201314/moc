@@ -1432,7 +1432,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                     *selected = (*selected + 3).min(rows.len().saturating_sub(1));
                 }
                 View::Maintenance(report) => {
-                    let total = report.archived.len() + report.removed.len();
+                    let total = report.removed.len();
                     panel.offset = (panel.offset + 3).min(total.saturating_sub(1));
                 }
                 _ => {}

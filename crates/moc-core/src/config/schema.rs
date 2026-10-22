@@ -712,6 +712,8 @@ impl Default for WorkspaceConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SessionDocument {
     pub dir: String,
+    /// 新建会话是否使用 zstd 压缩；默认为关闭。
+    pub compress: bool,
     pub retention: RetentionConfig,
 }
 
@@ -719,6 +721,7 @@ impl Default for SessionDocument {
     fn default() -> Self {
         Self {
             dir: "~/.moc/sessions".into(),
+            compress: false,
             retention: RetentionConfig::default(),
         }
     }
@@ -780,9 +783,6 @@ impl Default for JobConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct RetentionConfig {
     pub enabled: bool,
-    pub archive_after_days: u64,
-    pub retain_newest_global: usize,
-    pub retain_newest_per_workspace: usize,
     pub artifacts_days: u64,
     pub logs_days: u64,
 }
@@ -791,9 +791,6 @@ impl Default for RetentionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            archive_after_days: 30,
-            retain_newest_global: 20,
-            retain_newest_per_workspace: 10,
             artifacts_days: 30,
             logs_days: 14,
         }

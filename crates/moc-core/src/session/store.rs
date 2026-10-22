@@ -1,4 +1,7 @@
-//! JSONL transcript 的存储和原子历史重写。
+//! transcript 的存储和原子历史重写。
+//!
+//! 普通会话是逐行 JSONL；开启 zstd 压缩的新会话是 `.jsonl.zst`，由独立的完整帧拼接。
+//! 两种格式的读写都封装在这里，上层只接触 [`Entry`]。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -6,11 +9,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::error::CoreError;
 
 use super::entries::Entry;
+use super::log;
+
+/// 不超过该长度的记录直接在异步线程压缩：spawn_blocking 的调度开销比压缩本身还大。
+const INLINE_COMPRESS_LIMIT: usize = 64 * 1024;
 
 /// 一个会话的 transcript 和 sidecar 路径。
 #[derive(Debug, Clone)]
@@ -20,6 +27,13 @@ pub struct SessionPaths {
 }
 
 impl SessionPaths {
+    /// 会话日志是否使用 zstd 压缩；扩展名在会话创建时固定。
+    pub fn compressed(&self) -> bool {
+        self.transcript
+            .extension()
+            .is_some_and(|extension| extension == "zst")
+    }
+
     pub fn lock_file(&self, session_id: &str) -> PathBuf {
         self.transcript
             .parent()
@@ -50,6 +64,7 @@ impl SessionPaths {
 /// `session/list` 里。
 pub struct SessionFile {
     path: PathBuf,
+    format: log::Format,
     file: tokio::sync::Mutex<Option<File>>,
     revision: RwLock<crate::hashline::SnapshotId>,
 }
@@ -74,6 +89,15 @@ impl SessionFile {
                 path.display()
             )));
         }
+        let format = log::format(path);
+        let mut line = serde_json::to_vec(header).map_err(|error| {
+            CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
+        })?;
+        line.push(b'\n');
+        let payload = match format {
+            log::Format::Plain => line,
+            log::Format::Zstd => log::compress_frame(&line)?,
+        };
         let temp = path.with_extension(format!("jsonl.{}.tmp", crate::ids::entry_id()));
         let result = async {
             let mut file = OpenOptions::new()
@@ -81,11 +105,7 @@ impl SessionFile {
                 .create_new(true)
                 .open(&temp)
                 .await?;
-            let mut line = serde_json::to_vec(header).map_err(|error| {
-                CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
-            })?;
-            line.push(b'\n');
-            file.write_all(&line).await?;
+            file.write_all(&payload).await?;
             file.flush().await?;
             file.sync_data().await?;
             drop(file);
@@ -105,6 +125,7 @@ impl SessionFile {
         let revision = crate::hashline::SnapshotId::from_metadata(&file.metadata().await?);
         Ok(Self {
             path: path.to_owned(),
+            format,
             file: tokio::sync::Mutex::new(Some(file)),
             revision: RwLock::new(revision),
         })
@@ -121,10 +142,9 @@ impl SessionFile {
 
     /// 重新打开磁盘上的 transcript。
     ///
-    /// 外部维护可能已经把日志归档成 `.jsonl.gz`：先解压恢复可写日志再打开，否则重新
-    /// 打开的会话无法再追加记录。调用者要持有会话文件锁。
+    /// 外部进程可能已经追加过记录；重新打开后 revision 以磁盘为准。格式在会话创建时
+    /// 固定，这里不重新判定。调用者要持有会话文件锁。
     pub async fn reopen(&self) -> Result<(), CoreError> {
-        super::maintenance::restore(&self.path).await?;
         let mut current = self.file.lock().await;
         let reopened = OpenOptions::new()
             .read(true)
@@ -137,15 +157,23 @@ impl SessionFile {
         Ok(())
     }
 
-    /// 追加一条完整的 JSONL 记录并 flush；磁盘文件不存在时先用 header 重建。
+    /// 追加一条完整记录并 flush；磁盘文件不存在时先用 header 重建。
     ///
     /// 写入或刷写失败时把文件截回写入前的长度：调用方会重试同一个批次，留下半条记录
-    /// 会让下一次追加粘到残尾，产生无法解析的中间行。
+    /// 会让下一次追加粘到残尾，产生无法解析的中间行。压缩会话的每条记录是一个独立帧，
+    /// 帧边界就是回滚边界。
     pub async fn append(&self, entry: &Entry, header: Option<&Entry>) -> Result<(), CoreError> {
         let mut line = serde_json::to_vec(entry).map_err(|error| {
             CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
         })?;
         line.push(b'\n');
+        let payload = match self.format {
+            log::Format::Plain => line,
+            log::Format::Zstd if line.len() <= INLINE_COMPRESS_LIMIT => log::compress_frame(&line)?,
+            log::Format::Zstd => tokio::task::spawn_blocking(move || log::compress_frame(&line))
+                .await
+                .map_err(|error| CoreError::Session(error.to_string()))??,
+        };
         let mut file = self.file.lock().await;
         if file.is_none() {
             let parent = self
@@ -165,16 +193,20 @@ impl SessionFile {
                     CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
                 })?;
                 header_line.push(b'\n');
+                let header_payload = match self.format {
+                    log::Format::Plain => header_line,
+                    log::Format::Zstd => log::compress_frame(&header_line)?,
+                };
                 file.as_mut()
                     .expect("刚创建的句柄")
-                    .write_all(&header_line)
+                    .write_all(&header_payload)
                     .await?;
             }
         }
         let handle = file.as_mut().expect("延迟创建之后一定已有句柄");
         let before = handle.metadata().await?.len();
         if let Err(error) = async {
-            handle.write_all(&line).await?;
+            handle.write_all(&payload).await?;
             handle.flush().await?;
             Ok::<(), std::io::Error>(())
         }
@@ -189,10 +221,11 @@ impl SessionFile {
         Ok(())
     }
 
-    /// 截掉最后一个不完整行，返回是否发生截断。
+    /// 截掉最后一个不完整记录，返回是否发生截断。
     ///
     /// 只在调用方持有写租约时使用：崩溃可能留下半条记录，读取时忽略它并不代表文件可以
-    /// 继续追加，残留字节会让下一条记录粘成坏行。最后一个完整行之后的字节一律丢弃。
+    /// 继续追加，残留字节会让下一条记录粘成坏行。明文丢掉最后一个换行之后的字节，
+    /// 压缩会话丢掉不完整的最后一帧。
     pub async fn truncate_partial_tail(&self) -> Result<bool, CoreError> {
         const SCAN_CHUNK: u64 = 64 * 1024;
         let mut file = self.file.lock().await;
@@ -202,6 +235,17 @@ impl SessionFile {
         let length = handle.metadata().await?.len();
         if length == 0 {
             return Ok(false);
+        }
+        if self.format == log::Format::Zstd {
+            let path = self.path.clone();
+            let truncated = tokio::task::spawn_blocking(move || log::truncate_torn_tail(&path))
+                .await
+                .map_err(|error| CoreError::Session(error.to_string()))??;
+            if truncated {
+                *self.revision.write() =
+                    crate::hashline::SnapshotId::from_metadata(&handle.metadata().await?);
+            }
+            return Ok(truncated);
         }
         let mut reader = handle.try_clone().await?;
         let mut end = length;
@@ -231,7 +275,7 @@ impl SessionFile {
     }
 
     /// 原子替换整个 transcript；rename 前先刷写并 fsync 临时文件。
-    /// 磁盘文件不存在时同样适用：整份 entries 通过临时文件 rename 发布。
+    /// 磁盘文件不存在时同样适用：整份 entries 通过临时文件 rename 发布，格式保持不变。
     pub async fn rewrite(&self, entries: &[Entry]) -> Result<(), CoreError> {
         let mut current = self.file.lock().await;
         let parent = self
@@ -248,12 +292,22 @@ impl SessionFile {
                 .create_new(true)
                 .open(&temp)
                 .await?;
-            for entry in entries {
-                let line = serde_json::to_vec(entry).map_err(|error| {
-                    CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
-                })?;
-                replacement.write_all(&line).await?;
-                replacement.write_all(b"\n").await?;
+            match self.format {
+                log::Format::Plain => {
+                    for entry in entries {
+                        let line = serde_json::to_vec(entry).map_err(|error| {
+                            CoreError::Session(format!("序列化 transcript entry 失败: {error}"))
+                        })?;
+                        replacement.write_all(&line).await?;
+                        replacement.write_all(b"\n").await?;
+                    }
+                }
+                log::Format::Zstd => {
+                    // rewrite 是少见操作：在异步线程压成一份小缓冲，避免为 spawn_blocking
+                    // 再复制整份 entries；普通 append 已经按大小分流。
+                    let encoded = log::encode_zstd_entries(entries)?;
+                    replacement.write_all(&encoded).await?;
+                }
             }
             replacement.flush().await?;
             replacement.sync_all().await?;
@@ -300,9 +354,29 @@ impl SessionStore {
         &self.root
     }
 
-    /// 只计算 transcript 和 sidecar 的路径，不访问磁盘。
+    /// 只计算明文 transcript 和 sidecar 的路径，不访问磁盘。
     pub fn paths_for(&self, cwd: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
-        self.paths_in(&self.root.join(encode_cwd(cwd)), session_id, created_at_ms)
+        self.paths_in(
+            &self.root.join(encode_cwd(cwd)),
+            session_id,
+            created_at_ms,
+            false,
+        )
+    }
+
+    /// 只计算压缩 transcript 和 sidecar 的路径，不访问磁盘。
+    pub fn paths_for_compressed(
+        &self,
+        cwd: &Path,
+        session_id: &str,
+        created_at_ms: u64,
+    ) -> SessionPaths {
+        self.paths_in(
+            &self.root.join(encode_cwd(cwd)),
+            session_id,
+            created_at_ms,
+            true,
+        )
     }
 
     /// 子代理路径：transcript 和父会话的 transcript 同目录，父会话的 sidecar 目录
@@ -316,21 +390,29 @@ impl SessionStore {
         parent_session_id: &str,
         session_id: &str,
         created_at_ms: u64,
+        compressed: bool,
     ) -> Result<SessionPaths, CoreError> {
         let parent_sidecar = match self.find(parent_session_id).await? {
             Some(paths) => paths.sidecar,
             None => self.paths_for(cwd, parent_session_id, 0).sidecar,
         };
-        Ok(self.paths_in(&parent_sidecar, session_id, created_at_ms))
+        Ok(self.paths_in(&parent_sidecar, session_id, created_at_ms, compressed))
     }
 
     /// 会话日志和 sidecar 的位置；`directory` 是它们共同的父目录。
-    fn paths_in(&self, directory: &Path, session_id: &str, created_at_ms: u64) -> SessionPaths {
+    fn paths_in(
+        &self,
+        directory: &Path,
+        session_id: &str,
+        created_at_ms: u64,
+        compressed: bool,
+    ) -> SessionPaths {
         SessionPaths {
             transcript: directory.join(format!(
-                "{}_{}.jsonl",
+                "{}_{}.jsonl{}",
                 timestamp_name(created_at_ms),
-                session_id
+                session_id,
+                if compressed { ".zst" } else { "" }
             )),
             sidecar: directory.join(session_id),
         }
@@ -343,10 +425,15 @@ impl SessionStore {
         }
         let suffix = format!("_{session_id}");
         for path in self.journals().await? {
-            if path
-                .file_stem()
-                .is_some_and(|stem| stem.to_string_lossy().ends_with(&suffix))
-            {
+            let matches = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| {
+                    name.strip_suffix(".jsonl.zst")
+                        .or_else(|| name.strip_suffix(".jsonl"))
+                })
+                .is_some_and(|stem| stem.ends_with(&suffix));
+            if matches {
                 let paths = SessionPaths {
                     transcript: path.clone(),
                     sidecar: path.parent().unwrap_or(&self.root).join(session_id),
@@ -391,7 +478,6 @@ impl SessionStore {
 
     /// 打开 transcript 用于追加。
     pub async fn open(&self, paths: &SessionPaths) -> Result<SessionFile, CoreError> {
-        super::maintenance::restore(&paths.transcript).await?;
         let file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -402,48 +488,36 @@ impl SessionStore {
         ));
         Ok(SessionFile {
             path: paths.transcript.clone(),
+            format: log::format(&paths.transcript),
             file: tokio::sync::Mutex::new(Some(file)),
             revision,
         })
     }
 
-    /// 读取并反序列化完整的 JSONL 历史。
+    /// 读取并反序列化完整历史。
     ///
-    /// 最后一段不以换行结束时视为写者追加到一半，直接丢弃；中间行损坏仍然报错。
+    /// 明文最后一段不以换行结束时视为写者追加到一半，直接丢弃；压缩会话忽略不完整的
+    /// 最后一帧。中间记录或完整帧损坏仍然报错。
     pub async fn read_entries(&self, paths: &SessionPaths) -> Result<Vec<Entry>, CoreError> {
-        let mut reader = super::maintenance::reader(&paths.transcript).await?;
-        let mut entries = Vec::new();
-        let mut line_number = 0usize;
-        let mut buffer = Vec::new();
-        loop {
-            buffer.clear();
-            let read = reader.read_until(b'\n', &mut buffer).await?;
-            if read == 0 {
-                break;
-            }
-            line_number += 1;
-            if buffer.last() != Some(&b'\n') {
-                break;
-            }
-            buffer.pop();
-            if buffer.last() == Some(&b'\r') {
-                buffer.pop();
-            }
-            let line = std::str::from_utf8(&buffer).map_err(|error| {
-                CoreError::Session(format!(
-                    "解析 {} 第 {line_number} 行失败: {error}",
-                    paths.transcript.display()
-                ))
+        let path = paths.transcript.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut entries = Vec::new();
+            let mut line_number = 0usize;
+            log::for_each_line(&path, log::Policy::Fail, &mut |line| {
+                line_number += 1;
+                let entry = serde_json::from_slice(line).map_err(|error| {
+                    CoreError::Session(format!(
+                        "解析 {} 第 {line_number} 行失败: {error}",
+                        path.display()
+                    ))
+                })?;
+                entries.push(entry);
+                Ok(())
             })?;
-            let entry = serde_json::from_str(line).map_err(|error| {
-                CoreError::Session(format!(
-                    "解析 {} 第 {line_number} 行失败: {error}",
-                    paths.transcript.display()
-                ))
-            })?;
-            entries.push(entry);
-        }
-        Ok(entries)
+            Ok(entries)
+        })
+        .await
+        .map_err(|error| CoreError::Session(error.to_string()))?
     }
 
     /// 流式读取元信息，跳过消息内容的分配，并按更新时间从新到旧排序。
@@ -522,17 +596,15 @@ async fn listed_session(path: &Path) -> Option<moc_protocol::methods::SessionInf
 async fn read_session_info(
     path: &Path,
 ) -> Result<Option<(moc_protocol::methods::SessionInfo, bool)>, CoreError> {
-    let mut reader = super::maintenance::reader(path).await?;
-    let mut line = String::new();
-    if reader.read_line(&mut line).await? == 0 {
-        return Ok(None);
-    }
-    let header: Entry = serde_json::from_str(&line)
-        .map_err(|error| CoreError::Session(format!("{}：{error}", path.display())))?;
-    let Some(mut info) = header.session_info(None) else {
-        return Ok(None);
-    };
-    let mut has_entries = false;
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || read_session_info_sync(&path))
+        .await
+        .map_err(|error| CoreError::Session(error.to_string()))?
+}
+
+fn read_session_info_sync(
+    path: &Path,
+) -> Result<Option<(moc_protocol::methods::SessionInfo, bool)>, CoreError> {
     // 忽略大消息字段，不必构造正文、工具参数或思维链的对象树。
     #[derive(serde::Deserialize)]
     struct Metadata {
@@ -545,19 +617,35 @@ async fn read_session_info(
         #[serde(default)]
         permission: Option<moc_protocol::methods::SessionPermission>,
     }
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
-            break;
+    let mut info: Option<moc_protocol::methods::SessionInfo> = None;
+    let mut has_entries = false;
+    let mut header_seen = false;
+    let mut skip = false;
+    log::for_each_line(path, log::Policy::SkipFrame, &mut |line| {
+        if !header_seen {
+            header_seen = true;
+            let header: Entry = serde_json::from_slice(line)
+                .map_err(|error| CoreError::Session(format!("{}：{error}", path.display())))?;
+            match header.session_info(None) {
+                Some(value) => info = Some(value),
+                None => skip = true,
+            }
+            return Ok(());
+        }
+        if skip {
+            return Ok(());
         }
         has_entries = true;
-        let metadata: Metadata = match serde_json::from_str(&line) {
+        let metadata: Metadata = match serde_json::from_slice(line) {
             Ok(metadata) => metadata,
             Err(error) => {
                 // 一条记录损坏只影响它自己的元信息，其余记录照常参与列表。
                 tracing::warn!(path = %path.display(), %error, "跳过损坏的 transcript 记录");
-                continue;
+                return Ok(());
             }
+        };
+        let Some(info) = info.as_mut() else {
+            return Ok(());
         };
         info.updated_at_ms = metadata.at_ms;
         match metadata.kind.as_str() {
@@ -583,8 +671,9 @@ async fn read_session_info(
             }
             _ => {}
         }
-    }
-    Ok(Some((info, has_entries)))
+        Ok(())
+    })?;
+    Ok(info.map(|info| (info, has_entries)))
 }
 
 /// 把 cwd 编码成 omp 风格的可读目录名。
@@ -935,7 +1024,7 @@ mod tests {
         let parent_paths = store.paths_for(cwd, parent, 10);
         write_session(&parent_paths, parent).await;
         let child_paths = store
-            .paths_for_child(cwd, parent, child, 20)
+            .paths_for_child(cwd, parent, child, 20, false)
             .await
             .expect("子代理路径");
         assert_eq!(
@@ -950,7 +1039,7 @@ mod tests {
             .await
             .expect("jobs 目录");
         write_session(
-            &store.paths_in(&parent_paths.jobs(), "ses_fake00000001", 30),
+            &store.paths_in(&parent_paths.jobs(), "ses_fake00000001", 30, false),
             "ses_fake00000001",
         )
         .await;
@@ -971,7 +1060,7 @@ mod tests {
 
         // 父会话还没写盘时也按父目录归档：sidecar 目录名永远等于会话 ID。
         let pending = store
-            .paths_for_child(cwd, "ses_pending00001", "ses_pendingchild1", 40)
+            .paths_for_child(cwd, "ses_pending00001", "ses_pendingchild1", 40, false)
             .await
             .expect("未落盘父会话的落点");
         assert_eq!(
