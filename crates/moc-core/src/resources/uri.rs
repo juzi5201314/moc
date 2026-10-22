@@ -153,7 +153,6 @@ pub enum ResourceScheme {
     Skill,
     Local,
     History,
-    OpenViking,
 }
 
 impl ResourceScheme {
@@ -163,7 +162,6 @@ impl ResourceScheme {
             Self::Skill => "skill",
             Self::Local => "local",
             Self::History => "history",
-            Self::OpenViking => "viking",
         }
     }
 
@@ -173,7 +171,6 @@ impl ResourceScheme {
             "skill" => Some(Self::Skill),
             "local" => Some(Self::Local),
             "history" => Some(Self::History),
-            "viking" => Some(Self::OpenViking),
             _ => None,
         }
     }

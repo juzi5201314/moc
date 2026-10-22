@@ -65,8 +65,6 @@ pub struct ResourceContext<'ctx> {
     pub paths: &'ctx SessionPaths,
     pub skills: &'ctx SkillIndex,
     pub sessions: &'ctx SessionTable,
-    /// 仅用于 completion 展示 viking namespace；不把 provider 配置或 secret 暴露给候选。
-    pub openviking_configured: bool,
 }
 
 /// 命名空间列表里最多列出的条目数；超出部分只给计数。
@@ -218,7 +216,7 @@ impl ArtifactStore {
     }
 }
 
-/// 是否为 MOC 资源 URI（含 `ov://` 别名）。
+/// 是否为 MOC 资源 URI。
 ///
 /// 只有注册过的 scheme 才算资源 URI；含 `://` 的其它字符串是合法本地路径，
 /// 工具必须按文件系统路径处理，不能按 URI 报错。
@@ -226,20 +224,9 @@ pub fn is_resource_uri(input: &str) -> bool {
     resource_scheme(input).is_some()
 }
 
-/// 是否为带独立写入出口的资源 URI（OpenViking）。
-///
-/// 其余 MOC 内部 URI 由 [`ResourceRouter::write`] 直接拒绝写入；OpenViking
-/// 写入是远程写入，不属于会话工作区，需要一次性授权。
-pub fn is_writable_resource_uri(input: &str) -> bool {
-    matches!(resource_scheme(input), Some(ResourceScheme::OpenViking))
-}
-
 /// 读取输入前缀里的已注册 scheme；不是资源 URI 时返回 `None`。
 fn resource_scheme(input: &str) -> Option<ResourceScheme> {
     let (scheme, _) = input.split_once("://")?;
-    if scheme == "ov" {
-        return Some(ResourceScheme::OpenViking);
-    }
     ResourceScheme::parse(scheme)
 }
 
@@ -265,8 +252,8 @@ impl ResourceRouter {
 
     pub fn write(input: &str) -> Result<(), ResourceError> {
         match resource_scheme(input) {
-            // OpenViking 有独立的写入出口；其余 `://` 字符串按本地路径写入。
-            None | Some(ResourceScheme::OpenViking) => Ok(()),
+            // 未注册 scheme 的 `://` 字符串按本地路径写入；内部 URI 只读。
+            None => Ok(()),
             Some(_) => Err(ResourceError::new(
                 "E_URI_READ_ONLY",
                 "session resource URIs are read-only; plans are saved with write_plan",
@@ -321,7 +308,6 @@ impl ResourceRouter {
                 &crate::sandbox::SandboxPolicy::full(context.cwd.to_owned()),
             )
             .map(Some),
-            ResourceScheme::OpenViking => Ok(None),
         }
     }
 }
@@ -332,7 +318,6 @@ fn scheme_candidates(_context: &ResourceContext<'_>) -> Vec<ResourceCandidate> {
         namespace("history://", "current session transcript", "history"),
         namespace("local://", "current session plan files", "local"),
         namespace("skill://", "discovered agent skill", "skill"),
-        namespace("viking://", "remote OpenViking resource", "provider"),
     ]
 }
 
@@ -340,17 +325,11 @@ fn normalized_scheme_candidates(
     context: &ResourceContext<'_>,
     scheme: &str,
 ) -> Vec<ResourceCandidate> {
-    if !matches!(
-        scheme,
-        "artifact" | "history" | "local" | "skill" | "viking"
-    ) {
+    if !matches!(scheme, "artifact" | "history" | "local" | "skill") {
         return Vec::new();
     }
     if scheme == "local" {
         return local_candidates(context, "local://");
-    }
-    if scheme == "viking" && !context.openviking_configured {
-        return Vec::new();
     }
     vec![namespace(
         &format!("{scheme}://"),
@@ -812,7 +791,6 @@ mod tests {
             paths,
             skills,
             sessions,
-            openviking_configured: false,
         }
     }
 
@@ -917,11 +895,6 @@ mod tests {
         let context = context_of(&paths, root.path(), &skills, &sessions);
 
         let root_candidates = ResourceRouter::complete(&context, "//").expect("根候选");
-        assert!(
-            root_candidates
-                .iter()
-                .any(|candidate| candidate.uri == "viking://")
-        );
         assert!(
             !root_candidates
                 .iter()
@@ -1230,8 +1203,6 @@ mod tests {
             "skill://demo/SKILL.md",
             "local://plan_1.md",
             "history://transcript",
-            "viking://~/notes",
-            "ov://repo",
         ] {
             assert!(is_resource_uri(uri), "{uri}");
         }
@@ -1262,8 +1233,5 @@ mod tests {
             assert!(ResourceRouter::write(path).is_ok(), "{path}");
             assert!(!is_resource_uri(path), "{path}");
         }
-        // OpenViking 由独立分支处理，路由层不拦截。
-        assert!(ResourceRouter::write("viking://~/notes").is_ok());
-        assert!(ResourceRouter::write("ov://repo").is_ok());
     }
 }

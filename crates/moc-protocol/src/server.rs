@@ -35,12 +35,12 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet, ConfigManage,
-    Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite, Ping,
-    PingResult, PluginList, PluginRunCommand, PromptParams, ResourceComplete, SessionBash,
-    SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
-    SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
-    SessionPrompt, SessionRename, SessionRewind, SessionSetMode, SessionSetModel,
-    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
+    Initialize, Ping, PingResult, PluginList, PluginRunCommand, PromptParams, ResourceComplete,
+    SessionBash, SessionCancel, SessionCancelResult, SessionCompact, SessionContext,
+    SessionContextContent, SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew,
+    SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
+    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
+    SessionUnsteer, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -507,42 +507,6 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .plugin_run_command(self.context(client, cancel), params)
-                        .await?,
-                )
-            }
-            <OpenVikingList as Method>::NAME => {
-                let params = params_from_value::<OpenVikingList>(params)?;
-                value_from(
-                    self.server
-                        .service
-                        .openviking_list(self.context(client, cancel), params)
-                        .await?,
-                )
-            }
-            <OpenVikingRead as Method>::NAME => {
-                let params = params_from_value::<OpenVikingRead>(params)?;
-                value_from(
-                    self.server
-                        .service
-                        .openviking_read(self.context(client, cancel), params)
-                        .await?,
-                )
-            }
-            <OpenVikingWrite as Method>::NAME => {
-                let params = params_from_value::<OpenVikingWrite>(params)?;
-                value_from(
-                    self.server
-                        .service
-                        .openviking_write(self.context(client, cancel), params)
-                        .await?,
-                )
-            }
-            <OpenVikingDelete as Method>::NAME => {
-                let params = params_from_value::<OpenVikingDelete>(params)?;
-                value_from(
-                    self.server
-                        .service
-                        .openviking_delete(self.context(client, cancel), params)
                         .await?,
                 )
             }

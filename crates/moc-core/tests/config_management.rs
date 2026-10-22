@@ -6,7 +6,7 @@ use moc_protocol::{ConfigScope, FieldKind};
 use serde_json::json;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{header, method, path, query_param},
+    matchers::{header, method, path},
 };
 
 fn workspace() -> (tempfile::TempDir, CoreConfig) {
@@ -414,64 +414,6 @@ async fn anthropic_discovery_uses_auth_and_follows_opaque_ids() {
             .1,
         "a.1"
     );
-}
-
-#[tokio::test]
-async fn workspace_rename_preserves_identity_and_manual_cleanup_is_scoped() {
-    let (_root, boot) = workspace();
-    let server = MockServer::builder().start().await;
-    std::fs::write(
-        boot.home.join("config.toml"),
-        format!("[openviking]\nurl='{}'\n", server.uri()),
-    )
-    .unwrap();
-    let config = ResolvedConfig::load(&boot).unwrap();
-    let original = moc_core::workspace::registry::resolve(&config, &boot.cwd).unwrap();
-    let renamed = boot.cwd.with_file_name("renamed");
-    std::fs::rename(&boot.cwd, &renamed).unwrap();
-    let before = moc_core::workspace::registry::list(&boot.home).unwrap();
-    assert!(!before[0].exists);
-    moc_core::workspace::registry::rebind(
-        &boot.home,
-        &server.uri(),
-        &before[0].path,
-        renamed.to_str().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        moc_core::workspace::registry::resolve(&config, &renamed)
-            .unwrap()
-            .peer_id,
-        original.peer_id
-    );
-    let uri = format!("viking://~/peers/{}", original.peer_id);
-    Mock::given(method("DELETE"))
-        .and(path("/api/v1/fs"))
-        .and(query_param("uri", uri.clone()))
-        .and(query_param("recursive", "true"))
-        .and(header("x-openviking-actor-peer", original.peer_id.clone()))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"status":"ok","result":{"uri":uri}})),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
-    let current = moc_core::workspace::registry::list(&boot.home).unwrap();
-    moc_core::workspace::registry::delete(
-        &config,
-        &server.uri(),
-        &current[0].path,
-        &original.peer_id,
-    )
-    .await
-    .unwrap();
-    assert!(
-        moc_core::workspace::registry::list(&boot.home)
-            .unwrap()
-            .is_empty()
-    );
-    let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1, "读取及重绑不应修改远端知识");
 }
 
 #[test]

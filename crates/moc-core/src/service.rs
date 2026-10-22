@@ -10,9 +10,7 @@ use moc_protocol::methods::{
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
     AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
     ContextContentResult, ContextUsageResult, Empty, InitializeParams, InitializeResult, ModelInfo,
-    ModelInput, ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult,
-    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
-    OpenVikingWriteParams, OpenVikingWriteResult, PluginCommandInfo, PluginInfo, PluginListParams,
+    ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo, PluginListParams,
     PluginListResult, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
@@ -98,8 +96,6 @@ pub(crate) struct CoreInner {
     pub project_configs: RwLock<HashMap<PathBuf, Arc<ResolvedConfig>>>,
     /// 每个项目（cwd）一个 MCP 管理器，键与 `project_configs` 相同。
     pub mcp_managers: Mutex<HashMap<PathBuf, Arc<moc_mcp::McpManager>>>,
-    /// 按规范化的工作区路径缓存 OpenViking 客户端；未配置 URL 时存 `None`。
-    pub openviking_clients: Mutex<HashMap<PathBuf, Option<Arc<moc_openviking::OpenVikingClient>>>>,
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     /// 每个项目一个插件宿主，键与 `project_configs` 相同。
     pub plugin_hosts: Mutex<HashMap<PathBuf, Arc<moc_plugin::PluginHost>>>,
@@ -149,13 +145,6 @@ impl CoreInner {
         Arc::clone(&self.config.read())
     }
 
-    pub(crate) fn workspace_identity(
-        &self,
-        cwd: &Path,
-    ) -> Result<moc_openviking::WorkspaceIdentity, CoreError> {
-        crate::workspace::registry::resolve(self.project_config(cwd)?.as_ref(), cwd)
-    }
-
     pub(crate) async fn provider_permit(
         &self,
         model: &crate::ResolvedModel,
@@ -169,36 +158,6 @@ impl CoreInner {
             .await
             .ok_or(CoreError::Cancelled)
     }
-    pub(crate) async fn project_openviking(
-        &self,
-        cwd: &Path,
-    ) -> Result<Option<Arc<moc_openviking::OpenVikingClient>>, CoreError> {
-        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
-        if let Some(client) = self.openviking_clients.lock().await.get(&key).cloned() {
-            return Ok(client);
-        }
-        let config = self.project_config(&key)?.openviking.clone();
-        let client = moc_openviking::OpenVikingClient::new(config)
-            .map_err(|error| CoreError::Config(error.to_string()))?
-            .map(Arc::new);
-        self.openviking_clients
-            .lock()
-            .await
-            .insert(key, client.clone());
-        Ok(client)
-    }
-    pub(crate) fn openviking_failure_key(url: &str, peer: &str) -> String {
-        format!("{url}\n{peer}")
-    }
-
-    pub(crate) fn openviking_should_notice(&self, key: &str) -> bool {
-        self.remote_unavailable.write().insert(key.to_owned())
-    }
-
-    pub(crate) fn openviking_mark_success(&self, key: &str) {
-        self.remote_unavailable.write().remove(key);
-    }
-
     pub(crate) fn project_config(&self, cwd: &Path) -> Result<Arc<ResolvedConfig>, CoreError> {
         let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
         if let Some(config) = self.project_configs.read().get(&cwd).cloned() {
@@ -443,7 +402,6 @@ impl Core {
                 runtimes: Mutex::new(HashMap::new()),
                 project_configs: RwLock::new(HashMap::new()),
                 mcp_managers: Mutex::new(HashMap::new()),
-                openviking_clients: Mutex::new(HashMap::new()),
                 skill_indexes: RwLock::new(HashMap::new()),
                 plugin_hosts: Mutex::new(HashMap::new()),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
@@ -470,17 +428,6 @@ impl Core {
             if let Err(error) = result {
                 tracing::error!(%error, "提示任务异常退出");
             }
-        }
-        let sessions = match self.inner.sessions.list().await {
-            Ok(sessions) => sessions,
-            Err(error) => {
-                tracing::debug!(%error, "读取会话列表失败，跳过 OpenViking commit");
-                Vec::new()
-            }
-        };
-        for session in sessions {
-            self.commit_openviking_for(Path::new(&session.cwd), &session.id)
-                .await;
         }
         let managers: Vec<_> = self
             .inner
@@ -525,38 +472,6 @@ impl Core {
             config.tools.output.max_file_bytes,
         )
         .await?)
-    }
-    async fn openviking_client_for(
-        &self,
-        cwd: &Path,
-    ) -> Result<Option<Arc<moc_openviking::OpenVikingClient>>, RpcError> {
-        self.inner.project_openviking(cwd).await.map_err(to_rpc)
-    }
-
-    async fn commit_openviking_for(&self, cwd: &Path, session_id: &str) {
-        let Ok(Some(client)) = self.openviking_client_for(cwd).await else {
-            return;
-        };
-        let Ok(identity) = self.inner.workspace_identity(cwd) else {
-            return;
-        };
-        let _ = client
-            .commit_session(&openviking_session_id(session_id), &identity.peer_id)
-            .await;
-    }
-
-    async fn openviking_client(&self) -> Result<Arc<moc_openviking::OpenVikingClient>, RpcError> {
-        self.openviking_client_for(&self.inner.config().cwd)
-            .await?
-            .ok_or_else(|| {
-                RpcError::new(RpcErrorCode::NotSupported.code(), "未配置 OpenViking URL")
-            })
-    }
-
-    fn openviking_identity(&self) -> Result<moc_openviking::WorkspaceIdentity, RpcError> {
-        self.inner
-            .workspace_identity(&self.inner.config().cwd)
-            .map_err(to_rpc)
     }
     /// 把长操作挂在 Core 上运行，前端断开后也能完成进程回收和会话提交。
     async fn run_operation<T: Send + 'static>(
@@ -867,99 +782,6 @@ impl AgentService for Core {
         Ok(PluginRunCommandResult { text })
     }
 
-    async fn openviking_list(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingListParams,
-    ) -> Result<OpenVikingListResult, RpcError> {
-        let client = self.openviking_client().await?;
-        let identity = self.openviking_identity()?;
-        let uri = moc_openviking::OpenVikingUri::parse(&params.uri).map_err(openviking_rpc)?;
-        let entries = client
-            .list(
-                uri.as_str(),
-                Some(&identity.peer_id),
-                params.recursive,
-                params.limit,
-            )
-            .await
-            .map_err(openviking_rpc)?;
-        Ok(OpenVikingListResult {
-            uri: uri.as_str().to_owned(),
-            entries: entries
-                .into_iter()
-                .map(|entry| moc_protocol::methods::OpenVikingEntry {
-                    name: entry.name,
-                    uri: entry.uri,
-                    is_dir: entry.is_dir,
-                    abstract_text: entry.abstract_text,
-                })
-                .collect(),
-        })
-    }
-
-    async fn openviking_read(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingReadParams,
-    ) -> Result<OpenVikingReadResult, RpcError> {
-        let client = self.openviking_client().await?;
-        let identity = self.openviking_identity()?;
-        let uri = moc_openviking::OpenVikingUri::parse(&params.uri).map_err(openviking_rpc)?;
-        let document = client
-            .read(
-                uri.as_str(),
-                Some(&identity.peer_id),
-                params.offset,
-                params.limit,
-            )
-            .await
-            .map_err(openviking_rpc)?;
-        Ok(OpenVikingReadResult {
-            uri: document.uri,
-            content: document.content,
-        })
-    }
-
-    async fn openviking_write(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingWriteParams,
-    ) -> Result<OpenVikingWriteResult, RpcError> {
-        if params.mode != "replace" {
-            return Err(invalid_params("OpenViking 只支持 mode=replace"));
-        }
-        let client = self.openviking_client().await?;
-        let identity = self.openviking_identity()?;
-        let uri = moc_openviking::OpenVikingUri::parse(&params.uri).map_err(openviking_rpc)?;
-        let result = client
-            .write(uri.as_str(), &params.content, Some(&identity.peer_id))
-            .await
-            .map_err(openviking_rpc)?;
-        Ok(OpenVikingWriteResult {
-            uri: uri.as_str().to_owned(),
-            result,
-        })
-    }
-
-    async fn openviking_delete(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingDeleteParams,
-    ) -> Result<OpenVikingDeleteResult, RpcError> {
-        let client = self.openviking_client().await?;
-        let identity = self.openviking_identity()?;
-        let uri = moc_openviking::OpenVikingUri::parse(&params.uri).map_err(openviking_rpc)?;
-        let result = client
-            .delete(uri.as_str(), Some(&identity.peer_id), params.recursive)
-            .await
-            .map_err(openviking_rpc)?;
-        Ok(OpenVikingDeleteResult {
-            uri: uri.as_str().to_owned(),
-            result,
-        })
-    }
-
     async fn resource_complete(
         &self,
         _ctx: RequestContext,
@@ -972,7 +794,6 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
-        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
         let context = crate::resources::ResourceContext {
             session_id: &params.session_id,
@@ -980,7 +801,6 @@ impl AgentService for Core {
             paths: &record.paths,
             skills: &skills,
             sessions: &self.inner.sessions,
-            openviking_configured: !config.openviking.url.trim().is_empty(),
         };
         let candidates = crate::resources::ResourceRouter::complete(&context, &params.prefix)
             .map_err(|error| RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string()))?
@@ -1186,10 +1006,8 @@ impl AgentService for Core {
         // unload_locked 要求调用方持有提示锁：进行中的提示会因运行时状态被移除而 panic 或写入失败，
         // 而且这里会先杀掉提示正在用的后台任务。和其它修改类 RPC 一样，拿不到锁就返回 SESSION_BUSY。
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
         let runtime = self.inner.runtime(&params.session_id).await;
         runtime.jobs.kill_all().await;
-        self.commit_openviking_for(&cwd, &params.session_id).await;
         self.inner
             .sessions
             .unload_locked(&params.session_id, &record);
@@ -1476,7 +1294,6 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
-        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
         let result = compact::manual(
             &self.inner,
             &ctx,
@@ -1487,7 +1304,6 @@ impl AgentService for Core {
         )
         .await
         .map_err(to_rpc)?;
-        self.commit_openviking_for(&cwd, &params.session_id).await;
         Ok(result)
     }
 
@@ -1583,20 +1399,6 @@ impl AgentService for Core {
         .await
     }
 }
-fn openviking_rpc(error: moc_openviking::OpenVikingError) -> RpcError {
-    let code = match &error {
-        moc_openviking::OpenVikingError::Disabled => RpcErrorCode::NotSupported,
-        moc_openviking::OpenVikingError::InvalidUri(_) => RpcErrorCode::InvalidParams,
-        moc_openviking::OpenVikingError::HttpStatus { .. }
-        | moc_openviking::OpenVikingError::Server { .. } => RpcErrorCode::InternalError,
-        moc_openviking::OpenVikingError::InvalidJson(_)
-        | moc_openviking::OpenVikingError::Timeout
-        | moc_openviking::OpenVikingError::Transport(_)
-        | moc_openviking::OpenVikingError::PendingIo(_) => RpcErrorCode::InternalError,
-    };
-    RpcError::new(code.code(), error.to_string())
-}
-
 /// 写租约失败时把持有者投影一并返回，前端不用再发一次 `session/list` 才能提示。
 fn write_lease_error(
     core: &Core,
@@ -1639,18 +1441,6 @@ pub(crate) fn invalid_params(message: impl Into<String>) -> RpcError {
 
 pub(crate) fn protocol_to_rpc(error: impl std::fmt::Display) -> RpcError {
     RpcError::new(RpcErrorCode::InternalError.code(), error.to_string())
-}
-
-fn openviking_session_id(session_id: &str) -> String {
-    format!(
-        "moc-{}",
-        session_id.replace(
-            |character: char| !character.is_ascii_alphanumeric()
-                && character != '-'
-                && character != '_',
-            "-"
-        )
-    )
 }
 
 pub(crate) async fn snapshot_workspace(

@@ -66,8 +66,6 @@ pub enum AppEvent {
     },
     /// 剪贴板粘贴结果（ctrl+v）：图片优先，其次纯文本；`None` = 空或读取失败。
     ClipboardPaste(Option<ClipboardPayload>),
-    /// OpenViking 记忆目录列表。
-    Memories(Vec<moc_protocol::methods::OpenVikingEntry>),
     /// 本工作区的插件清单；同时刷新斜杠命令补全。
     Plugins(Vec<moc_protocol::methods::PluginInfo>),
     /// 插件斜杠命令的输出；`None` 表示执行失败，文本是给用户看的错误。
@@ -77,10 +75,6 @@ pub enum AppEvent {
         text: String,
         error: bool,
     },
-    /// OpenViking 正文读取完成。
-    MemoryRead(moc_protocol::methods::OpenVikingReadResult),
-    /// OpenViking 正文保存完成。
-    MemorySaved(String),
     /// 当前会话的模型调用用量。
     Usage {
         /// 发起刷新时取的请求序号，用于丢弃乱序或跨会话迟到的旧回执。
@@ -140,7 +134,7 @@ pub enum AppEvent {
     },
     /// 非模态异步操作的用户可见提示。
     Notice(String),
-    /// 选择器或记忆加载失败。
+    /// 选择器加载失败。
     PickerError(String),
     /// git 分支就绪（statusline 异步刷新）。
     GitBranch(String),

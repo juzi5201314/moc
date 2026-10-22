@@ -312,8 +312,6 @@ mod tests {
             "artifact://jobs/job.log",
             "local://plan_1.md",
             "history://transcript",
-            "viking://~/notes",
-            "ov://repo",
         ] {
             assert_eq!(
                 reject_resource_root(Some(uri)).unwrap_err().code,

@@ -11,11 +11,10 @@ use anyhow::Context as _;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use moc_core::Core;
 use moc_protocol::{
-    ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, OpenVikingList,
-    OpenVikingListParams, OpenVikingRead, OpenVikingReadParams, OpenVikingWrite,
-    OpenVikingWriteParams, PluginList, PluginListParams, PluginRunCommand, PluginRunCommandParams,
-    ResourceComplete, ResourceCompleteParams, Role, SessionCompact, SessionCompactParams,
-    SessionContext, SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
+    ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, PluginList,
+    PluginListParams, PluginRunCommand, PluginRunCommandParams, ResourceComplete,
+    ResourceCompleteParams, Role, SessionCompact, SessionCompactParams, SessionContext,
+    SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
     SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
     SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionRewind,
@@ -833,26 +832,6 @@ async fn event_loop(
                             reply: Some(reply),
                         });
                         app.focus = crate::app::Focus::Prompt;
-                    }
-                    Some(AppEvent::Memories(entries)) => {
-                        if let Some(Modal::Memories { entries: current, picker, .. }) = app.modal.as_mut() {
-                            *current = entries;
-                            picker.loading = false;
-                            picker.error = None;
-                            picker.selected = 0;
-                            picker.offset = 0;
-                        }
-                    }
-                    Some(AppEvent::MemoryRead(document)) => {
-                        if let Some(Modal::Memories { root_uri, entries, picker }) = app.modal.take() {
-                            let mut editor = crate::widgets::prompt::PromptState::default();
-                            editor.text = document.content;
-                            editor.cursor = editor.text.len();
-                            app.modal = Some(Modal::MemoryEditor { uri: document.uri, editor, dirty: false, root_uri, entries, picker });
-                        }
-                    }
-                    Some(AppEvent::MemorySaved(uri)) => {
-                        apply_memory_saved(app, connection, uri);
                     }
                     Some(AppEvent::Plugins(plugins)) => {
                         app.plugin_commands = plugins
@@ -2070,7 +2049,6 @@ fn handle_modal_key(
     let events = app.events.clone();
     let mut close = false;
     let mut focus_target: Option<String> = None;
-    let mut return_memory_list = false;
     let mut return_plan_review = false;
     // 模型角色字段选定的值：延迟到模态借用结束后写回配置。
     let mut config_pick: Option<(Vec<String>, String, String)> = None;
@@ -2577,157 +2555,6 @@ fn handle_modal_key(
             (KeyCode::Esc, _) => close = true,
             _ => {}
         },
-        Modal::Memories {
-            root_uri,
-            entries,
-            picker,
-        } => {
-            let query = picker.query.to_lowercase();
-            let filtered: Vec<_> = entries
-                .iter()
-                .filter(|entry| entry.name.to_lowercase().contains(&query))
-                .collect();
-            match (code, modifiers) {
-                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
-                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
-                (KeyCode::PageUp, _) => picker.move_selection(-8, filtered.len(), 8),
-                (KeyCode::PageDown, _) => picker.move_selection(8, filtered.len(), 8),
-                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                    picker.query.clear();
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
-                    while picker.query.ends_with(' ') {
-                        picker.query.pop();
-                    }
-                    while !picker.query.is_empty() && !picker.query.ends_with(' ') {
-                        picker.query.pop();
-                    }
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Backspace, _) => {
-                    picker.query.pop();
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
-                    if !ch.is_control() =>
-                {
-                    picker.query.push(ch);
-                    picker.selected = 0;
-                    picker.offset = 0;
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    let Some(entry) = filtered.get(picker.selected) else {
-                        return;
-                    };
-                    let uri = entry.uri.clone();
-                    let client = connection.client.clone();
-                    let events = events.clone();
-                    if entry.is_dir {
-                        *root_uri = uri.clone();
-                        picker.loading = true;
-                        picker.error = None;
-                        tokio::spawn(async move {
-                            match client
-                                .call::<OpenVikingList>(OpenVikingListParams {
-                                    uri,
-                                    recursive: false,
-                                    limit: 128,
-                                })
-                                .await
-                            {
-                                Ok(result) => {
-                                    let _ = events.send(AppEvent::Memories(result.entries));
-                                }
-                                Err(error) => {
-                                    let _ = events.send(AppEvent::PickerError(format!(
-                                        "读取 OpenViking 目录失败：{error}"
-                                    )));
-                                }
-                            }
-                        });
-                    } else {
-                        picker.loading = true;
-                        picker.error = None;
-                        tokio::spawn(async move {
-                            match client
-                                .call::<OpenVikingRead>(OpenVikingReadParams {
-                                    uri,
-                                    offset: 0,
-                                    limit: 32_000,
-                                })
-                                .await
-                            {
-                                Ok(result) => {
-                                    let _ = events.send(AppEvent::MemoryRead(result));
-                                }
-                                Err(error) => {
-                                    let _ = events.send(AppEvent::PickerError(format!(
-                                        "读取 OpenViking 正文失败：{error}"
-                                    )));
-                                }
-                            }
-                        });
-                    }
-                }
-                (KeyCode::Esc, _) => close = true,
-                _ => {}
-            }
-        }
-        Modal::MemoryEditor {
-            uri, editor, dirty, ..
-        } => match (code, modifiers) {
-            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                let uri = uri.clone();
-                let content = editor.text.clone();
-                let client = connection.client.clone();
-                let events = events.clone();
-                // `dirty` 由保存回执清除：写入失败时标题必须仍然带 `*`。
-                tokio::spawn(async move {
-                    match client
-                        .call::<OpenVikingWrite>(OpenVikingWriteParams {
-                            uri: uri.clone(),
-                            content,
-                            mode: "replace".into(),
-                        })
-                        .await
-                    {
-                        Ok(_) => {
-                            let _ = events.send(AppEvent::MemorySaved(uri));
-                        }
-                        Err(error) => {
-                            let _ = events
-                                .send(AppEvent::PickerError(format!("保存记忆失败：{error}")));
-                        }
-                    }
-                });
-            }
-            (KeyCode::Esc, _) => return_memory_list = true,
-            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) if !ch.is_control() => {
-                editor.insert_char(ch);
-                *dirty = true;
-            }
-            (KeyCode::Backspace, _) => {
-                editor.backspace();
-                *dirty = true;
-            }
-            (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT) => {
-                editor.insert_char('\n');
-                *dirty = true;
-            }
-            (KeyCode::Left, _) => editor.left(),
-            (KeyCode::Right, _) => editor.right(),
-            (KeyCode::Up, _) => {
-                editor.up();
-            }
-            (KeyCode::Down, _) => {
-                editor.down();
-            }
-            _ => {}
-        },
         Modal::Sessions {
             sessions,
             cwd,
@@ -3004,20 +2831,6 @@ fn handle_modal_key(
         {
             app.modal = Some(Modal::Plan { state });
         }
-    } else if return_memory_list {
-        if let Some(Modal::MemoryEditor {
-            root_uri,
-            entries,
-            picker,
-            ..
-        }) = app.modal.take()
-        {
-            app.modal = Some(Modal::Memories {
-                root_uri,
-                entries,
-                picker,
-            });
-        }
     } else if close {
         app.modal = None;
         if !plan_review_open {
@@ -3206,60 +3019,6 @@ pub(crate) fn apply_plan_execution_loaded(
             "计划已批准，但加载执行会话失败：{error}；可通过 /resume 恢复"
         )),
     }
-}
-
-/// 记忆保存回执：清掉该文档的 `*` 标记并回到列表。
-///
-/// `dirty` 只在回执到达时清（写入发起时清会让标题提前显示为已保存，失败时
-/// 用户看不到「还有未保存改动」）。
-fn apply_memory_saved(app: &mut App, connection: &EmbeddedConnection, uri: String) {
-    if let Some(Modal::MemoryEditor {
-        uri: open_uri,
-        dirty,
-        ..
-    }) = app.modal.as_mut()
-        && *open_uri == uri
-    {
-        *dirty = false;
-    }
-    let root = match app.modal.take() {
-        Some(Modal::MemoryEditor { root_uri, .. }) => root_uri,
-        other => {
-            app.modal = other;
-            String::new()
-        }
-    };
-    if root.is_empty() {
-        app.set_notice("记忆已保存");
-        return;
-    }
-    app.modal = Some(Modal::Memories {
-        root_uri: root.clone(),
-        entries: Vec::new(),
-        picker: crate::modal::PickerState {
-            loading: true,
-            ..Default::default()
-        },
-    });
-    let client = connection.client.clone();
-    let events = app.events.clone();
-    tokio::spawn(async move {
-        match client
-            .call::<OpenVikingList>(OpenVikingListParams {
-                uri: root,
-                recursive: false,
-                limit: 128,
-            })
-            .await
-        {
-            Ok(result) => {
-                let _ = events.send(AppEvent::Memories(result.entries));
-            }
-            Err(error) => {
-                let _ = events.send(AppEvent::PickerError(format!("刷新记忆列表失败：{error}")));
-            }
-        }
-    });
 }
 
 fn start_plan_execution(
@@ -3976,41 +3735,6 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                     }
                     Err(error) => {
                         let _ = events.send(AppEvent::Notice(format!("新建会话失败：{error}")));
-                    }
-                }
-            });
-        }
-        "/memories" => {
-            let root_uri = if rest.trim().is_empty() {
-                "viking://~/memories/".to_owned()
-            } else {
-                rest.trim().replace("ov://", "viking://")
-            };
-            app.modal = Some(Modal::Memories {
-                root_uri: root_uri.clone(),
-                entries: Vec::new(),
-                picker: crate::modal::PickerState {
-                    loading: true,
-                    ..Default::default()
-                },
-            });
-            let client = connection.client.clone();
-            let events = app.events.clone();
-            tokio::spawn(async move {
-                match client
-                    .call::<OpenVikingList>(OpenVikingListParams {
-                        uri: root_uri,
-                        recursive: false,
-                        limit: 128,
-                    })
-                    .await
-                {
-                    Ok(result) => {
-                        let _ = events.send(AppEvent::Memories(result.entries));
-                    }
-                    Err(error) => {
-                        let _ =
-                            events.send(AppEvent::PickerError(format!("读取记忆失败：{error}")));
                     }
                 }
             });
@@ -5892,7 +5616,7 @@ mod tests {
             KeyModifiers::NONE,
             KeyCode::Up
         ));
-        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(2));
+        assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(1));
 
         // 向下循环回到第一项
         assert!(handle_completion_key(
@@ -7416,52 +7140,6 @@ mod tests {
                 assert_eq!(picker.query, "x", "Ctrl+S 不得进入过滤查询")
             }
             _ => panic!("名册应保持打开"),
-        }
-
-        connection.shutdown().await;
-        core.shutdown().await;
-    }
-
-    /// 小8：记忆编辑器的 `*` 标记在保存回执到达时才清。
-    ///
-    /// 写入发起时就清会让标题提前显示为已保存；失败时用户再也看不到「还有未保存
-    /// 改动」，静默丢改动。
-    #[tokio::test]
-    async fn memory_editor_clears_dirty_on_save_receipt() {
-        let (core, connection, mut app) = setup_test_app().await;
-        let uri = "viking://memories/note.md".to_owned();
-        let mut editor = crate::widgets::prompt::PromptState::default();
-        editor.insert_str_raw("记忆正文");
-        app.modal = Some(Modal::MemoryEditor {
-            uri: uri.clone(),
-            editor,
-            dirty: true,
-            root_uri: "viking://memories".into(),
-            entries: Vec::new(),
-            picker: crate::modal::PickerState::default(),
-        });
-
-        // Ctrl+S 只发起写入：回执未到之前必须仍是「已修改」
-        handle_key(
-            &mut app,
-            &connection,
-            KeyModifiers::CONTROL,
-            KeyCode::Char('s'),
-        );
-        match app.modal.as_ref() {
-            Some(Modal::MemoryEditor { dirty, .. }) => {
-                assert!(*dirty, "写入回执前标题应保留 *");
-            }
-            _ => unreachable!("保存期间编辑器保持打开"),
-        }
-
-        // 回执到达：清标记并回到记忆列表
-        apply_memory_saved(&mut app, &connection, uri);
-        match app.modal.as_ref() {
-            Some(Modal::Memories { root_uri, .. }) => {
-                assert_eq!(root_uri, "viking://memories", "保存后回到所在目录");
-            }
-            _ => unreachable!("保存回执后应回到记忆列表"),
         }
 
         connection.shutdown().await;

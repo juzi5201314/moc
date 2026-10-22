@@ -53,7 +53,7 @@ pub async fn run(args: CliArgs, web: bool) -> anyhow::Result<()> {
     let core = Core::new(config).context("初始化 MOC core 失败")?;
     // SIGTERM / SIGHUP 不会走前端的正常退出路径：先把前端 future 收掉（TUI 的
     // TerminalGuard Drop 恢复终端、连接 Drop 触发收尾），再统一执行 core.shutdown()，
-    // 保证 raw mode、MCP 子进程与 OpenViking commit 都不因信号退出而丢失。
+    // 保证 raw mode 与 MCP 子进程都不因信号退出而丢失。
     let result = tokio::select! {
         result = run_frontend(Arc::clone(&core), args, web) => result,
         signal = termination_signal() => {

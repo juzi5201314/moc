@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-openviking", "crates/moc-plugin", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
+members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-plugin", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
 default-members = ["crates/moc-cli", "crates/moc-tui"]
 
 [workspace.dependencies]

@@ -12,7 +12,7 @@ use crate::{
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
-    MaintenanceReport, SettingsDocument, WorkspaceBinding,
+    MaintenanceReport, SettingsDocument,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -30,7 +30,6 @@ pub const TABS: &[&str] = &[
     "上下文",
     "会话",
     "MCP",
-    "OpenViking",
     "界面",
     "高级",
 ];
@@ -79,11 +78,9 @@ pub enum Job {
     Save,
     /// 获取供应商的模型候选。
     Models,
-    /// 工作区记忆清单。
-    Workspaces,
     /// 存储维护的预览或执行结果。
     Maintenance,
-    /// 改绑目录、删除工作区记忆等其他一次性写入。
+    /// 确认卡片批准的一次性写入。
     Update,
 }
 
@@ -202,10 +199,6 @@ pub enum View {
         checked: BTreeSet<String>,
         selected: usize,
     },
-    Workspaces {
-        rows: Vec<WorkspaceBinding>,
-        selected: usize,
-    },
     Maintenance(MaintenanceReport),
     Confirm {
         text: String,
@@ -218,7 +211,6 @@ pub enum EditTarget {
     Model(String),
     Mcp,
     ModelDefaults,
-    Rebind(WorkspaceBinding),
     Filter,
 }
 pub enum ConfirmAction {
@@ -230,7 +222,7 @@ pub enum Hit {
     Tab(usize),
     /// 字段树行。
     Row(usize),
-    /// 模型候选或工作区列表行。
+    /// 模型候选列表行。
     Check(usize),
     /// 工具栏按钮：等价于按下某个按键。
     Key(KeyCode, KeyModifiers),
@@ -518,9 +510,6 @@ impl SettingsPanel {
                 if let View::Models { rows: current, .. } = &mut self.view {
                     *current = rows;
                 }
-            }
-            Ok(ConfigReply::Workspaces(rows)) => {
-                self.view = View::Workspaces { rows, selected: 0 };
             }
             Ok(ConfigReply::Maintenance(report)) => self.view = View::Maintenance(report),
             Ok(ConfigReply::Updated(message)) => {
@@ -1446,9 +1435,6 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                 View::Models { rows, selected, .. } => {
                     *selected = (*selected + 3).min(rows.len().saturating_sub(1));
                 }
-                View::Workspaces { rows, selected } => {
-                    *selected = (*selected + 3).min(rows.len().saturating_sub(1));
-                }
                 View::Maintenance(report) => {
                     let total = report.removed.len();
                     panel.offset = (panel.offset + 3).min(total.saturating_sub(1));
@@ -1475,9 +1461,6 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                     panel.selected = panel.selected.saturating_sub(3);
                 }
                 View::Models { selected, .. } => {
-                    *selected = selected.saturating_sub(3);
-                }
-                View::Workspaces { selected, .. } => {
                     *selected = selected.saturating_sub(3);
                 }
                 View::Maintenance(_) => {
@@ -1524,10 +1507,8 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
             }
         }
         Hit::Check(index) => {
-            match &mut panel.view {
-                View::Models { selected, .. } => *selected = index,
-                View::Workspaces { selected, .. } => *selected = index,
-                _ => {}
+            if let View::Models { selected, .. } = &mut panel.view {
+                *selected = index;
             }
             if matches!(panel.view, View::Models { .. }) {
                 // 与 Space 同一条勾选路径：已添加的模型保持不可勾选，否则会攒出

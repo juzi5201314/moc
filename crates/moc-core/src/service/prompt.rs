@@ -272,26 +272,6 @@ async fn run_prompt_locked(
                 .map_err(to_rpc)?;
         }
     }
-    if project_config.openviking.capture
-        && let Some(client) = inner
-            .project_openviking(std::path::Path::new(&state_snapshot.session.cwd))
-            .await
-            .map_err(to_rpc)?
-        && let Ok(identity) =
-            inner.workspace_identity(std::path::Path::new(&state_snapshot.session.cwd))
-    {
-        let ov_session = openviking_session_id(&params.session_id);
-        let _ = client.create_session(&ov_session, &identity.peer_id).await;
-        let message = serde_json::json!({"role":"user","parts":[{"type":"text","text":truncate_memory(&user_message.text())}]});
-        if let Err(error) = client
-            .append_messages(&ov_session, &[message], &identity.peer_id)
-            .await
-        {
-            // 写记忆不阻塞提示：失败只记日志，不能因为远端不可用就让整轮对话丢掉。
-            tracing::warn!(session_id = %params.session_id, %error, "OpenViking 用户消息写入失败");
-        }
-    }
-
     if state_snapshot.session.title == "新会话" {
         let title = user_message
             .text()
@@ -460,7 +440,7 @@ async fn run_prompt_locked(
 
     let mut is_first_turn = true;
     'turns: loop {
-        // 召回结果和本地提醒只在首轮注入；同一提示内因 continue 进入的轮次不算首轮。
+        // 本地提醒只在首轮注入；同一提示内因 continue 进入的轮次不算首轮。
         let first_turn = std::mem::take(&mut is_first_turn);
         if cancel.is_cancelled() {
             final_reason = FinishReason::Cancelled;
@@ -539,84 +519,6 @@ async fn run_prompt_locked(
             reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>")));
         }
         if first_turn {
-            if project_config.openviking.recall
-                && !project_config.openviking.url.trim().is_empty()
-                && let Some(client) = inner
-                    .project_openviking(std::path::Path::new(&state_snapshot.session.cwd))
-                    .await
-                    .map_err(to_rpc)?
-                && let Ok(identity) =
-                    inner.workspace_identity(std::path::Path::new(&state_snapshot.session.cwd))
-            {
-                let key = CoreInner::openviking_failure_key(
-                    &project_config.openviking.url,
-                    &identity.peer_id,
-                );
-                let session_id = openviking_session_id(&params.session_id);
-                match client
-                    .search_context(
-                        &user_message.text(),
-                        Some(&session_id),
-                        Some(&identity.peer_id),
-                    )
-                    .await
-                {
-                    Ok(context) => {
-                        inner.openviking_mark_success(&key);
-                        if let Some(rendered) = render_openviking_context(
-                            &context,
-                            project_config.openviking.max_context_tokens,
-                        ) {
-                            reminder_messages.push(reminder_message(rendered));
-                        }
-                    }
-                    Err(error) => {
-                        if inner.openviking_should_notice(&key) {
-                            record
-                                .state
-                                .lock()
-                                .await
-                                .notices
-                                .push(format!("OpenViking recall unavailable: {error}"));
-                        }
-                    }
-                }
-            }
-            if project_config.openviking.skills
-                && let Some(client) = inner
-                    .project_openviking(std::path::Path::new(&state_snapshot.session.cwd))
-                    .await
-                    .map_err(to_rpc)?
-                && let Ok(identity) =
-                    inner.workspace_identity(std::path::Path::new(&state_snapshot.session.cwd))
-                && let Ok(mut catalog) = client.list_skills(Some(&identity.peer_id)).await
-            {
-                inner.openviking_mark_success(&CoreInner::openviking_failure_key(
-                    &project_config.openviking.url,
-                    &identity.peer_id,
-                ));
-                let entries = if catalog.get("skills").is_some() {
-                    catalog.get_mut("skills")
-                } else {
-                    Some(&mut catalog)
-                };
-                if let Some(entries) = entries.and_then(Value::as_array_mut) {
-                    let mut seen = std::collections::HashSet::new();
-                    entries.retain(|entry| {
-                        entry
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .is_some_and(|name| {
-                                skills.get(name).is_none() && seen.insert(name.to_owned())
-                            })
-                    });
-                }
-                let rendered = format!(
-                    "<openviking-skills>{}</openviking-skills>",
-                    catalog.get("skills").cloned().unwrap_or(catalog)
-                );
-                reminder_messages.push(reminder_message(rendered));
-            }
             let mut reminder_state = runtime.reminders.lock().await;
             if let Some(reminder) =
                 reminder_state.render(&crate::system_prompt::reminder::local_time())
@@ -1077,21 +979,6 @@ async fn run_prompt_locked(
         }
 
         let calls: Vec<_> = response.message.tool_calls().cloned().collect();
-        if project_config.openviking.capture
-            && let Some(client) = inner.project_openviking(&cwd).await.map_err(to_rpc)?
-            && let Ok(identity) = inner.workspace_identity(&cwd)
-        {
-            let ov_session = openviking_session_id(&params.session_id);
-            let tool_calls: Vec<_> = calls.iter().map(|call| serde_json::json!({"id": call.id, "name": call.name, "arguments": truncate_memory(&call.arguments)})).collect();
-            let message = serde_json::json!({"role":"assistant","parts":[{"type":"text","text":truncate_memory(&response.message.text())}],"tool_calls":tool_calls});
-            if let Err(error) = client
-                .append_messages(&ov_session, &[message], &identity.peer_id)
-                .await
-            {
-                // 写记忆不阻塞提示：失败只记日志，不能因为远端不可用就让整轮对话丢掉。
-                tracing::warn!(session_id = %params.session_id, %error, "OpenViking 助手消息写入失败");
-            }
-        }
         if calls.is_empty() || interrupted {
             if interrupted {
                 for call in &calls {
@@ -1163,11 +1050,6 @@ async fn run_prompt_locked(
             }
             break;
         }
-        let openviking = inner.project_openviking(&cwd).await.map_err(to_rpc)?;
-        let openviking_peer = inner
-            .workspace_identity(&cwd)
-            .ok()
-            .map(|identity| identity.peer_id);
         let tool_ctx = ToolCtx {
             session_id: params.session_id.clone(),
             prompt_id: prompt_id.clone(),
@@ -1188,8 +1070,6 @@ async fn run_prompt_locked(
             subagent,
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
-            openviking,
-            openviking_peer,
             mcp: Arc::clone(&mcp),
             skills: Arc::clone(&skills),
             plugins: Arc::clone(&plugins),
@@ -1242,13 +1122,6 @@ async fn run_prompt_locked(
         }
     }
 
-    if project_config.openviking.capture
-        && let Some(client) = inner.project_openviking(&cwd).await.map_err(to_rpc)?
-        && let Ok(identity) = inner.workspace_identity(&cwd)
-    {
-        let ov_session = openviking_session_id(&params.session_id);
-        let _ = client.commit_session(&ov_session, &identity.peer_id).await;
-    }
     check_workspace(
         &update,
         &runtime,
@@ -1269,86 +1142,6 @@ async fn run_prompt_locked(
         finish_reason: final_reason,
         usage,
     })
-}
-
-fn openviking_session_id(session_id: &str) -> String {
-    format!(
-        "moc-{}",
-        session_id.replace(
-            |character: char| !character.is_ascii_alphanumeric()
-                && character != '-'
-                && character != '_',
-            "-"
-        )
-    )
-}
-
-fn truncate_memory(value: &str) -> String {
-    value.chars().take(4096).collect()
-}
-
-fn render_openviking_context(value: &Value, max_tokens: u32) -> Option<String> {
-    let entries = value.get("entries")?.as_array()?;
-    let mut ordered: Vec<(usize, &Value)> = entries.iter().enumerate().collect();
-    ordered.sort_by(|(left_index, left), (right_index, right)| {
-        let rank = |entry: &Value| match entry.get("origin").and_then(Value::as_str) {
-            Some("actor_peer") => 0,
-            Some("self") => 1,
-            _ => 2,
-        };
-        rank(left)
-            .cmp(&rank(right))
-            .then_with(|| {
-                right
-                    .get("score")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0)
-                    .partial_cmp(&left.get("score").and_then(Value::as_f64).unwrap_or(0.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then(left_index.cmp(right_index))
-    });
-    let mut seen = std::collections::HashSet::new();
-    let mut rendered = String::from("<openviking-context>");
-    let budget = u64::from(max_tokens);
-    let mut used = compact::estimate_tokens(&rendered) + 8;
-    for (_, entry) in ordered {
-        let Some(uri) = entry.get("uri").and_then(Value::as_str) else {
-            continue;
-        };
-        if !seen.insert(uri) {
-            continue;
-        }
-        let content = entry
-            .get("content")
-            .or_else(|| entry.get("abstract"))
-            .or_else(|| entry.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let memory = format!(
-            "<memory uri=\"{}\">{}</memory>",
-            escape_xml(uri),
-            escape_xml(content)
-        );
-        let tokens = compact::estimate_tokens(&memory);
-        if used.saturating_add(tokens) > budget {
-            continue;
-        }
-        used += tokens;
-        rendered.push_str(&memory);
-    }
-    (rendered.len() > "<openviking-context>".len()).then(|| {
-        rendered.push_str("</openviking-context>");
-        rendered
-    })
-}
-
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 async fn emit_fatal(
@@ -1440,25 +1233,4 @@ async fn apply_skill_invocation(
         injected.push_str(&format!("\n\nUser instructions: {arguments}"));
     }
     Ok(Message::user_text(injected))
-}
-
-#[cfg(test)]
-mod openviking_tests {
-    use super::render_openviking_context;
-
-    #[test]
-    fn actor_context_precedes_global_and_deduplicates_uri() {
-        let value = serde_json::json!({"entries":[
-            {"uri":"viking://user/u/a","origin":"self","score":0.99,"content":"global"},
-            {"uri":"viking://resources/p/a","origin":"actor_peer","score":0.2,"content":"workspace"},
-            {"uri":"viking://resources/p/a","origin":"actor_peer","score":0.1,"content":"duplicate"}
-        ]});
-        let rendered = render_openviking_context(&value, 1600).expect("context");
-        assert!(
-            rendered.find("workspace").expect("workspace")
-                < rendered.find("global").expect("global")
-        );
-        assert!(!rendered.contains("duplicate"));
-        assert_eq!(rendered.matches("viking://resources/p/a").count(), 1);
-    }
 }

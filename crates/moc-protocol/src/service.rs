@@ -31,9 +31,7 @@ use crate::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentSpawnParams,
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
     CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult,
-    Empty, InitializeParams, InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult,
-    OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
-    OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
+    Empty, InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
     PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
     PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
@@ -141,30 +139,6 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: PluginRunCommandParams,
     ) -> impl Future<Output = Result<PluginRunCommandResult, RpcError>> + Send;
-
-    fn openviking_list(
-        &self,
-        ctx: RequestContext,
-        params: OpenVikingListParams,
-    ) -> impl Future<Output = Result<OpenVikingListResult, RpcError>> + Send;
-
-    fn openviking_read(
-        &self,
-        ctx: RequestContext,
-        params: OpenVikingReadParams,
-    ) -> impl Future<Output = Result<OpenVikingReadResult, RpcError>> + Send;
-
-    fn openviking_write(
-        &self,
-        ctx: RequestContext,
-        params: OpenVikingWriteParams,
-    ) -> impl Future<Output = Result<OpenVikingWriteResult, RpcError>> + Send;
-
-    fn openviking_delete(
-        &self,
-        ctx: RequestContext,
-        params: OpenVikingDeleteParams,
-    ) -> impl Future<Output = Result<OpenVikingDeleteResult, RpcError>> + Send;
 
     fn resource_complete(
         &self,

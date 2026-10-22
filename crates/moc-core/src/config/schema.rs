@@ -21,7 +21,6 @@ pub(super) struct ConfigDocument {
     pub system_prompt: SystemPromptConfig,
     pub context_files: ContextFilesConfig,
     pub workspace: WorkspaceConfig,
-    pub openviking: moc_openviking::OpenVikingConfig,
     pub session: SessionDocument,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,

@@ -141,8 +141,6 @@
 //! use moc_protocol::methods::{
 //!     CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult,
 //!     Empty, InitializeParams, InitializeResult,
-//!     OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
-//!     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
 //!     PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
 //!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams,
 //!     SessionContextContentParams, SessionContextParams,
@@ -291,18 +289,6 @@
 //!     }
 //!     async fn plugin_run_command(&self, _ctx: RequestContext, params: PluginRunCommandParams) -> Result<PluginRunCommandResult, RpcError> {
 //!         Ok(PluginRunCommandResult { text: params.name })
-//!     }
-//!     async fn openviking_list(&self, _ctx: RequestContext, params: OpenVikingListParams) -> Result<OpenVikingListResult, RpcError> {
-//!         Ok(OpenVikingListResult { uri: params.uri, entries: Vec::new() })
-//!     }
-//!     async fn openviking_read(&self, _ctx: RequestContext, params: OpenVikingReadParams) -> Result<OpenVikingReadResult, RpcError> {
-//!         Ok(OpenVikingReadResult { uri: params.uri, content: String::new() })
-//!     }
-//!     async fn openviking_write(&self, _ctx: RequestContext, params: OpenVikingWriteParams) -> Result<OpenVikingWriteResult, RpcError> {
-//!         Ok(OpenVikingWriteResult { uri: params.uri, result: serde_json::Value::Null })
-//!     }
-//!     async fn openviking_delete(&self, _ctx: RequestContext, params: OpenVikingDeleteParams) -> Result<OpenVikingDeleteResult, RpcError> {
-//!         Ok(OpenVikingDeleteResult { uri: params.uri, result: serde_json::Value::Null })
 //!     }
 //! }
 //! ```

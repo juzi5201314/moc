@@ -99,7 +99,6 @@ pub struct ResolvedConfig {
     pub system_prompt: SystemPromptConfig,
     pub context_files: ContextFilesConfig,
     pub workspace: WorkspaceConfig,
-    pub openviking: moc_openviking::OpenVikingConfig,
     pub session: SessionSettings,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
@@ -247,8 +246,6 @@ impl ResolvedConfig {
             system_prompt: document.system_prompt,
             context_files: document.context_files,
             workspace: document.workspace,
-            openviking: document.openviking,
-
             session: SessionSettings {
                 dir: session_dir,
                 compress: document.session.compress,

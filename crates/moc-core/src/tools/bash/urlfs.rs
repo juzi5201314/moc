@@ -19,7 +19,7 @@ use crate::tools::ToolError;
 
 mod windows;
 
-/// 在 urlfs 目录里有本地映射的 scheme（`viking://`、`ov://` 是远程资源，没有本地路径）。
+/// 在 urlfs 目录里有本地映射的 scheme。
 const FARM_SCHEMES: [&str; 4] = ["artifact", "local", "history", "skill"];
 
 /// 一个待改写的 URI 词及其在命令里的字节范围。
@@ -438,9 +438,9 @@ mod tests {
                 ShellKind::Bash,
                 &paths,
                 &skills,
-                "wc -l viking://resources/a.md ov://repo"
+                "wc -l unknown://resources/a.md other://repo"
             )
-            .expect("远程 scheme 不映射")
+            .expect("非 urlfs 映射的 scheme 不改写")
             .is_none()
         );
     }

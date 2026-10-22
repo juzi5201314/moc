@@ -259,17 +259,6 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
                     theme,
                 );
             }
-            if TABS[panel.tab] == "OpenViking" {
-                button(
-                    frame,
-                    &mut hits,
-                    &mut x,
-                    toolbar_y,
-                    area.right(),
-                    ("工作区 W", KeyCode::Char('w'), KeyModifiers::NONE),
-                    theme,
-                );
-            }
             if TABS[panel.tab] == "会话" {
                 button(
                     frame,
@@ -299,35 +288,6 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
                 toolbar_y,
                 area.right(),
                 ("全选/全消 A", KeyCode::Char('a'), KeyModifiers::NONE),
-                theme,
-            );
-            button(
-                frame,
-                &mut hits,
-                &mut x,
-                toolbar_y,
-                area.right(),
-                ("返回 Esc", KeyCode::Esc, KeyModifiers::NONE),
-                theme,
-            );
-        }
-        View::Workspaces { .. } => {
-            button(
-                frame,
-                &mut hits,
-                &mut x,
-                toolbar_y,
-                area.right(),
-                ("改绑 Enter", KeyCode::Enter, KeyModifiers::NONE),
-                theme,
-            );
-            button(
-                frame,
-                &mut hits,
-                &mut x,
-                toolbar_y,
-                area.right(),
-                ("删除记忆 Del", KeyCode::Delete, KeyModifiers::NONE),
                 theme,
             );
             button(
@@ -401,7 +361,6 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
     let (description, hint) = match &panel.view {
         View::Fields => draw_fields(frame, panel, theme, body, &mut hits),
         View::Models { .. } => draw_models(frame, panel, theme, body, &mut hits),
-        View::Workspaces { .. } => draw_workspaces(frame, panel, theme, body, &mut hits),
         View::Maintenance(report) => {
             let mut lines = vec![Line::from(if report.applied {
                 format!(
@@ -884,104 +843,6 @@ fn draw_models(
     (
         "勾选需要的模型后按 Enter 添加；也可以返回后手动填写模型 ID。".into(),
         "↑↓/jk 移动 · Space 勾选 · A 全选/全消 · Enter 添加 · Esc 返回".into(),
-    )
-}
-
-/// 工作区记忆列表。
-fn draw_workspaces(
-    frame: &mut Frame,
-    panel: &mut SettingsPanel,
-    theme: &Theme,
-    body: Rect,
-    hits: &mut Vec<(Rect, Hit)>,
-) -> (String, String) {
-    let View::Workspaces { rows, selected } = &panel.view else {
-        return (String::new(), String::new());
-    };
-    label(
-        frame,
-        Rect::new(body.x, body.y, body.width, 1),
-        "工作区记忆",
-        Style::new().fg(theme.accent_model),
-    );
-    let height = usize::from(body.height.saturating_sub(2));
-    if *selected < panel.offset {
-        panel.offset = *selected;
-    }
-    if *selected >= panel.offset.saturating_add(height) {
-        panel.offset = selected.saturating_sub(height.saturating_sub(1));
-    }
-    let has_scrollbar = rows.len() > height && height > 0;
-    let scrollbar_margin = if has_scrollbar { 1 } else { 0 };
-    let row_width = body.width.saturating_sub(scrollbar_margin);
-    for (index, row) in rows.iter().enumerate().skip(panel.offset).take(height) {
-        let area = Rect::new(
-            body.x,
-            body.y + 2 + cells(index - panel.offset),
-            row_width,
-            1,
-        );
-        label(
-            frame,
-            area,
-            format!(
-                "{}{}{}",
-                row.path,
-                if row.exists {
-                    ""
-                } else {
-                    " · 目录已失效"
-                },
-                if row.shared { " · 共享记忆" } else { "" }
-            ),
-            if index == *selected {
-                Style::new().bg(theme.bg_visual)
-            } else {
-                Style::new().fg(theme.gray)
-            },
-        );
-        hits.push((area, Hit::Check(index)));
-    }
-    if has_scrollbar {
-        let total = rows.len();
-        let thumb_height = (height * height / total).clamp(1, height);
-        let max_offset = total.saturating_sub(height);
-        let max_thumb_top = height.saturating_sub(thumb_height);
-        let thumb_top = if max_offset > 0 {
-            panel.offset * max_thumb_top / max_offset
-        } else {
-            0
-        };
-        let scroll_x = body.right().saturating_sub(1);
-        for i in 0..height {
-            let y = body.y + 2 + cells(i);
-            let in_thumb = i >= thumb_top && i < thumb_top + thumb_height;
-            let (ch, style) = if in_thumb {
-                ("█", Style::new().fg(theme.accent_model))
-            } else {
-                ("│", Style::new().fg(theme.gray_dim))
-            };
-            frame.render_widget(
-                Paragraph::new(ch).style(style),
-                Rect::new(scroll_x, y, 1, 1),
-            );
-            let clicked_row = (i * total / height).min(total.saturating_sub(1));
-            hits.push((Rect::new(scroll_x, y, 1, 1), Hit::Check(clicked_row)));
-        }
-    }
-    let description = rows.get(*selected).map_or_else(
-        || "还没有登记的工作区记忆；启用 OpenViking 后会按工作区登记。".into(),
-        |row| {
-            if row.shared {
-                format!("{}：与其他工作区共享记忆。", row.path)
-            } else {
-                format!("{}：独占的记忆。", row.path)
-            }
-        },
-    );
-    (
-        description,
-        "↑↓/jk 移动 · Enter 改绑目录 · Del 删除该工作区记忆 · Esc 返回".into(),
     )
 }
 

@@ -163,16 +163,6 @@ import_depth = 5
 watch = true
 max_scan_entries = 100000
 
-[openviking]
-url = ""
-api_key = ""
-timeout_secs = 15
-recall = true
-capture = true
-skills = true
-peer_scope = "actor"
-max_context_tokens = 1600
-
 [session]
 dir = "~/.moc/sessions"
 compress = false

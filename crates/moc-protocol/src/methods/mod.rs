@@ -31,7 +31,6 @@ pub mod config;
 pub mod diff;
 pub mod initialize;
 pub mod management;
-pub mod openviking;
 pub mod permission;
 pub mod plan;
 pub mod plugin;
@@ -65,13 +64,7 @@ pub use initialize::{
 pub use management::{
     CatalogModel, ChoiceOption, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope,
     FieldKind, MaintenanceReport, SessionSteer, SessionUnsteer, SettingsDocument, SteerParams,
-    SteerResult, UnsteerParams, UnsteerResult, WorkspaceBinding,
-};
-pub use openviking::{
-    OpenVikingDelete, OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingEntry,
-    OpenVikingList, OpenVikingListParams, OpenVikingListResult, OpenVikingRead,
-    OpenVikingReadParams, OpenVikingReadResult, OpenVikingWrite, OpenVikingWriteParams,
-    OpenVikingWriteResult,
+    SteerResult, UnsteerParams, UnsteerResult,
 };
 pub use permission::{
     PermissionOption, PermissionOptionKind, PermissionRequestParams, PermissionResult,
@@ -166,10 +159,6 @@ mod tests {
             (<SessionCancel as Method>::NAME, "session/cancel"),
             (<PluginList as Method>::NAME, "plugin/list"),
             (<PluginRunCommand as Method>::NAME, "plugin/run_command"),
-            (<OpenVikingList as Method>::NAME, "openviking/list"),
-            (<OpenVikingRead as Method>::NAME, "openviking/read"),
-            (<OpenVikingWrite as Method>::NAME, "openviking/write"),
-            (<OpenVikingDelete as Method>::NAME, "openviking/delete"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
             (<AgentSpawn as Method>::NAME, "agent/spawn"),
             (<AgentList as Method>::NAME, "agent/list"),

@@ -18,14 +18,12 @@ use std::time::Duration;
 use moc_protocol::methods::{
     AgentProfile, AskOption, AskParams, AskQuestion, AskResult, AssistantDelta, ClientInfo,
     ConfigGetParams, ConfigGetResult, ContextContentResult, Empty, InitializeParams,
-    InitializeResult, InputPart, ModelInfo, ModelInput, OpenVikingDeleteParams,
-    OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams,
-    OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams,
-    PermissionResult, PluginListParams, PluginListResult, PluginRunCommandParams,
-    PluginRunCommandResult, PromptParams, PromptResult, ServerCapabilities, ServerInfo,
-    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
-    SessionInfo, SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult,
-    SessionLockInfo, SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
+    InitializeResult, InputPart, ModelInfo, ModelInput, PermissionRequestParams, PermissionResult,
+    PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
+    PromptParams, PromptResult, ServerCapabilities, ServerInfo, SessionCompactParams,
+    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
+    SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
     SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
     SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry,
@@ -567,50 +565,6 @@ impl AgentService for ScriptedService {
     ) -> Result<PluginRunCommandResult, RpcError> {
         Ok(PluginRunCommandResult {
             text: format!("plugin command {}", params.name),
-        })
-    }
-
-    async fn openviking_list(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingListParams,
-    ) -> Result<OpenVikingListResult, RpcError> {
-        Ok(OpenVikingListResult {
-            uri: params.uri,
-            entries: Vec::new(),
-        })
-    }
-
-    async fn openviking_read(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingReadParams,
-    ) -> Result<OpenVikingReadResult, RpcError> {
-        Ok(OpenVikingReadResult {
-            uri: params.uri,
-            content: String::new(),
-        })
-    }
-
-    async fn openviking_write(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingWriteParams,
-    ) -> Result<OpenVikingWriteResult, RpcError> {
-        Ok(OpenVikingWriteResult {
-            uri: params.uri,
-            result: Value::Null,
-        })
-    }
-
-    async fn openviking_delete(
-        &self,
-        _ctx: RequestContext,
-        params: OpenVikingDeleteParams,
-    ) -> Result<OpenVikingDeleteResult, RpcError> {
-        Ok(OpenVikingDeleteResult {
-            uri: params.uri,
-            result: Value::Null,
         })
     }
 

@@ -45,7 +45,6 @@ async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
     assert!(uris.contains(&"history://"));
     assert!(uris.contains(&"local://"));
     assert!(uris.contains(&"skill://"));
-    assert!(uris.contains(&"viking://"));
     assert!(!uris.iter().any(|uri| uri.starts_with("proc://")));
     assert!(schemes.len() <= 20);
 

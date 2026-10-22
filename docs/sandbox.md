@@ -100,7 +100,7 @@ deny_write_paths = []          # 强制拒绝写入，优先于允许
 
 ## 明确不覆盖
 
-- MCP 服务、OpenViking、`web_fetch`、`web_search`、PTC worker，以及 core 自身的配置、
+- MCP 服务、`web_fetch`、`web_search`、PTC worker，以及 core 自身的配置、
   `context_files`、skill 索引在 core 进程运行，不受 OS 沙盒约束。
 - `workspace` 可读宿主 Unix socket（如 Docker/SSH agent）；`workspace-only` 不挂载
   宿主 `/run`（仅 `/run/systemd/resolve`）和 `/var`（仅 scratch `/var/tmp`），隔离更强。

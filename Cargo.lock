@@ -2203,7 +2203,6 @@ dependencies = [
  "memchr",
  "moc-llm",
  "moc-mcp",
- "moc-openviking",
  "moc-plugin",
  "moc-protocol",
  "moc-ptc-protocol",
@@ -2262,20 +2261,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "moc-openviking"
-version = "0.1.0"
-dependencies = [
- "http",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "wiremock",
 ]
 
 [[package]]

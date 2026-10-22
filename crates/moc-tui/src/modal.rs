@@ -809,21 +809,6 @@ pub enum Modal {
         level: LevelState,
         target: ModelTarget,
     },
-    /// OpenViking 工作区记忆目录。
-    Memories {
-        root_uri: String,
-        entries: Vec<moc_protocol::methods::OpenVikingEntry>,
-        picker: PickerState,
-    },
-    /// OpenViking 正文编辑器。
-    MemoryEditor {
-        uri: String,
-        editor: crate::widgets::prompt::PromptState,
-        dirty: bool,
-        root_uri: String,
-        entries: Vec<moc_protocol::methods::OpenVikingEntry>,
-        picker: PickerState,
-    },
     /// 消息回退选择器。
     Rewind { state: RewindState },
     /// 会话恢复（`session/list` + `session/load`）。
@@ -885,10 +870,6 @@ impl Modal {
                 .get(*question)
                 .map_or_else(|| "提问".into(), |question| question.question.clone()),
             Modal::Model { .. } => "选择模型".into(),
-            Modal::Memories { .. } => "OpenViking 记忆".into(),
-            Modal::MemoryEditor { uri, dirty, .. } => {
-                format!("{}{}", if *dirty { "* " } else { "" }, uri)
-            }
             Modal::Rewind { .. } => "消息回退".into(),
             Modal::Sessions { scope, .. } => match scope {
                 SessionScope::Folder => "恢复会话（当前目录）".into(),
@@ -917,18 +898,6 @@ impl Modal {
             Modal::Model {
                 picker, entries, ..
             } => filtered_entries(entries, &picker.query).len(),
-            Modal::Memories {
-                entries, picker, ..
-            } => entries
-                .iter()
-                .filter(|entry| {
-                    entry
-                        .name
-                        .to_lowercase()
-                        .contains(&picker.query.to_lowercase())
-                })
-                .count(),
-            Modal::MemoryEditor { .. } => 0,
             Modal::Rewind { .. } => 0,
             Modal::Sessions {
                 picker,
@@ -983,7 +952,6 @@ impl Modal {
                     .min(count - 1);
             }
             Modal::Ask { .. }
-            | Modal::MemoryEditor { .. }
             | Modal::Rewind { .. }
             | Modal::Help
             | Modal::Context { .. }
@@ -992,7 +960,6 @@ impl Modal {
                 *option = (*option as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
             Modal::Model { picker, .. }
-            | Modal::Memories { picker, .. }
             | Modal::Sessions { picker, .. }
             | Modal::Subagents { picker, .. } => {
                 picker.move_selection(delta, count, 8);
@@ -1002,9 +969,7 @@ impl Modal {
 
     pub fn picker_mut(&mut self) -> Option<&mut PickerState> {
         match self {
-            Modal::Model { picker, .. }
-            | Modal::Memories { picker, .. }
-            | Modal::Sessions { picker, .. } => Some(picker),
+            Modal::Model { picker, .. } | Modal::Sessions { picker, .. } => Some(picker),
             _ => None,
         }
     }
@@ -1428,18 +1393,19 @@ mod tests {
             } if error == "切换模型失败：断开"
         ));
 
-        let mut picker = Modal::Memories {
-            root_uri: "openviking://".into(),
-            entries: Vec::new(),
+        let mut sessions = Modal::Sessions {
+            sessions: Vec::new(),
+            cwd: "/tmp".into(),
+            scope: super::SessionScope::Folder,
             picker: PickerState {
                 loading: true,
                 ..Default::default()
             },
         };
-        assert!(picker.set_error("读取失败"));
+        assert!(sessions.set_error("读取失败"));
         assert!(matches!(
-            &picker,
-            Modal::Memories { picker: PickerState { loading: false, error: Some(error), .. }, .. }
+            &sessions,
+            Modal::Sessions { picker: PickerState { loading: false, error: Some(error), .. }, .. }
                 if error == "读取失败"
         ));
 

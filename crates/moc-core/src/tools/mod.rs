@@ -180,9 +180,6 @@ pub struct ToolCtx {
     pub cancel: CancellationToken,
     pub(crate) guard: Arc<crate::service::prompt::guard::PromptGuard>,
     pub jobs: Arc<job::JobManager>,
-    /// 当前工作区的 OpenViking 客户端，按需创建；未配置时为 `None`。
-    pub openviking: Option<Arc<moc_openviking::OpenVikingClient>>,
-    pub openviking_peer: Option<String>,
     /// 该项目的 MCP 管理器（没有配置时是空管理器）。
     pub mcp: Arc<moc_mcp::McpManager>,
     /// 该项目的 skill 索引。
@@ -232,7 +229,6 @@ impl ToolCtx {
             paths: &self.paths,
             skills: &self.skills,
             sessions: &self.sessions,
-            openviking_configured: !self.config.openviking.url.trim().is_empty(),
         }
     }
 
@@ -449,13 +445,6 @@ pub fn workspace_escape(
     value: impl AsRef<std::path::Path>,
 ) -> Option<PathBuf> {
     let supplied = value.as_ref();
-    // OpenViking 写入是远程写入，不属于会话工作区：按越界处理，在 workspace 权限下需要
-    // 一次性授权。只读的 MOC 内部 URI 由 ResourceRouter 直接拒绝写入。
-    if let Some(text) = supplied.to_str()
-        && crate::resources::is_writable_resource_uri(text)
-    {
-        return Some(supplied.to_owned());
-    }
     let root = std::fs::canonicalize(cwd).ok()?;
     let joined = if supplied.is_absolute() {
         supplied.to_owned()
@@ -615,15 +604,6 @@ mod tests {
             )
             .is_ok()
         );
-        // OpenViking 写入是远程写入：workspace 权限下按越界处理，需要一次性授权。
-        for uri in ["viking://~/notes/memory.md", "ov://repo/notes.md"] {
-            assert!(workspace_escape(&root, uri).is_some(), "{uri}");
-            assert!(
-                ensure_workspace_write(&root, SessionPermission::Workspace, uri).is_err(),
-                "{uri}"
-            );
-            assert!(ensure_workspace_write(&root, SessionPermission::Full, uri).is_ok());
-        }
         // 只读的 MOC 内部 URI 不算越界：写入会被 ResourceRouter 直接拒绝。
         assert!(workspace_escape(&root, "artifact://artifacts/out.txt").is_none());
         assert!(workspace_escape(&root, "plain://dir/file").is_none());

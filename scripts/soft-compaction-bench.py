@@ -1626,7 +1626,6 @@ def build_overlay(selector: str, keep_recent: int, max_output: int) -> str:
         "[context_files]\nenabled = false\n\n"
         "[skills]\nenabled = false\n\n"
         "[web_search]\nenabled = false\n\n"
-        "[openviking]\nrecall = false\ncapture = false\nskills = false\n\n"
         "[compaction]\n"
         "auto = false\n"
         "auto_continue = false\n"

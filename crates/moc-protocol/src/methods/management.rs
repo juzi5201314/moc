@@ -1,4 +1,4 @@
-//! 配置编辑、供应商模型发现、存储维护与工作区知识管理。
+//! 配置编辑、供应商模型发现与存储维护。
 
 use super::InputPart;
 use crate::method::{ClientRequest, Method};
@@ -30,20 +30,9 @@ pub enum ConfigAction {
         id: String,
         provider: Value,
     },
-    RebindWorkspace {
-        url: String,
-        path: String,
-        new_path: String,
-    },
-    DeleteWorkspace {
-        url: String,
-        path: String,
-        confirmed_peer: String,
-    },
     Maintenance {
         apply: bool,
     },
-    Workspaces,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,15 +104,6 @@ pub struct CatalogModel {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceBinding {
-    pub path: String,
-    pub peer_id: String,
-    pub url: String,
-    pub exists: bool,
-    pub shared: bool,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MaintenanceReport {
     pub removed: Vec<String>,
@@ -137,7 +117,6 @@ pub struct MaintenanceReport {
 pub enum ConfigReply {
     Settings(SettingsDocument),
     Models(Vec<CatalogModel>),
-    Workspaces(Vec<WorkspaceBinding>),
     Maintenance(MaintenanceReport),
     Updated(String),
 }

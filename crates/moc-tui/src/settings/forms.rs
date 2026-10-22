@@ -141,7 +141,6 @@ pub(super) fn key(
         View::Fields => fields_key(panel, app, connection, mods, code),
         View::Confirm { .. } => confirm_key(panel, app, connection, code),
         View::Models { .. } => models_key(panel, app, connection, code),
-        View::Workspaces { .. } => workspaces_key(panel, code),
         View::Maintenance(_) => maintenance_key(panel, code),
     }
 }
@@ -370,12 +369,6 @@ fn fields_key(
         KeyCode::Right | KeyCode::Char('l') => collapse(panel, true),
         KeyCode::Char('a') => panel.add(),
         KeyCode::Char('f') => panel.fetch(connection, &app.events),
-        KeyCode::Char('w') if TABS[panel.tab] == "OpenViking" => panel.request(
-            connection,
-            &app.events,
-            ConfigAction::Workspaces,
-            Job::Workspaces,
-        ),
         KeyCode::Char('d') if mods == KeyModifiers::CONTROL => panel.begin_named(
             EditTarget::ModelDefaults,
             "添加模型默认设置",
@@ -646,62 +639,6 @@ fn models_key(
     false
 }
 
-fn workspaces_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
-    let View::Workspaces { rows, mut selected } = std::mem::replace(&mut panel.view, View::Fields)
-    else {
-        return false;
-    };
-    if code == KeyCode::Esc {
-        return false;
-    }
-    let last = rows.len().saturating_sub(1);
-    match code {
-        KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-        KeyCode::Down | KeyCode::Char('j') => selected = (selected + 1).min(last),
-        KeyCode::PageUp => selected = selected.saturating_sub(10),
-        KeyCode::PageDown => selected = (selected + 10).min(last),
-        KeyCode::Home | KeyCode::Char('g') => selected = 0,
-        KeyCode::End | KeyCode::Char('G') => selected = last,
-        KeyCode::Enter => {
-            if let Some(binding) = rows.get(selected) {
-                panel.begin_named(
-                    EditTarget::Rebind(binding.clone()),
-                    "改绑工作区目录",
-                    "填写新的目录路径",
-                    &binding.path,
-                );
-                return false;
-            }
-        }
-        KeyCode::Delete => {
-            if let Some(binding) = rows.get(selected) {
-                panel.view = View::Confirm {
-                    text: if binding.shared {
-                        format!(
-                            "解除 {} 的记忆绑定？这个目录与其他工作区共享记忆，记忆本身会保留。",
-                            binding.path
-                        )
-                    } else {
-                        format!(
-                            "删除 {} 的专属记忆？共享记忆不会删除，此操作不可撤销。",
-                            binding.path
-                        )
-                    },
-                    action: ConfirmAction::Run(ConfigAction::DeleteWorkspace {
-                        url: binding.url.clone(),
-                        path: binding.path.clone(),
-                        confirmed_peer: binding.peer_id.clone(),
-                    }),
-                };
-                return false;
-            }
-        }
-        _ => {}
-    }
-    panel.view = View::Workspaces { rows, selected };
-    false
-}
-
 fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     let View::Maintenance(report) = std::mem::replace(&mut panel.view, View::Fields) else {
         return false;
@@ -865,16 +802,6 @@ fn apply_edit(
             panel.select_tab(0);
             panel.select_path(&path);
         }
-        EditTarget::Rebind(binding) => panel.request(
-            connection,
-            &app.events,
-            ConfigAction::RebindWorkspace {
-                url: binding.url.clone(),
-                path: binding.path.clone(),
-                new_path: text.trim().into(),
-            },
-            Job::Update,
-        ),
         EditTarget::Filter => {
             panel.filter = text.trim().into();
             panel.selected = 0;

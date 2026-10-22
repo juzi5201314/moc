@@ -171,12 +171,6 @@ fn rank(key: &str) -> usize {
         "output_bytes" => 10,
         "head_bytes" => 0,
         "tail_bytes" => 1,
-        // OpenViking
-        "recall" => 6,
-        "capture" => 7,
-        "skills" => 8,
-        "peer_scope" => 9,
-        "max_context_tokens" => 10,
         // 会话：压缩开关优先于存储目录与保留策略
         "compress" => 0,
         "dir" => 1,
@@ -266,7 +260,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             "context_files" | "system_prompt" | "sources" => "指令",
             "defaults" => "模型",
             "session" => "会话",
-            "openviking" => "OpenViking",
             "skills" => "技能",
             "mcp" => "MCP",
             _ => "高级",
@@ -285,7 +278,6 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             ("off", "不缓存"),
         ],
         "overflow" => &[("error", "直接报错"), ("wait", "等待空位")],
-        "peer_scope" => &[("actor", "仅当前工作区"), ("all", "全部工作区")],
         "max_output_tokens_field" => &[
             ("max_tokens", "max_tokens"),
             ("max_completion_tokens", "max_completion_tokens"),
@@ -465,9 +457,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "按上下文占用的比例触发，或按固定的内容长度触发。",
         ),
         "compaction.threshold.value" => ("压缩触发值", "按比例时填 1–100，按长度时填具体数值。"),
-        "openviking.url" => ("服务地址", "OpenViking 服务地址；留空则不连接。"),
-        "openviking.api_key" => ("API 密钥", "访问 OpenViking 的密钥；留空表示无需鉴权。"),
-        "openviking.timeout_secs" => ("请求超时（秒）", "单次请求等待 OpenViking 回复的最长时间。"),
         "web_search.enabled" => (
             "启用",
             "关闭后 web_search 工具不再向模型开放；不影响 web_fetch。",
@@ -689,12 +678,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "import_depth" => ("指令引用层数", "指令文件中 @文件 引用最多展开几层。"),
             "watch" => ("工作区变更检测", "检测工具之外的文件改动并报告。"),
             "max_scan_entries" => ("工作区扫描上限", "一次扫描最多检查多少个文件条目。"),
-            "url" => ("服务地址", "OpenViking 服务的完整地址。"),
-            "recall" => ("自动召回记忆", "每次提示时自动查找相关的历史记忆。"),
-            "capture" => ("自动记录经验", "把对话内容交给 OpenViking 提取记忆。"),
-            "skills" => ("远程技能", "从 OpenViking 获取技能；本地同名技能优先。"),
-            "peer_scope" => ("召回范围", "只召回当前工作区，或允许跨工作区。"),
-            "max_context_tokens" => ("记忆注入上限", "每次注入的记忆内容长度（token）。"),
+            "url" => ("服务地址", "MCP 服务的完整地址。"),
             "compress" => (
                 "压缩会话日志",
                 "新建会话以 zstd 压缩保存（.jsonl.zst）；已有会话保持原格式，读取时自动识别两种格式。",

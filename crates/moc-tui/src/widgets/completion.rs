@@ -70,10 +70,6 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "本条消息按问答模式处理（只读）",
     },
     SlashCommand {
-        name: "/memories",
-        description: "浏览工作区记忆",
-    },
-    SlashCommand {
         name: "/compact",
         description: "手动压缩上下文",
     },

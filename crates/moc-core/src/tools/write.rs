@@ -67,25 +67,6 @@ impl Tool for WriteTool {
             crate::tools::ensure_path_access(ctx, &args.path, crate::sandbox::Access::Write)?;
             ResourceRouter::write(&args.path)
                 .map_err(|error| ToolError::new(error.code, error.message))?;
-            if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
-                let Some(client) = &ctx.openviking else {
-                    return Err(ToolError::new(
-                        "E_OPENVIKING_DISABLED",
-                        "OpenViking URL is not configured",
-                    ));
-                };
-                let peer = ctx.openviking_peer.as_deref();
-                let uri = moc_openviking::OpenVikingUri::parse(&args.path)
-                    .map_err(|error| ToolError::new("E_OPENVIKING_URI", error.to_string()))?;
-                client
-                    .write(uri.as_str(), &args.content, peer)
-                    .await
-                    .map_err(|error| ToolError::new("E_OPENVIKING_WRITE", error.to_string()))?;
-                return Ok(ToolOutcome::success(format!(
-                    "Submitted OpenViking write for {}",
-                    uri.as_str()
-                )));
-            }
             let supplied = Path::new(&args.path);
             let absolute = if supplied.is_absolute() {
                 supplied.to_owned()
@@ -177,9 +158,6 @@ impl Tool for WriteTool {
 
 /// 授权预览：用与执行相同的旧内容和换行归一化算出覆盖后的 diff，不写盘。
 pub(crate) async fn preview_arguments(ctx: &ToolCtx, args: &WriteArgs) -> Option<ToolDiff> {
-    if args.path.starts_with("ov://") || args.path.starts_with("viking://") {
-        return None;
-    }
     let path = resolve_tool_path(&ctx.cwd, &args.path).ok()?;
     let max_file_bytes = ctx.config.tools.output.max_file_bytes;
     let (old, oversized) = read_previous(&path, max_file_bytes).await.ok()?;
