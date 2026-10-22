@@ -30,12 +30,37 @@ struct UriWord {
     remainder: String,
 }
 
+/// 改写结果保留本次命令是否需要历史镜像，不在授权前读取 transcript。
+#[derive(Debug)]
+pub(crate) struct PreparedCommand {
+    pub command: String,
+    pub history_view: bool,
+}
+
+pub(crate) fn refresh_history(
+    paths: &SessionPaths,
+    policy: &crate::sandbox::SandboxPolicy,
+) -> Result<(), ToolError> {
+    let mirror = crate::session::log::history_view_path(paths);
+    if policy.denies_read(&paths.transcript) || policy.denies_read(&mirror) {
+        // 不把 echo/ls 等不读取正文的命令整体拒绝；实际读取由内核镜像遮蔽阻止。
+        return Ok(());
+    }
+    if let Err(error) = crate::session::log::refresh_history_view(paths) {
+        #[cfg(unix)]
+        tracing::warn!(%error, "刷新压缩 transcript 的解码镜像失败");
+        #[cfg(not(unix))]
+        return Err(ToolError::new("E_URLFS", error.to_string()));
+    }
+    Ok(())
+}
+
 /// 把命令里没加引号的内部 URI 词换成当前 shell 可访问的路径；没有这类词时返回 `None`。
 pub(crate) fn prepare(
     paths: &SessionPaths,
     skills: &SkillIndex,
     command: &str,
-) -> Result<Option<String>, ToolError> {
+) -> Result<Option<PreparedCommand>, ToolError> {
     let Some(shell) = crate::shell::detect() else {
         return Ok(None);
     };
@@ -48,7 +73,7 @@ pub(crate) fn prepare_for(
     paths: &SessionPaths,
     skills: &SkillIndex,
     command: &str,
-) -> Result<Option<String>, ToolError> {
+) -> Result<Option<PreparedCommand>, ToolError> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (kind, paths, skills, command);
@@ -59,13 +84,24 @@ pub(crate) fn prepare_for(
         let Some(targets) = collect_targets(kind, command) else {
             return Ok(None);
         };
+        let history_view = paths.compressed()
+            && targets.iter().any(|target| {
+                let namespace = target.remainder.split('/').next().unwrap_or_default();
+                target.scheme == "history"
+                    && (namespace.is_empty()
+                        || namespace == "transcript"
+                        || namespace.contains(['*', '?', '[']))
+            });
         let rewrites = render_rewrites(kind, paths, skills, targets)?;
         // 从后往前替换：先改前面的词会让后面的字节偏移失效。
         let mut rewritten = command.to_owned();
         for (start, end, text) in rewrites.into_iter().rev() {
             rewritten.replace_range(start..end, &text);
         }
-        Ok(Some(rewritten))
+        Ok(Some(PreparedCommand {
+            command: rewritten,
+            history_view,
+        }))
     }
 }
 
@@ -162,10 +198,7 @@ fn ensure_farm(paths: &SessionPaths, skills: &SkillIndex) -> std::io::Result<Pat
     link(&farm.join("local"), Path::new("../plans"))?;
     link(&history.join("compaction"), Path::new("../../compaction"))?;
     if paths.compressed() {
-        // 压缩会话把解码后的明文镜像放在 sidecar/history 下，shell 读链接即可。
-        if let Err(error) = crate::session::log::refresh_history_view(paths) {
-            tracing::warn!(%error, "刷新压缩 transcript 的解码镜像失败");
-        }
+        // 解码必须留到授权后的执行阶段；这里只建立可供权限提示显示的链接。
         link(
             &history.join("transcript"),
             Path::new("../../history/transcript.jsonl"),
@@ -312,9 +345,6 @@ fn direct_target(
             }
             if remainder == "transcript" {
                 if paths.compressed() {
-                    if let Err(error) = crate::session::log::refresh_history_view(paths) {
-                        return Err(ToolError::new("E_URLFS", error.to_string()));
-                    }
                     return Ok(crate::session::log::history_view_path(paths));
                 }
                 return Ok(paths.transcript.clone());
@@ -371,6 +401,100 @@ mod tests {
     }
 
     #[test]
+    fn preparing_compressed_history_does_not_decode_before_authorization() {
+        let root = tempfile::tempdir().expect("临时目录");
+        let mut paths = paths(root.path());
+        paths.transcript = root.path().join("ses_1.jsonl.zst");
+        fs::write(
+            &paths.transcript,
+            crate::session::log::compress_frame(b"{\"secret\":1}\n").unwrap(),
+        )
+        .expect("压缩源");
+        let command = prepare_for(
+            ShellKind::Bash,
+            &paths,
+            &SkillIndex::empty(),
+            "cat history://transcript",
+        )
+        .expect("改写命令")
+        .expect("包含 URI");
+        assert!(command.command.contains("/history/transcript"));
+        assert!(command.history_view);
+        assert!(
+            !crate::session::log::history_view_path(&paths).exists(),
+            "授权之前不得解码源"
+        );
+    }
+
+    #[test]
+    fn denied_history_is_not_materialized_and_full_can_refresh_it() {
+        use crate::sandbox::{SandboxGrants, SandboxPolicy};
+        use moc_protocol::SessionPermission;
+
+        let root = tempfile::tempdir().expect("临时目录");
+        let mut paths = paths(root.path());
+        paths.transcript = root.path().join("ses_1.jsonl.zst");
+        fs::write(
+            &paths.transcript,
+            crate::session::log::compress_frame(b"{\"secret\":1}\n").unwrap(),
+        )
+        .unwrap();
+        let mut config = crate::config::ResolvedConfig::load(&crate::CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().to_owned(),
+            ..Default::default()
+        })
+        .unwrap()
+        .sandbox;
+        config.deny_read_paths = vec![paths.transcript.clone()];
+        let mut policy = SandboxPolicy::new(
+            SessionPermission::Workspace,
+            root.path().to_owned(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            None,
+        );
+        let mirror = crate::session::log::history_view_path(&paths);
+        policy.inherit_read_denials(&paths.transcript, &mirror);
+        refresh_history(&paths, &policy).expect("拒读时不解码");
+        assert!(!mirror.exists());
+        let mut full = policy.clone();
+        full.mode = SessionPermission::Full;
+        refresh_history(&paths, &full).expect("已授权 full 可解码");
+        let stamp = mirror.with_extension("stamp");
+        let before = fs::read(&stamp).unwrap();
+        fs::write(
+            &paths.transcript,
+            crate::session::log::compress_frame(b"{\"secret\":2}\n").unwrap(),
+        )
+        .unwrap();
+        refresh_history(&paths, &policy).expect("拒读时保留旧缓存但不刷新");
+        assert_eq!(fs::read_to_string(&mirror).unwrap(), "{\"secret\":1}\n");
+        assert_eq!(fs::read(&stamp).unwrap(), before);
+        assert!(policy.denies_read(&mirror));
+
+        for command in [
+            "cat artifact://jobs/x.log",
+            "cat history://compaction/INDEX.md",
+            "cat history://compaction/*.md",
+        ] {
+            let prepared = prepare_for(ShellKind::Bash, &paths, &SkillIndex::empty(), command)
+                .unwrap()
+                .unwrap();
+            assert!(!prepared.history_view, "无关资源不应解码：{command}");
+        }
+        for command in ["ls history://", "cat history://t*"] {
+            assert!(
+                prepare_for(ShellKind::Bash, &paths, &SkillIndex::empty(), command)
+                    .unwrap()
+                    .unwrap()
+                    .history_view
+            );
+        }
+    }
+
+    #[test]
     fn compressed_transcript_links_to_the_decoded_mirror() {
         let root = tempfile::tempdir().expect("临时目录");
         let mut paths = paths(root.path());
@@ -381,6 +505,11 @@ mod tests {
         )
         .expect("压缩 transcript");
         let farm = ensure_farm(&paths, &SkillIndex::empty()).expect("创建 urlfs 目录");
+        refresh_history(
+            &paths,
+            &crate::sandbox::SandboxPolicy::full(root.path().to_owned()),
+        )
+        .expect("授权后刷新镜像");
         assert_eq!(
             fs::read_link(farm.join("history/transcript")).expect("transcript 链接"),
             Path::new("../../history/transcript.jsonl")
@@ -445,7 +574,7 @@ mod tests {
         let farm = paths.sidecar.join("urlfs");
         let farm = farm.display();
         assert_eq!(
-            rewritten,
+            rewritten.command,
             format!(
                 "tail -3 '{farm}/artifact/jobs/job_1.log'; grep -n local: 'artifact://jobs' '{farm}/local/'"
             )
@@ -493,7 +622,7 @@ mod tests {
         let farm = paths.sidecar.join("urlfs");
         let farm = farm.display();
         assert_eq!(
-            rewritten,
+            rewritten.command,
             format!("ls '{farm}/artifact/jobs/'*.log '{farm}/local/a.md' '{farm}/local/b.md'")
         );
     }
@@ -529,7 +658,7 @@ mod tests {
             .expect("有 URI");
         let farm = paths.sidecar.join("urlfs");
         assert_eq!(
-            rewritten,
+            rewritten.command,
             format!("echo 中文 '{}/artifact/jobs/x.log'", farm.display())
         );
     }
@@ -727,7 +856,7 @@ mod windows_tests {
         .expect("修正")
         .expect("有 URI");
         let jobs = paths.jobs().to_string_lossy().replace('\\', "/");
-        assert_eq!(git, format!("cat '{jobs}/'*.log"));
+        assert_eq!(git.command, format!("cat '{jobs}/'*.log"));
 
         let powershell = prepare_for(
             ShellKind::PowerShell,
@@ -739,7 +868,7 @@ mod windows_tests {
         .expect("有 URI");
         let jobs_dir = paths.jobs();
         let jobs = jobs_dir.to_string_lossy();
-        assert_eq!(powershell, format!("Get-Content '{jobs}\\'*.log"));
+        assert_eq!(powershell.command, format!("Get-Content '{jobs}\\'*.log"));
 
         let cmd = prepare_for(
             ShellKind::Cmd,
@@ -751,7 +880,7 @@ mod windows_tests {
         .expect("有 URI");
         let jobs_dir = paths.jobs();
         let jobs = jobs_dir.to_string_lossy();
-        assert_eq!(cmd, format!("type \"{jobs}\"\\*.log"));
+        assert_eq!(cmd.command, format!("type \"{jobs}\"\\*.log"));
     }
 
     #[test]
@@ -772,7 +901,7 @@ mod windows_tests {
             .expect("修正")
             .expect("有 URI");
         let mut process = std::process::Command::new(&shell.program);
-        crate::shell::apply_arguments(&mut process, shell, &rewritten);
+        crate::shell::apply_arguments(&mut process, shell, &rewritten.command);
         let output = process
             .current_dir(root.path())
             .output()
@@ -809,15 +938,16 @@ mod windows_tests {
                 .expect("有 URI");
             let choice = crate::shell::ShellChoice { kind, program };
             let mut process = std::process::Command::new(&choice.program);
-            crate::shell::apply_arguments(&mut process, &choice, &rewritten);
+            crate::shell::apply_arguments(&mut process, &choice, &rewritten.command);
             let output = process
                 .current_dir(root.path())
                 .output()
                 .expect("启动 shell");
             assert!(
                 output.status.success(),
-                "{kind:?} 失败：{}\n命令：{rewritten}",
-                String::from_utf8_lossy(&output.stderr)
+                "{kind:?} 失败：{}\n命令：{}",
+                String::from_utf8_lossy(&output.stderr),
+                rewritten.command
             );
             assert!(
                 String::from_utf8_lossy(&output.stdout).contains("urlfs-ok"),

@@ -368,11 +368,19 @@ pub(crate) fn refresh_history_view(paths: &SessionPaths) -> Result<bool, CoreErr
         let _ = fs::remove_file(&stamp_path);
         return Ok(false);
     }
+    let permissions = fs::metadata(source)?.permissions();
+    #[cfg(unix)]
+    let permissions = {
+        use std::os::unix::fs::PermissionsExt;
+        // 镜像只承载数据，不继承执行位；创建时就不得比源文件更可见。
+        fs::Permissions::from_mode(permissions.mode() & 0o666)
+    };
     let before = snapshot_stamp(source)?;
     if mirror.exists()
         && let Ok(stamp) = fs::read_to_string(&stamp_path)
         && stamp == before
     {
+        fs::set_permissions(&mirror, permissions)?;
         return Ok(true);
     }
     if let Some(parent) = mirror.parent() {
@@ -380,10 +388,15 @@ pub(crate) fn refresh_history_view(paths: &SessionPaths) -> Result<bool, CoreErr
     }
     let temp = mirror.with_extension(format!("jsonl.{}.tmp", crate::ids::entry_id()));
     let result = (|| -> Result<(), CoreError> {
-        let out = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            options.mode(permissions.mode());
+        }
+        let out = options.open(&temp)?;
+        out.set_permissions(permissions)?;
         let mut out = BufWriter::with_capacity(READ_BUFFER, out);
         for_each_line(source, Policy::Fail, &mut |line| {
             out.write_all(line)?;
@@ -531,6 +544,35 @@ mod tests {
         fs::remove_file(&paths.transcript).expect("删除源");
         assert!(!refresh_history_view(&paths).unwrap());
         assert!(!mirror.exists(), "源删除后旧镜像也要移除");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn history_mirror_never_exposes_private_source_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("临时目录");
+        let paths = SessionPaths {
+            transcript: directory.path().join("1_ses_1.jsonl.zst"),
+            sidecar: directory.path().join("ses_1"),
+        };
+        fs::write(&paths.transcript, frame("{\"secret\":1}\n")).expect("写入源");
+        fs::set_permissions(&paths.transcript, fs::Permissions::from_mode(0o600))
+            .expect("限制源权限");
+        assert!(refresh_history_view(&paths).expect("生成镜像"));
+        let mirror = history_view_path(&paths);
+        assert_eq!(
+            fs::metadata(&mirror).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // 已发布镜像也不能通过缓存命中保留被外部放宽的权限。
+        fs::set_permissions(&mirror, fs::Permissions::from_mode(0o644)).expect("模拟旧版本镜像");
+        assert!(refresh_history_view(&paths).expect("访问缓存镜像"));
+        assert_eq!(
+            fs::metadata(&mirror).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

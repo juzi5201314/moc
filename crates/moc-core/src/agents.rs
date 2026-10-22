@@ -227,6 +227,7 @@ pub(crate) async fn spawn(
             parent.permission,
             title.as_deref(),
             SessionOrigin::spawned(session_id.clone()),
+            config.session.compress,
         )
         .await?;
     let record = inner.sessions.get(&session.id).await?;

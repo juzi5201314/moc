@@ -68,9 +68,12 @@ pub fn inspect(
     let home = super::expand_home_path(&boot.home);
     let path = path(&home, cwd, scope);
     let text = contents(&path)?;
-    let document = parse(&text)?;
-    let (_, inherited) = merged(boot, scope, cwd, toml::Value::Table(Default::default()))?;
+    let mut document = parse(&text)?;
+    super::remove_deprecated_retention_keys(&mut document);
+    let (_, mut inherited) = merged(boot, scope, cwd, toml::Value::Table(Default::default()))?;
+    super::remove_deprecated_retention_keys(&mut inherited);
     let (_, mut effective) = merged(boot, scope, cwd, document.clone())?;
+    super::remove_deprecated_retention_keys(&mut effective);
     super::apply_model_defaults(&mut effective)?;
     let mut effective =
         serde_json::to_value(effective).map_err(|error| CoreError::Config(error.to_string()))?;
@@ -110,9 +113,11 @@ pub fn save(
         ));
     }
     remove_nulls(&mut document);
+    let mut parsed =
+        toml::Value::try_from(&document).map_err(|error| CoreError::Config(error.to_string()))?;
+    super::remove_deprecated_retention_keys(&mut parsed);
     let text =
-        toml::to_string_pretty(&document).map_err(|error| CoreError::Config(error.to_string()))?;
-    let parsed = parse(&text)?;
+        toml::to_string_pretty(&parsed).map_err(|error| CoreError::Config(error.to_string()))?;
     let (base, effective) = merged(boot, scope, cwd, parsed)?;
     // 校验编辑目标本身，即便项目配置来源暂时关闭，也不保存无效 TOML。
     if scope == ConfigScope::Project {

@@ -384,6 +384,42 @@ mod tests {
     }
 
     #[test]
+    fn cached_history_mirror_is_masked_when_source_is_denied() {
+        let workspace = tempfile::tempdir().expect("工作区");
+        let source = workspace.path().join("private.jsonl.zst");
+        let mirror = workspace.path().join("ses_1/history/transcript.jsonl");
+        std::fs::write(&source, "源").unwrap();
+        std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+        std::fs::write(&mirror, "缓存").unwrap();
+        let mut config = probe_config(SessionPermission::Workspace);
+        config.deny_read_paths = vec![source.clone()];
+        let scratch = Arc::new(SandboxScratch::new().expect("scratch"));
+        let deny_file = scratch.deny_file.clone();
+        let mut policy = SandboxPolicy::new(
+            SessionPermission::Workspace,
+            workspace.path().to_owned(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            Some(scratch),
+        );
+        policy.inherit_read_denials(&source, &mirror);
+        let wrapped = wrap(
+            crate::shell::detect().expect("shell"),
+            "true",
+            workspace.path(),
+            &policy,
+        )
+        .expect("构造参数");
+        assert!(
+            wrapped.args.windows(3).any(|args| args[0] == "--ro-bind"
+                && args[1] == deny_file.as_os_str()
+                && args[2] == mirror.as_os_str()),
+            "不能通过已缓存的镜像绕过源拒读"
+        );
+    }
+
+    #[test]
     fn deny_write_path_inside_workspace_is_read_only() {
         let workspace = tempfile::tempdir().expect("workspace");
         let secret = workspace.path().join("secret");

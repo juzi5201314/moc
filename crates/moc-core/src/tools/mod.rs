@@ -204,6 +204,12 @@ impl ToolCtx {
             self.sandbox_scratch.clone(),
         );
         policy.overlay_home &= self.sandbox_support.home_overlay;
+        if self.paths.compressed() {
+            policy.inherit_read_denials(
+                &self.paths.transcript,
+                &crate::session::log::history_view_path(&self.paths),
+            );
+        }
         policy
     }
     pub fn resource_context(&self) -> crate::resources::ResourceContext<'_> {

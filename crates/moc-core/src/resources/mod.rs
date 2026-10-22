@@ -257,6 +257,9 @@ impl ResourceRouter {
             return Ok(None);
         };
         let context = ctx.resource_context();
+        if scheme == ResourceScheme::History {
+            return resolve_history(&context, input, &ctx.sandbox_policy()).map(Some);
+        }
         Self::resolve_context(&context, scheme, input)
     }
 
@@ -312,7 +315,12 @@ impl ResourceRouter {
                 .map(Some),
             ResourceScheme::Skill => resolve_skill(context, input).map(Some),
             ResourceScheme::Local => resolve_local(context, input).map(Some),
-            ResourceScheme::History => resolve_history(context, input).map(Some),
+            ResourceScheme::History => resolve_history(
+                context,
+                input,
+                &crate::sandbox::SandboxPolicy::full(context.cwd.to_owned()),
+            )
+            .map(Some),
             ResourceScheme::OpenViking => Ok(None),
         }
     }
@@ -581,6 +589,7 @@ fn resolve_local(
 fn resolve_history(
     context: &ResourceContext<'_>,
     input: &str,
+    policy: &crate::sandbox::SandboxPolicy,
 ) -> Result<ResolvedResource, ResourceError> {
     let compaction = context.paths.compaction();
     if input == "history://" {
@@ -591,6 +600,14 @@ fn resolve_history(
         InternalUri::parse(input).map_err(|error| ResourceError::new(error.code, error.message))?;
     let path = match (uri.authority(), uri.segments()) {
         ("transcript", []) => {
+            if policy.denies_read(&context.paths.transcript)
+                || policy.denies_read(&crate::session::log::history_view_path(context.paths))
+            {
+                return Err(ResourceError::new(
+                    "E_SANDBOX_DENIED",
+                    "transcript 源文件或镜像被禁止读取",
+                ));
+            }
             let exists = crate::session::log::refresh_history_view(context.paths)
                 .map_err(|error| ResourceError::new("E_HISTORY_READ", error.to_string()))?;
             if !exists {
@@ -1034,6 +1051,65 @@ mod tests {
             wrong.message.contains("history://transcript"),
             "{}",
             wrong.message
+        );
+    }
+
+    #[test]
+    fn history_source_denials_block_decoding_but_keep_namespaces() {
+        use crate::sandbox::{SandboxGrants, SandboxPolicy};
+        use moc_protocol::SessionPermission;
+
+        let root = tempfile::tempdir().expect("临时目录");
+        let mut paths = test_paths(root.path());
+        paths.transcript = root.path().join("transcript.jsonl.zst");
+        fs::write(
+            &paths.transcript,
+            crate::session::log::compress_frame(b"{\"a\":1}\n").unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(paths.compaction()).unwrap();
+        fs::write(paths.compaction().join("INDEX.md"), "索引").unwrap();
+        let sessions = SessionTable::new(root.path().join("sessions"), false);
+        let skills = SkillIndex::empty();
+        let context = context_of(&paths, root.path(), &skills, &sessions);
+        let mut config = crate::ResolvedConfig::load(&crate::CoreConfig {
+            home: root.path().join("home"),
+            cwd: root.path().to_owned(),
+            ..Default::default()
+        })
+        .unwrap()
+        .sandbox;
+        config.deny_read_paths = vec![paths.transcript.clone()];
+        let policy = SandboxPolicy::new(
+            SessionPermission::Workspace,
+            root.path().to_owned(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            None,
+        );
+        for uri in ["history://transcript", "history://%74ranscript"] {
+            assert_eq!(
+                resolve_history(&context, uri, &policy).unwrap_err().code,
+                "E_SANDBOX_DENIED"
+            );
+        }
+        assert!(!crate::session::log::history_view_path(&paths).exists());
+        assert!(resolve_history(&context, "history://", &policy).is_ok());
+        assert!(resolve_history(&context, "history://compaction/INDEX.md", &policy).is_ok());
+        assert_eq!(
+            resolve_history(&context, "history://transcript/invalid", &policy)
+                .unwrap_err()
+                .code,
+            "E_HISTORY_URI"
+        );
+        assert!(
+            resolve_history(
+                &context,
+                "history://transcript",
+                &SandboxPolicy::full(root.path().to_owned())
+            )
+            .is_ok()
         );
     }
 

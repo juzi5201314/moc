@@ -152,6 +152,7 @@ pub async fn approve_plan(
                 state.permission,
                 Some(&plan.title),
                 SessionOrigin::forked(params.session_id.clone()),
+                config.session.compress,
             )
             .await
             .map_err(to_rpc)?;

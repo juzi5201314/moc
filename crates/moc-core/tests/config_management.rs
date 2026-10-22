@@ -122,6 +122,168 @@ fn defaults_section_is_a_directive_and_may_be_empty() {
 }
 
 #[test]
+fn deprecated_retention_keys_load_from_global_cli_and_enabled_project() {
+    for layer in ["global", "cli", "project"] {
+        let (root, mut boot) = workspace();
+        let legacy = "[session.retention]\narchive_after_days=1\nretain_newest_global=2\n\
+                      retain_newest_per_workspace=3\nenabled=false\nartifacts_days=7\nlogs_days=9\n";
+        match layer {
+            "global" => std::fs::write(boot.home.join("config.toml"), legacy).unwrap(),
+            "cli" => {
+                let overlay = root.path().join("cli.toml");
+                std::fs::write(&overlay, legacy).unwrap();
+                boot.overlays.push(overlay);
+            }
+            "project" => {
+                std::fs::write(
+                    boot.home.join("config.toml"),
+                    "[sources]\nproject_config=true\n",
+                )
+                .unwrap();
+                std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
+                std::fs::write(boot.cwd.join(".moc/config.toml"), legacy).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let loaded = ResolvedConfig::load(&boot);
+        assert!(loaded.is_ok(), "{layer} 旧配置可加载：{:?}", loaded.err());
+        let resolved = loaded.unwrap().for_project(&boot.cwd).unwrap();
+        assert!(!resolved.session.retention.enabled, "{layer}");
+        assert_eq!(resolved.session.retention.artifacts_days, 7, "{layer}");
+        assert_eq!(resolved.session.retention.logs_days, 9, "{layer}");
+    }
+}
+
+#[test]
+fn deprecated_retention_keys_are_hidden_and_editor_save_migrates_them() {
+    for scope in [ConfigScope::Global, ConfigScope::Project] {
+        let (root, mut boot) = workspace();
+        let legacy = "[session.retention]\narchive_after_days=1\nretain_newest_global=2\n\
+                      retain_newest_per_workspace=3\nartifacts_days=7\nlogs_days=9\n";
+        std::fs::write(
+            boot.home.join("config.toml"),
+            format!("[sources]\nproject_config=true\n{legacy}"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
+        std::fs::write(boot.cwd.join(".moc/config.toml"), legacy).unwrap();
+        let overlay = root.path().join("cli.toml");
+        std::fs::write(&overlay, legacy).unwrap();
+        boot.overlays.push(overlay);
+        let view = editor::inspect(&boot, scope, &boot.cwd).unwrap();
+        for key in [
+            "archive_after_days",
+            "retain_newest_global",
+            "retain_newest_per_workspace",
+        ] {
+            assert!(
+                !view
+                    .fields
+                    .iter()
+                    .any(|field| field.path == ["session", "retention", key]),
+                "旧键 {key} 不应作为有效设置暴露"
+            );
+            for document in [
+                &view.document,
+                &view.effective,
+                &view.inherited,
+                &view.defaults,
+            ] {
+                assert!(document["session"]["retention"].get(key).is_none());
+            }
+        }
+        assert!(
+            view.fields
+                .iter()
+                .any(|field| field.path == ["session", "retention", "artifacts_days"])
+        );
+        let mut document = json!({"session":{"retention":{
+            "archive_after_days":1,"retain_newest_global":2,
+            "retain_newest_per_workspace":3,"artifacts_days":7,"logs_days":9
+        }}});
+        if scope == ConfigScope::Global {
+            document["sources"] = json!({"project_config":true});
+        }
+        editor::save(&boot, scope, &boot.cwd, document, &view.revision).unwrap();
+        let target = match scope {
+            ConfigScope::Global => boot.home.join("config.toml"),
+            ConfigScope::Project => boot.cwd.join(".moc/config.toml"),
+        };
+        let saved: toml::Value = toml::from_str(&std::fs::read_to_string(target).unwrap()).unwrap();
+        let retention = saved["session"]["retention"].as_table().unwrap();
+        assert_eq!(retention.len(), 2, "只保存仍有效的显式覆盖项");
+        assert_eq!(retention["artifacts_days"].as_integer(), Some(7));
+        assert_eq!(retention["logs_days"].as_integer(), Some(9));
+        assert!(
+            ResolvedConfig::load(&boot)
+                .unwrap()
+                .for_project(&boot.cwd)
+                .is_ok()
+        );
+    }
+}
+
+#[test]
+fn retention_migration_still_rejects_unknown_keys_when_loading_and_saving() {
+    let legacy = "[session.retention]\narchive_after_days=1\nretain_newest_global=2\n\
+                  retain_newest_per_workspace=3\nunknown_retention_key=4\n";
+    for layer in ["global", "cli", "project"] {
+        let (root, mut boot) = workspace();
+        match layer {
+            "global" => std::fs::write(boot.home.join("config.toml"), legacy).unwrap(),
+            "cli" => {
+                let overlay = root.path().join("cli.toml");
+                std::fs::write(&overlay, legacy).unwrap();
+                boot.overlays.push(overlay);
+            }
+            "project" => {
+                std::fs::write(
+                    boot.home.join("config.toml"),
+                    "[sources]\nproject_config=true\n",
+                )
+                .unwrap();
+                std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
+                std::fs::write(boot.cwd.join(".moc/config.toml"), legacy).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let loaded = ResolvedConfig::load(&boot).and_then(|config| config.for_project(&boot.cwd));
+        let Err(error) = loaded else {
+            panic!("{layer} 未知配置键必须拒绝");
+        };
+        assert!(
+            error.to_string().contains("unknown_retention_key"),
+            "{error}"
+        );
+    }
+    for scope in [ConfigScope::Global, ConfigScope::Project] {
+        let (_root, boot) = workspace();
+        let view = editor::inspect(&boot, scope, &boot.cwd).unwrap();
+        let Err(error) = editor::save(
+            &boot,
+            scope,
+            &boot.cwd,
+            json!({"session":{"retention":{
+                "archive_after_days":1,"retain_newest_global":2,
+                "retain_newest_per_workspace":3,"unknown_retention_key":4
+            }}}),
+            &view.revision,
+        ) else {
+            panic!("保存未知配置键必须拒绝，即便项目配置尚未启用");
+        };
+        assert!(
+            error.to_string().contains("unknown_retention_key"),
+            "{error}"
+        );
+        let target = match scope {
+            ConfigScope::Global => boot.home.join("config.toml"),
+            ConfigScope::Project => boot.cwd.join(".moc/config.toml"),
+        };
+        assert!(!target.exists(), "校验失败不得写入配置");
+    }
+}
+
+#[test]
 fn project_config_sources_stays_opt_in() {
     let (_root, boot) = workspace();
     std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();

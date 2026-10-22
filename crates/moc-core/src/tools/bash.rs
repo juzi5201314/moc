@@ -307,7 +307,16 @@ pub(crate) async fn run_manual(
     if cancel.is_cancelled() {
         return Err(ToolError::new("E_CANCELLED", "命令已取消"));
     }
-    let command = urlfs::prepare(paths, skills, &command)?.unwrap_or(command);
+    let policy = crate::sandbox::SandboxPolicy::full(cwd.clone());
+    let command = match urlfs::prepare(paths, skills, &command)? {
+        Some(prepared) => {
+            if prepared.history_view {
+                urlfs::refresh_history(paths, &policy)?;
+            }
+            prepared.command
+        }
+        None => command,
+    };
     let job_id = next_job_id(paths, state).await?;
     let output_path = paths.jobs().join(format!("{job_id}.log"));
     let timeout = Duration::from_secs(config.monitored_timeout_secs.min(config.max_timeout_secs));
@@ -330,14 +339,7 @@ pub(crate) async fn run_manual(
         sandbox_permissions: None,
         justification: None,
     };
-    let mut process = Process::spawn(
-        args,
-        cwd.clone(),
-        Some(timeout),
-        log,
-        crate::sandbox::SandboxPolicy::full(cwd),
-    )
-    .await?;
+    let mut process = Process::spawn(args, cwd.clone(), Some(timeout), log, policy).await?;
     tokio::select! {
         biased;
         result = &mut process.completion => Ok(exit_outcome(

@@ -278,6 +278,19 @@ impl SandboxPolicy {
         })
     }
 
+    /// 显式拒读不因派生资源换了物理路径而失效；full 授权仍按原策略放行。
+    pub(crate) fn denies_read(&self, path: &Path) -> bool {
+        self.mode != SessionPermission::Full
+            && resolve_access_path(path)
+                .is_some_and(|path| self.deny_read.iter().any(|root| is_within(&path, root)))
+    }
+
+    pub(crate) fn inherit_read_denials(&mut self, source: &Path, derived: &Path) {
+        if self.denies_read(source) && !self.deny_read.iter().any(|path| path == derived) {
+            self.deny_read.push(derived.to_owned());
+        }
+    }
+
     /// 判定路径访问；`path` 应是已解析或待解析的真实路径。
     pub(crate) fn check(&self, path: &Path, access: Access) -> Decision {
         if self.mode == SessionPermission::Full {
@@ -553,6 +566,46 @@ mod tests {
             policy.check(Path::new("/work/.env"), Access::Write),
             Decision::Deny
         );
+    }
+
+    #[test]
+    fn history_mirror_inherits_source_denials_even_when_already_cached() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let source = directory.path().join("private.jsonl.zst");
+        let mirror = directory.path().join("sidecar/history/transcript.jsonl");
+        std::fs::write(&source, "压缩源").unwrap();
+        std::fs::create_dir_all(mirror.parent().unwrap()).unwrap();
+        std::fs::write(&mirror, "旧缓存").unwrap();
+        let mut config = config();
+        config.deny_read_paths = vec![source.clone()];
+        let mut policy = SandboxPolicy::new(
+            SessionPermission::Workspace,
+            directory.path().to_owned(),
+            &config,
+            &SandboxGrants::default(),
+            &SandboxGrants::default(),
+            None,
+        );
+        policy.inherit_read_denials(&source, &mirror);
+        assert_eq!(policy.check(&mirror, Access::Read), Decision::Deny);
+        assert!(
+            policy.deny_read.contains(&mirror),
+            "内核沙盒也必须遮蔽已存在的镜像"
+        );
+        policy.mode = SessionPermission::Full;
+        assert_eq!(
+            policy.check(&mirror, Access::Read),
+            Decision::Allow,
+            "已授权的 full 仍可读取"
+        );
+        policy.mode = SessionPermission::Workspace;
+        policy.deny_read = vec![directory.path().to_owned()];
+        policy.inherit_read_denials(&source, &mirror);
+        assert!(policy.denies_read(&mirror), "父目录拒读也要覆盖镜像");
+        std::fs::remove_file(&mirror).unwrap();
+        policy.deny_read = vec![source.clone()];
+        policy.inherit_read_denials(&source, &mirror);
+        assert!(policy.denies_read(&mirror), "镜像未生成时也要继承拒读");
     }
 
     #[test]

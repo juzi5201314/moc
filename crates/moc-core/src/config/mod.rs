@@ -209,6 +209,7 @@ impl ResolvedConfig {
         cwd: PathBuf,
         overlays: Vec<PathBuf>,
     ) -> Result<Self, CoreError> {
+        remove_deprecated_retention_keys(&mut raw);
         apply_model_defaults(&mut raw)?;
         let document: ConfigDocument = raw
             .try_into()
@@ -486,6 +487,24 @@ fn merge_value(target: &mut Value, overlay: Value) {
             }
         }
         (target, overlay) => *target = overlay,
+    }
+}
+
+/// 旧会话归档与数量保留策略已移除；只迁移这三个键，其余未知字段仍由 schema 拒绝。
+fn remove_deprecated_retention_keys(raw: &mut Value) {
+    let Some(retention) = raw
+        .get_mut("session")
+        .and_then(|session| session.get_mut("retention"))
+        .and_then(Value::as_table_mut)
+    else {
+        return;
+    };
+    for key in [
+        "archive_after_days",
+        "retain_newest_global",
+        "retain_newest_per_workspace",
+    ] {
+        retention.remove(key);
     }
 }
 

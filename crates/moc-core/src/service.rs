@@ -367,7 +367,6 @@ impl Core {
         let resolved = Arc::new(resolved);
         std::fs::create_dir_all(&resolved.session.dir)?;
         let sessions = Arc::new(SessionTable::new(resolved.session.dir.clone(), true));
-        sessions.set_compress(resolved.session.compress);
         Ok(Arc::new(Self {
             inner: Arc::new(CoreInner {
                 config: RwLock::new(resolved),
@@ -907,6 +906,7 @@ impl AgentService for Core {
                 permission,
                 params.title.as_deref(),
                 SessionOrigin::root(),
+                config.session.compress,
             )
             .await
             .map_err(to_rpc)?;
@@ -1019,10 +1019,12 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
+        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let mut loaded = self
             .inner
             .sessions
-            .rewind(&params.session_id, &entry_id)
+            .rewind(&params.session_id, &entry_id, config.session.compress)
             .await
             .map_err(to_rpc)?;
         let child_id = loaded.session.id.clone();
@@ -1526,6 +1528,169 @@ pub(crate) async fn snapshot_workspace(
         .await
         .map_err(|error| CoreError::Session(format!("工作区快照任务失败：{error}")))?
         .map_err(|error| CoreError::Session(error.to_string()))
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    use moc_protocol::{
+        ClientBuilder, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope, Message,
+        PlanAction, Server, SessionNew, SessionPlanApprove, SessionRewind, transport,
+    };
+
+    #[tokio::test]
+    async fn project_compression_is_selected_per_creation_and_after_config_save() {
+        for global in [false, true] {
+            let root = tempfile::tempdir().expect("临时目录");
+            let home = root.path().join("home");
+            let plain = root.path().join("plain");
+            let compressed = root.path().join("compressed");
+            std::fs::create_dir_all(&home).unwrap();
+            for (cwd, enabled) in [(&plain, false), (&compressed, true)] {
+                std::fs::create_dir_all(cwd.join(".moc")).unwrap();
+                std::fs::write(
+                    cwd.join(".moc/config.toml"),
+                    format!("[session]\ncompress={enabled}\n"),
+                )
+                .unwrap();
+            }
+            std::fs::write(home.join("config.toml"), format!(
+                "[models.roles]\ndefault='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[sources]\nproject_config=true\n[session]\ncompress={global}\n"
+            )).unwrap();
+            let core = Core::new_with_sandbox_support(
+                CoreConfig {
+                    home,
+                    cwd: plain.clone(),
+                    session_dir: Some(root.path().join("sessions")),
+                    ..Default::default()
+                },
+                crate::sandbox::SandboxSupport::full_only(),
+            )
+            .unwrap();
+            let server = Server::new((*core).clone());
+            let (server_side, client_side) = transport::duplex(65536);
+            let connection = server.spawn(server_side);
+            let (client, _) = ClientBuilder::new(ClientInfo {
+                name: "压缩回归".into(),
+                version: "1".into(),
+                frontend: "test".into(),
+            })
+            .connect(client_side)
+            .await
+            .unwrap();
+            let new = |cwd: &Path| SessionNewParams {
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                ..Default::default()
+            };
+            let (plain_info, compressed_info) = tokio::join!(
+                client.call::<SessionNew>(new(&plain)),
+                client.call::<SessionNew>(new(&compressed))
+            );
+            for (info, enabled) in [
+                (plain_info.unwrap(), false),
+                (compressed_info.unwrap(), true),
+            ] {
+                let record = core.inner.sessions.get(&info.id).await.unwrap();
+                assert_eq!(
+                    record.paths.compressed(),
+                    enabled,
+                    "全局={global}，项目={enabled}"
+                );
+                let entry = core
+                    .inner
+                    .sessions
+                    .append_message(&info.id, Message::user_text("回退目标"), None, None)
+                    .await
+                    .unwrap();
+                let rewind = client
+                    .call::<SessionRewind>(SessionRewindParams {
+                        session_id: info.id.clone(),
+                        entry_id: entry.id().to_owned(),
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    core.inner
+                        .sessions
+                        .get(&rewind.session.id)
+                        .await
+                        .unwrap()
+                        .paths
+                        .compressed(),
+                    enabled
+                );
+
+                core.inner
+                    .sessions
+                    .append(
+                        &info.id,
+                        crate::session::entries::EntryPayload::Plan {
+                            plan_id: "plan_test".into(),
+                            title: "执行计划".into(),
+                            path: "local://plan_test.md".into(),
+                            markdown: "测试计划".into(),
+                            status: moc_protocol::PlanStatus::Submitted,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let plan = client
+                    .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                        session_id: info.id.clone(),
+                        plan_id: "plan_test".into(),
+                        action: PlanAction::ExecuteNewSession,
+                        execution_model: None,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    core.inner
+                        .sessions
+                        .get(&plan.session_id)
+                        .await
+                        .unwrap()
+                        .paths
+                        .compressed(),
+                    enabled
+                );
+            }
+            // 保存项目配置后只影响以后创建的会话；全局与其它工作区不应被改写。
+            let ConfigReply::Settings(view) = client
+                .call::<ConfigManage>(ConfigAction::Read {
+                    scope: ConfigScope::Project,
+                    cwd: compressed.to_string_lossy().into_owned(),
+                })
+                .await
+                .unwrap()
+            else {
+                panic!("配置视图");
+            };
+            client
+                .call::<ConfigManage>(ConfigAction::Save {
+                    scope: ConfigScope::Project,
+                    cwd: compressed.to_string_lossy().into_owned(),
+                    document: json!({"session":{"compress":false}}),
+                    revision: view.revision,
+                })
+                .await
+                .unwrap();
+            let next = client.call::<SessionNew>(new(&compressed)).await.unwrap();
+            assert!(
+                !core
+                    .inner
+                    .sessions
+                    .get(&next.id)
+                    .await
+                    .unwrap()
+                    .paths
+                    .compressed()
+            );
+            client.close().await;
+            connection.close();
+            connection.wait().await;
+            core.shutdown().await;
+        }
+    }
 }
 
 mod bash;

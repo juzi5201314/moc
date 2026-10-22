@@ -77,8 +77,6 @@ impl SessionRecord {
 pub struct SessionTable {
     store: SessionStore,
     locking: bool,
-    /// 新建会话是否使用 zstd 压缩；保存配置后即时更新，已有会话不受影响。
-    compress: AtomicBool,
     records: RwLock<HashMap<String, Arc<SessionRecord>>>,
 }
 
@@ -87,17 +85,12 @@ impl SessionTable {
         Self {
             store: SessionStore::new(root),
             locking,
-            compress: AtomicBool::new(false),
             records: RwLock::new(HashMap::new()),
         }
     }
 
-    /// 设置之后创建的会话是否压缩；读取始终兼容两种格式。
-    pub fn set_compress(&self, enabled: bool) {
-        self.compress.store(enabled, Ordering::Relaxed);
-    }
-
     /// 只登记内存状态；transcript 在第一次 append 时才写盘，空会话不会留下文件。
+    /// `compress` 由调用者传入本工作区的有效配置，格式在创建时固定。
     pub async fn create(
         &self,
         cwd: impl AsRef<Path>,
@@ -106,6 +99,7 @@ impl SessionTable {
         permission: SessionPermission,
         title: Option<&str>,
         origin: SessionOrigin,
+        compress: bool,
     ) -> Result<SessionInfo, CoreError> {
         let cwd = cwd.as_ref();
         let session_id = ids::session_id();
@@ -126,7 +120,6 @@ impl SessionTable {
             created_at_ms,
         );
         let state = SessionState::new(header.clone())?;
-        let compress = self.compress.load(Ordering::Relaxed);
         // 子代理落在父会话目录里，代理树和目录树同构：删除父会话会一并删除整棵子树。
         let paths = match origin_parent.as_deref() {
             Some(parent) => {
@@ -356,6 +349,7 @@ impl SessionTable {
         &self,
         session_id: &str,
         entry_id: &TranscriptEntryId,
+        compress: bool,
     ) -> Result<SessionLoadResult, CoreError> {
         let record = self.get(session_id).await?;
         let entries = {
@@ -418,6 +412,7 @@ impl SessionTable {
                 source_info.permission,
                 Some(&child_title),
                 SessionOrigin::forked(source_info.id.clone()),
+                compress,
             )
             .await?;
         let child = self.get(&child_info.id).await?;
@@ -887,6 +882,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建父会话");
@@ -902,6 +898,7 @@ mod tests {
                 SessionPermission::Full,
                 Some("子任务"),
                 SessionOrigin::spawned(parent.id.clone()),
+                true,
             )
             .await
             .expect("创建子代理会话");
@@ -912,6 +909,8 @@ mod tests {
 
         let parent_paths = table.get(&parent.id).await.expect("父记录").paths.clone();
         let child_paths = table.get(&child.id).await.expect("子记录").paths.clone();
+        assert!(!parent_paths.compressed());
+        assert!(child_paths.compressed(), "子代理按本次有效配置选择格式");
         assert_eq!(
             child_paths.transcript.parent(),
             Some(parent_paths.sidecar.as_path())
@@ -947,6 +946,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");
@@ -977,7 +977,6 @@ mod tests {
     async fn compressed_sessions_use_zstd_only_for_new_sessions() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
-        table.set_compress(true);
         let compressed = table
             .create(
                 "/tmp/project",
@@ -986,6 +985,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                true,
             )
             .await
             .expect("创建压缩会话");
@@ -1048,7 +1048,6 @@ mod tests {
         );
 
         // 关闭开关只影响以后创建的会话；已有会话保持压缩格式。
-        table.set_compress(false);
         let plain = table
             .create(
                 "/tmp/project",
@@ -1057,6 +1056,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建明文会话");
@@ -1084,7 +1084,6 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
-        table.set_compress(true);
         let info = table
             .create(
                 "/tmp/project",
@@ -1093,6 +1092,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                true,
             )
             .await
             .expect("创建压缩会话");
@@ -1143,6 +1143,7 @@ mod tests {
                 SessionPermission::Full,
                 Some("  标题  "),
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");
@@ -1202,6 +1203,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");
@@ -1256,6 +1258,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");
@@ -1295,6 +1298,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");
@@ -1351,6 +1355,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .unwrap();
@@ -1422,6 +1427,7 @@ mod tests {
                         SessionPermission::Full,
                         None,
                         SessionOrigin::root(),
+                        false,
                     )
                     .await
                     .expect("创建会话")
@@ -1481,6 +1487,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");
@@ -1521,7 +1528,7 @@ mod tests {
         let assistant_id = TranscriptEntryId::new(assistant.id());
 
         let rewound = table
-            .rewind(&info.id, &second_user_id)
+            .rewind(&info.id, &second_user_id, false)
             .await
             .expect("回退到用户消息");
         assert_eq!(rewound.entries.len(), 3);
@@ -1550,7 +1557,7 @@ mod tests {
         assert_eq!(original.entries.len(), 4);
 
         let rewound_again = table
-            .rewind(&info.id, &assistant_id)
+            .rewind(&info.id, &assistant_id, false)
             .await
             .expect("回退到助手工具调用");
         assert_eq!(rewound_again.entries.len(), 3);
@@ -1568,6 +1575,7 @@ mod tests {
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
+                false,
             )
             .await
             .expect("创建会话");

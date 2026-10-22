@@ -507,6 +507,7 @@ async fn execute_tool(
     };
     // bash 执行前先过静态规则，并把命令里没加引号的内部 URI 换成 urlfs 目录里的路径：
     // 沙盒判定和审批提示看到的都是真实路径，URI 交给 shell 也不会悄悄失效。
+    let mut history_view = false;
     if name == "bash"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
@@ -516,7 +517,10 @@ async fn execute_tool(
             return Ok(error.into_outcome());
         }
         match crate::tools::bash::urlfs::prepare(&ctx.paths, &ctx.skills, command) {
-            Ok(Some(rewritten)) => args["command"] = Value::String(rewritten),
+            Ok(Some(prepared)) => {
+                history_view = prepared.history_view;
+                args["command"] = Value::String(prepared.command);
+            }
             Ok(None) => {}
             Err(error) => return Ok(error.into_outcome()),
         }
@@ -567,6 +571,14 @@ async fn execute_tool(
     execution_ctx.permission = execution.permission;
     execution_ctx.call_grants = execution.call_grants;
     execution_ctx.tool_call_id = call.id.clone();
+    if history_view
+        && let Err(error) = crate::tools::bash::urlfs::refresh_history(
+            &execution_ctx.paths,
+            &execution_ctx.sandbox_policy(),
+        )
+    {
+        return Ok(error.into_outcome());
+    }
     let execution = AssertUnwindSafe(tool.run(&execution_ctx, args)).catch_unwind();
     let result = if tool.parallel_safe() || name == "ask" {
         tokio::select! {
