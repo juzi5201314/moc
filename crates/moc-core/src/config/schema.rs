@@ -113,6 +113,11 @@ pub(super) fn validate_tools(config: &ToolsConfig) -> Result<(), crate::error::C
             "tools.todo: reminders_after 与 reminders_max 必须大于 0".into(),
         ));
     }
+    config
+        .bash
+        .limits
+        .validate()
+        .map_err(crate::error::CoreError::Config)?;
     Ok(())
 }
 
@@ -191,6 +196,8 @@ pub struct BashConfig {
     pub max_output_bytes: u64,
     pub persistent_log_bytes: u64,
     pub deny_patterns: Vec<String>,
+    /// 每条 bash 的资源上限；默认关闭。
+    pub limits: crate::limits::BashLimitsConfig,
 }
 
 impl Default for BashConfig {
@@ -211,6 +218,7 @@ impl Default for BashConfig {
                 r"(?i)\b(remove-item|clear-disk|initialize-disk|remove-partition)\b".into(),
                 r">\s*/etc/passwd".into(),
             ],
+            limits: crate::limits::BashLimitsConfig::default(),
         }
     }
 }

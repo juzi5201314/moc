@@ -273,8 +273,11 @@ pub fn pieces(
             let shell = crate::shell::detect()
                 .map(crate::shell::ShellChoice::summary)
                 .unwrap_or_else(|| "unavailable".to_owned());
+            let limits = crate::limits::prompt_line(&config.tools.bash.limits)
+                .map(|line| format!("\n{line}"))
+                .unwrap_or_default();
             format!(
-                "<env>\ncwd: {}\nplatform: {} {}\nshell: {}\nmodel: {}\n</env>",
+                "<env>\ncwd: {}\nplatform: {} {}\nshell: {}{limits}\nmodel: {}\n</env>",
                 cwd.display(),
                 std::env::consts::OS,
                 std::env::consts::ARCH,
@@ -548,6 +551,42 @@ mod tests {
             Some("Always answer in Chinese.")
         );
         assert_eq!(prompt.static_prefix, vec![3]);
+    }
+
+    #[test]
+    fn environment_reports_bash_limits_only_when_enabled() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).expect("create repo");
+        let mut config = resolved(&cwd, &home);
+        let model = config.resolve_role("default").expect("resolve model");
+        let prompt = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            None,
+        );
+        assert!(!prompt_text(&prompt).contains("bash limits:"));
+
+        config.tools.bash.limits.enabled = true;
+        let prompt = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            None,
+        );
+        let text = prompt_text(&prompt);
+        if crate::limits::support().available {
+            assert!(text.contains("bash limits:"), "{text}");
+        }
+        assert!(text.contains("shell: "), "{text}");
     }
 
     /// 指令角色设为 user 时，规定性片段改用 user 消息，描述性片段留在 system；

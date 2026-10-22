@@ -3,6 +3,8 @@
 MOC 的会话权限分为 `full`、`workspace`、`workspace-only` 三档。默认是新会话使用
 `full`，保持既有 yolo 行为；需要隔离时用 `/permission` 或设置页切换。
 
+CPU 与内存上限是另一套独立机制，不随沙盒模式变化，见 [limits.md](limits.md)。
+
 ## 模式矩阵
 
 | 模式 | bash 文件系统 | bash 网络 | 内置文件工具 |

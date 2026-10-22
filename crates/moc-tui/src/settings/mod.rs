@@ -671,9 +671,19 @@ impl SettingsPanel {
                     chain.push((
                         format!("tools/{tool}"),
                         title.into(),
-                        vec!["tools".into(), tool],
+                        vec!["tools".into(), tool.clone()],
                         None,
                     ));
+                    if let Some(sub) = path.get(2)
+                        && let Some(subtitle) = tool_subgroup_title(sub)
+                    {
+                        chain.push((
+                            format!("tools/{tool}/{sub}"),
+                            subtitle.into(),
+                            vec!["tools".into(), tool.clone(), sub.clone()],
+                            None,
+                        ));
+                    }
                 }
             }
             Some("compaction") if path.len() >= 3 => {
@@ -1225,6 +1235,14 @@ fn tool_title(key: &str) -> Option<&'static str> {
         "job" => "后台任务",
         _ => return None,
     })
+}
+
+/// 工具内的二级分组；目前只有 bash 的资源限制需要和超时、日志等字段分开。
+fn tool_subgroup_title(key: &str) -> Option<&'static str> {
+    match key {
+        "limits" => Some("资源限制"),
+        _ => None,
+    }
 }
 
 /// MCP 服务的连接摘要：本地命令或远程地址。

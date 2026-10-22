@@ -70,6 +70,20 @@ deny_patterns = [
     ">\\s*/etc/passwd",
 ]
 
+[tools.bash.limits]
+# 关闭时完全不介入；开启后每条 agent bash 各自独占一个资源范围，额度不共享。
+enabled = false
+# CPU 核数上限；0 表示不限。Linux 走 cgroup CPUQuota（nproc 与 cargo 并发会跟着下降），
+# Windows 走 Job Object CPU rate（只限速，不改变并发度）。
+cpu_cores = 4
+# 内存软限（字节）：超过就节流、明显变慢，但尽量不失败；0 表示不节流。仅 Linux 生效。
+# 宿主没有 swap 时该值会被自动忽略，避免进程无限期停等。
+memory_high_bytes = 8589934592
+# 内存硬顶（字节）：兜底，超过按 OOM 终止；0 表示不设。仅 Linux 生效。
+memory_max_bytes = 12884901888
+# swap 预算（字节）：0 表示不限制。仅 Linux 生效。
+memory_swap_bytes = 4294967296
+
 [tools.read]
 default_limit = 300
 max_bytes = 51200

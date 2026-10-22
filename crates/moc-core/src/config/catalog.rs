@@ -153,6 +153,11 @@ fn rank(key: &str) -> usize {
         "max_timeout_secs" => 3,
         "max_output_bytes" => 4,
         "persistent_log_bytes" => 5,
+        // bash 资源限制：开关在前，CPU → 软限 → 硬顶 → swap
+        "cpu_cores" => 1,
+        "memory_high_bytes" => 2,
+        "memory_max_bytes" => 3,
+        "memory_swap_bytes" => 4,
         "max_files" => 0,
         "max_matches_per_file" => 1,
         "max_matches_total" => 2,
@@ -434,6 +439,26 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "sandbox.deny_write_paths" => (
             "强制拒绝写入",
             "逐行填写路径；优先于允许列表，即使位于工作区内也无法写入。不存在的路径无法在 bash 沙盒中遮蔽。",
+        ),
+        "tools.bash.limits.enabled" => (
+            "限制 bash 资源",
+            "为模型发起的每条 bash 单独设置 CPU 与内存上限；手打的 !命令不受影响。默认关闭。",
+        ),
+        "tools.bash.limits.cpu_cores" => (
+            "CPU 核数上限",
+            "0 表示不限。Linux 通过 cgroup CPUQuota 限制，nproc 与 cargo 的并发会跟着降到该值；Windows 通过 Job Object 只做限速，不改变并发度。",
+        ),
+        "tools.bash.limits.memory_high_bytes" => (
+            "内存软限（字节）",
+            "超过后开始节流，进程明显变慢但尽量不失败；0 表示不节流。仅 Linux 生效，宿主没有 swap 时自动忽略。示例：8 GiB = 8589934592。",
+        ),
+        "tools.bash.limits.memory_max_bytes" => (
+            "内存硬顶（字节）",
+            "兜底上限，超过按 OOM 终止；0 表示不设，非 0 时不得小于软限。仅 Linux 生效。示例：12 GiB = 12884901888。",
+        ),
+        "tools.bash.limits.memory_swap_bytes" => (
+            "swap 预算（字节）",
+            "单条命令最多可占用的 swap；0 表示不限制。仅 Linux 生效。示例：4 GiB = 4294967296。",
         ),
         "compaction.threshold.mode" => (
             "压缩触发方式",

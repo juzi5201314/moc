@@ -1,6 +1,7 @@
 //! 管道和 PTY 进程共用的完成句柄。转为后台任务只转移所有权，不会重置 monitored 超时。
 
 use super::{BashArgs, JobLog, ProcessGroup, ToolError};
+use crate::limits::BashLimits;
 use crate::sandbox::{SandboxPolicy, WrappedCommand, wrap_command};
 use futures_util::future::BoxFuture;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -23,6 +24,8 @@ pub(crate) struct ProcessExit {
     pub output_truncated: bool,
     /// stderr 命中沙盒拒绝签名；仅作提示，不改变退出码。
     pub sandbox_denied: bool,
+    /// 资源范围没能建立（命令实际在无限制下执行）；仅作提示。
+    pub limits_failed: bool,
 }
 
 pub(crate) struct Process {
@@ -39,6 +42,7 @@ impl Process {
         timeout: Option<Duration>,
         log: JobLog,
         policy: SandboxPolicy,
+        limits: Option<BashLimits>,
     ) -> Result<Self, ToolError> {
         if policy.mode != moc_protocol::SessionPermission::Full && cfg!(not(unix)) {
             return Err(ToolError::new(
@@ -56,9 +60,9 @@ impl Process {
             ));
         }
         if args.pty.unwrap_or(false) {
-            Self::pty(args, cwd, timeout, log, policy).await
+            Self::pty(args, cwd, timeout, log, policy, limits).await
         } else {
-            Self::pipe(args, cwd, timeout, log, policy)
+            Self::pipe(args, cwd, timeout, log, policy, limits)
         }
     }
 
@@ -68,6 +72,7 @@ impl Process {
         timeout: Option<Duration>,
         log: JobLog,
         policy: SandboxPolicy,
+        limits: Option<BashLimits>,
     ) -> Result<Self, ToolError> {
         let shell = crate::shell::detect().ok_or_else(|| {
             ToolError::new("E_BASH_SHELL", "no supported shell found on this platform")
@@ -80,6 +85,8 @@ impl Process {
             scratch,
             overlay_work,
         } = wrapped;
+        // 资源限制只改启动方式，不动沙盒、环境与管道。
+        let (program, sandbox_args) = crate::limits::wrap(program, sandbox_args, limits);
         let keepalive = (scratch, overlay_work);
         let mut command = Command::new(program);
         command.args(&sandbox_args);
@@ -99,7 +106,7 @@ impl Process {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(windows)]
-        let group = ProcessGroup::for_suspended_spawn(&mut command)?;
+        let group = ProcessGroup::for_suspended_spawn(&mut command, limits)?;
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -175,15 +182,13 @@ impl Process {
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
             log.finish()
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
-            let sandbox_denied = log
-                .read_tail(80)
-                .map(|(text, _)| crate::sandbox::denial_in(&text))
-                .unwrap_or(false);
+            let tail = log.read_tail(80).map(|(text, _)| text).unwrap_or_default();
             Ok(ProcessExit {
                 code: status.code(),
                 timed_out,
                 output_truncated,
-                sandbox_denied,
+                sandbox_denied: crate::sandbox::denial_in(&tail),
+                limits_failed: crate::limits::failure_in(&tail),
             })
         });
         Ok(Self {
@@ -200,12 +205,13 @@ impl Process {
         timeout: Option<Duration>,
         log: JobLog,
         policy: SandboxPolicy,
+        limits: Option<BashLimits>,
     ) -> Result<Self, ToolError> {
         let cancel = CancellationToken::new();
         let cancel_on_drop = cancel.clone().drop_guard();
         let (started, ready) = tokio::sync::oneshot::channel();
         let worker = tokio::task::spawn_blocking(move || {
-            run_pty(args, cwd, timeout, log, policy, cancel, started)
+            run_pty(args, cwd, timeout, log, policy, limits, cancel, started)
         });
         let (pid, group) = match ready.await {
             Ok((pid, group)) => (pid, group),
@@ -242,6 +248,7 @@ fn run_pty(
     timeout: Option<Duration>,
     log: JobLog,
     policy: SandboxPolicy,
+    limits: Option<BashLimits>,
     cancel: CancellationToken,
     started: tokio::sync::oneshot::Sender<(Option<u32>, ProcessGroup)>,
 ) -> std::io::Result<ProcessExit> {
@@ -267,6 +274,7 @@ fn run_pty(
             scratch,
             overlay_work,
         } = wrapped;
+        let (program, args) = crate::limits::wrap(program, args, limits);
         (program, args, envs, (scratch, overlay_work))
     };
     #[cfg(windows)]
@@ -307,8 +315,8 @@ fn run_pty(
         .take_writer()
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     #[cfg(windows)]
-    let group =
-        ProcessGroup::new_windows().map_err(|error| std::io::Error::other(error.to_string()))?;
+    let group = ProcessGroup::new_windows(limits)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut child = pair
         .slave
         .spawn_command(builder)
@@ -381,15 +389,16 @@ fn run_pty(
         .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
     let status = waited?;
     let code = status.exit_code().min(i32::MAX as u32) as i32;
-    let sandbox_denied = tail_log
+    let tail = tail_log
         .read_tail(80)
-        .map(|(text, _)| crate::sandbox::denial_in(&text))
-        .unwrap_or(false);
+        .map(|(text, _)| text)
+        .unwrap_or_default();
     Ok(ProcessExit {
         code: Some(if status.success() { code } else { code.max(1) }),
         timed_out,
         output_truncated,
-        sandbox_denied,
+        sandbox_denied: crate::sandbox::denial_in(&tail),
+        limits_failed: crate::limits::failure_in(&tail),
     })
 }
 
@@ -468,6 +477,7 @@ mod unix_tests {
             Some(Duration::from_secs(5)),
             log,
             policy(moc_protocol::SessionPermission::Workspace, directory.path()),
+            None,
         )
         .await
         .expect("启动 workspace shell");
@@ -489,6 +499,7 @@ mod unix_tests {
             Some(Duration::from_secs(5)),
             log,
             policy(moc_protocol::SessionPermission::Workspace, directory.path()),
+            None,
         )
         .await
         .expect("启动 external shell");
@@ -532,6 +543,7 @@ mod unix_tests {
             Some(Duration::from_secs(5)),
             log,
             policy,
+            None,
         )
         .await
         .expect("启动 deny shell");
@@ -578,6 +590,7 @@ mod unix_tests {
             Some(Duration::from_secs(5)),
             log,
             policy,
+            None,
         )
         .await
         .expect("启动 deny dir shell");
@@ -621,6 +634,7 @@ mod unix_tests {
             Some(Duration::from_secs(5)),
             log,
             policy,
+            None,
         )
         .await
         .expect("启动 deny read shell");
@@ -658,6 +672,7 @@ mod unix_tests {
                 directory.path(),
                 true,
             ),
+            None,
         )
         .await
         .expect("启动 overlay shell");
@@ -691,6 +706,7 @@ mod unix_tests {
                 moc_protocol::SessionPermission::WorkspaceOnly,
                 directory.path(),
             ),
+            None,
         )
         .await
         .expect("启动 workspace-only shell");
@@ -711,6 +727,7 @@ mod unix_tests {
             Some(Duration::from_secs(60)),
             log,
             policy(moc_protocol::SessionPermission::Full, directory.path()),
+            None,
         )
         .await
         .expect("启动 shell");
@@ -739,11 +756,42 @@ mod unix_tests {
             Some(Duration::from_secs(5)),
             log,
             policy(moc_protocol::SessionPermission::Full, directory.path()),
+            None,
         )
         .await
         .expect("启动 shell");
         let result = process.completion.await.expect("等待 shell");
         assert_eq!(result.code, Some(0));
         assert!(!marker.exists(), "BASH_ENV 不应被执行");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn cpu_limit_reaches_the_shell() {
+        if !crate::limits::support().available {
+            return;
+        }
+        let directory = tempfile::tempdir().expect("临时目录");
+        let log = test_log(directory.path().join("limits.log")).await;
+        let limits = crate::limits::BashLimits {
+            cpu_cores: 1,
+            memory_high_bytes: 0,
+            memory_max_bytes: 0,
+            memory_swap_bytes: 0,
+        };
+        let process = Process::spawn(
+            bash_args("printf 'CORE_COUNT=%s' \"$(nproc)\""),
+            directory.path().to_owned(),
+            Some(Duration::from_secs(10)),
+            log.clone(),
+            policy(moc_protocol::SessionPermission::Full, directory.path()),
+            Some(limits),
+        )
+        .await
+        .expect("启动受限 shell");
+        let result = process.completion.await.expect("等待受限 shell");
+        let (text, _) = log.read_tail(10).expect("读取输出");
+        assert_eq!(result.code, Some(0), "log: {text}");
+        assert!(text.contains("CORE_COUNT=1"), "实际输出：{text}");
     }
 }

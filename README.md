@@ -8,6 +8,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 - **多进程安全**：同一会话可以被多个进程打开，写租约保证同一时刻只有一个写者，其余前端只读降级
 - **多供应商**：OpenAI、Anthropic 及兼容 OpenAI 协议的网关均可接入
 - **代码工具**：`read` / `edit` / `write` / `bash` / `grep` / `find`，编辑前带结构化 diff 预览与确认
+- **资源限制**：可为 agent 的 bash 单独限制 CPU 与内存，编译占满机器时可以接受变慢、尽量不失败；默认关闭，见 [docs/limits.md](docs/limits.md)
 - **联网工具**：`web_search`（Tavily）与 `web_fetch`（本地抓取，HTML 转 Markdown；无需密钥，GitHub/docs.rs/MDN/arXiv/npm/PyPI 结构化）
 - **计划模式**：让模型先写执行计划，审阅后再逐步执行，避免盲目改动
 - **子代理**：可 spawn 独立子会话处理并行任务，共享工作目录与工具权限

@@ -237,8 +237,16 @@ impl Tool for BashTool {
             } else {
                 None
             };
-            let process =
-                Process::spawn(args, cwd, timeout, log.clone(), ctx.sandbox_policy()).await?;
+            let limits = ctx.config.tools.bash.limits.resolve();
+            let process = Process::spawn(
+                args,
+                cwd,
+                timeout,
+                log.clone(),
+                ctx.sandbox_policy(),
+                limits,
+            )
+            .await?;
             if asynchronous {
                 ctx.jobs.start(
                     ctx.clone(),
@@ -289,6 +297,7 @@ impl Tool for BashTool {
                 ctx.permission,
                 ctx.config.sandbox.on_denied,
                 ctx.config.sandbox.allow_unsandboxed,
+                limits,
             ))
         })
     }
@@ -339,7 +348,8 @@ pub(crate) async fn run_manual(
         sandbox_permissions: None,
         justification: None,
     };
-    let mut process = Process::spawn(args, cwd.clone(), Some(timeout), log, policy).await?;
+    // 用户手打的命令不受资源限制：输入本身即授权。
+    let mut process = Process::spawn(args, cwd.clone(), Some(timeout), log, policy, None).await?;
     tokio::select! {
         biased;
         result = &mut process.completion => Ok(exit_outcome(
@@ -349,6 +359,7 @@ pub(crate) async fn run_manual(
             moc_protocol::SessionPermission::Full,
             crate::config::OnDenied::Ask,
             true,
+            None,
         )),
         _ = cancel.cancelled() => {
             process.group.kill()?;
@@ -372,6 +383,7 @@ fn exit_outcome(
     permission: moc_protocol::SessionPermission,
     on_denied: crate::config::OnDenied,
     allow_unsandboxed: bool,
+    limits: Option<crate::limits::BashLimits>,
 ) -> ToolOutcome {
     let mut suffix = render_exit(
         result.code.unwrap_or(-1),
@@ -396,6 +408,18 @@ fn exit_outcome(
                 "\n[sandbox: escalation disabled by policy; adjust sandbox settings or use a permitted path]",
             );
         }
+    }
+    if result.limits_failed {
+        suffix.push_str(
+            "\n\n[limits: the resource scope could not be created, so the command did not run; disable tools.bash.limits or check `systemd --user`]",
+        );
+    } else if result.code == Some(137)
+        && cfg!(unix)
+        && limits.is_some_and(|limits| limits.memory_max_bytes > 0)
+    {
+        suffix.push_str(
+            "\n\n[limits: killed by the memory cap; raise tools.bash.limits.memory_max_bytes or lower build parallelism]",
+        );
     }
     let mut outcome = ToolOutcome::success(ToolOutput::File {
         path: output_path,
@@ -633,6 +657,70 @@ mod tests {
         assert!(reject_denied(&patterns, "FORMAT C:").is_err());
         assert!(reject_denied(&patterns, "Remove-Item C:\\data -Recurse").is_err());
         assert!(reject_denied(&patterns, "printf safe").is_ok());
+    }
+
+    fn bash_exit(code: i32, limits_failed: bool) -> ProcessExit {
+        ProcessExit {
+            code: Some(code),
+            timed_out: false,
+            output_truncated: false,
+            sandbox_denied: false,
+            limits_failed,
+        }
+    }
+
+    fn suffix_of(outcome: ToolOutcome) -> String {
+        let ToolOutput::File { suffix, .. } = outcome.content else {
+            panic!("bash 结果必须是文件输出");
+        };
+        suffix
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_cap_kills_are_explained_only_when_a_cap_is_configured() {
+        let path = std::path::PathBuf::from("/tmp/unused-job.log");
+        let limits = crate::limits::BashLimits {
+            cpu_cores: 4,
+            memory_high_bytes: 0,
+            memory_max_bytes: 12 * 1024 * 1024 * 1024,
+            memory_swap_bytes: 0,
+        };
+        let full = moc_protocol::SessionPermission::Full;
+        let suffix = suffix_of(exit_outcome(
+            path.clone(),
+            bash_exit(137, false),
+            5,
+            full,
+            crate::config::OnDenied::Ask,
+            true,
+            Some(limits),
+        ));
+        assert!(suffix.contains("killed by the memory cap"), "{suffix}");
+        let suffix = suffix_of(exit_outcome(
+            path,
+            bash_exit(137, false),
+            5,
+            full,
+            crate::config::OnDenied::Ask,
+            true,
+            None,
+        ));
+        assert!(!suffix.contains("memory cap"), "{suffix}");
+    }
+
+    #[test]
+    fn a_failed_resource_scope_is_reported() {
+        let suffix = suffix_of(exit_outcome(
+            std::path::PathBuf::from("/tmp/unused-job.log"),
+            bash_exit(1, true),
+            5,
+            moc_protocol::SessionPermission::Full,
+            crate::config::OnDenied::Ask,
+            true,
+            None,
+        ));
+        assert!(suffix.contains("could not be created"), "{suffix}");
     }
 
     #[test]

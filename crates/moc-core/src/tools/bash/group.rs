@@ -3,6 +3,9 @@ use std::sync::Arc;
 use crate::tools::ToolError;
 
 #[cfg(windows)]
+use crate::limits::BashLimits;
+
+#[cfg(windows)]
 #[link(name = "ntdll")]
 unsafe extern "system" {
     #[link_name = "NtResumeProcess"]
@@ -31,20 +34,21 @@ impl ProcessGroup {
     }
 
     #[cfg(windows)]
-    pub(crate) fn new_windows() -> Result<Self, ToolError> {
+    pub(crate) fn new_windows(limits: Option<BashLimits>) -> Result<Self, ToolError> {
         Ok(Self(Arc::new(ProcessGroupInner::Windows(
-            create_windows_job()?,
+            create_windows_job(limits)?,
         ))))
     }
 
     #[cfg(windows)]
     pub(crate) fn for_suspended_spawn(
         command: &mut tokio::process::Command,
+        limits: Option<BashLimits>,
     ) -> Result<Self, ToolError> {
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
 
-        let group = Self::new_windows()?;
+        let group = Self::new_windows(limits)?;
         command.as_std_mut().creation_flags(CREATE_SUSPENDED);
         Ok(group)
     }
@@ -131,7 +135,9 @@ fn kill_unix(pid: u32) -> Result<(), ToolError> {
 }
 
 #[cfg(windows)]
-fn create_windows_job() -> Result<std::os::windows::io::OwnedHandle, ToolError> {
+fn create_windows_job(
+    limits: Option<BashLimits>,
+) -> Result<std::os::windows::io::OwnedHandle, ToolError> {
     use std::mem::size_of;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::System::JobObjects::{
@@ -152,14 +158,14 @@ fn create_windows_job() -> Result<std::os::windows::io::OwnedHandle, ToolError> 
     }
     // SAFETY: CreateJobObjectW 返回的非空句柄由当前线程独占，交给 OwnedHandle 接管。
     let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
-    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    // SAFETY: limits 在本地存活，指针与长度覆盖完整结构体。
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: info 在本地存活，指针与长度覆盖完整结构体。
     let configured = unsafe {
         SetInformationJobObject(
             job.as_raw_handle(),
             JobObjectExtendedLimitInformation,
-            std::ptr::from_ref(&limits).cast::<std::ffi::c_void>(),
+            std::ptr::from_ref(&info).cast::<std::ffi::c_void>(),
             size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
         )
     };
@@ -172,7 +178,55 @@ fn create_windows_job() -> Result<std::os::windows::io::OwnedHandle, ToolError> 
             ),
         ));
     }
+    if let Some(limits) = limits
+        && let Err(error) = apply_cpu_limit(&job, limits)
+    {
+        tracing::warn!(%error, "Windows CPU 限速设置失败；本次命令将在不限速下执行");
+    }
     Ok(job)
+}
+
+/// CPU 硬限速：`CpuRate` 是占全部逻辑处理器时间的 1/100 百分比。
+#[cfg(windows)]
+fn apply_cpu_limit(
+    job: &std::os::windows::io::OwnedHandle,
+    limits: BashLimits,
+) -> Result<(), ToolError> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+        JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JobObjectCpuRateControlInformation,
+        SetInformationJobObject,
+    };
+
+    let total = std::thread::available_parallelism().map_or(1, |value| value.get());
+    let Some(rate) = crate::limits::windows_cpu_rate(limits, total) else {
+        return Ok(());
+    };
+    let mut info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+    info.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    // 写 union 字段不需要 unsafe；CpuRate 是 Copy 值，不涉及析构。
+    info.Anonymous.CpuRate = rate;
+    // SAFETY: info 在本地存活，指针与长度覆盖完整结构体。
+    let configured = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectCpuRateControlInformation,
+            std::ptr::from_ref(&info).cast::<std::ffi::c_void>(),
+            size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err(ToolError::new(
+            "E_BASH_LIMITS",
+            format!(
+                "failed to apply the Windows CPU rate limit: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -260,7 +314,19 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn empty_windows_job_can_be_created_and_dropped() {
-        drop(ProcessGroup::new_windows().unwrap());
+        drop(ProcessGroup::new_windows(None).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_job_accepts_a_cpu_rate_limit() {
+        let limits = crate::limits::BashLimits {
+            cpu_cores: 1,
+            memory_high_bytes: 0,
+            memory_max_bytes: 0,
+            memory_swap_bytes: 0,
+        };
+        drop(ProcessGroup::new_windows(Some(limits)).unwrap());
     }
     #[cfg(windows)]
     #[tokio::test]
@@ -273,7 +339,7 @@ mod tests {
         command
             .args(["/D", "/S", "/C"])
             .arg(format!("echo ready > \"{}\"", marker.display()));
-        let _group = ProcessGroup::for_suspended_spawn(&mut command).expect("创建暂停子进程");
+        let _group = ProcessGroup::for_suspended_spawn(&mut command, None).expect("创建暂停子进程");
         let mut child = command.spawn().expect("启动暂停子进程");
 
         tokio::time::sleep(std::time::Duration::from_millis(75)).await;
