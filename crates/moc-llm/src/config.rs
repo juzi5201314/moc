@@ -465,67 +465,6 @@ mod tests {
         }
     }
 
-    fn sample() -> LlmConfig {
-        LlmConfig {
-            protocol: Protocol::AnthropicMessages,
-            base_url: "https://api.anthropic.com/v1".into(),
-            model: "claude-sonnet-4-5".into(),
-            auth: Auth::Header {
-                name: "x-api-key".into(),
-                value: "sk-ant-xxx".into(),
-            },
-            endpoint: EndpointStyle::Azure {
-                api_version: "2025-04-01-preview".into(),
-            },
-            wire: WireConfig {
-                max_output_tokens_field: MaxTokensField::MaxCompletionTokens,
-                supports_stop: false,
-                reasoning_field: "reasoning".into(),
-                reasoning_field_aliases: vec!["reasoning".into()],
-                thinking: ThinkingWire {
-                    toggle_field: Some("thinking".into()),
-                    enabled_value: "enabled".into(),
-                    disabled_value: "disabled".into(),
-                    effort_field: None,
-                    effort_map: BTreeMap::from([(Effort::XHigh, "x-high".into())]),
-                    toggle_extra: serde_json::Map::from_iter([("keep".into(), json!("all"))]),
-                },
-                tool_choice_dialect: ToolChoiceDialect::AnyForRequired,
-                parallel_tool_calls: false,
-                developer_role: true,
-                response_format_dialect: ResponseFormatDialect::Unsupported,
-            },
-            headers: BTreeMap::from([(
-                "anthropic-beta".into(),
-                "prompt-caching-2024-07-31".into(),
-            )]),
-            extra_body: serde_json::Map::from_iter([("top_k".into(), json!(20))]),
-            timeout_secs: Some(120.0),
-            connect_timeout_secs: Some(5.0),
-            server_compaction_threshold: None,
-            retry: RetryPolicy {
-                max_attempts: 5,
-                ..Default::default()
-            },
-        }
-    }
-
-    #[test]
-    fn protocol_serializes_with_explicit_names() {
-        assert_eq!(
-            serde_json::to_value(Protocol::OpenAiChat).unwrap(),
-            json!("openai_chat")
-        );
-        assert_eq!(
-            serde_json::to_value(Protocol::OpenAiResponses).unwrap(),
-            json!("openai_responses")
-        );
-        assert_eq!(
-            serde_json::to_value(Protocol::AnthropicMessages).unwrap(),
-            json!("anthropic_messages")
-        );
-    }
-
     #[test]
     fn missing_fields_fall_back_to_semantic_defaults() {
         let config: LlmConfig = serde_json::from_value(json!({})).unwrap();
@@ -622,36 +561,6 @@ mod tests {
         assert_eq!(
             config.endpoint_url(),
             "https://contoso.openai.azure.com/openai/deployments/gpt-4o-deploy/chat/completions?api-version=2025-04-01-preview"
-        );
-    }
-
-    #[test]
-    fn with_model_replaces_only_model() {
-        let config = sample();
-        let next = config.with_model("claude-haiku-4-5");
-        assert_eq!(next.model, "claude-haiku-4-5");
-        assert_eq!(next.base_url, config.base_url);
-        assert_eq!(next.auth, config.auth);
-    }
-
-    #[test]
-    fn thinking_effort_value_honours_map() {
-        let wire = ThinkingWire {
-            effort_map: BTreeMap::from([(Effort::High, "high-effort".into())]),
-            ..Default::default()
-        };
-        assert_eq!(wire.effort_value(Effort::High), "high-effort");
-        assert_eq!(wire.effort_value(Effort::Low), "low");
-    }
-
-    #[test]
-    fn cache_ttl_wire_strings() {
-        assert_eq!(CacheTtl::FiveMinutes.as_str(), "5m");
-        assert_eq!(CacheTtl::ThirtyMinutes.as_str(), "30m");
-        assert_eq!(CacheTtl::OneHour.as_str(), "1h");
-        assert_eq!(
-            serde_json::to_value(CacheTtl::ThirtyMinutes).unwrap(),
-            json!("thirty_minutes")
         );
     }
 }

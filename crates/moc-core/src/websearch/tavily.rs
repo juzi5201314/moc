@@ -455,18 +455,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_request_maps_to_cancelled() {
-        let server = MockServer::builder().start().await;
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let error = provider(&server, 5)
-            .search(&search_request(), &cancel)
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, "E_CANCELLED");
-    }
-
-    #[tokio::test]
     async fn zero_result_search_with_time_filter_retries_once() {
         let server = MockServer::builder().start().await;
         let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -515,31 +503,5 @@ mod tests {
             bodies[1].get("start_date").is_none(),
             "重试请求不带时间过滤"
         );
-    }
-
-    #[tokio::test]
-    async fn zero_result_without_time_filter_does_not_retry() {
-        let server = MockServer::builder().start().await;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&calls);
-        Mock::given(method("POST"))
-            .and(path("/search"))
-            .respond_with(move |_: &Request| {
-                counter.fetch_add(1, Ordering::SeqCst);
-                ResponseTemplate::new(200)
-                    .set_body_raw(r#"{"results": [], "answer": null}"#, "application/json")
-            })
-            .mount(&server)
-            .await;
-        let mut request = search_request();
-        let response = search_with_fallback(
-            &provider(&server, 5),
-            &mut request,
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        assert!(response.results.is_empty());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

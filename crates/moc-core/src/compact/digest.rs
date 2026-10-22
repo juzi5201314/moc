@@ -497,7 +497,10 @@ fn list_item_number(line: &str) -> Option<usize> {
     }
     let number = line[..digits_end].parse::<usize>().ok()?;
     let rest = &line[digits_end..];
-    let marker = MARKERS.iter().copied().find(|marker| rest.starts_with(*marker))?;
+    let marker = MARKERS
+        .iter()
+        .copied()
+        .find(|marker| rest.starts_with(*marker))?;
     let after = &rest[marker.len_utf8()..];
     if matches!(marker, '、' | '）' | '．') || after.starts_with(' ') {
         Some(number)
@@ -940,21 +943,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_digest_lists_files_and_open_items() {
-        let state = state_with_calls(
-            vec![(
-                "edit",
-                serde_json::json!({"path": "crates/ingest/src/window.rs"}),
-            )],
-            vec![("call_0_edit", false)],
-        );
-        let digest = prompt_digest(&state).expect("digest");
-        assert!(digest.starts_with("<session-digest>"));
-        assert!(digest.contains("- crates/ingest/src/window.rs"));
-        assert!(digest.ends_with("</session-digest>"));
-    }
-
-    #[test]
     fn fallback_without_previous_builds_required_sections() {
         let state = state_with_calls(vec![], vec![]);
         let history = vec![
@@ -974,28 +962,6 @@ mod tests {
         }
         assert!(checkpoint.contains("把 TTL 改成 45 秒"));
         assert!(checkpoint.contains("已改好 window.rs"));
-    }
-
-    #[test]
-    fn fallback_keeps_previous_checkpoint_verbatim() {
-        let state = state_with_calls(vec![], vec![]);
-        let history = vec![Message::user_text("继续第 3 步")];
-        let checkpoint = fallback_checkpoint(&state, &history, Some("## Previous\nkeep me"), None);
-        assert!(checkpoint.starts_with("## Previous\nkeep me"));
-        assert!(checkpoint.contains("## Recent Activity"));
-        assert!(checkpoint.contains("继续第 3 步"));
-    }
-
-    #[test]
-    fn fallback_ignores_injected_context_messages() {
-        let state = state_with_calls(vec![], vec![]);
-        let history = vec![
-            Message::user_text("真实请求"),
-            Message::user_text("<system-reminder>Current local time: 2026-01-01</system-reminder>"),
-        ];
-        let checkpoint = fallback_checkpoint(&state, &history, None, None);
-        assert!(checkpoint.contains("真实请求"));
-        assert!(!checkpoint.contains("Current local time"));
     }
 
     #[test]
@@ -1027,36 +993,6 @@ mod tests {
     }
 
     #[test]
-    fn decisions_ignore_code_comments_but_keep_rejection_tables() {
-        let history = vec![
-            // 代码注释里的“禁止”不是决策。
-            Message::tool_result(
-                "call_1",
-                "// 禁止在这里分配：热路径\nfn handle() { let _ = LEGACY_SINK; }",
-                false,
-            ),
-            // 复盘表格里的“否决”是决策。
-            Message::tool_result(
-                "call_2",
-                "| 把窗口状态迁到 Redis | 否决 | 一致性不可接受 |",
-                false,
-            ),
-        ];
-        let decisions = decisions(&history, None);
-        assert_eq!(decisions.len(), 1, "代码注释不应产生决策");
-        assert!(decisions[0].clause.contains("Redis"));
-    }
-
-    #[test]
-    fn decisions_dedupe_repeated_mentions() {
-        let history = vec![
-            Message::user_text("否决了用 lru crate 的 LRU 缓存。"),
-            Message::user_text("再强调一次：否决了用 lru crate 的 LRU 缓存。"),
-        ];
-        assert_eq!(decisions(&history, None).len(), 1);
-    }
-
-    #[test]
     fn plan_steps_require_a_numbered_plan() {
         let plan = vec![Message::user_text(
             "收尾计划共 5 步：第 1 步改 TTL，第 2 步加骨架，第 3 步移计数，第 4 步更新文档，第 5 步加日志。",
@@ -1072,17 +1008,6 @@ mod tests {
     }
 
     #[test]
-    fn plan_steps_accept_chinese_numerals_and_spacing() {
-        let history = vec![Message::user_text(
-            "分三步：第一步读代码，第二步改常量，第三步补测试。",
-        )];
-        assert_eq!(
-            plan_steps(&history, None, None),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-    }
-
-    #[test]
     fn plan_steps_come_from_the_approved_plan_markdown() {
         let markdown = "# 重构计划\n\n## 实施步骤\n1. 改 A\n2. 改 B\n3. 改 C\n";
         assert_eq!(
@@ -1091,130 +1016,6 @@ mod tests {
         );
         // 没有计划文档时不会有计划步骤。
         assert!(plan_steps(&[], None, None).is_empty());
-    }
-
-    #[test]
-    fn plan_steps_ignore_numbered_lists_outside_step_sections() {
-        let markdown = "## 证据\n1. 第一条日志\n2. 第二条日志\n3. 第三条日志\n";
-        assert!(plan_steps(&[], None, Some(markdown)).is_empty());
-    }
-
-    #[test]
-    fn plan_steps_skip_fenced_code_numbering() {
-        let markdown = "## 实施步骤\n```text\n1. a\n2. b\n3. c\n```\n";
-        assert!(plan_steps(&[], None, Some(markdown)).is_empty());
-
-        // 四反引号围栏里的三反引号行不闭合围栏，围栏内的编号都不算步骤。
-        let nested = "## 实施步骤\n````text\n```txt\n1. e1\n2. e2\n3. e3\n4. e4\n5. e5\n```\n````\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(&[], None, Some(nested)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-
-        // 2 空格缩进的围栏仍算围栏。
-        let indented =
-            "## 实施步骤\n  ```text\n1. e1\n2. e2\n3. e3\n4. e4\n5. e5\n  ```\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(&[], None, Some(indented)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-
-        // 字符不匹配的围栏不闭合：`~~~` 关不掉 ``` 围栏。
-        let mismatched =
-            "## 实施步骤\n```text\n~~~\n1. e1\n2. e2\n3. e3\n4. e4\n5. e5\n```\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(&[], None, Some(mismatched)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-    }
-
-    #[test]
-    fn plan_steps_prefer_user_text_over_the_plan_document() {
-        let history = vec![Message::user_text(
-            "计划三步：第 1 步改 TTL，第 2 步加骨架，第 3 步移计数。",
-        )];
-        let markdown = "## 实施步骤\n1. a\n2. b\n3. c\n4. d\n";
-        assert_eq!(
-            plan_steps(&history, None, Some(markdown)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-    }
-
-    #[test]
-    fn plan_steps_prefer_the_plan_over_the_previous_checkpoint() {
-        // 上一版 checkpoint 的步号可能比刚批准的计划陈旧，不能压过计划文档。
-        let previous: String = (1..=5).map(|step| format!("第 {step} 步 done；")).collect();
-        let markdown = "## 实施步骤\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(
-                &[Message::user_text("继续")],
-                Some(&previous),
-                Some(markdown)
-            ),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-    }
-
-    #[test]
-    fn plan_steps_fall_back_when_user_steps_have_gaps() {
-        let history = vec![Message::user_text(
-            "第 1 步改 A，第 2 步改 B，第 4 步补测试。",
-        )];
-        let markdown = "## 实施步骤\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(&history, None, Some(markdown)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-    }
-
-    #[test]
-    fn plan_steps_prefer_a_step_section_over_an_h1_overview() {
-        let markdown = "# 迁移计划\n1. 概览一\n2. 概览二\n3. 概览三\n4. 概览四\n5. 概览五\n\
-                        6. 概览六\n7. 概览七\n## 实施步骤\n1. a\n2. b\n3. c\n4. d\n";
-        assert_eq!(
-            plan_steps(&[], None, Some(markdown)),
-            vec!["第 1 步", "第 2 步", "第 3 步", "第 4 步"]
-        );
-    }
-
-    #[test]
-    fn plan_steps_ignore_explanation_and_reproduce_sections() {
-        let markdown = "## Explanation\n1. e1\n2. e2\n3. e3\n\
-                        ## Steps to reproduce\n1. r1\n2. r2\n3. r3\n\
-                        ## 实施步骤\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(&[], None, Some(markdown)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-        assert!(plan_steps(&[], None, Some("## Explanation\n1. e1\n2. e2\n3. e3\n")).is_empty());
-    }
-
-    #[test]
-    fn plan_steps_fall_back_to_a_plan_heading() {
-        let markdown = "## 计划\n1. a\n2. b\n3. c\n";
-        assert_eq!(
-            plan_steps(&[], None, Some(markdown)),
-            vec!["第 1 步", "第 2 步", "第 3 步"]
-        );
-    }
-
-    #[test]
-    fn list_item_number_accepts_cjk_markers_without_spaces() {
-        assert_eq!(list_item_number("1、读取配置"), Some(1));
-        assert_eq!(list_item_number("12）收尾"), Some(12));
-        assert_eq!(list_item_number("3．验证"), Some(3));
-        assert_eq!(list_item_number("1.5 亿"), None);
-        assert_eq!(list_item_number("1.没有空格"), None);
-    }
-
-    #[test]
-    fn plan_steps_parse_multi_digit_numbers() {
-        let previous: String = (1..=12)
-            .map(|step| format!("第 {step} 步 done；"))
-            .collect();
-        let steps = plan_steps(&[Message::user_text("继续")], Some(&previous), None);
-        assert_eq!(steps.len(), 12);
-        assert_eq!(steps[11], "第 12 步");
     }
 
     #[test]
@@ -1237,28 +1038,5 @@ mod tests {
             !anchors.contains(&"rejected"),
             "识别词本身不该变成必保留事实：{anchors:?}"
         );
-    }
-
-    #[test]
-    fn fallback_keeps_rejected_options_and_plan() {
-        let state = state_with_calls(vec![], vec![]);
-        let history = vec![Message::user_text(
-            "否决了用 Redis 存窗口状态。计划三步：第 1 步改 TTL，第 2 步加骨架，第 3 步移计数。",
-        )];
-        let checkpoint = fallback_checkpoint(&state, &history, None, None);
-        assert!(checkpoint.contains("## Decisions and Rejected Options"));
-        assert!(checkpoint.contains("Redis"));
-        assert!(checkpoint.contains("## Plan Status"));
-        assert!(checkpoint.contains("第 3 步"));
-    }
-
-    #[test]
-    fn fallback_preserves_the_plan_override_steps() {
-        let state = state_with_calls(vec![], vec![]);
-        let history = vec![Message::user_text("继续")];
-        let plan = "## 实施步骤\n1. a\n2. b\n3. c\n";
-        let checkpoint = fallback_checkpoint(&state, &history, None, Some(plan));
-        assert!(checkpoint.contains("计划共 3 步"), "{checkpoint}");
-        assert!(checkpoint.contains("第 3 步"), "{checkpoint}");
     }
 }

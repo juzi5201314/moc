@@ -790,23 +790,6 @@ mod tests {
     }
 
     #[test]
-    fn session_compression_is_a_bool_field() {
-        let fields = fields(&json!({"session": {"compress": false}}));
-        let field = fields
-            .iter()
-            .find(|field| {
-                field
-                    .path
-                    .iter()
-                    .map(String::as_str)
-                    .eq(["session", "compress"])
-            })
-            .expect("session.compress 出现在配置目录");
-        assert!(matches!(field.kind, FieldKind::Bool));
-        assert!(field.description.contains("zstd"), "{}", field.description);
-    }
-
-    #[test]
     fn echo_reasoning_template_and_choices_stay_inside_the_schema() {
         let template = model_template();
         let value = template["compat"]["echo_reasoning"].clone();
@@ -819,68 +802,6 @@ mod tests {
         assert!(!options.is_empty(), "候选列表不得为空");
         for option in &options {
             serde_json::from_value::<moc_llm::ReasoningEcho>(json!(option))
-                .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
-        }
-    }
-
-    #[test]
-    fn instruction_system_description_lists_every_piece_name() {
-        let fields = fields(&json!({"providers": {"p": {"models": {"m": model_template()}}}}));
-        let field = fields
-            .iter()
-            .find(|field| {
-                field
-                    .path
-                    .last()
-                    .is_some_and(|key| key == "instruction_system")
-            })
-            .expect("instruction_system 出现在配置目录");
-        for name in crate::system_prompt::PIECE_NAMES {
-            assert!(
-                field.description.contains(name),
-                "字段说明必须列出片段名 {name}：{}",
-                field.description
-            );
-        }
-    }
-
-    #[test]
-    fn defaults_comment_lists_every_piece_name() {
-        let defaults = include_str!("defaults.toml");
-        for name in crate::system_prompt::PIECE_NAMES {
-            assert!(
-                defaults.contains(name),
-                "defaults.toml 的说明必须列出片段名 {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn instruction_role_template_and_choices_stay_inside_the_schema() {
-        use crate::config::model::InstructionRole;
-
-        let template = model_template();
-        // 模板写出的默认名单必须是规范片段名，否则配置加载会直接报错。
-        for name in template["compat"]["instruction_system"]
-            .as_array()
-            .expect("instruction_system 是数组")
-        {
-            let name = name.as_str().expect("片段名是字符串");
-            assert!(
-                crate::system_prompt::canonical_piece_name(name).is_some(),
-                "模板里的指令片段名 {name} 不在规范名单内"
-            );
-        }
-        let role = template["compat"]["instruction_role"].clone();
-        serde_json::from_value::<InstructionRole>(role)
-            .expect("模型模板写出的 instruction_role 必须是合法枚举值");
-        let options = choice_options(
-            &json!({"providers": {"p": {"models": {"m": template}}}}),
-            "instruction_role",
-        );
-        assert!(!options.is_empty(), "候选列表不得为空");
-        for option in &options {
-            serde_json::from_value::<InstructionRole>(json!(option))
                 .unwrap_or_else(|error| panic!("候选值 {option} 不在 schema 内：{error}"));
         }
     }

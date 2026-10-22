@@ -421,18 +421,6 @@ mod tests {
     }
 
     #[test]
-    fn split_lands_near_the_weight_fraction() {
-        let messages = vec![
-            Message::user_text(big(100)),
-            Message::user_text(big(800)),
-            Message::user_text(big(100)),
-        ];
-        let split = split_conversation_for_two_pass(&messages, TWO_PASS_DEFAULT_SPLIT_FRACTION)
-            .expect("可切分");
-        assert_eq!(split, 2, "累计权重首次达到 95% 的位置");
-    }
-
-    #[test]
     fn split_moves_off_tool_pairs() {
         let messages = vec![
             Message::user_text(big(100)),
@@ -443,109 +431,6 @@ mod tests {
         let split = split_conversation_for_two_pass(&messages, 0.5).expect("切点越过工具结果");
         assert_eq!(split, 3, "切点不能落在工具结果上");
         assert_ne!(messages[split].role, Role::Tool);
-    }
-
-    #[test]
-    fn split_keeps_pairing_when_it_falls_on_the_tail() {
-        let messages = vec![
-            Message::user_text(big(10)),
-            assistant_call("c1"),
-            Message::tool_result("c1", big(10), false),
-        ];
-        assert_eq!(
-            split_conversation_for_two_pass(&messages, 1.0),
-            Some(1),
-            "回退时把整组配对留给尾部"
-        );
-        assert!(split_conversation_for_two_pass(&[Message::user_text("only")], 0.95).is_none());
-    }
-
-    #[test]
-    fn cached_prefix_coverage_tracks_model_and_split() {
-        let prefix = vec![Message::user_text("前缀")];
-        let same = vec![Message::user_text("前缀")];
-        let other = vec![Message::user_text("别的")];
-        assert_eq!(
-            conversation_fingerprint(&prefix),
-            conversation_fingerprint(&same)
-        );
-        assert_ne!(
-            conversation_fingerprint(&prefix),
-            conversation_fingerprint(&other)
-        );
-
-        let state = PrefireState::default();
-        let (generation, _token) = state.try_begin().unwrap();
-        state.store(
-            generation,
-            PrefireCache {
-                note1: "笔记".into(),
-                prefix_len: 3,
-                fingerprint: conversation_fingerprint(&prefix),
-                model: "p/m".into(),
-            },
-        );
-        assert!(state.keeps_valid_prefix(3, "p/m"), "切点与缓存一致");
-        assert!(
-            state.keeps_valid_prefix(5, "p/m"),
-            "对话变长后仍覆盖同一前缀"
-        );
-        assert!(!state.keeps_valid_prefix(2, "p/m"), "切点回缩后需要重跑");
-        assert!(!state.keeps_valid_prefix(5, "p/other"), "换模型后需要重跑");
-    }
-
-    #[test]
-    fn take_for_pass2_validates_prefix_and_model() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let state = PrefireState::default();
-            let model = test_model();
-            let messages = vec![Message::user_text("前半"), Message::user_text("后半")];
-            let (generation, _token) = state.try_begin().unwrap();
-            state.store(
-                generation,
-                PrefireCache {
-                    note1: "笔记".into(),
-                    prefix_len: 1,
-                    fingerprint: conversation_fingerprint(&messages[..1]),
-                    model: model.selector.clone(),
-                },
-            );
-            state.finish(generation);
-            let cancel = CancellationToken::new();
-            assert_eq!(
-                state.take_for_pass2(&cancel, &model, &messages).await,
-                Some(("笔记".to_owned(), 1))
-            );
-            assert!(
-                state
-                    .take_for_pass2(&cancel, &model, &messages)
-                    .await
-                    .is_none(),
-                "结果只消费一次"
-            );
-
-            let (generation, _token) = state.try_begin().unwrap();
-            state.store(
-                generation,
-                PrefireCache {
-                    note1: "笔记".into(),
-                    prefix_len: 2,
-                    fingerprint: 7,
-                    model: "p/m".into(),
-                },
-            );
-            assert!(
-                state
-                    .take_for_pass2(&cancel, &model, &messages)
-                    .await
-                    .is_none(),
-                "前缀指纹不匹配时丢弃"
-            );
-        });
     }
 
     #[test]

@@ -3681,9 +3681,7 @@ fn usage_table(result: &moc_protocol::SessionUsageResult, max_width: usize) -> V
         };
         hidden[index] = true;
     }
-    let visible: Vec<usize> = (0..COLUMNS.len())
-        .filter(|index| !hidden[*index])
-        .collect();
+    let visible: Vec<usize> = (0..COLUMNS.len()).filter(|index| !hidden[*index]).collect();
     // 模型列吃掉剩余预算，其余列按内容宽定宽。
     let fixed: usize = visible
         .iter()

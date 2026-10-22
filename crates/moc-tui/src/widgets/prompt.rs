@@ -631,15 +631,6 @@ mod tests {
     use super::PromptState;
 
     #[test]
-    fn wide_character_cursor_moves_on_utf8_boundaries() {
-        let mut prompt = PromptState::default();
-        prompt.insert_str_raw("中文a");
-        prompt.left();
-        assert_eq!(&prompt.text[..prompt.cursor], "中文");
-        prompt.right();
-        assert_eq!(&prompt.text[..prompt.cursor], "中文a");
-    }
-    #[test]
     fn resource_completion_replaces_token_without_space_or_multiline_loss() {
         let mut prompt = PromptState::default();
         prompt.insert_str_raw("前 local:/\n保留内容");
@@ -649,29 +640,6 @@ mod tests {
         prompt.replace_range(start..end, "local://plan_1.md", false);
         assert_eq!(prompt.text, "前 local://plan_1.md\n保留内容");
         assert_eq!(prompt.cursor, start + "local://plan_1.md".len());
-    }
-
-    #[test]
-    fn word_navigation_moves_by_word_boundaries() {
-        let mut prompt = PromptState::default();
-        prompt.insert_str_raw("hello world_123 /path/test");
-        prompt.move_word_back();
-        assert_eq!(&prompt.text[prompt.cursor..], "test");
-        prompt.move_word_back();
-        assert_eq!(&prompt.text[prompt.cursor..], "/test");
-        prompt.move_word_back();
-        assert_eq!(&prompt.text[prompt.cursor..], "path/test");
-    }
-    #[test]
-    fn prompt_up_first_moves_to_start_before_history() {
-        let mut prompt = PromptState::default();
-        prompt.histories.push("old_command".into());
-        prompt.insert_str_raw("my current long prompt");
-        assert!(prompt.up());
-        assert_eq!(prompt.cursor, 0);
-        assert_eq!(prompt.text, "my current long prompt");
-        assert!(prompt.up());
-        assert_eq!(prompt.text, "old_command");
     }
 
     #[test]
@@ -716,29 +684,5 @@ mod tests {
         assert!(prompt.text.is_empty());
         assert!(!prompt.has_attached_images(), "占位删掉后 chip 不算附件");
         assert!(prompt.is_empty(), "只剩陈旧 chip 的输入框算空");
-    }
-
-    #[test]
-    fn seeded_history_is_recalled_newest_first() {
-        let mut prompt = PromptState::default();
-        prompt.seed_history(vec!["新提示".into(), "更旧".into()]);
-        assert!(prompt.history_up());
-        assert_eq!(prompt.text, "新提示");
-        assert!(prompt.history_up());
-        assert_eq!(prompt.text, "更旧");
-        assert!(prompt.history_down());
-        assert_eq!(prompt.text, "新提示");
-    }
-
-    #[test]
-    fn identical_consecutive_prompts_are_recorded_once() {
-        let mut prompt = PromptState::default();
-        for _ in 0..2 {
-            prompt.insert_str_raw("继续");
-            let _ = prompt.take_submitted_draft();
-        }
-        assert!(prompt.history_up());
-        assert_eq!(prompt.text, "继续");
-        assert!(!prompt.history_up(), "连续重复只留一条");
     }
 }

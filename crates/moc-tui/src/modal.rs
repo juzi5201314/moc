@@ -1336,7 +1336,10 @@ mod tests {
         let mut state = RewindState::default();
         state.set_entries(vec![
             entry("u1", Message::user_text("帮我实现一个快排")),
-            entry("a1", Message::assistant_text("好的，这是快速排序（快排）实现")),
+            entry(
+                "a1",
+                Message::assistant_text("好的，这是快速排序（快排）实现"),
+            ),
             entry("u2", Message::user_text("加几个单元测试")),
             entry("a2", Message::assistant_text("测试已增加并全部通过")),
             entry("u3", Message::user_text("改成双轴快排")),

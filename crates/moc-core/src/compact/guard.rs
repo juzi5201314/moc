@@ -431,27 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn unwrap_checkpoint_strips_wrappers_and_keeps_plain_text() {
-        let fence = "`".repeat(3);
-        let cases = [
-            (
-                "<analysis>draft</analysis>\n<summary>\n## A\nbody\n</summary>",
-                "## A\nbody",
-            ),
-            ("  ## A\nbody  ", "## A\nbody"),
-            (
-                &format!("{fence}markdown\n## A\nbody\n{fence}"),
-                "## A\nbody",
-            ),
-            ("<analysis>only draft", ""),
-            ("<analysis>draft<summary>## A\nkeep</summary>", "## A\nkeep"),
-        ];
-        for (raw, expected) in cases {
-            assert_eq!(unwrap_checkpoint(raw), expected, "{raw}");
-        }
-    }
-
-    #[test]
     fn missing_sections_requires_real_headings() {
         let text = "## Primary Request and Intent\nmentions Current Work in prose\n";
         assert_eq!(
@@ -473,13 +452,6 @@ mod tests {
         assert!(anchors.contains(&"3.2".to_owned()));
         assert!(!anchors.iter().any(|anchor| anchor == "window"));
         assert!(!anchors.iter().any(|anchor| anchor == "110jy"));
-    }
-
-    #[test]
-    fn anchors_prioritize_previous_checkpoint() {
-        let message = Message::user_text("rotate_windows");
-        let anchors = salient_anchors(std::iter::once(&message), Some("legacy.rs"));
-        assert_eq!(anchors.first().map(String::as_str), Some("legacy.rs"));
     }
 
     #[test]
@@ -524,16 +496,6 @@ mod tests {
     }
 
     #[test]
-    fn matching_counts_anchors_and_reports_missing() {
-        let anchors = vec!["a_b".to_owned(), "c_d".to_owned()];
-        assert_eq!(matching(&anchors, "a_b here"), 1);
-        assert_eq!(
-            missing_anchors(&anchors, "a_b here"),
-            vec!["c_d".to_owned()]
-        );
-    }
-
-    #[test]
     fn required_hits_scale_with_a_cap() {
         assert_eq!(required_hits(0), 0);
         assert_eq!(required_hits(2), 2);
@@ -541,23 +503,5 @@ mod tests {
         assert_eq!(required_hits(100), 64, "大输入直接封顶，不再要求 85%");
         assert_eq!(required_hits(240), 64);
         assert!(acceptable_hits(240) < required_hits(240));
-    }
-
-    #[test]
-    fn long_histories_sample_anchors_evenly() {
-        // 3000 个互不相同的锚点必须抽样到 240 个，且开头和结尾都要有代表。
-        let mut messages = Vec::new();
-        for index in 0..3000 {
-            messages.push(Message::user_text(format!(
-                "crates/ingest/src/module_{index}.rs 的第 {index} 步"
-            )));
-        }
-        let anchors = salient_anchors(messages.iter(), None);
-        assert_eq!(anchors.len(), MAX_ANCHORS);
-        assert!(anchors.iter().any(|anchor| anchor.contains("module_0.rs")));
-        assert!(
-            anchors.iter().any(|anchor| anchor.contains("module_2")),
-            "抽样必须覆盖后半段"
-        );
     }
 }

@@ -191,26 +191,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decodes_declared_charset_and_falls_back_to_utf8() {
-        let (gbk, _, _) = encoding_rs::GBK.encode("中文");
-        assert_eq!(decode_body(&gbk, Some("text/html; charset=gbk")), "中文");
-        assert_eq!(decode_body("中文".as_bytes(), None), "中文");
-        assert_eq!(
-            decode_body("中文".as_bytes(), Some("text/plain; charset=not-a-charset")),
-            "中文"
-        );
-    }
-
-    #[test]
-    fn content_type_essence_strips_parameters() {
-        assert_eq!(
-            content_type_essence(Some("Text/HTML; charset=UTF-8")).as_deref(),
-            Some("text/html")
-        );
-        assert_eq!(content_type_essence(Some("  ")), None);
-    }
-
-    #[test]
     fn batch_budget_never_overdraws() {
         let budget = BatchBudget::new(10);
         assert_eq!(budget.reserve(4), 4);

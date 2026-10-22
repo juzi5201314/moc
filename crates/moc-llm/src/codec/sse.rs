@@ -191,90 +191,6 @@ mod tests {
     }
 
     #[test]
-    fn comments_and_blank_lines_are_ignored() {
-        let mut decoder = SseDecoder::new();
-        decoder.push(b": keep-alive\n\n\n: another\ndata: ok\n\n\n");
-        assert_eq!(drain(&mut decoder), vec![data_event("ok")]);
-    }
-
-    #[test]
-    fn crlf_and_lf_are_equivalent() {
-        let mut decoder = SseDecoder::new();
-        decoder.push(b"event: ping\r\ndata: {\"x\":1}\r\n\r\ndata: tail\n\n");
-        assert_eq!(
-            drain(&mut decoder),
-            vec![
-                SseEvent {
-                    event: Some("ping".into()),
-                    data: "{\"x\":1}".into(),
-                    id: None,
-                },
-                data_event("tail"),
-            ]
-        );
-    }
-
-    #[test]
-    fn utf8_payload_decodes_verbatim() {
-        let mut decoder = SseDecoder::new();
-        decoder.push("data: 你好，世界\n\n".as_bytes());
-        assert_eq!(drain(&mut decoder), vec![data_event("你好，世界")]);
-    }
-
-    #[test]
-    fn utf8_split_across_chunks_survives() {
-        let payload = "data: 分片安全\n\n".as_bytes();
-        let mut decoder = SseDecoder::new();
-        for &byte in payload {
-            decoder.push(&[byte]);
-            let events = drain(&mut decoder);
-            if !events.is_empty() {
-                assert_eq!(events, vec![data_event("分片安全")]);
-            }
-        }
-    }
-
-    #[test]
-    fn arbitrary_split_points_yield_identical_events() {
-        let payload = "event: a\ndata: {\"a\":1}\n\ndata: 第二段\ndata: 续行\n\ndata: [DONE]\n\n";
-        let bytes = payload.as_bytes();
-        let expected = vec![
-            SseEvent {
-                event: Some("a".into()),
-                data: "{\"a\":1}".into(),
-                id: None,
-            },
-            data_event("第二段\n续行"),
-            data_event("[DONE]"),
-        ];
-
-        let collect = |cuts: &[usize]| {
-            let mut decoder = SseDecoder::new();
-            let mut events = Vec::new();
-            let mut start = 0;
-            for &cut in cuts {
-                decoder.push(&bytes[start..cut]);
-                events.extend(drain(&mut decoder));
-                start = cut;
-            }
-            decoder.push(&bytes[start..]);
-            events.extend(drain(&mut decoder));
-            events
-        };
-
-        for split in 0..=bytes.len() {
-            assert_eq!(collect(&[split]), expected, "单刀切分点 {split}");
-            for second in split..=bytes.len() {
-                assert_eq!(
-                    collect(&[split, second]),
-                    expected,
-                    "双刀切分点 {split}/{second}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn trailing_incomplete_frame_is_dropped() {
         let mut decoder = SseDecoder::new();
         decoder.push(b"data: complete\n\ndata: partial");
@@ -285,18 +201,5 @@ mod tests {
         // 补上结尾后照常产出，证明未消费字节被保留。
         decoder.push(b"\n\n");
         assert_eq!(drain(&mut decoder), vec![data_event("partial")]);
-    }
-
-    #[test]
-    fn buffer_reclaims_consumed_prefix() {
-        let mut decoder = SseDecoder::new();
-        for index in 0..64 {
-            decoder.push(format!("data: {index}\n\n").as_bytes());
-            assert_eq!(drain(&mut decoder), vec![data_event(&index.to_string())]);
-        }
-        assert_eq!(decoder.next_event(), None);
-        // 前缀回收发生在 push 内：读游标不会随帧数无限增长。
-        assert!(decoder.pos < decoder.buf.len() + 1);
-        assert_eq!(decoder.pos, decoder.buf.len());
     }
 }

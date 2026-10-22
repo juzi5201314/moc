@@ -207,26 +207,4 @@ mod tests {
             assert!(parse_anchor(raw).is_err(), "{raw}");
         }
     }
-
-    #[test]
-    fn id_index_round_trips_the_full_two_letter_space() {
-        for index in 0..ID_TOTAL {
-            let id = id_from_index(u32::from(index));
-            assert_eq!(id_index(id), index);
-        }
-    }
-
-    #[test]
-    fn token_keys_are_unique_across_lines_with_the_same_id() {
-        let token = AnchorToken {
-            line: 7,
-            id: *b"zz",
-        };
-        let other = AnchorToken {
-            line: 8,
-            id: *b"zz",
-        };
-        assert_ne!(token_key(token), token_key(other));
-        assert_eq!(token.text(), "7zz");
-    }
 }

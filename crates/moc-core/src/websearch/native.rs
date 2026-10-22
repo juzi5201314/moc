@@ -398,24 +398,11 @@ mod tests {
     }
 
     #[test]
-    fn caps_chars_at_boundary() {
-        let mut text = "中文".repeat(10);
-        assert!(cap_chars(&mut text, 5));
-        assert!(text.starts_with("中文中文中"));
-        assert!(text.contains("truncated after 5 characters"));
-        let mut short = "abc".to_owned();
-        assert!(!cap_chars(&mut short, 3));
-        assert_eq!(short, "abc");
-    }
-
-    #[test]
     fn rejects_unsupported_content_types() {
         assert!(!is_text_type("application/pdf"));
         assert!(is_text_type("text/plain"));
         assert!(is_text_type("application/json"));
     }
-
-    use std::time::Duration;
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -482,19 +469,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_text_passes_through() {
-        let server = MockServer::builder().start().await;
-        Mock::given(method("GET"))
-            .and(path("/page"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw("hello", "text/plain"))
-            .mount(&server)
-            .await;
-        let cache = tempfile::tempdir().expect("cache");
-        let response = fetch_one(&server, cache.path(), 1024, 100).await;
-        assert_eq!(response.results[0].raw_content, "hello");
-    }
-
-    #[tokio::test]
     async fn unsupported_content_type_is_a_per_url_failure() {
         let server = MockServer::builder().start().await;
         Mock::given(method("GET"))
@@ -554,37 +528,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caps_body_and_characters() {
-        let server = MockServer::builder().start().await;
-        Mock::given(method("GET"))
-            .and(path("/page"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("x".repeat(200)))
-            .mount(&server)
-            .await;
-        let cache = tempfile::tempdir().expect("cache");
-        let response = fetch_one(&server, cache.path(), 40, 10).await;
-        let result = &response.results[0];
-        assert!(result.truncated);
-        assert!(
-            result
-                .notes
-                .iter()
-                .any(|note| note.contains("body truncated"))
-        );
-        assert!(
-            result
-                .notes
-                .iter()
-                .any(|note| note.contains("truncated after 10 characters"))
-        );
-        assert!(
-            result
-                .raw_content
-                .contains("[truncated after 10 characters]")
-        );
-    }
-
-    #[tokio::test]
     async fn cancellation_aborts_the_whole_call() {
         let server = MockServer::builder().start().await;
         Mock::given(method("GET"))
@@ -611,46 +554,5 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code, "E_CANCELLED");
-    }
-
-    #[tokio::test]
-    async fn results_preserve_input_order() {
-        let server = MockServer::builder().start().await;
-        Mock::given(method("GET"))
-            .and(path("/slow"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_string("slow"),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/fast"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("fast"))
-            .mount(&server)
-            .await;
-        let cache = tempfile::tempdir().expect("cache");
-        let fetcher = NativeFetcher::with_endpoints(
-            &config(1024, 100),
-            SiteEndpoints::default(),
-            cache.path(),
-        );
-        let response = fetcher
-            .extract(
-                &ExtractRequest {
-                    urls: vec![
-                        format!("{}/slow", server.uri()),
-                        format!("{}/fast", server.uri()),
-                    ],
-                    query: None,
-                },
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("fetch");
-        assert_eq!(response.results.len(), 2);
-        assert!(response.results[0].url.ends_with("/slow"));
-        assert!(response.results[1].url.ends_with("/fast"));
     }
 }

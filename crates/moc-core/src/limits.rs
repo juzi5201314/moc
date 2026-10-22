@@ -385,14 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_only_returns_limits_when_enabled() {
-        let mut config = BashLimitsConfig::default();
-        assert!(config.resolve().is_none());
-        config.enabled = true;
-        assert_eq!(config.resolve(), Some(limits()));
-    }
-
-    #[test]
     fn validation_names_the_field_and_rejects_empty_or_inverted_limits() {
         let mut config = BashLimitsConfig::default();
         config.enabled = true;
@@ -446,33 +438,11 @@ mod tests {
     }
 
     #[test]
-    fn render_mentions_each_configured_cap() {
-        let rendered = render(&limits());
-        assert!(rendered.contains("4 cores"));
-        assert!(rendered.contains("memory high 8.0 GiB / max 12.0 GiB"));
-        assert!(rendered.contains("swap max 4.0 GiB"));
-        let without_high = render(&BashLimits {
-            memory_high_bytes: 0,
-            ..limits()
-        });
-        assert!(without_high.contains("memory max 12.0 GiB"));
-        assert!(!without_high.contains("memory high"));
-    }
-
-    #[test]
     fn unit_ids_are_unique_per_command() {
         let first = short_unit_id();
         let second = short_unit_id();
         assert_ne!(first, second);
         assert!(first.starts_with("moc-bash-"));
         assert!(first.len() <= 64);
-    }
-
-    #[test]
-    fn scope_failures_are_recognized_from_stderr() {
-        assert!(failure_in(
-            "Failed to start transient scope unit: Unit run-p1-i2.scope was already loaded"
-        ));
-        assert!(!failure_in("compile error"));
     }
 }

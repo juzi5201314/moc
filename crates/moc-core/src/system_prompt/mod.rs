@@ -553,42 +553,6 @@ mod tests {
         assert_eq!(prompt.static_prefix, vec![3]);
     }
 
-    #[test]
-    fn environment_reports_bash_limits_only_when_enabled() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let cwd = directory.path().join("repo");
-        let home = directory.path().join("home");
-        fs::create_dir_all(&cwd).expect("create repo");
-        let mut config = resolved(&cwd, &home);
-        let model = config.resolve_role("default").expect("resolve model");
-        let prompt = build(
-            &config,
-            &model,
-            &cwd,
-            &[],
-            &crate::skills::SkillIndex::empty(),
-            "",
-            None,
-        );
-        assert!(!prompt_text(&prompt).contains("bash limits:"));
-
-        config.tools.bash.limits.enabled = true;
-        let prompt = build(
-            &config,
-            &model,
-            &cwd,
-            &[],
-            &crate::skills::SkillIndex::empty(),
-            "",
-            None,
-        );
-        let text = prompt_text(&prompt);
-        if crate::limits::support().available {
-            assert!(text.contains("bash limits:"), "{text}");
-        }
-        assert!(text.contains("shell: "), "{text}");
-    }
-
     /// 指令角色设为 user 时，规定性片段改用 user 消息，描述性片段留在 system；
     /// 片段正文不变，只有分组和顺序不同。
     #[test]

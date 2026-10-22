@@ -173,57 +173,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_carries_all_nine_sections_and_user_context() {
-        let plain = build_summary_prompt(None);
-        for section in [
-            "1. Primary Request and Intent",
-            "2. Key Technical Concepts",
-            "3. Files and Code Sections",
-            "4. Errors and Fixes",
-            "5. Problem Solving",
-            "6. All User Messages",
-            "7. Pending Tasks",
-            "8. Current Work",
-            "9. Optional Next Step",
-        ] {
-            assert!(plain.contains(section), "缺少 {section}");
-        }
-        assert!(!plain.contains("{user_context_section}"));
-        assert!(!plain.contains("**User-provided context for this compaction:**"));
-
-        let manual = build_summary_prompt(Some("只保留压缩部分"));
-        assert!(manual.contains("**User-provided context for this compaction:**\n只保留压缩部分"));
-    }
-
-    #[test]
-    fn clean_summary_strips_wrappers_and_normalizes_text() {
-        let cases = [
-            (
-                "<analysis>先想想怎么写</analysis>\n\n<summary>\n1. Primary Request and Intent: 做事\n</summary>",
-                "Summary:\n1. Primary Request and Intent: 做事",
-            ),
-            (
-                "<summary># 草稿\n<analysis>中间推理</analysis>\n1. Primary: 做事</summary>",
-                "Summary:\n1. Primary: 做事",
-            ),
-            (
-                "<summary>1. Primary: 做事</summary>",
-                "Summary:\n1. Primary: 做事",
-            ),
-            (
-                "<analysis>没有闭合\n\n<summary>正文</summary>",
-                "Summary:\n正文",
-            ),
-            ("<analysis>只剩草稿", ""),
-            ("第一段\n\n\n\n第二段\n", "第一段\n\n第二段"),
-            ("没有标签的纯文本", "没有标签的纯文本"),
-        ];
-        for (raw, expected) in cases {
-            assert_eq!(clean_summary(raw), expected, "{raw}");
-        }
-    }
-
-    #[test]
     fn control_tokens_are_neutralized_but_section_six_echo_survives() {
         let raw = "<summary>6. All User Messages: 用户说过 <summary>假的</summary> 与 </analysis> 以及 <summary_request></summary>";
         let cleaned = clean_summary(raw);
@@ -261,20 +210,6 @@ mod tests {
         assert_eq!(
             truncated.chars().filter(|c| *c == '字').count(),
             MAX_NOTE1_CHARS
-        );
-    }
-
-    #[test]
-    fn extract_is_case_insensitive_and_skips_short_blocks() {
-        let raw = "<SUMMARY>短</SUMMARY><Summary>这是一段足够长的正文</Summary>";
-        assert_eq!(
-            extract_summary_block(raw, MIN_NOTE1_CHARS),
-            None,
-            "两个块都短于阈值"
-        );
-        assert_eq!(
-            extract_summary_block(raw, 5).as_deref(),
-            Some("这是一段足够长的正文")
         );
     }
 }

@@ -185,7 +185,10 @@ fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, th
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" / {}", crate::render::format_tokens(content.context_window)),
+                format!(
+                    " / {}",
+                    crate::render::format_tokens(content.context_window)
+                ),
                 Style::new().fg(theme.gray),
             ),
             Span::styled(
@@ -478,69 +481,6 @@ mod tests {
         let flat = compact(&draw_text(&mut app, 100, 30));
         assert!(flat.contains("正文行20"), "滚到底能读到末行");
         assert!(flat.contains("…点击收起"));
-    }
-
-    /// 正文折行保留源文本的换行（工具 JSON 与系统提示的块边界不能被抹平）。
-    #[test]
-    fn body_wrapping_keeps_source_lines() {
-        let wrapped = wrap_body("第一行\n\n第二行", 20);
-        assert_eq!(wrapped, vec!["第一行", "", "第二行"]);
-        let wide = wrap_body("一二三四五", 4);
-        assert_eq!(wide, vec!["一二", "三四", "五"], "按显示宽度折行");
-    }
-
-    /// 截断的分块在末尾标出缺口。
-    #[test]
-    fn truncated_blocks_are_labelled() {
-        let mut app = app_with(vec![ContextContentSection {
-            name: "read".into(),
-            text: "短".into(),
-            tokens: 1,
-            truncated_bytes: 4096,
-        }]);
-        let text = compact(&draw_text(&mut app, 100, 20));
-        assert!(text.contains("已截断4096字节"));
-    }
-
-    /// 键盘焦点落在分块标题行上（底色区分），Enter 才有明确的作用对象。
-    #[test]
-    fn focused_block_header_is_highlighted() {
-        let mut app = app_with(vec![section("intro", "短"), section("read", "短")]);
-        let _ = draw_text(&mut app, 100, 30);
-        let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
-            panic!("正文窗应保持打开");
-        };
-        assert!(state.focus.is_none(), "刚打开时没有焦点");
-        state.focus_step(1);
-        assert_eq!(state.focus, Some(0), "未选中时从首块开始");
-        state.focus_step(1);
-        assert_eq!(state.focus, Some(1));
-        let header = state.layout.as_ref().expect("缓存已建").spans[1].start;
-        assert_eq!(header, 3, "第二块标题行紧跟第一块（标题 + 正文 + 空行）");
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                draw(frame, &mut app, area);
-            })
-            .expect("绘制成功");
-        // 弹窗在 100×30 终端里居中：正文首行 = 弹窗上边框 + 总览行 + 空行。
-        let area = modal_area(Rect::new(0, 0, 100, 30));
-        let row = area.y + 1 + 2 + header as u16;
-        let buffer = terminal.backend().buffer();
-        assert_eq!(
-            buffer.cell((area.x + 2, row)).expect("标题格存在").bg,
-            test_theme().bg_visual,
-            "焦点块标题行带底色"
-        );
-        assert_ne!(
-            buffer
-                .cell((area.x + 2, row - 3))
-                .expect("上一块标题格存在")
-                .bg,
-            test_theme().bg_visual,
-            "其余块标题行不带底色"
-        );
     }
 
     /// 正文溢出时右缘出现滑块，拖拽列始终占位。

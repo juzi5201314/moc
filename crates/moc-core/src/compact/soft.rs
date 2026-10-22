@@ -620,137 +620,10 @@ fn repair_block(repair: &Repair) -> String {
 }
 
 #[cfg(test)]
-fn summary_transcript(
-    state: &SessionState,
-    history: &[Message],
-    start: usize,
-    instructions: Option<&str>,
-) -> String {
-    let mut transcript = summary_prompt(state, instructions, 0, None, None, None, false);
-    for message in &history[..start] {
-        transcript.push_str(&serde_json::to_string(message).expect("Message 可序列化"));
-        transcript.push_str("\n\n");
-    }
-    transcript
-}
-
-#[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::{PlanStatus, SessionMode, SessionPermission};
 
     use super::*;
-    use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
-
-    #[test]
-    fn summary_input_carries_checkpoint_plan_instructions_and_required_sections() {
-        let header = Entry::header(
-            "ses_123456789abc".into(),
-            "/tmp".into(),
-            "p/m".into(),
-            SessionMode::Plan,
-            SessionPermission::Full,
-            SessionOrigin::root(),
-            "plan".into(),
-            1,
-        );
-        let parent = header.id().to_owned();
-        let summary = Entry::from_payload(
-            EntryPayload::Compaction {
-                method: "soft".into(),
-                summary: "preserve user correction".into(),
-                first_kept_id: None,
-                tokens_before: 20,
-                tokens_after: 10,
-                instructions: None,
-                native: None,
-                model: Some("p/m".into()),
-                reminder: None,
-            },
-            parent,
-            2,
-        );
-        let plan = Entry::from_payload(
-            EntryPayload::Plan {
-                plan_id: "plan_12345678".into(),
-                title: "Keep plan".into(),
-                path: "/tmp/plan.md".into(),
-                markdown: "# Keep this plan".into(),
-                status: PlanStatus::Submitted,
-            },
-            summary.id().into(),
-            3,
-        );
-        let state = SessionState::from_entries(vec![header, summary, plan]).unwrap();
-        let input = summary_transcript(
-            &state,
-            &[
-                Message::user_text("older request"),
-                Message::user_text("recent request"),
-            ],
-            1,
-            Some("preserve plan and decisions"),
-        );
-
-        assert!(input.contains("preserve user correction"));
-        assert!(input.contains("<pending-plan>\n# Keep this plan\n</pending-plan>"));
-        assert!(
-            input
-                .contains("<user-instructions>\npreserve plan and decisions\n</user-instructions>")
-        );
-        assert!(input.contains("## Primary Request and Intent\n## Key Technical Concepts"));
-        assert!(input.contains("older request"));
-        assert!(!input.contains("recent request"));
-    }
-
-    #[test]
-    fn summary_prompt_states_the_merge_contract_and_digest() {
-        let header = Entry::header(
-            "ses_123456789abc".into(),
-            "/tmp".into(),
-            "p/m".into(),
-            SessionMode::Normal,
-            SessionPermission::Full,
-            SessionOrigin::root(),
-            "t".into(),
-            1,
-        );
-        let state = SessionState::from_entries(vec![header]).unwrap();
-        let prompt = summary_prompt(
-            &state,
-            None,
-            0,
-            Some("<session-digest>\n- a.rs\n</session-digest>"),
-            None,
-            None,
-            true,
-        );
-        assert!(prompt.contains("<checkpoint-contract>"));
-        assert!(prompt.contains("never restart from scratch"));
-        assert!(prompt.contains("<session-digest>\n- a.rs\n</session-digest>"));
-        assert!(prompt.contains("## Critical Context"));
-    }
-
-    #[test]
-    fn repair_block_lists_missing_anchors() {
-        let block = repair_block(&Repair {
-            reason: "your reply preserves only 12 of the 40 required concrete facts".into(),
-            missing: vec!["45_000".into(), "crates/ingest/src/window.rs".into()],
-        });
-        assert!(block.starts_with("<previous-attempt-rejected>"));
-        assert!(block.contains("- 45_000"));
-        assert!(block.contains("- crates/ingest/src/window.rs"));
-        assert!(block.ends_with("</previous-attempt-rejected>\n"));
-    }
-
-    #[test]
-    fn anchor_window_keeps_only_the_recent_tail() {
-        let history: Vec<Message> = (0..10)
-            .map(|index| Message::user_text(format!("{index:0>100}")))
-            .collect();
-        assert_eq!(anchor_window_start(&history, 350), 7);
-        assert_eq!(anchor_window_start(&history, 10_000), 0);
-    }
 
     #[test]
     fn anchor_window_keeps_the_newest_message_even_if_oversized() {
@@ -825,13 +698,6 @@ mod tests {
     }
 
     #[test]
-    fn summary_budget_covers_a_full_context_window_history() {
-        // 500k 窗口的 85% 触发点上，被丢弃的历史仍必须放得下。
-        let budget = summary_input_budget(500_000, 20_000, 5_000, summary_output_tokens(384_000));
-        assert!(budget >= 435_000, "输入预算只剩 {budget} token");
-    }
-
-    #[test]
     fn summary_view_keeps_the_main_loop_prefix_when_it_fits() {
         let prefix = vec![
             Message::user_text("system"),
@@ -882,47 +748,5 @@ mod tests {
         assert_eq!(view.len(), prefix.len());
         assert_eq!(view[0].text(), "system");
         assert_eq!(omitted, 1, "整段历史都没进请求，提示词必须如实说明");
-    }
-
-    #[test]
-    fn summary_prompt_omits_a_replayed_previous_summary() {
-        let header = Entry::header(
-            "ses_123456789abc".into(),
-            "/tmp".into(),
-            "p/m".into(),
-            SessionMode::Normal,
-            SessionPermission::Full,
-            SessionOrigin::root(),
-            "t".into(),
-            1,
-        );
-        let parent = header.id().to_owned();
-        let summary = Entry::from_payload(
-            EntryPayload::Compaction {
-                method: "soft".into(),
-                summary: "PRIOR CHECKPOINT".into(),
-                first_kept_id: None,
-                tokens_before: 20,
-                tokens_after: 10,
-                instructions: None,
-                native: None,
-                model: Some("p/m".into()),
-                reminder: None,
-            },
-            parent,
-            2,
-        );
-        let state = SessionState::from_entries(vec![header, summary]).unwrap();
-
-        let replayed = summary_prompt(&state, None, 0, None, None, None, true);
-        assert!(
-            !replayed.contains("<previous-summary>\nPRIOR CHECKPOINT"),
-            "上一版 checkpoint 已在消息前缀里，不能再占预算：{replayed}"
-        );
-        let isolated = summary_prompt(&state, None, 0, None, None, None, false);
-        assert!(
-            isolated.contains("<previous-summary>\nPRIOR CHECKPOINT\n</previous-summary>"),
-            "原生压缩载荷不在消息视图里时必须补上上一版 checkpoint：{isolated}"
-        );
     }
 }

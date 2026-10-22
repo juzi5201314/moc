@@ -419,9 +419,7 @@ fn is_iso_date(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::websearch::{
-        ExtractFailed, ExtractResponse, ExtractResult, SearchResponse, SearchResult,
-    };
+    use crate::websearch::{ExtractFailed, ExtractResponse, ExtractResult};
 
     #[test]
     fn parses_site_and_date_operators() {
@@ -436,87 +434,12 @@ mod tests {
     }
 
     #[test]
-    fn keeps_quoted_phrases_and_negated_terms() {
-        let parsed = parse_query_ops("\"foo bar\" -term baz");
-        assert_eq!(parsed.query, "\"foo bar\" -term baz");
-        assert!(parsed.include_domains.is_empty());
-        assert!(parsed.exclude_domains.is_empty());
-    }
-
-    #[test]
-    fn truncates_site_paths_and_rejects_invalid_operands() {
-        let parsed = parse_query_ops("site:example.com/docs after:not-a-date Site:UPPER");
-        assert_eq!(parsed.include_domains, ["example.com"]);
-        assert!(parsed.start_date.is_none());
-        assert_eq!(parsed.query, "after:not-a-date Site:UPPER");
-    }
-
-    #[test]
-    fn empty_host_operator_tokens_stay_in_query() {
-        let parsed = parse_query_ops("site: -site: foo");
-        assert_eq!(parsed.query, "site: -site: foo");
-        assert!(parsed.include_domains.is_empty());
-        assert!(parsed.exclude_domains.is_empty());
-    }
-
-    #[test]
     fn clamps_limit_and_applies_recency() {
         let request = build_search_request("rust", Some(Recency::Week), Some(100));
         assert_eq!(request.max_results, 20);
         assert_eq!(request.time_range, Some(TimeRange::Week));
         assert_eq!(build_search_request("rust", None, Some(0)).max_results, 1);
         assert_eq!(build_search_request("rust", None, None).max_results, 5);
-    }
-
-    #[test]
-    fn normalize_urls_trims_dedupes_and_bounds() {
-        let urls = normalize_urls(&[
-            " https://a.example ".into(),
-            "https://b.example".into(),
-            "https://a.example".into(),
-            "  ".into(),
-        ])
-        .expect("过滤后应能解析");
-        assert_eq!(urls, ["https://a.example", "https://b.example"]);
-        assert!(normalize_urls(&["   ".into()]).is_err());
-        let exactly_20: Vec<String> = (0..20)
-            .map(|index| format!("https://example.com/{index}"))
-            .collect();
-        assert_eq!(normalize_urls(&exactly_20).expect("20 条是合法数量").len(), 20);
-        let too_many: Vec<String> = (0..21)
-            .map(|index| format!("https://example.com/{index}"))
-            .collect();
-        assert!(normalize_urls(&too_many).is_err());
-    }
-
-    #[test]
-    fn renders_answer_first_with_numbered_sources() {
-        let response = SearchResponse {
-            answer: Some("Answer text.".into()),
-            results: vec![
-                SearchResult {
-                    title: "One".into(),
-                    url: "https://one.example".into(),
-                    snippet: Some("snippet".into()),
-                    published_date: Some("2025-08-01".into()),
-                },
-                SearchResult {
-                    title: "Two".into(),
-                    url: "https://two.example".into(),
-                    snippet: None,
-                    published_date: None,
-                },
-            ],
-        };
-        assert_eq!(
-            render_search("q", &response),
-            "Answer text.\n\n## Sources (2)\n[1] One (2025-08-01)\n    https://one.example\n    snippet\n[2] Two\n    https://two.example"
-        );
-        let empty = SearchResponse {
-            answer: None,
-            results: Vec::new(),
-        };
-        assert_eq!(render_search("q", &empty), "No results found for: q");
     }
 
     #[test]

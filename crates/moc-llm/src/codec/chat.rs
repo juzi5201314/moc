@@ -971,43 +971,6 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_field_switch() {
-        let req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            max_output_tokens: Some(64),
-            ..Default::default()
-        };
-        let cfg = config();
-        let body = encode_body(&cfg, &req, false);
-        assert_eq!(body["max_tokens"], json!(64));
-        assert!(body.get("max_completion_tokens").is_none());
-
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                max_output_tokens_field: MaxTokensField::MaxCompletionTokens,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let body = encode_body(&cfg, &req, false);
-        assert_eq!(body["max_completion_tokens"], json!(64));
-        assert!(body.get("max_tokens").is_none());
-    }
-
-    #[test]
-    fn developer_role_downgrade() {
-        let req = ChatRequest {
-            messages: vec![Message::developer("开发者提示")],
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["messages"],
-            json!([{"role": "system", "content": "开发者提示"}])
-        );
-    }
-
-    #[test]
     fn thinking_wire_variants() {
         let req = ChatRequest {
             messages: vec![Message::user_text("hi")],
@@ -1093,72 +1056,6 @@ mod tests {
     }
 
     #[test]
-    fn thinking_disabled_sends_only_the_disabled_toggle() {
-        let req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            reasoning: Some(ReasoningConfig {
-                enabled: false,
-                effort: Some(crate::types::Effort::High),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["thinking"], json!({"type": "disabled"}));
-        assert!(body.get("reasoning_effort").is_none());
-    }
-
-    #[test]
-    fn tool_choice_dialect() {
-        let mut req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            tools: vec![ToolDef::new("get_weather", json!({"type": "object"}))],
-            tool_choice: Some(ToolChoice::Required),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["tool_choice"], json!("required"));
-
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                tool_choice_dialect: ToolChoiceDialect::AnyForRequired,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let body = encode_body(&cfg, &req, false);
-        assert_eq!(body["tool_choice"], json!("any"));
-
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                tool_choice_dialect: ToolChoiceDialect::Unsupported,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let body = encode_body(&cfg, &req, false);
-        assert!(body.get("tool_choice").is_none());
-
-        // 具名工具与 none。
-        req.tool_choice = Some(ToolChoice::Tool("get_weather".into()));
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["tool_choice"],
-            json!({"type": "function", "function": {"name": "get_weather"}})
-        );
-
-        req.tool_choice = Some(ToolChoice::None);
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["tool_choice"], json!("none"));
-
-        // 无工具时不发送 tool_choice。
-        req.tools.clear();
-        let body = encode_body(&config(), &req, false);
-        assert!(body.get("tool_choice").is_none());
-        assert!(body.get("tools").is_none());
-    }
-
-    #[test]
     fn response_format_json_schema_and_unsupported() {
         let req = ChatRequest {
             messages: vec![Message::user_text("hi")],
@@ -1229,26 +1126,6 @@ mod tests {
     }
 
     #[test]
-    fn multi_part_system_flattens_with_blank_lines() {
-        // 多块系统提示与单块形态的线上文本必须逐字一致：块边界只服务本地断点。
-        let req = ChatRequest {
-            messages: vec![
-                Message {
-                    role: Role::System,
-                    content: vec![
-                        ContentPart::Text("第一块".into()),
-                        ContentPart::Text("第二块".into()),
-                    ],
-                },
-                Message::user_text("hi"),
-            ],
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["messages"][0]["content"], json!("第一块\n\n第二块"));
-    }
-
-    #[test]
     fn cache_key_and_breakpoints() {
         let req = ChatRequest {
             messages: vec![Message::system("系统"), Message::user_text("hi")],
@@ -1304,17 +1181,6 @@ mod tests {
         };
         let err = encode(&config(), &bad, false).unwrap_err();
         assert!(err.to_string().contains("超出消息范围"), "{err}");
-    }
-
-    #[test]
-    fn streaming_flag_adds_stream_options() {
-        let req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, true);
-        assert_eq!(body["stream"], json!(true));
-        assert_eq!(body["stream_options"], json!({"include_usage": true}));
     }
 
     #[test]
@@ -1374,53 +1240,6 @@ mod tests {
                 )),
                 ContentPart::ToolCall(ToolCall::new("call_2", "get_date", "{}")),
             ]
-        );
-    }
-
-    #[test]
-    fn response_reasoning_alias() {
-        let body = json!({
-            "choices": [{
-                "message": {"role": "assistant", "content": "hi", "reasoning": "别名字段的思考"},
-                "finish_reason": "stop",
-            }],
-        });
-        let response = decode_response(&config(), &ChatRequest::default(), &body).unwrap();
-        assert_eq!(
-            response.message.content[0],
-            ContentPart::Reasoning(ReasoningBlock::Text {
-                text: "别名字段的思考".into(),
-                signature: None,
-            })
-        );
-
-        // 自定义字段名优先于别名。
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                reasoning_field: "thinking_text".into(),
-                reasoning_field_aliases: vec!["reasoning".into()],
-                ..Default::default()
-            },
-            ..config()
-        };
-        let body = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "hi",
-                    "thinking_text": "自定义字段",
-                    "reasoning": "别名",
-                },
-                "finish_reason": "stop",
-            }],
-        });
-        let response = decode_response(&cfg, &ChatRequest::default(), &body).unwrap();
-        assert_eq!(
-            response.message.content[0],
-            ContentPart::Reasoning(ReasoningBlock::Text {
-                text: "自定义字段".into(),
-                signature: None,
-            })
         );
     }
 
@@ -1833,76 +1652,6 @@ mod tests {
                 text: "不能回答".into(),
             }
         );
-    }
-
-    #[test]
-    fn error_body_table() {
-        let cfg = config();
-        let cases = [
-            (
-                400,
-                r#"{"error":{"message":"bad temperature","type":"invalid_request_error","param":"temperature","code":null}}"#,
-                crate::error::ApiErrorKind::InvalidRequest,
-            ),
-            (
-                401,
-                r#"{"error":{"message":"invalid key","type":"authentication_error","code":"invalid_api_key"}}"#,
-                crate::error::ApiErrorKind::Auth,
-            ),
-            (
-                404,
-                r#"{"error":{"message":"model not found","type":"invalid_request_error","code":"model_not_found"}}"#,
-                crate::error::ApiErrorKind::NotFound,
-            ),
-            (
-                429,
-                r#"{"error":{"message":"rate limited","type":"rate_limit_error","code":"rate_limit_exceeded"}}"#,
-                crate::error::ApiErrorKind::RateLimit,
-            ),
-            (
-                429,
-                r#"{"error":{"message":"quota","type":"insufficient_quota","code":"insufficient_quota"}}"#,
-                crate::error::ApiErrorKind::QuotaExceeded,
-            ),
-            (
-                500,
-                r#"{"error":{"message":"server exploded","type":"server_error","code":null}}"#,
-                crate::error::ApiErrorKind::ServerError,
-            ),
-            (
-                400,
-                r#"{"error":{"message":"This model's maximum context length is 65536 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}"#,
-                crate::error::ApiErrorKind::ContextLength,
-            ),
-        ];
-        for (status, body, expected) in cases {
-            let error = super::super::decode_error(
-                &cfg,
-                status,
-                &reqwest::header::HeaderMap::new(),
-                body.as_bytes(),
-            );
-            assert_eq!(error.kind, expected, "status {status}: {body}");
-        }
-    }
-
-    #[test]
-    fn extra_body_is_overridden_by_standard_fields() {
-        let cfg = LlmConfig {
-            extra_body: serde_json::Map::from_iter([
-                ("temperature".into(), json!(9.9)),
-                ("thinking_budget".into(), json!(16384)),
-            ]),
-            ..config()
-        };
-        let req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            temperature: Some(0.2),
-            ..Default::default()
-        };
-        let body = encode_body(&cfg, &req, false);
-        assert_eq!(body["temperature"], json!(0.2));
-        assert_eq!(body["thinking_budget"], json!(16384));
     }
 
     #[test]

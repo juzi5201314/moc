@@ -2625,9 +2625,9 @@ mod tests {
     /// 回退模态：在终端缓冲里正确绘制时间线分界、回退横幅与底部 dock 操作栏。
     #[test]
     fn rewind_modal_draws_omp_timeline_and_dock_in_buffer() {
+        use moc_protocol::{Message, TranscriptEntry};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use moc_protocol::{Message, TranscriptEntry};
 
         let (events, _receiver) = unbounded_channel();
         let mut app = App::new(Theme::global(), events);
@@ -2651,7 +2651,9 @@ mod tests {
                 agent: None,
             },
         ]);
-        app.modal = Some(Modal::Rewind { state: rewind_state });
+        app.modal = Some(Modal::Rewind {
+            state: rewind_state,
+        });
 
         let (width, height) = (120u16, 32u16);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
@@ -2662,9 +2664,9 @@ mod tests {
         let rows: Vec<String> = (0..height)
             .map(|row| {
                 (0..width)
-                .filter_map(|x| terminal.backend().buffer().cell((x, row)))
-                .map(|cell| cell.symbol())
-                .collect::<String>()
+                    .filter_map(|x| terminal.backend().buffer().cell((x, row)))
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
             })
             .collect();
         let full_output: String = rows.join("\n").replace(' ', "");

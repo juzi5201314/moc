@@ -11,7 +11,10 @@ use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 fn text(value: &str, label: &str) -> Result<String, ToolError> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(ToolError::new("E_BAD_PAYLOAD", format!("{label} must not be empty")));
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            format!("{label} must not be empty"),
+        ));
     }
     Ok(value.to_owned())
 }
@@ -145,7 +148,10 @@ impl Tool for ListAgentsTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             if !args.as_object().is_some_and(serde_json::Map::is_empty) {
-                return Err(ToolError::new("E_BAD_PAYLOAD", "list_agents takes no arguments"));
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    "list_agents takes no arguments",
+                ));
             }
             let result = crate::agents::list(&ctx.core, ctx.session_id.clone())
                 .await
@@ -301,7 +307,10 @@ impl Tool for WaitAgentTool {
             let args: WaitArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             if args.timeout_secs == Some(0) {
-                return Err(ToolError::new("E_BAD_PAYLOAD", "timeout_secs must be greater than 0"));
+                return Err(ToolError::new(
+                    "E_BAD_PAYLOAD",
+                    "timeout_secs must be greater than 0",
+                ));
             }
             let progress = crate::agents::WaitProgress {
                 updates: ctx.request.updates(),

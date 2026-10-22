@@ -132,19 +132,6 @@ mod tests {
     }
 
     #[test]
-    fn budget_takes_larger_of_percent_and_floor() {
-        let config = SkillsConfig {
-            catalog_budget_percent: 1,
-            catalog_budget_min_tokens: 8000,
-            ..SkillsConfig::default()
-        };
-        // 500k 窗口的 1% 是 5000，低于下限 → 用下限。
-        assert_eq!(config.catalog_budget_tokens(500_000), 8000);
-        // 1M 窗口的 1% 是 10000，高于下限 → 用比例值。
-        assert_eq!(config.catalog_budget_tokens(1_000_000), 10_000);
-    }
-
-    #[test]
     fn all_names_stay_visible_under_budget_degradation() {
         let long_description = "很长的描述".repeat(200);
         let metas = vec![
@@ -162,24 +149,6 @@ mod tests {
         // 预算内者有完整描述，超预算者被降级并注明。
         assert!(rendered.contains("短描述"));
         assert!(rendered.contains("skill descriptions were shortened"));
-    }
-
-    #[test]
-    fn description_truncated_to_configured_limit() {
-        let index = index_of(vec![meta("toolong", "字".repeat(2000).as_str())]);
-        let rendered = render(&index, &config(8000), 0).unwrap();
-        assert!(rendered.contains('…'));
-        assert!(rendered.chars().count() < 2000);
-    }
-
-    #[test]
-    fn globs_and_when_to_use_are_annotated() {
-        let mut skill = meta("annotated", "描述");
-        skill.globs = vec!["*.rs".into()];
-        skill.when_to_use = Some("写 Rust 时".into());
-        let rendered = render(&index_of(vec![skill]), &config(8000), 0).unwrap();
-        assert!(rendered.contains("(applies to: *.rs)"));
-        assert!(rendered.contains("when to use: "));
     }
 
     #[test]

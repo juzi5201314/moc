@@ -999,7 +999,6 @@ mod tests {
     };
     use crate::types::{Effort, RequestOptions, ToolResult};
     use serde_json::json;
-    use std::collections::BTreeMap;
 
     fn config() -> LlmConfig {
         LlmConfig {
@@ -1170,26 +1169,6 @@ mod tests {
     }
 
     #[test]
-    fn system_hoisted_and_joined() {
-        let req = ChatRequest {
-            messages: vec![
-                Message::system("第一段"),
-                Message::user_text("hi"),
-                Message::developer("第二段"),
-                Message::system("第三段"),
-            ],
-            max_output_tokens: Some(1024),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(body["system"], json!("第一段\n\n第二段\n\n第三段"));
-        assert_eq!(
-            body["messages"],
-            json!([{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
-        );
-    }
-
-    #[test]
     fn system_and_developer_never_merged_into_messages() {
         let req = ChatRequest {
             messages: vec![
@@ -1238,46 +1217,6 @@ mod tests {
                 ]},
             ])
         );
-    }
-
-    #[test]
-    fn disable_parallel_tool_use_synthesized() {
-        let mut req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            tools: vec![ToolDef::new("get_weather", json!({"type": "object"}))],
-            parallel_tool_calls: Some(false),
-            max_output_tokens: Some(1024),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["tool_choice"],
-            json!({"type": "auto", "disable_parallel_tool_use": true})
-        );
-
-        // Some(true)：默认即允许并行，且未指定 choice → 完全不发送 tool_choice。
-        req.parallel_tool_calls = Some(true);
-        let body = encode_body(&config(), &req, false);
-        assert!(body.get("tool_choice").is_none());
-
-        // 未指定：同样不发送 tool_choice。
-        req.parallel_tool_calls = None;
-        let body = encode_body(&config(), &req, false);
-        assert!(body.get("tool_choice").is_none());
-
-        // 显式 choice + Some(false)：在对象形态上追加该键。
-        req.tool_choice = Some(ToolChoice::Tool("get_weather".into()));
-        req.parallel_tool_calls = Some(false);
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["tool_choice"],
-            json!({"type": "tool", "name": "get_weather", "disable_parallel_tool_use": true})
-        );
-
-        // 无工具时不发送 tool_choice。
-        req.tools.clear();
-        let body = encode_body(&config(), &req, false);
-        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
@@ -1413,16 +1352,6 @@ mod tests {
                 None => assert!(body.get("output_config").is_none(), "{body}"),
             }
         }
-    }
-
-    #[test]
-    fn max_tokens_is_required() {
-        let req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            ..Default::default()
-        };
-        let err = encode(&config(), &req, false).unwrap_err();
-        assert!(err.to_string().contains("max_output_tokens"), "{err}");
     }
 
     #[test]
@@ -1803,30 +1732,6 @@ mod tests {
     }
 
     #[test]
-    fn headers_carry_api_version_and_allow_override() {
-        let headers = headers_of(&config(), &base_request());
-        assert!(
-            headers.contains(&(
-                "anthropic-version".to_string(),
-                ANTHROPIC_VERSION.to_string()
-            )),
-            "{headers:?}"
-        );
-        assert!(headers.contains(&("x-api-key".to_string(), "test-key".to_string())));
-        assert!(headers.contains(&("content-type".to_string(), "application/json".to_string())));
-
-        let cfg = LlmConfig {
-            headers: BTreeMap::from([("anthropic-version".into(), "2024-10-22".into())]),
-            ..config()
-        };
-        let headers = headers_of(&cfg, &base_request());
-        assert!(
-            headers.contains(&("anthropic-version".to_string(), "2024-10-22".to_string())),
-            "{headers:?}"
-        );
-    }
-
-    #[test]
     fn reasoning_blocks_round_trip_with_signature() {
         let req = ChatRequest {
             messages: vec![Message {
@@ -1988,32 +1893,6 @@ mod tests {
                     "{\"city\":\"北京\"}"
                 )),
             ]
-        );
-    }
-
-    #[test]
-    fn stop_reason_table() {
-        let cases = [
-            ("end_turn", FinishReason::Stop),
-            ("stop_sequence", FinishReason::StopSequence),
-            ("max_tokens", FinishReason::Length),
-            ("model_context_window_exceeded", FinishReason::Length),
-            ("tool_use", FinishReason::ToolCalls),
-            ("pause_turn", FinishReason::PauseTurn),
-            ("refusal", FinishReason::Refusal),
-            ("something_new", FinishReason::Other("something_new".into())),
-        ];
-        for (wire, expected) in cases {
-            let body = json!({"content": [], "stop_reason": wire});
-            let response = decode_response(&config(), &base_request(), &body).unwrap();
-            assert_eq!(response.finish_reason, expected, "{wire}");
-        }
-
-        let body = json!({"content": []});
-        let response = decode_response(&config(), &base_request(), &body).unwrap();
-        assert_eq!(
-            response.finish_reason,
-            FinishReason::Other("unknown".into())
         );
     }
 

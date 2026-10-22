@@ -184,7 +184,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     draw_dock(frame, state, dock_area, theme);
 }
 
-fn draw_header(frame: &mut Frame, session_title: &str, state: &RewindState, area: Rect, theme: &Theme) {
+fn draw_header(
+    frame: &mut Frame,
+    session_title: &str,
+    state: &RewindState,
+    area: Rect,
+    theme: &Theme,
+) {
     let total_nodes = state.items.len();
 
     let mut lines = Vec::new();
@@ -222,12 +228,7 @@ fn draw_header(frame: &mut Frame, session_title: &str, state: &RewindState, area
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_body(
-    frame: &mut Frame,
-    state: &mut RewindState,
-    area: Rect,
-    theme: &Theme,
-) {
+fn draw_body(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &Theme) {
     if state.loading && state.items.is_empty() {
         let text = vec![
             Line::from(""),
@@ -436,8 +437,7 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
 
         if !clock_str.is_empty() {
             let used_w: usize = row1_spans.iter().map(|s| str_width(&s.content)).sum();
-            let pad = usize::from(inner.width)
-                .saturating_sub(used_w + str_width(&clock_str) + 1);
+            let pad = usize::from(inner.width).saturating_sub(used_w + str_width(&clock_str) + 1);
             if pad > 0 {
                 row1_spans.push(Span::styled(" ".repeat(pad), row1_base_style));
             }
@@ -456,16 +456,21 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
         if item_height >= 2 {
             let snippet = ellipsize(&item.preview, usize::from(inner.width).saturating_sub(6));
             let row2_style = if is_selected {
-                Style::new()
-                    .fg(theme.text_primary)
-                    .bg(theme.bg_visual)
+                Style::new().fg(theme.text_primary).bg(theme.bg_visual)
             } else if is_dropped {
                 Style::new().fg(theme.gray_dim)
             } else {
                 Style::new().fg(theme.text_secondary)
             };
             lines.push(Line::from(vec![
-                Span::styled("       ", if is_selected { Style::new().bg(theme.bg_visual) } else { Style::new() }),
+                Span::styled(
+                    "       ",
+                    if is_selected {
+                        Style::new().bg(theme.bg_visual)
+                    } else {
+                        Style::new()
+                    },
+                ),
                 Span::styled(snippet, row2_style),
             ]));
         }
@@ -525,8 +530,18 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
     let mut banner_lines = Vec::new();
     if current_item.is_user {
         banner_lines.push(Line::from(vec![
-            Span::styled("⏪ ", Style::new().fg(theme.accent_user).add_modifier(Modifier::BOLD)),
-            Span::styled("回退到此处 (Rewind to here)", Style::new().fg(theme.accent_user).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "⏪ ",
+                Style::new()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "回退到此处 (Rewind to here)",
+                Style::new()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         banner_lines.push(Line::from(Span::styled(
             "• 该用户提问将完整恢复到底部输入框，供您修改后重新发送",
@@ -545,8 +560,18 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
         }
     } else {
         banner_lines.push(Line::from(vec![
-            Span::styled("⏪ ", Style::new().fg(theme.accent_model).add_modifier(Modifier::BOLD)),
-            Span::styled("从此处继续 (Continue from here)", Style::new().fg(theme.accent_model).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "⏪ ",
+                Style::new()
+                    .fg(theme.accent_model)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "从此处继续 (Continue from here)",
+                Style::new()
+                    .fg(theme.accent_model)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         banner_lines.push(Line::from(Span::styled(
             "• 会话历史将截断至该回复节点，您可以继续向模型提问",
@@ -586,9 +611,13 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
         Span::styled(
             format!("{} · ", current_item.role_label()),
             if current_item.is_user {
-                Style::new().fg(theme.accent_user).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::new().fg(theme.accent_model).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(theme.accent_model)
+                    .add_modifier(Modifier::BOLD)
             },
         ),
         Span::styled("记录时间：", Style::new().fg(theme.gray_dim)),
@@ -626,10 +655,15 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
     let wrapped_body = wrap_text(&current_item.full_text, wrap_w);
     let total_body_lines = wrapped_body.len();
 
-    let text_lines_available = usize::from(content_area.height).saturating_sub(detail_lines.len() + 1);
+    let text_lines_available =
+        usize::from(content_area.height).saturating_sub(detail_lines.len() + 1);
     let scroll = state.detail_scroll.min(total_body_lines.saturating_sub(1));
 
-    for line_str in wrapped_body.into_iter().skip(scroll).take(text_lines_available) {
+    for line_str in wrapped_body
+        .into_iter()
+        .skip(scroll)
+        .take(text_lines_available)
+    {
         detail_lines.push(Line::from(Span::styled(
             format!("  {line_str}"),
             Style::new().fg(theme.text_primary),
@@ -678,9 +712,15 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
             Style::new().fg(theme.text_secondary),
         ));
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled("↑↓ 切换匹配", Style::new().fg(theme.text_primary)));
+        spans.push(Span::styled(
+            "↑↓ 切换匹配",
+            Style::new().fg(theme.text_primary),
+        ));
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled("Esc 清除过滤", Style::new().fg(theme.gray_dim)));
+        spans.push(Span::styled(
+            "Esc 清除过滤",
+            Style::new().fg(theme.gray_dim),
+        ));
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
         spans.push(Span::styled(
             "Enter 回退到此处",

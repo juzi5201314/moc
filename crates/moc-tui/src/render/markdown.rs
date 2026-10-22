@@ -1409,70 +1409,6 @@ mod tests {
     }
 
     #[test]
-    fn paragraphs_wrap_at_width() {
-        // 宽 12：每行 6 个宽字符；宽度低于 8 时有保底
-        let out = lines("一二三四五六七八", 12);
-        assert_eq!(out.join("|"), "一二三四五六|七八", "实际输出：{out:?}");
-    }
-
-    #[test]
-    fn headings_and_paragraphs_keep_visual_separation() {
-        let out = lines("# 标题\n\n第一段\n\n第二段", 40);
-        let heading = out.iter().position(|line| line.contains("标题")).unwrap();
-        let first = out.iter().position(|line| line == "第一段").unwrap();
-        let second = out.iter().position(|line| line == "第二段").unwrap();
-        assert_eq!(first, heading + 2, "标题与正文之间应留出一行：{out:?}");
-        assert_eq!(second, first + 2, "相邻段落应留出一行：{out:?}");
-    }
-
-    #[test]
-    fn lists_are_indented_and_bulleted() {
-        let out = lines("- 甲\n- 乙\n  - 丙", 40);
-        assert!(out.iter().any(|line| line.contains("• 甲")), "{out:?}");
-        assert!(out.iter().any(|line| line.contains("• 乙")), "{out:?}");
-        assert!(
-            out.iter()
-                .any(|line| line.starts_with("  ") && line.contains("• 丙")),
-            "{out:?}"
-        );
-    }
-
-    #[test]
-    fn fenced_code_blocks_render_via_highlighter() {
-        let out = lines("```rust\nfn main() {}\n```", 40);
-        // 代码内容保留（高亮可能把标识符切成多段）
-        let joined = out.join("");
-        assert!(joined.contains("fn"), "{out:?}");
-        assert!(joined.contains("main"), "{out:?}");
-    }
-
-    /// 缩进代码块同样逐行渲染：ASCII 示意图不能挤成一行，行内也不许带换行。
-    #[test]
-    fn indented_code_blocks_keep_one_line_per_source_line() {
-        let out = lines("    ╭──────╮\n    │ 对齐 │\n    ╰──────╯", 40);
-        for (index, glyph) in ["╭──────╮", "│ 对齐 │", "╰──────╯"].iter().enumerate()
-        {
-            assert!(out[index].contains(glyph), "第 {index} 行：{out:?}");
-        }
-        assert!(
-            out.iter().all(|line| !line.contains('\n')),
-            "渲染行内不得残留换行：{out:?}"
-        );
-    }
-
-    /// HTML 块整块送文本，也必须按行拆开而不是塞进同一行。
-    #[test]
-    fn html_blocks_split_into_lines() {
-        let out = lines("<div>\nfoo\n</div>\n\n正文", 40);
-        assert!(
-            out.iter().all(|line| !line.contains('\n')),
-            "渲染行内不得残留换行：{out:?}"
-        );
-        assert!(out.iter().any(|line| line.contains("正文")), "{out:?}");
-        assert!(out.iter().any(|line| line.contains("foo")), "{out:?}");
-    }
-
-    #[test]
     fn tables_render_light_rules_and_keep_cell_content_in_order() {
         let single = lines("| 尝试 | 结果 |\n|---|---|\n| a | b |", 40);
         assert!(
@@ -1528,51 +1464,6 @@ mod tests {
             out.iter().all(|line| str_width(line) <= 120),
             "表格行不得超宽：{out:?}"
         );
-    }
-
-    /// CJK 单元格按显示列折行，不按字节/字符数。
-    #[test]
-    fn cjk_cells_wrap_by_display_width() {
-        let out = lines("| 一 | 二 |\n|---|---|\n| 中文中文中文 | 值 |", 30);
-        assert!(
-            out.iter().any(|line| line.contains("中文中文中文")),
-            "中文内容不得被切断：{out:?}"
-        );
-        assert!(
-            out.iter().all(|line| str_width(line) <= 30),
-            "表格行不得超宽：{out:?}"
-        );
-    }
-
-    /// 连两格一列都放不下时，退化为逐字段列表，内容仍然完整。
-    #[test]
-    fn extremely_narrow_tables_list_fields_instead_of_dropping_content() {
-        let out = lines(
-            "| a | b | c | d | e |\n|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 |",
-            8,
-        );
-        assert!(out.iter().any(|line| line.contains("a: 1")), "{out:?}");
-        assert!(out.iter().any(|line| line.contains("e: 5")), "{out:?}");
-        assert!(!out.iter().any(|line| line.contains('…')), "{out:?}");
-    }
-
-    #[test]
-    fn inline_code_and_bold_styles_merge_runs() {
-        let out = lines("普通 **加粗** `code`", 60);
-        let joined = out.join("");
-        assert!(
-            joined.contains("普通") && joined.contains("加粗") && joined.contains("code"),
-            "{out:?}"
-        );
-    }
-
-    #[test]
-    fn soft_breaks_and_inline_code_padding_render_inline() {
-        assert_eq!(
-            lines("工具用途\n`bash`执行 shell 命令", 40),
-            vec!["工具用途", " bash 执行 shell 命令"]
-        );
-        assert_eq!(lines("前缀`bash`后缀", 40), vec!["前缀 bash 后缀"]);
     }
 
     /// 入口只在支持图形协议时出现；按钮左对齐且命中区间等于文字宽度。

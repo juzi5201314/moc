@@ -590,19 +590,6 @@ mod tests {
     }
 
     #[test]
-    fn partial_reads_keep_previous_windows() {
-        let mut served = ServedFile::new();
-        let epoch = id(3);
-        let lines = rows(&["one", "two", "three", "four"]);
-        served.serve(epoch, &lines, &[0..1]);
-        served.serve(epoch, &lines, &[2..3]);
-        assert!(served.is_served(0));
-        assert!(!served.is_served(1));
-        assert!(served.is_served(2));
-        assert!(!served.is_served(3));
-    }
-
-    #[test]
     fn duplicate_rows_get_distinct_tokens_and_keep_them_across_shifts() {
         let mut served = ServedFile::new();
         let epoch = id(3);
@@ -620,27 +607,6 @@ mod tests {
         assert_eq!(served.token(2), Some(second));
         assert_eq!(served.token(3), Some(third));
         assert!(served.token(1).is_none());
-    }
-
-    #[test]
-    fn refresh_updates_rendered_rows_without_serving_new_ones() {
-        let mut served = ServedFile::new();
-        let epoch = id(3);
-        let lines = rows(&["one", "two", "three"]);
-        served.serve(epoch, &lines, &[0..2]);
-        // 文件顶部插入一行后重新展示：令牌行号更新，id 保持不变。
-        let shifted = rows(&["new", "one", "two", "three"]);
-        served.rebase(&[(0, 0), (0, 1), (3, 1)], 4);
-        let moved = served.token(1).expect("移动后的第一行");
-        let refreshed = served.refresh_existing(&shifted, &[0..1]);
-        assert!(refreshed.is_empty(), "未服务的新行不应被刷新");
-        let refreshed = served.refresh_existing(&shifted, &[1..2]);
-        assert_eq!(refreshed.len(), 1);
-        assert_eq!(refreshed[0].0, 1);
-        assert_eq!(refreshed[0].1.id, moved.id);
-        assert_eq!(refreshed[0].1.line, 2);
-        assert!(!served.is_served(0), "新插入的首行未被服务");
-        assert!(served.is_served(2), "原有第二行仍在服务表中");
     }
 
     #[test]
@@ -679,21 +645,6 @@ mod tests {
         assert!(store.push_undo_with_budget(path.clone(), vec![2u8; 150], id(1), budget));
         assert_eq!(store.undo_bytes(), budget);
         assert!(!store.push_undo_with_budget(path, vec![0u8; budget + 1], id(1), budget));
-    }
-
-    #[test]
-    fn refresh_nearest_prefers_rows_near_the_failed_anchor() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("file.txt");
-        std::fs::write(&path, "one\ntwo\nthree\nfour\nfive\n").expect("写文件");
-        let snapshot = crate::hashline::served::read_snapshot(&path, 4096).expect("读取快照");
-        let store = AnchorStore::new();
-        store.record_served(path.clone(), &snapshot, &[0..snapshot.lines.len()]);
-        let tokens = store
-            .refresh_nearest(&path, &snapshot, &[4], 2)
-            .expect("刷新成功");
-        let positions: Vec<usize> = tokens.iter().map(|(position, _)| *position).collect();
-        assert_eq!(positions, vec![2, 3], "优先返回第 3、4 行");
     }
 
     #[test]

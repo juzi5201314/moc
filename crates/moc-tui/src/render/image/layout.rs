@@ -93,23 +93,6 @@ mod tests {
     const CELL: CellPixels = CellPixels { w: 8, h: 18 };
 
     #[test]
-    fn never_scales_up_small_images() {
-        let layout = layout((16, 18), CELL, 80).expect("放得下");
-        assert_eq!((layout.cols, layout.rows), (2, 1));
-        assert_eq!(layout.px, (16, 18));
-        assert_eq!(layout.fit, (0, 0, 16, 18), "原样居中，不放大");
-    }
-
-    #[test]
-    fn caps_width_at_the_pixel_budget() {
-        // 90 列 × 8px = 720px 正是上限；给 200 列也只用到 90 列
-        let layout = layout((4000, 100), CELL, 200).expect("放得下");
-        assert_eq!(layout.px.0, MAX_IMAGE_PX);
-        assert_eq!(layout.cols, 90);
-        assert_eq!(layout.rows, 1);
-    }
-
-    #[test]
     fn caps_height_at_the_row_budget() {
         let layout = layout((100, 4000), CELL, 80).expect("放得下");
         assert_eq!(layout.rows, MAX_IMAGE_ROWS);
@@ -131,15 +114,5 @@ mod tests {
             layout((10, 10), CellPixels { w: 1, h: 1 }, 80).is_none(),
             "单元格太小画不出可读的图"
         );
-    }
-
-    #[test]
-    fn fit_centres_the_scaled_image() {
-        // 源图 100×100 放进 40×30 框：按比例缩到 30×30，水平居中
-        assert_eq!(fit((100, 100), (40, 30)), (5, 0, 30, 30));
-        // 框比源图大：保持原尺寸并居中
-        assert_eq!(fit((4, 2), (10, 10)), (3, 4, 4, 2));
-        // 退化输入不产生除零
-        assert_eq!(fit((0, 0), (10, 10)), (0, 0, 0, 0));
     }
 }

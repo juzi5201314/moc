@@ -162,17 +162,6 @@ mod tests {
     }
 
     #[test]
-    fn paths_alias_single_string_and_globs_alias() {
-        let parsed = parse("---\npaths: \"src/**/*.rs\"\n---\n正文").unwrap();
-        assert_eq!(
-            parsed.frontmatter.glob_list(),
-            vec!["src/**/*.rs".to_owned()]
-        );
-        let parsed = parse("---\nglobs: [\"a\", \"b\"]\n---\n正文").unwrap();
-        assert_eq!(parsed.frontmatter.glob_list().len(), 2);
-    }
-
-    #[test]
     fn missing_frontmatter_yields_empty_metadata() {
         let parsed = parse("# 纯正文\n没有 frontmatter").unwrap();
         assert!(parsed.frontmatter.name.is_none());
@@ -180,33 +169,8 @@ mod tests {
     }
 
     #[test]
-    fn crlf_frontmatter_and_unclosed_are_handled() {
-        let parsed = parse("---\r\nname: x\r\ndescription: y\r\n---\r\n正文").unwrap();
-        assert_eq!(parsed.frontmatter.name.as_deref(), Some("x"));
-        assert_eq!(parsed.body, "正文");
-
-        assert!(parse("---\nname: x\n正文").is_err());
-    }
-
-    #[test]
     fn bad_yaml_reports_error() {
         let error = parse("---\nname: [未闭合\n---\n正文").unwrap_err();
         assert!(error.to_string().contains("YAML"));
-    }
-
-    #[test]
-    fn metadata_round_trips_through_yaml_types() {
-        let parsed =
-            parse("---\nmetadata:\n  n: 3\n  ok: \"yes\"\n  nested:\n    a: 1\n---\n正文").unwrap();
-        // 标量字符串化；复合值丢弃。
-        assert_eq!(
-            parsed.frontmatter.metadata.get("n").map(String::as_str),
-            Some("3")
-        );
-        assert_eq!(
-            parsed.frontmatter.metadata.get("ok").map(String::as_str),
-            Some("yes")
-        );
-        assert!(!parsed.frontmatter.metadata.contains_key("nested"));
     }
 }

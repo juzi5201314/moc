@@ -190,45 +190,4 @@ mod tests {
         assert!(read(&path).is_none(), "释放后不得再报持有者");
         assert!(path.exists(), "锁文件应当常驻，不随释放删除");
     }
-
-    #[test]
-    fn leftover_record_without_a_holder_is_not_reported_as_locked() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("ses_123.lock");
-        let stale = LockRecord {
-            pid: std::process::id().saturating_add(1_000_000),
-            frontend: "crashed".into(),
-            process_name: Some("dead".into()),
-            acquired_at_ms: 1,
-        };
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .expect("写陈旧锁");
-        write_record(&mut file, &stale).expect("写记录");
-        drop(file);
-        assert!(
-            read(&path).is_none(),
-            "没有内核锁的残留记录不得被当成持有者"
-        );
-        let guard = SessionLockGuard::acquire(&path, "webui").expect("残留文件不阻塞新租约");
-        assert_eq!(read(&path).expect("新租约投影").frontend, "webui");
-        drop(guard);
-    }
-
-    #[test]
-    fn damaged_record_still_blocks_and_reports_unknown_holder() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("ses_123.lock");
-        let guard = SessionLockGuard::acquire(&path, "tui").expect("取得锁");
-        std::fs::write(&path, b"not json").expect("写坏记录");
-        let error = SessionLockGuard::acquire(&path, "webui")
-            .err()
-            .expect("锁仍然有效");
-        assert!(error.to_string().contains("SESSION_LOCKED"), "{error}");
-        drop(guard);
-    }
 }

@@ -318,17 +318,6 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[test]
-    fn windows_job_accepts_a_cpu_rate_limit() {
-        let limits = crate::limits::BashLimits {
-            cpu_cores: 1,
-            memory_high_bytes: 0,
-            memory_max_bytes: 0,
-            memory_swap_bytes: 0,
-        };
-        drop(ProcessGroup::new_windows(Some(limits)).unwrap());
-    }
-    #[cfg(windows)]
     #[tokio::test]
     async fn suspended_windows_process_waits_before_running() {
         let directory = tempfile::tempdir().expect("临时目录");

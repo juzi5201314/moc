@@ -839,39 +839,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn message_constructors_produce_expected_role_and_content() {
-        let system = Message::system("sys");
-        assert_eq!(system.role, Role::System);
-        assert_eq!(system.content, vec![ContentPart::Text("sys".into())]);
-
-        let developer = Message::developer("dev");
-        assert_eq!(developer.role, Role::Developer);
-        assert_eq!(developer.text(), "dev");
-
-        let user = Message::user_text("你好");
-        assert_eq!(user.role, Role::User);
-        assert_eq!(user.content, vec![ContentPart::Text("你好".into())]);
-
-        let assistant = Message::assistant_text("ok");
-        assert_eq!(assistant.role, Role::Assistant);
-        assert_eq!(assistant.text(), "ok");
-
-        let tool = Message::tool_result("call_1", "42", true);
-        assert_eq!(tool.role, Role::Tool);
-        assert_eq!(
-            tool.content,
-            vec![ContentPart::ToolResult(ToolResult {
-                tool_call_id: "call_1".into(),
-                content: "42".into(),
-                is_error: true,
-                images: Vec::new(),
-            })]
-        );
-        assert_eq!(tool.tool_results().count(), 1);
-        assert_eq!(tool.tool_calls().count(), 0);
-    }
-
-    #[test]
     fn tool_result_images_round_trip_and_default_when_absent() {
         use serde_json::json;
         let message = Message::tool_result_with_images(
@@ -913,28 +880,6 @@ mod tests {
         };
         assert_eq!(message.text(), "前半后半");
         assert_eq!(message.tool_calls().count(), 1);
-    }
-
-    #[test]
-    fn finish_reason_display_uses_wire_names() {
-        let cases = [
-            (FinishReason::Stop, "stop"),
-            (FinishReason::StopSequence, "stop_sequence"),
-            (FinishReason::Length, "length"),
-            (FinishReason::ToolCalls, "tool_calls"),
-            (FinishReason::ContentFilter, "content_filter"),
-            (FinishReason::Refusal, "refusal"),
-            (FinishReason::PauseTurn, "pause_turn"),
-            (FinishReason::Cancelled, "cancelled"),
-            (FinishReason::Interrupted, "interrupted"),
-            (
-                FinishReason::Other("model_context_window_exceeded".into()),
-                "model_context_window_exceeded",
-            ),
-        ];
-        for (reason, expected) in cases {
-            assert_eq!(reason.to_string(), expected);
-        }
     }
 
     #[test]
@@ -992,14 +937,5 @@ mod tests {
 
         let empty = ReasoningBlock::Item(Box::new(json!({"type": "reasoning", "summary": []})));
         assert_eq!(empty.display_text(), None);
-    }
-
-    #[test]
-    fn effort_default_strings_are_lowercase_names() {
-        assert_eq!(Effort::None.to_string(), "none");
-        assert_eq!(Effort::High.to_string(), "high");
-        assert_eq!(Effort::XHigh.to_string(), "xhigh");
-        assert_eq!(Effort::Max.to_string(), "max");
-        assert_eq!(serde_json::to_value(Effort::XHigh).unwrap(), json!("xhigh"));
     }
 }

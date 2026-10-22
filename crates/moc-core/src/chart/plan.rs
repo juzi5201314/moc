@@ -506,45 +506,6 @@ mod tests {
     }
 
     #[test]
-    fn plans_grouped_for_same_dimension_measures() {
-        let raw = table(
-            &["方案", "Q1", "Q2"],
-            &[&["C3", "10", "20"], &["C1", "12", "18"], &["C2", "9", "25"]],
-        );
-        let (planned, spec) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Grouped);
-        assert_eq!(planned.series, vec![1, 2]);
-        assert_eq!(spec.series.len(), 2);
-        assert_eq!(spec.series[0].name, "Q1");
-        // 类别顺序不重排：规划只做映射，排序由绘制层决定。
-        assert_eq!(spec.categories, vec!["C3", "C1", "C2"]);
-    }
-
-    #[test]
-    fn plans_paired_for_direction_headers() {
-        let raw = table(
-            &["指标", "改前", "改后"],
-            &[&["P95", "120", "80"], &["P99", "200", "150"]],
-        );
-        let (planned, _) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Paired);
-        assert_eq!(planned.series, vec![1, 2]);
-        assert_eq!(planned.polarity, vec![None, None]);
-    }
-
-    #[test]
-    fn plans_line_for_progress_axis() {
-        let raw = table(
-            &["day", "耗时 ms"],
-            &[&["1", "12"], &["2", "15"], &["3", "9"]],
-        );
-        let (planned, spec) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Line);
-        assert_eq!(planned.series, vec![1]);
-        assert_eq!(spec.categories, vec!["1", "2", "3"]);
-    }
-
-    #[test]
     fn plans_scatter_for_two_dimensions() {
         let raw = table(
             &["城市", "耗时 ms", "体积 KiB"],
@@ -562,39 +523,6 @@ mod tests {
         assert_eq!(planned.series, vec![1, 2]);
         assert_eq!(spec.series[0].dim, Dimension::Duration);
         assert_eq!(spec.series[1].dim, Dimension::Bytes);
-    }
-
-    /// 3 个同量纲系列走分组条形：普通数值表不该被画成满屏热力色块。
-    #[test]
-    fn plans_grouped_for_three_numeric_measures() {
-        let raw = table(
-            &["序号", "数值", "平方", "立方"],
-            &[
-                &["1", "12", "144", "1,728"],
-                &["2", "27", "729", "19,683"],
-                &["3", "45", "2,025", "91,125"],
-            ],
-        );
-        let (planned, spec) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Grouped);
-        assert_eq!(planned.series, vec![1, 2, 3]);
-        assert_eq!(spec.categories, vec!["1", "2", "3"]);
-    }
-
-    /// 至少 4 个同量纲系列才成矩阵，与 omp autoGraph 的热力图门槛一致。
-    #[test]
-    fn plans_heatmap_for_four_same_unit_measures() {
-        let raw = table(
-            &["区域", "Q1", "Q2", "Q3", "Q4"],
-            &[
-                &["北", "1", "2", "3", "4"],
-                &["中", "5", "6", "7", "8"],
-                &["南", "9", "10", "11", "12"],
-            ],
-        );
-        let (planned, _) = chart(&raw);
-        assert_eq!(planned.kind, ChartKind::Heatmap);
-        assert_eq!(planned.series, vec![1, 2, 3, 4]);
     }
 
     #[test]

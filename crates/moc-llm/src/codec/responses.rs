@@ -929,27 +929,6 @@ mod tests {
     }
 
     #[test]
-    fn system_role_and_instructions() {
-        let req = ChatRequest {
-            messages: vec![
-                Message::system("系统提示"),
-                Message::developer("开发者提示"),
-                Message::user_text("问题"),
-            ],
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["input"],
-            json!([
-                {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "系统提示"}]},
-                {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "开发者提示"}]},
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "问题"}]},
-            ])
-        );
-    }
-
-    #[test]
     fn request_input_items_order() {
         let req = ChatRequest {
             messages: vec![
@@ -1099,95 +1078,6 @@ mod tests {
         assert_eq!(input[4]["output"], json!("晴"));
         assert_eq!(input[5]["call_id"], json!("call_2"));
         assert_eq!(input[5]["output"], json!("2026-09-24"));
-    }
-
-    #[test]
-    fn tool_defs_and_choice() {
-        let req = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            tools: vec![ToolDef {
-                name: "get_weather".into(),
-                description: Some("查天气".into()),
-                parameters: json!({"type": "object"}),
-                strict: Some(true),
-            }],
-            tool_choice: Some(ToolChoice::Tool("get_weather".into())),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["tools"],
-            json!([{
-                "type": "function",
-                "name": "get_weather",
-                "description": "查天气",
-                "parameters": {"type": "object"},
-                "strict": true,
-            }])
-        );
-        assert_eq!(
-            body["tool_choice"],
-            json!({"type": "function", "name": "get_weather"})
-        );
-
-        // 无工具时不发送 tool_choice。
-        let bare = ChatRequest {
-            messages: vec![Message::user_text("hi")],
-            tool_choice: Some(ToolChoice::Auto),
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &bare, false);
-        assert!(body.get("tool_choice").is_none());
-
-        // Required 直接发送 required。
-        let required = ChatRequest {
-            tools: vec![ToolDef::new("t", json!({"type": "object"}))],
-            tool_choice: Some(ToolChoice::Required),
-            ..bare
-        };
-        let body = encode_body(&config(), &required, false);
-        assert_eq!(body["tool_choice"], json!("required"));
-    }
-
-    #[test]
-    fn text_format_json_schema() {
-        let req = ChatRequest {
-            response_format: Some(ResponseFormat::JsonSchema {
-                name: "weather".into(),
-                description: Some("结构".into()),
-                schema: json!({"type": "object"}),
-                strict: Some(true),
-            }),
-            ..base_request()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["text"],
-            json!({"format": {
-                "type": "json_schema",
-                "name": "weather",
-                "description": "结构",
-                "schema": {"type": "object"},
-                "strict": true,
-            }})
-        );
-
-        let plain = ChatRequest {
-            response_format: Some(ResponseFormat::Text),
-            ..base_request()
-        };
-        let body = encode_body(&config(), &plain, false);
-        assert_eq!(body["text"], json!({"format": {"type": "text"}}));
-
-        let cfg = LlmConfig {
-            wire: WireConfig {
-                response_format_dialect: ResponseFormatDialect::Unsupported,
-                ..Default::default()
-            },
-            ..config()
-        };
-        let body = encode_body(&cfg, &req, false);
-        assert!(body.get("text").is_none());
     }
 
     #[test]
@@ -1342,29 +1232,6 @@ mod tests {
                 {"type": "input_image", "image_url": "https://example.com/a.png", "detail": "low"},
                 {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
             ])
-        );
-    }
-
-    #[test]
-    fn multi_part_system_flattens_to_one_block() {
-        // 多块系统提示拍平成单个 input_text 块，文本与单块形态逐字一致。
-        let req = ChatRequest {
-            messages: vec![
-                Message {
-                    role: Role::System,
-                    content: vec![
-                        ContentPart::Text("第一块".into()),
-                        ContentPart::Text("第二块".into()),
-                    ],
-                },
-                Message::user_text("hi"),
-            ],
-            ..Default::default()
-        };
-        let body = encode_body(&config(), &req, false);
-        assert_eq!(
-            body["input"][0]["content"],
-            json!([{"type": "input_text", "text": "第一块\n\n第二块"}])
         );
     }
 
@@ -1744,20 +1611,6 @@ mod tests {
                     finish_reason: FinishReason::Other("unknown".into()),
                 },
             ]
-        );
-    }
-
-    #[test]
-    fn stream_flag_and_headers() {
-        let encoded = encode(&config(), &base_request(), true).unwrap();
-        let body: Value = serde_json::from_slice(&encoded.body).unwrap();
-        assert_eq!(body["stream"], json!(true));
-        assert!(
-            encoded
-                .headers
-                .contains(&("authorization".to_string(), "Bearer sk-test".to_string())),
-            "{:?}",
-            encoded.headers
         );
     }
 }

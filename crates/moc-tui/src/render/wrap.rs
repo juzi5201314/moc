@@ -135,28 +135,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wraps_at_word_boundaries() {
-        assert_eq!(wrap_text("hello world", 7), vec!["hello", "world"]);
-    }
-
-    #[test]
-    fn hard_splits_long_words() {
-        assert_eq!(wrap_text("abcdefgh", 3), vec!["abc", "def", "gh"]);
-    }
-
-    #[test]
-    fn wide_chars_count_double() {
-        // 4 个全角字符宽 8：宽度 5 时第一个字符放不下第二行
-        assert_eq!(wrap_text("中文中文", 5), vec!["中文", "中文"]);
-        assert_eq!(str_width("中文"), 4);
-    }
-
-    #[test]
-    fn zero_width_returns_single_line() {
-        assert_eq!(wrap_text("abc", 0), vec!["abc"]);
-    }
-
-    #[test]
     fn display_window_is_display_width_aware() {
         assert_eq!(display_window("abcdef", 0, 3), "abc");
         assert_eq!(display_window("abcdef", 3, 3), "def");

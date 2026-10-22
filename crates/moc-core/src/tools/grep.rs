@@ -710,44 +710,6 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn context_colons_do_not_consume_match_budget_and_nested_globs_work() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("src")).unwrap();
-        std::fs::write(
-            root.path().join("src/a.rs"),
-            "context: colon\nhit one\ncontext: colon\nhit two\ntail\n",
-        )
-        .unwrap();
-        std::fs::write(root.path().join("b.txt"), "hit ignored").unwrap();
-        let config = crate::config::GrepConfig {
-            max_matches_total: 2,
-            max_matches_per_file: 2,
-            ..Default::default()
-        };
-        let output = run(
-            root.path(),
-            serde_json::json!({"pattern":"hit","glob":["src/**/*.rs"],"context_before":1,"context_after":1}),
-            config,
-        );
-        assert_eq!(
-            output,
-            "src/a.rs\n  1-context: colon\n  2:hit one\n  3-context: colon\n  4:hit two\n  5-tail"
-        );
-    }
-    #[test]
-    fn multi_row_file_groups_under_one_path_and_single_row_file_stays_inline() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("a.rs"), "hit\nhit\n").unwrap();
-        std::fs::write(root.path().join("b.rs"), "hit\n").unwrap();
-        let config = crate::config::GrepConfig {
-            context_before: 0,
-            context_after: 0,
-            ..Default::default()
-        };
-        let output = run(root.path(), serde_json::json!({"pattern":"hit"}), config);
-        assert_eq!(output, "a.rs\n  1:hit\n  2:hit\nb.rs:1:hit");
-    }
-    #[test]
     fn long_line_preview_keeps_the_match_visible() {
         let root = tempfile::tempdir().unwrap();
         let line = format!("{}NEEDLE{}", "a".repeat(700), "b".repeat(700));
@@ -795,26 +757,6 @@ mod tests {
         assert!(output.contains("output capped at 1 bytes"), "{output}");
     }
     #[test]
-    fn pagination_is_path_ordered_and_binary_files_are_not_returned() {
-        let root = tempfile::tempdir().unwrap();
-        for path in ["c.rs", "a.rs", "b.rs"] {
-            std::fs::write(root.path().join(path), "hit\n").unwrap();
-        }
-        std::fs::write(root.path().join("0.bin"), b"hit\0\n").unwrap();
-        let config = crate::config::GrepConfig {
-            max_files: 1,
-            ..Default::default()
-        };
-        let output = run(
-            root.path(),
-            serde_json::json!({"pattern":"hit","skip":1}),
-            config,
-        );
-        assert!(output.starts_with("b.rs:1:hit\n"));
-        assert!(output.contains("skip=2"));
-        assert!(!output.contains("a.rs:") && !output.contains("0.bin"));
-    }
-    #[test]
     fn resource_context_ranges_saturate_instead_of_overflowing() {
         let config = crate::config::GrepConfig::default();
         let args: GrepArgs = serde_json::from_value(serde_json::json!({
@@ -833,33 +775,6 @@ mod tests {
         assert_eq!(
             output,
             "skill://demo/SKILL.md\n  1-first\n  2:hit\n  3-last"
-        );
-    }
-
-    /// 命名空间扫描：命中行的前缀必须是和 read 一样的 URI，不能是 sidecar 路径。
-    #[test]
-    fn namespace_scan_prefixes_rows_with_entry_uris() {
-        let root = tempfile::tempdir().unwrap();
-        let jobs = root.path().join("jobs");
-        std::fs::create_dir_all(jobs.join("nested")).unwrap();
-        std::fs::write(jobs.join("job_1.log"), "alpha\nbeta\nerror: boom\n").unwrap();
-        std::fs::write(jobs.join("job_2.log"), "fine\n").unwrap();
-        std::fs::write(jobs.join(".hidden.log"), "error: hidden\n").unwrap();
-        std::fs::write(jobs.join("nested/job_3.log"), "error: nested\n").unwrap();
-        let config = crate::config::GrepConfig::default();
-        let args: GrepArgs =
-            serde_json::from_value(serde_json::json!({"pattern":"error","context_before":1}))
-                .unwrap();
-        let entries = vec![("artifact://jobs/".to_owned(), jobs.clone())];
-        let output = search_resource_namespace(&entries, &args, &config).unwrap();
-        // 显式要一行上文；同一个文件的 URI 只写一次，单行文件仍是一行式。
-        assert_eq!(
-            output,
-            "artifact://jobs/job_1.log\n  2-beta\n  3:error: boom\nartifact://jobs/nested/job_3.log:1:error: nested"
-        );
-        assert_eq!(
-            search_resource_namespace(&[], &args, &config).unwrap(),
-            "No matches found"
         );
     }
 

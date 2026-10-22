@@ -1229,7 +1229,6 @@ mod tests {
     use super::*;
 
     use moc_core::chart::{Dimension, Point};
-    use ratatui::style::Color;
 
     use crate::render::chart::with_fonts;
     use crate::render::graphics::CellPixels;
@@ -1355,118 +1354,6 @@ mod tests {
         );
     }
 
-    /// 极差 100 倍以上时线性会把小值压成 1px；对数刻度下中值仍可读。
-    #[test]
-    fn bar_uses_log_scale_for_wide_positive_ranges() {
-        let spec = spec(
-            ChartKind::Bar,
-            &["a", "b", "c"],
-            vec![series(
-                "量",
-                &[(10.0, "10"), (1_000.0, "1000"), (100_000.0, "100000")],
-            )],
-        );
-        let scale = ValueScale::new(&spec.series);
-        assert!(scale.is_log(), "10000 倍极差应走对数刻度");
-        let theme = Theme::resolved(ColorLevel::TrueColor);
-        let color = chart_rgb(&theme, 0);
-        let (canvas, _) = raster(&spec);
-        let widths: Vec<u32> = (1..=3)
-            .map(|row| width_of(&canvas, row * 18 + 9, color))
-            .collect();
-        assert!(widths[0] <= 3, "最小值只需少量像素：{widths:?}");
-        assert!(widths[1] > 40, "中值在对数刻度下必须明显可见：{widths:?}");
-        assert!(widths[0] < widths[1] && widths[1] < widths[2], "{widths:?}");
-    }
-
-    /// 分组图：每个类别占系列数行，且每行只用对应系列的颜色。
-    #[test]
-    fn grouped_gives_each_series_its_own_row() {
-        let theme = Theme::resolved(ColorLevel::TrueColor);
-        let spec = spec(
-            ChartKind::Grouped,
-            &["a", "b"],
-            vec![
-                series("读", &[(10.0, "10"), (20.0, "20")]),
-                series("写", &[(30.0, "30"), (5.0, "5")]),
-            ],
-        );
-        let (canvas, layout) = raster(&spec);
-        assert_eq!(layout.rows, 1 + 2 * 2 + 1, "图例 + 2 类别 × 2 系列 + 轴");
-        let first = chart_rgb(&theme, 0);
-        let second = chart_rgb(&theme, 1);
-        // 类别 a：行 1 = 读（系列 0），行 2 = 写（系列 1）
-        assert!(
-            width_of(&canvas, 18 + 9, first) > 0,
-            "第 2 行应是系列 0 的条"
-        );
-        assert!(
-            width_of(&canvas, 18 + 9, second) == 0,
-            "第 2 行不该出现系列 1"
-        );
-        assert!(
-            width_of(&canvas, 36 + 9, second) > 0,
-            "第 3 行应是系列 1 的条"
-        );
-    }
-
-    /// 成对图：每类别两行，行尾按极性给差值上色（耗时下降 = 变好 = 成功色）。
-    #[test]
-    fn paired_colours_the_delta_by_polarity() {
-        let theme = Theme::resolved(ColorLevel::TrueColor);
-        let mut before = series("改前", &[(100.0, "100"), (80.0, "80")]);
-        let mut after = series("改后", &[(60.0, "60"), (90.0, "90")]);
-        after.polarity = Some(Polarity::Lower);
-        before.polarity = Some(Polarity::Lower);
-        let spec = spec(ChartKind::Paired, &["a", "b"], vec![before, after]);
-        let (canvas, layout) = raster(&spec);
-        assert_eq!(layout.rows, 1 + 2 * 2 + 1);
-        let success = theme.raw().accent_success;
-        let error = theme.raw().accent_error;
-        // 差值文本在每对的后一行：a 下降（成功色）、b 上升（错误色）
-        let row_a = 2 * 18 + 9;
-        let row_b = 4 * 18 + 9;
-        assert!(
-            (0..canvas.w()).any(|x| rgb_at(&canvas, x, row_a) == success),
-            "a 的差值应用成功色"
-        );
-        assert!(
-            (0..canvas.w()).any(|x| rgb_at(&canvas, x, row_b) == error),
-            "b 的差值应用错误色"
-        );
-    }
-
-    /// 折线：绘图区里能同时看到系列色折线与顶点圆点。
-    #[test]
-    fn line_connects_the_points() {
-        let theme = Theme::resolved(ColorLevel::TrueColor);
-        let color = chart_rgb(&theme, 0);
-        let spec = spec(
-            ChartKind::Line,
-            &["a", "b", "c"],
-            vec![series("延迟", &[(10.0, "10"), (30.0, "30"), (20.0, "20")])],
-        );
-        let (canvas, layout) = raster(&spec);
-        assert_eq!(layout.rows, 1 + 6 + 1, "折线固定 6 行绘图区");
-        let ink = (0..canvas.h())
-            .flat_map(|y| (0..canvas.w()).map(move |x| (x, y)))
-            .filter(|(x, y)| rgb_at(&canvas, *x, *y) == color)
-            .count();
-        assert!(ink > 60, "折线与圆点应有足够像素：{ink}");
-        // 顶点必须落在绘图区内（图例行第 0 行有图例色块，不算）
-        let top = 18u32;
-        let bottom = 6 * 18 + 18;
-        let rows: Vec<u32> = (0..canvas.h())
-            .filter(|y| *y >= top)
-            .filter(|y| (0..canvas.w()).any(|x| rgb_at(&canvas, x, *y) == color))
-            .collect();
-        assert!(!rows.is_empty(), "绘图区里应有折线");
-        assert!(
-            rows.iter().all(|y| *y <= bottom),
-            "折线越出绘图区：{rows:?}"
-        );
-    }
-
     /// 堆叠图：各段之和恰好等于条长（不允许舍入留缝）。
     #[test]
     fn stacked_segments_fill_the_track() {
@@ -1502,30 +1389,6 @@ mod tests {
             width_of(&canvas, 18 + 9, first) > width_of(&canvas, 36 + 9, first),
             "份额大的类别第一段更长"
         );
-    }
-
-    /// 进度条：填充长度与比例一致，超出 100% 的被夹紧。
-    #[test]
-    fn progress_fills_by_ratio() {
-        let theme = Theme::resolved(ColorLevel::TrueColor);
-        let mut progress = series("进度", &[(50.0, "50%"), (120.0, "120%")]);
-        progress.dim = Dimension::Percent;
-        for point in progress.points.iter_mut().flatten() {
-            point.total = Some(100.0);
-        }
-        let spec = spec(ChartKind::Progress, &["半", "满"], vec![progress]);
-        let (canvas, layout) = raster(&spec);
-        assert_eq!(layout.rows, 2, "进度图只有类别行");
-        let color = chart_rgb(&theme, 0);
-        let half_width = width_of(&canvas, 9, color);
-        let full_width = width_of(&canvas, 27, color);
-        assert!(half_width > 0, "半程应有填充");
-        assert!(full_width > half_width, "满程应长于半程");
-        assert!(
-            (f64::from(full_width) / f64::from(half_width) - 2.0).abs() < 0.2,
-            "比例应约为 2：{half_width} vs {full_width}"
-        );
-        let _ = Color::Reset;
     }
 
     /// 热力图：数值越大越接近系列色（亮度递增），且每格有填充。

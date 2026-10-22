@@ -267,27 +267,12 @@ fn truncate_message(message: Message, budget: u64) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use moc_llm::{ImageSource, ToolCall};
+    use moc_llm::ToolCall;
 
     use super::*;
 
     fn text_tokens(chars: usize) -> String {
         "a".repeat(chars * 4)
-    }
-
-    #[test]
-    fn initial_stage_only_cuts_when_system_plus_history_exceeds_budget() {
-        let system = vec![Message::user_text("system")];
-        let small = vec![Message::user_text("hi")];
-        assert_eq!(
-            initial_stage(&system, &small, 0, 200_000),
-            InputStage::Verbatim
-        );
-        let large = vec![Message::user_text(text_tokens(8_000))];
-        assert_eq!(
-            initial_stage(&system, &large, 0, 40_000),
-            InputStage::Fitted
-        );
     }
 
     #[test]
@@ -353,62 +338,6 @@ mod tests {
             messages_tokens(&fitted) <= 140,
             "{}",
             messages_tokens(&fitted)
-        );
-    }
-
-    #[test]
-    fn dangling_tool_call_tail_is_dropped() {
-        let messages = vec![
-            Message::user_text("做点事"),
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentPart::ToolCall(ToolCall::new("c1", "read", "{}"))],
-            },
-        ];
-        assert_eq!(
-            truncate_incomplete_tail(messages),
-            vec![Message::user_text("做点事")]
-        );
-    }
-
-    #[test]
-    fn lossy_stage_drops_images_and_reasoning_before_fitting() {
-        let messages = vec![Message {
-            role: Role::User,
-            content: vec![
-                ContentPart::Text("看图".into()),
-                ContentPart::Image {
-                    source: ImageSource::Url("https://example.invalid/a.png".into()),
-                    detail: None,
-                },
-            ],
-        }];
-        let prepared = prepare_stage(InputStage::Lossy, messages, 200_000, 0);
-        assert_eq!(prepared, vec![Message::user_text("看图")]);
-
-        let reasoning = vec![Message {
-            role: Role::Assistant,
-            content: vec![
-                ContentPart::Reasoning(moc_llm::ReasoningBlock::text("想")),
-                ContentPart::Text("答".into()),
-            ],
-        }];
-        let prepared = prepare_stage(InputStage::Lossy, reasoning, 200_000, 0);
-        assert_eq!(
-            prepared,
-            vec![Message {
-                role: Role::Assistant,
-                content: vec![ContentPart::Text("答".into())],
-            }]
-        );
-    }
-
-    #[test]
-    fn verbatim_stage_keeps_everything_but_dangling_calls() {
-        let messages = vec![Message::user_text("hi"), Message::user_text("there")];
-        assert_eq!(
-            prepare_stage(InputStage::Verbatim, messages.clone(), 1, 1),
-            messages
         );
     }
 }

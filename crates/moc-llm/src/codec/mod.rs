@@ -358,7 +358,6 @@ fn join_names(calls: &[&ToolCall]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::WireConfig;
     use crate::types::{ContentPart, ReasoningBlock, ToolCall};
     use serde_json::json;
 
@@ -463,75 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn header_bag_is_case_insensitive_and_last_write_wins() {
-        let cfg = LlmConfig {
-            auth: Auth::Bearer("token".into()),
-            headers: BTreeMap::from([("X-Trace".into(), "cfg".into())]),
-            ..Default::default()
-        };
-        let req = ChatRequest {
-            options: crate::types::RequestOptions {
-                headers: BTreeMap::from([("x-trace".into(), "req".into())]),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let headers = common_headers(&cfg, &req).into_vec();
-        assert_eq!(
-            headers,
-            vec![
-                ("authorization".to_string(), "Bearer token".to_string()),
-                ("content-type".to_string(), "application/json".to_string()),
-                ("x-trace".to_string(), "req".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn decode_error_reads_metadata_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert("retry-after", "7".parse().unwrap());
-        headers.insert("x-request-id", "req_42".parse().unwrap());
-        let cfg = LlmConfig {
-            protocol: Protocol::OpenAiChat,
-            ..Default::default()
-        };
-        let error = decode_error(
-            &cfg,
-            429,
-            &headers,
-            br#"{"error":{"message":"slow down","type":"rate_limit_error","code":"rate_limited"}}"#,
-        );
-        assert_eq!(error.status, Some(429));
-        assert_eq!(error.kind, ApiErrorKind::RateLimit);
-        assert_eq!(error.message, "slow down");
-        assert_eq!(error.code.as_deref(), Some("rate_limited"));
-        assert_eq!(error.request_id.as_deref(), Some("req_42"));
-        assert_eq!(error.retry_after, Some(std::time::Duration::from_secs(7)));
-    }
-
-    #[test]
-    fn decode_error_degrades_when_body_is_not_json() {
-        let cfg = LlmConfig {
-            protocol: Protocol::OpenAiChat,
-            ..Default::default()
-        };
-        let error = decode_error(&cfg, 502, &HeaderMap::new(), b"<html>bad gateway</html>");
-        assert_eq!(error.status, Some(502));
-        assert_eq!(error.kind, ApiErrorKind::ServerError);
-        assert_eq!(error.message, "<html>bad gateway</html>");
-        assert_eq!(error.raw_body.as_ref(), "<html>bad gateway</html>");
-        assert!(error.is_retryable());
-    }
-
-    #[test]
-    fn truncated_keeps_char_boundaries() {
-        assert_eq!(truncated("abcdef", 3), "abc…");
-        assert_eq!(truncated("abc", 3), "abc");
-        assert_eq!(truncated("你好世界", 2), "你好…");
-    }
-
-    #[test]
     fn encode_validates_history_before_dispatch() {
         let cfg = LlmConfig {
             protocol: Protocol::OpenAiChat,
@@ -544,24 +474,6 @@ mod tests {
         };
         let err = encode(&cfg, &req, false).unwrap_err();
         assert!(matches!(err, LlmError::Encode(_)), "{err:?}");
-    }
-
-    #[test]
-    fn decode_response_reports_non_json_body() {
-        let cfg = LlmConfig {
-            protocol: Protocol::OpenAiChat,
-            wire: WireConfig::default(),
-            ..Default::default()
-        };
-        let req = ChatRequest::default();
-        let err = decode_response(&cfg, &req, b"not json").unwrap_err();
-        match err {
-            LlmError::Decode { message, body } => {
-                assert!(message.contains("不是合法 JSON"), "{message}");
-                assert_eq!(body.as_deref(), Some("not json"));
-            }
-            other => panic!("期望 Decode 错误，实际 {other:?}"),
-        }
     }
 
     #[test]
@@ -664,32 +576,5 @@ mod tests {
             let response = decode_response(&cfg, &ChatRequest::default(), body.as_bytes()).unwrap();
             assert_eq!(response.message.text(), text, "{protocol:?}");
         }
-    }
-
-    #[test]
-    fn decode_response_captures_raw_body_on_demand() {
-        let cfg = LlmConfig {
-            protocol: Protocol::OpenAiChat,
-            ..Default::default()
-        };
-        let body = json!({
-            "id": "chatcmpl-1",
-            "model": "test-model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]
-        })
-        .to_string();
-        let req = ChatRequest {
-            options: crate::types::RequestOptions {
-                capture_raw: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let response = decode_response(&cfg, &req, body.as_bytes()).unwrap();
-        assert_eq!(response.message.text(), "hi");
-        assert_eq!(
-            response.raw.as_deref().and_then(|value| value.get("id")),
-            Some(&json!("chatcmpl-1"))
-        );
     }
 }

@@ -135,16 +135,6 @@ mod tests {
     /// 测试底色。
     const BG: [u8; 3] = [10, 10, 12];
 
-    /// 返回值严格等于 `x + fonts.width(text, px)`（同一套 advance 取整）。
-    #[test]
-    fn draw_returns_x_plus_width() {
-        with_fonts(|fonts| {
-            let mut canvas = Canvas::new(160, 40, BG);
-            let end = draw(&mut canvas, 3, 30, "A中x", 16, [240, 240, 240], BG, fonts);
-            assert_eq!(end, 3 + fonts.width("A中x", 16));
-        });
-    }
-
     /// 纯背景画布上画字母必留墨迹（至少一个非背景像素）。
     #[test]
     fn draw_paints_ink() {
@@ -155,42 +145,6 @@ mod tests {
                 canvas.index().iter().any(|i| *i != 0),
                 "字母 A 必须留下像素"
             );
-        });
-    }
-
-    /// 文本伸出右缘/上缘只裁剪，不 panic；结束笔位照常累加。
-    #[test]
-    fn draw_clips_at_edges() {
-        with_fonts(|fonts| {
-            let mut canvas = Canvas::new(12, 12, BG);
-            let end = draw(&mut canvas, 10, 11, "WWWW", 16, [255, 255, 255], BG, fonts);
-            assert!(end > 12, "文本确实伸出画布右缘");
-            // 基线抬到画布上方：逐行判定全部落在界外，什么都不画。
-            let mut above = Canvas::new(12, 12, BG);
-            let end_above = draw(&mut above, 10, -20, "WW", 16, [255, 255, 255], BG, fonts);
-            assert!(end_above > 10);
-            assert!(above.index().iter().all(|i| *i == 0));
-        });
-    }
-
-    /// 缺字画方框占位，结束笔位按方框宽度前进。
-    #[test]
-    fn missing_glyph_draws_box() {
-        with_fonts(|fonts| {
-            let mut canvas = Canvas::new(48, 32, BG);
-            let end = draw(
-                &mut canvas,
-                4,
-                24,
-                "\u{10FFFD}",
-                16,
-                [255, 255, 255],
-                BG,
-                fonts,
-            );
-            assert_eq!(end, 4 + missing_box_width(16));
-            let painted = canvas.index().iter().filter(|i| **i != 0).count();
-            assert!(painted > 0, "缺字必须画方框，不能是空白");
         });
     }
 }

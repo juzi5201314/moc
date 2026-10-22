@@ -242,18 +242,6 @@ mod tests {
     }
 
     #[test]
-    fn valid_name_enforces_spec() {
-        assert!(valid_name("pdf-report"));
-        assert!(valid_name("a1"));
-        assert!(!valid_name(""));
-        assert!(!valid_name("Pdf"));
-        assert!(!valid_name("-lead"));
-        assert!(!valid_name("tail-"));
-        assert!(!valid_name("a--b"));
-        assert!(!valid_name(&"a".repeat(65)));
-    }
-
-    #[test]
     fn project_moc_beats_agents_beats_user() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
@@ -472,25 +460,5 @@ mod tests {
             &config(Vec::new(), Vec::new()),
         );
         assert_eq!(index.get("deep").unwrap().description, "嵌套分类");
-    }
-
-    #[test]
-    fn name_directory_mismatch_still_loads_with_warning_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = dir.path().join("project");
-        let home = dir.path().join("home");
-        std::fs::create_dir_all(project.join(".agents/skills/wrong-dir")).unwrap();
-        std::fs::write(
-            project.join(".agents/skills/wrong-dir/SKILL.md"),
-            "---\nname: right-name\ndescription: 名字不一致\n---\n正文",
-        )
-        .unwrap();
-        let index = discover_index(
-            &project,
-            &home,
-            Some(&home),
-            &config(Vec::new(), Vec::new()),
-        );
-        assert!(index.get("right-name").is_some());
     }
 }

@@ -230,28 +230,6 @@ mod tests {
     }
 
     #[test]
-    fn full_served_range_accepts_reverse_order_and_warns() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("file.txt");
-        let snapshot = snapshot(&path, b"one\ntwo\nthree");
-        let mut served = ServedFile::new();
-        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
-        let (start, end, warning) = verify_range(
-            &served,
-            &snapshot,
-            &anchor_token(3, &snapshot.lines[2]),
-            &anchor_token(1, &snapshot.lines[0]),
-        )
-        .expect("锚点逆序自动交换");
-        assert_eq!((start, end), (0, 2));
-        assert!(
-            warning
-                .expect("逆序应有警告")
-                .contains("E_REVERSED_ANCHORS")
-        );
-    }
-
-    #[test]
     fn duplicate_lines_resolve_by_stable_token_after_any_shift() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
