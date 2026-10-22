@@ -52,17 +52,19 @@ pub const PIECE_PTC_RUNTIME: &str = "ptc runtime";
 pub const PIECE_MCP_SERVERS: &str = "mcp servers";
 pub const PIECE_REPO_RULES: &str = "repo rules";
 pub const PIECE_SKILLS: &str = "skills";
+pub const PIECE_PLUGINS: &str = "plugins";
 pub const PIECE_SUBAGENT: &str = "subagent";
 pub const PIECE_ENVIRONMENT: &str = "environment";
 pub const PIECE_APPEND: &str = "append";
 /// 全部片段名，配置校验和角色分组都以此为准。
-pub const PIECE_NAMES: [&str; 9] = [
+pub const PIECE_NAMES: [&str; 10] = [
     PIECE_INTRO,
     PIECE_TOOL_POLICY,
     PIECE_PTC_RUNTIME,
     PIECE_MCP_SERVERS,
     PIECE_REPO_RULES,
     PIECE_SKILLS,
+    PIECE_PLUGINS,
     PIECE_SUBAGENT,
     PIECE_ENVIRONMENT,
     PIECE_APPEND,
@@ -102,6 +104,8 @@ pub struct SystemPrompt {
     pub static_prefix: Vec<usize>,
 }
 
+/// 变长参数全部属于同一次组装：配置、模型与按工作目录取得的项目内容。
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     config: &ResolvedConfig,
     model: &ResolvedModel,
@@ -109,6 +113,7 @@ pub fn build(
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
+    plugins: &str,
     subagent: Option<&str>,
 ) -> SystemPrompt {
     compose(
@@ -119,6 +124,7 @@ pub fn build(
             context_files,
             skills,
             mcp_summary,
+            plugins,
             subagent,
         ),
         model,
@@ -165,6 +171,7 @@ pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt 
 }
 
 /// 生成稳定前缀的各个片段。时间、后台任务、工作区变更、MCP 状态和当前模式放在尾部提醒里，不进前缀。
+#[allow(clippy::too_many_arguments)]
 pub fn pieces(
     config: &ResolvedConfig,
     model: &ResolvedModel,
@@ -172,6 +179,7 @@ pub fn pieces(
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
+    plugins: &str,
     subagent: Option<&str>,
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
@@ -255,6 +263,14 @@ pub fn pieces(
             name: PIECE_SKILLS,
             scope: PieceScope::Project,
             text: catalog,
+        });
+    }
+    if !plugins.is_empty() {
+        sections.push(PromptPiece {
+            title: "plugins",
+            name: PIECE_PLUGINS,
+            scope: PieceScope::Project,
+            text: format!("<plugins>\n{plugins}\n</plugins>"),
         });
     }
     if let Some(subagent) = subagent {
@@ -454,6 +470,7 @@ mod tests {
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
+            "",
             None,
         );
         let text = prompt_text(&prompt);
@@ -499,6 +516,7 @@ mod tests {
             &[],
             &crate::skills::SkillIndex::empty(),
             "",
+            "",
             None,
         );
         let text = prompt_text(&prompt);
@@ -543,6 +561,7 @@ mod tests {
             &[],
             &crate::skills::SkillIndex::empty(),
             "",
+            "",
             None,
         );
         let blocks = blocks(&prompt);
@@ -573,6 +592,7 @@ mod tests {
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
+            "",
             None,
         );
         // 两条消息：system 组放描述性片段，user 组放规定性片段。
@@ -603,6 +623,7 @@ mod tests {
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
+            "",
             None,
         );
         assert_eq!(plain.messages.len(), 1);
@@ -659,6 +680,7 @@ mod tests {
                 &context_files,
                 &crate::skills::SkillIndex::empty(),
                 "",
+                "",
                 None,
             ))
         };
@@ -700,7 +722,7 @@ mod tests {
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", None);
+        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", "", None);
         let text = prompt_text(&prompt);
         assert!(text.contains("<skills>"));
         assert!(text.contains("- demo: demo skill"));

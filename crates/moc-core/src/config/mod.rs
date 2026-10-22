@@ -12,7 +12,9 @@ use toml::Value;
 use crate::CoreConfig;
 use crate::error::CoreError;
 use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
-use schema::{ConfigDocument, SandboxConfig, validate_compaction, validate_skills};
+use schema::{
+    ConfigDocument, SandboxConfig, validate_compaction, validate_plugins, validate_skills,
+};
 
 pub mod catalog;
 pub mod discovery;
@@ -24,9 +26,9 @@ pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, Thi
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig, OnDenied,
-    OutputConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig, SkillsConfig,
-    SoftMethod, SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig, WebFetchConfig,
-    WebSearchConfig, WorkspaceConfig, WriteConfig,
+    OutputConfig, PluginsConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig,
+    SkillsConfig, SoftMethod, SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig,
+    WebFetchConfig, WebSearchConfig, WorkspaceConfig, WriteConfig,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -101,6 +103,7 @@ pub struct ResolvedConfig {
     pub session: SessionSettings,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
+    pub plugins: PluginsConfig,
     pub web_search: ResolvedWebSearch,
     pub web_fetch: ResolvedWebFetch,
     providers: BTreeMap<String, model::ResolvedProvider>,
@@ -219,6 +222,7 @@ impl ResolvedConfig {
         validate_compaction(&document.compaction)?;
         schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
+        validate_plugins(&document.plugins)?;
         let web_search_provider = schema::validate_web_search(&document.web_search)?;
         let web_search_key =
             model::resolve_secret("web_search.api_key", &document.web_search.api_key)?;
@@ -252,6 +256,7 @@ impl ResolvedConfig {
             },
             mcp: document.mcp,
             skills: document.skills,
+            plugins: document.plugins,
             web_search: ResolvedWebSearch {
                 enabled: document.web_search.enabled,
                 provider: web_search_provider,
@@ -784,6 +789,44 @@ mod tests {
         }
     }
 
+    /// 插件配置的 0 值必须拒绝：它会让「永远超时」「永远加载失败」变成静默行为。
+    #[test]
+    fn rejects_zero_plugin_limits_and_unknown_plugin_keys() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&home).expect("创建 home");
+        let base = provider_config("k");
+        fs::write(
+            home.join("config.toml"),
+            format!("{base}\n[plugins]\ncall_timeout_ms=0\n"),
+        )
+        .expect("写配置");
+        let error = match ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())) {
+            Ok(_) => panic!("0 超时必须报错"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("call_timeout_ms"), "{error}");
+
+        fs::write(
+            home.join("config.toml"),
+            format!("{base}\n[plugins]\nmax_plugns=3\n"),
+        )
+        .expect("写配置");
+        assert!(
+            ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err(),
+            "未知字段必须报错"
+        );
+
+        // 默认值：全开、64 MiB、5 秒、4k 提示词预算。
+        fs::write(home.join("config.toml"), &base).expect("写配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).expect("默认可用");
+        assert!(config.plugins.enabled && config.plugins.project && config.plugins.user);
+        assert_eq!(config.plugins.memory_limit_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.plugins.call_timeout_ms, 5000);
+        assert_eq!(config.plugins.max_prompt_chars, 4000);
+    }
+
     #[test]
     fn rejects_unknown_levels_missing_environment_and_invalid_toml() {
         assert!("ultra".parse::<ThinkingLevel>().is_err());
@@ -949,6 +992,7 @@ max_output_tokens = 128000
                     false,
                     config,
                     crate::tools::ToolScope::top(),
+                    &[],
                 )
                 .iter()
                 .any(|definition| definition.name == name)

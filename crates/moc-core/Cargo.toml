@@ -8,6 +8,7 @@ authors = ["soeur@soeur.dev@gmail.com"]
 moc-llm = { path = "../moc-llm" }
 moc-openviking = { path = "../moc-openviking" }
 moc-mcp = { path = "../moc-mcp" }
+moc-plugin = { path = "../moc-plugin" }
 moc-protocol = { path = "../moc-protocol" }
 moc-ptc-protocol = { path = "../moc-ptc-protocol" }
 anyhow.workspace = true

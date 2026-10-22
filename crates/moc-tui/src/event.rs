@@ -13,15 +13,15 @@ use moc_core::Core;
 use moc_protocol::{
     ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, OpenVikingList,
     OpenVikingListParams, OpenVikingRead, OpenVikingReadParams, OpenVikingWrite,
-    OpenVikingWriteParams, ResourceComplete, ResourceCompleteParams, Role, SessionCompact,
-    SessionCompactParams, SessionContext, SessionContextContent, SessionContextContentParams,
-    SessionInfo, SessionList, SessionListParams, SessionLoad, SessionLoadPage,
-    SessionLoadPageParams, SessionLoadParams, SessionLoadResult, SessionMode,
-    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
-    SessionPlanApprove, SessionPlanApproveParams, SessionRewind, SessionRewindParams,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
-    SessionSetPermission, SessionSetPermissionParams, SessionUpdate, SessionUsage,
-    SessionUsageParams, UpstreamField,
+    OpenVikingWriteParams, PluginList, PluginListParams, PluginRunCommand, PluginRunCommandParams,
+    ResourceComplete, ResourceCompleteParams, Role, SessionCompact, SessionCompactParams,
+    SessionContext, SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
+    SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
+    SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionRewind,
+    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
+    SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -287,6 +287,76 @@ fn refresh_usage(app: &mut App, connection: &EmbeddedConnection, show: bool) {
             Err(_) => {}
         }
     });
+}
+
+/// 刷新插件清单：`show` 为真时把清单写进转写（`/plugins`），否则只更新命令补全。
+fn refresh_plugins(app: &App, connection: &EmbeddedConnection, show: bool) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<PluginList>(PluginListParams { session_id })
+            .await
+        {
+            Ok(result) => {
+                let text = show.then(|| format_plugins(&result.plugins));
+                let _ = events.send(AppEvent::Plugins(result.plugins));
+                if let Some(text) = text {
+                    let _ = events.send(AppEvent::PluginOutput {
+                        name: "plugins".into(),
+                        text,
+                        error: false,
+                    });
+                }
+            }
+            Err(error) => {
+                if show {
+                    let _ = events.send(AppEvent::PluginOutput {
+                        name: "plugins".into(),
+                        text: format!("读取插件失败：{error}"),
+                        error: true,
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// `/plugins` 的正文：每个插件一行来源与目录，再列出它注册的工具和命令。
+fn format_plugins(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
+    if plugins.is_empty() {
+        return "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。"
+            .into();
+    }
+    let mut lines = vec![format!("已加载 {} 个插件：", plugins.len())];
+    for plugin in plugins {
+        let version = plugin
+            .version
+            .as_deref()
+            .map(|version| format!(" v{version}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {}{version}（{}）{}",
+            plugin.name,
+            plugin.source,
+            plugin.description.as_deref().unwrap_or_default()
+        ));
+        lines.push(format!("  {}", plugin.dir));
+        if let Some(error) = &plugin.error {
+            lines.push(format!("  不可用：{error}"));
+            continue;
+        }
+        for tool in &plugin.tools {
+            lines.push(format!("  工具 {} [{}]", tool.name, tool.tier));
+        }
+        for command in &plugin.commands {
+            lines.push(format!("  命令 /{}", command.name));
+        }
+    }
+    lines.join("\n")
 }
 
 /// 刷新代理面：名册与侧栏始终挂靠 [`App::agents_root_id`]（聚焦时是主会话）。
@@ -784,6 +854,21 @@ async fn event_loop(
                     Some(AppEvent::MemorySaved(uri)) => {
                         apply_memory_saved(app, connection, uri);
                     }
+                    Some(AppEvent::Plugins(plugins)) => {
+                        app.plugin_commands = plugins
+                            .iter()
+                            .flat_map(|plugin| plugin.commands.iter().cloned())
+                            .collect();
+                        app.plugins = plugins;
+                    }
+                    Some(AppEvent::PluginOutput { name, text, error }) => {
+                        let text = if text.trim().is_empty() {
+                            format!("插件命令 /{name} 没有输出")
+                        } else {
+                            text
+                        };
+                        app.push_note(text, error);
+                    }
                     Some(AppEvent::Usage {
                         request,
                         result,
@@ -884,7 +969,11 @@ async fn event_loop(
                                     );
                                 }
                                 Err(_) => {
-                                    app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
+                                    app.completion =
+                        crate::widgets::completion::CompletionState::derive(
+                            app.prompt_text(),
+                            &app.plugin_commands,
+                        );
                                 }
                             }
                         }
@@ -916,6 +1005,7 @@ async fn event_loop(
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
                         refresh_usage(app, connection, false);
+                        refresh_plugins(app, connection, false);
                         load_subagents_for_parent(app, &connection.client, Some(id));
                         if let Some(text) = app.startup_pending.take() {
                             app.prompt.insert_str_raw(&text);
@@ -3925,6 +4015,13 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 }
             });
         }
+        "/plugins" => {
+            if app.session.is_none() {
+                app.set_notice("当前没有活动会话");
+                return;
+            }
+            refresh_plugins(app, connection, true);
+        }
         "/usage" => {
             if app.session.is_none() {
                 app.set_notice("当前没有活动会话");
@@ -3966,7 +4063,50 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/ask" => ask_once(app, connection, rest),
         "/model" => app.open_model_picker(),
         "/resume" => open_session_picker(app, connection),
-        other => app.set_notice(format!("未知命令：{other}")),
+        other => {
+            // 插件命令兜底：名字由 `plugin/list` 提供，执行结果写进转写。
+            let name = other.trim_start_matches('/').to_owned();
+            if app
+                .plugin_commands
+                .iter()
+                .any(|command| command.name == name)
+            {
+                let Some(session_id) = session_id else {
+                    app.set_notice("当前没有活动会话");
+                    return;
+                };
+                let client = connection.client.clone();
+                let events = app.events.clone();
+                let args = rest.trim().to_owned();
+                tokio::spawn(async move {
+                    match client
+                        .call::<PluginRunCommand>(PluginRunCommandParams {
+                            session_id,
+                            name: name.clone(),
+                            args,
+                        })
+                        .await
+                    {
+                        Ok(result) => {
+                            let _ = events.send(AppEvent::PluginOutput {
+                                name,
+                                text: result.text,
+                                error: false,
+                            });
+                        }
+                        Err(error) => {
+                            let _ = events.send(AppEvent::PluginOutput {
+                                name,
+                                text: format!("插件命令执行失败：{error}"),
+                                error: true,
+                            });
+                        }
+                    }
+                });
+                return;
+            }
+            app.set_notice(format!("未知命令：{other}"));
+        }
     }
 }
 
@@ -4516,6 +4656,78 @@ mod tests {
         let mut app = App::new(Theme::global(), events);
         app.session = Some(session);
         (core, connection, app, receiver, root)
+    }
+
+    /// 插件命令参与补全与分派：`/plugins` 读回清单，插件命令的结果写进转写。
+    #[tokio::test]
+    async fn plugin_commands_complete_and_run_through_core() {
+        let (core, connection, mut app, mut receiver, root) = app_with_core().await;
+        let dir = root.path().join(".moc/plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.json"), r#"{"name":"demo"}"#).unwrap();
+        std::fs::write(
+            dir.join("index.js"),
+            r#"
+            export default {
+              commands: { demo: { description: "示例命令", run: args => `cmd:${args}` } }
+            };
+            "#,
+        )
+        .unwrap();
+
+        execute_command(&mut app, &connection, "/plugins".into());
+        let mut plugins = None;
+        let mut listing = None;
+        while plugins.is_none() || listing.is_none() {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .expect("插件清单应在超时前返回")
+                .expect("事件队列未关闭");
+            match event {
+                AppEvent::Plugins(list) => plugins = Some(list),
+                AppEvent::PluginOutput { text, error, .. } => {
+                    assert!(!error, "{text}");
+                    listing = Some(text);
+                }
+                _ => {}
+            }
+        }
+        let plugins = plugins.expect("收到清单");
+        // 主循环收到清单时会同步补全表；这里手动同步一次，不重复跑整个事件循环。
+        app.plugin_commands = plugins
+            .iter()
+            .flat_map(|plugin| plugin.commands.iter().cloned())
+            .collect();
+        app.plugins = plugins.clone();
+        assert_eq!(plugins[0].name, "demo");
+        assert_eq!(plugins[0].commands[0].name, "demo");
+        assert!(
+            listing.expect("列出插件").contains("命令 /demo"),
+            "清单里要列出插件命令"
+        );
+        // 清单顺带刷新补全表；插件命令与内置命令一起参与前缀匹配。
+        let completion =
+            crate::widgets::completion::CompletionState::derive("/demo", &app.plugin_commands)
+                .expect("插件命令可补全");
+        assert_eq!(completion.candidates[0].value, "/demo");
+
+        app.blocks.clear();
+        execute_command(&mut app, &connection, "/demo 参数".into());
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), receiver.recv())
+                .await
+                .expect("命令结果应在超时前返回")
+                .expect("事件队列未关闭");
+            if let AppEvent::PluginOutput { name, text, error } = event {
+                assert_eq!(name, "demo");
+                assert!(!error, "{text}");
+                assert_eq!(text, "cmd:参数");
+                break;
+            }
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
     }
 
     /// `/context` 打开正文窗，并把 core 的真实分块装进窗里。
@@ -5601,7 +5813,10 @@ mod tests {
     fn app_with_completion() -> App {
         let mut app = app();
         app.prompt.insert_str_raw("/m");
-        app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
+        app.completion = crate::widgets::completion::CompletionState::derive(
+            app.prompt_text(),
+            &app.plugin_commands,
+        );
         app
     }
 
@@ -5774,7 +5989,10 @@ mod tests {
     async fn terminal_event_arrows_preserve_completion_selection() {
         let (core, connection, mut app) = setup_test_app().await;
         app.prompt.insert_str_raw("/co");
-        app.completion = crate::widgets::completion::CompletionState::derive(app.prompt_text());
+        app.completion = crate::widgets::completion::CompletionState::derive(
+            app.prompt_text(),
+            &app.plugin_commands,
+        );
         assert!(app.completion.is_some());
         assert_eq!(app.completion.as_ref().map(|c| c.selected), Some(0));
 
@@ -5882,8 +6100,11 @@ mod tests {
     async fn completion_mouse_click_selects_and_accepts_candidate() {
         let (core, connection, mut app) = setup_test_app().await;
         app.prompt.insert_str_raw("/co");
-        let mut completion =
-            crate::widgets::completion::CompletionState::derive(app.prompt_text()).unwrap();
+        let mut completion = crate::widgets::completion::CompletionState::derive(
+            app.prompt_text(),
+            &app.plugin_commands,
+        )
+        .unwrap();
         let menu_area = ratatui::layout::Rect::new(2, 10, 40, 6);
         completion.area = menu_area;
         completion.visible_count = 3;
@@ -5913,8 +6134,11 @@ mod tests {
     async fn completion_mouse_hover_and_scroll_and_dismiss() {
         let (core, connection, mut app) = setup_test_app().await;
         app.prompt.insert_str_raw("/co");
-        let mut completion =
-            crate::widgets::completion::CompletionState::derive(app.prompt_text()).unwrap();
+        let mut completion = crate::widgets::completion::CompletionState::derive(
+            app.prompt_text(),
+            &app.plugin_commands,
+        )
+        .unwrap();
         let menu_area = ratatui::layout::Rect::new(2, 10, 40, 6);
         completion.area = menu_area;
         completion.visible_count = 3;

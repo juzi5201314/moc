@@ -223,7 +223,13 @@ pub(super) async fn execute_tool_batch(
             );
             continue;
         }
-        let Some(tool) = inner.tools.get(&call.name) else {
+        let selected = inner.tools.get(&call.name).or_else(|| {
+            tool_ctx
+                .catalog
+                .get(&call.name)
+                .filter(|tool| tool.origin() == crate::tools::ToolOrigin::Plugin)
+        });
+        let Some(tool) = selected else {
             let error = CoreError::Tool(format!(
                 "E_TOOL_NOT_FOUND: tool `{}` is not registered",
                 call.name
@@ -426,6 +432,12 @@ pub(super) async fn execute_tool_batch(
         inner
             .tools
             .get(&call.name)
+            .or_else(|| {
+                tool_ctx
+                    .catalog
+                    .get(&call.name)
+                    .filter(|tool| tool.origin() == crate::tools::ToolOrigin::Plugin)
+            })
             .is_some_and(|tool| tool.parallel_safe())
     }) {
         observations.sort_unstable_by_key(|(fingerprint, _, _)| *fingerprint);
@@ -454,10 +466,15 @@ async fn execute_tool(
             "Call MCP tools through run_code",
         ));
     }
+    // 插件工具活在本次提示的工具目录里（和 MCP 工具一样按提示快照），不进内置注册表。
     let selected = if ctx.nested {
         ctx.catalog.get(name)
     } else {
-        inner.tools.get(name)
+        inner.tools.get(name).or_else(|| {
+            ctx.catalog
+                .get(name)
+                .filter(|tool| tool.origin() == crate::tools::ToolOrigin::Plugin)
+        })
     };
     let Some(tool) = selected else {
         return Ok(ToolOutcome::failure(
@@ -477,7 +494,7 @@ async fn execute_tool(
             "yield is available only to subagents",
         ));
     }
-    if !crate::service::mode::mode_allows(mode, name, tool.tier()) {
+    if !crate::service::mode::mode_allows(mode, name, tool.tier(), tool.origin()) {
         return Ok(ToolOutcome::failure(
             "E_MODE",
             "This tool is not allowed in the current mode",
@@ -485,6 +502,7 @@ async fn execute_tool(
     }
     if !crate::service::mode::tool_enabled(
         name,
+        tool.origin(),
         inner.client_supports_ask(request.connection_id()),
         config,
     ) {
@@ -505,6 +523,23 @@ async fn execute_tool(
             ));
         }
     };
+    // 插件钩子先于一切本地检查：改写后的参数才是沙盒、规则和工具真正看到的那份。
+    // 只有模型发起的调用会触发钩子；PTC 与插件内部的工具调用不重入钩子。
+    if !ctx.nested
+        && !ctx.plugins.is_empty()
+        && let Some(denied) = plugin_before_tool_call(ctx, name, &mut args).await
+    {
+        return Ok(ToolOutcome {
+            content: format!("[E_PLUGIN_DENIED] {denied}").into(),
+            is_error: true,
+            structured_content: None,
+            error_code: Some("E_PLUGIN_DENIED".into()),
+            images: Vec::new(),
+            control: ToolControl::Continue,
+            status: Some(ToolStatus::Denied),
+            diff: None,
+        });
+    }
     // bash 执行前先过静态规则，并把命令里没加引号的内部 URI 换成 urlfs 目录里的路径：
     // 沙盒判定和审批提示看到的都是真实路径，URI 交给 shell 也不会悄悄失效。
     let mut history_view = false;
@@ -579,7 +614,7 @@ async fn execute_tool(
     {
         return Ok(error.into_outcome());
     }
-    let execution = AssertUnwindSafe(tool.run(&execution_ctx, args)).catch_unwind();
+    let execution = AssertUnwindSafe(tool.run(&execution_ctx, args.clone())).catch_unwind();
     let result = if tool.parallel_safe() || name == "ask" {
         tokio::select! {
             biased;
@@ -594,6 +629,20 @@ async fn execute_tool(
         Ok(Ok(outcome)) => {
             if outcome.diff.is_some() {
                 ctx.guard.record_change();
+            }
+            if !ctx.nested && !ctx.plugins.is_empty() {
+                let result = moc_plugin::ToolResult {
+                    content: match &outcome.content {
+                        crate::tools::ToolOutput::Text(text) => text.clone(),
+                        crate::tools::ToolOutput::File { path, .. } => path.display().to_string(),
+                        crate::tools::ToolOutput::Excerpt { text, .. } => text.clone(),
+                    },
+                    structured: outcome.structured_content.clone(),
+                    is_error: outcome.is_error,
+                };
+                ctx.plugins
+                    .after_tool_call(name, &args, &result, &ctx.plugin_call_context())
+                    .await;
             }
             Ok(outcome)
         }
@@ -618,6 +667,13 @@ pub(crate) async fn execute_nested_tool(
             "Nested run_code calls are not allowed",
         ));
     }
+    // 插件工具不是 PTC 的扩展面：插件已经能直接调宿主只读工具，再开放会绕开钩子与模式限制。
+    if ctx.plugins.owns_tool(&call.name) {
+        return Ok(ToolOutcome::failure(
+            "E_PLUGIN_RECURSION",
+            "Plugin tools cannot be called from run_code or from another plugin",
+        ));
+    }
     let mut nested = ctx.clone();
     nested.nested = true;
     nested.call_grants = crate::sandbox::SandboxGrants::default();
@@ -629,6 +685,21 @@ pub(crate) async fn execute_nested_tool(
         ctx.mode
     };
     execute_tool(inner, &nested, mode, call).await
+}
+
+/// 调用全部插件的 `beforeToolCall`；拒绝时返回原因，允许时就地改写参数。
+async fn plugin_before_tool_call(ctx: &ToolCtx, name: &str, args: &mut Value) -> Option<String> {
+    match ctx
+        .plugins
+        .before_tool_call(name, args, &ctx.plugin_call_context())
+        .await
+    {
+        moc_plugin::BeforeToolCall::Allow(rewritten) => {
+            *args = rewritten;
+            None
+        }
+        moc_plugin::BeforeToolCall::Deny(reason) => Some(reason),
+    }
 }
 
 enum Authorization {

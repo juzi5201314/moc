@@ -323,7 +323,8 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
         })
         .collect();
     rows.insert(0, ("/confirm-plan".into(), "重新审阅待确认的计划"));
-    rows.insert(1, ("/close".into(), "卸载会话并释放写租约"));
+    rows.insert(1, ("/plugins".into(), "查看已加载的插件与插件命令"));
+    rows.insert(2, ("/close".into(), "卸载会话并释放写租约"));
     // 双列按行序对半切开，两列各自收窄；退回单列时两列并作一列取并集。
     let unified = measure_column(&rows);
     let split = rows.len().div_ceil(2);

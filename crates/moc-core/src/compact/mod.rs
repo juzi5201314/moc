@@ -134,9 +134,22 @@ pub(crate) async fn model_context(
     let skills = inner.project_skills(cwd)?;
     let summary = inner.mcp_summary(config).await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
-    let prompt =
-        crate::system_prompt::build(config, model, cwd, &context_files, &skills, &summary, None);
+    let plugins = inner.project_plugins(cwd).await?;
+    let plugin_prompt = plugins
+        .prompt_text(&crate::service::plugin_context(state, &model.selector))
+        .await;
+    let prompt = crate::system_prompt::build(
+        config,
+        model,
+        cwd,
+        &context_files,
+        &skills,
+        &summary,
+        &plugin_prompt,
+        None,
+    );
     let system = prompt.messages;
+    let plugins = inner.plugin_tools(cwd).await;
     let tools = inner.tools.definitions(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),
@@ -145,6 +158,7 @@ pub(crate) async fn model_context(
             control_agents: !state.session.is_subagent(),
             subagent: state.session.is_subagent(),
         },
+        &plugins,
     );
     let messages = replay::model_messages(state, None, Some(model));
     let mut measured = Vec::with_capacity(system.len() + messages.len());

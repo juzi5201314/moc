@@ -49,6 +49,12 @@ pub(crate) async fn compact(
     let context_files = inner
         .project_context_files(&state.session.id, std::path::Path::new(&state.session.cwd))
         .await;
+    let plugins = inner
+        .project_plugins(std::path::Path::new(&state.session.cwd))
+        .await?;
+    let plugin_prompt = plugins
+        .prompt_text(&crate::service::plugin_context(state, &model.selector))
+        .await;
     full_messages.extend(
         crate::system_prompt::build(
             config,
@@ -57,11 +63,15 @@ pub(crate) async fn compact(
             &context_files,
             &skills,
             &summary,
+            &plugin_prompt,
             None,
         )
         .messages,
     );
     full_messages.extend_from_slice(messages);
+    let plugins = inner
+        .plugin_tools(std::path::Path::new(&state.session.cwd))
+        .await;
     let request = ChatRequest {
         messages: full_messages,
         tools: inner.tools.definitions(
@@ -72,6 +82,7 @@ pub(crate) async fn compact(
                 control_agents: !state.session.is_subagent(),
                 subagent: state.session.is_subagent(),
             },
+            &plugins,
         ),
         native_input: None,
         ..ChatRequest::default()

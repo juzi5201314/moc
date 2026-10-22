@@ -68,6 +68,15 @@ pub enum AppEvent {
     ClipboardPaste(Option<ClipboardPayload>),
     /// OpenViking 记忆目录列表。
     Memories(Vec<moc_protocol::methods::OpenVikingEntry>),
+    /// 本工作区的插件清单；同时刷新斜杠命令补全。
+    Plugins(Vec<moc_protocol::methods::PluginInfo>),
+    /// 插件斜杠命令的输出；`None` 表示执行失败，文本是给用户看的错误。
+    PluginOutput {
+        /// 命令名（不含斜杠），用于回显。
+        name: String,
+        text: String,
+        error: bool,
+    },
     /// OpenViking 正文读取完成。
     MemoryRead(moc_protocol::methods::OpenVikingReadResult),
     /// OpenViking 正文保存完成。

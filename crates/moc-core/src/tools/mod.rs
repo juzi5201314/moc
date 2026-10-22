@@ -15,6 +15,7 @@ pub(crate) mod job_log;
 pub mod mcp;
 pub mod output;
 pub mod plan;
+pub mod plugin;
 pub mod ptc;
 pub mod read;
 pub mod todo;
@@ -37,6 +38,14 @@ use moc_llm::ToolDef;
 use moc_protocol::{RequestContext, SessionMode, SessionPermission};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+
+/// 工具的来源：决定模式白名单与结果归属，也用于拒绝插件嵌套调用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOrigin {
+    Builtin,
+    Mcp,
+    Plugin,
+}
 
 /// 工具的风险等级；授权统一在工具执行入口处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +187,10 @@ pub struct ToolCtx {
     pub mcp: Arc<moc_mcp::McpManager>,
     /// 该项目的 skill 索引。
     pub skills: Arc<crate::skills::SkillIndex>,
+    /// 该项目的插件宿主（没有插件时是空宿主）。
+    pub plugins: Arc<moc_plugin::PluginHost>,
+    /// 本次提示使用的模型选择器，供插件上下文读取。
+    pub model: String,
     /// 当前正在执行的外层工具调用 ID；PTC 用它关联父子调用。
     pub tool_call_id: String,
     /// 本会话已加载的 skill 名。
@@ -226,6 +239,21 @@ impl ToolCtx {
     pub fn artifact_store(&self) -> crate::resources::ArtifactStore {
         crate::resources::ArtifactStore::new(self.paths.clone())
     }
+
+    /// 交给插件的会话快照；字段与 `moc.d.ts` 的 `Session` 一一对应。
+    pub fn plugin_call_context(&self) -> moc_plugin::CallContext {
+        moc_plugin::CallContext {
+            session_id: self.session_id.clone(),
+            cwd: self.cwd.display().to_string(),
+            mode: serde_json::to_value(self.mode)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            permission: self.permission.as_str().to_owned(),
+            model: self.model.clone(),
+            is_subagent: self.subagent,
+        }
+    }
 }
 
 /// 工具实现。注册表持有工具实例；schema 同步生成，执行是异步的。
@@ -240,6 +268,9 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn tier(&self) -> Tier;
+    fn origin(&self) -> ToolOrigin {
+        ToolOrigin::Builtin
+    }
     fn parallel_safe(&self) -> bool;
     fn def(&self) -> ToolDef;
     fn output_schema(&self) -> Option<&Value> {
@@ -313,15 +344,20 @@ impl ToolRegistry {
             .cloned()
     }
 
+    /// 模型可见的工具定义：内置工具 + 调用方传入的插件工具。
+    ///
+    /// 插件工具与 MCP 一样按风险等级判定模式；内置白名单不适用于它们。
     pub fn definitions(
         &self,
         mode: SessionMode,
         ask_supported: bool,
         config: &ResolvedConfig,
         scope: ToolScope,
+        extra: &[Arc<dyn Tool>],
     ) -> Vec<ToolDef> {
         self.builtins
             .iter()
+            .chain(extra.iter())
             .filter(|tool| match tool.name() {
                 // 创建、停止和等待子代理只在顶层会话可用；子代理只能通信。
                 name if Self::is_parent_only_tool(name) => scope.control_agents,
@@ -330,8 +366,13 @@ impl ToolRegistry {
                 _ => true,
             })
             .filter(|tool| {
-                crate::service::mode::mode_allows(mode, tool.name(), tool.tier())
-                    && crate::service::mode::tool_enabled(tool.name(), ask_supported, config)
+                crate::service::mode::mode_allows(mode, tool.name(), tool.tier(), tool.origin())
+                    && crate::service::mode::tool_enabled(
+                        tool.name(),
+                        tool.origin(),
+                        ask_supported,
+                        config,
+                    )
             })
             .map(|tool| {
                 let mut definition = tool.def();
@@ -356,8 +397,9 @@ impl ToolRegistry {
         &self,
         snapshot: &moc_mcp::McpSnapshot,
         manager: Arc<moc_mcp::McpManager>,
+        plugins: Vec<Arc<dyn Tool>>,
     ) -> Result<catalog::ToolCatalog, ToolError> {
-        catalog::ToolCatalog::new(self, snapshot, manager)
+        catalog::ToolCatalog::new(self, snapshot, manager, plugins)
     }
 }
 

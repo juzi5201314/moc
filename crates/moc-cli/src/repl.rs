@@ -6,13 +6,14 @@ use anyhow::{Context, bail};
 use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
 use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, ModelSwitchOverflow,
-    PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, SessionCancel,
-    SessionCancelParams, SessionCompact, SessionCompactParams, SessionInfo, SessionList,
-    SessionListParams, SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction,
-    SessionNew, SessionNewParams, SessionPermission, SessionPlanApprove, SessionPlanApproveParams,
-    SessionPrompt, SessionRequestAsk, SessionRequestPermission, SessionSetMode,
-    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
-    SessionSetPermissionParams, SessionUpdateMethod, SessionUsage, SessionUsageParams,
+    PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, PluginList,
+    PluginListParams, PluginRunCommand, PluginRunCommandParams, SessionCancel, SessionCancelParams,
+    SessionCompact, SessionCompactParams, SessionInfo, SessionList, SessionListParams, SessionLoad,
+    SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt,
+    SessionRequestAsk, SessionRequestPermission, SessionSetMode, SessionSetModeParams,
+    SessionSetModel, SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams,
+    SessionUpdateMethod, SessionUsage, SessionUsageParams,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -393,6 +394,10 @@ async fn run_command(
     // 命令表是唯一来源：`/help` 的文本、这张表与下面的分派分支必须一致，
     // `help_matches_command_table` 用例把「帮助承诺了不存在的命令」挡在 CI 里。
     if !name.is_empty() && !COMMANDS.contains(&name) {
+        // 插件命令不在内置表里：先问 core 这个工作区注册了什么，再决定是否未知。
+        if run_plugin_command(client, session, name, argument).await? {
+            return Ok(CommandResult::Continue);
+        }
         print_unknown_command(name);
         return Ok(CommandResult::Continue);
     }
@@ -414,6 +419,7 @@ async fn run_command(
             );
         }
         "help" => print_help(),
+        "plugins" => print_plugins(client, &session.id).await?,
         "new" => {
             *session = client
                 .call::<SessionNew>(SessionNewParams {
@@ -608,6 +614,7 @@ const COMMANDS: &[&str] = &[
     "compact",
     "usage",
     "model",
+    "plugins",
 ];
 
 /// 帮助文本：一行一条命令，行首必须是 `/<命令名>`。
@@ -627,7 +634,78 @@ const HELP_TEXT: &str = "\
 /usage                    查看当前会话模型用量
 /new                      创建新会话
 /sessions                 列出会话
-/model <selector>         切换模型（装不下当前上下文时先询问再压缩）";
+/model <selector>         切换模型（装不下当前上下文时先询问再压缩）
+/plugins                  查看已加载的插件与插件命令";
+
+/// 执行插件注册的斜杠命令；名字不存在时返回 `false`，交给内置命令的未知分支。
+async fn run_plugin_command(
+    client: &ClientHandle,
+    session: &SessionInfo,
+    name: &str,
+    argument: &str,
+) -> anyhow::Result<bool> {
+    let list = client
+        .call::<PluginList>(PluginListParams {
+            session_id: session.id.clone(),
+        })
+        .await?;
+    if !list
+        .plugins
+        .iter()
+        .any(|plugin| plugin.commands.iter().any(|command| command.name == name))
+    {
+        return Ok(false);
+    }
+    let result = client
+        .call::<PluginRunCommand>(PluginRunCommandParams {
+            session_id: session.id.clone(),
+            name: name.to_owned(),
+            args: argument.to_owned(),
+        })
+        .await?;
+    println!("{}", result.text);
+    Ok(true)
+}
+
+async fn print_plugins(client: &ClientHandle, session_id: &str) -> anyhow::Result<()> {
+    let list = client
+        .call::<PluginList>(PluginListParams {
+            session_id: session_id.to_owned(),
+        })
+        .await?;
+    if list.plugins.is_empty() {
+        println!(
+            "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。"
+        );
+        return Ok(());
+    }
+    println!("已加载 {} 个插件：", list.plugins.len());
+    for plugin in &list.plugins {
+        let version = plugin
+            .version
+            .as_deref()
+            .map(|version| format!(" v{version}"))
+            .unwrap_or_default();
+        println!(
+            "- {}{version}（{}）{}",
+            plugin.name,
+            plugin.source,
+            plugin.description.as_deref().unwrap_or_default()
+        );
+        println!("  {}", plugin.dir);
+        if let Some(error) = &plugin.error {
+            println!("  不可用：{error}");
+            continue;
+        }
+        for tool in &plugin.tools {
+            println!("  工具 {} [{}]", tool.name, tool.tier);
+        }
+        for command in &plugin.commands {
+            println!("  命令 /{}", command.name);
+        }
+    }
+    Ok(())
+}
 
 fn print_unknown_command(name: &str) {
     eprintln!("未知命令 `/{name}`；输入 /help 查看命令。");

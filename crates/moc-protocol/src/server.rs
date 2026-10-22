@@ -36,11 +36,11 @@ use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet, ConfigManage,
     Initialize, OpenVikingDelete, OpenVikingList, OpenVikingRead, OpenVikingWrite, Ping,
-    PingResult, PromptParams, ResourceComplete, SessionBash, SessionCancel, SessionCancelResult,
-    SessionCompact, SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
-    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind,
-    SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
-    SessionUnlock, SessionUnsteer, SessionUsage,
+    PingResult, PluginList, PluginRunCommand, PromptParams, ResourceComplete, SessionBash,
+    SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
+    SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
+    SessionPrompt, SessionRename, SessionRewind, SessionSetMode, SessionSetModel,
+    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -491,6 +491,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     .config_get(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
+            }
+            <PluginList as Method>::NAME => {
+                let params = params_from_value::<PluginList>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .plugin_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <PluginRunCommand as Method>::NAME => {
+                let params = params_from_value::<PluginRunCommand>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .plugin_run_command(self.context(client, cancel), params)
+                        .await?,
+                )
             }
             <OpenVikingList as Method>::NAME => {
                 let params = params_from_value::<OpenVikingList>(params)?;

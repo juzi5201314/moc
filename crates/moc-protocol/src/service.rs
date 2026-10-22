@@ -34,6 +34,7 @@ use crate::methods::{
     Empty, InitializeParams, InitializeResult, OpenVikingDeleteParams, OpenVikingDeleteResult,
     OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
     OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams, PermissionResult,
+    PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
     PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
     SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
@@ -128,6 +129,18 @@ pub trait AgentService: Send + Sync + 'static {
     ) -> impl Future<Output = Result<AgentWaitResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
+
+    fn plugin_list(
+        &self,
+        ctx: RequestContext,
+        params: PluginListParams,
+    ) -> impl Future<Output = Result<PluginListResult, RpcError>> + Send;
+
+    fn plugin_run_command(
+        &self,
+        ctx: RequestContext,
+        params: PluginRunCommandParams,
+    ) -> impl Future<Output = Result<PluginRunCommandResult, RpcError>> + Send;
 
     fn openviking_list(
         &self,

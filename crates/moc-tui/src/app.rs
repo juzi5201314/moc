@@ -284,6 +284,10 @@ pub struct App {
     pub startup_cwd: String,
     pub startup_mode: SessionMode,
     pub startup_pending: Option<String>,
+    /// 本工作区插件注册的斜杠命令，供补全与命令分派使用。
+    pub plugin_commands: Vec<moc_protocol::methods::PluginCommandInfo>,
+    /// 最近一次 `plugin/list` 的结果，供 `/plugins` 展示。
+    pub plugins: Vec<moc_protocol::methods::PluginInfo>,
     pub subagents: std::collections::BTreeMap<String, crate::subagent::SubagentView>,
     pub subagent_selected: Option<String>,
     pub subagent_area: Rect,
@@ -511,6 +515,8 @@ impl App {
             startup_cwd: String::new(),
             startup_mode: SessionMode::Normal,
             startup_pending: None,
+            plugin_commands: Vec::new(),
+            plugins: Vec::new(),
             subagents: std::collections::BTreeMap::new(),
             subagent_selected: None,
             focused: None,
@@ -1410,7 +1416,7 @@ impl App {
 
     pub fn prompt_changed(&mut self) {
         self.prompt_revision = self.prompt_revision.wrapping_add(1);
-        self.completion = CompletionState::derive(&self.prompt.text);
+        self.completion = CompletionState::derive(&self.prompt.text, &self.plugin_commands);
         self.completion_prefix = None;
     }
 

@@ -332,16 +332,22 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
 /// 当前模式是否允许调用该工具。
 ///
 /// 内置工具按名字白名单判断。`clm_context` 只在 CLM 模式可用：如果 Normal 下也能调用，
-/// 一次工具调用就能伪造实时上下文视图并锁死会话模式。动态（MCP）工具按风险等级判断：
-/// Normal 全部放行，Ask/Plan 只放行 `Tier::Read` 的只读工具。
-pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> bool {
+/// 一次工具调用就能伪造实时上下文视图并锁死会话模式。扩展工具（MCP、插件）不在白名单里，
+/// 按风险等级判断：Normal 全部放行，Ask/Plan 只放行 `Tier::Read` 的只读工具，PTC 不放行。
+pub fn mode_allows(
+    mode: SessionMode,
+    name: &str,
+    tier: crate::tools::Tier,
+    origin: crate::tools::ToolOrigin,
+) -> bool {
     if CLM_ONLY_TOOLS.contains(&name) && mode != SessionMode::ClmExperimental {
         return false;
     }
     if allowed_tools(mode).contains(&name) {
         return true;
     }
-    if !name.starts_with("mcp__") {
+    // 插件工具与 MCP 工具同属「外部扩展」：白名单里没有它们，按风险等级判定。
+    if matches!(origin, crate::tools::ToolOrigin::Builtin) {
         return false;
     }
     match mode {
@@ -353,9 +359,13 @@ pub fn mode_allows(mode: SessionMode, name: &str, tier: crate::tools::Tier) -> b
 
 pub fn tool_enabled(
     name: &str,
+    origin: crate::tools::ToolOrigin,
     ask_supported: bool,
     config: &crate::config::ResolvedConfig,
 ) -> bool {
+    if !matches!(origin, crate::tools::ToolOrigin::Builtin) {
+        return true;
+    }
     match name {
         "ask" => ask_supported,
         "todo" => config.tools.todo.enabled,
@@ -378,7 +388,8 @@ mod agent_mode_tests {
         assert!(mode_allows(
             SessionMode::ClmExperimental,
             "clm_context",
-            Tier::Write
+            Tier::Write,
+            crate::tools::ToolOrigin::Builtin,
         ));
         for mode in [
             SessionMode::Normal,
@@ -387,7 +398,12 @@ mod agent_mode_tests {
             SessionMode::Ptc,
         ] {
             assert!(
-                !mode_allows(mode, "clm_context", Tier::Write),
+                !mode_allows(
+                    mode,
+                    "clm_context",
+                    Tier::Write,
+                    crate::tools::ToolOrigin::Builtin
+                ),
                 "{mode:?} 不能开放实时上下文写入"
             );
         }

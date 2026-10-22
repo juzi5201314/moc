@@ -143,6 +143,7 @@
 //!     Empty, InitializeParams, InitializeResult,
 //!     OpenVikingDeleteParams, OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult,
 //!     OpenVikingReadParams, OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult,
+//!     PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
 //!     PromptParams, ServerCapabilities, ServerInfo, SessionCompactParams,
 //!     SessionContextContentParams, SessionContextParams,
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
@@ -284,6 +285,12 @@
 //!     }
 //!     async fn session_context_content(&self, _ctx: RequestContext, _params: SessionContextContentParams) -> Result<ContextContentResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn plugin_list(&self, _ctx: RequestContext, _params: PluginListParams) -> Result<PluginListResult, RpcError> {
+//!         Ok(PluginListResult { plugins: Vec::new() })
+//!     }
+//!     async fn plugin_run_command(&self, _ctx: RequestContext, params: PluginRunCommandParams) -> Result<PluginRunCommandResult, RpcError> {
+//!         Ok(PluginRunCommandResult { text: params.name })
 //!     }
 //!     async fn openviking_list(&self, _ctx: RequestContext, params: OpenVikingListParams) -> Result<OpenVikingListResult, RpcError> {
 //!         Ok(OpenVikingListResult { uri: params.uri, entries: Vec::new() })

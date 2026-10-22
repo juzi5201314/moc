@@ -12,15 +12,16 @@ use moc_protocol::methods::{
     ContextContentResult, ContextUsageResult, Empty, InitializeParams, InitializeResult, ModelInfo,
     ModelInput, ModelUsageSummary, OpenVikingDeleteParams, OpenVikingDeleteResult,
     OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams, OpenVikingReadResult,
-    OpenVikingWriteParams, OpenVikingWriteResult, PromptResult, ResourceCompleteParams,
-    ResourceCompleteResult, ServerCapabilities, ServerInfo, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
-    SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPermission,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
-    SessionUsageResult, UnsteerParams, UnsteerResult,
+    OpenVikingWriteParams, OpenVikingWriteResult, PluginCommandInfo, PluginInfo, PluginListParams,
+    PluginListResult, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
+    ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
+    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
+    SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
+    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -100,6 +101,8 @@ pub(crate) struct CoreInner {
     /// 按规范化的工作区路径缓存 OpenViking 客户端；未配置 URL 时存 `None`。
     pub openviking_clients: Mutex<HashMap<PathBuf, Option<Arc<moc_openviking::OpenVikingClient>>>>,
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
+    /// 每个项目一个插件宿主，键与 `project_configs` 相同。
+    pub plugin_hosts: Mutex<HashMap<PathBuf, Arc<moc_plugin::PluginHost>>>,
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
     /// 本进程内子代理的运行状态。历史以持久化的 transcript 为准。
     pub agents: Mutex<crate::agents::AgentRegistry>,
@@ -107,6 +110,35 @@ pub(crate) struct CoreInner {
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
     pub sandbox_support: crate::sandbox::SandboxSupport,
+}
+
+/// 会话状态里的插件调用上下文；构建提示词时还没有 `ToolCtx`，先按会话头取一份。
+pub(crate) fn plugin_context(
+    state: &crate::session::state::SessionState,
+    model: &str,
+) -> moc_plugin::CallContext {
+    moc_plugin::CallContext {
+        session_id: state.session.id.clone(),
+        cwd: state.session.cwd.clone(),
+        mode: serde_json::to_value(state.mode)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        permission: state.permission.as_str().to_owned(),
+        model: model.to_owned(),
+        is_subagent: state.session.is_subagent(),
+    }
+}
+
+/// 把插件声明适配成工具实例；调用方已经拿到宿主时用它，免得重复查询缓存。
+pub(crate) fn plugin_tools_of(host: &moc_plugin::PluginHost) -> Vec<Arc<dyn crate::tools::Tool>> {
+    host.tools()
+        .into_iter()
+        .map(|(plugin, declaration)| {
+            Arc::new(crate::tools::plugin::PluginTool::new(plugin, &declaration))
+                as Arc<dyn crate::tools::Tool>
+        })
+        .collect()
 }
 
 impl CoreInner {
@@ -275,11 +307,40 @@ impl CoreInner {
     pub(crate) async fn mcp_summary(&self, config: &ResolvedConfig) -> Result<String, CoreError> {
         let manager = self.project_mcp(&config.cwd).await?;
         let snapshot = manager.snapshot().await;
+        let plugins = self.plugin_tools(&config.cwd).await;
         let catalog = self
             .tools
-            .catalog(&snapshot, manager)
+            .catalog(&snapshot, manager, plugins)
             .map_err(|err| CoreError::Tool(err.to_string()))?;
         Ok(catalog.summary())
+    }
+
+    /// 获取该项目的插件宿主：首次调用时发现并加载全部插件，之后复用。
+    pub(crate) async fn project_plugins(
+        &self,
+        cwd: &Path,
+    ) -> Result<Arc<moc_plugin::PluginHost>, CoreError> {
+        let config = self.project_config(cwd)?;
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        if let Some(host) = self.plugin_hosts.lock().await.get(&key).cloned() {
+            return Ok(host);
+        }
+        // 加载期间不持锁：模块求值可能耗到 load_timeout，不能挡住其它会话。
+        let settings = config.plugins.settings();
+        let host = moc_plugin::PluginHost::start(&key, &config.home, &settings).await;
+        let mut hosts = self.plugin_hosts.lock().await;
+        Ok(hosts.entry(key).or_insert(host).clone())
+    }
+
+    /// 该项目的插件工具；插件宿主不可用时退化成空列表。
+    pub(crate) async fn plugin_tools(&self, cwd: &Path) -> Vec<Arc<dyn crate::tools::Tool>> {
+        match self.project_plugins(cwd).await {
+            Ok(host) => plugin_tools_of(&host),
+            Err(error) => {
+                tracing::warn!(%error, "插件宿主不可用，按无插件继续");
+                Vec::new()
+            }
+        }
     }
 
     /// 获取该项目的 skill 索引，没有就扫描生成。
@@ -384,6 +445,7 @@ impl Core {
                 mcp_managers: Mutex::new(HashMap::new()),
                 openviking_clients: Mutex::new(HashMap::new()),
                 skill_indexes: RwLock::new(HashMap::new()),
+                plugin_hosts: Mutex::new(HashMap::new()),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
                 agents: Mutex::new(crate::agents::AgentRegistry::default()),
                 agent_tasks: Mutex::new(tokio::task::JoinSet::new()),
@@ -734,6 +796,77 @@ impl AgentService for Core {
             cwd: config.cwd.to_string_lossy().into_owned(),
         })
     }
+    async fn plugin_list(
+        &self,
+        _ctx: RequestContext,
+        params: PluginListParams,
+    ) -> Result<PluginListResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let state = record.state.lock().await;
+        let cwd = PathBuf::from(&state.session.cwd);
+        let host = self.inner.project_plugins(&cwd).await.map_err(to_rpc)?;
+        let plugins = host
+            .info()
+            .into_iter()
+            .map(|info| PluginInfo {
+                name: info.name,
+                version: info.version,
+                description: info.description,
+                source: info.source,
+                dir: info.dir.to_string_lossy().into_owned(),
+                tools: info
+                    .tools
+                    .into_iter()
+                    .map(|tool| PluginToolInfo {
+                        name: tool.name,
+                        description: tool.description,
+                        tier: tool.tier.as_str().to_owned(),
+                    })
+                    .collect(),
+                commands: info
+                    .commands
+                    .into_iter()
+                    .map(|command| PluginCommandInfo {
+                        name: command.name,
+                        description: command.description,
+                        usage: command.usage,
+                    })
+                    .collect(),
+                error: info.error,
+            })
+            .collect();
+        Ok(PluginListResult { plugins })
+    }
+
+    async fn plugin_run_command(
+        &self,
+        _ctx: RequestContext,
+        params: PluginRunCommandParams,
+    ) -> Result<PluginRunCommandResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let state = record.state.lock().await;
+        let cwd = PathBuf::from(&state.session.cwd);
+        let context = plugin_context(&state, &state.model);
+        let host = self.inner.project_plugins(&cwd).await.map_err(to_rpc)?;
+        let text = host
+            .run_command(&params.name, &params.args, &context)
+            .await
+            .map_err(|error| {
+                RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string())
+            })?;
+        Ok(PluginRunCommandResult { text })
+    }
+
     async fn openviking_list(
         &self,
         _ctx: RequestContext,

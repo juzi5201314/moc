@@ -14,6 +14,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 - **子代理**：可 spawn 独立子会话处理并行任务，共享工作目录与工具权限
 - **上下文管理**：实时查看上下文占用与真正送进模型的正文，支持压缩与消息回退分叉（独立会话，出身只对用户可见）
 - **MCP 支持**：可接入外部 MCP 服务器扩展工具集
+- **插件**：本地目录里的 JavaScript 插件（内嵌 QuickJS）可注册工具、斜杠命令、工具钩子与提示词贡献，见 [docs/plugins.md](docs/plugins.md)
 - **循环保护**：自动检测无进展循环与重复内容，防止 token 浪费
 
 ## 安装
@@ -86,6 +87,7 @@ cargo build         # 调试构建
 ## Workspace 结构
 
 - `crates/moc-core` — Agent 内核：会话、提示调度、工具执行、循环保护
+- `crates/moc-plugin` — 本地插件系统：目录发现、QuickJS 运行时、宿主桥与 `moc` 模块类型声明
 - `crates/moc-ptc-protocol` — PTC 宿主与 worker 共用的 JSON 协议和 prelude
 - `crates/moc-ptc-worker` — 独立 QuickJS worker 的执行循环
 - `crates/moc-protocol` — JSON-RPC 协议层

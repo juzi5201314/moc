@@ -1,0 +1,22 @@
+//! moc 插件系统：本地目录发现、QuickJS 运行时与宿主桥接。
+//!
+//! 插件是本地目录里的 ES 模块，由宿主在专用线程内用 QuickJS 执行；对外契约见
+//! `docs/plugins.md` 与 `js/moc.d.ts`。本 crate 不依赖 moc 的协议与工具类型，
+//! core 只需提供 [`host::CallContext`] 与一个 [`host::HostBridge`]。
+
+pub mod descriptor;
+pub mod discovery;
+pub mod error;
+pub mod host;
+pub mod kv;
+pub mod loader;
+pub mod manifest;
+pub mod runtime;
+
+pub use descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl, ToolTier};
+pub use error::{PluginError, Result};
+pub use host::{
+    BeforeToolCall, CallContext, HostBridge, PluginHost, PluginInfo, Settings, ToolResult,
+};
+pub use manifest::Manifest;
+pub use runtime::API_VERSION;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-openviking", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
+members = ["crates/moc-cli", "crates/moc-core", "crates/moc-llm", "crates/moc-mcp", "crates/moc-openviking", "crates/moc-plugin", "crates/moc-protocol", "crates/moc-ptc-protocol", "crates/moc-ptc-worker", "crates/moc-tui", "crates/moc-web"]
 default-members = ["crates/moc-cli", "crates/moc-tui"]
 
 [workspace.dependencies]
@@ -49,6 +49,8 @@ fontdb = "0.24"
 flate2 = "1"
 zstd = "0.13"
 rustix = { version = "1", features = ["event"] }
+# 插件运行时：与 PTC worker 共用同一份 QuickJS 构建（原生 C，无 WASM）；loader 提供 ESM 解析。
+rquickjs = { version = "=0.14.0", features = ["loader"] }
 
 # 测试/开发构建只需要行号，不需要完整 DWARF：
 # 完整调试信息会让单个集成测试二进制达到 0.4–0.65GB，

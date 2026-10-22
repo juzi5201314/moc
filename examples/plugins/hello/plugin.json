@@ -1,0 +1,6 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "示例插件：一个工具、一个命令、一个提示词贡献",
+  "main": "index.js"
+}

@@ -209,6 +209,28 @@ catalog_budget_percent = 1
 catalog_budget_min_tokens = 8000
 description_max_chars = 1024
 
+[plugins]
+# 本地插件系统：每个插件是目录里的 ES 模块（plugin.json + index.js），在 core 进程内
+# 用 QuickJS 执行。插件可注册工具、斜杠命令、工具钩子与提示词贡献。
+enabled = true
+# 扫描用户目录 $MOC_HOME/plugins。
+user = true
+# 扫描项目目录 .moc/plugins（cwd 向上到 git root）。插件是会被执行的代码，
+# 开启项目级来源等于信任该仓库；克隆不可信仓库前请确认。
+project = true
+# 额外扫描目录；支持 ~。
+dirs = []
+# 按插件名禁用，其余发现到的插件自动启用。
+disable = []
+max_plugins = 32
+memory_limit_bytes = 67108864
+load_timeout_ms = 5000
+# 单次调用超时；超时的插件在本进程内禁用，需要重启 moc 恢复。
+call_timeout_ms = 5000
+max_kv_bytes = 1048576
+# 全部插件提示词贡献的总字符上限。
+max_prompt_chars = 4000
+
 [web_search]
 enabled = true
 provider = "tavily"

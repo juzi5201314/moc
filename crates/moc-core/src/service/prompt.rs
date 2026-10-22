@@ -401,10 +401,15 @@ async fn run_prompt_locked(
             .push(format!("MCP `{}`：{}", notice.server, notice.message));
     }
     let mcp_snapshot = mcp.snapshot().await;
+    let plugins = inner
+        .project_plugins(std::path::Path::new(&state_snapshot.session.cwd))
+        .await
+        .map_err(to_rpc)?;
+    let plugin_tools = crate::service::plugin_tools_of(&plugins);
     let catalog = Arc::new(
         inner
             .tools
-            .catalog(&mcp_snapshot, Arc::clone(&mcp))
+            .catalog(&mcp_snapshot, Arc::clone(&mcp), plugin_tools.clone())
             .map_err(|error| to_rpc(crate::CoreError::Tool(error.to_string())))?,
     );
     let skills = inner
@@ -421,6 +426,7 @@ async fn run_prompt_locked(
             control_agents: !subagent,
             subagent,
         },
+        &plugin_tools,
     );
     let mut last_message = Message::default();
     // 只在 break 前赋值；循环没有别的出口，所以不需要初值。
@@ -433,6 +439,12 @@ async fn run_prompt_locked(
     let summary = catalog.summary();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
     let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
+    let plugin_prompt = plugins
+        .prompt_text(&crate::service::plugin_context(
+            &state_snapshot,
+            &model.selector,
+        ))
+        .await;
     let system = build(
         &project_config,
         &model,
@@ -440,6 +452,7 @@ async fn run_prompt_locked(
         &context_files,
         &skills,
         &summary,
+        &plugin_prompt,
         subagent_prompt.as_ref().map(|prompt| prompt.block.as_str()),
     );
     // 代理列表随兄弟代理的状态变化，放在尾部提醒里，免得每次变化都让系统前缀缓存失效。
@@ -1179,6 +1192,8 @@ async fn run_prompt_locked(
             openviking_peer,
             mcp: Arc::clone(&mcp),
             skills: Arc::clone(&skills),
+            plugins: Arc::clone(&plugins),
+            model: model.selector.clone(),
             tool_call_id: String::new(),
             loaded_skills: Arc::clone(&runtime.loaded_skills),
             sandbox_support: inner.sandbox_support.clone(),

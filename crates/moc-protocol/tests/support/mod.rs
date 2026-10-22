@@ -21,7 +21,8 @@ use moc_protocol::methods::{
     InitializeResult, InputPart, ModelInfo, ModelInput, OpenVikingDeleteParams,
     OpenVikingDeleteResult, OpenVikingListParams, OpenVikingListResult, OpenVikingReadParams,
     OpenVikingReadResult, OpenVikingWriteParams, OpenVikingWriteResult, PermissionRequestParams,
-    PermissionResult, PromptParams, PromptResult, ServerCapabilities, ServerInfo,
+    PermissionResult, PluginListParams, PluginListResult, PluginRunCommandParams,
+    PluginRunCommandResult, PromptParams, PromptResult, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
     SessionInfo, SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult,
     SessionLockInfo, SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
@@ -549,6 +550,26 @@ impl AgentService for ScriptedService {
             cwd: state.cwd.clone(),
         })
     }
+    async fn plugin_list(
+        &self,
+        _ctx: RequestContext,
+        _params: PluginListParams,
+    ) -> Result<PluginListResult, RpcError> {
+        Ok(PluginListResult {
+            plugins: Vec::new(),
+        })
+    }
+
+    async fn plugin_run_command(
+        &self,
+        _ctx: RequestContext,
+        params: PluginRunCommandParams,
+    ) -> Result<PluginRunCommandResult, RpcError> {
+        Ok(PluginRunCommandResult {
+            text: format!("plugin command {}", params.name),
+        })
+    }
+
     async fn openviking_list(
         &self,
         _ctx: RequestContext,

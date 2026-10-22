@@ -12,6 +12,21 @@ pub struct SlashCommand {
     pub description: &'static str,
 }
 
+/// 插件命令在补全里的名字：`/` 加插件命令名。
+fn plugin_candidate(command: &moc_protocol::methods::PluginCommandInfo) -> CompletionCandidate {
+    CompletionCandidate {
+        value: format!("/{}", command.name),
+        label: format!("/{}", command.name),
+        description: if command.description.is_empty() {
+            "插件命令".to_owned()
+        } else {
+            command.description.clone()
+        },
+        append_space: true,
+        source: CompletionSource::Slash,
+    }
+}
+
 /// 内置斜杠命令表。
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
@@ -79,6 +94,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "计划模式下重新审阅已写入的待审计划",
     },
     SlashCommand {
+        name: "/plugins",
+        description: "查看插件：来源、工具与斜杠命令",
+    },
+    SlashCommand {
         name: "/close",
         description: "卸载当前会话并释放跨进程写租约",
     },
@@ -137,7 +156,13 @@ pub struct CompletionState {
 
 impl CompletionState {
     /// 依据首行 `/` 前缀计算候选；无候选时返回 `None`。
-    pub fn derive(text: &str) -> Option<Self> {
+    ///
+    /// `plugins` 是当前工作区插件注册的命令，与内置命令一起参与前缀匹配；
+    /// 同名时内置命令在前，分派也以内置为准。
+    pub fn derive(
+        text: &str,
+        plugins: &[moc_protocol::methods::PluginCommandInfo],
+    ) -> Option<Self> {
         let first_line = text.lines().next().unwrap_or_default();
         let query = first_line.strip_prefix('/')?;
         if query.contains(char::is_whitespace) {
@@ -147,6 +172,12 @@ impl CompletionState {
             .iter()
             .filter(|command| command.name[1..].starts_with(query))
             .map(CompletionCandidate::slash)
+            .chain(
+                plugins
+                    .iter()
+                    .filter(|command| command.name.starts_with(query))
+                    .map(plugin_candidate),
+            )
             .collect();
         if candidates.is_empty() {
             return None;
@@ -255,15 +286,15 @@ mod tests {
 
     #[test]
     fn derive_table_filters_closes_and_keeps_order() {
-        let state = CompletionState::derive("/mo").expect("有候选");
+        let state = CompletionState::derive("/mo", &[]).expect("有候选");
         assert_eq!(state.candidates.len(), 2);
         assert_eq!(state.candidates[0].value, "/model");
         assert_eq!(state.candidates[1].value, "/mode");
 
         // 参数一旦开始、非命令文本或无匹配前缀都不提供候选。
-        assert!(CompletionState::derive("/model ").is_none());
-        assert!(CompletionState::derive("聊天文本").is_none());
-        assert!(CompletionState::derive("/zzz").is_none());
+        assert!(CompletionState::derive("/model ", &[]).is_none());
+        assert!(CompletionState::derive("聊天文本", &[]).is_none());
+        assert!(CompletionState::derive("/zzz", &[]).is_none());
     }
     #[test]
     fn resource_candidate_keeps_namespace_without_space() {
@@ -284,7 +315,7 @@ mod tests {
 
     #[test]
     fn entry_at_detects_candidate_rows_and_ignores_borders() {
-        let mut state = CompletionState::derive("/mo").expect("有候选");
+        let mut state = CompletionState::derive("/mo", &[]).expect("有候选");
         state.area = Rect::new(10, 5, 30, 5);
         state.visible_count = 2;
 

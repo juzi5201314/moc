@@ -12,7 +12,7 @@ use moc_llm::ToolDef;
 use moc_mcp::{McpError, McpManager, McpToolInfo};
 use serde_json::Value;
 
-use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome};
+use super::{Tier, Tool, ToolCtx, ToolError, ToolOrigin, ToolOutcome};
 
 pub struct McpTool {
     manager: Arc<McpManager>,
@@ -38,6 +38,10 @@ impl Tool for McpTool {
             .description
             .as_deref()
             .unwrap_or("MCP server-provided tool.")
+    }
+
+    fn origin(&self) -> ToolOrigin {
+        ToolOrigin::Mcp
     }
 
     /// MCP 工具的风险等级不采信服务端声明的 `readOnlyHint`。
@@ -139,14 +143,20 @@ mod tests {
             );
             for mode in [SessionMode::Ask, SessionMode::Plan] {
                 assert!(
-                    !crate::service::mode::mode_allows(mode, tool.name(), tool.tier()),
+                    !crate::service::mode::mode_allows(
+                        mode,
+                        tool.name(),
+                        tool.tier(),
+                        tool.origin()
+                    ),
                     "只读模式不得放行声明只读的 MCP 工具"
                 );
             }
             assert!(crate::service::mode::mode_allows(
                 SessionMode::Normal,
                 tool.name(),
-                tool.tier()
+                tool.tier(),
+                tool.origin()
             ));
         }
     }

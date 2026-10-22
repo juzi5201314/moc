@@ -25,8 +25,10 @@ impl ToolCatalog {
         registry: &ToolRegistry,
         snapshot: &McpSnapshot,
         manager: Arc<McpManager>,
+        plugins: Vec<Arc<dyn Tool>>,
     ) -> Result<Self, ToolError> {
         let mut tools: Vec<Arc<dyn Tool>> = registry.all().iter().cloned().collect();
+        tools.extend(plugins);
         tools.extend(snapshot.tools.iter().map(|info| {
             Arc::new(super::mcp::McpTool::new(
                 Arc::clone(&manager),
@@ -68,8 +70,8 @@ impl ToolCatalog {
         };
         self.tools.iter().filter(move |tool| {
             tool.name() != "run_code"
-                && mode::mode_allows(mode, tool.name(), tool.tier())
-                && mode::tool_enabled(tool.name(), ask_supported, config)
+                && mode::mode_allows(mode, tool.name(), tool.tier(), tool.origin())
+                && mode::tool_enabled(tool.name(), tool.origin(), ask_supported, config)
         })
     }
 

@@ -95,7 +95,7 @@ markdown 只解析本地文件与 `file://`（支持 `~/` 与 `%20` 这类百分
 | `Esc` | 运行中停止当前提示；空闲时清除选区或输入，空输入框双击打开消息回退，或关闭模态；**聚焦子代理时**（输入框为空）返回主会话 |
 | `←` `←` | 聚焦子代理时连按两次返回主会话 |
 
-斜杠命令包括 `/help` `/new` `/resume` `/close` `/model` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/compact` `/usage` `/config` `/settings` `/memories` `/context` `/quit`；`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/close` 卸载当前会话并释放跨进程写租约：另一个 `moc` 或 `moc web` 进程随后就能以写模式打开它；不关闭也不影响本进程继续使用。`/usage` 先给出会话统计（模型用时 = 生成 + 网络等待、工具调用用时、首 token 平均（TTFT）、输出速度），再以对齐表格列出当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、生成时间、TTFT 与 TPS，末行是全部模型的合计；统计来自会话 JSONL 里逐次模型调用的 `usage` 记录（工具耗时来自 transcript 里的工具结果记录），重启或恢复会话后仍然连续。`/context` 打开上下文正文窗（见下文），顶部信息条右端的进度条点击打开的是上下文占用窗，两者看的是同一份上下文。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 与模型选择器把目标模型和思考等级一起选中：切到别的模型时用该模型支持的最高等级，停在同一个模型时沿用配置或会话里写的等级；目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
+斜杠命令包括 `/help` `/new` `/resume` `/close` `/model` `/mode` `/confirm-plan` `/clm-experimental` `/ask` `/agents` `/compact` `/usage` `/plugins` `/config` `/settings` `/memories` `/context` `/quit`；`/plugins` 列出当前工作区已加载的插件、来源目录与它们注册的工具和命令，失败插件同时显示原因，插件注册的命令也出现在补全表里（与内置命令同名时内置优先）。`/confirm-plan` 仅在计划模式且有已写入的待审计划时打开审阅，其余情况只显示提示。`/close` 卸载当前会话并释放跨进程写租约：另一个 `moc` 或 `moc web` 进程随后就能以写模式打开它；不关闭也不影响本进程继续使用。`/usage` 先给出会话统计（模型用时 = 生成 + 网络等待、工具调用用时、首 token 平均（TTFT）、输出速度），再以对齐表格列出当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、生成时间、TTFT 与 TPS，末行是全部模型的合计；统计来自会话 JSONL 里逐次模型调用的 `usage` 记录（工具耗时来自 transcript 里的工具结果记录），重启或恢复会话后仍然连续。`/context` 打开上下文正文窗（见下文），顶部信息条右端的进度条点击打开的是上下文占用窗，两者看的是同一份上下文。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文。`/model` 与模型选择器把目标模型和思考等级一起选中：切到别的模型时用该模型支持的最高等级，停在同一个模型时沿用配置或会话里写的等级；目标模型装不下当前上下文时先询问，确认后先切换再由新模型压缩上下文。
 
 ### 子代理
 
@@ -132,7 +132,7 @@ statusline = "{model} * {mode} -> {workdir}"
 
 ## 上下文正文窗
 
-`/context` 打开：窗内列出**真正送进模型的内容**，顺序与请求一致——系统提示片段（`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`subagent`、`environment`、`append`）、逐个工具 schema（分块名就是工具名）、注入消息（`compaction summary`、`active plan`、`active todos`、`grok build summary`、`system reminder`）与会话消息（`user`、`assistant`、`tool result`、`bash`、`agent`）。每块一行标题，`▌` 色标与分块名同色（按分块顺序取调色板），右端是该块单独估算的 token；标题栏显示合计与窗口上限，与占用窗、顶部进度条同口径。新会话只有前面组装好的上下文，消息部分为空。
+`/context` 打开：窗内列出**真正送进模型的内容**，顺序与请求一致——系统提示片段（`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`plugins`、`subagent`、`environment`、`append`）、逐个工具 schema（分块名就是工具名）、注入消息（`compaction summary`、`active plan`、`active todos`、`grok build summary`、`system reminder`）与会话消息（`user`、`assistant`、`tool result`、`bash`、`agent`）。每块一行标题，`▌` 色标与分块名同色（按分块顺序取调色板），右端是该块单独估算的 token；标题栏显示合计与窗口上限，与占用窗、顶部进度条同口径。新会话只有前面组装好的上下文，消息部分为空。
 
 正文超过 6 行的块默认折叠成前 6 行加一行「… 还有 N 行 · 点击展开」，点标题或正文任意一行展开，再点收起。单块正文超过 256 KiB 时由 core 按字符边界截断，块尾标注被丢掉的字节数。窗口约占终端四分之三宽、五分之四高（上限 120×40），右缘是可拖拽的滚动条（按在滑块上保持抓取点，按在轨道空白处把滑块挪过来），鼠标滚轮一次三行。
 

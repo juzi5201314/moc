@@ -289,7 +289,13 @@ async fn snapshot(
     let context_files = inner.project_context_files(session_id, &cwd).await;
     let mcp_summary = inner.mcp_summary(&config).await.map_err(to_rpc)?;
     let subagent = crate::agents::subagent_prompt(inner, session_id).await;
+    // 插件宿主首次加载可能耗到 load_timeout，必须在拿会话锁之前完成。
+    let plugins = inner.project_plugins(&cwd).await.map_err(to_rpc)?;
+    let plugin_tools = crate::service::plugin_tools_of(&plugins);
     let state = record.state.lock().await;
+    let plugin_prompt = plugins
+        .prompt_text(&crate::service::plugin_context(&state, &model.selector))
+        .await;
     let pieces = crate::system_prompt::pieces(
         &config,
         &model,
@@ -297,6 +303,7 @@ async fn snapshot(
         &context_files,
         &skills,
         &mcp_summary,
+        &plugin_prompt,
         subagent.as_ref().map(|prompt| prompt.block.as_str()),
     );
     let system = crate::system_prompt::compose(pieces.clone(), &model);
@@ -308,6 +315,7 @@ async fn snapshot(
             control_agents: !state.session.is_subagent(),
             subagent: state.session.is_subagent(),
         },
+        &plugin_tools,
     );
     let (injected, transcript) = messages(&state, &model);
     Ok(Snapshot {

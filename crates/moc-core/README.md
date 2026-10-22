@@ -61,7 +61,7 @@ deny_write_paths = []
 - `supports_prompt_cache_key = false`：Chat/Responses 请求不发送缓存键及相关缓存选项，适用于拒绝扩展字段的上游；不关闭 Anthropic 的消息缓存断点。默认 `true`。
 - `requires_reasoning_content_for_all_assistant_turns = true`：回传所有 assistant 思维链，并为缺失的历史补显式空块；不只针对工具调用。默认 `false`。
 - `requires_reasoning_content_for_tool_calls` 与 `requires_assistant_content_for_tool_calls`：分别补齐工具调用历史中的推理字段和正文；显式空字符串不会被编码器转换成缺失字段。
-- `instruction_role = "user"`：把规定性指令片段（工具政策、PTC 运行时、仓库规则、技能目录、子代理契约与追加指令）改以 user 角色下发，供对 system 角色遵循度不足的上游使用；默认 `"system"`，行为与不配置完全一致。配套的 `instruction_system`（默认 `["intro", "mcp servers", "environment"]`）列出仍留在 system 消息里的描述性片段，留空表示整条指令都用 user；可用片段名（即正文窗里的标题）：`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`subagent`、`environment`、`append`，拼错会在配置加载期报错。分组只改变消息边界与角色：片段正文、顺序与 token 占用不变，Anthropic 下 user 组会与首条用户消息合并。
+- `instruction_role = "user"`：把规定性指令片段（工具政策、PTC 运行时、仓库规则、技能目录、子代理契约与追加指令）改以 user 角色下发，供对 system 角色遵循度不足的上游使用；默认 `"system"`，行为与不配置完全一致。配套的 `instruction_system`（默认 `["intro", "mcp servers", "environment"]`）列出仍留在 system 消息里的描述性片段，留空表示整条指令都用 user；可用片段名（即正文窗里的标题）：`intro`、`tool policy`、`ptc runtime`、`mcp servers`、`repo rules`、`skills`、`plugins`、`subagent`、`environment`、`append`，拼错会在配置加载期报错。分组只改变消息边界与角色：片段正文、顺序与 token 占用不变，Anthropic 下 user 组会与首条用户消息合并。
 
 供应商的 `connect_timeout_secs` 只限制 DNS/TCP/TLS 建连，默认 20 秒。`timeout_secs` 默认不设置，不限制首包等待或流式空闲；仅用户显式设置时才限制非流式整请求以及流式首包等待和后续空闲。
 
@@ -124,6 +124,18 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_concurrent_calls`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
 
 `moc-ptc-worker` 随 `moc-cli` 包一起构建并安装，`moc` 启动时查找同目录的 worker 二进制；找不到时 `run_code` 返回 `E_PTC_WORKER`。worker 崩溃或提前退出只影响本次脚本，core 收到 `E_PTC_WORKER` 并继续；超时或取消会终止子进程。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。worker 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
+
+### 插件
+
+插件是本地目录里的 JavaScript（ES 模块），在 core 进程内用 QuickJS 执行（每个插件一个专用线程与 Runtime，与 PTC 的独立 worker 不同）。发现来源按优先级为项目 `.moc/plugins`（cwd 向上到 git root）、`[plugins] dirs`、`$MOC_HOME/plugins`；**发现即启用**，因此项目级来源等于信任该仓库，`[plugins] project=false` 或 `disable` 是退出口。完整契约见 [docs/plugins.md](../../docs/plugins.md)，类型声明在 `crates/moc-plugin/js/moc.d.ts`。
+
+插件可注册四类能力：工具（`tier` 取 `read`/`write`/`exec`，默认 `read`；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具在模型侧与 MCP 工具同属扩展工具：按风险等级参与模式白名单（标准模式全部放行，问答/计划只放行 `read`，PTC 不放行），`run_code` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
+
+`beforeToolCall` 只对模型发起的调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 是观察型，失败只记日志。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
+
+插件提示词汇总进系统提示的 `plugins` 片段（`PIECE_PLUGINS`），按插件名排序拼接并受 `[plugins] max_prompt_chars` 限制；该片段每轮重建，不属于稳定前缀。`moc.tools.call()` 允许插件调用宿主只读内置工具，是插件获得文件/搜索能力的唯一通道。
+
+调用是串行的（同一插件排队）；`call_timeout_ms` 到点会中断 JS 并把该插件在本进程内禁用（`/plugins` 与 `plugin/list` 显示原因），内存上限是单个 Runtime 的 `memory_limit_bytes`。KV 存在 `$MOC_HOME/plugin-data/<插件名>/kv.json`，按插件名跨项目共享。QuickJS 崩溃会带走整个进程——插件不是沙盒，是「你信任的本地代码」。
 
 ### 上下文压缩与解释
 

@@ -25,6 +25,7 @@ pub(super) struct ConfigDocument {
     pub session: SessionDocument,
     pub mcp: moc_mcp::McpDocument,
     pub skills: SkillsConfig,
+    pub plugins: PluginsConfig,
     pub web_search: WebSearchConfig,
     pub web_fetch: WebFetchConfig,
 }
@@ -72,6 +73,96 @@ impl Default for SkillsConfig {
             description_max_chars: 1024,
         }
     }
+}
+
+/// 插件系统配置；插件是本地目录里会被执行的 JS 代码，项目级来源等于信任该仓库。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginsConfig {
+    pub enabled: bool,
+    /// 是否扫描用户目录 `~/.moc/plugins`。
+    pub user: bool,
+    /// 是否扫描项目目录 `.moc/plugins`（cwd 向上到 git root）；开启即信任仓库。
+    pub project: bool,
+    /// 额外扫描目录；支持 `~` 展开。
+    pub dirs: Vec<String>,
+    /// 按插件名禁用。
+    pub disable: Vec<String>,
+    /// 一次最多加载的插件数。
+    pub max_plugins: usize,
+    /// 单个插件运行时的内存上限。
+    pub memory_limit_bytes: usize,
+    /// 模块求值（含 `activate`）的最长等待。
+    pub load_timeout_ms: u64,
+    /// 单次工具/命令/钩子调用的最长等待；超时后本进程内禁用该插件。
+    pub call_timeout_ms: u64,
+    /// 单个插件 KV 的总字节上限。
+    pub max_kv_bytes: usize,
+    /// 全部插件提示词贡献的总字符上限。
+    pub max_prompt_chars: usize,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            user: true,
+            project: true,
+            dirs: Vec::new(),
+            disable: Vec::new(),
+            max_plugins: 32,
+            memory_limit_bytes: 64 * 1024 * 1024,
+            load_timeout_ms: 5000,
+            call_timeout_ms: 5000,
+            max_kv_bytes: 1024 * 1024,
+            max_prompt_chars: 4000,
+        }
+    }
+}
+
+impl PluginsConfig {
+    /// 转成运行时设置；`dirs` 在这里展开 `~`。
+    pub fn settings(&self) -> moc_plugin::Settings {
+        moc_plugin::Settings {
+            discovery: moc_plugin::discovery::DiscoveryConfig {
+                enabled: self.enabled,
+                user: self.user,
+                project: self.project,
+                dirs: self
+                    .dirs
+                    .iter()
+                    .map(|dir| crate::config::expand_user_path(dir))
+                    .collect(),
+            },
+            disable: self.disable.clone(),
+            max_plugins: self.max_plugins,
+            memory_limit_bytes: self.memory_limit_bytes,
+            load_timeout: std::time::Duration::from_millis(self.load_timeout_ms),
+            call_timeout: std::time::Duration::from_millis(self.call_timeout_ms),
+            max_kv_bytes: self.max_kv_bytes,
+            max_prompt_chars: self.max_prompt_chars,
+        }
+    }
+}
+
+/// 插件配置的数值校验；0 值一律拒绝，避免出现「永远超时」这类静默失效。
+pub(super) fn validate_plugins(plugins: &PluginsConfig) -> Result<(), CoreError> {
+    for (name, value) in [
+        ("plugins.max_plugins", plugins.max_plugins as u64),
+        (
+            "plugins.memory_limit_bytes",
+            plugins.memory_limit_bytes as u64,
+        ),
+        ("plugins.max_kv_bytes", plugins.max_kv_bytes as u64),
+        ("plugins.max_prompt_chars", plugins.max_prompt_chars as u64),
+        ("plugins.load_timeout_ms", plugins.load_timeout_ms),
+        ("plugins.call_timeout_ms", plugins.call_timeout_ms),
+    ] {
+        if value == 0 {
+            return Err(CoreError::Config(format!("{name} 必须大于 0")));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
