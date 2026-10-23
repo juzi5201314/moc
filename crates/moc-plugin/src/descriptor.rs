@@ -5,30 +5,55 @@
 
 use serde_json::Value;
 
-/// 工具的风险等级，与宿主 `tools::Tier` 一一对应。
+/// 插件工具可见的会话模式集合。
+///
+/// 固定三个标志，用 `u8` 位图即可，不为每个工具分配 `Vec`。`PTC` 不在集合里：
+/// 该模式下模型只能看到 `run_code`，插件工具也会被宿主以 `E_PLUGIN_RECURSION` 拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolTier {
-    Read,
-    Write,
-    Exec,
-}
+pub struct ModeMask(u8);
 
-impl ToolTier {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Read => "read",
-            Self::Write => "write",
-            Self::Exec => "exec",
-        }
+impl ModeMask {
+    pub const NORMAL: Self = Self(1 << 0);
+    pub const ASK: Self = Self(1 << 1);
+    pub const PLAN: Self = Self(1 << 2);
+    /// 省略 `modes` 时的默认值：三种模式都可见。
+    pub const ALL: Self = Self(Self::NORMAL.0 | Self::ASK.0 | Self::PLAN.0);
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "read" => Some(Self::Read),
-            "write" => Some(Self::Write),
-            "exec" => Some(Self::Exec),
+            "normal" => Some(Self::NORMAL),
+            "ask" => Some(Self::ASK),
+            "plan" => Some(Self::PLAN),
             _ => None,
         }
+    }
+
+    /// 按固定顺序给出模式名，供 `plugin/list` 与前端展示。
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
+        [
+            (Self::NORMAL, "normal"),
+            (Self::ASK, "ask"),
+            (Self::PLAN, "plan"),
+        ]
+        .into_iter()
+        .filter(move |(flag, _)| self.contains(*flag))
+        .map(|(_, name)| name)
     }
 }
 
@@ -39,7 +64,8 @@ pub struct ToolDecl {
     pub description: String,
     /// JSON Schema（`type: "object"`）。
     pub parameters: Value,
-    pub tier: ToolTier,
+    /// 工具可见的会话模式；默认 [`ModeMask::ALL`]。
+    pub modes: ModeMask,
     /// 是否可与其它只读工具并行；默认 `false`，作为批次屏障。
     pub parallel: bool,
 }
@@ -102,10 +128,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tier_names_round_trip() {
-        for tier in [ToolTier::Read, ToolTier::Write, ToolTier::Exec] {
-            assert_eq!(ToolTier::parse(tier.as_str()), Some(tier));
-        }
-        assert_eq!(ToolTier::parse("admin"), None);
+    fn mode_masks_parse_and_render_in_order() {
+        assert_eq!(ModeMask::parse("normal"), Some(ModeMask::NORMAL));
+        assert_eq!(ModeMask::parse("ask"), Some(ModeMask::ASK));
+        assert_eq!(ModeMask::parse("plan"), Some(ModeMask::PLAN));
+        assert_eq!(ModeMask::parse("ptc"), None);
+        assert_eq!(ModeMask::parse("admin"), None);
+        assert_eq!(
+            ModeMask::NORMAL
+                .union(ModeMask::PLAN)
+                .names()
+                .collect::<Vec<_>>(),
+            vec!["normal", "plan"]
+        );
+        assert_eq!(
+            ModeMask::ALL.names().collect::<Vec<_>>(),
+            vec!["normal", "ask", "plan"]
+        );
+        assert!(ModeMask::ALL.contains(ModeMask::ASK));
+        assert!(!ModeMask::NORMAL.contains(ModeMask::ASK));
+        assert!(ModeMask::empty().is_empty());
     }
 }

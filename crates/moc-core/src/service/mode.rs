@@ -332,8 +332,11 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
 /// 当前模式是否允许调用该工具。
 ///
 /// 内置工具按名字白名单判断。`clm_context` 只在 CLM 模式可用：如果 Normal 下也能调用，
-/// 一次工具调用就能伪造实时上下文视图并锁死会话模式。扩展工具（MCP、插件）不在白名单里，
-/// 按风险等级判断：Normal 全部放行，Ask/Plan 只放行 `Tier::Read` 的只读工具，PTC 不放行。
+/// 一次工具调用就能伪造实时上下文视图并锁死会话模式。
+///
+/// 这是 [`crate::tools::Tool::visible_in`] 的默认实现：内置工具与 MCP 工具走这里
+/// （MCP 一律按 `Tier::Exec` 处理，只读模式不放行）；插件工具用自己声明的 `modes`
+/// 覆盖，不经过风险等级推断。
 pub fn mode_allows(
     mode: SessionMode,
     name: &str,
@@ -346,7 +349,7 @@ pub fn mode_allows(
     if allowed_tools(mode).contains(&name) {
         return true;
     }
-    // 插件工具与 MCP 工具同属「外部扩展」：白名单里没有它们，按风险等级判定。
+    // MCP 工具不在内置白名单里，按风险等级判定。
     if matches!(origin, crate::tools::ToolOrigin::Builtin) {
         return false;
     }

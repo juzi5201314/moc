@@ -349,7 +349,7 @@ fn format_plugins(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
             continue;
         }
         for tool in &plugin.tools {
-            lines.push(format!("  工具 {} [{}]", tool.name, tool.tier));
+            lines.push(format!("  工具 {} [{}]", tool.name, tool.modes.join(",")));
         }
         for command in &plugin.commands {
             lines.push(format!("  命令 /{}", command.name));

@@ -1,15 +1,15 @@
 //! 插件工具桥接：把 moc-plugin 注册的工具适配成 [`Tool`]。
 //!
-//! 风险等级由插件声明（`read`/`write`/`exec`），直接映射到宿主 [`Tier`]；只读模式因此
-//! 仍然可以调用声明为 `read` 的插件工具。工具内部通过 `moc.tools.call()` 回调宿主时
-//! 只能落到只读内置工具上，见 [`ReadOnlyBridge`]。
+//! 插件工具在哪些会话模式可见由插件自己声明（`modes`），宿主不再按风险等级推断；
+//! 能力边界仍由 `moc.tools.call()` 的只读白名单决定，见 [`ReadOnlyBridge`]。
 
 use std::pin::Pin;
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use moc_plugin::ToolTier as DeclaredTier;
+use moc_plugin::ModeMask;
+use moc_protocol::SessionMode;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOrigin, ToolOutcome};
@@ -19,7 +19,7 @@ pub struct PluginTool {
     name: String,
     description: String,
     parameters: Value,
-    tier: Tier,
+    modes: ModeMask,
     parallel: bool,
 }
 
@@ -31,11 +31,7 @@ impl PluginTool {
             name: declaration.name.clone(),
             description: declaration.description.clone(),
             parameters: declaration.parameters.clone(),
-            tier: match declaration.tier {
-                DeclaredTier::Read => Tier::Read,
-                DeclaredTier::Write => Tier::Write,
-                DeclaredTier::Exec => Tier::Exec,
-            },
+            modes: declaration.modes,
             parallel: declaration.parallel,
         }
     }
@@ -50,12 +46,26 @@ impl Tool for PluginTool {
         &self.description
     }
 
+    /// 插件工具的能力边界由 QuickJS 运行时与 `tools.call` 白名单决定；这里的等级只
+    /// 用于满足 [`Tool`] 契约，模式可见性由 [`PluginTool::visible_in`] 覆盖。
     fn tier(&self) -> Tier {
-        self.tier
+        Tier::Read
     }
 
     fn origin(&self) -> ToolOrigin {
         ToolOrigin::Plugin
+    }
+
+    /// 按插件声明的 `modes` 判定。`normal` 同时覆盖 `clm_experimental`（两者工具面
+    /// 相同，CLM 只是多一个内置的 `clm_context`）；PTC 不开放插件工具。
+    fn visible_in(&self, mode: SessionMode) -> bool {
+        let flag = match mode {
+            SessionMode::Normal | SessionMode::ClmExperimental => ModeMask::NORMAL,
+            SessionMode::Ask => ModeMask::ASK,
+            SessionMode::Plan => ModeMask::PLAN,
+            SessionMode::Ptc => return false,
+        };
+        self.modes.contains(flag)
     }
 
     /// 插件线程按插件串行；默认整批当作屏障，声明 `parallel: true` 才允许并发。
@@ -180,7 +190,51 @@ impl moc_plugin::HostBridge for ReadOnlyBridge {
 
 #[cfg(test)]
 mod tests {
-    use super::host_tool_allowed;
+    use super::{PluginTool, host_tool_allowed};
+    use crate::tools::Tool;
+    use moc_plugin::ModeMask;
+    use moc_protocol::SessionMode;
+    use serde_json::json;
+
+    fn tool(modes: ModeMask) -> PluginTool {
+        PluginTool::new(
+            "demo",
+            &moc_plugin::ToolDecl {
+                name: "demo".into(),
+                description: "演示".into(),
+                parameters: json!({"type": "object"}),
+                modes,
+                parallel: false,
+            },
+        )
+    }
+
+    #[test]
+    fn visibility_follows_declared_modes() {
+        let all = tool(ModeMask::ALL);
+        for mode in [
+            SessionMode::Normal,
+            SessionMode::Ask,
+            SessionMode::Plan,
+            SessionMode::ClmExperimental,
+        ] {
+            assert!(all.visible_in(mode), "{mode:?}");
+        }
+        assert!(!all.visible_in(SessionMode::Ptc));
+
+        let normal_only = tool(ModeMask::NORMAL);
+        assert!(normal_only.visible_in(SessionMode::Normal));
+        assert!(
+            normal_only.visible_in(SessionMode::ClmExperimental),
+            "normal 覆盖 CLM 实验模式"
+        );
+        assert!(!normal_only.visible_in(SessionMode::Ask));
+        assert!(!normal_only.visible_in(SessionMode::Plan));
+
+        let plan_only = tool(ModeMask::PLAN);
+        assert!(plan_only.visible_in(SessionMode::Plan));
+        assert!(!plan_only.visible_in(SessionMode::Normal));
+    }
 
     #[test]
     fn host_tool_allowlist_keeps_the_surface_read_only() {

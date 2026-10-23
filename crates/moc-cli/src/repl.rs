@@ -696,7 +696,7 @@ async fn print_plugins(client: &ClientHandle, session_id: &str) -> anyhow::Resul
             continue;
         }
         for tool in &plugin.tools {
-            println!("  工具 {} [{}]", tool.name, tool.tier);
+            println!("  工具 {} [{}]", tool.name, tool.modes.join(","));
         }
         for command in &plugin.commands {
             println!("  命令 /{}", command.name);

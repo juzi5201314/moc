@@ -128,8 +128,63 @@ async fn plugin_tool_runs_and_its_prompt_reaches_the_model() {
         .expect("插件已加载");
     assert_eq!(demo.error, None);
     assert_eq!(demo.tools[0].name, "plugin_echo");
-    assert_eq!(demo.tools[0].tier, "read");
+    assert_eq!(demo.tools[0].modes.join(","), "normal,ask,plan");
     assert_eq!(demo.commands[0].name, "demo");
+
+    harness.close().await;
+}
+
+/// 插件工具声明的 `modes` 决定它在模型工具表里何时出现。
+#[tokio::test]
+async fn plugin_tool_modes_filter_the_model_tool_table() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    install_plugin(
+        &harness,
+        "demo",
+        r#"
+        export default {
+          tools: {
+            normal_only: {
+              description: "只在标准模式可见",
+              parameters: { type: "object" },
+              modes: ["normal"],
+              run() { return "ok"; }
+            },
+            everywhere: {
+              description: "默认三种模式都可见",
+              parameters: { type: "object" },
+              run() { return "ok"; }
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Plan).await;
+    harness.prompt(&session, "先给计划").await;
+
+    let requests = upstream.received_requests().await.expect("请求记录");
+    let first: Value = serde_json::from_slice(&requests[0].body).expect("请求体是 JSON");
+    let names: Vec<&str> = first["tools"]
+        .as_array()
+        .expect("请求带工具")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(
+        !names.contains(&"normal_only"),
+        "计划模式不应暴露 normal_only：{names:?}"
+    );
+    assert!(
+        names.contains(&"everywhere"),
+        "默认全开的插件工具应可见：{names:?}"
+    );
 
     harness.close().await;
 }

@@ -78,7 +78,7 @@ export default {
         required: ["name"],
         additionalProperties: false,
       },
-      tier: "read",       // read（默认）| write | exec
+      modes: ["normal", "ask", "plan"], // 默认三种全开；收窄成 ["normal"] 也行
       parallel: false,    // 默认 false：作为批次屏障
       async run(input, ctx) {
         return `你好，${input.name}`;
@@ -119,9 +119,11 @@ export default {
 |---|---|
 | `description` | 必填，非空。会作为工具描述进模型提示，按提示词规范写：只讲这个工具自己的用法。 |
 | `parameters` | 必填，JSON Schema 对象（`type: "object"`）。原样进模型提示；调用时按其中的 `type`、`required`、`properties`、`additionalProperties`、`items`、`enum` 校验参数。 |
-| `tier` | `read`（默认）/`write`/`exec`。决定只读模式（问答、计划）是否可见。 |
+| `modes` | 可选，取值 `normal`/`ask`/`plan` 的数组，默认三种全开。决定该工具在模型工具表里何时出现、何时允许调用；`normal` 同时覆盖 CLM 实验模式，PTC 不开放插件工具。空数组或未知模式会加载失败。 |
 | `parallel` | 默认 `false`。为 `true` 时允许与其它只读工具并发，否则整批作为屏障。 |
 | `run(input, ctx)` | 必填。第一个参数是按 schema 校验过的对象（不满足时模型收到 `E_PLUGIN_ARGUMENTS`），第二个是会话快照。 |
+
+`modes` 只是**可见性声明**，不授予任何能力：插件能读写什么，由 `moc` 模块的 `tools.call` 白名单决定（见下文）。所以一个工具声明 `plan` 并不等于它在计划模式里能写文件，只表示模型在计划模式下能看到并调用它。
 
 工具名全局唯一：与内置工具、MCP 工具（`mcp__` 前缀）、其它插件工具撞名会让该工具被忽略并告警（内置优先）。工具名只允许字母、数字、下划线、连字符。
 

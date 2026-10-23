@@ -20,7 +20,7 @@ use rquickjs::{
 };
 use serde_json::Value;
 
-use crate::descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl, ToolTier};
+use crate::descriptor::{CommandDecl, Descriptor, HookKind, ModeMask, ToolDecl};
 use crate::error::{PluginError, Result};
 use crate::loader::{PluginLoader, PluginResolver};
 use crate::manifest::{valid_command_name, valid_tool_name};
@@ -439,17 +439,7 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
                     format!("工具 `{name}` 的 parameters 必须是 JSON Schema 对象"),
                 ));
             }
-            let tier = match optional_string(ctx, &declaration, "tier")?.as_deref() {
-                None | Some("read") => ToolTier::Read,
-                Some("write") => ToolTier::Write,
-                Some("exec") => ToolTier::Exec,
-                Some(other) => {
-                    return Err(PluginError::new(
-                        "E_PLUGIN_DESCRIPTOR",
-                        format!("工具 `{name}` 的 tier `{other}` 无效（read/write/exec）"),
-                    ));
-                }
-            };
+            let modes = optional_modes(ctx, &declaration, &name)?;
             let parallel = optional_bool(ctx, &declaration, "parallel")?.unwrap_or(false);
             let run: JsValue = declaration
                 .get("run")
@@ -465,7 +455,7 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
                 name,
                 description,
                 parameters,
-                tier,
+                modes,
                 parallel,
             });
         }
@@ -623,6 +613,43 @@ fn optional_bool<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
         .as_bool()
         .map(Some)
         .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是布尔值")))
+}
+
+/// 可选 `modes`：缺失/`null` 表示三种模式全开；存在时必须是 `normal`/`ask`/`plan`
+/// 的非空字符串数组。`ptc` 不开放：PTC 只暴露 `run_code`，插件工具在那里不可达。
+fn optional_modes<'js>(ctx: &Ctx<'js>, object: &Object<'js>, owner: &str) -> Result<ModeMask> {
+    let value: JsValue = object.get("modes").map_err(|error| js_error(ctx, error))?;
+    if value.is_undefined() || value.is_null() {
+        return Ok(ModeMask::ALL);
+    }
+    let Value::Array(items) = js_to_json(ctx, value)? else {
+        return Err(PluginError::new(
+            "E_PLUGIN_DESCRIPTOR",
+            format!("工具 `{owner}` 的 modes 必须是字符串数组"),
+        ));
+    };
+    let mut modes = ModeMask::empty();
+    for item in items {
+        let Some(name) = item.as_str() else {
+            return Err(PluginError::new(
+                "E_PLUGIN_DESCRIPTOR",
+                format!("工具 `{owner}` 的 modes 必须是字符串数组"),
+            ));
+        };
+        modes = modes.union(ModeMask::parse(name).ok_or_else(|| {
+            PluginError::new(
+                "E_PLUGIN_DESCRIPTOR",
+                format!("工具 `{owner}` 的 modes 含未知模式 `{name}`（normal/ask/plan）"),
+            )
+        })?);
+    }
+    if modes.is_empty() {
+        return Err(PluginError::new(
+            "E_PLUGIN_DESCRIPTOR",
+            format!("工具 `{owner}` 的 modes 不能是空数组；不想暴露就删掉这个工具"),
+        ));
+    }
+    Ok(modes)
 }
 
 /// 建宿主桥：`log`、`session`、`tools.call`。
@@ -1080,7 +1107,7 @@ mod tests {
         );
         let (worker, descriptor) = load(temp.path(), Duration::from_secs(2)).await;
         assert_eq!(descriptor.tools.len(), 1);
-        assert_eq!(descriptor.tools[0].tier, ToolTier::Read);
+        assert_eq!(descriptor.tools[0].modes, ModeMask::ALL);
         assert_eq!(descriptor.commands[0].name, "echo");
         assert!(descriptor.has_prompt);
 
@@ -1119,6 +1146,61 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(value, json!("plugin prompt for normal"));
+    }
+
+    #[tokio::test]
+    async fn tool_modes_filter_the_declared_surface() {
+        let temp = tempfile::tempdir().unwrap();
+        write_plugin(
+            temp.path(),
+            "index.js",
+            r#"
+            export default {
+              tools: {
+                plan_only: {
+                  description: "只在计划模式可见",
+                  parameters: { type: "object" },
+                  modes: ["plan"],
+                  run() { return "ok"; }
+                },
+                everywhere: {
+                  description: "默认全开",
+                  parameters: { type: "object" },
+                  run() { return "ok"; }
+                }
+              }
+            };
+            "#,
+        );
+        let (_worker, descriptor) = load(temp.path(), Duration::from_secs(2)).await;
+        assert_eq!(descriptor.tool("plan_only").unwrap().modes, ModeMask::PLAN);
+        assert_eq!(descriptor.tool("everywhere").unwrap().modes, ModeMask::ALL);
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_tool_modes() {
+        let temp = tempfile::tempdir().unwrap();
+        for (index, modes) in [r#"["ptc"]"#, r#"[]"#, r#""plan""#].into_iter().enumerate() {
+            let dir = temp.path().join(format!("case{index}"));
+            write_plugin(
+                &dir,
+                "index.js",
+                &format!(
+                    "export default {{ tools: {{ x: {{ description: \"x\", parameters: {{ type: \"object\" }}, modes: {modes}, run: () => \"ok\" }} }} }};"
+                ),
+            );
+            let (_worker, ready) = spawn(
+                "demo".into(),
+                dir.clone(),
+                dir.join("index.js"),
+                limits(Duration::from_secs(1)),
+            );
+            let error = ready
+                .await
+                .expect("插件线程存活")
+                .expect_err("非法 modes 应加载失败");
+            assert_eq!(error.code, "E_PLUGIN_DESCRIPTOR", "modes={modes}");
+        }
     }
 
     #[tokio::test]

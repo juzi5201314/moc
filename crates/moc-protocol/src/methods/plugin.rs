@@ -48,7 +48,8 @@ pub struct PluginInfo {
 pub struct PluginToolInfo {
     pub name: String,
     pub description: String,
-    pub tier: String,
+    /// 该工具可见的会话模式（`normal`/`ask`/`plan`）。
+    pub modes: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

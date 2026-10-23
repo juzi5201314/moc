@@ -59,8 +59,8 @@ export interface Session {
   isSubagent: boolean;
 }
 
-/** 工具的风险等级；决定只读模式（问答、计划）是否可见。 */
-export type ToolTier = "read" | "write" | "exec";
+/** 工具可见的会话模式；`normal` 同时覆盖 CLM 实验模式，PTC 不开放插件工具。 */
+export type ToolMode = "normal" | "ask" | "plan";
 
 export interface ToolDefinition {
   /**
@@ -75,8 +75,13 @@ export interface ToolDefinition {
     required?: string[];
     [key: string]: unknown;
   };
-  /** 默认 `"read"`。 */
-  tier?: ToolTier;
+  /**
+   * 该工具在哪些会话模式可见；默认 `["normal", "ask", "plan"]`。
+   *
+   * 只影响模型工具表与调用放行，不授予任何额外能力：插件能做什么仍由
+   * `tools.call` 的只读白名单决定。空数组或未知模式会加载失败。
+   */
+  modes?: ToolMode[];
   /** 默认 `false`：作为批次屏障，不与其它工具并发。 */
   parallel?: boolean;
   /**

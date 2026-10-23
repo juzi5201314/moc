@@ -29,8 +29,7 @@ export default {
         required: [],
         additionalProperties: false,
       },
-      // 只读工具在问答与计划模式也可用。
-      tier: "read",
+      // 省略 modes 时在 normal/ask/plan 都可见；需要收窄就写 modes: ["normal"]。
       run(input, ctx) {
         const who = (input.name || "world").trim();
         return `你好，${who}！模式 ${ctx.mode}，目录 ${ctx.cwd}`;

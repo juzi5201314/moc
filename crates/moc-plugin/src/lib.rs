@@ -13,7 +13,7 @@ pub mod manifest;
 pub mod runtime;
 pub mod schema;
 
-pub use descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl, ToolTier};
+pub use descriptor::{CommandDecl, Descriptor, HookKind, ModeMask, ToolDecl};
 pub use error::{PluginError, Result};
 pub use host::{
     BeforeToolCall, CallContext, HostBridge, PluginHost, PluginInfo, Settings, ToolResult,

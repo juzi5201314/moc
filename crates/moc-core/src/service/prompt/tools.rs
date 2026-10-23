@@ -478,7 +478,7 @@ async fn execute_tool(
             "yield is available only to subagents",
         ));
     }
-    if !crate::service::mode::mode_allows(mode, name, tool.tier(), tool.origin()) {
+    if !tool.visible_in(mode) {
         return Ok(ToolOutcome::failure(
             "E_MODE",
             "This tool is not allowed in the current mode",

@@ -267,6 +267,11 @@ pub trait Tool: Send + Sync {
     fn origin(&self) -> ToolOrigin {
         ToolOrigin::Builtin
     }
+    /// 当前模式是否可见。默认按内置白名单与风险等级判定；插件工具用自己声明的
+    /// `modes` 覆盖。
+    fn visible_in(&self, mode: SessionMode) -> bool {
+        crate::service::mode::mode_allows(mode, self.name(), self.tier(), self.origin())
+    }
     fn parallel_safe(&self) -> bool;
     fn def(&self) -> ToolDef;
     fn output_schema(&self) -> Option<&Value> {
@@ -362,7 +367,7 @@ impl ToolRegistry {
                 _ => true,
             })
             .filter(|tool| {
-                crate::service::mode::mode_allows(mode, tool.name(), tool.tier(), tool.origin())
+                tool.visible_in(mode)
                     && crate::service::mode::tool_enabled(
                         tool.name(),
                         tool.origin(),

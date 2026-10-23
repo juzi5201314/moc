@@ -753,7 +753,7 @@ impl AgentService for Core {
                     .map(|tool| PluginToolInfo {
                         name: tool.name,
                         description: tool.description,
-                        tier: tool.tier.as_str().to_owned(),
+                        modes: tool.modes.names().map(str::to_owned).collect(),
                     })
                     .collect(),
                 commands: info
