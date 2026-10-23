@@ -16,11 +16,13 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl};
+use crate::descriptor::{CommandDecl, ConfigDecl, Descriptor, HookKind, ToolDecl};
 use crate::discovery::{self, Discovered, DiscoveryConfig};
 use crate::error::{PluginError, Result};
 use crate::manifest::Manifest;
-use crate::runtime::{CallOp, CallRequest, HostRequest, Limits, Worker, spawn};
+use crate::runtime::{
+    CallOp, CallRequest, HostOperation, HostRequest, Limits, Worker, spawn_unactivated,
+};
 
 /// 一份插件的运行时配置（来自 `[plugins]`，`dirs` 已展开 `~`）。
 #[derive(Debug, Clone)]
@@ -63,6 +65,9 @@ pub struct CallContext {
     pub permission: String,
     pub model: String,
     pub is_subagent: bool,
+    /// 仅宿主内部使用；上下文预览禁止持久化写入。
+    #[serde(skip)]
+    pub writable: bool,
 }
 
 impl CallContext {
@@ -86,6 +91,30 @@ pub trait HostBridge: Send + Sync {
         name: String,
         args: Value,
     ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>>;
+}
+
+/// 插件持久化操作；插件名、配置路径和会话上下文均由宿主注入。
+#[derive(Debug, Clone)]
+pub enum PersistenceOp {
+    ConfigSnapshot,
+    ConfigGet { key: String },
+    ConfigSet { key: String, value: Value },
+    StateSnapshot,
+    StateGet { key: String },
+    StateSet { key: String, value: Value },
+    StateDelete { key: String },
+    StateKeys,
+}
+
+/// core 提供的持久化边界，不依赖工具白名单。
+pub trait PersistenceBridge: Send + Sync {
+    fn request<'a>(
+        &'a self,
+        plugin: &'a str,
+        config_path: &'a Path,
+        context: Option<&'a CallContext>,
+        op: PersistenceOp,
+    ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
 }
 
 /// `beforeToolCall` 的聚合结论：任一插件 deny 即拒绝；多个改写按插件顺序叠加。
@@ -116,6 +145,8 @@ struct Plugin {
     source: String,
     dir: PathBuf,
     descriptor: Descriptor,
+    config_path: PathBuf,
+    activation_budget: Duration,
     /// 线程句柄；运行期失败后置空，线程随之退出并释放它的 Runtime。
     worker: Mutex<Option<Worker>>,
     /// 运行期失败（超时、线程退出）：记录后本进程内不再调用。
@@ -162,6 +193,7 @@ fn fingerprint_of(discovered: &[Discovered]) -> u64 {
     let mut hasher = DefaultHasher::new();
     for candidate in discovered {
         candidate.dir.hash(&mut hasher);
+        candidate.config_path.hash(&mut hasher);
         for file in plugin_files(&candidate.dir) {
             file.hash(&mut hasher);
             let metadata = std::fs::metadata(&file).ok();
@@ -225,6 +257,7 @@ pub struct PluginHost {
     call_timeout: Duration,
     /// 加载时的目录指纹；core 用它判断插件目录是否变过。
     stamp: u64,
+    persistence: Option<Arc<dyn PersistenceBridge>>,
 }
 
 impl PluginHost {
@@ -237,6 +270,26 @@ impl PluginHost {
         home: &Path,
         settings: &Settings,
         reserved: &[&str],
+    ) -> Arc<Self> {
+        Self::start_inner(cwd, home, settings, reserved, None).await
+    }
+
+    pub async fn start_with_persistence(
+        cwd: &Path,
+        home: &Path,
+        settings: &Settings,
+        reserved: &[&str],
+        persistence: Arc<dyn PersistenceBridge>,
+    ) -> Arc<Self> {
+        Self::start_inner(cwd, home, settings, reserved, Some(persistence)).await
+    }
+
+    async fn start_inner(
+        cwd: &Path,
+        home: &Path,
+        settings: &Settings,
+        reserved: &[&str],
+        persistence: Option<Arc<dyn PersistenceBridge>>,
     ) -> Arc<Self> {
         let discovered = discovery::discover(cwd, home, &discovery_config(cwd, settings));
         let stamp = fingerprint_of(&discovered);
@@ -283,8 +336,9 @@ impl PluginHost {
                 continue;
             }
             let entry = manifest.entry(&candidate.dir);
+            let load_started = std::time::Instant::now();
             let (worker, ready) =
-                spawn(manifest.name.clone(), candidate.dir.clone(), entry, limits);
+                spawn_unactivated(manifest.name.clone(), candidate.dir.clone(), entry, limits);
             let index = plugins.len();
             // 线程可能在报告结果前就没了（例如 C 层 abort 之前的 unwind）：当作加载失败。
             let loaded = match ready.await {
@@ -345,6 +399,10 @@ impl PluginHost {
                         source: candidate.source,
                         dir: candidate.dir,
                         descriptor,
+                        config_path: candidate.config_path,
+                        activation_budget: settings
+                            .load_timeout
+                            .saturating_sub(load_started.elapsed()),
                         worker: Mutex::new(Some(worker)),
                         failure: Mutex::new(None),
                     });
@@ -363,6 +421,8 @@ impl PluginHost {
                         source: candidate.source,
                         dir: candidate.dir,
                         descriptor: Descriptor::default(),
+                        config_path: candidate.config_path,
+                        activation_budget: Duration::ZERO,
                         worker: Mutex::new(None),
                         failure: Mutex::new(Some(error)),
                     });
@@ -370,14 +430,48 @@ impl PluginHost {
             }
         }
 
-        Arc::new(Self {
+        let host = Arc::new(Self {
             plugins,
             tools,
             commands,
             max_prompt_chars: settings.max_prompt_chars,
             call_timeout: settings.call_timeout,
             stamp,
-        })
+            persistence,
+        });
+        for index in 0..host.plugins.len() {
+            if host.plugins[index].alive() {
+                if let Err(error) = host
+                    .invoke_context(
+                        index,
+                        CallOp::Activate,
+                        Value::Null,
+                        None,
+                        false,
+                        None,
+                        host.plugins[index].activation_budget,
+                    )
+                    .await
+                {
+                    host.fail(index, error);
+                }
+            }
+        }
+        host
+    }
+
+    /// 返回全部配置声明，运行失败的插件也保留声明供 UI 修复配置。
+    pub fn config_declarations(&self) -> Vec<(String, PathBuf, Vec<ConfigDecl>)> {
+        self.plugins
+            .iter()
+            .map(|plugin| {
+                (
+                    plugin.name.clone(),
+                    plugin.config_path.clone(),
+                    plugin.descriptor.configs.clone(),
+                )
+            })
+            .collect()
     }
 
     /// 加载时的目录指纹；与 [`fingerprint`] 的当前值不同就说明目录变过。
@@ -632,16 +726,61 @@ impl PluginHost {
         tools_allowed: bool,
         bridge: Option<Arc<dyn HostBridge>>,
     ) -> Result<Value> {
+        self.invoke_context(
+            index,
+            op,
+            payload,
+            Some(context),
+            tools_allowed,
+            bridge,
+            self.call_timeout,
+        )
+        .await
+    }
+
+    async fn invoke_context(
+        &self,
+        index: usize,
+        op: CallOp,
+        payload: Value,
+        context: Option<&CallContext>,
+        tools_allowed: bool,
+        bridge: Option<Arc<dyn HostBridge>>,
+        timeout: Duration,
+    ) -> Result<Value> {
         let plugin = &self.plugins[index];
+        let started = std::time::Instant::now();
         if let Some(failure) = plugin.failure.lock().as_ref() {
             return Err(failure.clone());
         }
-        let (host_tx, mut host_rx) = match &bridge {
-            Some(_) => {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                (Some(tx), Some(rx))
+        if let Some(persistence) = &self.persistence {
+            let validation = tokio::time::timeout(
+                timeout,
+                request_persistence(
+                    persistence.as_ref(),
+                    &plugin.name,
+                    &plugin.config_path,
+                    context,
+                    &plugin.descriptor.configs,
+                    PersistenceOp::ConfigSnapshot,
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err(PluginError::new("E_PLUGIN_TIMEOUT", "读取插件配置超时")));
+            if let Err(error) = validation {
+                return Err(self.fail(index, error));
             }
-            None => (None, None),
+        }
+        let timeout = timeout.saturating_sub(started.elapsed());
+        if timeout.is_zero() {
+            return Err(self.fail(
+                index,
+                PluginError::new("E_PLUGIN_TIMEOUT", "插件调用预算已耗尽"),
+            ));
+        }
+        let (host_tx, mut host_rx) = {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), Some(rx))
         };
         let (reply, receiver) = tokio::sync::oneshot::channel();
         {
@@ -656,25 +795,30 @@ impl PluginHost {
             worker.call(CallRequest {
                 op,
                 payload,
-                context: context.json(),
+                context: context
+                    .map(CallContext::json)
+                    .unwrap_or_else(|| "null".into()),
                 tools_allowed,
-                deadline: std::time::Instant::now() + self.call_timeout,
+                deadline: std::time::Instant::now() + timeout,
                 host_tx,
                 reply,
             })?;
         }
-        let deadline = tokio::time::Instant::now() + self.call_timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
         tokio::pin!(receiver);
         // 宿主工具调用放进独立任务：桥自己慢不能让超时分支失去作用。
-        let mut host_task: Option<tokio::task::JoinHandle<Result<ToolResult>>> = None;
+        let mut host_task: Option<tokio::task::JoinHandle<Result<Value>>> = None;
         let mut pending_reply: Option<std::sync::mpsc::Sender<Result<Value>>> = None;
         let mut waiting_on_host = false;
+        let mut waiting_on_persistence = false;
         let outcome = loop {
             tokio::select! {
                 biased;
                 result = &mut receiver => {
                     break match result {
-                        Ok(result) => result,
+                        Ok(Err(error)) if error.code == "E_PLUGIN_TIMEOUT" && waiting_on_host && !waiting_on_persistence => Err(error),
+                        Ok(Err(error)) => Err(self.fail(index, error)),
+                        Ok(Ok(value)) => Ok(value),
                         Err(_) => Err(self.fail(
                             index,
                             PluginError::new(
@@ -686,7 +830,7 @@ impl PluginHost {
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     let elapsed = self.call_timeout.as_millis();
-                    break if waiting_on_host {
+                    break if waiting_on_host && !waiting_on_persistence {
                         // 插件线程此刻在等宿主的回包，它的 tools.call 也因为同一个
                         // deadline 抛了错：这条路径不算插件跑飞，不毒化它。
                         Err(PluginError::new(
@@ -718,27 +862,34 @@ impl PluginHost {
                         host_rx = None;
                         continue;
                     };
-                    let Some(bridge) = bridge.clone() else {
-                        continue;
-                    };
-                    let HostRequest { name, args, reply } = request;
+                    let HostRequest { operation, reply } = request;
+                    waiting_on_persistence = matches!(&operation, HostOperation::Persistence(_));
                     waiting_on_host = true;
                     pending_reply = Some(reply);
+                    let bridge = bridge.clone();
+                    let persistence = self.persistence.clone();
+                    let name = plugin.name.clone();
+                    let path = plugin.config_path.clone();
+                    let fields = plugin.descriptor.configs.clone();
+                    let context = context.cloned();
                     host_task = Some(tokio::spawn(async move {
-                        bridge.call_tool(name, args).await
+                        match operation {
+                            HostOperation::Tool { name, args } => {
+                                let bridge = bridge.ok_or_else(|| PluginError::new("E_PLUGIN_TOOLS_UNAVAILABLE", "工具桥不可用"))?;
+                                let result = bridge.call_tool(name, args).await?;
+                                Ok(serde_json::json!({"content":result.content,"structuredContent":result.structured,"isError":result.is_error}))
+                            }
+                            HostOperation::Persistence(op) => {
+                                let bridge = persistence.ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "持久化桥不可用"))?;
+                                request_persistence(bridge.as_ref(), &name, &path, context.as_ref(), &fields, op).await
+                            }
+                        }
                     }));
                 }
                 reply = host_reply(&mut host_task) => {
                     waiting_on_host = false;
-                    let value = reply.map(|result| {
-                        serde_json::json!({
-                            "content": result.content,
-                            "structuredContent": result.structured,
-                            "isError": result.is_error,
-                        })
-                    });
                     if let Some(sender) = pending_reply.take() {
-                        let _ = sender.send(value);
+                        let _ = sender.send(reply);
                     }
                 }
             }
@@ -753,9 +904,95 @@ impl PluginHost {
     /// 记录运行期失败：禁用插件并丢掉线程句柄，让它的 Runtime 随线程退出而释放。
     fn fail(&self, index: usize, error: PluginError) -> PluginError {
         let plugin = &self.plugins[index];
-        *plugin.failure.lock() = Some(error.clone());
+        let first = plugin.failure.lock().get_or_insert(error).clone();
         plugin.worker.lock().take();
-        error
+        first
+    }
+}
+
+async fn request_persistence(
+    bridge: &dyn PersistenceBridge,
+    plugin: &str,
+    path: &Path,
+    context: Option<&CallContext>,
+    fields: &[ConfigDecl],
+    op: PersistenceOp,
+) -> Result<Value> {
+    match &op {
+        PersistenceOp::ConfigSnapshot | PersistenceOp::ConfigGet { .. } => {
+            let value = bridge
+                .request(plugin, path, context, PersistenceOp::ConfigSnapshot)
+                .await?;
+            let object = value
+                .as_object()
+                .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", "插件配置必须是对象"))?;
+            for (key, value) in object {
+                let declaration =
+                    fields
+                        .iter()
+                        .find(|field| &field.key == key)
+                        .ok_or_else(|| {
+                            PluginError::new("E_PLUGIN_CONFIG", format!("配置 `{key}` 未注册"))
+                        })?;
+                declaration
+                    .validate(value)
+                    .map_err(|error| PluginError::new("E_PLUGIN_CONFIG", error))?;
+            }
+            if let PersistenceOp::ConfigGet { key } = op {
+                let declaration =
+                    fields
+                        .iter()
+                        .find(|field| field.key == key)
+                        .ok_or_else(|| {
+                            PluginError::new("E_PLUGIN_CONFIG", format!("配置 `{key}` 未注册"))
+                        })?;
+                let value = object.get(&key).or(declaration.default.as_ref());
+                Ok(match value {
+                    Some(value) => serde_json::json!({"found":true,"value":value}),
+                    None => serde_json::json!({"found":false}),
+                })
+            } else {
+                Ok(value)
+            }
+        }
+        PersistenceOp::ConfigSet { key, value } => {
+            if context.is_some_and(|context| !context.writable) {
+                return Err(PluginError::new(
+                    "E_PLUGIN_STATE",
+                    "当前调用禁止修改插件配置",
+                ));
+            }
+            let declaration = fields
+                .iter()
+                .find(|field| &field.key == key)
+                .ok_or_else(|| {
+                    PluginError::new("E_PLUGIN_CONFIG", format!("配置 `{key}` 未注册"))
+                })?;
+            if !value.is_null() {
+                declaration
+                    .validate(value)
+                    .map_err(|error| PluginError::new("E_PLUGIN_CONFIG", error))?;
+            }
+            bridge.request(plugin, path, context, op).await
+        }
+        PersistenceOp::StateSet { .. } | PersistenceOp::StateDelete { .. } => {
+            if context.is_none() {
+                return Err(PluginError::new("E_PLUGIN_STATE", "当前调用没有会话"));
+            }
+            if context.is_some_and(|context| !context.writable) {
+                return Err(PluginError::new(
+                    "E_PLUGIN_STATE",
+                    "当前调用禁止修改插件状态",
+                ));
+            }
+            bridge.request(plugin, path, context, op).await
+        }
+        _ => {
+            if context.is_none() {
+                return Err(PluginError::new("E_PLUGIN_STATE", "当前调用没有会话"));
+            }
+            bridge.request(plugin, path, context, op).await
+        }
     }
 }
 
@@ -769,9 +1006,7 @@ async fn next_request(
 }
 
 /// 等一个在途的宿主工具调用；没有任务时永远挂起，让 `select!` 的分支保持安静。
-async fn host_reply(
-    task: &mut Option<tokio::task::JoinHandle<Result<ToolResult>>>,
-) -> Result<ToolResult> {
+async fn host_reply(task: &mut Option<tokio::task::JoinHandle<Result<Value>>>) -> Result<Value> {
     let Some(handle) = task.take() else {
         return std::future::pending().await;
     };
@@ -860,6 +1095,7 @@ mod tests {
             permission: "full".into(),
             model: "m".into(),
             is_subagent: false,
+            writable: true,
         }
     }
 
@@ -878,6 +1114,180 @@ mod tests {
                     is_error: false,
                 })
             })
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryPersistence {
+        config: Mutex<serde_json::Map<String, Value>>,
+        state: Mutex<BTreeMap<(String, String, String), Value>>,
+    }
+
+    impl PersistenceBridge for MemoryPersistence {
+        fn request<'a>(
+            &'a self,
+            plugin: &'a str,
+            _path: &'a Path,
+            context: Option<&'a CallContext>,
+            op: PersistenceOp,
+        ) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>> {
+            Box::pin(async move {
+                match op {
+                    PersistenceOp::ConfigSnapshot => Ok(Value::Object(self.config.lock().clone())),
+                    PersistenceOp::ConfigGet { key } => Ok(match self.config.lock().get(&key) {
+                        Some(value) => serde_json::json!({"found":true,"value":value}),
+                        None => serde_json::json!({"found":false}),
+                    }),
+                    PersistenceOp::ConfigSet { key, value } => {
+                        if value.is_null() {
+                            self.config.lock().remove(&key);
+                        } else {
+                            self.config.lock().insert(key, value);
+                        }
+                        Ok(Value::Null)
+                    }
+                    op => {
+                        let session = &context.expect("state 必须带会话").session_id;
+                        let slot = |key: String| (plugin.to_owned(), session.clone(), key);
+                        let mut state = self.state.lock();
+                        Ok(match op {
+                            PersistenceOp::StateSnapshot => Value::Object(
+                                state
+                                    .iter()
+                                    .filter(|((name, id, _), _)| name == plugin && id == session)
+                                    .map(|((_, _, key), value)| (key.clone(), value.clone()))
+                                    .collect(),
+                            ),
+                            PersistenceOp::StateGet { key } => match state.get(&slot(key)) {
+                                Some(value) => serde_json::json!({"found":true,"value":value}),
+                                None => serde_json::json!({"found":false}),
+                            },
+                            PersistenceOp::StateSet { key, value } => {
+                                state.insert(slot(key), value);
+                                Value::Null
+                            }
+                            PersistenceOp::StateDelete { key } => {
+                                Value::Bool(state.remove(&slot(key)).is_some())
+                            }
+                            PersistenceOp::StateKeys => serde_json::json!(
+                                state
+                                    .keys()
+                                    .filter(|(name, id, _)| name == plugin && id == session)
+                                    .map(|(_, _, key)| key)
+                                    .collect::<Vec<_>>()
+                            ),
+                            _ => unreachable!(),
+                        })
+                    }
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn configuration_and_state_work_in_activate_and_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "persist",
+            r#"
+            import { config, session } from 'moc';
+            config.register('prefix', { type:'text', default:'count' });
+            let initial;
+            export default {
+                activate() { initial = config.get('prefix'); },
+                commands: { persist: { description:'持久化', run(_args, ctx) {
+                    session.state.__proto__ = null;
+                    ctx.state.count = (session().state.count ?? 0) + 1;
+                    config.set('prefix', 'saved');
+                    const result = { initial, value:config.get('prefix'), count:ctx.state.count, keys:Object.keys(ctx.state), own:'__proto__' in ctx.state, nil:ctx.state.__proto__ };
+                    delete ctx.state.__proto__;
+                    return result;
+                } } }
+            };
+        "#,
+        );
+        let bridge = Arc::new(MemoryPersistence::default());
+        let host =
+            PluginHost::start_with_persistence(temp.path(), temp.path(), &settings(), &[], bridge)
+                .await;
+        assert_eq!(host.info()[0].error, None);
+        assert_eq!(host.config_declarations()[0].2[0].key, "prefix");
+        let first: Value =
+            serde_json::from_str(&host.run_command("persist", "", &context()).await.unwrap())
+                .unwrap();
+        assert_eq!(first["initial"], "count");
+        assert_eq!(first["value"], "saved");
+        assert_eq!(first["count"], 1);
+        assert_eq!(first["own"], true);
+        assert!(first["nil"].is_null());
+        let second: Value =
+            serde_json::from_str(&host.run_command("persist", "", &context()).await.unwrap())
+                .unwrap();
+        assert_eq!(second["count"], 2);
+    }
+
+    #[tokio::test]
+    async fn bad_configuration_disables_plugin_but_keeps_its_declarations() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "bad",
+            "import {config} from 'moc'; config.register('prefix',{type:'text',default:'ok'}); export default {};",
+        );
+        let bridge = Arc::new(MemoryPersistence::default());
+        bridge
+            .config
+            .lock()
+            .insert("prefix".into(), serde_json::json!(42));
+        let host =
+            PluginHost::start_with_persistence(temp.path(), temp.path(), &settings(), &[], bridge)
+                .await;
+        assert!(
+            host.info()[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("E_PLUGIN_CONFIG")
+        );
+        assert_eq!(host.config_declarations()[0].2[0].key, "prefix");
+    }
+
+    #[tokio::test]
+    async fn invalid_json_cannot_be_silently_coerced_or_caught_to_keep_plugin_alive() {
+        for value in [
+            "NaN",
+            "Infinity",
+            "undefined",
+            "() => 1",
+            "[,,]",
+            "{x:undefined}",
+            "new Date()",
+            "({get x(){ return 1; }})",
+            "(() => { const x = {}; x.x=x; return x; })()",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            install(
+                temp.path(),
+                "bad",
+                &format!(
+                    "import {{session}} from 'moc'; export default {{commands:{{bad:{{description:'bad',run(){{try {{session.state.x={value};}} catch {{}} return 'caught';}}}}}}}};"
+                ),
+            );
+            let host = PluginHost::start_with_persistence(
+                temp.path(),
+                temp.path(),
+                &settings(),
+                &[],
+                Arc::new(MemoryPersistence::default()),
+            )
+            .await;
+            let error = host
+                .run_command("bad", "", &context())
+                .await
+                .expect_err(value);
+            assert_eq!(error.code, "E_PLUGIN_VALUE", "{value}: {error}");
+            assert!(host.info()[0].error.is_some(), "{value}");
         }
     }
 

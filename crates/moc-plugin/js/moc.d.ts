@@ -15,6 +15,31 @@ export const version: string;
  * 当前会话快照。每次调用都重新读取，不缓存。
  */
 export function session(): Session;
+export namespace session {
+  /** 当前调用所属会话的插件私有 KV；读取对象深冻结，修改后须整值赋回。 */
+  const state: Record<string, JsonValue | undefined>;
+}
+
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export interface ConfigDefinition {
+  type: "bool" | "integer" | "number" | "text" | "secret" | "multiline" | "strings" | "object" | "choice";
+  label?: string;
+  description?: string;
+  default?: JsonValue;
+  /** 仅 choice 类型提供，必须是非空、不重复的字符串数组。 */
+  choices?: string[];
+}
+
+/** 配置仅可操作本插件命名空间；所有方法同步。 */
+export const config: {
+  /** 只允许模块顶层注册；activate 和其它回调中注册会报错。 */
+  register(key: string, definition: ConfigDefinition): void;
+  /** 返回有效配置或声明默认值；均未设置时返回 undefined，读取对象深冻结。 */
+  get(key: string): JsonValue | undefined;
+  /** 写回插件安装来源所属配置文件；null 删除该层显式值，重新继承。 */
+  set(key: string, value: JsonValue): void;
+};
 
 /** 写 moc 日志；`RUST_LOG=moc_plugin=debug` 时能看到 debug。 */
 export const log: {
@@ -57,6 +82,8 @@ export interface Session {
   model: string;
   /** 是否在子代理会话里。 */
   isSubagent: boolean;
+  /** session ID 与插件名双重隔离；支持读取、赋值、delete、Object.keys。 */
+  readonly state: Record<string, JsonValue | undefined>;
 }
 
 /** 工具可见的会话模式；`normal` 同时覆盖 CLM 实验模式，PTC 不开放插件工具。 */

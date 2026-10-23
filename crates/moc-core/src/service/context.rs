@@ -292,10 +292,14 @@ async fn snapshot(
     // 插件宿主首次加载可能耗到 load_timeout，必须在拿会话锁之前完成。
     let plugins = inner.project_plugins(&cwd).await.map_err(to_rpc)?;
     let plugin_tools = crate::service::plugin_tools_of(&plugins);
+    let mut plugin_context = {
+        let state = record.state.lock().await;
+        crate::service::plugin_context(&state, &model.selector)
+    };
+    plugin_context.writable = false;
+    // 预览/上下文构建不能持有会话锁等待插件，也不能产生持久化副作用。
+    let plugin_prompt = plugins.prompt_text(&plugin_context).await;
     let state = record.state.lock().await;
-    let plugin_prompt = plugins
-        .prompt_text(&crate::service::plugin_context(&state, &model.selector))
-        .await;
     let pieces = crate::system_prompt::pieces(
         &config,
         &model,

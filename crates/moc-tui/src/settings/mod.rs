@@ -32,6 +32,7 @@ pub const TABS: &[&str] = &[
     "MCP",
     "界面",
     "高级",
+    "插件",
 ];
 
 pub struct SettingsPanel {
@@ -537,10 +538,37 @@ impl SettingsPanel {
         let Some(data) = &self.data else {
             return;
         };
-        self.effective = data.inherited.clone();
-        moc_core::config::editor::merge_json(&mut self.effective, data.document.clone());
+        // `effective` 是服务端按完整配置优先级计算出的结果；编辑期间只由
+        // set/remove_value 修改对应路径，不能再用 document 整体覆盖它。
+        self.effective = if data.effective.is_null()
+            || (data
+                .effective
+                .as_object()
+                .is_some_and(|value| value.is_empty())
+                && data
+                    .inherited
+                    .as_object()
+                    .is_some_and(|value| !value.is_empty()))
+        {
+            // 兼容旧回执未提供 effective 的场景；正常服务端回执始终优先。
+            data.inherited.clone()
+        } else {
+            data.effective.clone()
+        };
         moc_core::config::catalog::complete_view(&mut self.effective);
-        self.fields = moc_core::config::catalog::fields(&self.effective);
+        // 服务端目录包含插件声明的字段（即便插件尚未加载成功也能修复配置）；
+        // 不能用本地值推断结果覆盖它，否则动态字段会丢失且描述/类型会漂移。
+        // 核心目录仍作增量补充，以便本次编辑刚新增的 provider/model 立即可见。
+        self.fields = data.fields.clone();
+        for field in moc_core::config::catalog::fields(&self.effective) {
+            if !self
+                .fields
+                .iter()
+                .any(|existing| existing.path == field.path)
+            {
+                self.fields.push(field);
+            }
+        }
         self.fields.extend(crate::config::fields());
         self.effective["tui"] = self.tui.clone();
         self.rebuild_rows();
@@ -595,6 +623,10 @@ impl SettingsPanel {
     }
     fn matches_tab(&self, field: &ConfigField) -> bool {
         let tab = TABS[self.tab];
+        // 插件字段由插件声明，设置页应始终可见，不能被核心“高级”开关隐藏。
+        if tab == "插件" {
+            return field.tab == tab;
+        }
         if !field.advanced {
             return field.tab == tab;
         }
@@ -704,6 +736,15 @@ impl SettingsPanel {
                     name.clone(),
                     vec!["mcp".into(), "servers".into(), name.clone()],
                     Some(vec!["mcp".into(), "servers".into(), name.clone()]),
+                ));
+            }
+            Some("plugins") if path.len() >= 4 && second.is_some() => {
+                let plugin = path[1].clone();
+                chain.push((
+                    format!("plugins/{plugin}"),
+                    plugin.clone(),
+                    vec!["plugins".into(), plugin.clone()],
+                    None,
                 ));
             }
             _ => {}
@@ -844,7 +885,10 @@ impl SettingsPanel {
         if path.first().is_some_and(|part| part == "tui") {
             set(&mut self.tui, &path[1..], value);
         } else if let Some(data) = &mut self.data {
-            set(&mut data.document, path, value);
+            set(&mut data.document, path, value.clone());
+            // effective 是服务端结果的本地工作副本；仅编辑项在此叠加，
+            // 下一次服务端回执会以新的 effective 重新建立基线。
+            set(&mut data.effective, path, value);
         }
     }
     /// 恢复默认：删掉配置文件里的这一项；界面偏好则写回默认值。
@@ -855,6 +899,12 @@ impl SettingsPanel {
             set(&mut self.tui, &path[1..], value);
         } else if let Some(data) = &mut self.data {
             remove(&mut data.document, path);
+            // 删除显式值后显示服务端提供的继承值/默认值，而不是空值。
+            if let Some(value) = get(&data.inherited, path).cloned() {
+                set(&mut data.effective, path, value);
+            } else {
+                remove(&mut data.effective, path);
+            }
         }
     }
     fn request(
@@ -1818,6 +1868,146 @@ mod tests {
             role_specials("plan"),
             [("inherit", "沿用主模型"), ("none", "沿用当前会话模型")]
         );
+    }
+
+    #[test]
+    fn server_plugin_fields_survive_rebuild_with_defaults() {
+        let path = vec![
+            "plugins".into(),
+            "foo".into(),
+            "config".into(),
+            "api_key".into(),
+        ];
+        let field = ConfigField {
+            path: path.clone(),
+            tab: "插件".into(),
+            label: "服务密钥".into(),
+            description: "插件访问服务所需的密钥".into(),
+            kind: FieldKind::Choice(vec![
+                moc_protocol::ChoiceOption::new("safe", "安全"),
+                moc_protocol::ChoiceOption::new("fast", "快速"),
+            ]),
+            advanced: false,
+        };
+        let mut panel = SettingsPanel {
+            id: 1,
+            cwd: String::new(),
+            scope: ConfigScope::Global,
+            data: Some(SettingsDocument {
+                path: String::new(),
+                revision: String::new(),
+                document: json!({}),
+                effective: json!({
+                    "plugins": {"foo": {"config": {"api_key": "safe"}}}
+                }),
+                inherited: json!({
+                    "plugins": {"foo": {"config": {"api_key": "safe"}}}
+                }),
+                defaults: Value::Null,
+                fields: vec![field.clone()],
+                provider_template: Value::Null,
+                model_template: Value::Null,
+            }),
+            tui: Value::Null,
+            effective: Value::Null,
+            fields: Vec::new(),
+            rows: Vec::new(),
+            collapsed: BTreeSet::new(),
+            expanded: BTreeSet::new(),
+            tab: TABS.iter().position(|tab| *tab == "插件").unwrap(),
+            selected: 0,
+            offset: 0,
+            advanced: false,
+            filter: String::new(),
+            edit: None,
+            error: None,
+            message: None,
+            busy: false,
+            hits: Vec::new(),
+            pending: None,
+            view: View::Fields,
+            history: History::default(),
+            outcome: None,
+            restore: None,
+        };
+        panel.rebuild();
+
+        let actual = panel
+            .fields
+            .iter()
+            .find(|candidate| candidate.path == path)
+            .expect("服务端插件字段保留");
+        assert_eq!(actual.label, "服务密钥");
+        assert_eq!(actual.description, "插件访问服务所需的密钥");
+        assert!(matches!(actual.kind, FieldKind::Choice(_)));
+        assert_eq!(panel.value(&actual.path), Some(&json!("safe")));
+        assert!(panel.rows.iter().any(|row| {
+            matches!(&row.kind, RowKind::Field(index) if panel.fields[*index].path == actual.path)
+        }));
+    }
+
+    #[test]
+    fn rebuilding_does_not_infer_plugin_field_metadata() {
+        let path = vec![
+            "plugins".into(),
+            "foo".into(),
+            "config".into(),
+            "api_key".into(),
+        ];
+        let field = ConfigField {
+            path: path.clone(),
+            tab: "插件".into(),
+            label: "自定义标签".into(),
+            description: "自定义说明".into(),
+            kind: FieldKind::Text,
+            advanced: false,
+        };
+        let mut panel = SettingsPanel {
+            id: 1,
+            cwd: String::new(),
+            scope: ConfigScope::Global,
+            data: Some(SettingsDocument {
+                path: String::new(),
+                revision: String::new(),
+                document: json!({}),
+                effective: json!({"plugins": {"foo": {"config": {"api_key": "x"}}}}),
+                inherited: json!({}),
+                defaults: Value::Null,
+                fields: vec![field],
+                provider_template: Value::Null,
+                model_template: Value::Null,
+            }),
+            tui: Value::Null,
+            effective: Value::Null,
+            fields: Vec::new(),
+            rows: Vec::new(),
+            collapsed: BTreeSet::new(),
+            expanded: BTreeSet::new(),
+            tab: TABS.iter().position(|tab| *tab == "插件").unwrap(),
+            selected: 0,
+            offset: 0,
+            advanced: false,
+            filter: String::new(),
+            edit: None,
+            error: None,
+            message: None,
+            busy: false,
+            hits: Vec::new(),
+            pending: None,
+            view: View::Fields,
+            history: History::default(),
+            outcome: None,
+            restore: None,
+        };
+        panel.rebuild();
+
+        let actual = panel
+            .fields
+            .iter()
+            .find(|candidate| candidate.path == path)
+            .expect("服务端插件字段保留");
+        assert_eq!(actual.label, "自定义标签");
+        assert_eq!(actual.description, "自定义说明");
     }
 
     #[test]

@@ -135,11 +135,7 @@ fn deprecated_retention_keys_load_from_global_cli_and_enabled_project() {
                 boot.overlays.push(overlay);
             }
             "project" => {
-                std::fs::write(
-                    boot.home.join("config.toml"),
-                    "[sources]\nproject_config=true\n",
-                )
-                .unwrap();
+                std::fs::write(boot.home.join("config.toml"), "").unwrap();
                 std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
                 std::fs::write(boot.cwd.join(".moc/config.toml"), legacy).unwrap();
             }
@@ -160,11 +156,7 @@ fn deprecated_retention_keys_are_hidden_and_editor_save_migrates_them() {
         let (root, mut boot) = workspace();
         let legacy = "[session.retention]\narchive_after_days=1\nretain_newest_global=2\n\
                       retain_newest_per_workspace=3\nartifacts_days=7\nlogs_days=9\n";
-        std::fs::write(
-            boot.home.join("config.toml"),
-            format!("[sources]\nproject_config=true\n{legacy}"),
-        )
-        .unwrap();
+        std::fs::write(boot.home.join("config.toml"), legacy).unwrap();
         std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
         std::fs::write(boot.cwd.join(".moc/config.toml"), legacy).unwrap();
         let overlay = root.path().join("cli.toml");
@@ -197,13 +189,10 @@ fn deprecated_retention_keys_are_hidden_and_editor_save_migrates_them() {
                 .iter()
                 .any(|field| field.path == ["session", "retention", "artifacts_days"])
         );
-        let mut document = json!({"session":{"retention":{
+        let document = json!({"session":{"retention":{
             "archive_after_days":1,"retain_newest_global":2,
             "retain_newest_per_workspace":3,"artifacts_days":7,"logs_days":9
         }}});
-        if scope == ConfigScope::Global {
-            document["sources"] = json!({"project_config":true});
-        }
         editor::save(&boot, scope, &boot.cwd, document, &view.revision).unwrap();
         let target = match scope {
             ConfigScope::Global => boot.home.join("config.toml"),
@@ -237,11 +226,7 @@ fn retention_migration_still_rejects_unknown_keys_when_loading_and_saving() {
                 boot.overlays.push(overlay);
             }
             "project" => {
-                std::fs::write(
-                    boot.home.join("config.toml"),
-                    "[sources]\nproject_config=true\n",
-                )
-                .unwrap();
+                std::fs::write(boot.home.join("config.toml"), "").unwrap();
                 std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
                 std::fs::write(boot.cwd.join(".moc/config.toml"), legacy).unwrap();
             }
@@ -284,16 +269,12 @@ fn retention_migration_still_rejects_unknown_keys_when_loading_and_saving() {
 }
 
 #[test]
-fn project_config_sources_stays_opt_in() {
+fn project_config_always_overrides_global() {
     let (_root, boot) = workspace();
     std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
-    let marker = boot.cwd.join("project-command-ran");
     std::fs::write(
         boot.cwd.join(".moc/config.toml"),
-        format!(
-            "[tools.job]\nmax_running=9\n[web_search]\napi_key='!echo project-key; touch {}'\n",
-            marker.display()
-        ),
+        "[tools.job]\nmax_running=9\n",
     )
     .unwrap();
     std::fs::write(
@@ -305,20 +286,47 @@ fn project_config_sources_stays_opt_in() {
         .unwrap()
         .for_project(&boot.cwd)
         .unwrap();
-    assert!(!resolved.sources.project_config, "项目级配置默认关闭");
-    assert_eq!(resolved.tools.job.max_running, 3, "默认不得合并项目配置");
-    assert!(!marker.exists(), "默认不得执行项目配置里的 !命令");
+    assert_eq!(
+        resolved.tools.job.max_running, 9,
+        "项目配置始终覆盖全局配置"
+    );
+}
+
+#[test]
+fn plugin_config_patch_round_trips_and_preserves_orphans() {
+    let (_root, boot) = workspace();
+    let path = boot.home.join("config.toml");
     std::fs::write(
-        boot.home.join("config.toml"),
-        "[sources]\nproject_config=true\n[tools.job]\nmax_running=3\n",
+        &path,
+        "[tools.job]\nmax_running=3\n[plugins.orphan]\nlegacy=42\n",
     )
     .unwrap();
-    let resolved = ResolvedConfig::load(&boot)
-        .unwrap()
-        .for_project(&boot.cwd)
-        .unwrap();
-    assert_eq!(resolved.tools.job.max_running, 9, "显式开启后项目配置生效");
-    assert!(marker.exists(), "显式开启后项目配置里的 !命令才执行");
+    editor::patch_plugin(&boot, &path, "demo", "enabled", Some(json!(true))).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("legacy = 42"));
+    assert!(text.contains("enabled = true"));
+    editor::patch_plugin(&boot, &path, "demo", "enabled", None).unwrap();
+    assert!(
+        !std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("enabled = true")
+    );
+}
+
+#[test]
+fn malformed_plugin_value_does_not_break_core_configuration() {
+    let (_root, boot) = workspace();
+    std::fs::write(
+        boot.home.join("config.toml"),
+        "[tools.job]\nmax_running=3\n[plugins.bad]\nconfig=42\n",
+    )
+    .unwrap();
+    let resolved = ResolvedConfig::load(&boot).unwrap();
+    assert_eq!(resolved.tools.job.max_running, 3);
+    assert_eq!(
+        resolved.plugins.plugin_value("bad").unwrap()["config"].as_integer(),
+        Some(42)
+    );
 }
 
 #[test]
@@ -338,46 +346,6 @@ fn stale_editor_cannot_overwrite_another_writer() {
     assert_eq!(
         std::fs::read_to_string(boot.home.join("config.toml")).unwrap(),
         changed
-    );
-}
-
-#[test]
-fn disabled_project_source_cannot_override_global_settings() {
-    let (_root, boot) = workspace();
-    std::fs::create_dir_all(boot.cwd.join(".moc")).unwrap();
-    std::fs::write(
-        boot.home.join("config.toml"),
-        "[sources]\nproject_config=false\n[tools.job]\nmax_running=3",
-    )
-    .unwrap();
-    std::fs::write(
-        boot.cwd.join(".moc/config.toml"),
-        "[tools.job]\nmax_running=9",
-    )
-    .unwrap();
-    let resolved = ResolvedConfig::load(&boot)
-        .unwrap()
-        .for_project(&boot.cwd)
-        .unwrap();
-    assert_eq!(resolved.tools.job.max_running, 3);
-    let view = editor::inspect(&boot, ConfigScope::Global, &boot.cwd).unwrap();
-    editor::save(
-        &boot,
-        ConfigScope::Global,
-        &boot.cwd,
-        json!({"sources":{"project_config":true},"tools":{"job":{"max_running":3}}}),
-        &view.revision,
-    )
-    .unwrap();
-    assert_eq!(
-        ResolvedConfig::load(&boot)
-            .unwrap()
-            .for_project(&boot.cwd)
-            .unwrap()
-            .tools
-            .job
-            .max_running,
-        9
     );
 }
 

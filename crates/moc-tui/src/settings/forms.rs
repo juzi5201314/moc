@@ -265,7 +265,7 @@ fn fields_key(
         // 改动都是即时保存的，直接返回即可。
         return true;
     }
-    // 数字键 1-9, 0, - 直达 11 个选项卡
+    // 数字键 1-9, 0, - 直达前 11 个选项卡；插件页通过 [] 或 Tab 切换
     let tab_jump = match code {
         KeyCode::Char('1') => Some(0),
         KeyCode::Char('2') => Some(1),

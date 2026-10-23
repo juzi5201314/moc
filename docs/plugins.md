@@ -152,11 +152,11 @@ export default {
 - 返回 `{ deny: "原因" }` → 本次调用被拒绝，模型收到 `E_PLUGIN_DENIED`（含插件名与原因）
 - 返回 `{ arguments: {...} }` → 用新参数替换，**改写发生在沙盒判定、bash 规则与授权之前**
 - 返回 `undefined`/`null` → 不改
-- 抛异常或超时 → fail-open，只记日志，调用继续
+- 抛异常或超时 → fail-open，禁用出错插件并记录原因，宿主工具调用继续
 
 多个插件按加载顺序串联，后一个看到的 `arguments` 是前一个改写后的结果；任一插件拒绝即中止。
 
-`afterToolCall(event, ctx)`：观察型。`event = { name, arguments, content, isError }`，返回值被忽略，失败只记日志。
+`afterToolCall(event, ctx)`：观察型。`event = { name, arguments, content, isError }`，返回值被忽略，失败禁用该插件，不改变已经完成的宿主工具结果。
 
 ### 提示词
 
@@ -172,12 +172,89 @@ export default {
 | `session()` | 当前会话快照 `{ sessionId, cwd, mode, permission, model, isSubagent }`。在 `activate`/`deactivate` 里调用会抛 `E_PLUGIN_STATE`（那时没有会话）。 |
 | `log.debug/info/warn/error(...)` | 写 moc 日志，`RUST_LOG=moc_plugin=debug` 可见。 |
 | `tools.call(name, args)` | 调用宿主工具，返回 `{ content, structuredContent, isError }`。 |
+| `config.register/get/set` | 注册配置声明、读取有效值、按安装来源写回本插件配置。 |
+| `session.state` / `session().state` / `ctx.state` | 会话内按插件隔离的同步持久化 KV。 |
 
 `tools.call` 的边界：
 
 - 只在工具的 `run` 里可用；命令、钩子、`prompt`、`activate` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`
 - 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_search`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`run_code`、MCP 工具与插件工具一律拒绝
 - 不能调自身或其它插件工具，也不能从 `run_code` 里调用插件工具（`E_PLUGIN_RECURSION`）
+
+## 插件持久化配置
+
+配置字段在模块顶层注册，模块求值结束后冻结。`activate` 可以读取、写入已注册配置，但不能再注册字段：
+
+```js
+import { config, session } from "moc";
+
+config.register("prefix", {
+  type: "text",
+  label: "计数前缀",
+  description: "显示在计数结果前面的文本。",
+  default: "count",
+});
+config.register("style", {
+  type: "choice",
+  choices: ["short", "full"],
+  default: "short",
+});
+
+export default {
+  commands: {
+    count: {
+      description: "显示会话计数",
+      run() {
+        session.state.count = (session.state.count ?? 0) + 1;
+        return `${config.get("prefix")}: ${session.state.count}`;
+      },
+    },
+  },
+};
+```
+
+对应配置只保存在本插件的命名空间，不会与 moc 核心字段混在一起：
+
+```toml
+[plugins."my-plugin".config]
+prefix = "次数"
+style = "full"
+```
+
+### 注册与读写
+
+- `config.register(key, definition)`：键为 1–128 UTF-8 字节且不能包含控制字符，不能重复注册。声明接受 `type`、`label`、`description`、`default`、`choices`，未知字段报错。
+- `type` 可为 `bool`、`integer`、`number`、`text`、`secret`、`multiline`、`strings`、`object`、`choice`。`choices` 仅用于 `choice`，必须为非空、不重复的字符串数组。默认值必须满足字段类型且能无损表示为 TOML；不支持 `null` 或超出有符号 64 位范围的整数。
+- `config.get(key)`：返回合并后的有效值，其次为声明默认值；两者都没有则返回 `undefined`。未注册键报错。默认值仅参与读取与 UI 展示，不会自动写入配置文件。
+- `config.set(key, value)`：同步写入安装来源所属文件，只能写本插件、已注册的键。`config.set(key, null)` 删除该层显式值，重新使用高优先级覆盖、继承值或默认值；不是把 `null` 写进 TOML。
+- 项目 `.moc/plugins` 中的插件写回**安装所在项目**的 `.moc/config.toml`；祖先项目发现的插件写回那个祖先项目，而非当前子目录。用户插件和 `[plugins] dirs` 中的插件写回 `$MOC_HOME/config.toml`。符号链接不改变发现来源的归属。
+- 读取遵循全局 → 安装来源项目（如果不同）→ 当前项目 → CLI 覆盖的顺序，因此 `set` 写入来源层后，`get` 仍可能返回更高优先级覆盖的值。配置字符串不额外执行 `env:` 或 `!命令`。
+- TUI `/config` 自动显示“插件”分组及声明的标题、说明、默认值和枚举。`secret` 只在界面遮罩，磁盘仍为明文。
+
+启动以及每次调用前都会校验整个插件配置，包括未知键。类型错误、未知键、无效默认值或写盘失败只禁用该插件，核心配置与其它插件继续工作。配置出错时仍保留已取得的字段声明，便于在设置页修复；插件移除后保留其配置，不要求插件在场才能加载 moc。
+
+## 会话持久化 state
+
+`session.state`、`session().state` 与回调参数 `ctx.state` 是同一能力的三种入口，数据按 **session ID + 插件名** 隔离：
+
+```js
+const state = session().state;
+state.count = (state.count ?? 0) + 1;
+state.preferences = { colors: ["blue"], enabled: true };
+const value = state.preferences;        // 深冻结的读取快照
+state.preferences = { ...value, enabled: false }; // 修改后整值赋回
+Object.keys(state);                    // 枚举已保存的键
+"count" in state;                      // 是否存在（null 与缺失不同）
+delete state.count;
+```
+
+- 赋值同步持久化，成功返回后才更新本次回调的读取缓存；写入失败不覆盖旧文件。读取不存在的键返回 `undefined`，赋 `null` 则保存 JSON null。`delete` 删除键。
+- 键为 1–128 UTF-8 字节，支持包括 `__proto__` 在内的普通字符串；state 代理使用空原型，不支持修改原型、`defineProperty` 或冻结代理本身。
+- 值仅接受无损 JSON：拒绝 `undefined`、函数、Symbol、BigInt、NaN/Infinity、稀疏数组、访问器、循环引用以及 Date 等自定义原型对象，不能靠 `JSON.stringify` 静默省略或转换。即使插件捕获非法写入异常，调用结束时仍会禁用该插件。
+- 每个回调首次读取时加载一次命名空间快照，点查与枚举共用本次快照；下次回调重新读取。返回的对象与数组深冻结，深层修改不会自动保存，必须整值赋回。
+- `activate`/`deactivate` 没有会话，不能访问 state。缓存的旧 state/ctx 句柄只允许在所属 session 的回调中使用，跨 session 使用会报 `E_PLUGIN_STATE`，不会偷偷改写另一个会话。
+- state 独立于聊天历史：同一 session 的清空、压缩、恢复不会清除；删除 session 才随 sidecar 删除。回退会创建新 session ID，新会话、分叉及子代理默认没有原会话的插件 state。
+- 各插件的数据分文件隔离；单个 state 文件损坏不会使聊天 transcript 无法加载，也不会影响其它插件。卸载插件保留数据，重新安装同名插件可继续使用。
 
 ## 执行模型与边界
 
@@ -222,6 +299,8 @@ max_prompt_chars = 4000
 | `E_PLUGIN_LOAD` | 读不到入口文件 |
 | `E_PLUGIN_IMPORT` | 非法的模块说明符或逃出插件目录 |
 | `E_PLUGIN_DESCRIPTOR` | `export default` 形状不对（未知字段、缺 `run`、名字非法等） |
+| `E_PLUGIN_CONFIG` | 配置声明、未知键、类型、默认值或写入失败 |
+| `E_PLUGIN_VALUE` | 持久化值不能无损序列化为 JSON |
 | `E_PLUGIN_THREAD` / `E_PLUGIN_RUNTIME` | 线程或 Runtime 起不来 |
 | `E_PLUGIN_MEMORY` | 超过 `memory_limit_bytes` |
 | `E_PLUGIN_TIMEOUT` / `E_PLUGIN_INTERRUPTED` | 超时或被打断 |

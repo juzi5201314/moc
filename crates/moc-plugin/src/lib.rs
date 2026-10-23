@@ -13,11 +13,13 @@ pub mod manifest;
 pub mod runtime;
 pub mod schema;
 
-pub use descriptor::{CommandDecl, Descriptor, HookKind, ModeMask, ToolDecl};
+pub use descriptor::{
+    CommandDecl, ConfigDecl, ConfigKind, Descriptor, HookKind, ModeMask, ToolDecl,
+};
 pub use error::{PluginError, Result};
 pub use host::{
-    BeforeToolCall, CallContext, HostBridge, PluginHost, PluginInfo, Settings, ToolResult,
-    fingerprint,
+    BeforeToolCall, CallContext, HostBridge, PersistenceBridge, PersistenceOp, PluginHost,
+    PluginInfo, Settings, ToolResult, fingerprint,
 };
 pub use manifest::Manifest;
 pub use runtime::API_VERSION;

@@ -14,10 +14,6 @@ plan = "inherit"
 # 可用片段名：intro、tool policy、ptc runtime、mcp servers、repo rules、skills、
 # subagent、environment、append。
 
-[sources]
-# 项目级 .moc/config.toml 能改写全局设置并触发其中的 !命令，默认关闭。
-project_config = false
-
 [sandbox]
 # 新会话默认模式：full（不隔离）、workspace（工作区可写、外部只读）、workspace_only（外部不可读写）
 default_mode = "full"

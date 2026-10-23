@@ -100,6 +100,19 @@ pub fn valid_name(name: &str) -> bool {
         && name.chars().all(|character| {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
         })
+        && !matches!(
+            name,
+            "enabled"
+                | "user"
+                | "project"
+                | "dirs"
+                | "disable"
+                | "max_plugins"
+                | "memory_limit_bytes"
+                | "load_timeout_ms"
+                | "call_timeout_ms"
+                | "max_prompt_chars"
+        )
 }
 
 /// 工具名：`[A-Za-z0-9_-]{1,64}`；`mcp__` 前缀保留给 MCP 桥接工具。

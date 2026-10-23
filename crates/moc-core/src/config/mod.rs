@@ -25,10 +25,10 @@ mod schema;
 pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
-    EditConfig, FindConfig, GrepConfig, JobConfig, JobOverflow, LimitsConfig, OnDenied,
-    OutputConfig, PluginsConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig, ShakeConfig,
-    SkillsConfig, SoftMethod, SourcesConfig, SystemPromptConfig, TodoConfig, ToolsConfig,
-    WebFetchConfig, WebSearchConfig, WorkspaceConfig, WriteConfig,
+    EditConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow, LimitsConfig,
+    OnDenied, OutputConfig, PluginsConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig,
+    ShakeConfig, SkillsConfig, SoftMethod, SystemPromptConfig, TodoConfig, ToolsConfig,
+    WebFetchConfig, WebSearchConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。
@@ -91,7 +91,6 @@ pub struct ResolvedConfig {
     pub home: PathBuf,
     pub cwd: PathBuf,
     pub roles: ModelRoles,
-    pub sources: SourcesConfig,
     pub tools: ToolsConfig,
     pub sandbox: ResolvedSandboxConfig,
     pub compaction: CompactionConfig,
@@ -111,7 +110,7 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedConfig {
-    /// 读取内置默认、全局配置与命令行覆盖层，不加载项目配置。
+    /// 读取内置默认、全局配置与命令行覆盖层。
     pub fn load(config: &CoreConfig) -> Result<Self, CoreError> {
         let home = expand_home_path(&config.home);
         let mut base_raw: Value = toml::from_str(include_str!("defaults.toml"))
@@ -132,14 +131,12 @@ impl ResolvedConfig {
 
     /// 以项目配置覆盖全局配置，再按原顺序合并 CLI 覆盖层。
     ///
-    /// 项目级 `.moc/config.toml` 只在 `[sources] project_config = true` 时合并：
-    /// 它会改写全局设置并触发其中的 `!命令`，默认按不可信仓库处理。
+    /// 项目级 `.moc/config.toml` 始终参与合并；项目配置中的 `!命令` 仍按统一配置
+    /// 解析规则执行，使用项目配置前应确认仓库可信。
     pub fn for_project(&self, cwd: impl AsRef<Path>) -> Result<Self, CoreError> {
         let cwd = expand_home_path(cwd.as_ref());
         let mut raw = self.base_raw.clone();
-        if self.sources.project_config {
-            merge_optional_file(&mut raw, &cwd.join(".moc").join("config.toml"))?;
-        }
+        merge_optional_file(&mut raw, &cwd.join(".moc").join("config.toml"))?;
         for overlay in &self.overlays {
             merge_required_file(&mut raw, overlay)?;
         }
@@ -238,7 +235,6 @@ impl ResolvedConfig {
             home,
             cwd,
             roles: document.models.roles,
-            sources: document.sources,
             tools: document.tools,
             sandbox,
             compaction: document.compaction,
@@ -492,21 +488,20 @@ fn merge_value(target: &mut Value, overlay: Value) {
     }
 }
 
-/// 旧会话归档与数量保留策略已移除；只迁移这三个键，其余未知字段仍由 schema 拒绝。
+/// 清理已移除的配置键；其余未知字段仍由 schema 拒绝。
 fn remove_deprecated_retention_keys(raw: &mut Value) {
-    let Some(retention) = raw
+    if let Some(retention) = raw
         .get_mut("session")
         .and_then(|session| session.get_mut("retention"))
         .and_then(Value::as_table_mut)
-    else {
-        return;
-    };
-    for key in [
-        "archive_after_days",
-        "retain_newest_global",
-        "retain_newest_per_workspace",
-    ] {
-        retention.remove(key);
+    {
+        for key in [
+            "archive_after_days",
+            "retain_newest_global",
+            "retain_newest_per_workspace",
+        ] {
+            retention.remove(key);
+        }
     }
 }
 
@@ -718,7 +713,7 @@ mod tests {
         fs::write(
             home.join("config.toml"),
             format!(
-                "{}\n[sources]\nproject_config=true\n[sandbox]\nnetwork=false\non_denied=\"deny\"\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n",
+                "{}\n[sandbox]\nnetwork=false\non_denied=\"deny\"\n[tools.read]\ndefault_limit=400\nmax_bytes=40000\n",
                 provider_config("literal")
             ),
         )

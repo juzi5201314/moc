@@ -57,6 +57,69 @@ impl ModeMask {
     }
 }
 
+/// 插件配置字段的基础类型；与设置 UI 的字段类型一一对应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigKind {
+    Bool,
+    Integer,
+    Number,
+    Text,
+    Secret,
+    Multiline,
+    Strings,
+    Object,
+    Choice,
+}
+
+/// 一个插件配置字段的静态声明。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigDecl {
+    pub key: String,
+    pub kind: ConfigKind,
+    pub label: String,
+    pub description: String,
+    pub default: Option<Value>,
+    pub choices: Vec<String>,
+}
+
+impl ConfigDecl {
+    pub fn validate(&self, value: &Value) -> Result<(), String> {
+        let valid = match self.kind {
+            ConfigKind::Bool => value.is_boolean(),
+            ConfigKind::Integer => value.as_i64().is_some() || value.as_u64().is_some(),
+            ConfigKind::Number => value.is_number(),
+            ConfigKind::Text | ConfigKind::Secret | ConfigKind::Multiline => value.is_string(),
+            ConfigKind::Strings => value
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string)),
+            ConfigKind::Object => value.is_object(),
+            ConfigKind::Choice => value
+                .as_str()
+                .is_some_and(|value| self.choices.iter().any(|choice| choice == value)),
+        };
+        fn toml_value(value: &Value) -> bool {
+            match value {
+                Value::Null => false,
+                Value::Number(number) => {
+                    number.as_i64().is_some()
+                        || (!number.is_u64() && number.as_f64().is_some_and(f64::is_finite))
+                }
+                Value::Array(items) => items.iter().all(toml_value),
+                Value::Object(object) => object.values().all(toml_value),
+                _ => true,
+            }
+        }
+        if valid && toml_value(value) {
+            Ok(())
+        } else {
+            Err(format!(
+                "配置 `{}` 的值类型、取值或 TOML 表示无效",
+                self.key
+            ))
+        }
+    }
+}
+
 /// 一个插件工具的静态声明。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolDecl {
@@ -105,6 +168,7 @@ pub struct Descriptor {
     pub tools: Vec<ToolDecl>,
     pub commands: Vec<CommandDecl>,
     pub hooks: Vec<HookKind>,
+    pub configs: Vec<ConfigDecl>,
     /// 是否导出 `prompt`；没有就不占提示词预算。
     pub has_prompt: bool,
 }

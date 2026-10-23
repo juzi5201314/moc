@@ -20,8 +20,11 @@ use rquickjs::{
 };
 use serde_json::Value;
 
-use crate::descriptor::{CommandDecl, Descriptor, HookKind, ModeMask, ToolDecl};
+use crate::descriptor::{
+    CommandDecl, ConfigDecl, ConfigKind, Descriptor, HookKind, ModeMask, ToolDecl,
+};
 use crate::error::{PluginError, Result};
+use crate::host::PersistenceOp;
 use crate::loader::{PluginLoader, PluginResolver};
 use crate::manifest::{valid_command_name, valid_tool_name};
 
@@ -62,11 +65,15 @@ pub(crate) enum CallOp {
     Prompt,
 }
 
-/// JS 在 `moc.tools.call()` 里发起的一次宿主调用。
+/// JS 发起的一次宿主调用；持久化不经过工具白名单。
 pub(crate) struct HostRequest {
-    pub name: String,
-    pub args: Value,
+    pub operation: HostOperation,
     pub reply: std::sync::mpsc::Sender<Result<Value>>,
+}
+
+pub(crate) enum HostOperation {
+    Tool { name: String, args: Value },
+    Persistence(PersistenceOp),
 }
 
 enum Command {
@@ -102,12 +109,32 @@ impl Drop for Worker {
     }
 }
 
-/// 启动插件线程并等待模块求值完成；返回值里带解析好的描述符。
+/// 单测兼容入口：模块求值后直接激活。
+#[cfg(test)]
 pub(crate) fn spawn(
     name: String,
     dir: PathBuf,
     entry: PathBuf,
     limits: Limits,
+) -> (Worker, tokio::sync::oneshot::Receiver<Result<Descriptor>>) {
+    spawn_mode(name, dir, entry, limits, true)
+}
+
+pub(crate) fn spawn_unactivated(
+    name: String,
+    dir: PathBuf,
+    entry: PathBuf,
+    limits: Limits,
+) -> (Worker, tokio::sync::oneshot::Receiver<Result<Descriptor>>) {
+    spawn_mode(name, dir, entry, limits, false)
+}
+
+fn spawn_mode(
+    name: String,
+    dir: PathBuf,
+    entry: PathBuf,
+    limits: Limits,
+    activate_on_load: bool,
 ) -> (Worker, tokio::sync::oneshot::Receiver<Result<Descriptor>>) {
     let (command_tx, command_rx) = std::sync::mpsc::channel();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -120,7 +147,17 @@ pub(crate) fn spawn(
     let thread_name = format!("moc-plugin-{name}");
     let spawned = std::thread::Builder::new()
         .name(thread_name)
-        .spawn(move || run_thread(dir, entry, limits, interrupt, command_rx, ready_tx));
+        .spawn(move || {
+            run_thread(
+                dir,
+                entry,
+                limits,
+                interrupt,
+                command_rx,
+                ready_tx,
+                activate_on_load,
+            )
+        });
     if let Err(error) = spawned {
         // 线程都起不来时把错误通过同一个通道交回调用方。
         let worker = Worker {
@@ -143,10 +180,19 @@ struct CallHost {
     session: String,
     tools_allowed: bool,
     deadline: Instant,
+    fault: Option<PluginError>,
+    /// 仅活跃回调内缓存；首次 state 读取后点查和枚举不重复访问磁盘。
+    state: Option<serde_json::Map<String, Value>>,
+}
+
+struct Registrations {
+    fields: Option<Vec<ConfigDecl>>,
+    error: Option<PluginError>,
 }
 
 struct Functions {
     export: Persistent<Object<'static>>,
+    context: Persistent<Function<'static>>,
     tools: BTreeMap<String, Persistent<Function<'static>>>,
     commands: BTreeMap<String, Persistent<Function<'static>>>,
 }
@@ -207,6 +253,7 @@ fn run_thread(
     interrupt: Arc<AtomicBool>,
     commands: std::sync::mpsc::Receiver<Command>,
     ready: tokio::sync::oneshot::Sender<Result<Descriptor>>,
+    activate_on_load: bool,
 ) {
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
@@ -247,21 +294,23 @@ fn run_thread(
         context
             .with(|ctx| init(&ctx, &entry, &host))
             .and_then(|(descriptor, functions)| {
-                context.with(|ctx| {
-                    invoke(
-                        &ctx,
-                        &functions,
-                        &host,
-                        Invocation {
-                            op: CallOp::Activate,
-                            payload: Value::Null,
-                            session: "null".into(),
-                            tools_allowed: false,
-                            deadline,
-                            host_tx: None,
-                        },
-                    )
-                })?;
+                if activate_on_load {
+                    context.with(|ctx| {
+                        invoke(
+                            &ctx,
+                            &functions,
+                            &host,
+                            Invocation {
+                                op: CallOp::Activate,
+                                payload: Value::Null,
+                                session: "null".into(),
+                                tools_allowed: false,
+                                deadline,
+                                host_tx: None,
+                            },
+                        )
+                    })?;
+                }
                 Ok((descriptor, functions))
             });
     // 无论成功与否都要停掉看门狗并复位中断标志，否则后续调用会被立刻打断。
@@ -344,7 +393,17 @@ fn init<'js>(
     entry: &Path,
     host: &Rc<RefCell<Option<CallHost>>>,
 ) -> Result<(Descriptor, Functions)> {
-    install_globals(ctx, host)?;
+    let registrations = Rc::new(RefCell::new(Registrations {
+        fields: Some(Vec::new()),
+        error: None,
+    }));
+    install_globals(ctx, host, &registrations)?;
+    let (_, prelude) = Module::declare(ctx.clone(), "moc", crate::loader::PRELUDE)
+        .and_then(Module::eval)
+        .map_err(|error| js_error(ctx, error))?;
+    prelude
+        .finish::<()>()
+        .map_err(|error| js_error(ctx, error))?;
     let name = entry.to_string_lossy().into_owned();
     let source = std::fs::read(entry).map_err(|error| {
         PluginError::new(
@@ -363,8 +422,6 @@ fn init<'js>(
         ),
         error => js_error(ctx, error),
     })?;
-    // `moc` 模块已经把宿主对象捕获进闭包，全局桥不必再暴露给插件代码。
-    let _ = ctx.eval::<(), _>("delete globalThis.__moc");
     let namespace = module.namespace().map_err(|error| js_error(ctx, error))?;
     let default: JsValue = namespace
         .get("default")
@@ -375,7 +432,17 @@ fn init<'js>(
             "`export default` 必须是对象；导出形状见 docs/plugins.md",
         )
     })?;
-    let (descriptor, functions) = parse_descriptor(ctx, &object)?;
+    if let Some(error) = registrations.borrow_mut().error.take() {
+        return Err(error);
+    }
+    let configs = registrations
+        .borrow_mut()
+        .fields
+        .take()
+        .expect("注册表只冻结一次");
+    let (mut descriptor, functions) = parse_descriptor(ctx, &object)?;
+    descriptor.configs = configs;
+    let _ = ctx.eval::<(), _>("delete globalThis.__moc");
     Ok((descriptor, functions))
 }
 
@@ -557,6 +624,13 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
         descriptor,
         Functions {
             export: Persistent::save(ctx, object.clone()),
+            context: Persistent::save(
+                ctx,
+                ctx.globals()
+                    .get::<_, Object>("__moc")
+                    .and_then(|host| host.get::<_, Function>("context"))
+                    .map_err(|error| js_error(ctx, error))?,
+            ),
             tools: tool_functions,
             commands: command_functions,
         },
@@ -666,7 +740,11 @@ fn optional_modes<'js>(ctx: &Ctx<'js>, object: &Object<'js>, owner: &str) -> Res
 }
 
 /// 建宿主桥：`log`、`session`、`tools.call`。
-fn install_globals<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Option<CallHost>>>) -> Result<()> {
+fn install_globals<'js>(
+    ctx: &Ctx<'js>,
+    host: &Rc<RefCell<Option<CallHost>>>,
+    registrations: &Rc<RefCell<Registrations>>,
+) -> Result<()> {
     let bridge = Object::new(ctx.clone()).map_err(|error| js_error(ctx, error))?;
     bridge
         .set("version", API_VERSION)
@@ -692,8 +770,8 @@ fn install_globals<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Option<CallHost>>>) ->
         move |ctx: Ctx<'js>| -> rquickjs::Result<String> {
             let borrowed = current.borrow();
             match borrowed.as_ref() {
-                Some(call) => Ok(call.session.clone()),
-                None => Err(throw(
+                Some(call) if call.session != "null" => Ok(call.session.clone()),
+                _ => Err(throw(
                     &ctx,
                     &PluginError::new("E_PLUGIN_STATE", "没有正在进行的插件调用"),
                 )),
@@ -745,8 +823,7 @@ fn install_globals<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Option<CallHost>>>) ->
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             if tx
                 .send(HostRequest {
-                    name,
-                    args,
+                    operation: HostOperation::Tool { name, args },
                     reply: reply_tx,
                 })
                 .is_err()
@@ -772,9 +849,262 @@ fn install_globals<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Option<CallHost>>>) ->
         .set("toolCall", call_tool)
         .map_err(|error| js_error(ctx, error))?;
 
+    let registry = Rc::clone(registrations);
+    let current = Rc::clone(host);
+    let register = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, key: String, definition: String| -> rquickjs::Result<()> {
+            let result = (|| -> Result<()> {
+                let mut registry = registry.borrow_mut();
+                let fields = registry
+                    .fields
+                    .as_mut()
+                    .ok_or_else(|| PluginError::new("E_PLUGIN_CONFIG", "配置只能在模块顶层注册"))?;
+                let declaration = config_declaration(key, &definition)?;
+                if fields.iter().any(|field| field.key == declaration.key) {
+                    return Err(PluginError::new("E_PLUGIN_CONFIG", "配置键不能重复注册"));
+                }
+                fields.push(declaration);
+                Ok(())
+            })();
+            result.map_err(|error| {
+                registry.borrow_mut().error.get_or_insert(error.clone());
+                if let Some(call) = current.borrow_mut().as_mut() {
+                    call.fault = Some(error.clone());
+                }
+                throw(&ctx, &error)
+            })
+        },
+    )
+    .map_err(|error| js_error(ctx, error))?;
+    bridge
+        .set("configRegister", register)
+        .map_err(|error| js_error(ctx, error))?;
+
+    let current = Rc::clone(host);
+    let registry = Rc::clone(registrations);
+    let invalid = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, message: String| -> rquickjs::Result<()> {
+            let error = PluginError::new("E_PLUGIN_VALUE", message);
+            registry.borrow_mut().error.get_or_insert(error.clone());
+            if let Some(call) = current.borrow_mut().as_mut() {
+                call.fault = Some(error.clone());
+            }
+            Err(throw(&ctx, &error))
+        },
+    )
+    .map_err(|error| js_error(ctx, error))?;
+    bridge
+        .set("invalidValue", invalid)
+        .map_err(|error| js_error(ctx, error))?;
+
+    let current = Rc::clone(host);
+    let persistence = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>,
+              operation: String,
+              key: String,
+              value: String|
+              -> rquickjs::Result<String> {
+            let result = (|| -> Result<Value> {
+                let (tx, deadline) = {
+                    let borrowed = current.borrow();
+                    let call = borrowed.as_ref().ok_or_else(|| {
+                        PluginError::new("E_PLUGIN_STATE", "没有正在进行的插件调用")
+                    })?;
+                    (
+                        call.tx
+                            .clone()
+                            .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "持久化桥不可用"))?,
+                        call.deadline,
+                    )
+                };
+                let op = match operation.as_str() {
+                    "configGet" => PersistenceOp::ConfigGet { key },
+                    "configSet" => PersistenceOp::ConfigSet {
+                        key,
+                        value: serde_json::from_str(&value).map_err(|error| {
+                            PluginError::new("E_PLUGIN_VALUE", error.to_string())
+                        })?,
+                    },
+                    "stateGet" => PersistenceOp::StateGet { key },
+                    "stateSet" => PersistenceOp::StateSet {
+                        key,
+                        value: serde_json::from_str(&value).map_err(|error| {
+                            PluginError::new("E_PLUGIN_VALUE", error.to_string())
+                        })?,
+                    },
+                    "stateDelete" => PersistenceOp::StateDelete { key },
+                    "stateKeys" => PersistenceOp::StateKeys,
+                    _ => return Err(PluginError::new("E_PLUGIN_STATE", "未知持久化操作")),
+                };
+                let request = |op| -> Result<Value> {
+                    let (reply, receiver) = std::sync::mpsc::channel();
+                    tx.send(HostRequest {
+                        operation: HostOperation::Persistence(op),
+                        reply,
+                    })
+                    .map_err(|_| PluginError::new("E_PLUGIN_STATE", "持久化桥已关闭"))?;
+                    receiver
+                        .recv_timeout(
+                            deadline
+                                .saturating_duration_since(Instant::now())
+                                .max(Duration::from_millis(1)),
+                        )
+                        .map_err(|_| PluginError::new("E_PLUGIN_TIMEOUT", "持久化请求超时"))?
+                };
+                if let PersistenceOp::StateGet { key }
+                | PersistenceOp::StateSet { key, .. }
+                | PersistenceOp::StateDelete { key } = &op
+                {
+                    if key.is_empty() || key.len() > 128 {
+                        return Err(PluginError::new(
+                            "E_PLUGIN_STATE",
+                            "state 键必须是 1..128 UTF-8 字节",
+                        ));
+                    }
+                }
+                if matches!(
+                    &op,
+                    PersistenceOp::StateGet { .. } | PersistenceOp::StateKeys
+                ) {
+                    let needs_snapshot = current
+                        .borrow()
+                        .as_ref()
+                        .expect("当前调用存在")
+                        .state
+                        .is_none();
+                    if needs_snapshot {
+                        let snapshot = request(PersistenceOp::StateSnapshot)?;
+                        let object = snapshot
+                            .as_object()
+                            .ok_or_else(|| {
+                                PluginError::new("E_PLUGIN_STATE", "state 快照必须是对象")
+                            })?
+                            .clone();
+                        current.borrow_mut().as_mut().expect("当前调用存在").state = Some(object);
+                    }
+                    let borrowed = current.borrow();
+                    let state = borrowed
+                        .as_ref()
+                        .and_then(|call| call.state.as_ref())
+                        .expect("快照已加载");
+                    return Ok(match &op {
+                        PersistenceOp::StateGet { key } => match state.get(key) {
+                            Some(value) => serde_json::json!({"found":true,"value":value}),
+                            None => serde_json::json!({"found":false}),
+                        },
+                        _ => serde_json::json!(state.keys().collect::<Vec<_>>()),
+                    });
+                }
+                let result = request(op.clone())?;
+                if let Some(state) = current
+                    .borrow_mut()
+                    .as_mut()
+                    .and_then(|call| call.state.as_mut())
+                {
+                    match op {
+                        PersistenceOp::StateSet { key, value } => {
+                            state.insert(key, value);
+                        }
+                        PersistenceOp::StateDelete { key } => {
+                            state.remove(&key);
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(result)
+            })();
+            match result {
+                Ok(value) => Ok(value.to_string()),
+                Err(error) => {
+                    if let Some(call) = current.borrow_mut().as_mut() {
+                        call.fault = Some(error.clone());
+                    }
+                    Err(throw(&ctx, &error))
+                }
+            }
+        },
+    )
+    .map_err(|error| js_error(ctx, error))?;
+    bridge
+        .set("persistence", persistence)
+        .map_err(|error| js_error(ctx, error))?;
+
     ctx.globals()
         .set("__moc", bridge)
         .map_err(|error| js_error(ctx, error))
+}
+
+fn config_declaration(key: String, definition: &str) -> Result<ConfigDecl> {
+    let invalid = |message: &str| PluginError::new("E_PLUGIN_CONFIG", message);
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        return Err(invalid("配置键必须是 1–128 字节且不含控制字符"));
+    }
+    let value: Value =
+        serde_json::from_str(definition).map_err(|error| invalid(&error.to_string()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("配置声明必须是对象"))?;
+    if object
+        .keys()
+        .any(|key| !["type", "default", "label", "description", "choices"].contains(&key.as_str()))
+    {
+        return Err(invalid("配置声明包含未知字段"));
+    }
+    let kind = match object.get("type").and_then(Value::as_str) {
+        Some("bool") => ConfigKind::Bool,
+        Some("integer") => ConfigKind::Integer,
+        Some("number") => ConfigKind::Number,
+        Some("text") => ConfigKind::Text,
+        Some("secret") => ConfigKind::Secret,
+        Some("multiline") => ConfigKind::Multiline,
+        Some("strings") => ConfigKind::Strings,
+        Some("object") => ConfigKind::Object,
+        Some("choice") => ConfigKind::Choice,
+        _ => return Err(invalid("未知配置字段类型")),
+    };
+    let mut choices = Vec::new();
+    if let Some(value) = object.get("choices") {
+        let values = value
+            .as_array()
+            .ok_or_else(|| invalid("choices 必须是字符串数组"))?;
+        for item in values {
+            let choice = item
+                .as_str()
+                .ok_or_else(|| invalid("choices 必须是字符串数组"))?
+                .to_owned();
+            if choices.contains(&choice) {
+                return Err(invalid("choices 不能有重复值"));
+            }
+            choices.push(choice);
+        }
+    }
+    if (kind == ConfigKind::Choice) != !choices.is_empty() {
+        return Err(invalid("只有 choice 类型必须提供非空 choices"));
+    }
+    let text = |name: &str, fallback: &str| -> Result<String> {
+        match object.get(name) {
+            None => Ok(fallback.to_owned()),
+            Some(Value::String(value)) => Ok(value.clone()),
+            _ => Err(invalid("label 与 description 必须是字符串")),
+        }
+    };
+    let declaration = ConfigDecl {
+        label: text("label", &key)?,
+        description: text("description", "")?,
+        key,
+        kind,
+        default: object.get("default").cloned(),
+        choices,
+    };
+    if let Some(value) = &declaration.default {
+        declaration
+            .validate(value)
+            .map_err(|error| invalid(&error))?;
+    }
+    Ok(declaration)
 }
 
 /// 一次待执行的插件调用：宿主在调用期间登记它与会话的关联。
@@ -806,10 +1136,15 @@ fn invoke<'js>(
         session: session.clone(),
         tools_allowed,
         deadline,
+        fault: None,
+        state: None,
     });
     let result = dispatch(ctx, functions, op, &payload, &session);
-    *host.borrow_mut() = None;
-    result
+    let call = host.borrow_mut().take().expect("调用上下文已登记");
+    match call.fault {
+        Some(error) => Err(error),
+        None => result,
+    }
 }
 
 fn dispatch<'js>(
@@ -817,10 +1152,14 @@ fn dispatch<'js>(
     functions: &Functions,
     op: CallOp,
     payload: &Value,
-    session: &str,
+    _session: &str,
 ) -> Result<Value> {
     let context_value = || -> Result<JsValue<'js>> {
-        ctx.json_parse(session)
+        functions
+            .context
+            .clone()
+            .restore(ctx)
+            .and_then(|factory| factory.call(()))
             .map_err(|error| js_error(ctx, error))
     };
     match op {

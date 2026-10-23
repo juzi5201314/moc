@@ -1,5 +1,7 @@
 //! core 的公开入口、生命周期管理和 JSON-RPC 服务实现。
 
+mod plugin_persistence;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,6 +125,7 @@ pub(crate) fn plugin_context(
         permission: state.permission.as_str().to_owned(),
         model: model.to_owned(),
         is_subagent: state.session.is_subagent(),
+        writable: true,
     }
 }
 
@@ -293,7 +296,21 @@ impl CoreInner {
         }
         // 加载期间不持锁：模块求值可能耗到 load_timeout，不能挡住其它会话。
         let reserved: Vec<&str> = self.tools.all().iter().map(|tool| tool.name()).collect();
-        let host = moc_plugin::PluginHost::start(&key, &config.home, &settings, &reserved).await;
+        let mut boot = self.boot.clone();
+        boot.home = config.home.clone();
+        let bridge = Arc::new(plugin_persistence::Bridge {
+            boot,
+            sessions: Arc::clone(&self.sessions),
+            cwd: key.clone(),
+        });
+        let host = moc_plugin::PluginHost::start_with_persistence(
+            &key,
+            &config.home,
+            &settings,
+            &reserved,
+            bridge,
+        )
+        .await;
         // 必须覆盖：命中的旧宿主指纹过期了，`or_insert` 会把它留下、丢掉刚加载的这份。
         self.plugin_hosts
             .lock()
@@ -782,9 +799,21 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let state = record.state.lock().await;
-        let cwd = PathBuf::from(&state.session.cwd);
-        let context = plugin_context(&state, &state.model);
+        let _epoch = self.inner.config_epoch.read().await;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, "moc-plugin")
+            .await
+            .map_err(to_rpc)?;
+        let (cwd, context) = {
+            let state = record.state.lock().await;
+            (
+                PathBuf::from(&state.session.cwd),
+                plugin_context(&state, &state.model),
+            )
+        };
+        // JS 可同步访问持久化 state；等待插件返回时不能占用会话状态锁。
         let host = self.inner.project_plugins(&cwd).await.map_err(to_rpc)?;
         let text = host
             .run_command(&params.name, &params.args, &context)
@@ -1491,7 +1520,7 @@ mod compression_tests {
                 .unwrap();
             }
             std::fs::write(home.join("config.toml"), format!(
-                "[models.roles]\ndefault='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[sources]\nproject_config=true\n[session]\ncompress={global}\n"
+                "[models.roles]\ndefault='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='http://127.0.0.1:1'\n[providers.p.models.m]\n[session]\ncompress={global}\n"
             )).unwrap();
             let core = Core::new_with_sandbox_support(
                 CoreConfig {

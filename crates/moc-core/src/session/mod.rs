@@ -7,7 +7,7 @@ pub mod maintenance;
 pub mod state;
 pub mod store;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -197,10 +197,129 @@ impl SessionTable {
         self.store.list().await
     }
 
+    /// 读取插件在本会话中的一个状态值。插件状态不进入 transcript，且按插件文件隔离。
+    pub async fn plugin_state_get(
+        &self,
+        session_id: &str,
+        plugin: &str,
+        key: &str,
+    ) -> Result<Option<serde_json::Value>, CoreError> {
+        validate_plugin_state_key(plugin, key)?;
+        let record = self.get(session_id).await?;
+        let state = self.read_plugin_state(&record, plugin).await?;
+        Ok(state.get(key).cloned())
+    }
+
+    /// 一次读取完整命名空间，供插件本次回调缓存，避免枚举时逐键重读文件。
+    pub async fn plugin_state_snapshot(
+        &self,
+        session_id: &str,
+        plugin: &str,
+    ) -> Result<BTreeMap<String, serde_json::Value>, CoreError> {
+        validate_plugin_state_component(plugin, "plugin")?;
+        let record = self.get(session_id).await?;
+        self.read_plugin_state(&record, plugin).await
+    }
+
+    /// 列出插件在本会话中已保存的状态键。
+    pub async fn plugin_state_keys(
+        &self,
+        session_id: &str,
+        plugin: &str,
+    ) -> Result<Vec<String>, CoreError> {
+        validate_plugin_state_component(plugin, "plugin")?;
+        let record = self.get(session_id).await?;
+        let state = self.read_plugin_state(&record, plugin).await?;
+        Ok(state.keys().cloned().collect())
+    }
+
+    /// 原子写入插件状态；磁盘失败时不更新内存（状态仅以文件为准）。
+    pub async fn plugin_state_set(
+        &self,
+        session_id: &str,
+        plugin: &str,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<(), CoreError> {
+        validate_plugin_state_key(plugin, key)?;
+        let record = self.get(session_id).await?;
+        self.ensure_write_lease(session_id, &record, "moc-plugin")
+            .await?;
+        let _append = record.append_lock.lock().await;
+        if !record.active.load(Ordering::Acquire) {
+            return Err(CoreError::Session(
+                "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+            ));
+        }
+        self.ensure_transcript_header(&record).await?;
+        let mut state = self.read_plugin_state(&record, plugin).await?;
+        state.insert(key.to_owned(), value);
+        self.store
+            .write_plugin_state(&record.paths, plugin, &state)
+            .await
+    }
+
+    /// 原子删除插件状态；返回是否存在该键。
+    pub async fn plugin_state_remove(
+        &self,
+        session_id: &str,
+        plugin: &str,
+        key: &str,
+    ) -> Result<bool, CoreError> {
+        validate_plugin_state_key(plugin, key)?;
+        let record = self.get(session_id).await?;
+        self.ensure_write_lease(session_id, &record, "moc-plugin")
+            .await?;
+        let _append = record.append_lock.lock().await;
+        if !record.active.load(Ordering::Acquire) {
+            return Err(CoreError::Session(
+                "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+            ));
+        }
+        let mut state = self.read_plugin_state(&record, plugin).await?;
+        let removed = state.remove(key).is_some();
+        if removed {
+            self.store
+                .write_plugin_state(&record.paths, plugin, &state)
+                .await?;
+        }
+        Ok(removed)
+    }
+
+    async fn read_plugin_state(
+        &self,
+        record: &Arc<SessionRecord>,
+        plugin: &str,
+    ) -> Result<BTreeMap<String, serde_json::Value>, CoreError> {
+        let ensure_active = || {
+            if record.active.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(CoreError::Session(
+                    "SESSION_NOT_FOUND: 会话已卸载或删除".into(),
+                ))
+            }
+        };
+        ensure_active()?;
+        let state = self.store.read_plugin_state(&record.paths, plugin).await;
+        ensure_active()?;
+        state
+    }
+
+    async fn ensure_transcript_header(&self, record: &Arc<SessionRecord>) -> Result<(), CoreError> {
+        let mut file = record.file.lock().await;
+        if file.is_none() {
+            *file = Some(
+                SessionFile::create_with_header(&record.paths.transcript, &record.header).await?,
+            );
+        }
+        Ok(())
+    }
+
     /// 已知会话：合并磁盘上的会话和内存里已加载的会话，内存记录优先。
     ///
-    /// `list` 只看磁盘，而 transcript 要到第一次 append 才写盘：`session/new` 和刚
-    /// spawn 的子代理在写入第一条记录前只存在于内存里。解析代理关系时必须能看到它们。
+    /// `list` 只看磁盘，而 transcript 要到首次写入 entry 或插件状态时才落盘：
+    /// `session/new` 和刚 spawn 的子代理可能只存在于内存里，解析代理关系时仍须可见。
     pub async fn known(&self) -> Result<Vec<SessionInfo>, CoreError> {
         let mut sessions: HashMap<String, SessionInfo> = self
             .store
@@ -742,6 +861,32 @@ impl SessionTable {
     }
 }
 
+fn validate_plugin_state_component(value: &str, label: &str) -> Result<(), CoreError> {
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || value.as_bytes()[0].is_ascii_digit()
+        || value.as_bytes()[0] == b'-'
+    {
+        return Err(CoreError::Session(format!(
+            "插件状态 {label} 不合法：需为 1-64 位小写字母、数字或连字符，且以字母开头"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_plugin_state_key(plugin: &str, key: &str) -> Result<(), CoreError> {
+    validate_plugin_state_component(plugin, "名")?;
+    if key.is_empty() || key.len() > 128 {
+        return Err(CoreError::Session(
+            "插件状态 key 必须是 1..128 UTF-8 字节".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn message_bytes(message: &Message) -> usize {
     message
         .content
@@ -867,6 +1012,213 @@ mod tests {
     use moc_protocol::methods::{SessionMode, SessionRenameParams, ToolStatus};
 
     use super::*;
+
+    async fn create_plugin_state_session(table: &SessionTable) -> SessionInfo {
+        table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建会话")
+    }
+
+    #[tokio::test]
+    async fn plugin_state_isolated_and_persistent_without_transcript_entries() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let session = create_plugin_state_session(&table).await;
+        table
+            .plugin_state_set(&session.id, "demo", "count", serde_json::json!(1))
+            .await
+            .expect("写插件状态");
+        assert_eq!(
+            table
+                .plugin_state_get(&session.id, "demo", "count")
+                .await
+                .expect("读插件状态"),
+            Some(serde_json::json!(1))
+        );
+        assert_eq!(
+            table
+                .plugin_state_keys(&session.id, "other")
+                .await
+                .expect("读另一个插件状态"),
+            Vec::<String>::new()
+        );
+        let record = table.get(&session.id).await.expect("会话记录");
+        assert_eq!(
+            record.state.lock().await.entries.len(),
+            1,
+            "状态不进入 transcript"
+        );
+        let paths = record.paths.clone();
+        table.unload(&session.id).await.expect("卸载会话");
+        let restored = table
+            .plugin_state_get(&session.id, "demo", "count")
+            .await
+            .expect("恢复插件状态");
+        assert_eq!(restored, Some(serde_json::json!(1)));
+        assert!(paths.plugin_state("demo").is_file());
+    }
+
+    #[tokio::test]
+    async fn plugin_state_corruption_does_not_affect_other_plugins_or_session_load() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let session = create_plugin_state_session(&table).await;
+        for plugin in ["demo", "other"] {
+            table
+                .plugin_state_set(&session.id, plugin, "count", serde_json::json!(1))
+                .await
+                .expect("保存插件状态");
+        }
+        let record = table.get(&session.id).await.expect("会话记录");
+        tokio::fs::write(record.paths.plugin_state("demo"), b"{broken")
+            .await
+            .expect("损坏单个插件状态文件");
+        assert!(
+            table
+                .plugin_state_get(&session.id, "demo", "count")
+                .await
+                .is_err()
+        );
+        assert!(table.plugin_state_keys(&session.id, "demo").await.is_err());
+        table.unload(&session.id).await.expect("卸载会话");
+        table
+            .load(&session.id, None)
+            .await
+            .expect("损坏状态不影响恢复会话");
+        table
+            .plugin_state_set(&session.id, "other", "count", serde_json::json!(2))
+            .await
+            .expect("另一个插件仍可写入");
+        assert_eq!(
+            table
+                .plugin_state_get(&session.id, "other", "count")
+                .await
+                .expect("读取其它插件"),
+            Some(serde_json::json!(2))
+        );
+        assert!(
+            table.read_plugin_state(&record, "other").await.is_err(),
+            "已卸载的记录不能读取状态"
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_state_limit_preserves_previous_file_and_bounds_reads() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let session = create_plugin_state_session(&table).await;
+        table
+            .plugin_state_set(&session.id, "demo", "count", serde_json::json!(1))
+            .await
+            .expect("保存原状态");
+        let record = table.get(&session.id).await.expect("会话记录");
+        let path = record.paths.plugin_state("demo");
+        let before = tokio::fs::read(&path).await.expect("原文件字节");
+        assert!(
+            table
+                .plugin_state_set(
+                    &session.id,
+                    "demo",
+                    "count",
+                    serde_json::json!("x".repeat(1024 * 1024))
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            tokio::fs::read(&path).await.expect("写入失败后的文件"),
+            before
+        );
+        assert_eq!(
+            table
+                .plugin_state_get(&session.id, "demo", "count")
+                .await
+                .expect("原状态仍可读取"),
+            Some(serde_json::json!(1))
+        );
+        tokio::fs::write(
+            record.paths.plugin_state("other"),
+            vec![b'x'; 1024 * 1024 + 1],
+        )
+        .await
+        .expect("外部写入超限文件");
+        assert!(
+            table
+                .plugin_state_keys(&session.id, "other")
+                .await
+                .expect_err("读取也有容量上限")
+                .to_string()
+                .contains("1 MiB")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                tokio::fs::metadata(&path)
+                    .await
+                    .expect("文件权限")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_state_is_not_inherited_by_rewind_or_cleared_by_reset() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let session = create_plugin_state_session(&table).await;
+        table
+            .plugin_state_set(&session.id, "demo", "count", serde_json::json!(1))
+            .await
+            .expect("保存原会话状态");
+        let message = table
+            .append_message(&session.id, Message::user_text("回退目标"), None, None)
+            .await
+            .expect("追加用户消息");
+        let fork = table
+            .rewind(&session.id, &TranscriptEntryId::new(message.id()), false)
+            .await
+            .expect("创建回退会话");
+        assert_ne!(fork.session.id, session.id);
+        assert!(
+            table
+                .plugin_state_keys(&fork.session.id, "demo")
+                .await
+                .expect("新 ID 状态为空")
+                .is_empty()
+        );
+        table
+            .append(&session.id, EntryPayload::ResetBoundary)
+            .await
+            .expect("清空原会话上下文");
+        assert_eq!(
+            table
+                .plugin_state_get(&session.id, "demo", "count")
+                .await
+                .expect("原 ID 状态保留"),
+            Some(serde_json::json!(1))
+        );
+        let record = table.get(&session.id).await.expect("会话记录");
+        let path = record.paths.plugin_state("demo");
+        table.delete(&session.id).await.expect("删除原会话");
+        assert!(!path.exists(), "删除会话会清理插件状态");
+        table
+            .load(&fork.session.id, None)
+            .await
+            .expect("独立分叉不受删除影响");
+    }
 
     /// 子代理会话整个放在父会话目录里：transcript 和父会话的 sidecar 同目录，自己的
     /// sidecar 是它的子目录。恢复后父链接和来源都在，删除父会话会一并删除子树。

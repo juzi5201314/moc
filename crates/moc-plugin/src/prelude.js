@@ -32,10 +32,116 @@ export const log = Object.freeze({
   error: logger('error'),
 });
 
-/** 当前会话快照：`{sessionId, cwd, mode, permission, model, isSubagent}`。 */
-export function session() {
-  return parse(host.session());
+// 持久化只接受无损 JSON；不能让 stringify 静默丢掉函数、稀疏项或非有限数。
+function jsonValue(value, stack = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'object' || stack.has(value)) host.invalidValue('持久化值必须是无环、无损 JSON');
+  const array = Array.isArray(value);
+  if (!array && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
+    host.invalidValue('持久化对象必须是普通对象');
+  }
+  stack.add(value);
+  const result = array ? [] : Object.create(null);
+  const keys = Reflect.ownKeys(value);
+  if (array) {
+    if (keys.length !== value.length + 1) host.invalidValue('持久化数组不能稀疏或带额外属性');
+    for (let index = 0; index < value.length; index++) {
+      if (!Object.hasOwn(value, index)) host.invalidValue('持久化数组不能包含空缺项');
+    }
+  }
+  for (const key of keys) {
+    if (array && key === 'length') continue;
+    if (typeof key !== 'string') host.invalidValue('持久化对象不能包含 Symbol 属性');
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) host.invalidValue('持久化对象不能包含访问器或隐藏属性');
+    Object.defineProperty(result, key, { value: jsonValue(descriptor.value, stack), enumerable: true, writable: true, configurable: true });
+  }
+  stack.delete(value);
+  return result;
 }
+
+function frozen(value) {
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value)) frozen(value[key]);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function persist(operation, key = '', value = null) {
+  return parse(host.persistence(operation, key, stringify(value)));
+}
+
+function stateProxy() {
+  // 每个代理绑定创建时的会话，不能把旧 ctx 偷渡到另一个会话中使用。
+  const sessionId = parse(host.session()).sessionId;
+  const check = () => {
+    if (parse(host.session())?.sessionId !== sessionId) {
+      const error = new Error('state 代理已离开所属会话');
+      error.code = 'E_PLUGIN_STATE';
+      throw error;
+    }
+  };
+  return new Proxy(Object.create(null), {
+    get(_target, key) {
+      check();
+      if (typeof key !== 'string') return undefined;
+      const result = persist('stateGet', key);
+      return result.found ? frozen(result.value) : undefined;
+    },
+    set(_target, key, value) {
+      check();
+      if (typeof key !== 'string') host.invalidValue('state 键必须是字符串');
+      persist('stateSet', key, jsonValue(value));
+      return true;
+    },
+    deleteProperty(_target, key) {
+      check();
+      if (typeof key !== 'string') host.invalidValue('state 键必须是字符串');
+      persist('stateDelete', key);
+      return true;
+    },
+    ownKeys() { check(); return persist('stateKeys'); },
+    has(_target, key) { check(); return typeof key === 'string' && persist('stateGet', key).found; },
+    getOwnPropertyDescriptor(_target, key) {
+      check();
+      if (typeof key !== 'string') return undefined;
+      const result = persist('stateGet', key);
+      return result.found ? { value: frozen(result.value), writable: true, enumerable: true, configurable: true } : undefined;
+    },
+    defineProperty() { host.invalidValue('请使用 state[key] = value 写入'); },
+    setPrototypeOf() { host.invalidValue('state 原型不可修改'); },
+    preventExtensions() { host.invalidValue('state 代理不可冻结'); },
+  });
+}
+
+/** 当前会话快照与插件私有的持久化 state。 */
+export function session() {
+  const snapshot = parse(host.session());
+  if (!snapshot) host.invalidValue('当前调用没有会话');
+  Object.defineProperty(snapshot, 'state', { value: stateProxy(), enumerable: true });
+  return snapshot;
+}
+Object.defineProperty(session, 'state', { get: stateProxy });
+// 供运行时给回调 ctx 附上与 session() 相同的能力；不暴露到插件全局。
+host.context = session;
+
+export const config = Object.freeze({
+  register(key, definition) {
+    if (typeof key !== 'string') host.invalidValue('配置键必须是字符串');
+    host.configRegister(key, stringify(jsonValue(definition)));
+  },
+  get(key) {
+    if (typeof key !== 'string') host.invalidValue('配置键必须是字符串');
+    const result = persist('configGet', key);
+    return result.found ? frozen(result.value) : undefined;
+  },
+  set(key, value) {
+    if (typeof key !== 'string') host.invalidValue('配置键必须是字符串');
+    persist('configSet', key, jsonValue(value));
+  },
+});
 
 /**
  * 调用宿主工具。只在工具的 `run` 里可用，且只允许只读工具；

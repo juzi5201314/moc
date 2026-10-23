@@ -6,8 +6,8 @@ use crate::{
     config::{discovery, editor},
 };
 use moc_protocol::{
-    ConfigAction, ConfigReply, RequestContext, SteerParams, SteerResult, UnsteerParams,
-    UnsteerResult,
+    ConfigAction, ConfigReply, ConfigScope, RequestContext, SteerParams, SteerResult,
+    UnsteerParams, UnsteerResult,
 };
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
@@ -120,10 +120,17 @@ pub(super) async fn manage(
 ) -> Result<ConfigReply, CoreError> {
     match action {
         ConfigAction::Read { scope, cwd } => {
+            // 插件 activate 可能调用 config.set；先完成首次加载，再读取 revision 快照。
+            let _ = inner.project_plugins(Path::new(&cwd)).await;
             let boot = inner.boot.clone();
-            tokio::task::spawn_blocking(move || editor::inspect(&boot, scope, Path::new(&cwd)))
+            let path = cwd.clone();
+            let view = tokio::task::spawn_blocking(move || {
+                editor::inspect(&boot, scope, Path::new(&path))
+            })
+            .await
+            .map_err(|error| CoreError::Config(error.to_string()))??;
+            super::plugin_persistence::settings(inner, Path::new(&cwd), view)
                 .await
-                .map_err(|error| CoreError::Config(error.to_string()))?
                 .map(ConfigReply::Settings)
         }
         ConfigAction::Save {
@@ -139,9 +146,24 @@ pub(super) async fn manage(
                 _ = cancel.cancelled() => return Err(CoreError::Cancelled),
                 epoch = inner.config_epoch.write() => epoch,
             };
+            // 仅校验修改过的插件条目，已有坏配置不能阻挡普通 moc 设置的保存。
+            let plugin_host = inner.project_plugins(Path::new(&cwd)).await.ok();
             let boot = inner.boot.clone();
             let path = cwd.clone();
             let resolved = tokio::task::spawn_blocking(move || {
+                if let Some(host) = plugin_host {
+                    let previous = editor::inspect(&boot, scope, Path::new(&path))?;
+                    let target = match scope {
+                        ConfigScope::Global => boot.home.join("config.toml"),
+                        ConfigScope::Project => Path::new(&path).join(".moc/config.toml"),
+                    };
+                    super::plugin_persistence::validate_changes(
+                        &host,
+                        &target,
+                        &previous.document,
+                        &document,
+                    )?;
+                }
                 editor::save(&boot, scope, Path::new(&path), document, &revision)
             })
             .await
@@ -160,11 +182,12 @@ pub(super) async fn manage(
             for runtime in runtimes {
                 *runtime.context_files.lock().await = None;
             }
-            Ok(ConfigReply::Settings(editor::inspect(
-                &inner.boot,
-                scope,
-                Path::new(&cwd),
-            )?))
+            // 清缓存后插件会重新激活并可能写入配置；激活完成后再取最终 revision。
+            let _ = inner.project_plugins(Path::new(&cwd)).await;
+            let view = editor::inspect(&inner.boot, scope, Path::new(&cwd))?;
+            super::plugin_persistence::settings(inner, Path::new(&cwd), view)
+                .await
+                .map(ConfigReply::Settings)
         }
         ConfigAction::Models { id, mut provider } => {
             editor::remove_nulls(&mut provider);

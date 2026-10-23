@@ -3,13 +3,13 @@
 //! 普通会话是逐行 JSONL；开启 zstd 压缩的新会话是 `.jsonl.zst`，由独立的完整帧拼接。
 //! 两种格式的读写都封装在这里，上层只接触 [`Entry`]。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use tokio::fs::{self, File, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::error::CoreError;
 
@@ -18,6 +18,8 @@ use super::log;
 
 /// 不超过该长度的记录直接在异步线程压缩：spawn_blocking 的调度开销比压缩本身还大。
 const INLINE_COMPRESS_LIMIT: usize = 64 * 1024;
+/// 每个会话中单个插件的状态序列化上限；读写都受此限制。
+const PLUGIN_STATE_MAX_BYTES: usize = 1024 * 1024;
 
 /// 一个会话的 transcript 和 sidecar 路径。
 #[derive(Debug, Clone)]
@@ -54,6 +56,11 @@ impl SessionPaths {
     }
     pub fn compaction(&self) -> PathBuf {
         self.sidecar.join("compaction")
+    }
+
+    /// 一个插件在本会话里的 KV 状态文件；插件之间使用独立文件隔离。
+    pub fn plugin_state(&self, plugin: &str) -> PathBuf {
+        self.sidecar.join("plugins").join(format!("{plugin}.json"))
     }
 }
 
@@ -416,6 +423,73 @@ impl SessionStore {
             )),
             sidecar: directory.join(session_id),
         }
+    }
+
+    /// 读取单个插件状态；文件缺失视为空，损坏只影响该插件调用。
+    pub async fn read_plugin_state(
+        &self,
+        paths: &SessionPaths,
+        plugin: &str,
+    ) -> Result<BTreeMap<String, serde_json::Value>, CoreError> {
+        let path = paths.plugin_state(plugin);
+        let file = match File::open(&path).await {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => return Err(CoreError::Session(format!("读取插件状态失败：{error}"))),
+        };
+        let mut bytes = Vec::new();
+        file.take((PLUGIN_STATE_MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > PLUGIN_STATE_MAX_BYTES {
+            return Err(CoreError::Session("插件状态文件超过 1 MiB 限制".into()));
+        }
+        serde_json::from_slice(&bytes).map_err(|error| {
+            CoreError::Session(format!("插件状态文件损坏（{}）：{error}", path.display()))
+        })
+    }
+
+    /// 原子替换单个插件状态文件；写入前检查序列化大小。
+    pub async fn write_plugin_state(
+        &self,
+        paths: &SessionPaths,
+        plugin: &str,
+        state: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), CoreError> {
+        let path = paths.plugin_state(plugin);
+        let bytes = serde_json::to_vec(state)
+            .map_err(|error| CoreError::Session(format!("序列化插件状态失败：{error}")))?;
+        if bytes.len() > PLUGIN_STATE_MAX_BYTES {
+            return Err(CoreError::Session(format!(
+                "插件状态超过 {} MiB 限制",
+                PLUGIN_STATE_MAX_BYTES / (1024 * 1024)
+            )));
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| CoreError::Session("插件状态路径缺少父目录".into()))?;
+        fs::create_dir_all(parent).await?;
+        let temp = parent.join(format!(".{plugin}.tmp-{}", crate::ids::entry_id()));
+        let result = async {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&temp).await?;
+            file.write_all(&bytes).await?;
+            file.flush().await?;
+            file.sync_data().await?;
+            drop(file);
+            fs::rename(&temp, &path).await?;
+            Ok::<(), CoreError>(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = fs::remove_file(&temp).await;
+        }
+        result
     }
 
     /// 按会话 ID 查找路径，必要时扫描磁盘目录。

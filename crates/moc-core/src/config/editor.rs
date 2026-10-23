@@ -1,6 +1,8 @@
 //! 只保存显式覆盖项；提交前比对版本，避免覆盖外部编辑器的并发修改。
 
-use super::{ResolvedConfig, catalog, merge_optional_file, merge_required_file, merge_value};
+use super::{
+    ResolvedConfig, catalog, is_plugin_key, merge_optional_file, merge_required_file, merge_value,
+};
 use crate::{CoreConfig, CoreError};
 use moc_protocol::{ConfigScope, SettingsDocument};
 use serde_json::{Value as Json, json};
@@ -28,6 +30,33 @@ fn parse(text: &str) -> Result<toml::Value, CoreError> {
     toml::from_str(text).map_err(|error| CoreError::Config(format!("配置文件格式有误：{error}")))
 }
 
+fn write_atomic(target: &Path, text: &str) -> Result<(), CoreError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| CoreError::Config("配置路径缺少父目录".into()))?;
+    let temp = parent.join(format!(".config-{}.tmp", crate::ids::entry_id()));
+    let result = (|| {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, target)?;
+        Ok::<(), CoreError>(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 fn merged(
     boot: &CoreConfig,
     scope: ConfigScope,
@@ -42,17 +71,10 @@ fn merged(
         merge_optional_file(&mut base, &home.join("config.toml"))?;
     }
     let mut effective = base.clone();
-    let project_enabled = base
-        .get("sources")
-        .and_then(|v| v.get("project_config"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false);
-    if project_enabled {
-        if scope == ConfigScope::Project {
-            merge_value(&mut effective, document);
-        } else {
-            merge_optional_file(&mut effective, &cwd.join(".moc/config.toml"))?;
-        }
+    if scope == ConfigScope::Project {
+        merge_value(&mut effective, document);
+    } else {
+        merge_optional_file(&mut effective, &cwd.join(".moc/config.toml"))?;
     }
     for overlay in &boot.overlays {
         merge_required_file(&mut effective, overlay)?;
@@ -119,7 +141,7 @@ pub fn save(
     let text =
         toml::to_string_pretty(&parsed).map_err(|error| CoreError::Config(error.to_string()))?;
     let (base, effective) = merged(boot, scope, cwd, parsed)?;
-    // 校验编辑目标本身，即便项目配置来源暂时关闭，也不保存无效 TOML。
+    // 校验编辑目标本身，避免保存无效 TOML。
     if scope == ConfigScope::Project {
         let mut checked = base.clone();
         merge_value(&mut checked, parse(&text)?);
@@ -153,28 +175,101 @@ pub fn save(
     if let Some(directory) = &boot.session_dir {
         resolved.session.dir = directory.clone();
     }
-    let temp = parent.join(format!(".config-{}.tmp", crate::ids::entry_id()));
-    let result = (|| {
-        use std::io::Write;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, &target)?;
-        Ok::<_, CoreError>(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result?;
+    write_atomic(&target, &text)?;
     Ok(resolved)
+}
+
+/// 原子修改单个插件配置键，只触碰 `[plugins."插件名".config]` 命名空间。
+///
+/// 该接口不解析或执行其它核心配置（包括密钥命令），因此插件配置损坏时仍可修复，
+/// 且不会因为插件写入错误值而让 moc 核心配置失效。
+pub fn patch_plugin(
+    _boot: &CoreConfig,
+    config_path: &Path,
+    plugin: &str,
+    key: &str,
+    value: Option<Json>,
+) -> Result<(), CoreError> {
+    if !is_plugin_key(plugin) {
+        return Err(CoreError::Config(format!("插件名 `{plugin}` 不合法")));
+    }
+    if key.is_empty() || key.len() > 256 {
+        return Err(CoreError::Config("插件配置键长度必须为 1..256 字节".into()));
+    }
+    let parent = config_path
+        .parent()
+        .ok_or_else(|| CoreError::Config("插件配置路径缺少父目录".into()))?;
+    std::fs::create_dir_all(parent)?;
+    let _guard = crate::session::lock::SessionLockGuard::acquire(
+        parent.join("config.lock"),
+        "plugin-config",
+    )?;
+    let text = contents(config_path)?;
+    let mut document = if text.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        parse(&text)?
+    };
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| CoreError::Config("配置根必须是 TOML 表".into()))?;
+    let plugins_empty = {
+        let plugins = root
+            .entry("plugins")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+            .as_table_mut()
+            .ok_or_else(|| CoreError::Config("配置中的 plugins 必须是表".into()))?;
+        let plugin_entry = plugins
+            .entry(plugin.to_owned())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if !plugin_entry.is_table() {
+            return Err(CoreError::Config(format!(
+                "插件 `{plugin}` 的配置必须是 TOML 表"
+            )));
+        }
+        let config = plugin_entry
+            .as_table_mut()
+            .expect("插件值已规范化为表")
+            .entry("config")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if !config.is_table() {
+            *config = toml::Value::Table(toml::map::Map::new());
+        }
+        let config = config.as_table_mut().expect("插件 config 已规范化为表");
+        match value {
+            Some(value) if !value.is_null() => {
+                config.insert(
+                    key.to_owned(),
+                    toml::Value::try_from(value).map_err(|error| {
+                        CoreError::Config(format!("插件配置值无法写入 TOML：{error}"))
+                    })?,
+                );
+            }
+            Some(_) | None => {
+                config.remove(key);
+            }
+        }
+        if config.is_empty() {
+            plugin_entry
+                .as_table_mut()
+                .expect("插件值仍为表")
+                .remove("config");
+        }
+        if plugin_entry
+            .as_table()
+            .is_some_and(|table| table.is_empty())
+        {
+            plugins.remove(plugin);
+        }
+        plugins.is_empty()
+    };
+    if plugins_empty {
+        root.remove("plugins");
+    }
+    super::remove_deprecated_retention_keys(&mut document);
+    let output = toml::to_string_pretty(&document)
+        .map_err(|error| CoreError::Config(format!("配置序列化失败：{error}")))?;
+    write_atomic(config_path, &output)
 }
 
 pub fn merge_json(target: &mut Json, overlay: Json) {

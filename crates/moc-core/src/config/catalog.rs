@@ -123,7 +123,6 @@ fn rank(key: &str) -> usize {
         "max_tokens" => 3,
         "import_depth" => 4,
         "user_config" => 1,
-        "project_config" => 2,
         "connect_timeout_secs" => 3,
         "call_timeout_secs" => 4,
         // 技能来源
@@ -188,6 +187,12 @@ fn rank(key: &str) -> usize {
 }
 
 fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
+    // 动态插件配置由插件声明字段后补入；目录扫描阶段不猜测 api_key/provider 等语义。
+    if path.first().is_some_and(|part| part == "plugins")
+        && path.get(1).is_some_and(|name| super::is_plugin_key(name))
+    {
+        return;
+    }
     let object_editor = path.last().is_some_and(|key| {
         matches!(
             key.as_str(),
@@ -257,7 +262,7 @@ fn walk(value: &Value, path: &mut Vec<String>, output: &mut Vec<ConfigField>) {
             "tools" | "workspace" | "web_search" | "web_fetch" => "工具",
             "sandbox" => "沙盒",
             "compaction" | "limits" => "上下文",
-            "context_files" | "system_prompt" | "sources" => "指令",
+            "context_files" | "system_prompt" => "指令",
             "defaults" => "模型",
             "session" => "会话",
             "skills" => "技能",
@@ -392,10 +397,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         "skills.enabled" => ("启用技能", "关闭后不再加载任何技能。"),
         "mcp.enabled" => ("启用 MCP", "关闭后不再连接任何 MCP 服务。"),
         "compaction.enabled" => ("启用压缩", "关闭后不再自动压缩对话历史。"),
-        "sources.project_config" => (
-            "允许项目配置",
-            "允许项目里的 .moc/config.toml 覆盖全局设置；默认关闭，开启即信任该仓库。",
-        ),
         "sandbox.default_mode" => (
             "默认沙盒模式",
             "新会话的初始模式。full 不隔离；workspace 工作区可写、工作区外只读；workspace-only 工作区外不可读写。原生 Windows 仅支持 full。",
@@ -502,10 +503,6 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "agents_user" => ("用户共享技能", "加载 ~/.agents/skills 里的共享技能。"),
             "agents_project" => ("项目共享技能", "加载项目 .agents/skills 里的共享技能。"),
             "user_config" => ("用户 MCP 配置", "加载 ~/.moc/mcp.json 里定义的 MCP 服务。"),
-            "project_config" => (
-                "项目 MCP 配置",
-                "加载项目里的 .mcp.json / mcp.json；其中的本地服务会被启动。默认关闭。",
-            ),
             "api" => ("API 格式", "按供应商支持的协议选择；可在供应商文档中确认。"),
             "base_url" => ("服务地址", "供应商接口地址；通常会自动补上 /v1。"),
             "api_key" => ("API 密钥", "可直接填写，或写 env:变量名 从环境变量读取。"),

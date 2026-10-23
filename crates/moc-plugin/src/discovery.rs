@@ -27,6 +27,8 @@ pub struct Discovered {
     pub dir: PathBuf,
     /// 来源描述，用于 `plugin/list` 与诊断。
     pub source: String,
+    /// 安装来源所属配置；在解析符号链接之前确定。
+    pub config_path: PathBuf,
 }
 
 /// 扫描全部来源，返回按优先级排序的候选目录。
@@ -34,7 +36,7 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
     if !config.enabled {
         return Vec::new();
     }
-    let mut roots: Vec<(u32, PathBuf, String)> = Vec::new();
+    let mut roots: Vec<(u32, PathBuf, String, PathBuf)> = Vec::new();
     if config.project {
         let git_root = git_root(cwd);
         for (depth, dir) in ancestors(cwd, git_root.as_deref()).into_iter().enumerate() {
@@ -42,20 +44,31 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
                 100 + depth as u32,
                 dir.join(".moc").join("plugins"),
                 format!("项目 .moc/plugins（{}）", dir.display()),
+                dir.join(".moc/config.toml"),
             ));
         }
     }
     for dir in &config.dirs {
-        roots.push((300, dir.clone(), format!("配置 dirs（{}）", dir.display())));
+        roots.push((
+            300,
+            dir.clone(),
+            format!("配置 dirs（{}）", dir.display()),
+            home.join("config.toml"),
+        ));
     }
     if config.user {
-        roots.push((400, home.join("plugins"), "用户 .moc/plugins".into()));
+        roots.push((
+            400,
+            home.join("plugins"),
+            "用户 .moc/plugins".into(),
+            home.join("config.toml"),
+        ));
     }
     roots.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
 
     let mut found = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for (_rank, root, source) in roots {
+    for (_rank, root, source, config_path) in roots {
         let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
@@ -85,6 +98,7 @@ pub fn discover(cwd: &Path, home: &Path, config: &DiscoveryConfig) -> Vec<Discov
                 dir_name,
                 dir: real,
                 source: source.clone(),
+                config_path: config_path.clone(),
             });
         }
     }

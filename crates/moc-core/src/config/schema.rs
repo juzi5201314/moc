@@ -13,7 +13,6 @@ use moc_protocol::SessionPermission;
 pub(super) struct ConfigDocument {
     pub models: ModelCatalog,
     pub providers: BTreeMap<String, super::model::ProviderDocument>,
-    pub sources: SourcesConfig,
     pub tools: ToolsConfig,
     pub sandbox: SandboxConfig,
     pub compaction: CompactionConfig,
@@ -75,8 +74,11 @@ impl Default for SkillsConfig {
 }
 
 /// 插件系统配置；插件是本地目录里会被执行的 JS 代码，项目级来源等于信任该仓库。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+///
+/// 宿主字段保持严格校验；其它符合插件名规则的键原样保留为动态值，具体结构由
+/// 插件注册配置项时校验。这样已卸载插件、损坏插件或未来版本写入的值不会阻止 moc
+/// 启动，插件本身可以单独被禁用。
+#[derive(Debug, Clone)]
 pub struct PluginsConfig {
     pub enabled: bool,
     /// 是否扫描用户目录 `~/.moc/plugins`。
@@ -97,6 +99,32 @@ pub struct PluginsConfig {
     pub call_timeout_ms: u64,
     /// 全部插件提示词贡献的总字符上限。
     pub max_prompt_chars: usize,
+    /// `[plugins."插件名"]` 的原始值；不在核心层解释，以便孤立配置继续保存。
+    pub configs: BTreeMap<String, toml::Value>,
+}
+
+/// `[plugins]` 下由宿主占用的键；插件名不得与这些键冲突。
+pub const HOST_PLUGIN_KEYS: &[&str] = &[
+    "enabled",
+    "user",
+    "project",
+    "dirs",
+    "disable",
+    "max_plugins",
+    "memory_limit_bytes",
+    "load_timeout_ms",
+    "call_timeout_ms",
+    "max_prompt_chars",
+];
+
+/// 判断一个动态键是否可作为插件名。
+pub fn is_plugin_key(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name.bytes().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == b'-'
+        })
+        && !HOST_PLUGIN_KEYS.contains(&name)
 }
 
 impl Default for PluginsConfig {
@@ -112,11 +140,100 @@ impl Default for PluginsConfig {
             load_timeout_ms: 5000,
             call_timeout_ms: 5000,
             max_prompt_chars: 4000,
+            configs: BTreeMap::new(),
         }
     }
 }
 
+impl<'de> Deserialize<'de> for PluginsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut values = BTreeMap::<String, toml::Value>::deserialize(deserializer)?;
+        let defaults = Self::default();
+        fn take<T: serde::de::DeserializeOwned, E: serde::de::Error>(
+            values: &mut BTreeMap<String, toml::Value>,
+            key: &str,
+            default: T,
+        ) -> Result<T, E> {
+            values
+                .remove(key)
+                .map(|value| value.try_into().map_err(E::custom))
+                .unwrap_or(Ok(default))
+        }
+        let mut configs = BTreeMap::new();
+        let names: Vec<String> = values.keys().cloned().collect();
+        for name in names {
+            if HOST_PLUGIN_KEYS.contains(&name.as_str()) {
+                continue;
+            }
+            let value = values.remove(&name).expect("刚从键列表取出的插件值");
+            if !is_plugin_key(&name) {
+                return Err(serde::de::Error::custom(format!(
+                    "plugins 下未知宿主字段或非法插件名 `{name}`"
+                )));
+            }
+            configs.insert(name, value);
+        }
+        Ok(Self {
+            enabled: take(&mut values, "enabled", defaults.enabled)?,
+            user: take(&mut values, "user", defaults.user)?,
+            project: take(&mut values, "project", defaults.project)?,
+            dirs: take(&mut values, "dirs", defaults.dirs)?,
+            disable: take(&mut values, "disable", defaults.disable)?,
+            max_plugins: take(&mut values, "max_plugins", defaults.max_plugins)?,
+            memory_limit_bytes: take(
+                &mut values,
+                "memory_limit_bytes",
+                defaults.memory_limit_bytes,
+            )?,
+            load_timeout_ms: take(&mut values, "load_timeout_ms", defaults.load_timeout_ms)?,
+            call_timeout_ms: take(&mut values, "call_timeout_ms", defaults.call_timeout_ms)?,
+            max_prompt_chars: take(&mut values, "max_prompt_chars", defaults.max_prompt_chars)?,
+            configs,
+        })
+    }
+}
+
+impl serde::Serialize for PluginsConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map =
+            serializer.serialize_map(Some(HOST_PLUGIN_KEYS.len() + self.configs.len()))?;
+        map.serialize_entry("enabled", &self.enabled)?;
+        map.serialize_entry("user", &self.user)?;
+        map.serialize_entry("project", &self.project)?;
+        map.serialize_entry("dirs", &self.dirs)?;
+        map.serialize_entry("disable", &self.disable)?;
+        map.serialize_entry("max_plugins", &self.max_plugins)?;
+        map.serialize_entry("memory_limit_bytes", &self.memory_limit_bytes)?;
+        map.serialize_entry("load_timeout_ms", &self.load_timeout_ms)?;
+        map.serialize_entry("call_timeout_ms", &self.call_timeout_ms)?;
+        map.serialize_entry("max_prompt_chars", &self.max_prompt_chars)?;
+        for (name, value) in &self.configs {
+            map.serialize_entry(name, value)?;
+        }
+        map.end()
+    }
+}
+
 impl PluginsConfig {
+    /// 取得插件的原始配置值；未知插件的值也会保留。
+    pub fn plugin_value(&self, name: &str) -> Option<&toml::Value> {
+        self.configs.get(name)
+    }
+
+    /// 枚举全部插件配置，顺序稳定且包含未安装插件。
+    pub fn plugin_values(&self) -> impl Iterator<Item = (&str, &toml::Value)> {
+        self.configs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
+    }
+
     /// 转成运行时设置；`dirs` 在这里展开 `~`。
     pub fn settings(&self) -> moc_plugin::Settings {
         moc_plugin::Settings {
@@ -818,14 +935,6 @@ impl Default for SessionDocument {
             retention: RetentionConfig::default(),
         }
     }
-}
-
-/// 配置文件来源；显式 CLI 覆盖层始终加载。
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SourcesConfig {
-    /// 项目级 `.moc/config.toml` 能改写全局设置、触发其中的密钥命令，默认关闭。
-    pub project_config: bool,
 }
 
 /// 文件容量与工具输出预算属于公共工具策略，不归某个具体工具所有。

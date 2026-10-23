@@ -248,6 +248,7 @@ impl ToolCtx {
             permission: self.permission.as_str().to_owned(),
             model: self.model.clone(),
             is_subagent: self.subagent,
+            writable: true,
         }
     }
 }
