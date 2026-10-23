@@ -133,9 +133,9 @@ PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`
 
 `beforeToolCall` 只对模型发起的调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 是观察型，失败只记日志。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
 
-插件提示词汇总进系统提示的 `plugins` 片段（`PIECE_PLUGINS`），按插件名排序拼接并受 `[plugins] max_prompt_chars` 限制；该片段每轮重建，不属于稳定前缀。`moc.tools.call()` 允许插件调用宿主只读内置工具，是插件获得文件/搜索能力的唯一通道。
+插件提示词汇总进系统提示的 `plugins` 片段（`PIECE_PLUGINS`），按插件名排序拼接并受 `[plugins] max_prompt_chars` 限制；该片段每轮重建，不属于稳定前缀。`moc.tools.call()` 是插件获得文件/搜索能力的唯一通道，只放行 `read`、`grep`、`find`、`web_search`、`web_fetch`。
 
-调用是串行的（同一插件排队）；`call_timeout_ms` 到点会中断 JS 并把该插件在本进程内禁用（`/plugins` 与 `plugin/list` 显示原因），内存上限是单个 Runtime 的 `memory_limit_bytes`。KV 存在 `$MOC_HOME/plugin-data/<插件名>/kv.json`，按插件名跨项目共享。QuickJS 崩溃会带走整个进程——插件不是沙盒，是「你信任的本地代码」。
+调用是串行的（同一插件排队）；`load_timeout_ms` 约束模块求值与 `activate`，`call_timeout_ms` 到点会中断 JS 并把该插件在本进程内禁用（`/plugins` 与 `plugin/list` 显示原因）；插件等宿主工具超时只让本次调用失败。`run`/命令/钩子/`prompt`/`activate` 返回的 Promise 会被 QuickJS 任务队列驱动到落定，永远不落定的报 `E_PLUGIN_STATE`。内存上限是单个 Runtime 的 `memory_limit_bytes`。插件目录内容或配置变化后宿主在下一个提示/命令重建。QuickJS 崩溃会带走整个进程——插件不是沙盒，是「你信任的本地代码」。
 
 ### 上下文压缩与解释
 

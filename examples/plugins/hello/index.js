@@ -6,7 +6,7 @@
 // 这里用到的 API 全部是同步的：宿主在插件专用线程里执行，跨边界调用会阻塞该线程。
 // 类型提示靠同目录的 moc.d.ts（`import("./moc")`），运行时不需要它。
 
-import { kv, log } from "moc";
+import { log } from "moc";
 
 /** @type {import("./moc").Plugin} */
 export default {
@@ -33,9 +33,7 @@ export default {
       tier: "read",
       run(input, ctx) {
         const who = (input.name || "world").trim();
-        const seen = kv.get("greetings") ?? 0;
-        kv.set("greetings", seen + 1);
-        return `你好，${who}！这是本机第 ${seen + 1} 次问候；模式 ${ctx.mode}，目录 ${ctx.cwd}`;
+        return `你好，${who}！模式 ${ctx.mode}，目录 ${ctx.cwd}`;
       },
     },
   },

@@ -46,7 +46,7 @@ disable = ["noisy"]  # 按插件名禁用
 }
 ```
 
-- `name`：必填，1–64 位小写字母/数字/连字符，且以字母开头。它就是 KV 的命名空间与 `/plugins` 里的名字。
+- `name`：必填，1–64 位小写字母/数字/连字符，且以字母开头。它就是 `/plugins` 里的名字。
 - `main`：可选，默认 `index.js`；必须是插件目录内的 `.js`/`.mjs`，不能逃出目录。
 - 未知字段直接报错，不做猜测。
 
@@ -55,7 +55,7 @@ disable = ["noisy"]  # 按插件名禁用
 ES 模块，`export default` 一个对象：
 
 ```js
-import { kv, log, session, tools } from "moc";
+import { log, session, tools } from "moc";
 
 export default {
   name: "hello",
@@ -118,12 +118,12 @@ export default {
 | 字段 | 说明 |
 |---|---|
 | `description` | 必填，非空。会作为工具描述进模型提示，按提示词规范写：只讲这个工具自己的用法。 |
-| `parameters` | 必填，JSON Schema 对象（`type: "object"`）。原样进模型提示。 |
+| `parameters` | 必填，JSON Schema 对象（`type: "object"`）。原样进模型提示；调用时按其中的 `type`、`required`、`properties`、`additionalProperties`、`items`、`enum` 校验参数。 |
 | `tier` | `read`（默认）/`write`/`exec`。决定只读模式（问答、计划）是否可见。 |
 | `parallel` | 默认 `false`。为 `true` 时允许与其它只读工具并发，否则整批作为屏障。 |
-| `run(input, ctx)` | 必填。第一个参数是按 schema 校验过的对象，第二个是会话快照。 |
+| `run(input, ctx)` | 必填。第一个参数是按 schema 校验过的对象（不满足时模型收到 `E_PLUGIN_ARGUMENTS`），第二个是会话快照。 |
 
-工具名全局唯一：与内置工具、MCP 工具（`mcp__` 前缀）、其它插件工具撞名会让该工具被忽略并告警。工具名只允许字母、数字、下划线、连字符。
+工具名全局唯一：与内置工具、MCP 工具（`mcp__` 前缀）、其它插件工具撞名会让该工具被忽略并告警（内置优先）。工具名只允许字母、数字、下划线、连字符。
 
 返回值按下面的规则映射成工具结果：
 
@@ -166,25 +166,26 @@ export default {
 |---|---|
 | `version` | 宿主 API 版本（当前 `"1"`）。 |
 | `session()` | 当前会话快照 `{ sessionId, cwd, mode, permission, model, isSubagent }`。在 `activate`/`deactivate` 里调用会抛 `E_PLUGIN_STATE`（那时没有会话）。 |
-| `kv.get(name)` / `set` / `delete` / `keys()` / `clear()` | 插件级持久化，值必须是 JSON 可序列化。存盘在 `$MOC_HOME/plugin-data/<插件名>/kv.json`，**按插件名共享，跨项目**，总字节数受 `[plugins] max_kv_bytes` 限制。 |
 | `log.debug/info/warn/error(...)` | 写 moc 日志，`RUST_LOG=moc_plugin=debug` 可见。 |
-| `tools.call(name, args)` | 调用宿主**只读内置工具**，返回 `{ content, structuredContent, isError }`。 |
+| `tools.call(name, args)` | 调用宿主工具，返回 `{ content, structuredContent, isError }`。 |
 
 `tools.call` 的边界：
 
 - 只在工具的 `run` 里可用；命令、钩子、`prompt`、`activate` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`
-- 只能调 `tier = read` 的内置工具（如 `read`、`grep`、`find`）；写、shell、`run_code`、MCP 工具与插件工具一律拒绝
+- 只放行白名单里的只读工具：`read`、`grep`、`find`、`web_search`、`web_fetch`；写、shell、`job`、`ask`、`todo`、`run_code`、MCP 工具与插件工具一律拒绝
 - 不能调自身或其它插件工具，也不能从 `run_code` 里调用插件工具（`E_PLUGIN_RECURSION`）
 
 ## 执行模型与边界
 
 - **每个插件一个专用线程**，线程里建独立的 QuickJS `Runtime`。插件之间不共享全局状态，一个插件的死循环不会卡住另一个（各自有 `call_timeout_ms`）。
 - 同一个插件的调用**串行**：工具、命令、钩子、`prompt` 排队执行。插件里不需要自己加锁。
-- **超时/取消**：到 `call_timeout_ms` 时宿主置中断标志，QuickJS 在 JS 执行期间中断，返回 `E_PLUGIN_TIMEOUT`；该插件在**本进程内**被禁用，`/plugins` 与 `plugin/list` 会显示原因，重启 moc 恢复。这样一次卡死不会让后续每个调用都再等一轮超时。
+- **加载超时**：`load_timeout_ms` 覆盖模块求值与 `activate`。到点仍未完成时中断 JS 并返回 `E_PLUGIN_TIMEOUT`，该插件按加载失败列出，不会拖住启动它的提示。
+- **调用超时**：JS 自身跑到 `call_timeout_ms` 时宿主置中断标志，QuickJS 在 JS 执行期间中断，返回 `E_PLUGIN_TIMEOUT`；该插件在**本进程内**被禁用，`/plugins` 与 `plugin/list` 会显示原因，重启 moc 恢复。这样一次卡死不会让后续每个调用都再等一轮超时。
+- **借宿主工具时超时**：插件线程在等 `tools.call` 的宿主工具，同样受同一个 `call_timeout_ms` 约束（宿主工具本身慢不会被无限等待）；这条路径只让本次调用失败，不禁用插件。
 - **内存**：`memory_limit_bytes`（默认 64 MiB）是单个 Runtime 的上限，超限抛 `E_PLUGIN_MEMORY`。
 - **模块解析**：只允许 `moc` 这个虚拟模块与插件目录内的相对路径（`./x.js` / `../y.mjs`）。裸模块名与 `node:` 内置模块一律拒绝；没有 `node_modules`，也没有文件、网络、进程、定时器 API——需要这些能力就通过 `tools.call` 借宿主的工具。
 - **崩溃**：QuickJS 是嵌入式的，C 层崩溃会带走整个 moc 进程。这是嵌入执行换来的代价：插件不是沙盒，是「你信任的本地代码」。
-- 同步 API：插件里的一切都是同步的（`kv`、`tools.call` 都直接返回）。`run`/`prompt`/钩子可以返回 Promise，宿主会等待其落定。
+- 同步 API：插件里的 `tools.call` 直接返回。`run`、命令、钩子、`prompt`、`activate` 可以返回 Promise，宿主会驱动 QuickJS 的任务队列等到落定；没有定时器与事件循环，所以永远不落定的 Promise 会报 `E_PLUGIN_STATE`，不会静默变成 `{}`。
 
 ## 配置
 
@@ -199,9 +200,10 @@ max_plugins = 32
 memory_limit_bytes = 67108864
 load_timeout_ms = 5000    # 模块求值 + activate
 call_timeout_ms = 5000    # 单次工具/命令/钩子/prompt
-max_kv_bytes = 1048576
 max_prompt_chars = 4000
 ```
+
+改动何时生效：插件目录里的发现结果、`plugin.json` 与 `.js`/`.mjs` 内容（含子目录里的模块）变化，会在下一次提示或 `plugin/list` 时重建宿主；保存配置同样重建（`disable`、超时、内存上限）。被超时禁用的插件不在重建范围内，仍需重启 moc。
 
 ## 查看与调试
 
@@ -219,10 +221,11 @@ max_prompt_chars = 4000
 | `E_PLUGIN_THREAD` / `E_PLUGIN_RUNTIME` | 线程或 Runtime 起不来 |
 | `E_PLUGIN_MEMORY` | 超过 `memory_limit_bytes` |
 | `E_PLUGIN_TIMEOUT` / `E_PLUGIN_INTERRUPTED` | 超时或被打断 |
-| `E_PLUGIN_TOOLS_UNAVAILABLE` | 在不允许的地方调 `tools.call`，或调用了非只读工具 |
+| `E_PLUGIN_STATE` | 没有会话上下文却调用会话 API，或 Promise 永远不会落定 |
+| `E_PLUGIN_ARGUMENTS` | 工具参数不符合 `parameters` 里的 schema |
+| `E_PLUGIN_TOOLS_UNAVAILABLE` | 在不允许的地方调 `tools.call`，或调用了白名单外的工具 |
 | `E_PLUGIN_DENIED` | `beforeToolCall` 拒绝了本次调用 |
 | `E_PLUGIN_RECURSION` | 试图嵌套调用插件工具 |
-| `E_PLUGIN_KV_KEY` / `E_PLUGIN_KV_LIMIT` | KV 键非法或超出配额 |
 
 ## 示例
 

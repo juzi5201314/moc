@@ -1,4 +1,4 @@
-// moc 插件宿主 API 的类型声明（`crates/moc-plugin/js/moc.d.ts`）。
+// moc 插件宿主 API 的类型声明（与 `crates/moc-plugin/js/moc.d.ts` 保持一致）。
 //
 // 用法：把本文件拷到插件目录下的 `moc.d.ts`，插件 `index.js` 顶部写
 //   /** @type {import("./moc").Plugin} */
@@ -6,7 +6,7 @@
 //
 // 这里的每个函数在 moc 里都是**同步**的：宿主在插件专用线程里跑 QuickJS，
 // 跨边界调用会阻塞该线程直到返回。`run`/`prompt`/`activate` 可以是 async，
-// 但内部的 `kv` 与 `tools.call` 仍然是同步返回。
+// 但内部的 `tools.call` 仍然是同步返回。
 
 /** 宿主 API 版本；当前为 `"1"`。 */
 export const version: string;
@@ -15,20 +15,6 @@ export const version: string;
  * 当前会话快照。每次调用都重新读取，不缓存。
  */
 export function session(): Session;
-
-/** 插件级持久化键值存储：按插件名共享，跨项目、跨重启保留。 */
-export const kv: {
-  /** 读取一个键；不存在时返回 `undefined`。 */
-  get<T = unknown>(name: string): T | undefined;
-  /** 写入一个 JSON 可序列化的值；`undefined` 按 `null` 存。 */
-  set(name: string, value: unknown): void;
-  /** 删除一个键；返回是否真的删掉了。 */
-  delete(name: string): boolean;
-  /** 全部键名，升序。 */
-  keys(): string[];
-  /** 清空本插件的全部键。 */
-  clear(): void;
-};
 
 /** 写 moc 日志；`RUST_LOG=moc_plugin=debug` 时能看到 debug。 */
 export const log: {
@@ -41,13 +27,14 @@ export const log: {
 /**
  * 调用宿主工具。
  *
- * 只在工具的 `run` 里可用，且只能调用只读内置工具（`read`/`grep`/`find` 等）；
- * 在命令、钩子、`prompt`、`activate` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`。
+ * 只在工具的 `run` 里可用，且只放行 `read`、`grep`、`find`、`web_search`、`web_fetch`；
+ * 其它名字，以及在命令、钩子、`prompt`、`activate` 里调用，都会抛
+ * `E_PLUGIN_TOOLS_UNAVAILABLE`。
  * 失败以异常形式抛出，异常对象带 `code` 与 `message`。
  */
 export const tools: {
   call(
-    name: string,
+    name: "read" | "grep" | "find" | "web_search" | "web_fetch",
     args?: Record<string, unknown>,
   ): {
     content: string;
@@ -81,7 +68,7 @@ export interface ToolDefinition {
    * 只写这个工具自己的用法，不要重复通用工具政策。
    */
   description: string;
-  /** JSON Schema（`type: "object"`），原样进模型提示。 */
+  /** JSON Schema（`type: "object"`），原样进模型提示；调用时按其中的 `type`、`required`、`properties`、`additionalProperties`、`items`、`enum` 校验参数。 */
   parameters: {
     type: "object";
     properties?: Record<string, unknown>;
@@ -93,10 +80,11 @@ export interface ToolDefinition {
   /** 默认 `false`：作为批次屏障，不与其它工具并发。 */
   parallel?: boolean;
   /**
-   * 工具实现。`input` 是符合 `parameters` 的对象。
+   * 工具实现。`input` 是按 `parameters` 校验过的对象。
    *
    * 返回值：`string` 作为正文；`{content, structuredContent?, isError?}` 作为富结果；
    * 其它 JSON 会被 `JSON.stringify`；`undefined`/`null` 表示空正文。
+   * 返回的 Promise 会被等待；永远不会落定的 Promise 报 `E_PLUGIN_STATE`。
    */
   run(input: any, ctx: Session): ToolResult | Promise<ToolResult>;
 }
@@ -166,8 +154,13 @@ export interface Plugin {
   name?: string;
   version?: string;
   description?: string;
-  /** 模块求值完成后调用一次；宿主会等 Promise 落定。 */
-  activate?(ctx: Session): void | Promise<void>;
+  /**
+   * 模块求值完成后调用一次；宿主会等 Promise 落定，并受 `load_timeout_ms` 约束。
+   *
+   * 加载发生在会话之外，所以这里没有会话上下文：`session()` 与 `tools.call()`
+   * 都会抛错，`log` 可用。
+   */
+  activate?(): void | Promise<void>;
   /** 进程退出或插件卸载时调用。 */
   deactivate?(): void | Promise<void>;
   /** 工具名 → 定义。名字全局唯一，只允许字母、数字、下划线、连字符。 */
