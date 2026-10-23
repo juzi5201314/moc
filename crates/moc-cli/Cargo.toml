@@ -13,7 +13,11 @@ moc-tui = { path = "../moc-tui" }
 moc-web = { path = "../moc-web" }
 anyhow.workspace = true
 clap.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true

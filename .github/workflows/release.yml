@@ -90,11 +90,10 @@ jobs:
           file "$bin"
           file "$bin" | grep -qE 'statically linked|static-pie linked'
           "$bin" --version
-          mkdir -p dist package
-          cp "$bin" package/moc
-          archive="moc-$VERSION-$PLATFORM.tar.gz"
-          tar -C package -czf "dist/$archive" moc
-          (cd dist && sha256sum "$archive" > "$archive.sha256")
+          mkdir -p dist
+          raw="moc-$VERSION-$PLATFORM"
+          cp "$bin" "dist/$raw"
+          (cd dist && sha256sum "$raw" > "$raw.sha256")
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -103,13 +102,12 @@ jobs:
           $bin = "target/$env:TARGET/release/moc.exe"
           & $bin --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Force -Path dist, package | Out-Null
-          Copy-Item $bin package/moc.exe
-          $archiveName = "moc-$env:VERSION-$env:PLATFORM.zip"
-          $archive = Join-Path dist $archiveName
-          Compress-Archive -Path package/moc.exe -DestinationPath $archive -Force
-          $hash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
-          "$hash  $archiveName" | Set-Content -Path "$archive.sha256" -Encoding ascii
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $rawName = "moc-$env:VERSION-$env:PLATFORM.exe"
+          $rawPath = Join-Path dist $rawName
+          Copy-Item $bin $rawPath
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $rawPath).Hash.ToLower()
+          "$hash  $rawName" | Set-Content -Path "$rawPath.sha256" -Encoding ascii
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7

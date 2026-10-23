@@ -7,6 +7,7 @@
 pub mod args;
 mod render;
 mod repl;
+pub mod update;
 
 pub use args::CliArgs;
 
