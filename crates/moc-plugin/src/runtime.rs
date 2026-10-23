@@ -428,6 +428,17 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
                     format!("工具 `{name}` 的声明必须是对象"),
                 )
             })?;
+            for key in declaration.keys::<String>() {
+                let key = key.map_err(|error| js_error(ctx, error))?;
+                if !["description", "parameters", "modes", "parallel", "run"]
+                    .contains(&key.as_str())
+                {
+                    return Err(PluginError::new(
+                        "E_PLUGIN_DESCRIPTOR",
+                        format!("工具 `{name}` 的声明里有未知字段 `{key}`"),
+                    ));
+                }
+            }
             let description = required_text(ctx, &declaration, "description", &name)?;
             let parameters_value: JsValue = declaration
                 .get("parameters")
@@ -615,28 +626,30 @@ fn optional_bool<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
         .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是布尔值")))
 }
 
-/// 可选 `modes`：缺失/`null` 表示三种模式全开；存在时必须是 `normal`/`ask`/`plan`
+/// 可选 `modes`：缺失时三种模式全开；存在时必须是 `normal`/`ask`/`plan`
 /// 的非空字符串数组。`ptc` 不开放：PTC 只暴露 `run_code`，插件工具在那里不可达。
 fn optional_modes<'js>(ctx: &Ctx<'js>, object: &Object<'js>, owner: &str) -> Result<ModeMask> {
     let value: JsValue = object.get("modes").map_err(|error| js_error(ctx, error))?;
-    if value.is_undefined() || value.is_null() {
+    if value.is_undefined() {
         return Ok(ModeMask::ALL);
     }
-    let Value::Array(items) = js_to_json(ctx, value)? else {
-        return Err(PluginError::new(
+    let items = value.into_array().ok_or_else(|| {
+        PluginError::new(
             "E_PLUGIN_DESCRIPTOR",
             format!("工具 `{owner}` 的 modes 必须是字符串数组"),
-        ));
-    };
+        )
+    })?;
     let mut modes = ModeMask::empty();
-    for item in items {
-        let Some(name) = item.as_str() else {
-            return Err(PluginError::new(
+    for item in items.iter::<JsValue>() {
+        let item = item.map_err(|error| js_error(ctx, error))?;
+        let name = item.into_string().ok_or_else(|| {
+            PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
                 format!("工具 `{owner}` 的 modes 必须是字符串数组"),
-            ));
-        };
-        modes = modes.union(ModeMask::parse(name).ok_or_else(|| {
+            )
+        })?;
+        let name = name.to_string().map_err(|error| js_error(ctx, error))?;
+        modes = modes.union(ModeMask::parse(&name).ok_or_else(|| {
             PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
                 format!("工具 `{owner}` 的 modes 含未知模式 `{name}`（normal/ask/plan）"),
@@ -1178,9 +1191,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_unknown_tool_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        for (index, field) in ["mode", "unexpected"].into_iter().enumerate() {
+            let dir = temp.path().join(format!("case{index}"));
+            write_plugin(
+                &dir,
+                "index.js",
+                &format!(
+                    "export default {{ tools: {{ x: {{ description: \"x\", parameters: {{ type: \"object\" }}, {field}: [\"normal\"], run: () => \"ok\" }} }} }};"
+                ),
+            );
+            let (_worker, ready) = spawn(
+                "demo".into(),
+                dir.clone(),
+                dir.join("index.js"),
+                limits(Duration::from_secs(1)),
+            );
+            let error = ready
+                .await
+                .expect("插件线程存活")
+                .expect_err("未知字段应加载失败");
+            assert_eq!(error.code, "E_PLUGIN_DESCRIPTOR");
+            assert!(error.message.contains(field), "{error}");
+        }
+    }
+
+    #[tokio::test]
     async fn rejects_invalid_tool_modes() {
         let temp = tempfile::tempdir().unwrap();
-        for (index, modes) in [r#"["ptc"]"#, r#"[]"#, r#""plan""#].into_iter().enumerate() {
+        for (index, modes) in [
+            r#"["ptc"]"#,
+            r#"[]"#,
+            r#""plan""#,
+            "null",
+            r#"["plan", 1]"#,
+            r#"{ toJSON: () => ["plan"] }"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let dir = temp.path().join(format!("case{index}"));
             write_plugin(
                 &dir,

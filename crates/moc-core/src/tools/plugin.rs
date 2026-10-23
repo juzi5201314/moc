@@ -1,6 +1,6 @@
 //! 插件工具桥接：把 moc-plugin 注册的工具适配成 [`Tool`]。
 //!
-//! 插件工具在哪些会话模式可见由插件自己声明（`modes`），宿主不再按风险等级推断；
+//! 插件工具在哪些会话模式可见由插件自己声明（`modes`）；
 //! 能力边界仍由 `moc.tools.call()` 的只读白名单决定，见 [`ReadOnlyBridge`]。
 
 use std::pin::Pin;
@@ -241,7 +241,7 @@ mod tests {
         for name in ["read", "grep", "find", "web_search", "web_fetch"] {
             assert!(host_tool_allowed(name), "{name} 应在白名单里");
         }
-        // `tier = read` 不代表可以借给插件：这些会改状态、要人机交互或结束回合。
+        // 这些工具会改状态、要人机交互或结束回合，不属于插件能力面。
         for name in [
             "job",
             "ask",

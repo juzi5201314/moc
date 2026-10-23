@@ -347,7 +347,7 @@ impl ToolRegistry {
 
     /// 模型可见的工具定义：内置工具 + 调用方传入的插件工具。
     ///
-    /// 插件工具与 MCP 一样按风险等级判定模式；内置白名单不适用于它们。
+    /// 模式判定统一走 [`Tool::visible_in`]，配置开关与代理范围另外过滤。
     pub fn definitions(
         &self,
         mode: SessionMode,

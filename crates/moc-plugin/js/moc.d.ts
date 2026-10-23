@@ -79,7 +79,8 @@ export interface ToolDefinition {
    * 该工具在哪些会话模式可见；默认 `["normal", "ask", "plan"]`。
    *
    * 只影响模型工具表与调用放行，不授予任何额外能力：插件能做什么仍由
-   * `tools.call` 的只读白名单决定。空数组或未知模式会加载失败。
+   * `tools.call` 的只读白名单决定。显式值必须是非空模式数组，否则加载失败。
+   * `run_code` 不能发现或调用插件工具。
    */
   modes?: ToolMode[];
   /** 默认 `false`：作为批次屏障，不与其它工具并发。 */

@@ -134,14 +134,28 @@ async fn plugin_tool_runs_and_its_prompt_reaches_the_model() {
     harness.close().await;
 }
 
-/// 插件工具声明的 `modes` 决定它在模型工具表里何时出现。
+/// 插件工具声明的 `modes` 同时约束模型工具表和实际调用。
 #[tokio::test]
-async fn plugin_tool_modes_filter_the_model_tool_table() {
+async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream"),
-        )
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let has_result = body["messages"]
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
+            if has_result {
+                ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_raw(
+                    tool_stream(vec![
+                        ("hidden", "normal_only", json!({})),
+                        ("visible", "everywhere", json!({})),
+                    ]),
+                    "text/event-stream",
+                )
+            }
+        })
         .mount(&upstream)
         .await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
@@ -155,12 +169,12 @@ async fn plugin_tool_modes_filter_the_model_tool_table() {
               description: "只在标准模式可见",
               parameters: { type: "object" },
               modes: ["normal"],
-              run() { return "ok"; }
+              run() { return "HIDDEN_PLUGIN_EXECUTED"; }
             },
             everywhere: {
               description: "默认三种模式都可见",
               parameters: { type: "object" },
-              run() { return "ok"; }
+              run() { return "VISIBLE_PLUGIN_EXECUTED"; }
             }
           }
         };
@@ -185,6 +199,30 @@ async fn plugin_tool_modes_filter_the_model_tool_table() {
         names.contains(&"everywhere"),
         "默认全开的插件工具应可见：{names:?}"
     );
+    let results = load(&harness, &session).await;
+    assert!(
+        results.iter().any(|text| text.contains("E_MODE")),
+        "{results:?}"
+    );
+    assert!(
+        !results
+            .iter()
+            .any(|text| text.contains("HIDDEN_PLUGIN_EXECUTED")),
+        "隐藏工具不得执行：{results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|text| text.contains("VISIBLE_PLUGIN_EXECUTED")),
+        "可见工具应执行：{results:?}"
+    );
+    let plugins = plugin_list(&harness, &session).await;
+    let normal_only = plugins[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "normal_only")
+        .unwrap();
+    assert_eq!(normal_only.modes, ["normal"]);
 
     harness.close().await;
 }

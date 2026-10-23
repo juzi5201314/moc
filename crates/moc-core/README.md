@@ -129,7 +129,7 @@ PTC worker 入口已编译进 `moc`，CLI 启动时将当前 `moc` 作为子进�
 
 插件是本地目录里的 JavaScript（ES 模块），在 core 进程内用 QuickJS 执行（每个插件一个专用线程与 Runtime，与 PTC 的独立 worker 不同）。发现来源按优先级为项目 `.moc/plugins`（cwd 向上到 git root）、`[plugins] dirs`、`$MOC_HOME/plugins`；**发现即启用**，因此项目级来源等于信任该仓库，`[plugins] project=false` 或 `disable` 是退出口。完整契约见 [docs/plugins.md](../../docs/plugins.md)，类型声明在 `crates/moc-plugin/js/moc.d.ts`。
 
-插件可注册四类能力：工具（`modes` 取 `normal`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具的可见性完全由自己声明的 `modes` 决定（`normal` 覆盖 CLM 实验模式，PTC 不放行），宿主不再按风险等级推断；`run_code` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
+插件可注册四类能力：工具（`modes` 取 `normal`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定原生可见性（`normal` 覆盖 CLM 实验模式，PTC 不放行）；`run_code` 的工具目录不列出插件工具，`run_code` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
 
 `beforeToolCall` 只对模型发起的调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 是观察型，失败只记日志。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
 

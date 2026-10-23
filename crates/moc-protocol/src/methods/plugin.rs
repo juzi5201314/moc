@@ -84,3 +84,20 @@ pub struct PluginRunCommandResult {
     /// 插件返回的文本；前端按普通输出展示。
     pub text: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn plugin_tool_info_round_trips_the_current_contract() {
+        let expected = json!({
+            "name": "demo",
+            "description": "演示",
+            "modes": ["normal", "plan"],
+        });
+        let tool: PluginToolInfo = serde_json::from_value(expected.clone()).expect("工具声明");
+        assert_eq!(serde_json::to_value(tool).expect("序列化"), expected);
+    }
+}
