@@ -26,9 +26,9 @@ pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, Thi
 pub use schema::{
     BashConfig, CompactionConfig, CompactionMethod, CompactionThreshold, ContextFilesConfig,
     EditConfig, FindConfig, GrepConfig, HOST_PLUGIN_KEYS, JobConfig, JobOverflow, LimitsConfig,
-    OnDenied, OutputConfig, PluginsConfig, ReadConfig, RemoteCompactionConfig, RetentionConfig,
-    ShakeConfig, SkillsConfig, SoftMethod, SystemPromptConfig, TodoConfig, ToolsConfig,
-    WebFetchConfig, WebSearchConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
+    OnDenied, OutputConfig, PluginsConfig, PtcConfig, ReadConfig, RemoteCompactionConfig,
+    RetentionConfig, ShakeConfig, SkillsConfig, SoftMethod, SystemPromptConfig, TodoConfig,
+    ToolsConfig, WebFetchConfig, WebSearchConfig, WorkspaceConfig, WriteConfig, is_plugin_key,
 };
 
 /// 会话文件与保留策略；跨进程锁始终启用。

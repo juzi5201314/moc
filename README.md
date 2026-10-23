@@ -23,7 +23,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 cargo build --release
 ```
 
-需要 Rust 1.88+（brush-parser 的 MSRV）。构建产物为 `target/release/moc`；PTC worker 已内嵌在同一个二进制中，运行 `run_code` 时由 `moc` 自身以隐藏 worker 模式启动独立子进程。`cargo install --path crates/moc-cli` 只安装 `moc`。
+需要 Rust 1.88+（brush-parser 的 MSRV）。构建产物为 `target/release/moc`；PTC Host 已内嵌在同一个二进制中，首次 `run_code` 时由 `moc` 自身以隐藏 worker 模式启动一个长期子进程。`cargo install --path crates/moc-cli` 只安装 `moc`。
 
 shell 选择：Unix 上只接受 bash/zsh（fish/nushell 等回退 bash）；Windows 按 Git Bash → PowerShell → cmd 回退。实际解释器会写进系统提示的 `<env>`，命令始终在对应语法下执行。
 

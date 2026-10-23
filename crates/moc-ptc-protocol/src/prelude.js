@@ -4,6 +4,8 @@
   const requests = [];
   let nextId = 0;
   let maxPending = 0;
+  let maxTotal = 0;
+  let totalCalls = 0;
   let maxOutput = 0;
   let root = {state:'pending'};
   const stringify = JSON.stringify;
@@ -51,6 +53,8 @@
     try {
       const copy = json(operation, 'E_SERIALIZE');
       if (pending.size >= maxPending || nextId > 0xffffffff) throw fail('E_QUEUE_LIMIT', 'too many pending calls');
+      if (totalCalls >= maxTotal) throw fail('E_CALL_LIMIT', 'total host call limit exceeded');
+      totalCalls++;
       const id = nextId++;
       return new Promise((resolve, reject) => {
         pending.set(id, {resolve, reject});
@@ -87,8 +91,10 @@
   });
   Object.assign(globalThis, {tools,catalog,state});
   return Object.freeze({
-    start(code, count, output) {
+    start(code, count, total, output) {
       maxPending = count;
+      maxTotal = total;
+      totalCalls = 0;
       maxOutput = output;
       Promise.resolve().then(() => (new (async function(){}).constructor('tools','catalog','state',code))(tools,catalog,state))
         .then(value => {

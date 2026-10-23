@@ -101,6 +101,7 @@ pub(crate) struct CoreInner {
     pub skill_indexes: RwLock<HashMap<PathBuf, Arc<crate::skills::SkillIndex>>>,
     /// 每个项目一个插件宿主，键与 `project_configs` 相同。
     pub plugin_hosts: Mutex<HashMap<PathBuf, Arc<moc_plugin::PluginHost>>>,
+    pub ptc_host: Mutex<Option<Arc<crate::tools::ptc::PtcHost>>>,
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
     /// 本进程内子代理的运行状态。历史以持久化的 transcript 为准。
     pub agents: Mutex<crate::agents::AgentRegistry>,
@@ -432,6 +433,7 @@ impl Core {
                 mcp_managers: Mutex::new(HashMap::new()),
                 skill_indexes: RwLock::new(HashMap::new()),
                 plugin_hosts: Mutex::new(HashMap::new()),
+                ptc_host: Mutex::new(None),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
                 agents: Mutex::new(crate::agents::AgentRegistry::default()),
                 agent_tasks: Mutex::new(tokio::task::JoinSet::new()),
@@ -471,6 +473,9 @@ impl Core {
         let runtimes: Vec<_> = self.inner.runtimes.lock().await.values().cloned().collect();
         for runtime in runtimes {
             runtime.jobs.kill_all().await;
+        }
+        if let Some(host) = self.inner.ptc_host.lock().await.take() {
+            host.shutdown().await;
         }
         self.inner.runtimes.lock().await.clear();
         // 丢掉宿主句柄：插件线程收到退出信号后自己走 deactivate 并释放 Runtime。

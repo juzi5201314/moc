@@ -187,7 +187,6 @@ async fn perform(
 pub(super) async fn run(
     ctx: &ToolCtx,
     mut guest: Guest,
-    input: Vec<u8>,
     deadline: tokio::time::Instant,
 ) -> ToolOutcome {
     let mut child = ctx.clone();
@@ -199,8 +198,7 @@ pub(super) async fn run(
     let mut pending = BTreeMap::<u32, usize>::new();
     let mut pending_bytes = 0usize;
     let mut next_id = 0u64;
-    let mut input = input;
-    let mut first = true;
+    let mut input = Vec::new();
     let mut images = Vec::new();
     let mut outcome;
     'drive: loop {
@@ -208,18 +206,21 @@ pub(super) async fn run(
             biased;
             _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "script cancelled"); break; }
             _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "script timed out"); break; }
-            step = guest.step(&input, first, if first { config.max_output_bytes } else { config.max_result_bytes }) => match step {
+            step = guest.step(std::mem::take(&mut input)) => match step {
                 Ok(step) => step,
                 Err(err) => { outcome = err.into_outcome(); break; }
             }
         };
-        first = false;
         for request in step.requests {
             if u64::from(request.id) != next_id {
                 outcome = ToolOutcome::failure(
                     "E_PTC_PROTOCOL",
                     "request IDs must increase and be unique",
                 );
+                break 'drive;
+            }
+            if next_id >= config.max_total_calls as u64 {
+                outcome = ToolOutcome::failure("E_CALL_LIMIT", "total host call limit exceeded");
                 break 'drive;
             }
             next_id += 1;
@@ -284,6 +285,14 @@ pub(super) async fn run(
             biased;
             _ = ctx.cancel.cancelled() => { outcome = ToolOutcome::failure("E_CANCELLED", "script cancelled"); break; }
             _ = tokio::time::sleep_until(deadline) => { outcome = ToolOutcome::failure("E_TIMEOUT", "script timed out"); break; }
+            step = guest.receive() => {
+                outcome = match step {
+                    Ok(GuestStep { state: GuestState::Failed { error }, .. }) => ToolOutcome::failure(&error.code, error.message),
+                    Ok(_) => ToolOutcome::failure("E_PTC_PROTOCOL", "unexpected execution step while waiting for host calls"),
+                    Err(error) => error.into_outcome(),
+                };
+                break;
+            }
             completed = active.next() => completed.expect("活动队列非空"),
         };
         let (id, result, tool) = completed;
@@ -297,7 +306,7 @@ pub(super) async fn run(
                 break;
             }
         }
-        input = serde_json::to_vec(&[HostCompletion { id, result }]).expect("完成项可序列化");
+        input.push(HostCompletion { id, result });
     }
     // 取消还在执行的只读和进程类子工具；写入事务照常完整提交。
     child.cancel.cancel();
@@ -308,6 +317,7 @@ pub(super) async fn run(
     } else {
         "E_CANCELLED"
     };
+    guest.cancel(code);
     while let Some(request) = queue.pop_front() {
         let (_, _, tool) = perform(&child, request, Some(code)).await;
         if let Some(mut tool) = tool {

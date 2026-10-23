@@ -333,6 +333,9 @@ pub struct PtcConfig {
     pub max_concurrent_calls: usize,
     pub max_result_bytes: usize,
     pub max_pending_calls: usize,
+    pub max_total_calls: usize,
+    pub max_concurrent_runs: usize,
+    pub host_idle_timeout_secs: u64,
     pub max_state_bytes: usize,
 }
 
@@ -346,6 +349,9 @@ impl Default for PtcConfig {
             max_concurrent_calls: 16,
             max_result_bytes: 16 * 1024 * 1024,
             max_pending_calls: 256,
+            max_total_calls: 1000,
+            max_concurrent_runs: 16,
+            host_idle_timeout_secs: 600,
             max_state_bytes: 16 * 1024 * 1024,
         }
     }
@@ -372,6 +378,15 @@ pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreE
             "max_pending_calls",
             "必须不小于并发上限且不超过 65536",
         ));
+    }
+    if config.max_total_calls == 0 || config.max_total_calls > 1_000_000 {
+        return Err(fail("max_total_calls", "必须在 1..=1000000 范围内"));
+    }
+    if config.max_concurrent_runs == 0 {
+        return Err(fail("max_concurrent_runs", "必须大于 0"));
+    }
+    if config.host_idle_timeout_secs == 0 {
+        return Err(fail("host_idle_timeout_secs", "必须大于 0"));
     }
     if !(8 * 1024 * 1024..=u32::MAX as usize).contains(&config.memory_limit_bytes) {
         return Err(fail("memory_limit_bytes", "必须在 8 MiB..=u32::MAX 范围内"));

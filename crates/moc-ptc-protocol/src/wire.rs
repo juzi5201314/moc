@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// 包含 JSON 转义与 envelope 的传输帧硬上限；读端分配前即检查。
+pub const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartRequest {
@@ -11,6 +14,32 @@ pub struct StartRequest {
     pub max_output_bytes: usize,
     pub max_message_bytes: usize,
     pub max_pending_calls: usize,
+    pub max_total_calls: usize,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostMessage {
+    Start {
+        execution_id: u64,
+        request: StartRequest,
+    },
+    Complete {
+        execution_id: u64,
+        completions: Vec<HostCompletion>,
+    },
+    Cancel {
+        execution_id: u64,
+        code: String,
+    },
+    Shutdown,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum GuestMessage {
+    Step { execution_id: u64, step: GuestStep },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

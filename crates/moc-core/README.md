@@ -117,13 +117,13 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 代码编排（PTC）
 
-`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在 `moc` 自身以隐藏 worker 模式启动的独立子进程中（QuickJS-NG/rquickjs 原生执行，无 WASM、无 JIT），worker 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
+`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。Core 按需启动一个长期 `moc --ptc-worker` Host，多个逻辑 execution 通过 ID 复用同一进程；每次 execution 都创建全新的 QuickJS Runtime/Context，因此全局变量、Promise 和堆不会跨 execution 泄漏。Host 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
 
 脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。失败会 reject 带 `code`、`message`、`result` 的错误。`state.store/load/remove/keys` 提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
 
-PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_concurrent_calls`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
+PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_total_calls`、`max_concurrent_calls`、`max_concurrent_runs`、`host_idle_timeout_secs`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。同步 JS 循环由 QuickJS interrupt watchdog 中断，Core deadline 覆盖完整工具等待；取消若超过宽限期无响应会重启整个 Host，并让所有活跃 execution 收到 `E_PTC_WORKER`。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
 
-PTC worker 入口已编译进 `moc`，CLI 启动时将当前 `moc` 作为子进程并传入隐藏参数；因此发布和安装只需要一个 `moc` 文件。worker 崩溃或提前退出只影响本次脚本，core 收到 `E_PTC_WORKER` 并继续；超时或取消会终止子进程。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。worker 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
+PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为子进程并传入隐藏参数；因此发布和安装只需要一个 `moc` 文件。Host 崩溃、协议损坏或无法在取消宽限期内停止时，core 会让所有活跃 execution 收到 `E_PTC_WORKER`，随后下一次 execution 懒启动新 Host；空闲 Host 按 `host_idle_timeout_secs` 回收。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。Host 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
 
 ### 插件
 

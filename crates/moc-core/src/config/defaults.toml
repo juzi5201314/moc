@@ -41,6 +41,9 @@ memory_limit_bytes = 134217728
 max_output_bytes = 4194304
 max_result_bytes = 16777216
 max_pending_calls = 256
+max_total_calls = 1000
+max_concurrent_runs = 16
+host_idle_timeout_secs = 600
 max_state_bytes = 16777216
 
 
