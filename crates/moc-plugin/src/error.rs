@@ -2,7 +2,7 @@
 
 /// 宿主认识的错误码。插件自己抛出的异常若带 `code`，归一化到这一组里的某一个，
 /// 否则落到 `E_PLUGIN`——错误码是给上层分支判断用的，不能是任意字符串。
-pub const CODES: [&str; 20] = [
+pub const CODES: [&str; 18] = [
     "E_PLUGIN",
     "E_PLUGIN_LOAD",
     "E_PLUGIN_RUNTIME",
@@ -15,8 +15,6 @@ pub const CODES: [&str; 20] = [
     "E_PLUGIN_INTERRUPTED",
     "E_PLUGIN_TIMEOUT",
     "E_PLUGIN_CRASH",
-    "E_PLUGIN_KV_KEY",
-    "E_PLUGIN_KV_LIMIT",
     "E_PLUGIN_TOOL",
     "E_PLUGIN_COMMAND",
     "E_PLUGIN_DENIED",

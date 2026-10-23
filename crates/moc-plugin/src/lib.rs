@@ -8,15 +8,16 @@ pub mod descriptor;
 pub mod discovery;
 pub mod error;
 pub mod host;
-pub mod kv;
 pub mod loader;
 pub mod manifest;
 pub mod runtime;
+pub mod schema;
 
 pub use descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl, ToolTier};
 pub use error::{PluginError, Result};
 pub use host::{
     BeforeToolCall, CallContext, HostBridge, PluginHost, PluginInfo, Settings, ToolResult,
+    fingerprint,
 };
 pub use manifest::Manifest;
 pub use runtime::API_VERSION;

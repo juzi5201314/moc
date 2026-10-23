@@ -217,7 +217,6 @@ memory_limit_bytes = 67108864
 load_timeout_ms = 5000
 # 单次调用超时；超时的插件在本进程内禁用，需要重启 moc 恢复。
 call_timeout_ms = 5000
-max_kv_bytes = 1048576
 # 全部插件提示词贡献的总字符上限。
 max_prompt_chars = 4000
 

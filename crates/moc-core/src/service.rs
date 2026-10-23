@@ -274,21 +274,32 @@ impl CoreInner {
         Ok(catalog.summary())
     }
 
-    /// 获取该项目的插件宿主：首次调用时发现并加载全部插件，之后复用。
+    /// 获取该项目的插件宿主：没有就发现并加载，目录内容变了就重建。
+    ///
+    /// 缓存键是工作目录；命中之后还要比对目录指纹，插件目录增删或清单/模块改动都会
+    /// 让旧宿主失效。配置改动改不到文件，由保存配置时清空缓存。
     pub(crate) async fn project_plugins(
         &self,
         cwd: &Path,
     ) -> Result<Arc<moc_plugin::PluginHost>, CoreError> {
         let config = self.project_config(cwd)?;
         let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
-        if let Some(host) = self.plugin_hosts.lock().await.get(&key).cloned() {
+        let settings = config.plugins.settings();
+        let stamp = moc_plugin::fingerprint(&key, &config.home, &settings);
+        if let Some(host) = self.plugin_hosts.lock().await.get(&key).cloned()
+            && host.stamp() == stamp
+        {
             return Ok(host);
         }
         // 加载期间不持锁：模块求值可能耗到 load_timeout，不能挡住其它会话。
-        let settings = config.plugins.settings();
-        let host = moc_plugin::PluginHost::start(&key, &config.home, &settings).await;
-        let mut hosts = self.plugin_hosts.lock().await;
-        Ok(hosts.entry(key).or_insert(host).clone())
+        let reserved: Vec<&str> = self.tools.all().iter().map(|tool| tool.name()).collect();
+        let host = moc_plugin::PluginHost::start(&key, &config.home, &settings, &reserved).await;
+        // 必须覆盖：命中的旧宿主指纹过期了，`or_insert` 会把它留下、丢掉刚加载的这份。
+        self.plugin_hosts
+            .lock()
+            .await
+            .insert(key, Arc::clone(&host));
+        Ok(host)
     }
 
     /// 该项目的插件工具；插件宿主不可用时退化成空列表。
@@ -445,6 +456,8 @@ impl Core {
             runtime.jobs.kill_all().await;
         }
         self.inner.runtimes.lock().await.clear();
+        // 丢掉宿主句柄：插件线程收到退出信号后自己走 deactivate 并释放 Runtime。
+        self.inner.plugin_hosts.lock().await.clear();
     }
 
     /// 返回配置中的模型列表，供 CLI 展示与诊断。

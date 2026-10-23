@@ -22,7 +22,6 @@ use serde_json::Value;
 
 use crate::descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl, ToolTier};
 use crate::error::{PluginError, Result};
-use crate::kv::Kv;
 use crate::loader::{PluginLoader, PluginResolver};
 use crate::manifest::{valid_command_name, valid_tool_name};
 
@@ -108,7 +107,6 @@ pub(crate) fn spawn(
     name: String,
     dir: PathBuf,
     entry: PathBuf,
-    kv: Arc<Kv>,
     limits: Limits,
 ) -> (Worker, tokio::sync::oneshot::Receiver<Result<Descriptor>>) {
     let (command_tx, command_rx) = std::sync::mpsc::channel();
@@ -122,7 +120,7 @@ pub(crate) fn spawn(
     let thread_name = format!("moc-plugin-{name}");
     let spawned = std::thread::Builder::new()
         .name(thread_name)
-        .spawn(move || run_thread(dir, entry, kv, limits, interrupt, command_rx, ready_tx));
+        .spawn(move || run_thread(dir, entry, limits, interrupt, command_rx, ready_tx));
     if let Err(error) = spawned {
         // 线程都起不来时把错误通过同一个通道交回调用方。
         let worker = Worker {
@@ -153,10 +151,58 @@ struct Functions {
     commands: BTreeMap<String, Persistent<Function<'static>>>,
 }
 
+/// 加载阶段的看门狗：模块求值与 `activate` 都在它的预算里。
+///
+/// 求值发生在同步的插件线程上，宿主没有别的办法打断它，只能靠 QuickJS 的 interrupt
+/// handler：到点置标志，JS 执行期间轮询到就抛出不可捕获异常。
+struct LoadGuard {
+    stop: std::sync::mpsc::Sender<()>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    fired: Arc<AtomicBool>,
+}
+
+impl LoadGuard {
+    fn start(interrupt: &Arc<AtomicBool>, timeout: Duration) -> std::io::Result<Self> {
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(interrupt);
+        let timed_out = Arc::clone(&fired);
+        let handle = std::thread::Builder::new()
+            .name("moc-plugin-load".into())
+            .spawn(move || {
+                if stopped.recv_timeout(timeout).is_err() {
+                    timed_out.store(true, Ordering::SeqCst);
+                    flag.store(true, Ordering::SeqCst);
+                }
+            })?;
+        Ok(Self {
+            stop,
+            handle: Some(handle),
+            fired,
+        })
+    }
+
+    /// 结束看门狗、复位中断标志，返回它是否真的到点过。
+    fn finish(mut self, interrupt: &Arc<AtomicBool>) -> bool {
+        let _ = self.stop.send(());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        interrupt.store(false, Ordering::SeqCst);
+        self.fired.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for LoadGuard {
+    /// 线程异常退出时也要放走看门狗，别让它把「调用方没了」记成超时。
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+    }
+}
+
 fn run_thread(
     dir: PathBuf,
     entry: PathBuf,
-    kv: Arc<Kv>,
     limits: Limits,
     interrupt: Arc<AtomicBool>,
     commands: std::sync::mpsc::Receiver<Command>,
@@ -185,33 +231,59 @@ fn run_thread(
         }
     };
     let host: Rc<RefCell<Option<CallHost>>> = Rc::new(RefCell::new(None));
-    let initialized = context.with(|ctx| init(&ctx, &entry, &host, &kv));
-    let (descriptor, functions) = match initialized {
-        Ok(value) => value,
+    // 看门狗覆盖模块求值与 activate：两者都是同步 JS，跑飞了只能靠中断标志收场。
+    let guard = match LoadGuard::start(&interrupt, limits.load_timeout) {
+        Ok(guard) => guard,
         Err(error) => {
-            let _ = ready.send(Err(error));
+            let _ = ready.send(Err(PluginError::new(
+                "E_PLUGIN_THREAD",
+                format!("无法启动加载看门狗：{error}"),
+            )));
             return;
         }
     };
     let deadline = Instant::now() + limits.load_timeout;
-    if let Err(error) = context.with(|ctx| {
-        invoke(
-            &ctx,
-            &functions,
-            &host,
-            Invocation {
-                op: CallOp::Activate,
-                payload: Value::Null,
-                session: "null".into(),
-                tools_allowed: false,
-                deadline,
-                host_tx: None,
-            },
-        )
-    }) {
-        let _ = ready.send(Err(error));
-        return;
-    }
+    let loaded =
+        context
+            .with(|ctx| init(&ctx, &entry, &host))
+            .and_then(|(descriptor, functions)| {
+                context.with(|ctx| {
+                    invoke(
+                        &ctx,
+                        &functions,
+                        &host,
+                        Invocation {
+                            op: CallOp::Activate,
+                            payload: Value::Null,
+                            session: "null".into(),
+                            tools_allowed: false,
+                            deadline,
+                            host_tx: None,
+                        },
+                    )
+                })?;
+                Ok((descriptor, functions))
+            });
+    // 无论成功与否都要停掉看门狗并复位中断标志，否则后续调用会被立刻打断。
+    let timed_out = guard.finish(&interrupt);
+    let (descriptor, functions) = match (loaded, timed_out) {
+        // 加载在窗口内做完了：看门狗是否在边界上响过都不影响结果。
+        (Ok(value), _) => value,
+        (Err(_), true) => {
+            let _ = ready.send(Err(PluginError::new(
+                "E_PLUGIN_TIMEOUT",
+                format!(
+                    "插件在 {} ms 内没有完成加载（模块求值 + activate）",
+                    limits.load_timeout.as_millis()
+                ),
+            )));
+            return;
+        }
+        (Err(error), false) => {
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
     let _ = ready.send(Ok(descriptor));
 
     for command in commands {
@@ -271,9 +343,8 @@ fn init<'js>(
     ctx: &Ctx<'js>,
     entry: &Path,
     host: &Rc<RefCell<Option<CallHost>>>,
-    kv: &Arc<Kv>,
 ) -> Result<(Descriptor, Functions)> {
-    install_globals(ctx, host, kv)?;
+    install_globals(ctx, host)?;
     let name = entry.to_string_lossy().into_owned();
     let source = std::fs::read(entry).map_err(|error| {
         PluginError::new(
@@ -284,9 +355,14 @@ fn init<'js>(
     let module =
         Module::declare(ctx.clone(), name, source).map_err(|error| js_error(ctx, error))?;
     let (module, promise) = module.eval().map_err(|error| js_error(ctx, error))?;
-    promise
-        .finish::<()>()
-        .map_err(|error| js_error(ctx, error))?;
+    promise.finish::<()>().map_err(|error| match error {
+        // 没有定时器与事件循环：顶层 await 等不到的东西永远等不到。
+        rquickjs::Error::WouldBlock => PluginError::new(
+            "E_PLUGIN_STATE",
+            "模块顶层 await 没有落定：插件里没有定时器或事件循环",
+        ),
+        error => js_error(ctx, error),
+    })?;
     // `moc` 模块已经把宿主对象捕获进闭包，全局桥不必再暴露给插件代码。
     let _ = ctx.eval::<(), _>("delete globalThis.__moc");
     let namespace = module.namespace().map_err(|error| js_error(ctx, error))?;
@@ -549,78 +625,11 @@ fn optional_bool<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
         .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是布尔值")))
 }
 
-/// 建宿主桥：`kv`、`log`、`session`、`tools.call`。
-fn install_globals<'js>(
-    ctx: &Ctx<'js>,
-    host: &Rc<RefCell<Option<CallHost>>>,
-    kv: &Arc<Kv>,
-) -> Result<()> {
+/// 建宿主桥：`log`、`session`、`tools.call`。
+fn install_globals<'js>(ctx: &Ctx<'js>, host: &Rc<RefCell<Option<CallHost>>>) -> Result<()> {
     let bridge = Object::new(ctx.clone()).map_err(|error| js_error(ctx, error))?;
     bridge
         .set("version", API_VERSION)
-        .map_err(|error| js_error(ctx, error))?;
-
-    let store = Arc::clone(kv);
-    let get = Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>, key: String| -> rquickjs::Result<Option<String>> {
-            match store.get(&key) {
-                Ok(value) => Ok(value.map(|value| value.to_string())),
-                Err(error) => Err(throw(&ctx, &error)),
-            }
-        },
-    )
-    .map_err(|error| js_error(ctx, error))?;
-    bridge
-        .set("kvGet", get)
-        .map_err(|error| js_error(ctx, error))?;
-
-    let store = Arc::clone(kv);
-    let set = Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>, key: String, text: String| -> rquickjs::Result<()> {
-            let value: Value = serde_json::from_str(&text).map_err(|error| {
-                throw(
-                    &ctx,
-                    &PluginError::new("E_PLUGIN_VALUE", format!("kv 值不是合法 JSON：{error}")),
-                )
-            })?;
-            store.set(&key, value).map_err(|error| throw(&ctx, &error))
-        },
-    )
-    .map_err(|error| js_error(ctx, error))?;
-    bridge
-        .set("kvSet", set)
-        .map_err(|error| js_error(ctx, error))?;
-
-    let store = Arc::clone(kv);
-    let delete = Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>, key: String| -> rquickjs::Result<bool> {
-            store.delete(&key).map_err(|error| throw(&ctx, &error))
-        },
-    )
-    .map_err(|error| js_error(ctx, error))?;
-    bridge
-        .set("kvDelete", delete)
-        .map_err(|error| js_error(ctx, error))?;
-
-    let store = Arc::clone(kv);
-    let keys = Function::new(ctx.clone(), move || -> String {
-        serde_json::to_string(&store.keys()).unwrap_or_else(|_| "[]".into())
-    })
-    .map_err(|error| js_error(ctx, error))?;
-    bridge
-        .set("kvKeys", keys)
-        .map_err(|error| js_error(ctx, error))?;
-
-    let store = Arc::clone(kv);
-    let clear = Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> rquickjs::Result<()> {
-        store.clear().map_err(|error| throw(&ctx, &error))
-    })
-    .map_err(|error| js_error(ctx, error))?;
-    bridge
-        .set("kvClear", clear)
         .map_err(|error| js_error(ctx, error))?;
 
     let log = Function::new(
@@ -786,9 +795,8 @@ fn dispatch<'js>(
                 return Ok(Value::Null);
             };
             // 生命周期钩子不带会话：加载发生在会话之外，`moc.session()` 此时不可用。
-            function
-                .call::<_, JsValue>(())
-                .map_err(|error| js_error(ctx, error))?;
+            let result: JsValue = function.call(()).map_err(|error| js_error(ctx, error))?;
+            settle(ctx, result)?;
             Ok(Value::Null)
         }
         CallOp::Tool => {
@@ -810,7 +818,7 @@ fn dispatch<'js>(
             let result: JsValue = function
                 .call((arguments, context_value()?))
                 .map_err(|error| js_error(ctx, error))?;
-            js_to_json(ctx, result)
+            settle(ctx, result)
         }
         CallOp::Command => {
             let name = payload
@@ -834,7 +842,7 @@ fn dispatch<'js>(
             let result: JsValue = function
                 .call((arguments, context_value()?))
                 .map_err(|error| js_error(ctx, error))?;
-            js_to_json(ctx, result)
+            settle(ctx, result)
         }
         CallOp::BeforeToolCall | CallOp::AfterToolCall => {
             let export = export_object(ctx, functions)?;
@@ -851,7 +859,7 @@ fn dispatch<'js>(
             let result: JsValue = function
                 .call((event, context_value()?))
                 .map_err(|error| js_error(ctx, error))?;
-            js_to_json(ctx, result)
+            settle(ctx, result)
         }
         CallOp::Prompt => {
             let export = export_object(ctx, functions)?;
@@ -860,7 +868,7 @@ fn dispatch<'js>(
             let result: JsValue = function
                 .call::<_, JsValue>((context_value()?,))
                 .map_err(|error| js_error(ctx, error))?;
-            js_to_json(ctx, result)
+            settle(ctx, result)
         }
     }
 }
@@ -896,6 +904,27 @@ fn optional_function<'js>(
         .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是函数")))
 }
 
+/// 把插件函数的返回值转成 JSON；返回 Promise 时先驱动 QuickJS 的任务队列直到落定。
+///
+/// 插件里没有定时器和事件循环，`finish` 在队列耗尽仍 Pending 时返回 `WouldBlock`：
+/// 这种 Promise 永远等不到结果，按状态错误报出去，而不是静默变成 `{}`。
+fn settle<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Value> {
+    if !value.is_promise() {
+        return js_to_json(ctx, value);
+    }
+    let promise = value
+        .into_promise()
+        .expect("is_promise 判定之后一定是 Promise");
+    match promise.finish::<JsValue>() {
+        Ok(resolved) => js_to_json(ctx, resolved),
+        Err(rquickjs::Error::WouldBlock) => Err(PluginError::new(
+            "E_PLUGIN_STATE",
+            "函数返回的 Promise 没有落定：插件里没有定时器或事件循环，Promise 必须能自行完成",
+        )),
+        Err(error) => Err(js_error(ctx, error)),
+    }
+}
+
 fn js_to_json<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Value> {
     if value.is_undefined() || value.is_null() {
         return Ok(Value::Null);
@@ -926,7 +955,7 @@ fn js_error(ctx: &Ctx<'_>, error: rquickjs::Error) -> PluginError {
     caught(ctx, CaughtError::from_error(ctx, error))
 }
 
-fn caught(_ctx: &Ctx<'_>, error: CaughtError<'_>) -> PluginError {
+fn caught<'js>(ctx: &Ctx<'js>, error: CaughtError<'js>) -> PluginError {
     match error {
         CaughtError::Exception(exception) => {
             let message = exception
@@ -942,7 +971,16 @@ fn caught(_ctx: &Ctx<'_>, error: CaughtError<'_>) -> PluginError {
                 .unwrap_or_else(|| default_code(&message));
             PluginError::new(code, message)
         }
-        CaughtError::Value(value) => PluginError::new("E_PLUGIN", value.type_name().to_owned()),
+        // `throw "文本"` / `Promise.reject(值)`：把值本身变成可读消息，别只剩一个类型名。
+        CaughtError::Value(value) => {
+            let message = ctx
+                .json_stringify(value)
+                .ok()
+                .flatten()
+                .and_then(|text| text.to_string().ok())
+                .unwrap_or_else(|| "插件抛出了无法序列化的值".to_owned());
+            PluginError::new("E_PLUGIN", message)
+        }
         CaughtError::Error(error) => map_error(error),
     }
 }
@@ -985,17 +1023,15 @@ mod tests {
         std::fs::write(dir.join(main), body).unwrap();
     }
 
-    async fn load(dir: &Path, call: Duration) -> (Worker, Descriptor, Arc<Kv>) {
-        let kv = Arc::new(Kv::open(&dir.join("data"), "demo", 1 << 20));
+    async fn load(dir: &Path, call: Duration) -> (Worker, Descriptor) {
         let (worker, ready) = spawn(
             "demo".into(),
             dir.to_path_buf(),
             dir.join("index.js"),
-            Arc::clone(&kv),
             limits(call),
         );
         let descriptor = ready.await.expect("插件线程存活").expect("插件加载成功");
-        (worker, descriptor, kv)
+        (worker, descriptor)
     }
 
     async fn call(
@@ -1022,19 +1058,19 @@ mod tests {
     const SESSION: &str = r#"{"sessionId":"s1","cwd":"/tmp","mode":"normal","permission":"full","model":"m","isSubagent":false}"#;
 
     #[tokio::test]
-    async fn evaluates_tools_commands_and_kv() {
+    async fn evaluates_tools_commands() {
         let temp = tempfile::tempdir().unwrap();
         write_plugin(
             temp.path(),
             "index.js",
             r#"
-            import { kv, session } from "moc";
+            import { session } from "moc";
             export default {
               tools: {
                 greet: {
                   description: "打招呼",
                   parameters: { type: "object", properties: { name: { type: "string" } } },
-                  run(input, ctx) { kv.set("last", input); return `hi ${input.name} from ${ctx.model}`; }
+                  run(input, ctx) { return `hi ${input.name} from ${ctx.model}`; }
                 }
               },
               commands: { echo: { description: "回显", run(args) { return `echo:${args}`; } } },
@@ -1042,7 +1078,7 @@ mod tests {
             };
             "#,
         );
-        let (worker, descriptor, kv) = load(temp.path(), Duration::from_secs(2)).await;
+        let (worker, descriptor) = load(temp.path(), Duration::from_secs(2)).await;
         assert_eq!(descriptor.tools.len(), 1);
         assert_eq!(descriptor.tools[0].tier, ToolTier::Read);
         assert_eq!(descriptor.commands[0].name, "echo");
@@ -1059,7 +1095,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(value, json!("hi moc from m"));
-        assert_eq!(kv.get("last").unwrap(), Some(json!({"name":"moc"})));
 
         let value = call(
             &worker,
@@ -1103,7 +1138,7 @@ mod tests {
             };
             "#,
         );
-        let (worker, descriptor, _) = load(temp.path(), Duration::from_secs(2)).await;
+        let (worker, descriptor) = load(temp.path(), Duration::from_secs(2)).await;
         assert!(descriptor.has_hook(HookKind::BeforeToolCall));
         let value = call(
             &worker,
@@ -1148,7 +1183,7 @@ mod tests {
             };
             "#,
         );
-        let (worker, _, _) = load(temp.path(), Duration::from_secs(2)).await;
+        let (worker, _) = load(temp.path(), Duration::from_secs(2)).await;
         let error = call(
             &worker,
             CallOp::Tool,
@@ -1174,7 +1209,7 @@ mod tests {
             };
             "#,
         );
-        let (worker, _, _) = load(temp.path(), Duration::from_secs(2)).await;
+        let (worker, _) = load(temp.path(), Duration::from_secs(2)).await;
         let (reply, ready) = tokio::sync::oneshot::channel();
         worker
             .call(CallRequest {
@@ -1225,12 +1260,10 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("plugin.json"), r#"{"name":"demo"}"#).unwrap();
             std::fs::write(dir.join("index.js"), body).unwrap();
-            let kv = Arc::new(Kv::open(&dir.join("data"), "demo", 1 << 20));
             let (_worker, ready) = spawn(
                 "demo".into(),
                 dir.clone(),
                 dir.join("index.js"),
-                kv,
                 limits(Duration::from_secs(1)),
             );
             let error = ready.await.expect("线程存活").expect_err("必须失败");

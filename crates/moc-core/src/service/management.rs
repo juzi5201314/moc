@@ -153,6 +153,8 @@ pub(super) async fn manage(
             *inner.config.write() = Arc::new(resolved);
             inner.project_configs.write().clear();
             inner.skill_indexes.write().clear();
+            // 插件目录没变时指纹察觉不到配置改动（`disable`、超时、内存上限），必须显式丢弃宿主。
+            inner.plugin_hosts.lock().await.clear();
             // 指令文件按会话缓存：保存配置后必须让缓存失效，否则已有会话还用旧开关。
             let runtimes: Vec<_> = inner.runtimes.lock().await.values().cloned().collect();
             for runtime in runtimes {

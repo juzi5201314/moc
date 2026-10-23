@@ -95,8 +95,6 @@ pub struct PluginsConfig {
     pub load_timeout_ms: u64,
     /// 单次工具/命令/钩子调用的最长等待；超时后本进程内禁用该插件。
     pub call_timeout_ms: u64,
-    /// 单个插件 KV 的总字节上限。
-    pub max_kv_bytes: usize,
     /// 全部插件提示词贡献的总字符上限。
     pub max_prompt_chars: usize,
 }
@@ -113,7 +111,6 @@ impl Default for PluginsConfig {
             memory_limit_bytes: 64 * 1024 * 1024,
             load_timeout_ms: 5000,
             call_timeout_ms: 5000,
-            max_kv_bytes: 1024 * 1024,
             max_prompt_chars: 4000,
         }
     }
@@ -138,7 +135,6 @@ impl PluginsConfig {
             memory_limit_bytes: self.memory_limit_bytes,
             load_timeout: std::time::Duration::from_millis(self.load_timeout_ms),
             call_timeout: std::time::Duration::from_millis(self.call_timeout_ms),
-            max_kv_bytes: self.max_kv_bytes,
             max_prompt_chars: self.max_prompt_chars,
         }
     }
@@ -152,7 +148,6 @@ pub(super) fn validate_plugins(plugins: &PluginsConfig) -> Result<(), CoreError>
             "plugins.memory_limit_bytes",
             plugins.memory_limit_bytes as u64,
         ),
-        ("plugins.max_kv_bytes", plugins.max_kv_bytes as u64),
         ("plugins.max_prompt_chars", plugins.max_prompt_chars as u64),
         ("plugins.load_timeout_ms", plugins.load_timeout_ms),
         ("plugins.call_timeout_ms", plugins.call_timeout_ms),

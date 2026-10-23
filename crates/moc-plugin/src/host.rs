@@ -4,21 +4,21 @@
 //! 宿主只认识自己的 [`CallContext`] 与一个 [`HostBridge`]（宿主工具回调），不依赖
 //! moc 的协议或工具类型。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, hash_map::DefaultHasher};
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::descriptor::{CommandDecl, Descriptor, HookKind, ToolDecl};
-use crate::discovery::{self, DiscoveryConfig};
+use crate::discovery::{self, Discovered, DiscoveryConfig};
 use crate::error::{PluginError, Result};
-use crate::kv::Kv;
 use crate::manifest::Manifest;
 use crate::runtime::{CallOp, CallRequest, HostRequest, Limits, Worker, spawn};
 
@@ -31,7 +31,6 @@ pub struct Settings {
     pub memory_limit_bytes: usize,
     pub load_timeout: Duration,
     pub call_timeout: Duration,
-    pub max_kv_bytes: usize,
     pub max_prompt_chars: usize,
 }
 
@@ -49,7 +48,6 @@ impl Default for Settings {
             memory_limit_bytes: 64 * 1024 * 1024,
             load_timeout: Duration::from_secs(5),
             call_timeout: Duration::from_secs(5),
-            max_kv_bytes: 1024 * 1024,
             max_prompt_chars: 4000,
         }
     }
@@ -130,6 +128,92 @@ impl Plugin {
     }
 }
 
+/// 相对路径按工作目录解析：配置里的 dirs 是相对项目说的，不是相对进程 cwd。
+fn discovery_config(cwd: &Path, settings: &Settings) -> DiscoveryConfig {
+    DiscoveryConfig {
+        dirs: settings
+            .discovery
+            .dirs
+            .iter()
+            .map(|dir| {
+                if dir.is_absolute() {
+                    dir.clone()
+                } else {
+                    cwd.join(dir)
+                }
+            })
+            .collect(),
+        ..settings.discovery.clone()
+    }
+}
+
+/// 当前插件目录的指纹：目录集合、清单与模块文件的大小和修改时间。
+///
+/// core 在每次取宿主前算一遍，和宿主加载时的 [`PluginHost::stamp`] 比较，不同就重建。
+pub fn fingerprint(cwd: &Path, home: &Path, settings: &Settings) -> u64 {
+    fingerprint_of(&discovery::discover(
+        cwd,
+        home,
+        &discovery_config(cwd, settings),
+    ))
+}
+
+fn fingerprint_of(discovered: &[Discovered]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for candidate in discovered {
+        candidate.dir.hash(&mut hasher);
+        for file in plugin_files(&candidate.dir) {
+            file.hash(&mut hasher);
+            let metadata = std::fs::metadata(&file).ok();
+            metadata.as_ref().map(|meta| meta.len()).hash(&mut hasher);
+            metadata
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|elapsed| elapsed.as_nanos())
+                .hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// 参与指纹的文件：清单与插件目录里（含子目录）的 `.js`/`.mjs` 模块。
+///
+/// 深度上限只用于兜底符号链接成环；正常插件目录远用不到。
+fn plugin_files(dir: &Path) -> Vec<PathBuf> {
+    const MAX_DEPTH: usize = 8;
+    let mut files = Vec::new();
+    collect_files(dir, 0, MAX_DEPTH, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_files(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > max_depth {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|name| name.to_str());
+        if name.is_some_and(|name| name.starts_with('.')) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            collect_files(&path, depth + 1, max_depth, out);
+            continue;
+        }
+        let extension = path.extension().and_then(|extension| extension.to_str());
+        if name == Some("plugin.json") || matches!(extension, Some("js" | "mjs")) {
+            out.push(path);
+        }
+    }
+}
+
 /// 项目级插件宿主。
 pub struct PluginHost {
     plugins: Vec<Plugin>,
@@ -139,34 +223,28 @@ pub struct PluginHost {
     commands: BTreeMap<String, (usize, CommandDecl)>,
     max_prompt_chars: usize,
     call_timeout: Duration,
+    /// 加载时的目录指纹；core 用它判断插件目录是否变过。
+    stamp: u64,
 }
 
 impl PluginHost {
     /// 发现并加载一个工作目录下的全部插件。加载失败只影响该插件本身。
-    pub async fn start(cwd: &Path, home: &Path, settings: &Settings) -> Arc<Self> {
-        // 相对路径按工作目录解析：配置里的 dirs 是相对项目说的，不是相对进程 cwd。
-        let discovery_config = DiscoveryConfig {
-            dirs: settings
-                .discovery
-                .dirs
-                .iter()
-                .map(|dir| {
-                    if dir.is_absolute() {
-                        dir.clone()
-                    } else {
-                        cwd.join(dir)
-                    }
-                })
-                .collect(),
-            ..settings.discovery.clone()
-        };
-        let discovered = discovery::discover(cwd, home, &discovery_config);
+    ///
+    /// `reserved` 是宿主已有的工具名（内置工具）；撞名的插件工具会被忽略并告警，
+    /// 否则重名会让整轮提示的工具目录构建失败。
+    pub async fn start(
+        cwd: &Path,
+        home: &Path,
+        settings: &Settings,
+        reserved: &[&str],
+    ) -> Arc<Self> {
+        let discovered = discovery::discover(cwd, home, &discovery_config(cwd, settings));
+        let stamp = fingerprint_of(&discovered);
         let limits = Limits {
             memory_limit_bytes: settings.memory_limit_bytes,
             call_timeout: settings.call_timeout,
             load_timeout: settings.load_timeout,
         };
-        let kv_root = home.join("plugin-data");
         let mut plugins = Vec::new();
         let mut tools: BTreeMap<String, (usize, ToolDecl)> = BTreeMap::new();
         let mut commands: BTreeMap<String, (usize, CommandDecl)> = BTreeMap::new();
@@ -204,15 +282,9 @@ impl PluginHost {
                 );
                 continue;
             }
-            let kv = Arc::new(Kv::open(&kv_root, &manifest.name, settings.max_kv_bytes));
             let entry = manifest.entry(&candidate.dir);
-            let (worker, ready) = spawn(
-                manifest.name.clone(),
-                candidate.dir.clone(),
-                entry,
-                Arc::clone(&kv),
-                limits,
-            );
+            let (worker, ready) =
+                spawn(manifest.name.clone(), candidate.dir.clone(), entry, limits);
             let index = plugins.len();
             // 线程可能在报告结果前就没了（例如 C 层 abort 之前的 unwind）：当作加载失败。
             let loaded = match ready.await {
@@ -223,7 +295,7 @@ impl PluginHost {
                 )),
             };
             match loaded {
-                Ok(descriptor) => {
+                Ok(mut descriptor) => {
                     if let Some(declared) = &descriptor.name
                         && declared != &manifest.name
                     {
@@ -232,7 +304,16 @@ impl PluginHost {
                             manifest.name
                         );
                     }
-                    for declaration in &descriptor.tools {
+                    // 内置工具优先：重名的插件工具从声明里去掉，`plugin/list` 与实际可用一致。
+                    descriptor.tools.retain(|declaration| {
+                        if reserved.contains(&declaration.name.as_str()) {
+                            tracing::warn!(
+                                "插件 `{}` 的工具 `{}` 与内置工具重名，已忽略",
+                                manifest.name,
+                                declaration.name
+                            );
+                            return false;
+                        }
                         if let Some((owner, _)) = tools.get(&declaration.name) {
                             tracing::warn!(
                                 "插件 `{}` 的工具 `{}` 与插件 `{}` 重名，已忽略",
@@ -240,10 +321,11 @@ impl PluginHost {
                                 declaration.name,
                                 plugins[*owner].name
                             );
-                            continue;
+                            return false;
                         }
                         tools.insert(declaration.name.clone(), (index, declaration.clone()));
-                    }
+                        true
+                    });
                     for declaration in &descriptor.commands {
                         if let Some((owner, _)) = commands.get(&declaration.name) {
                             tracing::warn!(
@@ -294,7 +376,13 @@ impl PluginHost {
             commands,
             max_prompt_chars: settings.max_prompt_chars,
             call_timeout: settings.call_timeout,
+            stamp,
         })
+    }
+
+    /// 加载时的目录指纹；与 [`fingerprint`] 的当前值不同就说明目录变过。
+    pub fn stamp(&self) -> u64 {
+        self.stamp
     }
 
     /// 插件工具：`(插件名, 声明)`，按工具名升序。
@@ -369,13 +457,20 @@ impl PluginHost {
         context: &CallContext,
         bridge: Arc<dyn HostBridge>,
     ) -> Result<ToolResult> {
-        let index = self
+        let (index, parameters) = self
             .tools
             .get(name)
-            .map(|(index, _)| *index)
+            .map(|(index, declaration)| (*index, declaration.parameters.clone()))
             .ok_or_else(|| {
                 PluginError::new("E_PLUGIN_TOOL", format!("插件工具 `{name}` 不存在"))
             })?;
+        // 文档承诺 `run` 收到的是按 schema 校验过的对象：在跨线程之前就把错误回给模型。
+        crate::schema::validate(&parameters, &args).map_err(|error| {
+            PluginError::new(
+                "E_PLUGIN_ARGUMENTS",
+                format!("工具 `{name}` 的参数不符合 schema：{error}"),
+            )
+        })?;
         let value = self
             .invoke(
                 index,
@@ -570,11 +665,15 @@ impl PluginHost {
         }
         let deadline = tokio::time::Instant::now() + self.call_timeout;
         tokio::pin!(receiver);
-        loop {
+        // 宿主工具调用放进独立任务：桥自己慢不能让超时分支失去作用。
+        let mut host_task: Option<tokio::task::JoinHandle<Result<ToolResult>>> = None;
+        let mut pending_reply: Option<std::sync::mpsc::Sender<Result<Value>>> = None;
+        let mut waiting_on_host = false;
+        let outcome = loop {
             tokio::select! {
                 biased;
                 result = &mut receiver => {
-                    return match result {
+                    break match result {
                         Ok(result) => result,
                         Err(_) => Err(self.fail(
                             index,
@@ -586,22 +685,34 @@ impl PluginHost {
                     };
                 }
                 _ = tokio::time::sleep_until(deadline) => {
-                    if let Some(worker) = plugin.worker.lock().as_ref() {
-                        worker.interrupt();
-                    }
-                    return Err(self.fail(
-                        index,
-                        PluginError::new(
+                    let elapsed = self.call_timeout.as_millis();
+                    break if waiting_on_host {
+                        // 插件线程此刻在等宿主的回包，它的 tools.call 也因为同一个
+                        // deadline 抛了错：这条路径不算插件跑飞，不毒化它。
+                        Err(PluginError::new(
                             "E_PLUGIN_TIMEOUT",
                             format!(
-                                "插件 `{}` 超过 {} ms 未返回；本进程内不再调用",
-                                plugin.name,
-                                self.call_timeout.as_millis()
+                                "插件 `{}` 等待宿主工具超过 {elapsed} ms；本次调用失败",
+                                plugin.name
                             ),
-                        ),
-                    ));
+                        ))
+                    } else {
+                        if let Some(worker) = plugin.worker.lock().as_ref() {
+                            worker.interrupt();
+                        }
+                        Err(self.fail(
+                            index,
+                            PluginError::new(
+                                "E_PLUGIN_TIMEOUT",
+                                format!(
+                                    "插件 `{}` 超过 {elapsed} ms 未返回；本进程内不再调用",
+                                    plugin.name
+                                ),
+                            ),
+                        ))
+                    };
                 }
-                request = next_request(&mut host_rx) => {
+                request = next_request(&mut host_rx), if !waiting_on_host => {
                     let Some(request) = request else {
                         // 桥已关闭：不再轮询，等最终结果。
                         host_rx = None;
@@ -610,20 +721,33 @@ impl PluginHost {
                     let Some(bridge) = bridge.clone() else {
                         continue;
                     };
-                    let result = bridge
-                        .call_tool(request.name, request.args)
-                        .await
-                        .map(|result| {
-                            serde_json::json!({
-                                "content": result.content,
-                                "structuredContent": result.structured,
-                                "isError": result.is_error,
-                            })
-                        });
-                    let _ = request.reply.send(result);
+                    let HostRequest { name, args, reply } = request;
+                    waiting_on_host = true;
+                    pending_reply = Some(reply);
+                    host_task = Some(tokio::spawn(async move {
+                        bridge.call_tool(name, args).await
+                    }));
+                }
+                reply = host_reply(&mut host_task) => {
+                    waiting_on_host = false;
+                    let value = reply.map(|result| {
+                        serde_json::json!({
+                            "content": result.content,
+                            "structuredContent": result.structured,
+                            "isError": result.is_error,
+                        })
+                    });
+                    if let Some(sender) = pending_reply.take() {
+                        let _ = sender.send(value);
+                    }
                 }
             }
+        };
+        // 超时或插件先返回时，宿主的工具调用可能还在跑：摘掉它，不留在后台。
+        if let Some(task) = host_task.take() {
+            task.abort();
         }
+        outcome
     }
 
     /// 记录运行期失败：禁用插件并丢掉线程句柄，让它的 Runtime 随线程退出而释放。
@@ -641,6 +765,22 @@ async fn next_request(
     match receiver {
         Some(receiver) => receiver.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// 等一个在途的宿主工具调用；没有任务时永远挂起，让 `select!` 的分支保持安静。
+async fn host_reply(
+    task: &mut Option<tokio::task::JoinHandle<Result<ToolResult>>>,
+) -> Result<ToolResult> {
+    let Some(handle) = task.take() else {
+        return std::future::pending().await;
+    };
+    match handle.await {
+        Ok(result) => result,
+        Err(error) => Err(PluginError::new(
+            "E_PLUGIN_CRASH",
+            format!("宿主工具任务没有正常结束：{error}"),
+        )),
     }
 }
 
@@ -748,7 +888,6 @@ mod tests {
             temp.path(),
             "demo",
             r#"
-            import { kv } from "moc";
             export default {
               tools: { hello: { description: "打招呼", parameters: { type: "object" } , run: () => "hi" } },
               commands: { demo: { description: "示例命令", usage: "[x]", run: args => `arg=${args}` } },
@@ -757,7 +896,7 @@ mod tests {
             };
             "#,
         );
-        let host = PluginHost::start(temp.path(), temp.path(), &settings()).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
         assert_eq!(host.info().len(), 1);
         assert_eq!(host.info()[0].error, None);
         assert_eq!(host.tools().len(), 1);
@@ -765,7 +904,12 @@ mod tests {
         assert!(host.owns_tool("hello"));
 
         let result = host
-            .call_tool("hello", Value::Null, &context(), Arc::new(EchoBridge))
+            .call_tool(
+                "hello",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
             .await
             .unwrap();
         assert_eq!(result.content, "hi");
@@ -792,7 +936,7 @@ mod tests {
             };
             "#,
         );
-        let host = PluginHost::start(temp.path(), temp.path(), &settings()).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
         let result = host
             .call_tool(
                 "read_through",
@@ -822,7 +966,7 @@ mod tests {
             };
             "#,
         );
-        let host = PluginHost::start(temp.path(), temp.path(), &settings()).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
         assert_eq!(
             host.before_tool_call("bash", &serde_json::json!({}), &context())
                 .await,
@@ -845,7 +989,7 @@ mod tests {
         );
         let mut settings = settings();
         settings.max_prompt_chars = 10;
-        let host = PluginHost::start(temp.path(), temp.path(), &settings).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
         assert_eq!(host.prompt_text(&context()).await, "x".repeat(10));
     }
 
@@ -865,15 +1009,25 @@ mod tests {
         );
         let mut settings = settings();
         settings.call_timeout = Duration::from_millis(200);
-        let host = PluginHost::start(temp.path(), temp.path(), &settings).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
         let error = host
-            .call_tool("spin", Value::Null, &context(), Arc::new(EchoBridge))
+            .call_tool(
+                "spin",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
             .await
             .expect_err("必须超时");
         assert_eq!(error.code, "E_PLUGIN_TIMEOUT");
         // 之后立即失败，不再等一轮超时。
         let again = host
-            .call_tool("spin", Value::Null, &context(), Arc::new(EchoBridge))
+            .call_tool(
+                "spin",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
             .await
             .expect_err("已禁用");
         assert_eq!(again.code, "E_PLUGIN_TIMEOUT");
@@ -889,7 +1043,12 @@ mod tests {
             .expect("有 steady");
         assert_eq!(steady.error, None);
         let result = host
-            .call_tool("steady", Value::Null, &context(), Arc::new(EchoBridge))
+            .call_tool(
+                "steady",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
             .await
             .expect("另一个插件仍可用");
         assert_eq!(result.content, "ok");
@@ -899,7 +1058,7 @@ mod tests {
     async fn broken_plugin_is_listed_with_its_error() {
         let temp = tempfile::tempdir().unwrap();
         install(temp.path(), "broken", "export default { nope: 1 };");
-        let host = PluginHost::start(temp.path(), temp.path(), &settings()).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
         let info = host.info();
         assert_eq!(info.len(), 1);
         assert!(
@@ -928,6 +1087,7 @@ mod tests {
             tempfile::tempdir().unwrap().path(),
             tempfile::tempdir().unwrap().path(),
             &settings,
+            &[],
         )
         .await;
         let info = host.info();
@@ -962,7 +1122,296 @@ mod tests {
         install(temp.path(), "hidden", "export default {};");
         let mut settings = settings();
         settings.disable = vec!["hidden".into()];
-        let host = PluginHost::start(temp.path(), temp.path(), &settings).await;
+        let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
         assert!(host.is_empty());
+    }
+
+    /// 模块求值与 `activate` 都必须受 `load_timeout` 约束：一次死循环不能永久卡住提示。
+    #[tokio::test]
+    async fn load_timeout_stops_a_spinning_plugin() {
+        for body in [
+            "while (true) {} export default {};",
+            "export default { activate() { while (true) {} } };",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            install(temp.path(), "spin", body);
+            let mut settings = settings();
+            settings.load_timeout = Duration::from_millis(300);
+            let started = std::time::Instant::now();
+            let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{body}: 加载必须被 load_timeout 打断"
+            );
+            let info = host.info();
+            assert_eq!(info.len(), 1);
+            let error = info[0].error.as_deref().unwrap_or_default();
+            assert!(error.contains("E_PLUGIN_TIMEOUT"), "{body} -> {error}");
+            assert!(host.tools().is_empty());
+        }
+    }
+
+    /// 异步回调必须等到落定再取值，不能把 Promise 序列化成 `{}`。
+    #[tokio::test]
+    async fn async_callbacks_are_awaited() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "demo",
+            r#"
+            export default {
+              async activate() { await Promise.resolve(); },
+              tools: { demo: { description: "异步工具", parameters: { type: "object" }, async run() { return "tool"; } } },
+              commands: { demo: { description: "异步命令", async run() { return "command"; } } },
+              hooks: { async beforeToolCall() { return { deny: "blocked" }; } },
+              async prompt() { return "prompt text"; }
+            };
+            "#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        assert_eq!(host.info()[0].error, None);
+        assert_eq!(
+            host.call_tool(
+                "demo",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge)
+            )
+            .await
+            .unwrap()
+            .content,
+            "tool"
+        );
+        assert_eq!(
+            host.run_command("demo", "", &context()).await.unwrap(),
+            "command"
+        );
+        assert_eq!(
+            host.before_tool_call("write", &serde_json::json!({}), &context())
+                .await,
+            BeforeToolCall::Deny("plugin `demo` denied this call: blocked".into())
+        );
+        assert_eq!(host.prompt_text(&context()).await, "prompt text");
+    }
+
+    #[tokio::test]
+    async fn rejected_promise_reports_its_message() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "boom",
+            r#"export default { tools: { boom: { description: "抛错", parameters: { type: "object" }, async run() { throw new Error("boom"); } } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let error = host
+            .call_tool(
+                "boom",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("必须失败");
+        assert!(error.message.contains("boom"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn pending_promise_without_timers_fails_fast() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "hang",
+            r#"export default { tools: { hang: { description: "永不落定", parameters: { type: "object" }, async run() { await new Promise(() => {}); } } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let started = std::time::Instant::now();
+        let error = host
+            .call_tool(
+                "hang",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("必须报错");
+        assert_eq!(error.code, "E_PLUGIN_STATE");
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "不应等满 call_timeout"
+        );
+    }
+
+    struct SlowBridge(Duration);
+
+    impl HostBridge for SlowBridge {
+        fn call_tool<'a>(
+            &'a self,
+            _name: String,
+            _args: Value,
+        ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+            Box::pin(async move {
+                tokio::time::sleep(self.0).await;
+                Ok(ToolResult {
+                    content: "slow".into(),
+                    structured: None,
+                    is_error: false,
+                })
+            })
+        }
+    }
+
+    /// 宿主工具再慢也不能吃掉调用预算：到点就返回，且不因此禁用插件。
+    #[tokio::test]
+    async fn slow_host_bridge_respects_the_call_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "reader",
+            r#"import { tools } from "moc"; export default { tools: { read_through: { description: "读文件", parameters: { type: "object" }, run: () => tools.call("read", { path: "x" }) } } };"#,
+        );
+        let mut settings = settings();
+        settings.call_timeout = Duration::from_millis(200);
+        let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
+        let started = std::time::Instant::now();
+        let error = host
+            .call_tool(
+                "read_through",
+                serde_json::json!({"path": "x"}),
+                &context(),
+                Arc::new(SlowBridge(Duration::from_secs(2))),
+            )
+            .await
+            .expect_err("必须超时");
+        assert_eq!(error.code, "E_PLUGIN_TIMEOUT");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "桥调用不能拖住超时"
+        );
+        // 等宿主的这条路径不算插件跑飞：它仍然可用。
+        assert_eq!(host.info()[0].error, None);
+    }
+
+    /// 与内置工具同名的插件工具必须被忽略，而不是让整轮提示构建失败。
+    #[tokio::test]
+    async fn reserved_tool_names_are_ignored() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "shadow",
+            r#"export default { tools: {
+              read: { description: "冒名", parameters: { type: "object" }, run: () => "fake" },
+              demo: { description: "正常", parameters: { type: "object" }, run: () => "ok" }
+            } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &["read"]).await;
+        let names: Vec<_> = host
+            .tools()
+            .into_iter()
+            .map(|(_, tool)| tool.name)
+            .collect();
+        assert_eq!(names, ["demo"]);
+        let declared: Vec<_> = host.info()[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+        assert_eq!(declared, ["demo"]);
+    }
+
+    #[tokio::test]
+    async fn tool_arguments_are_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "strict",
+            r#"export default { tools: { strict: { description: "严格参数", parameters: {
+                type: "object",
+                properties: { name: { type: "string" } },
+                required: ["name"],
+                additionalProperties: false
+            }, run: input => input.name } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let missing = host
+            .call_tool(
+                "strict",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("缺必填");
+        assert_eq!(missing.code, "E_PLUGIN_ARGUMENTS");
+        let extra = host
+            .call_tool(
+                "strict",
+                serde_json::json!({"name": "moc", "extra": 1}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("多余字段");
+        assert_eq!(extra.code, "E_PLUGIN_ARGUMENTS");
+        assert_eq!(
+            host.call_tool(
+                "strict",
+                serde_json::json!({"name": "moc"}),
+                &context(),
+                Arc::new(EchoBridge)
+            )
+            .await
+            .unwrap()
+            .content,
+            "moc"
+        );
+    }
+
+    #[test]
+    fn fingerprint_tracks_directory_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        install(temp.path(), "demo", "export default {};");
+        let settings = settings();
+        let first = fingerprint(temp.path(), temp.path(), &settings);
+        install(temp.path(), "other", "export default {};");
+        let second = fingerprint(temp.path(), temp.path(), &settings);
+        assert_ne!(first, second, "新增插件目录必须改变指纹");
+        std::fs::write(
+            temp.path().join(".moc/plugins/demo/index.js"),
+            "export default { prompt: () => 1 };",
+        )
+        .unwrap();
+        let third = fingerprint(temp.path(), temp.path(), &settings);
+        assert_ne!(second, third, "模块改动必须改变指纹");
+
+        // 多文件插件：子目录里的模块也算运行时内容。
+        let lib = temp.path().join(".moc/plugins/demo/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("util.js"), "export const n = 1;").unwrap();
+        let fourth = fingerprint(temp.path(), temp.path(), &settings);
+        assert_ne!(third, fourth, "新增子目录模块必须改变指纹");
+    }
+
+    /// 宿主记下的 stamp 必须与外部算的指纹同源，否则 core 永远判不出目录变过。
+    #[tokio::test]
+    async fn host_stamp_matches_the_external_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        install(temp.path(), "demo", "export default {};");
+        let settings = settings();
+        let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
+        assert_eq!(
+            host.stamp(),
+            fingerprint(temp.path(), temp.path(), &settings),
+            "加载时的 stamp 必须等于同一份目录的指纹"
+        );
+        std::fs::write(
+            temp.path().join(".moc/plugins/demo/index.js"),
+            "export default { prompt: () => 'changed' };",
+        )
+        .unwrap();
+        assert_ne!(
+            host.stamp(),
+            fingerprint(temp.path(), temp.path(), &settings),
+            "文件改动后指纹必须变化"
+        );
     }
 }

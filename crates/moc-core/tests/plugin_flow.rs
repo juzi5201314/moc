@@ -3,7 +3,8 @@
 mod support;
 
 use moc_protocol::methods::{
-    PluginList, PluginListParams, SessionLoad, SessionLoadParams, SessionMode,
+    ConfigAction, ConfigManage, ConfigReply, ConfigScope, PluginInfo, PluginList, PluginListParams,
+    SessionLoad, SessionLoadParams, SessionMode,
 };
 use serde_json::{Value, json};
 use support::{Harness, text_stream, tool_result_texts, tool_stream};
@@ -20,6 +21,17 @@ fn install_plugin(harness: &Harness, name: &str, body: &str) {
     )
     .unwrap();
     std::fs::write(dir.join("index.js"), body).unwrap();
+}
+
+async fn plugin_list(harness: &Harness, session: &str) -> Vec<PluginInfo> {
+    harness
+        .client
+        .call::<PluginList>(PluginListParams {
+            session_id: session.into(),
+        })
+        .await
+        .unwrap()
+        .plugins
 }
 
 async fn load(harness: &Harness, session: &str) -> Vec<String> {
@@ -229,6 +241,79 @@ async fn before_hook_rewrites_arguments_before_execution() {
     assert!(
         !results.iter().any(|text| text.contains("原始内容")),
         "原参数不应被使用：{results:?}"
+    );
+
+    harness.close().await;
+}
+
+/// 插件目录内容变化要在下一次 `plugin/list` 生效，不能一直用首次加载的宿主。
+#[tokio::test]
+async fn plugin_list_reloads_after_files_change() {
+    let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
+    install_plugin(
+        &harness,
+        "demo",
+        r#"export default { tools: { alpha: { description: "第一个", parameters: { type: "object" }, run: () => "a" } } };"#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+    let plugins = plugin_list(&harness, &session).await;
+    assert_eq!(plugins[0].tools[0].name, "alpha");
+
+    install_plugin(
+        &harness,
+        "demo",
+        r#"export default { tools: { beta: { description: "改过的工具描述", parameters: { type: "object" }, run: () => "b" } } };"#,
+    );
+    let plugins = plugin_list(&harness, &session).await;
+    assert_eq!(
+        plugins[0].tools[0].name, "beta",
+        "模块改动后必须重建宿主：{plugins:?}"
+    );
+
+    harness.close().await;
+}
+
+/// 保存配置要丢弃插件宿主：`disable` 改不到磁盘，指纹察觉不到。
+#[tokio::test]
+async fn config_save_disables_plugins() {
+    let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
+    install_plugin(&harness, "demo", "export default { prompt: () => 'x' };");
+    let session = harness.session(SessionMode::Normal).await;
+    assert_eq!(plugin_list(&harness, &session).await.len(), 1);
+
+    let cwd = harness
+        .root
+        .path()
+        .join("work")
+        .to_string_lossy()
+        .into_owned();
+    let reply = harness
+        .client
+        .call::<ConfigManage>(ConfigAction::Read {
+            scope: ConfigScope::Global,
+            cwd: cwd.clone(),
+        })
+        .await
+        .unwrap();
+    let ConfigReply::Settings(document) = reply else {
+        panic!("设置文档");
+    };
+    let mut edited = document.document.clone();
+    edited["plugins"] = json!({"disable": ["demo"]});
+    harness
+        .client
+        .call::<ConfigManage>(ConfigAction::Save {
+            scope: ConfigScope::Global,
+            cwd,
+            document: edited,
+            revision: document.revision,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        plugin_list(&harness, &session).await.is_empty(),
+        "保存配置后必须按新配置重建宿主"
     );
 
     harness.close().await;
