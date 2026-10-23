@@ -47,7 +47,7 @@ pub struct CoreConfig {
     pub ptc_worker: Option<PtcWorkerCommand>,
 }
 
-/// 启动 `moc-ptc-worker` 的命令。CLI 默认指向同目录的 worker 二进制。
+/// 启动 PTC worker 的命令。CLI 默认复用当前 `moc` 并传入隐藏 worker 参数。
 #[derive(Clone, Debug)]
 pub struct PtcWorkerCommand {
     pub program: std::path::PathBuf,

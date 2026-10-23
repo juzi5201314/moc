@@ -67,11 +67,10 @@ impl Harness {
                 overlays: vec![],
                 session_dir: Some(root.path().join("sessions")),
                 client: moc_llm::Client::new(),
-                ptc_worker: std::env::var_os("MOC_PTC_WORKER_BIN").map(|program| {
-                    PtcWorkerCommand {
-                        program: program.into(),
-                        args: Vec::new(),
-                    }
+                // PTC worker 内嵌在 moc 中：测试通过 MOC_TEST_BIN 指向 moc 可执行文件。
+                ptc_worker: std::env::var_os("MOC_TEST_BIN").map(|program| PtcWorkerCommand {
+                    program: program.into(),
+                    args: vec!["--ptc-worker".into()],
                 }),
             },
             sandbox_support,

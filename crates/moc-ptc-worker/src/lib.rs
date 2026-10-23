@@ -68,7 +68,7 @@ pub fn run<R: BufRead, W: Write>(mut input: R, mut output: W) -> Result<()> {
     }
 }
 
-/// 供 `moc-ptc-worker` 二进制使用的入口。
+/// 供 `moc --ptc-worker` 入口使用的 stdio 包装。
 pub fn run_stdio() -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

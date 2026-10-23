@@ -117,13 +117,13 @@ TUI `/config` 按选项卡分区，供应商与模型用可折叠分组展示；
 
 ### 代码编排（PTC）
 
-`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在独立的 `moc-ptc-worker` 进程中（QuickJS-NG/rquickjs 原生执行，无 WASM、无 JIT），worker 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
+`run_code` 在标准、问答、计划和 PTC 模式均可作为代码入口；PTC 模式的原生工具面仅保留它。脚本运行在 `moc` 自身以隐藏 worker 模式启动的独立子进程中（QuickJS-NG/rquickjs 原生执行，无 WASM、无 JIT），worker 与 core 通过一行一条 JSON 的 RPC 推进脚本；工具和 MCP 调用由本次提示创建的目录按权限执行，不会把完整 MCP schema 注入模型，也不会跨项目共享目录。脚本应先用 `catalog.search()` / `catalog.describe()` 发现 MCP，再通过 `tools[name](args)` 调用。
 
 脚本工具结果固定为 `{content, summary, structuredContent, isError, status, artifact}`；结构化 MCP 数据保留原始 JSON，文本预算只影响模型展示。失败会 reject 带 `code`、`message`、`result` 的错误。`state.store/load/remove/keys` 提供会话级 JSON 状态，每次成功写入立即追加到 JSONL，重启和回退按日志重建，普通 JavaScript 全局变量不会跨次保留。
 
 PTC 相关限制位于 `[tools.ptc]`：`memory_limit_bytes`、`max_output_bytes`、`max_result_bytes`、`max_pending_calls`、`max_concurrent_calls`、`max_state_bytes` 以及默认/最大超时。写工具和需要授权的调用是并发屏障；脚本返回前必须等待所有调用。worker 不提供文件、网络、进程、模块加载或定时器 API，工作区修改仍由宿主工具的现有授权与事务策略控制。
 
-`moc-ptc-worker` 随 `moc-cli` 包一起构建并安装，`moc` 启动时查找同目录的 worker 二进制；找不到时 `run_code` 返回 `E_PTC_WORKER`。worker 崩溃或提前退出只影响本次脚本，core 收到 `E_PTC_WORKER` 并继续；超时或取消会终止子进程。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。worker 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
+PTC worker 入口已编译进 `moc`，CLI 启动时将当前 `moc` 作为子进程并传入隐藏参数；因此发布和安装只需要一个 `moc` 文件。worker 崩溃或提前退出只影响本次脚本，core 收到 `E_PTC_WORKER` 并继续；超时或取消会终止子进程。QuickJS 是原生 C 构建（rquickjs），Windows x86_64 MSVC 支持仍是 experimental，跨平台发布需要在该平台构建。worker 只通过 stdio 通信，后续可以把它放进 OS 沙箱（bwrap 等）作为统一边界。
 
 ### 插件
 

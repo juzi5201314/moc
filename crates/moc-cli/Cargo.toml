@@ -33,7 +33,3 @@ libc.workspace = true
 [[bin]]
 name = "moc"
 path = "src/main.rs"
-
-[[bin]]
-name = "moc-ptc-worker"
-path = "src/bin/moc_ptc_worker.rs"

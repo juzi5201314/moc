@@ -150,9 +150,7 @@ fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {
     let cwd = cwd
         .canonicalize()
         .with_context(|| format!("无法打开工作目录 {}", cwd.display()))?;
-    let worker = std::env::current_exe()
-        .context("无法定位 moc 可执行文件")?
-        .with_file_name(format!("moc-ptc-worker{}", std::env::consts::EXE_SUFFIX));
+    let worker = std::env::current_exe().context("无法定位 moc 可执行文件")?;
     Ok(CoreConfig {
         cwd: cwd.clone(),
         overlays: args
@@ -166,7 +164,7 @@ fn make_core_config(args: &CliArgs) -> anyhow::Result<CoreConfig> {
             .map(|path| absolute_path(path, &cwd)),
         ptc_worker: Some(PtcWorkerCommand {
             program: worker,
-            args: Vec::new(),
+            args: vec!["--ptc-worker".into()],
         }),
         ..CoreConfig::default()
     })

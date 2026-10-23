@@ -23,7 +23,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 cargo build --release
 ```
 
-需要 Rust 1.88+（brush-parser 的 MSRV）。构建产物为 `target/release/moc` 与 `target/release/moc-ptc-worker`；PTC 的 `run_code` 依赖同目录的 worker。`cargo install --path crates/moc-cli` 会同时安装两者。
+需要 Rust 1.88+（brush-parser 的 MSRV）。构建产物为 `target/release/moc`；PTC worker 已内嵌在同一个二进制中，运行 `run_code` 时由 `moc` 自身以隐藏 worker 模式启动独立子进程。`cargo install --path crates/moc-cli` 只安装 `moc`。
 
 shell 选择：Unix 上只接受 bash/zsh（fish/nushell 等回退 bash）；Windows 按 Git Bash → PowerShell → cmd 回退。实际解释器会写进系统提示的 `<env>`，命令始终在对应语法下执行。
 
@@ -89,9 +89,9 @@ cargo build         # 调试构建
 - `crates/moc-core` — Agent 内核：会话、提示调度、工具执行、循环保护
 - `crates/moc-plugin` — 本地插件系统：目录发现、QuickJS 运行时、宿主桥与 `moc` 模块类型声明
 - `crates/moc-ptc-protocol` — PTC 宿主与 worker 共用的 JSON 协议和 prelude
-- `crates/moc-ptc-worker` — 独立 QuickJS worker 的执行循环
+- `crates/moc-ptc-worker` — 内嵌于 `moc` 的 QuickJS worker 执行循环
 - `crates/moc-protocol` — JSON-RPC 协议层
 - `crates/moc-llm` — LLM 传输与编解码
 - `crates/moc-tui` — 终端 TUI 前端
 - `crates/moc-web` — 浏览器前端（axum + WebSocket 桥）
-- `crates/moc-cli` — 命令行入口与 `moc-ptc-worker` 二进制
+- `crates/moc-cli` — 命令行入口与内嵌 PTC worker 入口
