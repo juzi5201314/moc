@@ -1,20 +1,21 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag name used in asset names (optional)"
-        required: false
+        description: "Existing tag to build and publish"
+        required: true
         type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -38,9 +39,11 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
       PLATFORM: ${{ matrix.name }}
-      VERSION: ${{ github.event.release.tag_name || github.event.inputs.tag || 'dev' }}
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -115,9 +118,27 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Upload assets to GitHub Release
-        if: github.event_name == 'release'
-        shell: bash
+  finalize:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create and publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$VERSION" dist/* --clobber
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --draft=false
+          else
+            gh release create "$TAG" dist/* --draft --verify-tag --generate-notes --title "$TAG"
+            gh release edit "$TAG" --draft=false
+          fi
