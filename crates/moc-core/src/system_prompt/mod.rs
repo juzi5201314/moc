@@ -49,6 +49,7 @@ const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 pub const PIECE_INTRO: &str = "intro";
 pub const PIECE_TOOL_POLICY: &str = "tool policy";
 pub const PIECE_PTC_RUNTIME: &str = "ptc runtime";
+pub const PIECE_TOOL_DECLS: &str = "tool declarations";
 pub const PIECE_MCP_SERVERS: &str = "mcp servers";
 pub const PIECE_REPO_RULES: &str = "repo rules";
 pub const PIECE_SKILLS: &str = "skills";
@@ -57,10 +58,11 @@ pub const PIECE_SUBAGENT: &str = "subagent";
 pub const PIECE_ENVIRONMENT: &str = "environment";
 pub const PIECE_APPEND: &str = "append";
 /// 全部片段名，配置校验和角色分组都以此为准。
-pub const PIECE_NAMES: [&str; 10] = [
+pub const PIECE_NAMES: [&str; 11] = [
     PIECE_INTRO,
     PIECE_TOOL_POLICY,
     PIECE_PTC_RUNTIME,
+    PIECE_TOOL_DECLS,
     PIECE_MCP_SERVERS,
     PIECE_REPO_RULES,
     PIECE_SKILLS,
@@ -113,6 +115,7 @@ pub fn build(
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
+    tool_declarations: &str,
     plugins: &str,
     subagent: Option<&str>,
 ) -> SystemPrompt {
@@ -124,6 +127,7 @@ pub fn build(
             context_files,
             skills,
             mcp_summary,
+            tool_declarations,
             plugins,
             subagent,
         ),
@@ -179,6 +183,7 @@ pub fn pieces(
     context_files: &[context_files::ContextFile],
     skills: &crate::skills::SkillIndex,
     mcp_summary: &str,
+    tool_declarations: &str,
     plugins: &str,
     subagent: Option<&str>,
 ) -> Vec<PromptPiece> {
@@ -227,6 +232,14 @@ pub fn pieces(
             config.tools.ptc.max_total_calls,
         ),
     });
+    if !tool_declarations.is_empty() {
+        sections.push(PromptPiece {
+            title: "tools",
+            name: PIECE_TOOL_DECLS,
+            scope: PieceScope::Project,
+            text: tool_declarations.to_owned(),
+        });
+    }
     if !mcp_summary.is_empty() {
         sections.push(PromptPiece {
             title: "tools",
@@ -472,6 +485,7 @@ mod tests {
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
             "",
+            "",
             None,
         );
         let text = prompt_text(&prompt);
@@ -518,6 +532,7 @@ mod tests {
             &crate::skills::SkillIndex::empty(),
             "",
             "",
+            "",
             None,
         );
         let text = prompt_text(&prompt);
@@ -562,6 +577,7 @@ mod tests {
             &crate::skills::SkillIndex::empty(),
             "",
             "",
+            "",
             None,
         );
         let blocks = blocks(&prompt);
@@ -570,6 +586,39 @@ mod tests {
             Some("Always answer in Chinese.")
         );
         assert_eq!(prompt.static_prefix, vec![3]);
+    }
+
+    /// 工具声明只在调用方渲染出来时注入：紧随 ptc runtime 之后，且不进静态前缀
+    /// （依赖 MCP 集合与配置，Project 作用域）。
+    #[test]
+    fn tool_declarations_piece_lands_after_ptc_runtime() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        let config = resolved(&cwd, &home);
+        let model = config.resolve_role("default").expect("resolve model");
+        let prompt = build(
+            &config,
+            &model,
+            &cwd,
+            &[],
+            &crate::skills::SkillIndex::empty(),
+            "",
+            "<tool-declarations>\ntools.read(args: { path: string }): Promise<ToolResult>\n</tool-declarations>",
+            "",
+            None,
+        );
+        let blocks = blocks(&prompt);
+        assert!(blocks[2].contains("run_code"), "ptc runtime 在声明之前");
+        assert!(
+            blocks[3].starts_with("<tool-declarations>"),
+            "声明片段紧随 ptc runtime：{blocks:?}"
+        );
+        assert_eq!(
+            prompt.static_prefix,
+            vec![3],
+            "声明是 Project 作用域，不得进静态前缀"
+        );
     }
 
     /// 指令角色设为 user 时，规定性片段改用 user 消息，描述性片段留在 system；
@@ -592,6 +641,7 @@ mod tests {
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
+            "",
             "",
             None,
         );
@@ -623,6 +673,7 @@ mod tests {
             &context_files,
             &crate::skills::SkillIndex::empty(),
             "<mcp-servers>\ngithub\n</mcp-servers>",
+            "",
             "",
             None,
         );
@@ -681,6 +732,7 @@ mod tests {
                 &crate::skills::SkillIndex::empty(),
                 "",
                 "",
+                "",
                 None,
             ))
         };
@@ -722,7 +774,7 @@ mod tests {
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", "", None);
+        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", "", "", None);
         let text = prompt_text(&prompt);
         assert!(text.contains("<skills>"));
         assert!(text.contains("- demo: demo skill"));

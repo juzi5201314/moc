@@ -279,9 +279,13 @@ async fn snapshot(
     session_id: &str,
 ) -> Result<Snapshot, RpcError> {
     let record = inner.sessions.get(session_id).await.map_err(to_rpc)?;
-    let (cwd, model_id) = {
+    let (cwd, model_id, mode) = {
         let state = record.state.lock().await;
-        (PathBuf::from(&state.session.cwd), state.model.clone())
+        (
+            PathBuf::from(&state.session.cwd),
+            state.model.clone(),
+            state.mode,
+        )
     };
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
     let model = config.resolve_model(&model_id).map_err(to_rpc)?;
@@ -299,6 +303,16 @@ async fn snapshot(
     plugin_context.writable = false;
     // 预览/上下文构建不能持有会话锁等待插件，也不能产生持久化副作用。
     let plugin_prompt = plugins.prompt_text(&plugin_context).await;
+    // 快照与声明都要等待 MCP/插件，必须在拿会话锁之前完成。
+    let tool_declarations = inner
+        .tool_declarations(
+            mode,
+            &config,
+            model.context_window,
+            inner.client_supports_ask(ctx.connection_id()),
+        )
+        .await
+        .map_err(to_rpc)?;
     let state = record.state.lock().await;
     let pieces = crate::system_prompt::pieces(
         &config,
@@ -307,6 +321,7 @@ async fn snapshot(
         &context_files,
         &skills,
         &mcp_summary,
+        &tool_declarations,
         &plugin_prompt,
         subagent.as_ref().map(|prompt| prompt.block.as_str()),
     );

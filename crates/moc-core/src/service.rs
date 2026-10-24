@@ -278,6 +278,32 @@ impl CoreInner {
         Ok(catalog.summary())
     }
 
+    /// 渲染 PTC 模式的工具声明；非 Ptc 模式返回空串。提示主路径直接用当轮
+    /// catalog 快照调用 `declarations::render`，本方法供压缩与 /context 预览复用。
+    pub(crate) async fn tool_declarations(
+        &self,
+        mode: SessionMode,
+        config: &ResolvedConfig,
+        context_window: u64,
+        ask_supported: bool,
+    ) -> Result<String, CoreError> {
+        let manager = self.project_mcp(&config.cwd).await?;
+        let snapshot = manager.snapshot().await;
+        let plugins = self.plugin_tools(&config.cwd).await;
+        let catalog = self
+            .tools
+            .catalog(&snapshot, manager, plugins)
+            .map_err(|err| CoreError::Tool(err.to_string()))?;
+        Ok(crate::tools::declarations::render(
+            &catalog,
+            mode,
+            ask_supported,
+            config,
+            context_window,
+        )
+        .unwrap_or_default())
+    }
+
     /// 获取该项目的插件宿主：没有就发现并加载，目录内容变了就重建。
     ///
     /// 缓存键是工作目录；命中之后还要比对目录指纹，插件目录增删或清单/模块改动都会

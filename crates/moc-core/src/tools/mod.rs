@@ -4,6 +4,7 @@ pub mod agent;
 pub mod ask;
 pub mod bash;
 pub mod catalog;
+pub mod declarations;
 pub mod edit;
 pub mod find;
 pub mod grep;

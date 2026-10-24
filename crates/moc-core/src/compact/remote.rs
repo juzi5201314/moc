@@ -46,6 +46,14 @@ pub(crate) async fn compact(
     let mut full_messages = Vec::with_capacity(messages.len() + 2);
     let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
     let summary = inner.mcp_summary(config).await?;
+    let tool_declarations = inner
+        .tool_declarations(
+            state.mode,
+            config,
+            model.context_window,
+            inner.client_supports_ask(ctx.connection_id()),
+        )
+        .await?;
     let context_files = inner
         .project_context_files(&state.session.id, std::path::Path::new(&state.session.cwd))
         .await;
@@ -63,6 +71,7 @@ pub(crate) async fn compact(
             &context_files,
             &skills,
             &summary,
+            &tool_declarations,
             &plugin_prompt,
             None,
         )

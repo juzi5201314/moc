@@ -133,6 +133,14 @@ pub(crate) async fn model_context(
     let cwd = std::path::Path::new(&state.session.cwd);
     let skills = inner.project_skills(cwd)?;
     let summary = inner.mcp_summary(config).await?;
+    let tool_declarations = inner
+        .tool_declarations(
+            state.mode,
+            config,
+            model.context_window,
+            inner.client_supports_ask(ctx.connection_id()),
+        )
+        .await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
     let plugins = inner.project_plugins(cwd).await?;
     let plugin_prompt = plugins
@@ -145,6 +153,7 @@ pub(crate) async fn model_context(
         &context_files,
         &skills,
         &summary,
+        &tool_declarations,
         &plugin_prompt,
         None,
     );

@@ -232,11 +232,12 @@ impl Default for ModelCompat {
     }
 }
 
-/// 指令角色为 `user` 时默认留在 system 的片段：身份、MCP 清单与信任声明、环境。
+/// 指令角色为 `user` 时默认留在 system 的片段：身份、工具声明、MCP 清单与信任声明、环境。
 /// 规定性片段（工具政策、仓库规则等）全部交给 user 消息。
 fn default_instruction_system() -> Vec<String> {
     vec![
         crate::system_prompt::PIECE_INTRO.into(),
+        crate::system_prompt::PIECE_TOOL_DECLS.into(),
         crate::system_prompt::PIECE_MCP_SERVERS.into(),
         crate::system_prompt::PIECE_ENVIRONMENT.into(),
     ]

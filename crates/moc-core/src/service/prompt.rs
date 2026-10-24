@@ -398,9 +398,10 @@ async fn run_prompt_locked(
     // 会话身份只看会话头。系统提示、工具可见性和代理列表都必须以它为准，
     // 否则会出现「系统提示说我是子代理，工具表里却没有 yield」这类矛盾。
     let subagent = state_snapshot.session.is_subagent();
+    let ask_supported = inner.client_supports_ask(ctx.connection_id());
     let tools_available = inner.tools.definitions(
         mode,
-        inner.client_supports_ask(ctx.connection_id()),
+        ask_supported,
         &project_config,
         crate::tools::ToolScope {
             control_agents: !subagent,
@@ -417,6 +418,15 @@ async fn run_prompt_locked(
     let mut stream_overflows = 0usize;
     let mut cycle_redirect = None;
     let summary = catalog.summary();
+    // 声明与工具表用同一份快照渲染，保证提示里的签名和实际可调用的集合一致。
+    let tool_declarations = crate::tools::declarations::render(
+        &catalog,
+        mode,
+        ask_supported,
+        &project_config,
+        model.context_window,
+    )
+    .unwrap_or_default();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
     let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
     let plugin_prompt = plugins
@@ -432,6 +442,7 @@ async fn run_prompt_locked(
         &context_files,
         &skills,
         &summary,
+        &tool_declarations,
         &plugin_prompt,
         subagent_prompt.as_ref().map(|prompt| prompt.block.as_str()),
     );
