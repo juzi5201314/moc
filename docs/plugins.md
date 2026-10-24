@@ -136,9 +136,14 @@ export default {
 - 其它 JSON → `JSON.stringify` 后作为正文
 - `undefined` / `null` → 空正文
 
+抛异常视为**插件故障**：宿主停用该插件（本进程内）、通知用户，后续调用一律得到 `E_PLUGIN_DISABLED`。
+要表达「这次调用失败，但插件本身没问题」，返回 `{ content: "…", isError: true }`，不要 throw。
+
 ### 斜杠命令
 
 命令名与插件名同规则，最终就是 `/名字`。`run(args, ctx)` 的 `args` 是命令名之后的原始文本（未分词）。返回值同样按上面的规则映射，作为一条提示写进转写。
+
+命令没有单独的「失败」通道：参数不对就把说明作为文本返回，别用 throw——throw 一律按插件故障处理（停用并通知）。
 
 命令名会进入前端补全表；与内置命令同名时内置优先。
 
@@ -152,11 +157,11 @@ export default {
 - 返回 `{ deny: "原因" }` → 本次调用被拒绝，模型收到 `E_PLUGIN_DENIED`（含插件名与原因）
 - 返回 `{ arguments: {...} }` → 用新参数替换，**改写发生在沙盒判定、bash 规则与授权之前**
 - 返回 `undefined`/`null` → 不改
-- 抛异常或超时 → fail-open，禁用出错插件并记录原因，宿主工具调用继续
+- 抛异常或超时 → 本次调用 fail-open 放行，同时停用出错插件并通知（模型提醒 + 前端提示），恢复见「失败与恢复」
 
 多个插件按加载顺序串联，后一个看到的 `arguments` 是前一个改写后的结果；任一插件拒绝即中止。
 
-`afterToolCall(event, ctx)`：观察型。`event = { name, arguments, content, isError }`，返回值被忽略，失败禁用该插件，不改变已经完成的宿主工具结果。
+`afterToolCall(event, ctx)`：观察型。`event = { name, arguments, content, isError }`，返回值被忽略，失败停用该插件并通知，不改变已经完成的宿主工具结果。
 
 ### 提示词
 
@@ -261,8 +266,9 @@ delete state.count;
 - **每个插件一个专用线程**，线程里建独立的 QuickJS `Runtime`。插件之间不共享全局状态，一个插件的死循环不会卡住另一个（各自有 `call_timeout_ms`）。
 - 同一个插件的调用**串行**：工具、命令、钩子、`prompt` 排队执行。插件里不需要自己加锁。
 - **加载超时**：`load_timeout_ms` 覆盖模块求值与 `activate`。到点仍未完成时中断 JS 并返回 `E_PLUGIN_TIMEOUT`，该插件按加载失败列出，不会拖住启动它的提示。
-- **调用超时**：JS 自身跑到 `call_timeout_ms` 时宿主置中断标志，QuickJS 在 JS 执行期间中断，返回 `E_PLUGIN_TIMEOUT`；该插件在**本进程内**被禁用，`/plugins` 与 `plugin/list` 会显示原因，重启 moc 恢复。这样一次卡死不会让后续每个调用都再等一轮超时。
+- **调用超时**：JS 自身跑到 `call_timeout_ms` 时宿主置中断标志，QuickJS 在 JS 执行期间中断，返回 `E_PLUGIN_TIMEOUT`；该插件在**本进程内**被禁用，`/plugins` 与 `plugin/list` 会显示原因，`/plugins reload` 或重启 moc 恢复。这样一次卡死不会让后续每个调用都再等一轮超时。
 - **借宿主工具时超时**：插件线程在等 `tools.call` 的宿主工具，同样受同一个 `call_timeout_ms` 约束（宿主工具本身慢不会被无限等待）；这条路径只让本次调用失败，不禁用插件。
+- **失败与恢复**：运行期任何异常（工具、命令、钩子、`prompt`、配置校验）都会让该插件在**本进程内停用**并通知一次：模型下一轮收到一条插件提醒，前端显示停用原因与 JS 调用栈。停用后的调用返回 `E_PLUGIN_DISABLED`（带首次失败原因）。恢复方式：TUI/REPL 执行 `/plugins reload`（协议 `plugin/reload`）、改动插件文件、保存配置或重启 moc。
 - **内存**：`memory_limit_bytes`（默认 64 MiB）是单个 Runtime 的上限，超限抛 `E_PLUGIN_MEMORY`。
 - **模块解析**：只允许 `moc` 这个虚拟模块与插件目录内的相对路径（`./x.js` / `../y.mjs`）。裸模块名与 `node:` 内置模块一律拒绝；没有 `node_modules`，也没有文件、网络、进程、定时器 API——需要这些能力就通过 `tools.call` 借宿主的工具。
 - **崩溃**：QuickJS 是嵌入式的，C 层崩溃会带走整个 moc 进程。这是嵌入执行换来的代价：插件不是沙盒，是「你信任的本地代码」。
@@ -284,14 +290,16 @@ call_timeout_ms = 5000    # 单次工具/命令/钩子/prompt
 max_prompt_chars = 4000
 ```
 
-改动何时生效：插件目录里的发现结果、`plugin.json` 与 `.js`/`.mjs` 内容（含子目录里的模块）变化，会在下一次提示或 `plugin/list` 时重建宿主；保存配置同样重建（`disable`、超时、内存上限）。被超时禁用的插件不在重建范围内，仍需重启 moc。
+改动何时生效：插件目录里的发现结果、`plugin.json` 与 `.js`/`.mjs` 内容（含子目录里的模块）变化，会在下一次提示或 `plugin/list` 时重建宿主；保存配置同样重建（`disable`、超时、内存上限）。被停用的插件可用 `/plugins reload` 立即恢复，不必重启 moc。
 
 ## 查看与调试
 
 - TUI：`/plugins` 列出插件、来源目录、注册的工具与命令、失败原因；插件命令也在补全表里。
+- TUI / REPL：`/plugins reload` 重新发现并加载插件。插件停用时转写里会留一条提示（含 JS 栈），TUI 状态栏同时给出告警。
+- Web：插件停用会在状态条上提示原因，并出现「重载插件」按钮。
 - `/context` 里的系统提示片段会多出 `plugins` 一块，内容是本次实际注入的插件提示词。
 - REPL：`/plugins` 同上。
-- 协议：`plugin/list`、`plugin/run_command`（见 `crates/moc-protocol/src/methods/plugin.rs`）。
+- 协议：`plugin/list`、`plugin/reload`、`plugin/run_command`（见 `crates/moc-protocol/src/methods/plugin.rs`）。
 - 常见错误码：
 
 | 码 | 含义 |
@@ -304,6 +312,7 @@ max_prompt_chars = 4000
 | `E_PLUGIN_THREAD` / `E_PLUGIN_RUNTIME` | 线程或 Runtime 起不来 |
 | `E_PLUGIN_MEMORY` | 超过 `memory_limit_bytes` |
 | `E_PLUGIN_TIMEOUT` / `E_PLUGIN_INTERRUPTED` | 超时或被打断 |
+| `E_PLUGIN_DISABLED` | 插件已在本进程内停用；`/plugins reload` 或重启后恢复 |
 | `E_PLUGIN_STATE` | 没有会话上下文却调用会话 API，或 Promise 永远不会落定 |
 | `E_PLUGIN_ARGUMENTS` | 工具参数不符合 `parameters` 里的 schema |
 | `E_PLUGIN_TOOLS_UNAVAILABLE` | 在不允许的地方调 `tools.call`，或调用了白名单外的工具 |
