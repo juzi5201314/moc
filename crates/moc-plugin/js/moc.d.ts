@@ -118,6 +118,10 @@ export interface ToolDefinition {
    * 返回值：`string` 作为正文；`{content, structuredContent?, isError?}` 作为富结果；
    * 其它 JSON 会被 `JSON.stringify`；`undefined`/`null` 表示空正文。
    * 返回的 Promise 会被等待；永远不会落定的 Promise 报 `E_PLUGIN_STATE`。
+   *
+   * 抛异常视为插件故障：宿主停用该插件（本进程内）并通知用户，后续调用得到
+   * `E_PLUGIN_DISABLED`。要表达「这次调用失败但插件正常」，返回
+   * `{ content, isError: true }`。
    */
   run(input: any, ctx: Session): ToolResult | Promise<ToolResult>;
 }

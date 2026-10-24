@@ -124,6 +124,34 @@ pub enum BeforeToolCall {
     Deny(String),
 }
 
+/// 插件失败通知：加载或调用出错、插件因此在本进程内停用时发一条。
+///
+/// core 会把它转成模型可见的提醒与前端可见的更新；latch 只发生一次，因此
+/// 同一插件同一进程内最多通知一次。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginNotice {
+    pub plugin: String,
+    /// 稳定错误码（`E_PLUGIN_*`）。
+    pub code: String,
+    /// 面向人的原因；有 JS 调用栈时换行附在后面。
+    pub message: String,
+}
+
+impl PluginNotice {
+    fn of(plugin: &str, error: &PluginError) -> Self {
+        let mut message = error.message.clone();
+        if let Some(detail) = &error.detail {
+            message.push('\n');
+            message.push_str(detail);
+        }
+        Self {
+            plugin: plugin.to_owned(),
+            code: error.code.to_owned(),
+            message,
+        }
+    }
+}
+
 /// `plugin/list` 的单项。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginInfo {
@@ -258,6 +286,9 @@ pub struct PluginHost {
     /// 加载时的目录指纹；core 用它判断插件目录是否变过。
     stamp: u64,
     persistence: Option<Arc<dyn PersistenceBridge>>,
+    /// 失败通知的发送端；插件在调用链路里随时可能失效，core 在提示边界抽干。
+    notices: tokio::sync::mpsc::UnboundedSender<PluginNotice>,
+    notifications: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<PluginNotice>>>,
 }
 
 impl PluginHost {
@@ -430,6 +461,7 @@ impl PluginHost {
             }
         }
 
+        let (notices, notifications) = tokio::sync::mpsc::unbounded_channel();
         let host = Arc::new(Self {
             plugins,
             tools,
@@ -438,7 +470,15 @@ impl PluginHost {
             call_timeout: settings.call_timeout,
             stamp,
             persistence,
+            notices,
+            notifications: Mutex::new(Some(notifications)),
         });
+        // 加载期失败的插件在宿主建好之后再通知：那时才有统一的发送端。
+        for plugin in &host.plugins {
+            if let Some(failure) = plugin.failure.lock().as_ref() {
+                host.notify(&plugin.name, failure);
+            }
+        }
         for index in 0..host.plugins.len() {
             if host.plugins[index].alive() {
                 if let Err(error) = host
@@ -477,6 +517,24 @@ impl PluginHost {
     /// 加载时的目录指纹；与 [`fingerprint`] 的当前值不同就说明目录变过。
     pub fn stamp(&self) -> u64 {
         self.stamp
+    }
+
+    /// 取走已累积的失败通知；通道长期保留，可反复调用。
+    pub fn drain_notices(&self) -> Vec<PluginNotice> {
+        let mut guard = self.notifications.lock();
+        let Some(receiver) = guard.as_mut() else {
+            return Vec::new();
+        };
+        let mut notices = Vec::new();
+        while let Ok(notice) = receiver.try_recv() {
+            notices.push(notice);
+        }
+        notices
+    }
+
+    fn notify(&self, plugin: &str, error: &PluginError) {
+        // 前端已经不在也无所谓：通知是可选的观察面，不影响插件状态机。
+        let _ = self.notices.send(PluginNotice::of(plugin, error));
     }
 
     /// 插件工具：`(插件名, 声明)`，按工具名升序。
@@ -751,7 +809,7 @@ impl PluginHost {
         let plugin = &self.plugins[index];
         let started = std::time::Instant::now();
         if let Some(failure) = plugin.failure.lock().as_ref() {
-            return Err(failure.clone());
+            return Err(PluginError::disabled(&plugin.name, failure));
         }
         if let Some(persistence) = &self.persistence {
             let validation = tokio::time::timeout(
@@ -901,11 +959,26 @@ impl PluginHost {
         outcome
     }
 
-    /// 记录运行期失败：禁用插件并丢掉线程句柄，让它的 Runtime 随线程退出而释放。
+    /// 记录运行期失败：禁用插件、发一条通知，并丢掉线程句柄，让它的 Runtime 随线程退出而释放。
+    ///
+    /// 只有第一次失败会通知：`failure` 一旦写入，后续调用在 [`Self::invoke_context`] 入口
+    /// 就被挡掉，不会再走到这里。
     fn fail(&self, index: usize, error: PluginError) -> PluginError {
         let plugin = &self.plugins[index];
-        let first = plugin.failure.lock().get_or_insert(error).clone();
-        plugin.worker.lock().take();
+        let (first, recorded) = {
+            let mut slot = plugin.failure.lock();
+            match slot.as_ref() {
+                Some(first) => (first.clone(), false),
+                None => {
+                    *slot = Some(error.clone());
+                    (error, true)
+                }
+            }
+        };
+        if recorded {
+            plugin.worker.lock().take();
+            self.notify(&plugin.name, &first);
+        }
         first
     }
 }
@@ -1430,7 +1503,7 @@ mod tests {
             .await
             .expect_err("必须超时");
         assert_eq!(error.code, "E_PLUGIN_TIMEOUT");
-        // 之后立即失败，不再等一轮超时。
+        // 之后立即失败，不再等一轮超时；且明确说明插件已停用、首次失败是什么。
         let again = host
             .call_tool(
                 "spin",
@@ -1440,7 +1513,13 @@ mod tests {
             )
             .await
             .expect_err("已禁用");
-        assert_eq!(again.code, "E_PLUGIN_TIMEOUT");
+        assert_eq!(again.code, "E_PLUGIN_DISABLED");
+        assert!(again.message.contains("首次失败"), "{}", again.message);
+        let notices = host.drain_notices();
+        assert_eq!(notices.len(), 1, "禁用只通知一次：{notices:?}");
+        assert_eq!(notices[0].plugin, "spin");
+        assert_eq!(notices[0].code, "E_PLUGIN_TIMEOUT");
+        assert!(host.drain_notices().is_empty(), "通知取走后不再重复");
         let info = host.info();
         let spin = info
             .iter()
@@ -1479,6 +1558,152 @@ mod tests {
                 .contains("E_PLUGIN_DESCRIPTOR")
         );
         assert!(host.tools().is_empty());
+        // 加载失败也必须通知：否则用户只有手动 /plugins 才发现插件没起来。
+        let notices = host.drain_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].plugin, "broken");
+        assert_eq!(notices[0].code, "E_PLUGIN_DESCRIPTOR");
+    }
+
+    /// 插件自己抛异常按故障处理：本进程内停用，且只通知一次。
+    #[tokio::test]
+    async fn thrown_error_disables_the_plugin_and_notifies_once() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "alpha",
+            r#"export default { tools: {
+                boom: { description: "抛错", parameters: { type: "object" }, run: () => { throw new Error("bad input"); } },
+                fine: { description: "正常", parameters: { type: "object" }, run: () => "ok" }
+            } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let error = host
+            .call_tool(
+                "boom",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("必须失败");
+        assert_eq!(error.code, "E_PLUGIN");
+        assert_eq!(error.message, "bad input");
+        // 同插件的其它工具也停用：再调用明确说「已禁用」，而不是复读原错误。
+        let again = host
+            .call_tool(
+                "fine",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("已禁用");
+        assert_eq!(again.code, "E_PLUGIN_DISABLED");
+        assert!(again.message.contains("bad input"), "{}", again.message);
+        let notices = host.drain_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].code, "E_PLUGIN");
+        assert!(
+            notices[0].message.starts_with("bad input\n    at run ("),
+            "{}",
+            notices[0].message
+        );
+    }
+
+    /// `throw {code, message}`：对象里约定的 code 要生效，消息不能退化成 JSON 文字。
+    #[tokio::test]
+    async fn thrown_object_keeps_its_code_and_message() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "object",
+            r#"export default { tools: { boom: { description: "抛错", parameters: { type: "object" }, run: () => { throw { code: "E_PLUGIN_DENIED", message: "no" }; } } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let error = host
+            .call_tool(
+                "boom",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("必须失败");
+        assert_eq!(error.code, "E_PLUGIN_DENIED");
+        assert_eq!(error.message, "no");
+    }
+
+    /// `throw "文本"` 的消息不带 JSON 引号。
+    #[tokio::test]
+    async fn thrown_string_is_plain_text() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "text",
+            r#"export default { tools: { boom: { description: "抛错", parameters: { type: "object" }, run: () => { throw "plain text"; } } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let error = host
+            .call_tool(
+                "boom",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("必须失败");
+        assert_eq!(error.message, "plain text");
+    }
+
+    /// 调用栈只进通知与详情（给人排查看），不进模型可见的单行消息。
+    #[tokio::test]
+    async fn stack_detail_reaches_the_notice_only() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "stack",
+            r#"export default { tools: { boom: { description: "抛错", parameters: { type: "object" }, run: () => { const inner = () => { throw new Error("boom"); }; return inner(); } } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let error = host
+            .call_tool(
+                "boom",
+                serde_json::json!({}),
+                &context(),
+                Arc::new(EchoBridge),
+            )
+            .await
+            .expect_err("必须失败");
+        assert_eq!(error.message, "boom");
+        let detail = error.detail.expect("异常要带栈");
+        assert!(!detail.is_empty());
+        let notices = host.drain_notices();
+        assert!(
+            notices[0].message.lines().count() > 1,
+            "通知里要能看到栈：{}",
+            notices[0].message
+        );
+    }
+
+    /// 钩子抛异常：本次调用 fail-open 放行，同时插件被停用并通知。
+    #[tokio::test]
+    async fn hook_failure_fail_opens_but_disables_and_notifies() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "guard",
+            r#"export default { hooks: { beforeToolCall() { throw new Error("hook boom"); } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let verdict = host
+            .before_tool_call("read", &serde_json::json!({}), &context())
+            .await;
+        assert_eq!(verdict, BeforeToolCall::Allow(serde_json::json!({})));
+        assert!(host.info()[0].error.is_some(), "钩子失败后插件停用");
+        let notices = host.drain_notices();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].code, "E_PLUGIN");
     }
 
     /// 仓库里的示例插件必须始终可加载：它是文档承诺的最小可运行形态。

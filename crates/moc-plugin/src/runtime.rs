@@ -1348,19 +1348,52 @@ fn caught<'js>(ctx: &Ctx<'js>, error: CaughtError<'js>) -> PluginError {
                 .flatten()
                 .map(|code| PluginError::known_code(&code))
                 .unwrap_or_else(|| default_code(&message));
+            // 栈只给用户看：模型可见的工具结果保持单行，排查时 /plugins 与通知里有位置。
             PluginError::new(code, message)
+                .with_detail(exception.stack().map(clip_stack).unwrap_or_default())
         }
-        // `throw "文本"` / `Promise.reject(值)`：把值本身变成可读消息，别只剩一个类型名。
-        CaughtError::Value(value) => {
-            let message = ctx
-                .json_stringify(value)
-                .ok()
-                .flatten()
-                .and_then(|text| text.to_string().ok())
-                .unwrap_or_else(|| "插件抛出了无法序列化的值".to_owned());
-            PluginError::new("E_PLUGIN", message)
-        }
+        // `throw "文本"` / `throw {code, message}` / `Promise.reject(值)`：把值本身变成
+        // 可读消息，并且认识约定的错误对象——否则会退化成带引号的 JSON 文字。
+        CaughtError::Value(value) => match thrown_object(&value) {
+            Some(error) => error,
+            None => {
+                let message = if value.is_string() {
+                    value.get::<String>().unwrap_or_default()
+                } else {
+                    ctx.json_stringify(value)
+                        .ok()
+                        .flatten()
+                        .and_then(|text| text.to_string().ok())
+                        .unwrap_or_else(|| "插件抛出了无法序列化的值".to_owned())
+                };
+                PluginError::new("E_PLUGIN", message)
+            }
+        },
         CaughtError::Error(error) => map_error(error),
+    }
+}
+
+/// `throw {code, message}` 的约定形状；缺 `code` 的对象仍按普通值处理。
+fn thrown_object(value: &rquickjs::Value<'_>) -> Option<PluginError> {
+    if !value.is_object() {
+        return None;
+    }
+    let object = value.clone().into_object()?;
+    let code = object.get::<_, Option<String>>("code").ok().flatten()?;
+    let message = object
+        .get::<_, Option<String>>("message")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "插件抛出了错误对象".to_owned());
+    Some(PluginError::new(PluginError::known_code(&code), message))
+}
+
+/// 栈可能很长（深递归），截断到 2 KiB：诊断要能定位，不是把日志搬进界面。
+fn clip_stack(stack: String) -> String {
+    const LIMIT: usize = 2048;
+    match stack.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}…", &stack[..end]),
+        None => stack,
     }
 }
 
