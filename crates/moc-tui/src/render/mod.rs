@@ -179,14 +179,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     highlight_selection(frame, app, scroll_area);
     // 滚动条贴终端右缘：与内容边距无关，避免压住正文
     draw_scrollbar(frame, app, scroll_area, window.max_offset);
-    // todo HUD 在转写之上；notice/warning 最后画，临时提示始终可读。
+    // todo HUD 在转写之上。
     if app.modal.is_none() {
         todo_hud::draw(frame, app, scroll_area, header_rows > 0);
     } else {
         app.todo_hud.on_hidden();
     }
-    draw_notice(frame, app, scroll_area);
-    draw_warning(frame, app, scroll_area);
 
     draw_header(frame, app, inset(header_area, MARGIN_X));
     draw_prompt(frame, app, prompt_area);
@@ -211,6 +209,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     if app.modal.is_some() {
         modal::draw_modal(frame, app);
     }
+    // notice/warning 在模态之后画：模态期间触发的提示（如复制选项）不被
+    // 调暗层压住，临时提示始终可读。
+    draw_notice(frame, app, scroll_area);
+    draw_warning(frame, app, scroll_area);
 }
 
 /// 拖选高亮：只覆盖选区内的格子；跨行时中间整行、首尾行按列收边。
