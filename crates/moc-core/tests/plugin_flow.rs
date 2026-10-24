@@ -4,7 +4,8 @@ mod support;
 
 use moc_protocol::methods::{
     ConfigAction, ConfigManage, ConfigReply, ConfigScope, PluginInfo, PluginList, PluginListParams,
-    SessionLoad, SessionLoadParams, SessionMode,
+    PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams, SessionLoad,
+    SessionLoadParams, SessionMode, SessionUpdate,
 };
 use serde_json::{Value, json};
 use support::{Harness, text_stream, tool_result_texts, tool_stream};
@@ -408,6 +409,321 @@ async fn config_save_disables_plugins() {
         plugin_list(&harness, &session).await.is_empty(),
         "保存配置后必须按新配置重建宿主"
     );
+
+    harness.close().await;
+}
+
+/// 取前端看到的插件失败通知。
+fn plugin_notices(harness: &Harness) -> Vec<(String, String, String)> {
+    harness
+        .updates
+        .lock()
+        .iter()
+        .filter_map(|update| match update {
+            SessionUpdate::PluginNotice {
+                plugin,
+                code,
+                message,
+            } => Some((plugin.clone(), code.clone(), message.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 工具抛业务异常按插件故障处理：同插件的下一次调用得到 `E_PLUGIN_DISABLED`，不复读原错误。
+#[tokio::test]
+async fn thrown_tool_error_disables_the_plugin_for_later_calls() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let done = body["messages"]
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
+            if done {
+                ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_raw(
+                    tool_stream(vec![
+                        ("call_boom", "plugin_boom", json!({})),
+                        ("call_fine", "plugin_fine", json!({})),
+                    ]),
+                    "text/event-stream",
+                )
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    install_plugin(
+        &harness,
+        "demo",
+        r#"
+        export default {
+          tools: {
+            plugin_boom: {
+              description: "抛异常",
+              parameters: { type: "object" },
+              run() { throw new Error("输入有问题"); }
+            },
+            plugin_fine: {
+              description: "同插件的另一个工具",
+              parameters: { type: "object" },
+              run() { return "fine"; }
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "先失败再继续").await;
+
+    let results = load(&harness, &session).await;
+    assert!(
+        results
+            .iter()
+            .any(|text| text.contains("[E_PLUGIN]") && text.contains("输入有问题")),
+        "首次调用应报告业务异常：{results:?}"
+    );
+    assert!(
+        results
+            .iter()
+            .any(|text| text.contains("E_PLUGIN_DISABLED")),
+        "同插件的下一次调用必须得到 E_PLUGIN_DISABLED：{results:?}"
+    );
+
+    let plugins = plugin_list(&harness, &session).await;
+    let demo = plugins
+        .iter()
+        .find(|plugin| plugin.name == "demo")
+        .expect("插件仍应出现在清单里");
+    assert!(
+        demo.error
+            .as_deref()
+            .is_some_and(|error| error.contains("E_PLUGIN")),
+        "停用原因应写进清单：{demo:?}"
+    );
+    assert!(demo.tools.is_empty(), "停用后不再暴露工具：{demo:?}");
+
+    harness.close().await;
+}
+
+/// `plugin/reload` 丢弃宿主缓存重建：停用的插件恢复，清单里的 error 与注册项随之变化。
+#[tokio::test]
+async fn plugin_reload_recovers_a_disabled_plugin() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    // 用会话级持久化 state 制造「只失败一次」：重载后 JS 重新求值，但 state 不丢。
+    install_plugin(
+        &harness,
+        "demo",
+        r#"
+        import { session } from "moc";
+        export default {
+          commands: {
+            once: {
+              description: "第一次失败，之后成功",
+              run() {
+                const state = session.state;
+                if (!state.failed) {
+                  state.failed = true;
+                  throw new Error("第一次失败");
+                }
+                return "插件恢复了";
+              }
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+    let command = |name: &str| PluginRunCommandParams {
+        session_id: session.clone(),
+        name: name.into(),
+        args: String::new(),
+    };
+    let error = harness
+        .client
+        .call::<PluginRunCommand>(command("once"))
+        .await
+        .expect_err("命令应失败");
+    let message = match error {
+        moc_protocol::RpcCallError::Rpc(error) => error.message,
+        other => panic!("预期服务端错误：{other:?}"),
+    };
+    assert!(
+        message.contains("E_PLUGIN") && message.contains("第一次失败"),
+        "{message}"
+    );
+
+    let plugins = plugin_list(&harness, &session).await;
+    assert_eq!(plugins.len(), 1);
+    assert!(
+        plugins[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("E_PLUGIN")),
+        "失败的插件在清单里带 error：{plugins:?}"
+    );
+    assert!(
+        plugins[0].commands.is_empty(),
+        "停用后不再列出命令：{plugins:?}"
+    );
+
+    let reloaded = harness
+        .client
+        .call::<PluginReload>(PluginReloadParams {
+            session_id: session.clone(),
+        })
+        .await
+        .unwrap()
+        .plugins;
+    assert_eq!(reloaded.len(), 1);
+    assert_eq!(reloaded[0].error, None, "重载后错误应清空：{reloaded:?}");
+    assert_eq!(reloaded[0].commands[0].name, "once");
+
+    let text = harness
+        .client
+        .call::<PluginRunCommand>(command("once"))
+        .await
+        .expect("重载后命令应恢复")
+        .text;
+    assert_eq!(text, "插件恢复了");
+
+    // 命令失败时已经先把通知送给前端，不必等下一轮提示。
+    let notices = plugin_notices(&harness);
+    assert_eq!(notices.len(), 1, "失败应只通知一次：{notices:?}");
+    assert_eq!(notices[0].0, "demo");
+    assert_eq!(notices[0].1, "E_PLUGIN");
+    assert!(notices[0].2.contains("第一次失败"), "{notices:?}");
+
+    // 重载撤掉排队中的「已停用」提醒：修好之后再发提示，模型不该被告知插件还坏着。
+    harness.prompt(&session, "你好").await;
+    let requests = upstream.received_requests().await.expect("请求记录");
+    let stale = requests.iter().any(|request| {
+        let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
+        body["messages"].as_array().is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("插件 `demo`"))
+            })
+        })
+    });
+    assert!(!stale, "重载后不得再把已恢复的插件报给模型");
+
+    harness.close().await;
+}
+
+/// 批次里刚挂掉的插件立刻通知：前端收到 PluginNotice，下一轮请求带上模型可见提醒。
+#[tokio::test]
+async fn plugin_failure_reaches_frontend_and_next_model_turn() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let done = body["messages"]
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
+            if done {
+                ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_raw(
+                    tool_stream(vec![("call_boom", "plugin_boom", json!({}))]),
+                    "text/event-stream",
+                )
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    install_plugin(
+        &harness,
+        "demo",
+        r#"
+        export default {
+          tools: {
+            plugin_boom: {
+              description: "抛异常",
+              parameters: { type: "object" },
+              run() { throw new Error("插件炸了"); }
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "触发失败").await;
+
+    let notices = plugin_notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(
+        (notices[0].0.as_str(), notices[0].1.as_str()),
+        ("demo", "E_PLUGIN")
+    );
+    assert!(notices[0].2.contains("插件炸了"), "{notices:?}");
+    assert!(
+        notices[0].2.contains("at ") && notices[0].2.lines().count() > 1,
+        "前端通知里要能看到 JS 栈：{notices:?}"
+    );
+
+    // 工具批次结束后立刻抽干通知：紧接着的模型请求就能看到插件提醒。
+    let requests = upstream.received_requests().await.expect("请求记录");
+    let reminder = requests.iter().skip(1).any(|request| {
+        let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
+        body["messages"].as_array().is_some_and(|messages| {
+            messages.iter().any(|message| {
+                message["content"].as_str().is_some_and(|content| {
+                    content.contains("插件 `demo`：插件炸了")
+                        && content.contains("plugin/reload")
+                        && content.contains("已停用")
+                })
+            })
+        })
+    });
+    assert!(reminder, "下一轮请求必须带上插件失败提醒");
+
+    harness.close().await;
+}
+
+/// 提示开始时也要抽干积压通知：加载失败的插件在第一轮就进模型提醒。
+#[tokio::test]
+async fn load_failure_notice_reaches_the_model_on_prompt_start() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    install_plugin(&harness, "broken", "export default { nope: 1 };");
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "你好").await;
+
+    let notices = plugin_notices(&harness);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, "broken");
+    assert_eq!(notices[0].1, "E_PLUGIN_DESCRIPTOR");
+
+    let requests = upstream.received_requests().await.expect("请求记录");
+    let first: Value = serde_json::from_slice(&requests[0].body).expect("请求体是 JSON");
+    let reminded = first["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["content"].as_str().is_some_and(|content| {
+                content.contains("插件 `broken`")
+                    && content.contains("plugin/reload")
+                    && content.contains("已停用")
+            })
+        })
+    });
+    assert!(reminded, "加载失败的通知必须进第一轮系统提醒");
 
     harness.close().await;
 }

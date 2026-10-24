@@ -13,15 +13,16 @@ use moc_protocol::methods::{
     AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
     ContextContentResult, ContextUsageResult, Empty, InitializeParams, InitializeResult, ModelInfo,
     ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo, PluginListParams,
-    PluginListResult, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
-    ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
-    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
-    SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
-    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    PluginListResult, PluginReloadParams, PluginReloadResult, PluginRunCommandParams,
+    PluginRunCommandResult, PluginToolInfo, PromptResult, ResourceCompleteParams,
+    ResourceCompleteResult, ServerCapabilities, ServerInfo, SessionCompactParams,
+    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPermission,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
+    SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -139,6 +140,85 @@ pub(crate) fn plugin_tools_of(host: &moc_plugin::PluginHost) -> Vec<Arc<dyn crat
                 as Arc<dyn crate::tools::Tool>
         })
         .collect()
+}
+
+/// 插件清单的协议投影；`plugin/list` 与 `plugin/reload` 用同一份映射。
+fn plugin_infos(host: &moc_plugin::PluginHost) -> Vec<PluginInfo> {
+    host.info()
+        .into_iter()
+        .map(|info| PluginInfo {
+            name: info.name,
+            version: info.version,
+            description: info.description,
+            source: info.source,
+            dir: info.dir.to_string_lossy().into_owned(),
+            tools: info
+                .tools
+                .into_iter()
+                .map(|tool| PluginToolInfo {
+                    name: tool.name,
+                    description: tool.description,
+                    modes: tool.modes.names().map(str::to_owned).collect(),
+                })
+                .collect(),
+            commands: info
+                .commands
+                .into_iter()
+                .map(|command| PluginCommandInfo {
+                    name: command.name,
+                    description: command.description,
+                    usage: command.usage,
+                })
+                .collect(),
+            error: info.error,
+        })
+        .collect()
+}
+
+/// 插件失败提醒的前缀；`plugin_reload` 按同一前缀撤掉过时的提醒。
+fn plugin_notice_prefix(plugin: &str) -> String {
+    format!("插件 `{plugin}`：")
+}
+
+/// 把宿主积压的插件失败通知送进会话提醒与前端。
+///
+/// 调用方在加载、工具批次与命令失败这些边界上主动抽干通道：通知攒到下一轮再报，
+/// 模型可能已经在用一把刚失去插件的工具表。
+pub(crate) async fn flush_plugin_notices(
+    host: &moc_plugin::PluginHost,
+    state: &Mutex<crate::session::state::SessionState>,
+    updates: &moc_protocol::UpdateSink,
+    session_id: &str,
+) -> Result<(), RpcError> {
+    let notices = host.drain_notices();
+    if notices.is_empty() {
+        return Ok(());
+    }
+    {
+        // 锁只圈住 push：通知里可能带多行 JS 栈，不能让格式化或 emit 拖住会话状态。
+        let mut state = state.lock().await;
+        for notice in &notices {
+            state.notices.push(format!(
+                "{}{}（本进程内已停用；`plugin/reload` 或重启后恢复）",
+                plugin_notice_prefix(&notice.plugin),
+                notice.message
+            ));
+        }
+    }
+    for notice in notices {
+        updates
+            .emit(
+                session_id.to_owned(),
+                SessionUpdate::PluginNotice {
+                    plugin: notice.plugin,
+                    code: notice.code,
+                    message: notice.message,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
+    Ok(())
 }
 
 impl CoreInner {
@@ -344,6 +424,17 @@ impl CoreInner {
             .await
             .insert(key, Arc::clone(&host));
         Ok(host)
+    }
+
+    /// 丢弃该项目的宿主缓存并重建，忽略指纹；插件在本进程内被停用后靠它恢复。
+    pub(crate) async fn reload_plugins(
+        &self,
+        cwd: &Path,
+    ) -> Result<Arc<moc_plugin::PluginHost>, CoreError> {
+        // 键必须与 `project_plugins` 一致：先按 canonicalize 后的 cwd 移除，再走正常加载。
+        let key = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+        self.plugin_hosts.lock().await.remove(&key);
+        self.project_plugins(&key).await
     }
 
     /// 该项目的插件工具；插件宿主不可用时退化成空列表。
@@ -786,42 +877,43 @@ impl AgentService for Core {
         let state = record.state.lock().await;
         let cwd = PathBuf::from(&state.session.cwd);
         let host = self.inner.project_plugins(&cwd).await.map_err(to_rpc)?;
-        let plugins = host
-            .info()
-            .into_iter()
-            .map(|info| PluginInfo {
-                name: info.name,
-                version: info.version,
-                description: info.description,
-                source: info.source,
-                dir: info.dir.to_string_lossy().into_owned(),
-                tools: info
-                    .tools
-                    .into_iter()
-                    .map(|tool| PluginToolInfo {
-                        name: tool.name,
-                        description: tool.description,
-                        modes: tool.modes.names().map(str::to_owned).collect(),
-                    })
-                    .collect(),
-                commands: info
-                    .commands
-                    .into_iter()
-                    .map(|command| PluginCommandInfo {
-                        name: command.name,
-                        description: command.description,
-                        usage: command.usage,
-                    })
-                    .collect(),
-                error: info.error,
-            })
-            .collect();
-        Ok(PluginListResult { plugins })
+        Ok(PluginListResult {
+            plugins: plugin_infos(&host),
+        })
+    }
+
+    async fn plugin_reload(
+        &self,
+        _ctx: RequestContext,
+        params: PluginReloadParams,
+    ) -> Result<PluginReloadResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
+        let host = self.inner.reload_plugins(&cwd).await.map_err(to_rpc)?;
+        // 重载是用户主动发起的：新宿主若仍有加载失败，返回清单的 error 已经写明，
+        // 这里丢掉通知，免得下一轮把刚展示过的失败再报一次。
+        host.drain_notices();
+        let plugins = plugin_infos(&host);
+        // 重载的目的就是把插件修好：撤掉本次会话里对已恢复插件的「已停用」提醒，
+        // 否则下一轮模型还会被告知一个其实已经可用的插件坏了。仍失败的保留原因。
+        {
+            let mut state = record.state.lock().await;
+            for plugin in plugins.iter().filter(|plugin| plugin.error.is_none()) {
+                let prefix = plugin_notice_prefix(&plugin.name);
+                state.notices.retain(|notice| !notice.starts_with(&prefix));
+            }
+        }
+        Ok(PluginReloadResult { plugins })
     }
 
     async fn plugin_run_command(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: PluginRunCommandParams,
     ) -> Result<PluginRunCommandResult, RpcError> {
         let record = self
@@ -846,12 +938,18 @@ impl AgentService for Core {
         };
         // JS 可同步访问持久化 state；等待插件返回时不能占用会话状态锁。
         let host = self.inner.project_plugins(&cwd).await.map_err(to_rpc)?;
-        let text = host
-            .run_command(&params.name, &params.args, &context)
-            .await
-            .map_err(|error| {
-                RpcError::new(RpcErrorCode::InvalidParams.code(), error.to_string())
-            })?;
+        let text = match host.run_command(&params.name, &params.args, &context).await {
+            Ok(text) => text,
+            Err(error) => {
+                // 命令失败通常意味着插件刚被停用：先把失败通知送到前端与下一轮提醒再报错。
+                flush_plugin_notices(&host, &record.state, &ctx.updates(), &params.session_id)
+                    .await?;
+                return Err(RpcError::new(
+                    RpcErrorCode::InvalidParams.code(),
+                    error.to_string(),
+                ));
+            }
+        };
         Ok(PluginRunCommandResult { text })
     }
 

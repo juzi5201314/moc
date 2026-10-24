@@ -3,7 +3,10 @@
 use super::workspace::{WorkspaceScope, check_workspace};
 use crate::{
     error::CoreError,
-    service::{CoreInner, SessionRuntime, protocol_to_rpc, snapshot_workspace, to_rpc},
+    service::{
+        CoreInner, SessionRuntime, flush_plugin_notices, protocol_to_rpc, snapshot_workspace,
+        to_rpc,
+    },
     tools::{ToolControl, ToolCtx, ToolOutcome, ToolOutput},
 };
 use futures_util::{
@@ -403,6 +406,8 @@ pub(super) async fn execute_tool_batch(
         },
     )
     .await?;
+    // 批次里刚被停用的插件要立刻让模型与前端看到，不能等到下一次提示。
+    flush_plugin_notices(&tool_ctx.plugins, &record.state, &update, session_id).await?;
     if let Some(error) = stop_reason {
         return Err(error);
     }

@@ -3,7 +3,7 @@
 use crate::{
     compact,
     compact::replay::model_messages,
-    service::{CoreInner, protocol_to_rpc, snapshot_workspace, to_rpc},
+    service::{CoreInner, flush_plugin_notices, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
     system_prompt::{build, merge_reminders, mode_contract, reminder_message, sandbox_contract},
     tools::ToolCtx,
@@ -385,6 +385,8 @@ async fn run_prompt_locked(
         .project_plugins(std::path::Path::new(&state_snapshot.session.cwd))
         .await
         .map_err(to_rpc)?;
+    // 加载期失败的插件只有在宿主建好后才有通知：先把积压送达模型与前端。
+    flush_plugin_notices(&plugins, &record.state, &update, &params.session_id).await?;
     let plugin_tools = crate::service::plugin_tools_of(&plugins);
     let catalog = Arc::new(
         inner
