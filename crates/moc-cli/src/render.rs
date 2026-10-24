@@ -60,6 +60,13 @@ impl Renderer {
                 }
                 let _ = writeln!(out, "\n[保护机制：{message}]");
             }
+            SessionUpdate::PluginNotice {
+                plugin,
+                code,
+                message,
+            } => {
+                let _ = writeln!(out, "\n[插件停用：{plugin}（{code}）{message}]");
+            }
             SessionUpdate::AssistantDelta { delta, .. } => match delta {
                 AssistantDelta::Text { delta } => {
                     let _ = write!(out, "{delta}");

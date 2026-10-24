@@ -28,6 +28,7 @@
     toolBlocks: new Map(), // tool_call_id -> element
     autoScroll: true,
     query: "",
+    pluginNotice: null, // { plugin, code }：收到插件停用通知后显示顶栏「重载插件」
   };
 
   const el = {
@@ -521,6 +522,7 @@
     state.promptRunning = false;
     state.streaming.clear();
     state.toolBlocks.clear();
+    state.pluginNotice = null;
     sessionStorage.setItem(STORAGE_KEY, sessionId);
 
     renderTranscript(loaded.entries || []);
@@ -534,6 +536,22 @@
       showHint(
         `另一个进程${state.readOnlyHolder ? `（${state.readOnlyHolder.frontend}，pid ${state.readOnlyHolder.pid}）` : ""}正在写入，当前为只读`,
       );
+    }
+    refreshPluginState();
+  }
+
+  /** 载入会话后同步插件停用态：刷新页面时也能看到顶栏「重载插件」。 */
+  async function refreshPluginState() {
+    if (!state.active) return;
+    try {
+      const result = await rpc("plugin/list", { session_id: state.active.id });
+      const failed = (result.plugins || []).find((plugin) => plugin.error);
+      state.pluginNotice = failed
+        ? { plugin: failed.name, code: "E_PLUGIN_DISABLED", message: failed.error }
+        : null;
+      renderHeader();
+    } catch {
+      // 清单读不到只影响这一个提示按钮，不打断对话。
     }
   }
 
@@ -562,6 +580,15 @@
     badges.push(`<span class="badge mode">${escapeHtml(modeLabel(session.mode))}</span>`);
     badges.push(`<span class="badge">${escapeHtml(permissionLabel(session.permission))}</span>`);
     if (session.parent_session_id) badges.push(`<span class="badge warn">子代理</span>`);
+    if (state.pluginNotice) {
+      const notice = state.pluginNotice;
+      const title = notice.message
+        ? `插件 ${notice.plugin} 不可用：${notice.message}`
+        : `插件 ${notice.plugin} 已停用（${notice.code}）`;
+      badges.push(
+        `<button id="reload-plugins" class="badge warn reload" title="${escapeHtml(title)}">重载插件</button>`,
+      );
+    }
     el.badges.innerHTML = badges.join("");
   }
 
@@ -765,6 +792,14 @@
       case "guard_notice":
         appendStatusLine(update.message, update.terminal ? "error" : "warn");
         break;
+      case "plugin_notice":
+        state.pluginNotice = { plugin: update.plugin, code: update.code };
+        appendStatusLine(
+          `插件 ${update.plugin} 已停用（${update.code}）：${update.message}\n修复后点顶栏「重载插件」或重启 moc 可恢复`,
+          "warn",
+        );
+        renderHeader();
+        break;
       case "lock_changed":
         // 锁投影只用于展示持有者；只读与否在 session/load 时已经裁决。
         state.readOnlyHolder = update.lock || null;
@@ -956,6 +991,28 @@
     }
   }
 
+  // ---------- 插件 ----------
+
+  /** 顶栏「重载插件」：丢弃插件宿主后重新加载；没有插件仍不可用时收起按钮。 */
+  async function reloadPlugins() {
+    if (!state.active) return;
+    try {
+      const result = await rpc("plugin/reload", { session_id: state.active.id });
+      const plugins = result.plugins || [];
+      const disabled = plugins.filter((plugin) => plugin.error).length;
+      appendStatusLine(
+        `插件已重载：${plugins.length - disabled} 个可用 / ${disabled} 个仍不可用`,
+        disabled > 0 ? "warn" : "",
+      );
+      if (disabled === 0) {
+        state.pluginNotice = null;
+        renderHeader();
+      }
+    } catch (error) {
+      appendStatusLine(`重载插件失败：${error.message}`, "error");
+    }
+  }
+
   // ---------- 事件绑定 ----------
 
   el.search.addEventListener("input", () => {
@@ -979,6 +1036,11 @@
   el.transcript.addEventListener("scroll", () => {
     const distance = el.transcript.scrollHeight - el.transcript.scrollTop - el.transcript.clientHeight;
     state.autoScroll = distance < 80;
+  });
+
+  // 徽章区随 renderHeader 重建，点击用委托接住「重载插件」。
+  el.badges.addEventListener("click", (event) => {
+    if (event.target.closest("#reload-plugins")) reloadPlugins();
   });
 
   document.addEventListener("keydown", (event) => {

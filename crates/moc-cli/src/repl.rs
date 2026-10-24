@@ -6,14 +6,15 @@ use anyhow::{Context, bail};
 use moc_core::{Core, CoreConfig, PtcWorkerCommand, resolve_models};
 use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, ModelSwitchOverflow,
-    PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, PluginList,
-    PluginListParams, PluginRunCommand, PluginRunCommandParams, SessionCancel, SessionCancelParams,
-    SessionCompact, SessionCompactParams, SessionInfo, SessionList, SessionListParams, SessionLoad,
-    SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt,
-    SessionRequestAsk, SessionRequestPermission, SessionSetMode, SessionSetModeParams,
-    SessionSetModel, SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams,
-    SessionUpdateMethod, SessionUsage, SessionUsageParams,
+    PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, PluginInfo, PluginList,
+    PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams,
+    SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams, SessionInfo,
+    SessionList, SessionListParams, SessionLoad, SessionLoadParams, SessionMode,
+    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
+    SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRequestAsk,
+    SessionRequestPermission, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdateMethod,
+    SessionUsage, SessionUsageParams,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -417,7 +418,11 @@ async fn run_command(
             );
         }
         "help" => print_help(),
-        "plugins" => print_plugins(client, &session.id).await?,
+        "plugins" => match argument {
+            "" => print_plugins(client, &session.id).await?,
+            "reload" => reload_plugins(client, &session.id).await?,
+            _ => bail!("用法：/plugins [reload]"),
+        },
         "new" => {
             *session = client
                 .call::<SessionNew>(SessionNewParams {
@@ -633,7 +638,7 @@ const HELP_TEXT: &str = "\
 /new                      创建新会话
 /sessions                 列出会话
 /model <selector>         切换模型（装不下当前上下文时先询问再压缩）
-/plugins                  查看已加载的插件与插件命令";
+/plugins [reload]         查看已加载的插件；reload 重载插件宿主并重新发现";
 
 /// 执行插件注册的斜杠命令；名字不存在时返回 `false`，交给内置命令的未知分支。
 async fn run_plugin_command(
@@ -671,14 +676,40 @@ async fn print_plugins(client: &ClientHandle, session_id: &str) -> anyhow::Resul
             session_id: session_id.to_owned(),
         })
         .await?;
-    if list.plugins.is_empty() {
+    print_plugin_list(&list.plugins);
+    Ok(())
+}
+
+/// `/plugins reload`：丢弃插件宿主后重新发现并加载，再打印新清单。
+async fn reload_plugins(client: &ClientHandle, session_id: &str) -> anyhow::Result<()> {
+    let result = client
+        .call::<PluginReload>(PluginReloadParams {
+            session_id: session_id.to_owned(),
+        })
+        .await?;
+    let disabled = result
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.error.is_some())
+        .count();
+    println!(
+        "插件已重载：{} 个可用 / {disabled} 个仍不可用",
+        result.plugins.len() - disabled
+    );
+    print_plugin_list(&result.plugins);
+    Ok(())
+}
+
+/// 打印插件清单：一行标题，随后每个插件的来源、目录、工具与命令。
+fn print_plugin_list(plugins: &[PluginInfo]) {
+    if plugins.is_empty() {
         println!(
             "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。"
         );
-        return Ok(());
+        return;
     }
-    println!("已加载 {} 个插件：", list.plugins.len());
-    for plugin in &list.plugins {
+    println!("已加载 {} 个插件：", plugins.len());
+    for plugin in plugins {
         let version = plugin
             .version
             .as_deref()
@@ -702,7 +733,6 @@ async fn print_plugins(client: &ClientHandle, session_id: &str) -> anyhow::Resul
             println!("  命令 /{}", command.name);
         }
     }
-    Ok(())
 }
 
 fn print_unknown_command(name: &str) {

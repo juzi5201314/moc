@@ -227,6 +227,14 @@ button, input, textarea {
 .badge.readonly { color: var(--yellow); border-color: #e0af6866; }
 .badge.mode { color: var(--accent); border-color: #7aa2f744; }
 
+/* 「重载插件」是可点的徽章：清掉按钮默认底色，悬停时把描边提亮。 */
+button.badge.reload {
+  background: transparent;
+  cursor: pointer;
+}
+
+button.badge.reload:hover { border-color: var(--yellow); }
+
 #transcript {
   flex: 1;
   min-height: 0;
@@ -367,6 +375,8 @@ button, input, textarea {
   border-radius: var(--radius);
   color: var(--muted);
   font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .status-line.error { color: var(--red); border-color: #f7768e44; }

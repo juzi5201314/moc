@@ -12,9 +12,9 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use moc_core::Core;
 use moc_protocol::{
     ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, PluginList,
-    PluginListParams, PluginRunCommand, PluginRunCommandParams, ResourceComplete,
-    ResourceCompleteParams, Role, SessionCompact, SessionCompactParams, SessionContext,
-    SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
+    PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams,
+    ResourceComplete, ResourceCompleteParams, Role, SessionCompact, SessionCompactParams,
+    SessionContext, SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
     SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
     SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionRewind,
@@ -288,21 +288,38 @@ fn refresh_usage(app: &mut App, connection: &EmbeddedConnection, show: bool) {
     });
 }
 
-/// 刷新插件清单：`show` 为真时把清单写进转写（`/plugins`），否则只更新命令补全。
-fn refresh_plugins(app: &App, connection: &EmbeddedConnection, show: bool) {
+/// 刷新插件清单：`show` 为真时把清单写进转写（`/plugins`），否则只更新命令补全；
+/// `reload` 为真时先丢弃插件宿主并重新加载（`/plugins reload`）。
+fn refresh_plugins(app: &App, connection: &EmbeddedConnection, show: bool, reload: bool) {
     let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
         return;
     };
     let client = connection.client.clone();
     let events = app.events.clone();
     tokio::spawn(async move {
-        match client
-            .call::<PluginList>(PluginListParams { session_id })
-            .await
-        {
-            Ok(result) => {
-                let text = show.then(|| format_plugins(&result.plugins));
-                let _ = events.send(AppEvent::Plugins(result.plugins));
+        let outcome = if reload {
+            client
+                .call::<PluginReload>(PluginReloadParams { session_id })
+                .await
+                .map(|result| result.plugins)
+                .map_err(|error| format!("重载插件失败：{error}"))
+        } else {
+            client
+                .call::<PluginList>(PluginListParams { session_id })
+                .await
+                .map(|result| result.plugins)
+                .map_err(|error| format!("读取插件失败：{error}"))
+        };
+        match outcome {
+            Ok(plugins) => {
+                let text = show.then(|| {
+                    if reload {
+                        reload_plugins_note(&plugins)
+                    } else {
+                        format_plugins(&plugins)
+                    }
+                });
+                let _ = events.send(AppEvent::Plugins(plugins));
                 if let Some(text) = text {
                     let _ = events.send(AppEvent::PluginOutput {
                         name: "plugins".into(),
@@ -311,11 +328,11 @@ fn refresh_plugins(app: &App, connection: &EmbeddedConnection, show: bool) {
                     });
                 }
             }
-            Err(error) => {
+            Err(text) => {
                 if show {
                     let _ = events.send(AppEvent::PluginOutput {
                         name: "plugins".into(),
-                        text: format!("读取插件失败：{error}"),
+                        text,
                         error: true,
                     });
                 }
@@ -324,13 +341,38 @@ fn refresh_plugins(app: &App, connection: &EmbeddedConnection, show: bool) {
     });
 }
 
-/// `/plugins` 的正文：每个插件一行来源与目录，再列出它注册的工具和命令。
+/// `/plugins` 的正文：首行是总数，随后每个插件一行来源与目录，再列出它注册的工具和命令。
 fn format_plugins(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
     if plugins.is_empty() {
         return "当前工作区没有插件。把插件放进 .moc/plugins/<name>/（或 $MOC_HOME/plugins）即可自动启用。"
             .into();
     }
-    let mut lines = vec![format!("已加载 {} 个插件：", plugins.len())];
+    format!(
+        "已加载 {} 个插件：\n{}",
+        plugins.len(),
+        format_plugin_lines(plugins)
+    )
+}
+
+/// `/plugins reload` 的正文：重载结果的可用计数，后接每个插件的明细。
+fn reload_plugins_note(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
+    if plugins.is_empty() {
+        return "插件已重载：当前工作区没有插件".into();
+    }
+    let disabled = plugins
+        .iter()
+        .filter(|plugin| plugin.error.is_some())
+        .count();
+    format!(
+        "插件已重载：{} 个可用 / {disabled} 个仍不可用\n{}",
+        plugins.len() - disabled,
+        format_plugin_lines(plugins)
+    )
+}
+
+/// 插件明细：来源、目录、不可用原因，以及它注册的工具与命令。
+fn format_plugin_lines(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
+    let mut lines = Vec::new();
     for plugin in plugins {
         let version = plugin
             .version
@@ -356,6 +398,11 @@ fn format_plugins(plugins: &[moc_protocol::methods::PluginInfo]) -> String {
         }
     }
     lines.join("\n")
+}
+
+/// 插件停用提示：保留失败原因（可能是多行 JS 调用栈）与恢复方式。
+fn plugin_notice_note(plugin: &str, code: &str, message: &str) -> String {
+    format!("插件 `{plugin}` 已停用（{code}）：{message}\n修复后 /plugins reload 可重载")
 }
 
 /// 刷新代理面：名册与侧栏始终挂靠 [`App::agents_root_id`]（聚焦时是主会话）。
@@ -984,7 +1031,7 @@ async fn event_loop(
                         refresh_git_branch(app, &cwd);
                         refresh_context(app, connection, false);
                         refresh_usage(app, connection, false);
-                        refresh_plugins(app, connection, false);
+                        refresh_plugins(app, connection, false, false);
                         load_subagents_for_parent(app, &connection.client, Some(id));
                         if let Some(text) = app.startup_pending.take() {
                             app.prompt.insert_str_raw(&text);
@@ -3199,6 +3246,15 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             app.push_note(message.clone(), terminal);
             app.set_warning(message);
         }
+        // 插件失败即在本进程内停用：转写留下原因与恢复方式，状态栏给一行摘要。
+        SessionUpdate::PluginNotice {
+            plugin,
+            code,
+            message,
+        } => {
+            app.push_note(plugin_notice_note(&plugin, &code, &message), true);
+            app.set_warning(format!("插件 `{plugin}` 已停用（{code}）"));
+        }
         SessionUpdate::AssistantDelta { delta, .. } => match delta {
             moc_protocol::methods::AssistantDelta::Text { delta } => {
                 app.finish_thinking();
@@ -3744,7 +3800,11 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 app.set_notice("当前没有活动会话");
                 return;
             }
-            refresh_plugins(app, connection, true);
+            match rest.trim() {
+                "" => refresh_plugins(app, connection, true, false),
+                "reload" => refresh_plugins(app, connection, true, true),
+                _ => app.set_notice("用法：/plugins [reload]"),
+            }
         }
         "/usage" => {
             if app.session.is_none() {
@@ -4452,6 +4512,15 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// 插件停用通知保留多行原因（JS 调用栈），并附上恢复方式。
+    #[test]
+    fn plugin_notice_note_keeps_cause_and_recovery_hint() {
+        assert_eq!(
+            plugin_notice_note("demo", "E_PLUGIN_DISABLED", "TypeError: x\n  at y"),
+            "插件 `demo` 已停用（E_PLUGIN_DISABLED）：TypeError: x\n  at y\n修复后 /plugins reload 可重载"
+        );
     }
 
     /// `/context` 打开正文窗，并把 core 的真实分块装进窗里。

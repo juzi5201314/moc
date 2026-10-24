@@ -91,7 +91,7 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/plugins",
-        description: "查看插件：来源、工具与斜杠命令",
+        description: "查看插件：来源、工具与斜杠命令；/plugins reload 重载",
     },
     SlashCommand {
         name: "/close",
