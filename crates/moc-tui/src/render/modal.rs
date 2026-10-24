@@ -679,7 +679,8 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     usize::MAX,
                 ));
             }
-            let options_rows = params.options.len() + 2;
+            // 预留空行 + 选项行 + 底部提示行。
+            let options_rows = params.options.len() + 3;
             let max_content_rows = max_lines.saturating_sub(options_rows).max(2);
             let offset = (*scroll_offset).min(all_content.len().saturating_sub(max_content_rows));
             let mut lines: Vec<Line<'static>> = all_content
@@ -706,6 +707,10 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     style,
                 )));
             }
+            lines.push(Line::from(Span::styled(
+                "1-9 直选 · enter 确认 · PgUp/PgDn 滚动预览 · esc 按拒绝处理",
+                Style::new().fg(theme.gray_dim),
+            )));
             lines
         }
         Modal::Ask {
