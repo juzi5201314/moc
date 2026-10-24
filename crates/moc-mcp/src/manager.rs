@@ -2,7 +2,8 @@
 //!
 //! 每个 server 一个监督任务（[`supervise`]），负责连接、监听 `tools/list_changed`
 //! 与检测传输关闭；`Peer` 是廉价克隆句柄，调用路径直接从相位快照取用，
-//! 不经过任何跨任务通道，保证并行调用的吞吐。
+//! 不经过任何跨任务通道，保证并行调用的吞吐。同一 server 的在飞调用数由
+//! 每 slot 信号量约束（默认 1，见 [`ServerSlot::calls`]），跨 server 不设限。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use rmcp::ServiceError;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::{Peer, RoleClient};
 use serde_json::Value;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{Connection, Connector};
@@ -144,6 +145,12 @@ struct ServerSlot {
     phase: RwLock<Phase>,
     generation: watch::Sender<u64>,
     connector: Connector,
+    /// 同一 server 的在飞调用上限，permit 数取自 `config.max_concurrent_calls`。
+    ///
+    /// 默认 1（串行）：声称只读、实际会改自身状态的 server 被并发调用会搞乱，
+    /// 串行化由本地机制保证而非服务端声明；已知无状态的 server 可在配置里调高。
+    /// 调用方（core 调度层）据此把 MCP 工具视为可并行——跨 server 并发不受影响。
+    calls: Arc<Semaphore>,
     /// 防止同一 slot 被重复启动监督任务。
     supervising: AtomicBool,
 }
@@ -208,6 +215,7 @@ impl McpManager {
             slots.insert(
                 name,
                 Arc::new(ServerSlot {
+                    calls: Arc::new(Semaphore::new(config.max_concurrent_calls)),
                     config,
                     phase: RwLock::new(Phase::Connecting),
                     generation,
@@ -307,8 +315,10 @@ impl McpManager {
 
     /// 调用一次工具。
     ///
-    /// 连接层故障时等待重连（至多 [`RECONNECT_WAIT`]）并重试一次；
-    /// 服务端错误与超时不重试，避免副作用型工具被重复执行。
+    /// 同一 server 的在飞调用数受 slot 信号量约束（默认 1）：permit 覆盖整个调用，
+    /// 含断线后的重连等待与重试，保证同 server 调用不交错。连接层故障时等待重连
+    /// （至多 [`RECONNECT_WAIT`]）并重试一次；服务端错误与超时不重试，
+    /// 避免副作用型工具被重复执行。
     pub async fn call(
         &self,
         info: &McpToolInfo,
@@ -319,6 +329,13 @@ impl McpManager {
             .slots
             .get(&info.server)
             .ok_or_else(|| McpError::Tool(format!("unknown MCP server `{}`", info.server)))?;
+        // 信号量随 manager 终身存活，acquire 只会因取消分支返回。
+        let _permit = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(McpError::Cancelled),
+            _ = self.shutdown.cancelled() => return Err(McpError::Cancelled),
+            permit = slot.calls.acquire() => permit.expect("server 信号量不会关闭"),
+        };
         let mut generation = slot.generation.subscribe();
         let peer = connected_peer(slot).ok_or_else(|| {
             McpError::Transport(format!(
@@ -721,6 +738,9 @@ mod tests {
         connect_count: AtomicUsize,
         /// 一次 `tools/list` 已应答（供「握手成功随即退出」用例同步）。
         listed: tokio::sync::Notify,
+        /// `slow` 工具的在飞数与观测到的峰值（供每 server 并发上限用例）。
+        inflight: AtomicUsize,
+        max_inflight: AtomicUsize,
     }
 
     struct TestServer {
@@ -759,6 +779,7 @@ mod tests {
                 ),
                 Tool::new("refresh", "触发 list_changed", schema(json!({}))),
                 Tool::new("die", "让服务端退出", schema(json!({}))),
+                Tool::new("slow", "延迟应答，用于观测并发", schema(json!({}))),
             ];
             if self.state.generation.load(Ordering::SeqCst) >= 1 {
                 tools.push(Tool::new("extra", "刷新后出现", schema(json!({}))));
@@ -801,6 +822,13 @@ mod tests {
                 "die" => {
                     self.state.kill.notify_waiters();
                     Ok(CallToolResult::success(vec![ContentBlock::text("bye")]).into())
+                }
+                "slow" => {
+                    let inflight = self.state.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                    self.state.max_inflight.fetch_max(inflight, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(80)).await;
+                    self.state.inflight.fetch_sub(1, Ordering::SeqCst);
+                    Ok(CallToolResult::success(vec![ContentBlock::text("ok")]).into())
                 }
                 other => Err(rmcp::model::ErrorData::invalid_params(
                     format!("未知工具 {other}"),
@@ -894,6 +922,7 @@ mod tests {
             tools: None,
             connect_timeout_secs: CONNECT,
             call_timeout_secs: CONNECT,
+            max_concurrent_calls: 1,
         }
     }
 
@@ -921,7 +950,7 @@ mod tests {
         );
         manager.start().await;
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         let echo = tools.iter().find(|t| t.name == "echo").unwrap();
         assert_eq!(echo.qualified, "mcp__test__echo");
         assert!(!echo.read_only);
@@ -935,7 +964,7 @@ mod tests {
         let snapshot = manager.snapshot().await;
         assert!(matches!(
             snapshot.statuses.get("test"),
-            Some(ServerStatus::Connected { tool_count: 3 })
+            Some(ServerStatus::Connected { tool_count: 4 })
         ));
         manager.shutdown().await;
     }
@@ -950,7 +979,7 @@ mod tests {
         );
         manager.start().await;
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
 
         let refresh = tools.iter().find(|t| t.name == "refresh").unwrap();
         manager
@@ -961,7 +990,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let count = manager.snapshot().await.tools.len();
-            if count == 4 {
+            if count == 5 {
                 break;
             }
             assert!(
@@ -1037,7 +1066,7 @@ mod tests {
         let mut config = test_server("test", true);
         config.tools = crate::config::ToolFilter {
             allow: Vec::new(),
-            deny: vec!["refresh".into(), "die".into()],
+            deny: vec!["refresh".into(), "die".into(), "slow".into()],
         }
         .compile()
         .unwrap();
@@ -1048,6 +1077,70 @@ mod tests {
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
+        manager.shutdown().await;
+    }
+
+    /// 并发发起的调用须由 slot 信号量串行化：默认上限 1，服务端观测不到交错。
+    #[tokio::test]
+    async fn same_server_calls_serialize_by_default() {
+        let state = Arc::new(TestState::default());
+        let manager = McpManager::build(
+            vec![test_server("test", true)],
+            CancellationToken::new(),
+            |_| test_connector(state.clone()),
+        );
+        manager.start().await;
+        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        let slow = Arc::clone(tools.iter().find(|t| t.name == "slow").unwrap());
+        let mut calls = Vec::new();
+        for _ in 0..3 {
+            let manager = Arc::clone(&manager);
+            let info = Arc::clone(&slow);
+            calls.push(tokio::spawn(async move {
+                manager.call(&info, json!({}), CancellationToken::new()).await
+            }));
+        }
+        for call in calls {
+            call.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            state.max_inflight.load(Ordering::SeqCst),
+            1,
+            "默认并发上限为 1，同 server 调用不得交错"
+        );
+        manager.shutdown().await;
+    }
+
+    /// 调高 `max_concurrent_calls` 后，同 server 并发可达且不超过配置上限。
+    #[tokio::test]
+    async fn raised_limit_allows_same_server_concurrency() {
+        let state = Arc::new(TestState::default());
+        let mut config = test_server("test", true);
+        config.max_concurrent_calls = 2;
+        let manager = McpManager::build(
+            vec![config],
+            CancellationToken::new(),
+            |_| test_connector(state.clone()),
+        );
+        manager.start().await;
+        let tools = connected_tools(&manager, Duration::from_secs(5)).await;
+        let slow = Arc::clone(tools.iter().find(|t| t.name == "slow").unwrap());
+        let mut calls = Vec::new();
+        for _ in 0..4 {
+            let manager = Arc::clone(&manager);
+            let info = Arc::clone(&slow);
+            calls.push(tokio::spawn(async move {
+                manager.call(&info, json!({}), CancellationToken::new()).await
+            }));
+        }
+        for call in calls {
+            call.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            state.max_inflight.load(Ordering::SeqCst),
+            2,
+            "并发应达到且不超过配置的上限"
+        );
         manager.shutdown().await;
     }
 

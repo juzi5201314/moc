@@ -62,6 +62,12 @@ pub struct RawServerSpec {
     /// 覆盖全局 `call_timeout_secs` 的单 server 调用时限。
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// 覆盖全局 `max_concurrent_calls` 的单 server 并发调用上限。
+    ///
+    /// 默认 1（同一 server 串行）：声称只读、实际会改自身状态的 server 被并发调用
+    /// 会搞乱，串行化不依赖服务端声明。已知无状态的 server 可调高。
+    #[serde(default)]
+    pub max_concurrent_calls: Option<usize>,
     #[serde(default)]
     pub tools: Option<ToolFilter>,
 }
@@ -153,6 +159,8 @@ pub struct ServerConfig {
     pub connect_timeout_secs: u64,
     /// 单次 `tools/call` 的时限（秒）。
     pub call_timeout_secs: u64,
+    /// 同一 server 的并发调用上限；1 即串行。
+    pub max_concurrent_calls: usize,
 }
 
 /// TOML `[mcp]` 段的结构；也承载全局默认值。
@@ -169,6 +177,9 @@ pub struct McpDocument {
     pub connect_timeout_secs: u64,
     #[serde(default = "default_call_timeout")]
     pub call_timeout_secs: u64,
+    /// 全局默认的每 server 并发调用上限；单 server 可在条目里覆盖。
+    #[serde(default = "default_max_concurrent_calls")]
+    pub max_concurrent_calls: usize,
     #[serde(default)]
     pub servers: BTreeMap<String, RawServerSpec>,
 }
@@ -181,6 +192,7 @@ impl Default for McpDocument {
             project_config: false,
             connect_timeout_secs: default_connect_timeout(),
             call_timeout_secs: default_call_timeout(),
+            max_concurrent_calls: default_max_concurrent_calls(),
             servers: BTreeMap::new(),
         }
     }
@@ -194,6 +206,9 @@ fn default_connect_timeout() -> u64 {
 }
 fn default_call_timeout() -> u64 {
     120
+}
+fn default_max_concurrent_calls() -> usize {
+    1
 }
 
 /// 展开字符串中的 `${VAR}` 与 `${VAR:-default}`；未设置且无默认值时展开为空并告警。
@@ -313,10 +328,20 @@ pub fn resolve_server(
     raw: &RawServerSpec,
     global_connect_timeout_secs: u64,
     global_call_timeout_secs: u64,
+    global_max_concurrent_calls: usize,
 ) -> Result<ServerConfig, McpError> {
     validate_server_name(name)?;
     let mut spec = raw.clone();
     expand_all_env(&mut spec);
+
+    let max_concurrent_calls = spec
+        .max_concurrent_calls
+        .unwrap_or(global_max_concurrent_calls);
+    if max_concurrent_calls == 0 {
+        return Err(McpError::Config(format!(
+            "server `{name}` max_concurrent_calls must be greater than 0"
+        )));
+    }
 
     let kind = spec.kind.as_deref().map(str::to_ascii_lowercase);
     let transport = match (&spec.command, &spec.url, kind.as_deref()) {
@@ -370,6 +395,7 @@ pub fn resolve_server(
         },
         connect_timeout_secs: global_connect_timeout_secs,
         call_timeout_secs: spec.timeout_secs.unwrap_or(global_call_timeout_secs),
+        max_concurrent_calls,
     })
 }
 
@@ -441,6 +467,7 @@ pub fn resolve_all(toml: &McpDocument, json: &JsonSource) -> Vec<ServerConfig> {
             &spec,
             toml.connect_timeout_secs,
             toml.call_timeout_secs,
+            toml.max_concurrent_calls,
         ) {
             Ok(config) => configs.push(config),
             // 单条非法配置只丢自己：其余 server 继续可用，不能整份 MCP 配置一起跳过。
@@ -506,6 +533,7 @@ mod tests {
             .unwrap(),
             15,
             60,
+            1,
         )
         .unwrap();
         match &stdio.transport {
@@ -529,6 +557,7 @@ mod tests {
             .unwrap(),
             15,
             60,
+            1,
         )
         .unwrap();
         match &http.transport {
@@ -543,16 +572,15 @@ mod tests {
         }
 
         // 缺失传输字段必须报错，而不是默默启动。
-        assert!(resolve_server("bad", &RawServerSpec::default(), 15, 60).is_err());
-        assert!(
-            resolve_server(
-                "__bad__",
-                &serde_json::from_value(json!({"url": "http://x"})).unwrap(),
-                15,
-                60
-            )
-            .is_err()
-        );
+        assert!(resolve_server("bad", &RawServerSpec::default(), 15, 60, 1).is_err());
+        assert!(resolve_server(
+            "__bad__",
+            &serde_json::from_value(json!({"url": "http://x"})).unwrap(),
+            15,
+            60,
+            1,
+        )
+        .is_err());
     }
 
     #[test]
@@ -694,10 +722,47 @@ mod tests {
                 .unwrap(),
             15,
             60,
+            1,
         )
         .unwrap();
         assert!(!config.enabled);
         assert_eq!(config.call_timeout_secs, 30);
+        assert_eq!(config.max_concurrent_calls, 1, "缺省必须同 server 串行");
+    }
+
+    #[test]
+    fn per_server_concurrency_overrides_and_rejects_zero() {
+        let config = resolve_server(
+            "x",
+            &serde_json::from_value(
+                json!({"command": "c", "max_concurrent_calls": 4}),
+            )
+            .unwrap(),
+            15,
+            60,
+            1,
+        )
+        .unwrap();
+        assert_eq!(config.max_concurrent_calls, 4);
+
+        let global = resolve_server(
+            "y",
+            &serde_json::from_value(json!({"command": "c"})).unwrap(),
+            15,
+            60,
+            8,
+        )
+        .unwrap();
+        assert_eq!(global.max_concurrent_calls, 8, "未覆盖时取全局默认");
+
+        assert!(resolve_server(
+            "z",
+            &serde_json::from_value(json!({"command": "c", "max_concurrent_calls": 0})).unwrap(),
+            15,
+            60,
+            1,
+        )
+        .is_err());
     }
 
     #[test]

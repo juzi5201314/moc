@@ -183,6 +183,9 @@ user_config = true
 project_config = false
 connect_timeout_secs = 15
 call_timeout_secs = 120
+# 同一 server 的并发调用上限；默认串行。单 server 可在条目里覆盖：
+# [mcp.servers.demo] max_concurrent_calls = 4
+max_concurrent_calls = 1
 
 [mcp.servers]
 

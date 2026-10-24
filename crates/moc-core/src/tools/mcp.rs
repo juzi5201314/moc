@@ -52,10 +52,13 @@ impl Tool for McpTool {
         Tier::Exec
     }
 
-    /// 并行性同样不采信服务端声明：声称只读、实际会改自身状态的 server 会被并发调用
-    /// 搞乱。代价是只读 MCP 工具也串行执行，多一点批量调用的延迟，换来不依赖不可信的声明。
+    /// 并行安全：同一 server 的在飞调用由 [`McpManager`] 的每 server 信号量串行化
+    /// （默认上限 1），跨 server 是独立进程、无共享状态，可安全并发。
+    ///
+    /// 同样不采信服务端声明：`readOnlyHint` 不影响并发度——串行化由本地机制保证，
+    /// 而不是相信 server 自述无状态；已知无状态的 server 由配置显式调高上限。
     fn parallel_safe(&self) -> bool {
-        false
+        true
     }
 
     fn def(&self) -> ToolDef {
@@ -138,8 +141,8 @@ mod tests {
                 "服务端声明的 readOnlyHint 不能改变风险等级"
             );
             assert!(
-                !tool.parallel_safe(),
-                "服务端自述不得放开并发执行：{declared}"
+                tool.parallel_safe(),
+                "并发判定与服务端声明无关：同 server 串行由 McpManager 保证：{declared}"
             );
             for mode in [SessionMode::Ask, SessionMode::Plan] {
                 assert!(
