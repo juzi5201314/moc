@@ -402,16 +402,32 @@ async fn manage(
                             fail(&mut process, &mut routes, worker_error("PTC Host 返回未知 execution ID")).await;
                             continue;
                         };
+                        let terminal = !matches!(step.state, GuestState::Pending);
                         if serde_json::to_vec(&step).map_or(true, |bytes| bytes.len() > route.limit) {
-                            fail(
-                                &mut process,
-                                &mut routes,
-                                ToolError::new("E_OUTPUT_LIMIT", "PTC Host execution 输出超限"),
-                            )
-                            .await;
+                            let Some(route) = routes.get_mut(&execution_id) else {
+                                continue;
+                            };
+                            let _ = route.steps.send(Err(ToolError::new(
+                                "E_OUTPUT_LIMIT",
+                                "PTC Host execution 输出超限",
+                            )));
+                            if terminal {
+                                routes.remove(&execution_id);
+                                if routes.is_empty() {
+                                    idle_at = Instant::now() + idle;
+                                }
+                            } else {
+                                route.cancelling = true;
+                                route.expires = route.expires.min(Instant::now() + CANCEL_GRACE);
+                                if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Cancel {
+                                    execution_id,
+                                    code: "E_OUTPUT_LIMIT".into(),
+                                }) {
+                                    fail(&mut process, &mut routes, error).await;
+                                }
+                            }
                             continue;
                         }
-                        let terminal = !matches!(step.state, GuestState::Pending);
                         let _ = route.steps.send(Ok(step));
                         if terminal { routes.remove(&execution_id); }
                         if routes.is_empty() { idle_at = Instant::now() + idle; }

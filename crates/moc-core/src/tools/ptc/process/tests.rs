@@ -39,6 +39,12 @@ async fn step(guest: &mut Guest) -> Result<GuestStep, ToolError> {
         .await
         .expect("Host 不应挂起")
 }
+
+async fn step_with_timeout(guest: &mut Guest, timeout: Duration) -> Result<GuestStep, ToolError> {
+    tokio::time::timeout(timeout, guest.step(Vec::new()))
+        .await
+        .expect("Host 不应挂起")
+}
 async fn receive(guest: &mut Guest) -> Result<GuestStep, ToolError> {
     tokio::time::timeout(Duration::from_secs(4), guest.receive())
         .await
@@ -121,6 +127,27 @@ async fn bounds_global_runs_and_kills_unresponsive_cancel() {
         "E_PTC_WORKER"
     );
     assert_ne!(pid(&host, &config).await, original);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn oversized_route_does_not_kill_healthy_siblings() {
+    let host = host();
+    let config = PtcConfig::default();
+    let mut oversized = request("hold");
+    oversized.max_message_bytes = 1;
+    let mut oversized = host.start(oversized, &config).unwrap();
+    assert_eq!(
+        step_with_timeout(&mut oversized, Duration::from_secs(1))
+            .await
+            .unwrap_err()
+            .code,
+        "E_OUTPUT_LIMIT"
+    );
+
+    let mut sibling = host.start(request("pid"), &config).unwrap();
+    let result = step_with_timeout(&mut sibling, Duration::from_secs(1)).await;
+    assert!(matches!(result.unwrap().state, GuestState::Done { .. }));
     host.shutdown().await;
 }
 
