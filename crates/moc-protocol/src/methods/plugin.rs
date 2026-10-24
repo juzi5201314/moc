@@ -60,6 +60,31 @@ pub struct PluginCommandInfo {
     pub usage: String,
 }
 
+/// `plugin/reload`：丢弃该工作区的插件宿主并重新发现、加载。
+///
+/// 插件在本进程内因失败被停用后，这是除重启 moc 之外的唯一恢复路径。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PluginReload;
+impl Method for PluginReload {
+    const NAME: &'static str = "plugin/reload";
+    type Params = PluginReloadParams;
+    type Result = PluginReloadResult;
+}
+impl ClientRequest for PluginReload {}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginReloadParams {
+    /// 重载哪个工作目录的插件；`None` 表示用会话自己的 cwd。
+    #[serde(default)]
+    pub session_id: String,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginReloadResult {
+    /// 重载后的完整插件清单（与 `plugin/list` 相同）。
+    pub plugins: Vec<PluginInfo>,
+}
+
 /// `plugin/run_command`：执行一个插件注册的斜杠命令。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PluginRunCommand;

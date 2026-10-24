@@ -35,7 +35,8 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet, ConfigManage,
-    Initialize, Ping, PingResult, PluginList, PluginRunCommand, PromptParams, ResourceComplete,
+    Initialize, Ping, PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams,
+    ResourceComplete,
     SessionBash, SessionCancel, SessionCancelResult, SessionCompact, SessionContext,
     SessionContextContent, SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew,
     SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
@@ -498,6 +499,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .plugin_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <PluginReload as Method>::NAME => {
+                let params = params_from_value::<PluginReload>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .plugin_reload(self.context(client, cancel), params)
                         .await?,
                 )
             }

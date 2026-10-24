@@ -952,6 +952,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::PromptStarted { .. } => "prompt_started",
         SessionUpdate::GenerationStarted { .. } => "generation_started",
         SessionUpdate::GuardNotice { .. } => "guard_notice",
+        SessionUpdate::PluginNotice { .. } => "plugin_notice",
         SessionUpdate::AssistantDelta { .. } => "assistant_delta",
         SessionUpdate::BashStarted { .. } => "bash_started",
         SessionUpdate::ToolStarted { .. } => "tool_started",

@@ -11,7 +11,7 @@
 //! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`session::SessionSetMode`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
-//! | [`plugin::PluginList`] / [`plugin::PluginRunCommand`] | C→S | core | 已初始化 + 插件可用 | `-32010` / `-32014` |
+//! | [`plugin::PluginList`] / [`plugin::PluginRunCommand`] / [`plugin::PluginReload`] | C→S | core | 已初始化 + 插件可用 | `-32010` / `-32014` |
 //! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
@@ -75,8 +75,9 @@ pub use plan::{
     SessionPlanApproveResult,
 };
 pub use plugin::{
-    PluginCommandInfo, PluginInfo, PluginList, PluginListParams, PluginListResult,
-    PluginRunCommand, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo,
+    PluginCommandInfo, PluginInfo, PluginList, PluginListParams, PluginListResult, PluginReload,
+    PluginReloadParams, PluginReloadResult, PluginRunCommand, PluginRunCommandParams,
+    PluginRunCommandResult, PluginToolInfo,
 };
 pub use prompt::{
     InputPart, PromptParams, PromptResult, SessionCancel, SessionCancelParams, SessionCancelResult,
@@ -158,6 +159,7 @@ mod tests {
             (<SessionBash as Method>::NAME, "session/bash"),
             (<SessionCancel as Method>::NAME, "session/cancel"),
             (<PluginList as Method>::NAME, "plugin/list"),
+            (<PluginReload as Method>::NAME, "plugin/reload"),
             (<PluginRunCommand as Method>::NAME, "plugin/run_command"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
             (<AgentSpawn as Method>::NAME, "agent/spawn"),

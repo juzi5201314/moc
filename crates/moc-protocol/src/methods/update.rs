@@ -209,6 +209,18 @@ pub enum SessionUpdate {
         message: String,
         terminal: bool,
     },
+    /// 插件失败：加载或调用出错，且插件因此在本进程内停用。
+    ///
+    /// 修复插件后需要 `plugin/reload` 或重启 moc 才能恢复；`message` 面向人，
+    /// 有 JS 调用栈时是多行文本。
+    PluginNotice {
+        /// 插件名。
+        plugin: String,
+        /// 稳定错误码（`E_PLUGIN_*`）。
+        code: String,
+        /// 失败原因。
+        message: String,
+    },
     /// 标题变化（core 自动命名或 `session/rename` 之后）。
     TitleChanged {
         /// 新标题。

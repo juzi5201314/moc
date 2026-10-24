@@ -32,15 +32,16 @@ use crate::methods::{
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
     CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult,
     Empty, InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
-    PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
-    PromptParams, PromptResult, ResourceCompleteParams, ResourceCompleteResult,
-    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
-    SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionNewParams,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
+    PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
+    ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
+    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
+    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
+    SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
+    SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
+    SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -139,6 +140,15 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: PluginRunCommandParams,
     ) -> impl Future<Output = Result<PluginRunCommandResult, RpcError>> + Send;
+
+    /// 重新发现并加载插件；插件在本进程内被停用后靠它恢复。
+    fn plugin_reload(
+        &self,
+        _ctx: RequestContext,
+        _params: PluginReloadParams,
+    ) -> impl Future<Output = Result<PluginReloadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
 
     fn resource_complete(
         &self,
