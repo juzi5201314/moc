@@ -1196,6 +1196,10 @@ fn handle_mouse_with_connection(
             handle_rewind_mouse(app, mouse);
             return;
         }
+        if matches!(app.modal, Some(Modal::Ask { .. })) {
+            handle_ask_mouse(app, connection, mouse);
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && app
                 .plan_model_area
@@ -1398,8 +1402,72 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     }
 }
 
+/// 提问卡片的鼠标处理：点击选项即选择（单选直接推进、多选切换勾选），
+/// 点击自定义行进入编辑；停泊态下点击等于回到作答并选择。
+/// 命中矩形由渲染层每帧写入 `ask_option_hits`，未命中（正文/页脚/卡片外）不响应。
+fn handle_ask_mouse(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mouse: crossterm::event::MouseEvent,
+) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        return;
+    }
+    let position = (mouse.column, mouse.row).into();
+    let Some((option, _)) = app
+        .ask_option_hits
+        .iter()
+        .find(|(_, area)| area.contains(position))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(Modal::Ask {
+        params,
+        question,
+        highlight,
+        selected,
+        custom,
+        preview_scroll,
+        parked,
+        reply,
+    }) = app.modal.as_mut()
+    else {
+        return;
+    };
+    let count = params
+        .questions
+        .get(*question)
+        .map(|current| current.options.len())
+        .unwrap_or(0);
+    *parked = false;
+    *preview_scroll = 0;
+    // 编辑中的文本留在原处，焦点交给点击的行。
+    if let Some(answer) = custom.get_mut(*question) {
+        answer.editing = false;
+    }
+    highlight[*question] = option;
+    if option >= count {
+        if let Some(answer) = custom.get_mut(*question) {
+            answer.editing = true;
+            answer.cursor = answer.text.len();
+        }
+        return;
+    }
+    let mut close = false;
+    if let Some(current) = params.questions.get(*question)
+        && pick_ask_option(current, *question, option, selected)
+    {
+        close = advance_ask(params, question, selected, custom, reply);
+    }
+    if close {
+        app.modal = None;
+        crate::queue::dispatch(app, connection);
+    }
+}
+
 /// 就地模式菜单的鼠标处理：命中条目即切换模式，点到菜单外（含再点一次图例）关闭。
-///
 /// 返回 `true` 表示事件已被菜单消费，不再落到队列、滚动区或输入框。
 fn handle_mode_menu_mouse(
     app: &mut App,
@@ -2262,6 +2330,19 @@ fn handle_modal_key(
                         }
                         *preview_scroll = 0;
                     }
+                    // ←→ 翻看问题与作答态同一语义：只动指针，不提交。
+                    (KeyCode::Left, _) => {
+                        if *question > 0 {
+                            *question -= 1;
+                            *preview_scroll = 0;
+                        }
+                    }
+                    (KeyCode::Right, _) => {
+                        if *question + 1 < params.questions.len() {
+                            *question += 1;
+                            *preview_scroll = 0;
+                        }
+                    }
                     (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
                         close |= dismiss_ask(reply);
                     }
@@ -2360,41 +2441,16 @@ fn handle_modal_key(
                             *preview_scroll = 0;
                         }
                         (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                            // 多选切换；自定义行上无效
-                            if let Some(option) = current.options.get(highlight[*question]) {
-                                let label = option.label.clone();
-                                if current.multi {
-                                    let chosen = &mut selected[*question];
-                                    if let Some(position) = chosen.iter().position(|s| *s == label)
-                                    {
-                                        chosen.remove(position);
-                                    } else {
-                                        chosen.push(label);
-                                    }
-                                } else {
-                                    selected[*question] = vec![label];
-                                }
-                            }
+                            // 多选切换；单选只写入聚焦项，自定义行上无效
+                            pick_ask_option(current, *question, highlight[*question], selected);
                         }
                         // 数字直达：单选选中即推进；多选切换勾选，enter 才推进。
                         (KeyCode::Char(digit), KeyModifiers::NONE)
                             if digit.is_ascii_digit() && digit != '0' =>
                         {
                             let index = digit.to_digit(10).expect("ascii digit") as usize - 1;
-                            if let Some(option) = current.options.get(index) {
-                                let label = option.label.clone();
-                                if current.multi {
-                                    let chosen = &mut selected[*question];
-                                    if let Some(position) = chosen.iter().position(|s| *s == label)
-                                    {
-                                        chosen.remove(position);
-                                    } else {
-                                        chosen.push(label);
-                                    }
-                                } else {
-                                    selected[*question] = vec![label];
-                                    close |= advance_ask(params, question, selected, custom, reply);
-                                }
+                            if pick_ask_option(current, *question, index, selected) {
+                                close |= advance_ask(params, question, selected, custom, reply);
                             }
                         }
                         // 复制聚焦项：选项给 label，自定义行给已输入的正文。
@@ -2447,6 +2503,20 @@ fn handle_modal_key(
                         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
                             if *question > 0 {
                                 *question -= 1;
+                                *preview_scroll = 0;
+                            }
+                        }
+                        // ←→ 只翻看问题指针：不写入选择也不提交，回看时误触不会推进；
+                        // 确认推进始终是 tab/enter 的事。
+                        (KeyCode::Left, _) => {
+                            if *question > 0 {
+                                *question -= 1;
+                                *preview_scroll = 0;
+                            }
+                        }
+                        (KeyCode::Right, _) => {
+                            if *question + 1 < params.questions.len() {
+                                *question += 1;
                                 *preview_scroll = 0;
                             }
                         }
@@ -3026,6 +3096,32 @@ fn handle_modal_key(
         if !plan_review_open {
             crate::queue::dispatch(app, connection);
         }
+    }
+}
+
+/// 写入一次选项选择：多选切换勾选，单选整体覆盖（返回 true 表示已就绪，调用方据此推进）。
+/// 空格、数字直达与鼠标点选共用这一份语义。
+fn pick_ask_option(
+    current: &moc_protocol::methods::AskQuestion,
+    question: usize,
+    index: usize,
+    selected: &mut [Vec<String>],
+) -> bool {
+    let Some(option) = current.options.get(index) else {
+        return false;
+    };
+    let label = option.label.clone();
+    if current.multi {
+        let chosen = &mut selected[question];
+        if let Some(position) = chosen.iter().position(|s| *s == label) {
+            chosen.remove(position);
+        } else {
+            chosen.push(label);
+        }
+        false
+    } else {
+        selected[question] = vec![label];
+        true
     }
 }
 
@@ -7707,6 +7803,174 @@ mod tests {
 
         connection.shutdown().await;
         core.shutdown().await;
+    }
+
+    /// ←→ 只翻看问题指针：不写入也不提交，已选答案原样保留。
+    #[tokio::test]
+    async fn ask_arrow_keys_browse_questions_without_submitting() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(
+            vec![ask_question("q1"), multi_ask_question()],
+            Some(reply_tx),
+        ));
+
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char(' '),
+        );
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        match app.modal.as_ref() {
+            Some(Modal::Ask { question, .. }) => assert_eq!(*question, 1, "→ 应翻到下一问"),
+            _ => unreachable!("翻看问题不应提交"),
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        if let Some(Modal::Ask { question, .. }) = app.modal.as_ref() {
+            assert_eq!(*question, 1, "最后一问上 → 不再前进");
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                question, selected, ..
+            }) => {
+                assert_eq!(*question, 0, "← 应翻回上一问");
+                assert_eq!(selected[0], vec!["选项一".to_owned()], "翻看不丢已选答案");
+            }
+            _ => unreachable!("模态应保持打开"),
+        }
+        assert!(reply_rx.try_recv().is_err(), "翻看问题不得提交");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 停泊态 ←→ 同样翻看问题，且不解除停泊。
+    #[tokio::test]
+    async fn ask_parked_arrow_keys_browse_questions() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal_with(
+            vec![ask_question("q1"), ask_question("q2")],
+            None,
+        ));
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                question, parked, ..
+            }) => {
+                assert!(*parked, "翻看问题不解除停泊");
+                assert_eq!(*question, 1);
+            }
+            _ => unreachable!("卡片应保留"),
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        if let Some(Modal::Ask { question, .. }) = app.modal.as_ref() {
+            assert_eq!(*question, 0, "停泊态 ← 应翻回上一问");
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 鼠标点选：单选点击即选中并提交整单。
+    #[tokio::test]
+    async fn ask_mouse_click_selects_and_submits_single_choice() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(vec![ask_question("q1")], Some(reply_tx)));
+        app.ask_option_hits = vec![
+            (0, ratatui::layout::Rect::new(10, 5, 40, 1)),
+            (1, ratatui::layout::Rect::new(10, 6, 40, 1)),
+        ];
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(10, 5));
+        let result = reply_rx
+            .try_recv()
+            .expect("单选点击即选择并提交")
+            .expect("提问结果");
+        assert_eq!(result.answers[0].selected, ["选项一"]);
+        assert!(app.modal.is_none(), "提交后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 鼠标点选：多选点击切换勾选、不推进；点击自定义行进入编辑。
+    #[tokio::test]
+    async fn ask_mouse_click_toggles_multi_and_opens_custom_editor() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal_with(vec![multi_ask_question()], None));
+        app.ask_option_hits = vec![
+            (0, ratatui::layout::Rect::new(10, 5, 40, 1)),
+            (1, ratatui::layout::Rect::new(10, 6, 40, 1)),
+            (2, ratatui::layout::Rect::new(10, 7, 40, 1)),
+            (3, ratatui::layout::Rect::new(10, 8, 40, 1)),
+        ];
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(10, 6));
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                selected,
+                highlight,
+                ..
+            }) => {
+                assert_eq!(selected[0], vec!["日志".to_owned()], "多选点击切换勾选");
+                assert_eq!(highlight[0], 1, "点击行获得聚焦");
+            }
+            _ => unreachable!("多选点击不推进"),
+        }
+        handle_mouse_with_connection(&mut app, &connection, left_click(10, 6));
+        if let Some(Modal::Ask { selected, .. }) = app.modal.as_ref() {
+            assert!(selected[0].is_empty(), "重复点击取消勾选");
+        }
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(10, 8));
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                custom, highlight, ..
+            }) => {
+                assert!(custom[0].editing, "点击自定义行进入编辑");
+                assert_eq!(highlight[0], 3);
+            }
+            _ => unreachable!("编辑态模态应保持打开"),
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 停泊态点击选项：解除停泊并直接选择（单选提交整单）。
+    #[tokio::test]
+    async fn ask_mouse_click_unparks_and_selects() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(vec![ask_question("q1")], Some(reply_tx)));
+        app.ask_option_hits = vec![(0, ratatui::layout::Rect::new(10, 5, 40, 1))];
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(10, 5));
+        let result = reply_rx
+            .try_recv()
+            .expect("停泊态点击即选择并提交")
+            .expect("提问结果");
+        assert_eq!(result.answers[0].selected, ["选项一"]);
+        assert!(app.modal.is_none(), "提交后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 左键单击事件。
+    fn left_click(column: u16, row: u16) -> crossterm::event::MouseEvent {
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     /// 默认高亮落在推荐项上；没有推荐才停在第一项。

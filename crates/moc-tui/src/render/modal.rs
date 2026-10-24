@@ -196,6 +196,11 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         context_content::draw(frame, app, area);
         return;
     }
+    if matches!(app.modal, Some(Modal::Ask { .. })) {
+        // 提问卡片自带命中几何（鼠标点选选项），同样不走通用路径。
+        draw_ask_modal(frame, app, area);
+        return;
+    }
     let Some(modal) = &app.modal else {
         return;
     };
@@ -214,14 +219,6 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             .saturating_sub(4)
             .clamp(16, 58)
             .min(area.width.saturating_sub(2));
-        (width, usize::from(width.saturating_sub(4)).max(8))
-    } else if modal.has_option_preview() {
-        // 提问预览：并排布局需要更宽的卡片。
-        let width = if area.width < 70 {
-            area.width.saturating_sub(4).max(16)
-        } else {
-            area.width.min(ASK_PREVIEW_MODAL_WIDTH)
-        };
         (width, usize::from(width.saturating_sub(4)).max(8))
     } else {
         let width = if area.width < 70 {
@@ -243,25 +240,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         width,
         height,
     };
-    frame.render_widget(Clear, modal_area);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::bordered()
-                    .border_set(ratatui::symbols::border::ROUNDED)
-                    .border_style(Style::new().fg(theme.border_active))
-                    // 左右各留 1 格内边距，正文不贴边框；标题自带同样的空格才能与正文左缘对齐。
-                    .padding(Padding::horizontal(1))
-                    .title(Span::styled(
-                        format!(" {} ", modal.title()),
-                        Style::new()
-                            .fg(theme.text_primary)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-            )
-            .wrap(Wrap { trim: false }),
-        modal_area,
-    );
+    render_modal_card(frame, lines, modal.title(), theme, modal_area);
     if let Modal::Plan { state } = modal {
         let prefix_width =
             u16::try_from(str_width("执行模型：")).expect("固定标签宽度可表示为 u16");
@@ -280,6 +259,82 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             1,
         );
     }
+}
+
+/// 模态卡片的公共渲染：圆角边框、标题、水平内边距与自动折行。
+fn render_modal_card(
+    frame: &mut Frame,
+    lines: Vec<Line<'static>>,
+    title: String,
+    theme: &Theme,
+    modal_area: Rect,
+) {
+    frame.render_widget(Clear, modal_area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::bordered()
+                    .border_set(ratatui::symbols::border::ROUNDED)
+                    .border_style(Style::new().fg(theme.border_active))
+                    // 左右各留 1 格内边距，正文不贴边框；标题自带同样的空格才能与正文左缘对齐。
+                    .padding(Padding::horizontal(1))
+                    .title(Span::styled(
+                        format!(" {title} "),
+                        Style::new()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+            )
+            .wrap(Wrap { trim: false }),
+        modal_area,
+    );
+}
+
+/// 提问卡片：渲染的同时把每个选项（含自定义行）的命中矩形记到 `ask_option_hits`，
+/// 鼠标点选据此换算。宽度、居中与通用模态一致，带选项预览时放宽到 120 列。
+fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let Some(modal) = app.modal.as_ref() else {
+        return;
+    };
+    let max_content = usize::from(area.height.saturating_sub(6)).max(1);
+    let width = if area.width < 70 {
+        area.width.saturating_sub(4).max(16)
+    } else if modal.has_option_preview() {
+        area.width.min(ASK_PREVIEW_MODAL_WIDTH)
+    } else {
+        area.width.min(96)
+    };
+    let content_width = usize::from(width.saturating_sub(4)).max(8);
+    let (lines, hits) = ask_layout(theme, modal, content_width, max_content);
+    let content_height = u16::try_from(lines.len().max(1)).unwrap_or(u16::MAX);
+    let height = content_height
+        .saturating_add(3)
+        .min(area.height.saturating_sub(2));
+    let modal_area = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    // 卡片被终端高度截断时，画不出来的行点不到：只记录可见行。
+    let visible_rows = lines
+        .len()
+        .min(usize::from(modal_area.height.saturating_sub(2)));
+    render_modal_card(frame, lines, modal.title(), theme, modal_area);
+    app.ask_option_hits = hits
+        .into_iter()
+        .filter_map(|(option, row)| {
+            if row >= visible_rows {
+                return None;
+            }
+            let y = modal_area.y + 1 + u16::try_from(row).ok()?;
+            Some((
+                option,
+                Rect::new(modal_area.x + 1, y, modal_area.width.saturating_sub(2), 1),
+            ))
+        })
+        .collect();
 }
 
 /// 快捷键帮助：键位列与描述列之间的间距（格）。
@@ -713,188 +768,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             )));
             lines
         }
-        Modal::Ask {
-            params,
-            question,
-            highlight,
-            selected,
-            custom,
-            preview_scroll,
-            parked,
-            ..
-        } => {
-            let mut lines = Vec::new();
-            if params.questions.len() > 1 {
-                lines.push(Line::from(Span::styled(
-                    format!("问题 {}/{}", question + 1, params.questions.len()),
-                    Style::new().fg(theme.gray),
-                )));
-            }
-            let Some(current) = params.questions.get(*question) else {
-                return lines;
-            };
-            lines.push(Line::from(String::new()));
-
-            // 问题正文进正文区折行展示：挤在标题栏里会被截断，多行问题更会整段丢失。
-            for row in crate::render::wrap::wrap_text(&current.question, width) {
-                lines.push(Line::from(Span::styled(
-                    row,
-                    Style::new()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                )));
-            }
-            lines.push(Line::from(String::new()));
-
-            // 选项 + 自定义输入行；带预览时整体作为并排布局的左栏。
-            // 行数不够时先让掉 description：问题正文与选项行是底线。
-            let footer_rows = if *parked { 1 } else { 2 };
-            let plain_rows = lines.len() + current.options.len() + 1 + footer_rows;
-            let show_descriptions = plain_rows + current.options.len() <= max_lines;
-            let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() * 2 + 1);
-            for (index, option) in current.options.iter().enumerate() {
-                let chosen = selected[*question].contains(&option.label);
-                let marker = if index == highlight[*question] {
-                    "❯"
-                } else {
-                    " "
-                };
-                // 单选用 radio、多选用 checkbox：勾选框在单选上暗示可多选，是误导。
-                let check = match (current.multi, chosen) {
-                    (true, true) => "☑",
-                    (true, false) => "☐",
-                    (false, true) => "●",
-                    (false, false) => "○",
-                };
-                let focused = index == highlight[*question];
-                let style = if focused {
-                    Style::new()
-                        .fg(theme.accent_user)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
-                let mut spans = vec![
-                    Span::styled(format!(" {marker} {check} "), style),
-                    Span::styled(option.label.clone(), style),
-                ];
-                if current.recommended.contains(&(index as u32)) {
-                    spans.push(Span::styled("（推荐）", Style::new().fg(theme.gray)));
-                }
-                body.push(Line::from(spans));
-                if show_descriptions
-                    && let Some(description) = option.description.as_deref()
-                    && !description.trim().is_empty()
-                {
-                    for row in crate::render::wrap::wrap_text(description, width.saturating_sub(6))
-                    {
-                        body.push(Line::from(Span::styled(
-                            format!("       {row}"),
-                            Style::new().fg(theme.gray),
-                        )));
-                    }
-                }
-            }
-            let editing_here = highlight[*question] == current.options.len();
-            let answer = custom.get(*question);
-            let editing = answer.is_some_and(|answer| answer.editing);
-            let custom_style = if editing {
-                Style::new()
-                    .fg(theme.accent_running)
-                    .bg(theme.bg_visual)
-                    .add_modifier(Modifier::BOLD)
-            } else if editing_here {
-                Style::new()
-                    .fg(theme.accent_user)
-                    .bg(theme.bg_visual)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(theme.gray)
-            };
-            let custom_display = match answer {
-                Some(answer) if answer.editing => {
-                    let cursor_pos = clamp_cursor(&answer.text, answer.cursor);
-                    let (before, after) = answer.text.split_at(cursor_pos);
-                    format!("{before}▏{after}")
-                }
-                Some(answer) => answer.text.clone(),
-                None => String::new(),
-            };
-            body.push(Line::from(Span::styled(
-                format!(
-                    " {} ✎ 自定义：{custom_display}",
-                    if editing_here { "❯" } else { " " }
-                ),
-                custom_style,
-            )));
-
-            // 预览只跟随聚焦项：自定义行/无预览项不进入预览布局。
-            let preview = current
-                .options
-                .get(highlight[*question])
-                .and_then(|option| option.preview.as_deref())
-                .filter(|text| !text.trim().is_empty());
-            // 顶部固定行 + 底部提示行之外的余量都留给预览。
-            let rows = max_lines.saturating_sub(lines.len() + 1).max(1);
-            match preview {
-                Some(source) if width >= ASK_PREVIEW_MIN_WIDTH => {
-                    // 并排布局：左栏选项列表、右栏聚焦项预览（同 Claude Code 的提问卡片）。
-                    let left_width = body
-                        .iter()
-                        .map(line_width)
-                        .max()
-                        .unwrap_or(0)
-                        .clamp(ASK_PREVIEW_LEFT_MIN, width / 2);
-                    let preview_width =
-                        width.saturating_sub(left_width + str_width(ASK_PREVIEW_SEPARATOR));
-                    let pane =
-                        ask_preview_lines(source, preview_width, rows, *preview_scroll, theme);
-                    lines.extend(join_columns(body, pane, left_width, theme));
-                }
-                Some(source) => {
-                    // 窄终端：预览整宽落到选项下方，同样围绕聚焦项。
-                    let preview_rows = rows.saturating_sub(body.len() + 2).max(1);
-                    lines.extend(body);
-                    lines.push(Line::from(String::new()));
-                    lines.push(Line::from(Span::styled(
-                        "预览",
-                        Style::new().fg(theme.gray_dim),
-                    )));
-                    lines.extend(ask_preview_lines(
-                        source,
-                        width,
-                        preview_rows,
-                        *preview_scroll,
-                        theme,
-                    ));
-                }
-                None => lines.extend(body),
-            }
-            if *parked {
-                lines.push(Line::from(Span::styled(
-                    "tab 返回提问 · ↑↓ 滚动查阅上下文 · shift+X 跳过 · esc 取消提问",
-                    Style::new().fg(theme.gray_dim),
-                )));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "1-9 直选 · space 切换 · enter 选择{} · z 自定义 · y 复制",
-                        if current.multi { "（多选）" } else { "" }
-                    ),
-                    Style::new().fg(theme.gray_dim),
-                )));
-                lines.push(Line::from(Span::styled(
-                    if params.questions.len() > 1 {
-                        "tab 下一问/Shift+Tab 上一问 · shift+X 跳过 · esc 稍后回答"
-                    } else {
-                        "shift+X 跳过 · esc 稍后回答"
-                    },
-                    Style::new().fg(theme.gray_dim),
-                )));
-            }
-            lines
-        }
+        Modal::Ask { .. } => ask_layout(theme, modal, width, max_lines).0,
         Modal::Model {
             entries,
             current,
@@ -1434,6 +1308,216 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
     };
     lines.truncate(max_lines.max(1));
     lines
+}
+
+/// 提问卡片正文与命中行：`hits` 是每个选项（含自定义行，下标 `options.len()`）
+/// 在最终行列表里的行号，`draw_ask_modal` 据此换算鼠标点选的屏幕矩形。
+/// 选项与自定义行一律截断到单行：`Wrap` 折行会让后续行号整体漂移。
+fn ask_layout(
+    theme: &Theme,
+    modal: &Modal,
+    width: usize,
+    max_lines: usize,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+    let Modal::Ask {
+        params,
+        question,
+        highlight,
+        selected,
+        custom,
+        preview_scroll,
+        parked,
+        ..
+    } = modal
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut lines = Vec::new();
+    if params.questions.len() > 1 {
+        lines.push(Line::from(Span::styled(
+            format!("问题 {}/{}", question + 1, params.questions.len()),
+            Style::new().fg(theme.gray),
+        )));
+    }
+    let Some(current) = params.questions.get(*question) else {
+        return (lines, Vec::new());
+    };
+    lines.push(Line::from(String::new()));
+
+    // 问题正文进正文区折行展示：挤在标题栏里会被截断，多行问题更会整段丢失。
+    for row in crate::render::wrap::wrap_text(&current.question, width) {
+        lines.push(Line::from(Span::styled(
+            row,
+            Style::new()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines.push(Line::from(String::new()));
+
+    // 选项 + 自定义输入行；带预览时整体作为并排布局的左栏。
+    // 行数不够时先让掉 description：问题正文与选项行是底线。
+    let footer_rows = if *parked { 1 } else { 2 };
+    let plain_rows = lines.len() + current.options.len() + 1 + footer_rows;
+    let show_descriptions = plain_rows + current.options.len() <= max_lines;
+    let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() * 2 + 1);
+    // 命中行先记 body 内相对行号，布局合入后再补上顶部固定行的偏移。
+    let mut hits: Vec<(usize, usize)> = Vec::with_capacity(current.options.len() + 1);
+    for (index, option) in current.options.iter().enumerate() {
+        hits.push((index, body.len()));
+        let chosen = selected[*question].contains(&option.label);
+        let marker = if index == highlight[*question] {
+            "❯"
+        } else {
+            " "
+        };
+        // 单选用 radio、多选用 checkbox：勾选框在单选上暗示可多选，是误导。
+        let check = match (current.multi, chosen) {
+            (true, true) => "☑",
+            (true, false) => "☐",
+            (false, true) => "●",
+            (false, false) => "○",
+        };
+        let focused = index == highlight[*question];
+        let style = if focused {
+            Style::new()
+                .fg(theme.accent_user)
+                .bg(theme.bg_visual)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.text_secondary)
+        };
+        // 前缀 " ❯ ☑ " 占 5 列，推荐后缀「（推荐）」占 8 列，都从标签预算里扣除。
+        let recommended = current.recommended.contains(&(index as u32));
+        let label_budget = width
+            .saturating_sub(5)
+            .saturating_sub(if recommended { 8 } else { 0 });
+        let mut spans = vec![
+            Span::styled(format!(" {marker} {check} "), style),
+            Span::styled(ellipsize(&option.label, label_budget), style),
+        ];
+        if recommended {
+            spans.push(Span::styled("（推荐）", Style::new().fg(theme.gray)));
+        }
+        body.push(Line::from(spans));
+        if show_descriptions
+            && let Some(description) = option.description.as_deref()
+            && !description.trim().is_empty()
+        {
+            // 折行预算与 7 列缩进相加恰好等于卡片宽：超出会被 Wrap 二次折行，行号随之漂移。
+            for row in crate::render::wrap::wrap_text(description, width.saturating_sub(7)) {
+                body.push(Line::from(Span::styled(
+                    format!("       {row}"),
+                    Style::new().fg(theme.gray),
+                )));
+            }
+        }
+    }
+    let editing_here = highlight[*question] == current.options.len();
+    let answer = custom.get(*question);
+    let editing = answer.is_some_and(|answer| answer.editing);
+    let custom_style = if editing {
+        Style::new()
+            .fg(theme.accent_running)
+            .bg(theme.bg_visual)
+            .add_modifier(Modifier::BOLD)
+    } else if editing_here {
+        Style::new()
+            .fg(theme.accent_user)
+            .bg(theme.bg_visual)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.gray)
+    };
+    let custom_display = match answer {
+        Some(answer) if answer.editing => {
+            let cursor_pos = clamp_cursor(&answer.text, answer.cursor);
+            let (before, after) = answer.text.split_at(cursor_pos);
+            format!("{before}▏{after}")
+        }
+        Some(answer) => answer.text.clone(),
+        None => String::new(),
+    };
+    hits.push((current.options.len(), body.len()));
+    body.push(Line::from(Span::styled(
+        ellipsize(
+            &format!(
+                " {} ✎ 自定义：{custom_display}",
+                if editing_here { "❯" } else { " " }
+            ),
+            width,
+        ),
+        custom_style,
+    )));
+
+    // 预览只跟随聚焦项：自定义行/无预览项不进入预览布局。
+    let preview = current
+        .options
+        .get(highlight[*question])
+        .and_then(|option| option.preview.as_deref())
+        .filter(|text| !text.trim().is_empty());
+    // 顶部固定行 + 底部提示行之外的余量都留给预览。
+    let rows = max_lines.saturating_sub(lines.len() + 1).max(1);
+    // 三种布局里 body 的每一行都恰好映射到输出的一行，偏移即合入前的固定行数。
+    let base = lines.len();
+    match preview {
+        Some(source) if width >= ASK_PREVIEW_MIN_WIDTH => {
+            // 并排布局：左栏选项列表、右栏聚焦项预览（同 Claude Code 的提问卡片）。
+            let left_width = body
+                .iter()
+                .map(line_width)
+                .max()
+                .unwrap_or(0)
+                .clamp(ASK_PREVIEW_LEFT_MIN, width / 2);
+            let preview_width = width.saturating_sub(left_width + str_width(ASK_PREVIEW_SEPARATOR));
+            let pane = ask_preview_lines(source, preview_width, rows, *preview_scroll, theme);
+            lines.extend(join_columns(body, pane, left_width, theme));
+        }
+        Some(source) => {
+            // 窄终端：预览整宽落到选项下方，同样围绕聚焦项。
+            let preview_rows = rows.saturating_sub(body.len() + 2).max(1);
+            lines.extend(body);
+            lines.push(Line::from(String::new()));
+            lines.push(Line::from(Span::styled(
+                "预览",
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines.extend(ask_preview_lines(
+                source,
+                width,
+                preview_rows,
+                *preview_scroll,
+                theme,
+            ));
+        }
+        None => lines.extend(body),
+    }
+    for (_, row) in &mut hits {
+        *row += base;
+    }
+    if *parked {
+        lines.push(Line::from(Span::styled(
+            "tab 返回提问 · ←→ 翻看问题 · ↑↓ 滚动上下文 · shift+X 跳过 · esc 取消提问",
+            Style::new().fg(theme.gray_dim),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "1-9 直选 · space 切换 · enter 选择{} · z 自定义 · y 复制",
+                if current.multi { "（多选）" } else { "" }
+            ),
+            Style::new().fg(theme.gray_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            if params.questions.len() > 1 {
+                "←→ 翻看问题 · tab 下一问/Shift+Tab 上一问 · shift+X 跳过 · esc 稍后回答"
+            } else {
+                "shift+X 跳过 · esc 稍后回答"
+            },
+            Style::new().fg(theme.gray_dim),
+        )));
+    }
+    (lines, hits)
 }
 
 /// 思考等级条：`╭`／`╰` 两个圆角把标签与等级挂在同一条左轨上，等级用方括号裹成一段分段控件，
@@ -2679,7 +2763,48 @@ mod tests {
         );
         assert!(
             compact.iter().any(|text| text.contains("esc稍后回答")),
-            "底部按键行应留在卡片内：{compact:#?}"
+            "底部按键行应留在卡片内：{compact:?}"
+        );
+    }
+
+    /// 渲染时把选项与自定义行的命中矩形记到 `ask_option_hits`：
+    /// 下标顺序对应选项（自定义行在末位），行号自上而下递增且落在卡片内。
+    #[test]
+    fn ask_render_records_option_hit_areas() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.modal = Some(ask_modal(0, 0));
+        let (width, height) = (120u16, 30u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+
+        let hits = &app.ask_option_hits;
+        assert_eq!(hits.len(), 3, "两个选项 + 自定义行：{hits:?}");
+        assert_eq!(
+            hits.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "下标按选项顺序排列，末位是自定义行"
+        );
+        assert!(hits[0].1.y < hits[1].1.y && hits[1].1.y < hits[2].1.y);
+        for (index, area) in hits {
+            assert!(area.y > 0 && area.y < height, "选项 {index} 命中行在终端内");
+            assert_eq!(area.height, 1);
+        }
+
+        // 命中行确实渲染了对应选项：下标 0 的行里能看到聚焦标记与标签。
+        let (_, first) = &hits[0];
+        let row: String = (first.x..first.right())
+            .filter_map(|x| terminal.backend().buffer().cell((x, first.y)))
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            row.replace(' ', "").contains("上中下"),
+            "命中行渲染选项文本：{row:?}"
         );
     }
 

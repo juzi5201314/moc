@@ -188,6 +188,9 @@ pub struct App {
     pub rewind_timeline_area: Rect,
     /// 消息回退详情区域（鼠标滚动换算用）。
     pub rewind_detail_area: Rect,
+    /// 提问卡片各选项（含自定义行）的命中矩形；`options.len()` 下标代表自定义行。
+    /// 每帧渲染时重建，下标越界（问题切换后）自然落空。
+    pub ask_option_hits: Vec<(usize, Rect)>,
     /// 就地模式菜单；`None` = 关闭。
     pub mode_menu: Option<ModeMenu>,
     /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
@@ -463,6 +466,7 @@ impl App {
             plan_model_area: Rect::default(),
             rewind_timeline_area: Rect::default(),
             rewind_detail_area: Rect::default(),
+            ask_option_hits: Vec::new(),
             mode_menu: None,
             transient_mode: None,
             context_usage: None,
