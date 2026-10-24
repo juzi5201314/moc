@@ -177,10 +177,15 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         return;
     }
     let theme = app.theme;
-    // 保留正文轮廓但降低对比度，浮层成为唯一的视觉焦点。
-    frame
-        .buffer_mut()
-        .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
+    // 停泊的提问卡片不压暗正文：用户正在滚动的就是提问背后的上下文，
+    // 调暗会伤可读性；卡片本身有 Clear 底，照样醒目。
+    let dim_background = !matches!(app.modal, Some(Modal::Ask { parked: true, .. }));
+    if dim_background {
+        // 保留正文轮廓但降低对比度，浮层成为唯一的视觉焦点。
+        frame
+            .buffer_mut()
+            .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
+    }
     if matches!(app.modal, Some(Modal::Rewind { .. })) {
         crate::render::rewind::draw(frame, app, area);
         return;
@@ -710,6 +715,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             selected,
             custom,
             preview_scroll,
+            parked,
             ..
         } => {
             let mut lines = Vec::new();
@@ -724,8 +730,23 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             };
             lines.push(Line::from(String::new()));
 
+            // 问题正文进正文区折行展示：挤在标题栏里会被截断，多行问题更会整段丢失。
+            for row in crate::render::wrap::wrap_text(&current.question, width) {
+                lines.push(Line::from(Span::styled(
+                    row,
+                    Style::new()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            lines.push(Line::from(String::new()));
+
             // 选项 + 自定义输入行；带预览时整体作为并排布局的左栏。
-            let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() + 1);
+            // 行数不够时先让掉 description：问题正文与选项行是底线。
+            let footer_rows = if *parked { 1 } else { 2 };
+            let plain_rows = lines.len() + current.options.len() + 1 + footer_rows;
+            let show_descriptions = plain_rows + current.options.len() <= max_lines;
+            let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() * 2 + 1);
             for (index, option) in current.options.iter().enumerate() {
                 let chosen = selected[*question].contains(&option.label);
                 let marker = if index == highlight[*question] {
@@ -733,13 +754,15 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 } else {
                     " "
                 };
-                let check = if chosen { "☑" } else { "☐" };
-                let recommendation = if current.recommended.contains(&(index as u32)) {
-                    " *"
-                } else {
-                    ""
+                // 单选用 radio、多选用 checkbox：勾选框在单选上暗示可多选，是误导。
+                let check = match (current.multi, chosen) {
+                    (true, true) => "☑",
+                    (true, false) => "☐",
+                    (false, true) => "●",
+                    (false, false) => "○",
                 };
-                let style = if index == highlight[*question] {
+                let focused = index == highlight[*question];
+                let style = if focused {
                     Style::new()
                         .fg(theme.accent_user)
                         .bg(theme.bg_visual)
@@ -747,10 +770,26 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 } else {
                     Style::new().fg(theme.text_secondary)
                 };
-                body.push(Line::from(Span::styled(
-                    format!(" {marker} {check} {}{recommendation}", option.label),
-                    style,
-                )));
+                let mut spans = vec![
+                    Span::styled(format!(" {marker} {check} "), style),
+                    Span::styled(option.label.clone(), style),
+                ];
+                if current.recommended.contains(&(index as u32)) {
+                    spans.push(Span::styled("（推荐）", Style::new().fg(theme.gray)));
+                }
+                body.push(Line::from(spans));
+                if show_descriptions
+                    && let Some(description) = option.description.as_deref()
+                    && !description.trim().is_empty()
+                {
+                    for row in crate::render::wrap::wrap_text(description, width.saturating_sub(6))
+                    {
+                        body.push(Line::from(Span::styled(
+                            format!("       {row}"),
+                            Style::new().fg(theme.gray),
+                        )));
+                    }
+                }
             }
             let editing_here = highlight[*question] == current.options.len();
             let answer = custom.get(*question);
@@ -827,13 +866,28 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 }
                 None => lines.extend(body),
             }
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "space 切换 · enter 选择{} · tab 下一问/Shift+Tab 上一问 · esc 取消",
-                    if current.multi { "（多选）" } else { "" }
-                ),
-                Style::new().fg(theme.gray_dim),
-            )));
+            if *parked {
+                lines.push(Line::from(Span::styled(
+                    "tab 返回提问 · ↑↓ 滚动查阅上下文 · shift+X 跳过 · esc 取消提问",
+                    Style::new().fg(theme.gray_dim),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "1-9 直选 · space 切换 · enter 选择{} · z 自定义 · y 复制",
+                        if current.multi { "（多选）" } else { "" }
+                    ),
+                    Style::new().fg(theme.gray_dim),
+                )));
+                lines.push(Line::from(Span::styled(
+                    if params.questions.len() > 1 {
+                        "tab 下一问/Shift+Tab 上一问 · shift+X 跳过 · esc 稍后回答"
+                    } else {
+                        "shift+X 跳过 · esc 稍后回答"
+                    },
+                    Style::new().fg(theme.gray_dim),
+                )));
+            }
             lines
         }
         Modal::Model {
@@ -2365,19 +2419,105 @@ mod tests {
             .collect();
         let first = texts
             .iter()
-            .find(|text| text.contains("上中下 *"))
-            .expect("第一个推荐项应带星号");
+            .find(|text| text.contains("上中下（推荐）"))
+            .expect("第一个推荐项应带推荐后缀");
         assert!(
-            first.contains("☑ 上中下 *"),
-            "已选推荐项仍应保留星号：{first}"
+            first.contains("☑ 上中下（推荐）"),
+            "已选推荐项仍应保留推荐后缀：{first}"
         );
         let second = texts
             .iter()
-            .find(|text| text.contains("左右 *"))
-            .expect("第二个推荐项应带星号");
+            .find(|text| text.contains("左右（推荐）"))
+            .expect("第二个推荐项应带推荐后缀");
         assert!(
-            second.contains("☐ 左右 *"),
-            "未选推荐项也应显示星号：{second}"
+            second.contains("☐ 左右（推荐）"),
+            "未选推荐项也应显示推荐后缀：{second}"
+        );
+    }
+
+    /// 问题正文与选项 description 进正文区；标题栏只放 header；
+    /// 矮终端先让掉 description，问题正文与选项行保留。
+    #[test]
+    fn ask_body_renders_question_and_descriptions() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let mut modal = ask_modal(0, 0);
+        if let Modal::Ask { params, .. } = &mut modal {
+            params.questions[0].header = Some("方案".into());
+            params.questions[0].question =
+                "这是一个很长很长的问题正文，应当折行展示，而不是挤在标题栏里被截断。".into();
+            for option in &mut params.questions[0].options {
+                option.preview = None;
+            }
+            params.questions[0].options[0].description = Some("第一个选项的含义说明".into());
+            params.questions[0].options[1].description = Some("第二个选项的含义说明".into());
+        }
+        assert_eq!(modal.title(), "方案", "标题栏只放 header");
+
+        let texts: Vec<String> = modal_lines(&app, &modal, 40, 24)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("这是一个很长很长的问题正文")),
+            "问题正文应出现在正文区：{texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("第一个选项的含义说明")),
+            "description 应渲染：{texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("第二个选项的含义说明"))
+        );
+
+        let tight: Vec<String> = modal_lines(&app, &modal, 40, 8)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(
+            tight.iter().any(|text| text.contains("问题正文")),
+            "矮终端仍显示问题正文：{tight:?}"
+        );
+        assert!(
+            tight.iter().any(|text| text.contains("上中下")),
+            "矮终端仍显示选项行：{tight:?}"
+        );
+        assert!(
+            !tight.iter().any(|text| text.contains("含义说明")),
+            "矮终端省略 description：{tight:?}"
+        );
+    }
+
+    /// 停泊态：提示行换成返回/跳过/取消，标题带「稍后回答」。
+    #[test]
+    fn ask_parked_footer_and_title() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let mut modal = ask_modal(0, 0);
+        if let Modal::Ask { params, parked, .. } = &mut modal {
+            for option in &mut params.questions[0].options {
+                option.preview = None;
+            }
+            *parked = true;
+        }
+        assert!(modal.title().contains("稍后回答"));
+        let texts: Vec<String> = modal_lines(&app, &modal, 60, 24)
+            .iter()
+            .map(line_text)
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains("tab 返回提问")),
+            "停泊提示行应给出回去的路：{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("esc 稍后回答")),
+            "停泊态不再显示作答提示：{texts:?}"
         );
     }
 
@@ -2396,7 +2536,7 @@ mod tests {
             .collect();
         let row = wide
             .iter()
-            .find(|text| text.contains("❯ ☐ 上中下"))
+            .find(|text| text.contains("❯ ○ 上中下"))
             .expect("选项行");
         assert!(row.contains("+--+"), "聚焦项预览应与选项同行：{row:?}");
         let offsets: Vec<usize> = wide
@@ -2522,7 +2662,7 @@ mod tests {
         let compact: Vec<String> = rows.iter().map(|text| text.replace(' ', "")).collect();
         let option_row = compact
             .iter()
-            .find(|text| text.contains("❯☐上中下"))
+            .find(|text| text.contains("❯○上中下"))
             .unwrap_or_else(|| {
                 let shown: Vec<&String> =
                     rows.iter().filter(|text| !text.trim().is_empty()).collect();
@@ -2533,7 +2673,7 @@ mod tests {
             "聚焦项预览应与选项同行：{option_row:?}"
         );
         assert!(
-            compact.iter().any(|text| text.contains("esc取消")),
+            compact.iter().any(|text| text.contains("esc稍后回答")),
             "底部按键行应留在卡片内：{compact:#?}"
         );
     }
@@ -2633,6 +2773,7 @@ mod tests {
             selected: vec![Vec::new()],
             custom: vec![crate::modal::CustomAnswer::default()],
             preview_scroll,
+            parked: false,
             reply: None,
         }
     }

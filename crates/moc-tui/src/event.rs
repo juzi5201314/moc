@@ -732,6 +732,15 @@ fn recommended_labels(question: &moc_protocol::AskQuestion) -> Vec<String> {
         .collect()
 }
 
+/// 取出问题默认高亮的选项下标：推荐项优先，没有推荐停在第一项——
+/// 用户直接回车选中的就是模型建议的答案。
+fn recommended_highlight(question: &moc_protocol::AskQuestion) -> usize {
+    question
+        .recommended
+        .first()
+        .map_or(0, |index| *index as usize)
+}
+
 /// 主循环。
 ///
 /// 绘制节流：帧预算 16ms（~60fps）。事件到达时若已过预算立即绘制，否则
@@ -866,8 +875,12 @@ async fn event_loop(
                     Some(AppEvent::Ask { params, reply }) => {
                         if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify("有问题等待你的回答"); }
                         let per_question = params.questions.len();
-                        // 先算推荐选择（借用 params），再整体 move 进模态
-                        let highlight = vec![0; per_question];
+                        // 高亮默认落在推荐项上；勾选集与高亮分离（多选可多个推荐）。
+                        let highlight = params
+                            .questions
+                            .iter()
+                            .map(recommended_highlight)
+                            .collect();
                         let selected = params.questions.iter().map(recommended_labels).collect();
                         app.modal = Some(Modal::Ask {
                             params,
@@ -876,6 +889,7 @@ async fn event_loop(
                             custom: vec![crate::modal::CustomAnswer::default(); per_question],
                             question: 0,
                             preview_scroll: 0,
+                            parked: false,
                             reply: Some(reply),
                         });
                         app.focus = crate::app::Focus::Prompt;
@@ -1075,9 +1089,36 @@ fn handle_terminal_event(app: &mut App, connection: &EmbeddedConnection, event: 
         Event::Mouse(mouse) => handle_mouse_with_connection(app, connection, mouse),
         Event::Paste(text) if text.is_empty() => spawn_clipboard_paste(app.events.clone()),
         Event::Paste(text) => {
-            app.prompt.insert_text(&text);
-            app.prompt_changed();
-            request_resource_completion(app, connection);
+            // 提问的自定义答案正在编辑时，粘贴进那一行而不是主输入框——
+            // 落到背后的输入框里，提交前用户根本看不见。
+            let editing_ask = matches!(
+                app.modal.as_mut(),
+                Some(Modal::Ask {
+                    custom,
+                    question,
+                    parked: false,
+                    ..
+                }) if custom
+                    .get(*question)
+                    .is_some_and(|answer| answer.editing)
+            );
+            if editing_ask {
+                let Some(Modal::Ask {
+                    custom, question, ..
+                }) = app.modal.as_mut()
+                else {
+                    unreachable!("上面刚判过提问模态");
+                };
+                if let Some(answer) = custom.get_mut(*question) {
+                    let pos = clamp_cursor(&answer.text, answer.cursor);
+                    answer.text.insert_str(pos, &text);
+                    answer.cursor = pos + text.len();
+                }
+            } else {
+                app.prompt.insert_text(&text);
+                app.prompt_changed();
+                request_resource_completion(app, connection);
+            }
         }
         Event::Resize(_, _) => app.todo_hud.on_resize(),
         Event::FocusGained => app.terminal_focused = true,
@@ -2170,154 +2211,244 @@ fn handle_modal_key(
             selected,
             custom,
             preview_scroll,
+            parked,
             reply,
         } => {
             let Some(current) = params.questions.get(*question) else {
                 return;
             };
             let option_count = current.options.len();
-            let Some(answer) = custom.get_mut(*question) else {
-                return;
-            };
-            if answer.editing {
-                let mut submit = false;
-                {
-                    match (code, modifiers) {
-                        (KeyCode::Esc, _) => answer.editing = false,
-                        (KeyCode::Enter, _) => {
-                            answer.editing = false;
-                            submit = true;
-                        }
-                        // 光标与删除一律按字符步进：正文是 UTF-8，按字节移动会切进多字节字符。
-                        (KeyCode::Left, _) => {
-                            answer.cursor = cursor_prev(&answer.text, answer.cursor)
-                        }
-                        (KeyCode::Right, _) => {
-                            answer.cursor = cursor_next(&answer.text, answer.cursor);
-                        }
-                        (KeyCode::Home, _) => answer.cursor = 0,
-                        (KeyCode::End, _) => answer.cursor = answer.text.len(),
-                        (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                            answer.text.clear();
-                            answer.cursor = 0;
-                        }
-                        (KeyCode::Backspace, _) => {
-                            let previous = cursor_prev(&answer.text, answer.cursor);
-                            if previous != answer.cursor {
-                                answer.text.remove(previous);
-                            }
-                            answer.cursor = previous;
-                        }
-                        (KeyCode::Delete, _) => {
-                            let cursor = clamp_cursor(&answer.text, answer.cursor);
-                            if answer.text[cursor..].chars().next().is_some() {
-                                answer.text.remove(cursor);
-                            }
-                            answer.cursor = cursor;
-                        }
-                        (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
-                            if !ch.is_control() =>
-                        {
-                            let pos = clamp_cursor(&answer.text, answer.cursor);
-                            answer.text.insert(pos, ch);
-                            answer.cursor = pos + ch.len_utf8();
-                        }
-                        _ => {}
+            if *parked {
+                // 停泊：键盘交给转写区（与 Focus::Scrollback 同一套滚动键），
+                // 卡片留在屏幕上，Tab 随时回来继续作答。
+                match (code, modifiers) {
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => scroll(app, 3),
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                        scroll(app, -3)
                     }
-                }
-                if submit {
-                    close |= advance_ask(params, question, selected, custom, reply);
-                }
-                if close {
-                    app.modal = None;
-                }
-                return;
-            }
-            match (code, modifiers) {
-                (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                    let next = highlight[*question].saturating_sub(1);
-                    if next != highlight[*question] {
-                        highlight[*question] = next;
-                        *preview_scroll = 0;
+                    (KeyCode::PageUp, _) | (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                        scroll(app, 10)
                     }
-                }
-                (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                    let next = (highlight[*question] + 1).min(option_count);
-                    if next != highlight[*question] {
-                        highlight[*question] = next;
-                        *preview_scroll = 0;
+                    (KeyCode::PageDown, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                        scroll(app, -10)
                     }
-                }
-                // 聚焦项预览滚动：只改偏移，越界由渲染层夹到实际行数。
-                (KeyCode::PageUp, _) => {
-                    *preview_scroll = preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP);
-                }
-                (KeyCode::PageDown, _) => {
-                    *preview_scroll = preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP);
-                }
-                (KeyCode::Char('z'), KeyModifiers::NONE) => {
-                    highlight[*question] = option_count;
-                    if let Some(answer) = custom.get_mut(*question) {
-                        answer.editing = true;
-                        answer.cursor = answer.text.len();
+                    (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => {
+                        app.scroll_offset = usize::MAX
                     }
-                    *preview_scroll = 0;
-                }
-                (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                    // 多选切换；自定义行上无效
-                    if let Some(option) = current.options.get(highlight[*question]) {
-                        let label = option.label.clone();
-                        if current.multi {
-                            let chosen = &mut selected[*question];
-                            if let Some(position) = chosen.iter().position(|s| *s == label) {
-                                chosen.remove(position);
-                            } else {
-                                chosen.push(label);
-                            }
-                        } else {
-                            selected[*question] = vec![label];
-                        }
+                    (KeyCode::End, _) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => {
+                        app.scroll_offset = 0
                     }
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if highlight[*question] == option_count {
+                    (KeyCode::Tab, _)
+                    | (KeyCode::Enter, KeyModifiers::NONE)
+                    | (KeyCode::Char(' '), KeyModifiers::NONE) => *parked = false,
+                    (KeyCode::Char('z'), KeyModifiers::NONE) => {
+                        *parked = false;
+                        highlight[*question] = option_count;
                         if let Some(answer) = custom.get_mut(*question) {
                             answer.editing = true;
                             answer.cursor = answer.text.len();
                         }
-                    } else if let Some(option) = current.options.get(highlight[*question]) {
-                        let label = option.label.clone();
-                        if current.multi {
-                            let chosen = &mut selected[*question];
-                            if !chosen.contains(&label) {
-                                chosen.push(label);
-                            }
-                            close |= advance_ask(params, question, selected, custom, reply);
-                        } else {
-                            selected[*question] = vec![label];
-                            close |= advance_ask(params, question, selected, custom, reply);
-                        }
-                    }
-                }
-                (KeyCode::Tab, KeyModifiers::NONE) => {
-                    *preview_scroll = 0;
-                    close |= advance_ask(params, question, selected, custom, reply);
-                }
-                (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
-                    if *question > 0 {
-                        *question -= 1;
                         *preview_scroll = 0;
                     }
-                }
-                (KeyCode::Esc, _) => {
-                    if let Some(reply) = reply.take() {
-                        let _ = reply.send(Err(moc_protocol::RpcError::of(
-                            moc_protocol::RpcErrorCode::RequestCancelled,
-                        )));
+                    (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
+                        close |= dismiss_ask(reply);
                     }
-                    close = true;
+                    (KeyCode::Esc, _) => {
+                        // 停泊后再退一次才取消整单（core 侧按「用户没有回答」收场）。
+                        if let Some(reply) = reply.take() {
+                            let _ = reply.send(Err(moc_protocol::RpcError::of(
+                                moc_protocol::RpcErrorCode::RequestCancelled,
+                            )));
+                        }
+                        close = true;
+                    }
+                    _ => {}
                 }
-                _ => {}
+            } else if let Some(answer) = custom.get_mut(*question) {
+                if answer.editing {
+                    let mut submit = false;
+                    {
+                        match (code, modifiers) {
+                            (KeyCode::Esc, _) => answer.editing = false,
+                            (KeyCode::Enter, _) => {
+                                answer.editing = false;
+                                submit = true;
+                            }
+                            // 光标与删除一律按字符步进：正文是 UTF-8，按字节移动会切进多字节字符。
+                            (KeyCode::Left, _) => {
+                                answer.cursor = cursor_prev(&answer.text, answer.cursor)
+                            }
+                            (KeyCode::Right, _) => {
+                                answer.cursor = cursor_next(&answer.text, answer.cursor)
+                            }
+                            (KeyCode::Home, _) => answer.cursor = 0,
+                            (KeyCode::End, _) => answer.cursor = answer.text.len(),
+                            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                                answer.text.clear();
+                                answer.cursor = 0;
+                            }
+                            (KeyCode::Backspace, _) => {
+                                let previous = cursor_prev(&answer.text, answer.cursor);
+                                if previous != answer.cursor {
+                                    answer.text.remove(previous);
+                                }
+                                answer.cursor = previous;
+                            }
+                            (KeyCode::Delete, _) => {
+                                let cursor = clamp_cursor(&answer.text, answer.cursor);
+                                if answer.text[cursor..].chars().next().is_some() {
+                                    answer.text.remove(cursor);
+                                }
+                                answer.cursor = cursor;
+                            }
+                            (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                                if !ch.is_control() =>
+                            {
+                                let pos = clamp_cursor(&answer.text, answer.cursor);
+                                answer.text.insert(pos, ch);
+                                answer.cursor = pos + ch.len_utf8();
+                            }
+                            _ => {}
+                        }
+                    }
+                    if submit {
+                        close |= advance_ask(params, question, selected, custom, reply);
+                    }
+                } else {
+                    match (code, modifiers) {
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                            let next = highlight[*question].saturating_sub(1);
+                            if next != highlight[*question] {
+                                highlight[*question] = next;
+                                *preview_scroll = 0;
+                            }
+                        }
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                            let next = (highlight[*question] + 1).min(option_count);
+                            if next != highlight[*question] {
+                                highlight[*question] = next;
+                                *preview_scroll = 0;
+                            }
+                        }
+                        // 聚焦项预览滚动：只改偏移，越界由渲染层夹到实际行数。
+                        (KeyCode::PageUp, _) => {
+                            *preview_scroll =
+                                preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP);
+                        }
+                        (KeyCode::PageDown, _) => {
+                            *preview_scroll =
+                                preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP);
+                        }
+                        (KeyCode::Char('z'), KeyModifiers::NONE) => {
+                            highlight[*question] = option_count;
+                            if let Some(answer) = custom.get_mut(*question) {
+                                answer.editing = true;
+                                answer.cursor = answer.text.len();
+                            }
+                            *preview_scroll = 0;
+                        }
+                        (KeyCode::Char(' '), KeyModifiers::NONE) => {
+                            // 多选切换；自定义行上无效
+                            if let Some(option) = current.options.get(highlight[*question]) {
+                                let label = option.label.clone();
+                                if current.multi {
+                                    let chosen = &mut selected[*question];
+                                    if let Some(position) = chosen.iter().position(|s| *s == label)
+                                    {
+                                        chosen.remove(position);
+                                    } else {
+                                        chosen.push(label);
+                                    }
+                                } else {
+                                    selected[*question] = vec![label];
+                                }
+                            }
+                        }
+                        // 数字直达：单选选中即推进；多选切换勾选，enter 才推进。
+                        (KeyCode::Char(digit), KeyModifiers::NONE)
+                            if digit.is_ascii_digit() && digit != '0' =>
+                        {
+                            let index = digit.to_digit(10).expect("ascii digit") as usize - 1;
+                            if let Some(option) = current.options.get(index) {
+                                let label = option.label.clone();
+                                if current.multi {
+                                    let chosen = &mut selected[*question];
+                                    if let Some(position) = chosen.iter().position(|s| *s == label)
+                                    {
+                                        chosen.remove(position);
+                                    } else {
+                                        chosen.push(label);
+                                    }
+                                } else {
+                                    selected[*question] = vec![label];
+                                    close |= advance_ask(params, question, selected, custom, reply);
+                                }
+                            }
+                        }
+                        // 复制聚焦项：选项给 label，自定义行给已输入的正文。
+                        (KeyCode::Char('y'), KeyModifiers::NONE) => {
+                            let text = current
+                                .options
+                                .get(highlight[*question])
+                                .map(|option| option.label.clone())
+                                .or_else(|| {
+                                    custom
+                                        .get(*question)
+                                        .filter(|answer| !answer.text.is_empty())
+                                        .map(|answer| answer.text.clone())
+                                });
+                            if let Some(text) = text {
+                                write_osc52(&text);
+                                tokio::spawn(async move {
+                                    match crate::clipboard::copy_text_to_clipboard(&text).await {
+                                        Ok(()) => tracing::debug!("选项已复制"),
+                                        Err(error) => tracing::debug!(%error, "复制选项失败"),
+                                    }
+                                });
+                                app.set_notice("已复制选项");
+                            }
+                        }
+                        (KeyCode::Enter, KeyModifiers::NONE) => {
+                            if highlight[*question] == option_count {
+                                if let Some(answer) = custom.get_mut(*question) {
+                                    answer.editing = true;
+                                    answer.cursor = answer.text.len();
+                                }
+                            } else if let Some(option) = current.options.get(highlight[*question]) {
+                                let label = option.label.clone();
+                                if current.multi {
+                                    let chosen = &mut selected[*question];
+                                    if !chosen.contains(&label) {
+                                        chosen.push(label);
+                                    }
+                                    close |= advance_ask(params, question, selected, custom, reply);
+                                } else {
+                                    selected[*question] = vec![label];
+                                    close |= advance_ask(params, question, selected, custom, reply);
+                                }
+                            }
+                        }
+                        (KeyCode::Tab, KeyModifiers::NONE) => {
+                            *preview_scroll = 0;
+                            close |= advance_ask(params, question, selected, custom, reply);
+                        }
+                        (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
+                            if *question > 0 {
+                                *question -= 1;
+                                *preview_scroll = 0;
+                            }
+                        }
+                        // 跳过整单：所有问题按未回答提交，模型收到明确语义而非错误。
+                        (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
+                            close |= dismiss_ask(reply);
+                        }
+                        (KeyCode::Esc, _) => {
+                            // 先停泊去翻提问背后的上下文；停泊态再 Esc 才取消整单。
+                            *parked = true;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         Modal::Rewind { state } => {
@@ -2884,6 +3015,22 @@ fn handle_modal_key(
             crate::queue::dispatch(app, connection);
         }
     }
+}
+
+/// 跳过整单提问：提交空答案，core 侧按「用户没有回答」输出给模型。
+fn dismiss_ask(
+    reply: &mut Option<
+        tokio::sync::oneshot::Sender<
+            Result<moc_protocol::methods::AskResult, moc_protocol::RpcError>,
+        >,
+    >,
+) -> bool {
+    if let Some(reply) = reply.take() {
+        let _ = reply.send(Ok(moc_protocol::methods::AskResult {
+            answers: Vec::new(),
+        }));
+    }
+    true
 }
 
 /// ask 推进到下一问或在最后一问提交；返回是否已提交（应关闭模态）。
@@ -5564,6 +5711,7 @@ mod tests {
             selected: vec![Vec::new(), Vec::new()],
             custom: vec![crate::modal::CustomAnswer::default(); 2],
             preview_scroll: 0,
+            parked: false,
             reply: None,
         });
 
@@ -7359,6 +7507,180 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 数字直达：单选选中即推进下一问；多选只切换勾选，不推进。
+    #[tokio::test]
+    async fn ask_digit_shortcuts_pick_and_toggle() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let single = AskQuestion {
+            id: "single".into(),
+            question: "单选哪个？".into(),
+            header: None,
+            multi: false,
+            recommended: Vec::new(),
+            options: vec![
+                AskOption {
+                    label: "甲".into(),
+                    description: None,
+                    preview: None,
+                },
+                AskOption {
+                    label: "乙".into(),
+                    description: None,
+                    preview: None,
+                },
+            ],
+        };
+        let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(
+            vec![single, multi_ask_question()],
+            Some(reply_tx),
+        ));
+
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('2'),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                question, selected, ..
+            }) => {
+                assert_eq!(*question, 1, "单选数字直达后推进到下一问");
+                assert_eq!(selected[0], vec!["乙".to_owned()]);
+            }
+            _ => unreachable!("还有未答的问题，模态应保持打开"),
+        }
+
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('1'),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                question, selected, ..
+            }) => {
+                assert_eq!(*question, 1, "多选数字只切换勾选，不推进");
+                assert_eq!(selected[1], vec!["缓存".to_owned()]);
+            }
+            _ => unreachable!("多选切换后模态应保持打开"),
+        }
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('1'),
+        );
+        if let Some(Modal::Ask { selected, .. }) = app.modal.as_ref() {
+            assert!(selected[1].is_empty(), "重复数字应取消勾选");
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// Shift+X 跳过整单提问：按未回答提交空答案，模态关闭。
+    #[tokio::test]
+    async fn ask_shift_x_dismisses_with_empty_answers() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(vec![ask_question("q1")], Some(reply_tx)));
+
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::SHIFT,
+            KeyCode::Char('X'),
+        );
+        let result = reply_rx
+            .try_recv()
+            .expect("跳过后应回报")
+            .expect("跳过按未回答成功收场");
+        assert!(result.answers.is_empty(), "跳过提交空答案");
+        assert!(app.modal.is_none(), "跳过后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// Esc 分层：第一次停泊（模态保留、键盘交给转写区），Tab 回卡片；
+    /// 停泊态再 Esc 才取消整单。
+    #[tokio::test]
+    async fn ask_esc_parks_before_cancelling() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(vec![ask_question("q1")], Some(reply_tx)));
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        match app.modal.as_ref() {
+            Some(Modal::Ask { parked, .. }) => {
+                assert!(*parked, "第一次 Esc 应停泊而不是取消")
+            }
+            _ => unreachable!("停泊时卡片应保留"),
+        }
+        assert!(reply_rx.try_recv().is_err(), "停泊不提交也不取消");
+
+        app.scroll_max_offset = 100;
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
+        assert_eq!(app.scroll_offset, 3, "停泊态 ↑ 应滚动转写");
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        if let Some(Modal::Ask { parked, .. }) = app.modal.as_ref() {
+            assert!(!parked, "Tab 应回到提问卡片");
+        }
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
+        assert!(
+            reply_rx.try_recv().expect("停泊后 Esc 应取消").is_err(),
+            "取消按错误回报"
+        );
+        assert!(app.modal.is_none(), "取消后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 粘贴在自定义答案编辑态写入那一行，而不是落到背后的主输入框。
+    #[tokio::test]
+    async fn ask_paste_lands_in_editing_custom_answer() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal());
+
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('z'),
+        );
+        handle_terminal_event(
+            &mut app,
+            &connection,
+            Event::Paste("/etc/config.toml".into()),
+        );
+        assert_eq!(ask_custom(&app).0, "/etc/config.toml");
+        assert!(app.prompt.text.is_empty(), "粘贴不得落到主输入框");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 默认高亮落在推荐项上；没有推荐才停在第一项。
+    #[test]
+    fn ask_highlight_defaults_to_recommendation() {
+        assert_eq!(recommended_highlight(&multi_ask_question()), 0);
+        let mut question = ask_question("q1");
+        question.options.push(AskOption {
+            label: "选项二".into(),
+            description: None,
+            preview: None,
+        });
+        question.recommended = vec![1];
+        assert_eq!(recommended_highlight(&question), 1);
+    }
+
     /// 单问 ask 模态：选项一个 + 自定义行（`z` 进入编辑态）。
     fn ask_modal() -> Modal {
         ask_modal_with(vec![ask_question("q1")], None)
@@ -7423,6 +7745,7 @@ mod tests {
             selected: vec![Vec::new(); count],
             custom: vec![crate::modal::CustomAnswer::default(); count],
             preview_scroll: 0,
+            parked: false,
             reply,
         }
     }

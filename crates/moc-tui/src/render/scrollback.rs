@@ -2012,13 +2012,22 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
         "ask" => args
             .get("questions")
             .and_then(Value::as_array)
-            .and_then(|questions| questions.first())
-            .and_then(|question| question.get("question"))
-            .and_then(Value::as_str)
-            // 摘要只占一行：问题正文可含换行，取首行避免控制字符在标题里粘连。
-            .and_then(|text| text.lines().next())
-            .unwrap_or_default()
-            .to_owned(),
+            .and_then(|questions| {
+                // 摘要只占一行：问题正文可含换行，取首行避免控制字符在标题里粘连；
+                // 多问时点明总量，后面的题不藏在首问后面。
+                let first = questions
+                    .first()
+                    .and_then(|question| question.get("question"))
+                    .and_then(Value::as_str)
+                    .and_then(|text| text.lines().next())
+                    .unwrap_or_default();
+                Some(
+                    (questions.len() > 1)
+                        .then(|| format!("共 {} 问 · {}", questions.len(), first))
+                        .unwrap_or_else(|| first.to_owned()),
+                )
+            })
+            .unwrap_or_default(),
         "job" | "write_plan" | "exit_plan" => String::new(),
         "run_code" => ui_description(args).unwrap_or_default().to_owned(),
         _ => {

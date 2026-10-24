@@ -799,6 +799,8 @@ pub enum Modal {
         custom: Vec<CustomAnswer>,
         /// 当前聚焦项预览的滚动行数（切换选项/问题时归零）。
         preview_scroll: usize,
+        /// 键盘停泊：卡片保留，按键交给转写区滚动，供用户查阅提问的上下文。
+        parked: bool,
         reply: Option<tokio::sync::oneshot::Sender<Result<AskResult, RpcErrorOf>>>,
     },
     /// 模型选择（`session/set_model`）。
@@ -864,11 +866,22 @@ impl Modal {
         match self {
             Modal::Permission { params, .. } => params.title.clone(),
             Modal::Ask {
-                params, question, ..
-            } => params
-                .questions
-                .get(*question)
-                .map_or_else(|| "提问".into(), |question| question.question.clone()),
+                params,
+                question,
+                parked,
+                ..
+            } => {
+                let title = params
+                    .questions
+                    .get(*question)
+                    .and_then(|question| question.header.clone())
+                    .unwrap_or_else(|| "提问".into());
+                if *parked {
+                    format!("{title} · 稍后回答")
+                } else {
+                    title
+                }
+            }
             Modal::Model { .. } => "选择模型".into(),
             Modal::Rewind { .. } => "消息回退".into(),
             Modal::Sessions { scope, .. } => match scope {
@@ -1233,6 +1246,7 @@ mod tests {
             selected: vec![Vec::new(); 2],
             custom: vec![CustomAnswer::default(); 2],
             preview_scroll: 0,
+            parked: false,
             reply: None,
         };
 

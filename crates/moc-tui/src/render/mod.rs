@@ -552,7 +552,11 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         .get("help")
         .and_then(|keys| keys.first())
         .map_or("—", String::as_str);
-    let (left_key, left_tip, left_color) = if app.prompt_running {
+    let (left_key, left_tip, left_color) = if let Some(Modal::Ask { parked: true, .. }) = &app.modal
+    {
+        // 提问卡片停泊中：图例固定给出回去的路，窄栏也不裁掉。
+        ("Tab", "提问", theme.accent_user)
+    } else if app.prompt_running {
         (
             "Esc",
             if app.cancel_requested {

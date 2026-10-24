@@ -2,9 +2,15 @@
 
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use moc_protocol::{AskOption, AskParams, AskQuestion, SessionRequestAsk};
+use moc_protocol::{
+    AskOption, AskParams, AskQuestion, AskResult, RpcCallError, RpcErrorCode, SessionRequestAsk,
+};
 use serde::Deserialize;
 use serde_json::Value;
+
+/// 无人应答的兜底等待：到点按「未回答」继续，别让提问在无人值守的终端上
+/// 永久阻塞整轮任务（对齐 Grok Build 的 ask_user_question 默认超时）。
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 
@@ -90,17 +96,18 @@ impl Tool for AskTool {
                 request_id,
                 questions: questions.clone(),
             };
-            let result = ctx
-                .request
-                .requester()
-                .request::<SessionRequestAsk>(params)
-                .await
-                .map_err(|error| {
-                    ToolError::new(
-                        "E_ASK_UNAVAILABLE",
-                        format!("The frontend could not handle the ask request: {error}"),
-                    )
-                })?;
+            let requester = ctx.request.requester();
+            let result = requester.request::<SessionRequestAsk>(params);
+            // 用户主动不回答是正常收场而不是前端故障：回明确语义，模型不会
+            // 收到错误，也就不会为「提问失败」道歉或重试。
+            let result = match tokio::time::timeout(ASK_TIMEOUT, result).await {
+                Ok(result) => ask_settled(result)?,
+                Err(_elapsed) => {
+                    return Ok(ToolOutcome::success(
+                        "The user did not answer within the time limit; continue without an answer.",
+                    ));
+                }
+            };
             if result.answers.is_empty() {
                 return Ok(ToolOutcome::success("The user did not answer."));
             }
@@ -147,6 +154,26 @@ fn preview_text(preview: &Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned)
+}
+
+/// 反向请求的收场映射：用户取消（本地取消或前端回 `-32001`）按「未回答」
+/// 成功收场——空答案在 `run` 里输出统一的未回答文本；其余错误才是前端故障。
+fn ask_settled(result: Result<AskResult, RpcCallError>) -> Result<AskResult, ToolError> {
+    match result {
+        Ok(result) => Ok(result),
+        Err(RpcCallError::Cancelled) => Ok(AskResult {
+            answers: Vec::new(),
+        }),
+        Err(RpcCallError::Rpc(error)) if error.code == RpcErrorCode::RequestCancelled.code() => {
+            Ok(AskResult {
+                answers: Vec::new(),
+            })
+        }
+        Err(error) => Err(ToolError::new(
+            "E_ASK_UNAVAILABLE",
+            format!("The frontend could not handle the ask request: {error}"),
+        )),
+    }
 }
 
 /// 解析并校验 ask 参数：逐题检查必填项、保留标签、「预览只用于单选」与推荐
@@ -243,6 +270,22 @@ fn normalize_questions(args: Value) -> Result<Vec<AskQuestion>, ToolError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 用户取消（本地取消与前端回 `-32001`）按未回答收场，其余错误才是前端故障。
+    #[test]
+    fn cancellation_settles_as_unanswered_and_other_errors_fail() {
+        let cancelled = ask_settled(Err(RpcCallError::Cancelled)).expect("本地取消不算失败");
+        assert!(cancelled.answers.is_empty());
+
+        let dismissed = ask_settled(Err(RpcCallError::Rpc(moc_protocol::RpcError::of(
+            RpcErrorCode::RequestCancelled,
+        ))))
+        .expect("前端回 -32001 同样按未回答收场");
+        assert!(dismissed.answers.is_empty());
+
+        let error = ask_settled(Err(RpcCallError::Closed)).expect_err("连接关闭才是故障");
+        assert_eq!(error.code, "E_ASK_UNAVAILABLE");
+    }
 
     /// 单选问题的预览原样透传给前端，空白预览被剥成「无预览」。
     #[test]
