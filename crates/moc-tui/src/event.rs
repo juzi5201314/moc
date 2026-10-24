@@ -2218,7 +2218,19 @@ fn handle_modal_key(
                 return;
             };
             let option_count = current.options.len();
-            if *parked {
+            // Ctrl+C 与权限弹窗同语义：任何状态（聚焦/停泊/编辑）下直接取消整单，
+            // 不让肌肉记忆落在被吞掉的键上。
+            if matches!(
+                (code, modifiers),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ) {
+                if let Some(reply) = reply.take() {
+                    let _ = reply.send(Err(moc_protocol::RpcError::of(
+                        moc_protocol::RpcErrorCode::RequestCancelled,
+                    )));
+                }
+                close = true;
+            } else if *parked {
                 // 停泊：键盘交给转写区（与 Focus::Scrollback 同一套滚动键），
                 // 卡片留在屏幕上，Tab 随时回来继续作答。
                 match (code, modifiers) {
@@ -7662,6 +7674,36 @@ mod tests {
         );
         assert_eq!(ask_custom(&app).0, "/etc/config.toml");
         assert!(app.prompt.text.is_empty(), "粘贴不得落到主输入框");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// Ctrl+C 在提问卡片任何状态下直接取消整单（与权限弹窗同语义）。
+    #[tokio::test]
+    async fn ask_ctrl_c_cancels_from_any_state() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(vec![ask_question("q1")], Some(reply_tx)));
+
+        // 编辑态下 Ctrl+C 也取消，而不是被输入行吞掉。
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::NONE,
+            KeyCode::Char('z'),
+        );
+        handle_key(
+            &mut app,
+            &connection,
+            KeyModifiers::CONTROL,
+            KeyCode::Char('c'),
+        );
+        assert!(
+            reply_rx.try_recv().expect("Ctrl+C 应取消提问").is_err(),
+            "取消按错误回报"
+        );
+        assert!(app.modal.is_none(), "取消后模态关闭");
 
         connection.shutdown().await;
         core.shutdown().await;
