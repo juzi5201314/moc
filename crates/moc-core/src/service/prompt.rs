@@ -56,6 +56,7 @@ pub(crate) async fn run_prompt_with_lock(
     let session_id = params.session_id.clone();
     let _prompt = prompt;
     let _epoch = inner.config_epoch.read().await;
+    let started = Instant::now();
     inner
         .sessions
         .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
@@ -179,10 +180,54 @@ pub(crate) async fn run_prompt_with_lock(
         .map_err(to_rpc)?;
     // 写租约不随提示结束释放：它属于「这个 core 进程打开了该会话」，由 unload 或进程
     // 退出释放，否则另一个进程可以在两次提示之间抢走会话。
-    match result {
+    let result = match result {
         Err(error) => Err(error),
         Ok(outcome) => finished.map_or(Ok(outcome), Err),
+    };
+    // `afterPrompt` 在清理之后触发：失败、取消与循环终止的路径同样能被插件观察到。
+    let plugin_state = record.state.lock().await.clone();
+    if let Some(host) = crate::service::plugin_events::host_for(
+        &inner,
+        std::path::Path::new(&plugin_state.session.cwd),
+    )
+    .await
+    {
+        let context = crate::service::plugin_events::context(
+            &session_id,
+            &plugin_state.session.cwd,
+            plugin_state.mode,
+            plugin_state.permission,
+            &plugin_state.model,
+            plugin_state.session.is_subagent(),
+        );
+        let (prompt_id, finish_reason, usage, error) = match &result {
+            Ok(outcome) => (
+                outcome.prompt_id.clone(),
+                Some(outcome.finish_reason.clone()),
+                outcome.usage,
+                None,
+            ),
+            Err(error) => (
+                crate::ids::prompt_id(plugin_state.prompt_sequence),
+                None,
+                Usage::default(),
+                Some(format!("{error}")),
+            ),
+        };
+        let loop_detected = matches!(finish_reason, Some(FinishReason::LoopDetected));
+        crate::service::plugin_events::after_prompt(
+            &host,
+            &context,
+            &prompt_id,
+            finish_reason.as_ref(),
+            usage,
+            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            loop_detected,
+            error.as_deref(),
+        )
+        .await;
     }
+    result
 }
 
 /// 一轮请求需要的会话状态副本。
@@ -239,13 +284,58 @@ async fn run_prompt_locked(
     if user_message.content.is_empty() {
         return Err(RpcError::of(RpcErrorCode::InvalidParams));
     }
-    // 代理消息原样写入会话：skill 调用对用户输入的改写不适用于代理投递的消息。
+    // 插件宿主与事件上下文在落库前就要就绪：`messageReceived` 是正文改写的提交点。
+    let plugins = inner
+        .project_plugins(std::path::Path::new(&state_snapshot.session.cwd))
+        .await
+        .map_err(to_rpc)?;
+    // CLM 是会话级模式，临时的 `/ask` 不能覆盖已启用的 CLM。
+    let mode = if state_snapshot.mode == moc_protocol::methods::SessionMode::ClmExperimental {
+        moc_protocol::methods::SessionMode::ClmExperimental
+    } else {
+        params.mode.unwrap_or(state_snapshot.mode)
+    };
+    let permission = inner.effective_permission(state_snapshot.permission);
+    let plugin_context = crate::service::plugin_events::context(
+        &params.session_id,
+        &state_snapshot.session.cwd,
+        mode,
+        permission,
+        &model.selector,
+        state_snapshot.session.is_subagent(),
+    );
     let agent_meta = params.agent_message.clone();
+    let source = if agent_meta.is_some() { "agent" } else { "user" };
+    let images = user_message
+        .content
+        .iter()
+        .filter(|part| matches!(part, moc_llm::ContentPart::Image { .. }))
+        .count();
+    let rewrite = crate::service::plugin_events::message_received(
+        &plugins,
+        &plugin_context,
+        source,
+        &user_message.text(),
+        images,
+        agent_meta.as_ref(),
+    )
+    .await;
+    let user_message = match rewrite.text {
+        Some(text) => {
+            if text.trim().is_empty() {
+                return Err(RpcError::of(RpcErrorCode::InvalidParams));
+            }
+            crate::service::plugin_events::rewrite_message_text(user_message, text)
+        }
+        None => user_message,
+    };
+    // 代理消息原样写入会话：skill 调用对用户输入的改写不适用于代理投递的消息。
     let user_message = if agent_meta.is_none() {
         apply_skill_invocation(&inner, user_message, &state_snapshot.session.cwd).await?
     } else {
         user_message
     };
+    let first_prompt = state_snapshot.prompt_sequence == 0;
     match &agent_meta {
         Some(meta) => {
             inner
@@ -313,14 +403,7 @@ async fn run_prompt_locked(
     let mut state = record.state.lock().await;
     state.todo_reminders_sent = 0;
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
-    // CLM 是会话级模式，临时的 `/ask` 不能覆盖已启用的 CLM。
-    let mode = if state_snapshot.mode == moc_protocol::methods::SessionMode::ClmExperimental {
-        moc_protocol::methods::SessionMode::ClmExperimental
-    } else {
-        params.mode.unwrap_or(state.mode)
-    };
     let clm_active = mode == moc_protocol::methods::SessionMode::ClmExperimental;
-    let permission = inner.effective_permission(state.permission);
     let cwd = std::path::PathBuf::from(&state.session.cwd);
     drop(state);
     if clm_active {
@@ -353,6 +436,21 @@ async fn run_prompt_locked(
             .map_err(to_rpc)?;
         *runtime.workspace.lock().await = Some(baseline);
     }
+    crate::service::plugin_events::before_prompt(
+        &plugins,
+        &plugin_context,
+        crate::service::plugin_events::prompt_started_payload(
+            &prompt_id,
+            first_prompt,
+            &model.selector,
+            mode,
+            permission,
+            source,
+            &user_message.text(),
+            images,
+        ),
+    )
+    .await;
     update
         .emit(
             params.session_id.clone(),
@@ -381,10 +479,6 @@ async fn run_prompt_locked(
             .push(format!("MCP `{}`：{}", notice.server, notice.message));
     }
     let mcp_snapshot = mcp.snapshot().await;
-    let plugins = inner
-        .project_plugins(std::path::Path::new(&state_snapshot.session.cwd))
-        .await
-        .map_err(to_rpc)?;
     // 加载期失败的插件只有在宿主建好后才有通知：先把积压送达模型与前端。
     flush_plugin_notices(&plugins, &record.state, &update, &params.session_id).await?;
     let plugin_tools = crate::service::plugin_tools_of(&plugins);
@@ -431,12 +525,7 @@ async fn run_prompt_locked(
     .unwrap_or_default();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
     let subagent_prompt = crate::agents::subagent_prompt(&inner, &params.session_id).await;
-    let plugin_prompt = plugins
-        .prompt_text(&crate::service::plugin_context(
-            &state_snapshot,
-            &model.selector,
-        ))
-        .await;
+    let plugin_prompt = plugins.prompt_text(&plugin_context).await;
     let system = build(
         &project_config,
         &model,
@@ -648,7 +737,9 @@ async fn run_prompt_locked(
         );
         // 首 token 等待：从发出请求到收到第一个内容增量；每次重试都重新计时。
         let mut first_token_ms: Option<u64>;
+        let mut attempt = 0u32;
         let (mut stream, request_permit, request_started) = loop {
+            attempt += 1;
             let mut llm_config = model.llm.clone();
             if project_config.compaction.enabled
                 && project_config.compaction.auto
@@ -671,6 +762,20 @@ async fn run_prompt_locked(
             };
             let request_started = Instant::now();
             first_token_ms = None;
+            crate::service::plugin_events::before_model_call(
+                &plugins,
+                &plugin_context,
+                &prompt_id,
+                attempt,
+                &model.provider_id,
+                &model.selector,
+                Some(model.thinking_level.as_str()),
+                request.messages.len(),
+                request.tools.len(),
+                context_tokens,
+                model.max_output_tokens,
+            )
+            .await;
             let streamed = tokio::select! {
                 _ = cancel.cancelled() => { final_reason = FinishReason::Cancelled; break 'turns; }
                 result = inner.client.stream(&llm_config, &request) => result,
@@ -694,6 +799,19 @@ async fn run_prompt_locked(
                 Err(moc_llm::LlmError::Guard(violation)) => {
                     guard.stop(violation);
                     final_reason = guard.reason();
+                    crate::service::plugin_events::after_model_call(
+                        &plugins,
+                        &plugin_context,
+                        &prompt_id,
+                        attempt,
+                        Some(&final_reason),
+                        None,
+                        None,
+                        u64::try_from(request_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        &[],
+                        Some(&final_reason.to_string()),
+                    )
+                    .await;
                     break 'turns;
                 }
                 Err(error)
@@ -775,6 +893,19 @@ async fn run_prompt_locked(
                     );
                 }
                 Err(error) => {
+                    crate::service::plugin_events::after_model_call(
+                        &plugins,
+                        &plugin_context,
+                        &prompt_id,
+                        attempt,
+                        None,
+                        None,
+                        first_token_ms,
+                        u64::try_from(request_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        &[],
+                        Some(&error.to_string()),
+                    )
+                    .await;
                     emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
                     return Err(RpcError::new(
                         RpcErrorCode::InternalError.code(),
@@ -831,6 +962,20 @@ async fn run_prompt_locked(
                             break None;
                         }
                         Some(Err(error)) => {
+                            crate::service::plugin_events::after_model_call(
+                                &plugins,
+                                &plugin_context,
+                                &prompt_id,
+                                attempt,
+                                None,
+                                None,
+                                first_token_ms,
+                                u64::try_from(request_started.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX),
+                                &[],
+                                Some(&error.to_string()),
+                            )
+                            .await;
                             emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
                             return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
                         }
@@ -838,6 +983,20 @@ async fn run_prompt_locked(
                             Ok(response) => break Some(response),
                             Err(error) if error.api_error().is_some_and(|api|api.kind==moc_llm::ApiErrorKind::ContextLength) && project_config.compaction.enabled && stream_overflows < 2 => break None,
                             Err(error) => {
+                                crate::service::plugin_events::after_model_call(
+                                    &plugins,
+                                    &plugin_context,
+                                    &prompt_id,
+                                    attempt,
+                                    None,
+                                    None,
+                                    first_token_ms,
+                                    u64::try_from(request_started.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
+                                    &[],
+                                    Some(&error.to_string()),
+                                )
+                                .await;
                                 emit_fatal(&update, &params.session_id, &prompt_id, &error.to_string()).await?;
                                 return Err(RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()));
                             }
@@ -882,6 +1041,19 @@ async fn run_prompt_locked(
         last_message = response.message.clone();
         if guard.violation().is_some() {
             final_reason = guard.reason();
+            crate::service::plugin_events::after_model_call(
+                &plugins,
+                &plugin_context,
+                &prompt_id,
+                attempt,
+                Some(&final_reason),
+                Some(response.usage),
+                first_token_ms,
+                u64::try_from(request_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                &[],
+                Some(&final_reason.to_string()),
+            )
+            .await;
             break 'turns;
         }
         // 完整响应先落库，再发通知和记用量：辅助步骤失败不能吞掉已经完整收到的模型响应。
@@ -902,7 +1074,7 @@ async fn run_prompt_locked(
                     params.session_id.clone(),
                     SessionUpdate::UpstreamMismatch {
                         prompt_id: prompt_id.clone(),
-                        fields: mismatches,
+                        fields: mismatches.clone(),
                     },
                 )
                 .await
@@ -919,6 +1091,19 @@ async fn run_prompt_locked(
         )
         .await
         .map_err(to_rpc)?;
+        crate::service::plugin_events::after_model_call(
+            &plugins,
+            &plugin_context,
+            &prompt_id,
+            attempt,
+            Some(&final_reason),
+            Some(response.usage),
+            first_token_ms,
+            active_ms,
+            &mismatches,
+            None,
+        )
+        .await;
         usage.input_tokens = usage
             .input_tokens
             .saturating_add(response.usage.input_tokens);
@@ -1146,6 +1331,8 @@ async fn run_prompt_locked(
             mode,
             before_tools: None,
         },
+        &plugins,
+        &plugin_context,
     )
     .await?;
     Ok(PromptResult {

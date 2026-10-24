@@ -238,6 +238,50 @@ pub(crate) async fn spawn(
     let info = info_from_session(&session, AgentStatus::Queued);
     let cancel = child_cancel(&inner, &session_id).await;
     prepare_agent(&inner, &info, cancel.clone()).await;
+    let plugin_host =
+        crate::service::plugin_events::host_for(&inner, Path::new(&parent.session.cwd)).await;
+    if let Some(host) = &plugin_host {
+        // 子代理会话同样是「会话」：`sessionStart` 注入的初始消息进入它的 transcript。
+        let child_context = crate::service::plugin_events::context_from_info(&session);
+        for message in
+            crate::service::plugin_events::session_start(host, &child_context, &session, "subagent", Some(&session_id))
+                .await
+        {
+            let role = if message.role == "system" {
+                Role::System
+            } else {
+                Role::User
+            };
+            inner
+                .sessions
+                .append_message(
+                    &session.id,
+                    Message {
+                        role,
+                        content: vec![moc_llm::ContentPart::Text(message.text)],
+                    },
+                    None,
+                    None,
+                )
+                .await?;
+        }
+    }
+    let mut task = task;
+    if let Some(host) = &plugin_host {
+        let parent_context = crate::service::plugin_events::context(
+            &session_id,
+            &parent.session.cwd,
+            parent.mode,
+            parent.permission,
+            &parent.model,
+            parent.session.is_subagent(),
+        );
+        if let Some(rewritten) =
+            crate::service::plugin_events::agent_started(host, &parent_context, &info, &task).await
+        {
+            task = rewritten;
+        }
+    }
     let _ = request
         .updates()
         .emit(
@@ -384,6 +428,7 @@ async fn finish(
             )
         }
     };
+    let finish_for_event = finish_reason.clone();
     let (message, last_message, title, notify) = {
         let mut registry = inner.agents.lock().await;
         let Some(runtime) = registry.items.get_mut(&agent_id) else {
@@ -425,6 +470,31 @@ async fn finish(
             },
         )
         .await;
+    if let Ok(parent) = parent_snapshot(&inner, &parent_id).await
+        && let Some(host) = crate::service::plugin_events::host_for(
+            &inner,
+            Path::new(&parent.session.cwd),
+        )
+        .await
+    {
+        let context = crate::service::plugin_events::context(
+            &parent_id,
+            &parent.session.cwd,
+            parent.mode,
+            parent.permission,
+            &parent.model,
+            parent.session.is_subagent(),
+        );
+        if let Ok(agent) = current_info(&inner, &agent_id).await {
+            crate::service::plugin_events::agent_finished(
+                &host,
+                &context,
+                &agent,
+                finish_for_event.as_ref(),
+            )
+            .await;
+        }
+    }
     deliver_result_notice(
         &inner,
         &parent_id,
@@ -767,7 +837,43 @@ pub(crate) async fn drain_inbox(
         std::mem::take(&mut inbox.messages)
     };
     let count = pending.len();
+    if count == 0 {
+        return Ok(0);
+    }
+    let plugin_state = inner.sessions.get(session).await?.state.lock().await.clone();
+    let plugin_host =
+        crate::service::plugin_events::host_for(inner, Path::new(&plugin_state.session.cwd)).await;
+    let plugin_context = plugin_host.as_ref().map(|_| {
+        crate::service::plugin_events::context(
+            session,
+            &plugin_state.session.cwd,
+            plugin_state.mode,
+            plugin_state.permission,
+            &plugin_state.model,
+            plugin_state.session.is_subagent(),
+        )
+    });
     for PendingAgentMessage { meta, message } in pending {
+        let mut message = message;
+        if let (Some(host), Some(context)) = (&plugin_host, &plugin_context) {
+            let images = message
+                .content
+                .iter()
+                .filter(|part| matches!(part, moc_llm::ContentPart::Image { .. }))
+                .count();
+            let rewrite = crate::service::plugin_events::message_received(
+                host,
+                context,
+                "agent",
+                &message.text(),
+                images,
+                Some(&meta),
+            )
+            .await;
+            if let Some(text) = rewrite.text {
+                message = crate::service::plugin_events::rewrite_message_text(message, text);
+            }
+        }
         inner
             .sessions
             .append_agent_message(session, message.clone(), meta.clone())

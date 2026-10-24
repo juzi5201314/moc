@@ -1,5 +1,6 @@
 //! core 的公开入口、生命周期管理和 JSON-RPC 服务实现。
 
+pub(crate) mod plugin_events;
 mod plugin_persistence;
 
 use std::collections::HashMap;
@@ -128,6 +129,31 @@ pub(crate) fn plugin_context(
         model: model.to_owned(),
         is_subagent: state.session.is_subagent(),
         writable: true,
+    }
+}
+
+/// 会话配置变更事件：模式 / 模型 / 权限切换成功后广播给插件。
+pub(crate) async fn emit_session_config_changed(
+    inner: &CoreInner,
+    state: &crate::session::state::SessionState,
+    field: &str,
+    from: &str,
+    to: &str,
+) {
+    if from == to {
+        return;
+    }
+    if let Some(host) = plugin_events::host_for(inner, std::path::Path::new(&state.session.cwd)).await
+    {
+        let context = plugin_events::context(
+            &state.session.id,
+            &state.session.cwd,
+            state.mode,
+            state.permission,
+            &state.model,
+            state.session.is_subagent(),
+        );
+        plugin_events::session_config_changed(&host, &context, field, from, to).await;
     }
 }
 
@@ -1063,6 +1089,32 @@ impl AgentService for Core {
                 .map_err(to_rpc)?;
             *self.inner.runtime(&info.id).await.workspace.lock().await = Some(snapshot);
         }
+        if let Some(host) =
+            plugin_events::host_for(&self.inner, std::path::Path::new(&info.cwd)).await
+        {
+            let context = plugin_events::context_from_info(&info);
+            for message in plugin_events::session_start(&host, &context, &info, "user", None).await
+            {
+                let role = if message.role == "system" {
+                    moc_llm::Role::System
+                } else {
+                    moc_llm::Role::User
+                };
+                self.inner
+                    .sessions
+                    .append_message(
+                        &info.id,
+                        moc_llm::Message {
+                            role,
+                            content: vec![moc_llm::ContentPart::Text(message.text)],
+                        },
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(to_rpc)?;
+            }
+        }
         Ok(info)
     }
 
@@ -1160,6 +1212,43 @@ impl AgentService for Core {
             .map_err(|error| write_lease_error(self, &child_id, &child, error))?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
+        if let Some(host) = plugin_events::host_for(
+            &self.inner,
+            std::path::Path::new(&loaded.session.cwd),
+        )
+        .await
+        {
+            let context = plugin_events::context_from_info(&loaded.session);
+            let parent = loaded.session.forked_from.clone();
+            for message in plugin_events::session_start(
+                &host,
+                &context,
+                &loaded.session,
+                "rewind",
+                parent.as_deref(),
+            )
+            .await
+            {
+                let role = if message.role == "system" {
+                    moc_llm::Role::System
+                } else {
+                    moc_llm::Role::User
+                };
+                self.inner
+                    .sessions
+                    .append_message(
+                        &loaded.session.id,
+                        moc_llm::Message {
+                            role,
+                            content: vec![moc_llm::ContentPart::Text(message.text)],
+                        },
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(to_rpc)?;
+            }
+        }
         Ok(loaded)
     }
 
@@ -1177,6 +1266,20 @@ impl AgentService for Core {
         // unload_locked 要求调用方持有提示锁：进行中的提示会因运行时状态被移除而 panic 或写入失败，
         // 而且这里会先杀掉提示正在用的后台任务。和其它修改类 RPC 一样，拿不到锁就返回 SESSION_BUSY。
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+        let state = record.state.lock().await.clone();
+        if let Some(host) =
+            plugin_events::host_for(&self.inner, std::path::Path::new(&state.session.cwd)).await
+        {
+            let context = plugin_events::context(
+                &params.session_id,
+                &state.session.cwd,
+                state.mode,
+                state.permission,
+                &state.model,
+                state.session.is_subagent(),
+            );
+            plugin_events::session_end(&host, &context, "unloaded").await;
+        }
         let runtime = self.inner.runtime(&params.session_id).await;
         runtime.jobs.kill_all().await;
         self.inner
@@ -1236,6 +1339,20 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, "moc-core")
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let state = record.state.lock().await.clone();
+        if let Some(host) =
+            plugin_events::host_for(&self.inner, std::path::Path::new(&state.session.cwd)).await
+        {
+            let context = plugin_events::context(
+                &params.session_id,
+                &state.session.cwd,
+                state.mode,
+                state.permission,
+                &state.model,
+                state.session.is_subagent(),
+            );
+            plugin_events::session_end(&host, &context, "deleted").await;
+        }
         let runtime = self.inner.runtime(&params.session_id).await;
         runtime.jobs.kill_all().await;
         self.inner
@@ -1333,6 +1450,15 @@ impl AgentService for Core {
             )
             .await
             .map_err(protocol_to_rpc)?;
+        let state = record.state.lock().await.clone();
+        emit_session_config_changed(
+            &self.inner,
+            &state,
+            "permission",
+            old_permission.as_str(),
+            info.permission.as_str(),
+        )
+        .await;
         Ok(info)
     }
 
@@ -1353,9 +1479,13 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
-        let (cwd, from) = {
+        let (cwd, from, model_before) = {
             let state = record.state.lock().await;
-            (PathBuf::from(state.session.cwd.clone()), state.mode)
+            (
+                PathBuf::from(state.session.cwd.clone()),
+                state.mode,
+                state.model.clone(),
+            )
         };
         let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         // 进入计划模式前先解析计划模型，避免解析失败时模式已切换而模型没切换。
@@ -1394,7 +1524,25 @@ impl AgentService for Core {
                 .map_err(to_rpc)?;
             *runtime.workspace.lock().await = Some(snapshot);
         }
-        mode::emit_mode_change(&ctx, &params.session_id, info.mode, switched).await?;
+        mode::emit_mode_change(&ctx, &params.session_id, info.mode, switched.clone()).await?;
+        let state = record.state.lock().await.clone();
+        emit_session_config_changed(
+            &self.inner,
+            &state,
+            "mode",
+            &serde_json::to_value(from)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            &serde_json::to_value(info.mode)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+        )
+        .await;
+        if let Some(model) = &switched {
+            emit_session_config_changed(&self.inner, &state, "model", &model_before, model).await;
+        }
         Ok(info)
     }
 
@@ -1410,7 +1558,10 @@ impl AgentService for Core {
             .await
             .map_err(to_rpc)?;
         let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
-        let cwd = record.state.lock().await.session.cwd.clone();
+        let (cwd, model_before) = {
+            let state = record.state.lock().await;
+            (state.session.cwd.clone(), state.model.clone())
+        };
         let config = self
             .inner
             .project_config(std::path::Path::new(&cwd))
@@ -1433,6 +1584,9 @@ impl AgentService for Core {
         let mut session = outcome.session;
         session.lock = None;
         session.permission = self.inner.effective_permission(session.permission);
+        let state = record.state.lock().await.clone();
+        emit_session_config_changed(&self.inner, &state, "model", &model_before, &session.model)
+            .await;
         Ok(SessionSetModelResult {
             session,
             overflow: outcome.overflow,
@@ -1445,7 +1599,35 @@ impl AgentService for Core {
         ctx: RequestContext,
         params: SessionPlanApproveParams,
     ) -> Result<SessionPlanApproveResult, RpcError> {
-        mode::approve_plan(&self.inner, ctx, params).await
+        let plan_id = params.plan_id.clone();
+        let action = match params.action {
+            moc_protocol::methods::PlanAction::Execute => "execute",
+            moc_protocol::methods::PlanAction::ExecuteCompacted => "execute_compacted",
+            moc_protocol::methods::PlanAction::ExecuteNewSession => "execute_new_session",
+            moc_protocol::methods::PlanAction::Reject => "reject",
+        };
+        let result = mode::approve_plan(&self.inner, ctx, params).await?;
+        let record = self
+            .inner
+            .sessions
+            .get(&result.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let state = record.state.lock().await.clone();
+        if let Some(host) =
+            plugin_events::host_for(&self.inner, std::path::Path::new(&state.session.cwd)).await
+        {
+            let context = plugin_events::context(
+                &result.session_id,
+                &state.session.cwd,
+                state.mode,
+                state.permission,
+                &state.model,
+                state.session.is_subagent(),
+            );
+            plugin_events::plan_decided(&host, &context, &plan_id, action).await;
+        }
+        Ok(result)
     }
 
     async fn session_compact(

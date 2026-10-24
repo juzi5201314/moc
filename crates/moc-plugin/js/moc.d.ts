@@ -8,7 +8,7 @@
 // 跨边界调用会阻塞该线程直到返回。`run`/`prompt`/`activate` 可以是 async，
 // 但内部的 `tools.call` 仍然是同步返回。
 
-/** 宿主 API 版本；当前为 `"1"`。 */
+/** 宿主 API 版本；当前为 `"2"`。 */
 export const version: string;
 
 /**
@@ -166,23 +166,261 @@ export type BeforeToolCallResult =
       arguments?: Record<string, unknown>;
     };
 
-/** `afterToolCall` 的事件；返回值被忽略。 */
+/** `afterToolCall` 的事件；返回 `{ content?, structuredContent? }` 可改写结果。 */
 export interface AfterToolCallEvent extends BeforeToolCallEvent {
   /** 工具结果的正文。 */
   content: string;
+  /** 工具的结构化结果；没有时为 `undefined`。 */
+  structuredContent?: unknown;
   /** 工具是否以失败结束。 */
   isError: boolean;
 }
 
+/** 代理消息的来源。 */
+export interface AgentMessageMeta {
+  from_id: string;
+  from_title: string;
+  /** `"injected"` 或 `"woken"`。 */
+  delivery: string;
+}
+
+/** 一次模型请求的 token 用量。 */
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  reasoningTokens: number;
+}
+
+/** 入站消息（用户输入、steer、代理投递共用）。 */
+export interface MessageReceivedEvent {
+  atMs: number;
+  /** `"user" | "steer" | "agent"`。 */
+  source: string;
+  text: string;
+  images: number;
+  /** 代理消息的来源信息；用户输入时为 `undefined`。 */
+  agent?: AgentMessageMeta;
+}
+
+/** 会话开始。 */
+export interface SessionStartEvent {
+  atMs: number;
+  sessionId: string;
+  cwd: string;
+  model: string;
+  mode: string;
+  permission: string;
+  isSubagent: boolean;
+  /** `"user" | "subagent" | "rewind"`。 */
+  origin: string;
+  parentSessionId?: string;
+  title?: string;
+}
+
+/** 开始提示。 */
+export interface BeforePromptEvent {
+  atMs: number;
+  promptId: string;
+  firstPrompt: boolean;
+  model: string;
+  mode: string;
+  permission: string;
+  source: string;
+  text: string;
+  images: number;
+}
+
+/** 提示结束。 */
+export interface AfterPromptEvent {
+  atMs: number;
+  promptId: string;
+  finishReason?: string;
+  usage: Usage;
+  durationMs: number;
+  loopDetected: boolean;
+  error?: string;
+}
+
+/** 会话结束。 */
+export interface SessionEndEvent {
+  atMs: number;
+  reason: "deleted" | "unloaded";
+}
+
+/** 模式 / 模型 / 权限切换。 */
+export interface SessionConfigChangedEvent {
+  atMs: number;
+  field: "mode" | "model" | "permission";
+  from: string;
+  to: string;
+}
+
+/** 一次上游模型请求尝试。 */
+export interface ModelCallEvent {
+  atMs: number;
+  promptId: string;
+  /** 从 1 开始的尝试序号，重试会递增。 */
+  attempt: number;
+}
+
+export interface BeforeModelCallEvent extends ModelCallEvent {
+  provider: string;
+  model: string;
+  effort?: string;
+  messages: number;
+  tools: number;
+  contextTokens: number;
+  maxOutputTokens?: number;
+}
+
+export interface AfterModelCallEvent extends ModelCallEvent {
+  finishReason?: string;
+  usage?: Usage;
+  firstTokenMs?: number;
+  durationMs: number;
+  mismatch: string[];
+  error?: string;
+}
+
+/** 上下文压缩。 */
+export interface CompactionEvent {
+  atMs: number;
+  reason: "threshold" | "overflow" | "manual" | "pre_approve" | "switch";
+}
+
+export interface BeforeCompactionEvent extends CompactionEvent {
+  instructions?: string;
+  model?: string;
+}
+
+export interface AfterCompactionEvent extends CompactionEvent {
+  ok: boolean;
+  method?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  full?: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+/** 权限询问。 */
+export interface PermissionRequestedEvent {
+  atMs: number;
+  promptId: string;
+  requestId: string;
+  toolCallId: string;
+  toolName: string;
+  title: string;
+  body?: string;
+  /** 本次提供给用户的选项 id。 */
+  options: string[];
+}
+
+export interface PermissionResolvedEvent {
+  atMs: number;
+  promptId: string;
+  requestId: string;
+  /** 用户或插件选中的选项；取消时为 `null`。 */
+  option: string | null;
+}
+
+export interface WorkspaceChangedEvent {
+  atMs: number;
+  violation: boolean;
+  changes: { path: string; kind: string }[];
+}
+
+export interface PlanDecidedEvent {
+  atMs: number;
+  planId: string;
+  action: "execute" | "execute_compacted" | "execute_new_session" | "reject";
+}
+
+export interface AgentStartedEvent {
+  atMs: number;
+  agentId: string;
+  parentSessionId: string;
+  title: string;
+  model: string;
+  task: string;
+}
+
+export interface AgentFinishedEvent {
+  atMs: number;
+  agentId: string;
+  parentSessionId: string;
+  status: string;
+  finishReason?: string;
+  lastMessage?: string;
+}
+
+export interface JobFinishedEvent {
+  atMs: number;
+  jobId: string;
+  command: string;
+  exitCode?: number;
+  logPath: string;
+}
+
+export interface UserCommandEvent {
+  atMs: number;
+  command: string;
+  durationMs: number;
+  isError: boolean;
+  status: string;
+  content: string;
+}
+
+/**
+ * 生命周期钩子。能改变行为的钩子会返回表格中的字段；其余返回值被忽略。
+ * 只消费下表中的字段：字段类型不对就忽略并告警，不会停用插件。
+ */
 export interface Hooks {
   beforeToolCall?(
     event: BeforeToolCallEvent,
     ctx: Session,
   ): BeforeToolCallResult | Promise<BeforeToolCallResult>;
+  /** 返回 `{ content?, structuredContent? }`；在归档、落库、回灌模型之前改写。 */
   afterToolCall?(
     event: AfterToolCallEvent,
     ctx: Session,
-  ): void | Promise<void>;
+  ): { content?: string; structuredContent?: unknown } | void | Promise<{ content?: string; structuredContent?: unknown } | void>;
+  /** 返回 `{ text? }`；在消息写入 transcript 之前改写正文。 */
+  messageReceived?(
+    event: MessageReceivedEvent,
+    ctx: Session,
+  ): { text?: string } | void | Promise<{ text?: string } | void>;
+  /** 返回 `{ messages?: { role?: "system" | "user"; text: string }[] }`。 */
+  sessionStart?(
+    event: SessionStartEvent,
+    ctx: Session,
+  ): { messages?: { role?: "system" | "user"; text: string }[] } | void | Promise<{ messages?: { role?: "system" | "user"; text: string }[] } | void>;
+  /** 返回 `{ option?: string }`，只能是本次提供的一次性选项。 */
+  permissionRequested?(
+    event: PermissionRequestedEvent,
+    ctx: Session,
+  ): { option?: string } | void | Promise<{ option?: string } | void>;
+  /** 返回 `{ task? }`，在子代理首轮提示之前改写任务。 */
+  agentStarted?(
+    event: AgentStartedEvent,
+    ctx: Session,
+  ): { task?: string } | void | Promise<{ task?: string } | void>;
+  beforePrompt?(event: BeforePromptEvent, ctx: Session): void | Promise<void>;
+  afterPrompt?(event: AfterPromptEvent, ctx: Session): void | Promise<void>;
+  sessionEnd?(event: SessionEndEvent, ctx: Session): void | Promise<void>;
+  sessionConfigChanged?(event: SessionConfigChangedEvent, ctx: Session): void | Promise<void>;
+  beforeModelCall?(event: BeforeModelCallEvent, ctx: Session): void | Promise<void>;
+  afterModelCall?(event: AfterModelCallEvent, ctx: Session): void | Promise<void>;
+  beforeCompaction?(event: BeforeCompactionEvent, ctx: Session): void | Promise<void>;
+  afterCompaction?(event: AfterCompactionEvent, ctx: Session): void | Promise<void>;
+  permissionResolved?(event: PermissionResolvedEvent, ctx: Session): void | Promise<void>;
+  workspaceChanged?(event: WorkspaceChangedEvent, ctx: Session): void | Promise<void>;
+  planDecided?(event: PlanDecidedEvent, ctx: Session): void | Promise<void>;
+  agentFinished?(event: AgentFinishedEvent, ctx: Session): void | Promise<void>;
+  jobFinished?(event: JobFinishedEvent, ctx: Session): void | Promise<void>;
+  userCommand?(event: UserCommandEvent, ctx: Session): void | Promise<void>;
 }
 
 /** `export default` 的形状。 */

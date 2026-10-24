@@ -404,6 +404,8 @@ pub(super) async fn execute_tool_batch(
             mode,
             before_tools: tool_batch_before.as_ref(),
         },
+        &tool_ctx.plugins,
+        &tool_ctx.plugin_call_context(),
     )
     .await?;
     // 批次里刚被停用的插件要立刻让模型与前端看到，不能等到下一次提示。
@@ -615,7 +617,7 @@ async fn execute_tool(
         execution.await
     };
     match result {
-        Ok(Ok(outcome)) => {
+        Ok(Ok(mut outcome)) => {
             if outcome.diff.is_some() {
                 ctx.guard.record_change();
             }
@@ -629,9 +631,17 @@ async fn execute_tool(
                     structured: outcome.structured_content.clone(),
                     is_error: outcome.is_error,
                 };
-                ctx.plugins
+                // 改写必须发生在归档、落库、回灌模型与推前端之前：四处看到的是同一份结果。
+                let rewrite = ctx
+                    .plugins
                     .after_tool_call(name, &args, &result, &ctx.plugin_call_context())
                     .await;
+                if let Some(content) = rewrite.content {
+                    outcome.content = crate::tools::ToolOutput::Text(content);
+                }
+                if let Some(structured) = rewrite.structured {
+                    outcome.structured_content = (!structured.is_null()).then_some(structured);
+                }
             }
             Ok(outcome)
         }
@@ -1084,6 +1094,33 @@ async fn ask_permission(
     options: Vec<moc_protocol::methods::PermissionOption>,
 ) -> Result<PermissionAnswer, CoreError> {
     let request = &ctx.request;
+    let request_id = crate::ids::entry_id();
+    // 插件有机会在询问用户之前代答，但只能代替一次：会话级授权仍由人选择。
+    let plugin_context = ctx.plugin_call_context();
+    let event = crate::service::plugin_events::permission_request_payload(
+        &ctx.prompt_id,
+        &request_id,
+        tool_call_id,
+        tool_name,
+        &title,
+        body.as_deref(),
+        &options,
+    );
+    if let Some(option) = ctx
+        .plugins
+        .permission_requested(&event, &plugin_context)
+        .await
+    {
+        crate::service::plugin_events::permission_resolved(
+            &ctx.plugins,
+            &plugin_context,
+            &ctx.prompt_id,
+            &request_id,
+            Some(&option),
+        )
+        .await;
+        return Ok(PermissionAnswer::Selected(option));
+    }
     if !ctx
         .core
         .capabilities
@@ -1093,7 +1130,6 @@ async fn ask_permission(
     {
         return Ok(PermissionAnswer::Unavailable);
     }
-    let request_id = crate::ids::entry_id();
     request
         .updates()
         .emit(
@@ -1126,12 +1162,20 @@ async fn ask_permission(
             ctx.session_id.clone(),
             SessionUpdate::PermissionResolved {
                 prompt_id: ctx.prompt_id.clone(),
-                request_id,
+                request_id: request_id.clone(),
                 option_id: selected.clone(),
             },
         )
         .await
         .map_err(|error| CoreError::Protocol(error.to_string()))?;
+    crate::service::plugin_events::permission_resolved(
+        &ctx.plugins,
+        &plugin_context,
+        &ctx.prompt_id,
+        &request_id,
+        selected.as_deref(),
+    )
+    .await;
     Ok(match selected {
         None => PermissionAnswer::Dismissed,
         Some(option) => PermissionAnswer::Selected(option),

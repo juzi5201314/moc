@@ -300,6 +300,10 @@ impl JobManager {
             .uri_for_path(&log_path)
             .unwrap_or_else(|error| format!("[{}] {}", error.code, error.message));
         ctx.state.lock().await.notices.push(format!("Background {lifecycle:?} job {id} finished ({exit_label}). Output tail:\n{output}\nFull output: {log_uri}"));
+        let plugin_context = ctx.plugin_call_context();
+        let plugin_host = Arc::clone(&ctx.plugins);
+        let command_for_event = command.clone();
+        let log_uri_for_event = log_uri.clone();
         let update = SessionUpdate::JobFinished {
             job_id: id.clone(),
             command,
@@ -309,6 +313,15 @@ impl JobManager {
         if let Err(error) = ctx.request.updates().emit(ctx.session_id, update).await {
             tracing::warn!(job_id = %id, %error, "发送后台任务完成通知失败");
         }
+        crate::service::plugin_events::job_finished(
+            &plugin_host,
+            &plugin_context,
+            &id,
+            &command_for_event,
+            exit_code,
+            &log_uri_for_event,
+        )
+        .await;
     }
     pub async fn kill_all(&self) {
         self.shutting_down.store(true, Ordering::Release);

@@ -322,6 +322,35 @@ pub(crate) async fn compact(
             .saturating_add(context.additional_tokens),
     };
     let required_tokens = required_tokens(&config, model.context_window, reason);
+    let reason_name = match reason {
+        CompactReason::Threshold => "threshold",
+        CompactReason::Overflow => "overflow",
+        CompactReason::Manual => "manual",
+        CompactReason::PreApprove => "pre_approve",
+        CompactReason::Switch => "switch",
+    };
+    let compact_started = std::time::Instant::now();
+    let plugin_host =
+        crate::service::plugin_events::host_for(inner, std::path::Path::new(&state.session.cwd))
+            .await;
+    let plugin_context = crate::service::plugin_events::context(
+        session_id,
+        &state.session.cwd,
+        state.mode,
+        state.permission,
+        &model.selector,
+        state.session.is_subagent(),
+    );
+    if let Some(host) = &plugin_host {
+        crate::service::plugin_events::before_compaction(
+            host,
+            &plugin_context,
+            reason_name,
+            instructions,
+            Some(&model.selector),
+        )
+        .await;
+    }
     // 只有真正要等上游模型的压缩才让前端开始计时；纯本地裁剪瞬时可成。
     let mut started = false;
     let outcome: Result<CompactReport, CoreError> = async {
@@ -460,6 +489,39 @@ pub(crate) async fn compact(
             }
         }
         Err(_) => {}
+    }
+    if let Some(host) = &plugin_host {
+        let duration_ms = u64::try_from(compact_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        match &outcome {
+            Ok(report) => {
+                crate::service::plugin_events::after_compaction(
+                    host,
+                    &plugin_context,
+                    reason_name,
+                    Some(&report.result.method),
+                    Some(report.result.tokens_before),
+                    Some(report.result.tokens_after),
+                    Some(report.result.full),
+                    duration_ms,
+                    None,
+                )
+                .await;
+            }
+            Err(error) => {
+                crate::service::plugin_events::after_compaction(
+                    host,
+                    &plugin_context,
+                    reason_name,
+                    None,
+                    None,
+                    None,
+                    None,
+                    duration_ms,
+                    Some(&error.to_string()),
+                )
+                .await;
+            }
+        }
     }
     outcome
 }

@@ -727,3 +727,161 @@ async fn load_failure_notice_reaches_the_model_on_prompt_start() {
 
     harness.close().await;
 }
+
+/// `messageReceived` 在落库前改写正文：transcript 与模型请求都只看到改写后的文本。
+#[tokio::test]
+async fn message_received_rewrites_user_input_before_persisting() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|_: &wiremock::Request| {
+            ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    install_plugin(
+        &harness,
+        "rewrite",
+        r#"
+        export default {
+          hooks: {
+            messageReceived(event) {
+              if (event.source !== "user") return undefined;
+              return { text: event.text.replace("原始", "改写") };
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "原始指令").await;
+
+    let loaded = harness
+        .client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id: session.clone(),
+            max_entries: None,
+            read_only: false,
+        })
+        .await
+        .unwrap();
+    let users = loaded
+        .entries
+        .iter()
+        .filter(|entry| entry.message.role == moc_llm::Role::User)
+        .map(|entry| entry.message.text())
+        .collect::<Vec<_>>();
+    assert!(
+        users.iter().any(|text| text.contains("改写指令")),
+        "改写后的正文必须落库：{users:?}"
+    );
+    assert!(
+        !users.iter().any(|text| text.contains("原始指令")),
+        "原文不得进入 transcript：{users:?}"
+    );
+
+    harness.close().await;
+}
+
+/// `sessionStart` 注入的消息在会话创建后立即落库，并随 transcript 一起返回。
+#[tokio::test]
+async fn session_start_injects_messages_into_the_transcript() {
+    let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
+    install_plugin(
+        &harness,
+        "bootstrap",
+        r#"
+        export default {
+          hooks: {
+            sessionStart() {
+              return {
+                messages: [
+                  { role: "system", text: "会话初始化规则" },
+                  { role: "user", text: "先读 AGENTS.md" }
+                ]
+              };
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+
+    let loaded = harness
+        .client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id: session,
+            max_entries: None,
+            read_only: false,
+        })
+        .await
+        .unwrap();
+    let texts = loaded
+        .entries
+        .iter()
+        .map(|entry| entry.message.text())
+        .collect::<Vec<_>>();
+    assert!(
+        texts.iter().any(|text| text.contains("会话初始化规则")),
+        "系统消息必须落库：{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|text| text.contains("先读 AGENTS.md")),
+        "用户消息必须落库：{texts:?}"
+    );
+
+    harness.close().await;
+}
+
+/// `afterToolCall` 的改写发生在落库与回灌模型之前，transcript 与工具结果一致。
+#[tokio::test]
+async fn after_tool_call_rewrites_the_tool_result() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("请求体是 JSON");
+            let done = body["messages"]
+                .as_array()
+                .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
+            if done {
+                ResponseTemplate::new(200).set_body_raw(text_stream("完成"), "text/event-stream")
+            } else {
+                ResponseTemplate::new(200).set_body_raw(
+                    tool_stream(vec![("call_1", "read", json!({"path": "secret.txt"}))]),
+                    "text/event-stream",
+                )
+            }
+        })
+        .mount(&upstream)
+        .await;
+    let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    std::fs::write(harness.root.path().join("work/secret.txt"), "机密内容").unwrap();
+    install_plugin(
+        &harness,
+        "redact",
+        r#"
+        export default {
+          hooks: {
+            afterToolCall(event) {
+              if (event.name !== "read") return undefined;
+              return { content: "[已脱敏]" };
+            }
+          }
+        };
+        "#,
+    );
+    let session = harness.session(SessionMode::Normal).await;
+    harness.prompt(&session, "读文件").await;
+
+    let results = load(&harness, &session).await;
+    assert!(
+        results.iter().any(|text| text.contains("[已脱敏]")),
+        "工具结果必须被改写：{results:?}"
+    );
+    assert!(
+        !results.iter().any(|text| text.contains("机密内容")),
+        "原文不得进入 transcript：{results:?}"
+    );
+
+    harness.close().await;
+}

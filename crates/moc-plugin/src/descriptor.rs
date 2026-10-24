@@ -143,19 +143,99 @@ pub struct CommandDecl {
 }
 
 /// 支持的生命周期钩子。
+///
+/// 顺序只影响 [`HookKind::ALL`] 的展示顺序与描述符校验；实际调用顺序始终是插件
+/// 加载顺序。会消费返回值的只有 `beforeToolCall`、`beforePrompt` 与 `afterToolCall`，
+/// 其余钩子的返回值被忽略（见 `docs/plugins.md`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HookKind {
     BeforeToolCall,
     AfterToolCall,
+    BeforePrompt,
+    AfterPrompt,
+    SessionStart,
+    SessionEnd,
+    SessionConfigChanged,
+    MessageReceived,
+    BeforeModelCall,
+    AfterModelCall,
+    BeforeCompaction,
+    AfterCompaction,
+    PermissionRequested,
+    PermissionResolved,
+    WorkspaceChanged,
+    PlanDecided,
+    AgentStarted,
+    AgentFinished,
+    JobFinished,
+    UserCommand,
 }
 
 impl HookKind {
+    /// 全部钩子；描述符校验、错误信息与文档都以它为准。
+    pub const ALL: [Self; 20] = [
+        Self::BeforeToolCall,
+        Self::AfterToolCall,
+        Self::BeforePrompt,
+        Self::AfterPrompt,
+        Self::SessionStart,
+        Self::SessionEnd,
+        Self::SessionConfigChanged,
+        Self::MessageReceived,
+        Self::BeforeModelCall,
+        Self::AfterModelCall,
+        Self::BeforeCompaction,
+        Self::AfterCompaction,
+        Self::PermissionRequested,
+        Self::PermissionResolved,
+        Self::WorkspaceChanged,
+        Self::PlanDecided,
+        Self::AgentStarted,
+        Self::AgentFinished,
+        Self::JobFinished,
+        Self::UserCommand,
+    ];
+
     /// 模块 `hooks` 对象里的键名。
     pub fn js_name(self) -> &'static str {
         match self {
             Self::BeforeToolCall => "beforeToolCall",
             Self::AfterToolCall => "afterToolCall",
+            Self::BeforePrompt => "beforePrompt",
+            Self::AfterPrompt => "afterPrompt",
+            Self::SessionStart => "sessionStart",
+            Self::SessionEnd => "sessionEnd",
+            Self::SessionConfigChanged => "sessionConfigChanged",
+            Self::MessageReceived => "messageReceived",
+            Self::BeforeModelCall => "beforeModelCall",
+            Self::AfterModelCall => "afterModelCall",
+            Self::BeforeCompaction => "beforeCompaction",
+            Self::AfterCompaction => "afterCompaction",
+            Self::PermissionRequested => "permissionRequested",
+            Self::PermissionResolved => "permissionResolved",
+            Self::WorkspaceChanged => "workspaceChanged",
+            Self::PlanDecided => "planDecided",
+            Self::AgentStarted => "agentStarted",
+            Self::AgentFinished => "agentFinished",
+            Self::JobFinished => "jobFinished",
+            Self::UserCommand => "userCommand",
         }
+    }
+
+    /// 从模块 `hooks` 的键名解析；未知名字返回 `None`。
+    pub fn from_js_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.js_name() == name)
+    }
+
+    /// 错误信息用的「支持哪些钩子」列表。
+    pub fn supported() -> String {
+        Self::ALL
+            .iter()
+            .map(|kind| kind.js_name())
+            .collect::<Vec<_>>()
+            .join(" / ")
     }
 }
 
@@ -190,6 +270,18 @@ impl Descriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_names_round_trip_and_are_unique() {
+        let mut names = std::collections::BTreeSet::new();
+        for kind in HookKind::ALL {
+            assert!(names.insert(kind.js_name()), "钩子名重复：{}", kind.js_name());
+            assert_eq!(HookKind::from_js_name(kind.js_name()), Some(kind));
+        }
+        assert_eq!(HookKind::from_js_name("beforeToolCall"), Some(HookKind::BeforeToolCall));
+        assert_eq!(HookKind::from_js_name("eventLoop"), None);
+        assert!(HookKind::supported().contains("userCommand"));
+    }
 
     #[test]
     fn mode_masks_parse_and_render_in_order() {

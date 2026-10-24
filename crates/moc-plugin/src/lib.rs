@@ -18,8 +18,9 @@ pub use descriptor::{
 };
 pub use error::{PluginError, Result};
 pub use host::{
-    BeforeToolCall, CallContext, HostBridge, PersistenceBridge, PersistenceOp, PluginHost,
-    PluginInfo, PluginNotice, Settings, ToolResult, fingerprint,
+    AfterToolCall, BeforeToolCall, CallContext, HostBridge, InjectedMessage, MessageRewrite,
+    PersistenceBridge, PersistenceOp, PluginHost, PluginInfo, PluginNotice, Settings, ToolResult,
+    fingerprint,
 };
 pub use manifest::Manifest;
 pub use runtime::API_VERSION;

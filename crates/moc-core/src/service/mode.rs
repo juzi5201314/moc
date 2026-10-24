@@ -183,6 +183,39 @@ pub async fn approve_plan(
             )
             .await
             .map_err(to_rpc)?;
+        if let Some(host) =
+            crate::service::plugin_events::host_for(inner, std::path::Path::new(&fork.cwd)).await
+        {
+            let context = crate::service::plugin_events::context_from_info(&fork);
+            for message in crate::service::plugin_events::session_start(
+                &host,
+                &context,
+                &fork,
+                "user",
+                Some(&params.session_id),
+            )
+            .await
+            {
+                let role = if message.role == "system" {
+                    moc_llm::Role::System
+                } else {
+                    moc_llm::Role::User
+                };
+                inner
+                    .sessions
+                    .append_message(
+                        &fork.id,
+                        moc_llm::Message {
+                            role,
+                            content: vec![moc_llm::ContentPart::Text(message.text)],
+                        },
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(to_rpc)?;
+            }
+        }
         inner
             .sessions
             .append_message(

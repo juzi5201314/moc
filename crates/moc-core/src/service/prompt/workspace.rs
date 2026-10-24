@@ -24,6 +24,8 @@ pub(super) async fn check_workspace(
     runtime: &SessionRuntime,
     record: &crate::session::SessionRecord,
     scope: WorkspaceScope<'_>,
+    plugins: &moc_plugin::PluginHost,
+    plugin_context: &moc_plugin::CallContext,
 ) -> Result<(), RpcError> {
     let WorkspaceScope {
         session_id,
@@ -81,6 +83,13 @@ pub(super) async fn check_workspace(
         )
         .await
         .map_err(protocol_to_rpc)?;
+    crate::service::plugin_events::workspace_changed(
+        plugins,
+        plugin_context,
+        violation,
+        &changes,
+    )
+    .await;
     let paths = changes
         .iter()
         .map(|change| {

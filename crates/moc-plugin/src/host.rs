@@ -124,6 +124,30 @@ pub enum BeforeToolCall {
     Deny(String),
 }
 
+/// `messageReceived` 的聚合结论：只携带真正被改写的正文。
+///
+/// 后一个插件看到前一个改写后的 `text`；类型不对的返回值按文档忽略，不停用插件。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MessageRewrite {
+    pub text: Option<String>,
+}
+
+/// 插件注入到 transcript 的一条消息；`role` 只会是 `system` 或 `user`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InjectedMessage {
+    pub role: String,
+    pub text: String,
+}
+
+/// `afterToolCall` 的聚合结论：只携带真正被改写的字段。
+///
+/// `structured` 为 `Some(Value::Null)` 表示插件要求清空结构化内容。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AfterToolCall {
+    pub content: Option<String>,
+    pub structured: Option<Value>,
+}
+
 /// 插件失败通知：加载或调用出错、插件因此在本进程内停用时发一条。
 ///
 /// core 会把它转成模型可见的提醒与前端可见的更新；latch 只发生一次，因此
@@ -667,6 +691,42 @@ impl PluginHost {
         })
     }
 
+    /// 是否有存活插件声明了该钩子；没有时调用方不必构造事件载荷。
+    pub fn has_hook(&self, kind: HookKind) -> bool {
+        self.plugins
+            .iter()
+            .any(|plugin| plugin.alive() && plugin.descriptor.has_hook(kind))
+    }
+
+    /// 派发一次观察型事件：按加载顺序调用声明了该钩子的插件，返回值忽略。
+    ///
+    /// 失败（抛错、超时、线程退出）只记日志；`invoke` 内部已经停用该插件并产生通知。
+    pub async fn emit(&self, kind: HookKind, event: Value, context: &CallContext) {
+        for (index, plugin) in self.plugins.iter().enumerate() {
+            if !plugin.alive() || !plugin.descriptor.has_hook(kind) {
+                continue;
+            }
+            if let Err(error) = self
+                .invoke(
+                    index,
+                    CallOp::Hook(kind),
+                    event.clone(),
+                    context,
+                    false,
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(
+                    plugin = %plugin.name,
+                    hook = kind.js_name(),
+                    %error,
+                    "事件钩子失败，已忽略"
+                );
+            }
+        }
+    }
+
     /// 按发现顺序调用全部 `beforeToolCall`。抛错或超时的插件按 fail-open 跳过。
     pub async fn before_tool_call(
         &self,
@@ -681,7 +741,14 @@ impl PluginHost {
             }
             let event = serde_json::json!({"name": tool, "arguments": current});
             match self
-                .invoke(index, CallOp::BeforeToolCall, event, context, false, None)
+                .invoke(
+                    index,
+                    CallOp::Hook(HookKind::BeforeToolCall),
+                    event,
+                    context,
+                    false,
+                    None,
+                )
                 .await
             {
                 Ok(value) => {
@@ -705,14 +772,204 @@ impl PluginHost {
         BeforeToolCall::Allow(current)
     }
 
-    /// `afterToolCall`：观察型钩子，失败只记日志。
+    /// 按发现顺序调用全部 `messageReceived`，返回最后一个有效正文改写。
+    ///
+    /// `event` 必须带 `text`；后一个插件看到前一个改写后的正文。
+    pub async fn message_received(&self, event: &Value, context: &CallContext) -> MessageRewrite {
+        let mut current = event
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut rewritten = None;
+        for (index, plugin) in self.plugins.iter().enumerate() {
+            if !plugin.alive() || !plugin.descriptor.has_hook(HookKind::MessageReceived) {
+                continue;
+            }
+            let mut payload = event.clone();
+            payload["text"] = Value::String(current.clone());
+            match self
+                .invoke(
+                    index,
+                    CallOp::Hook(HookKind::MessageReceived),
+                    payload,
+                    context,
+                    false,
+                    None,
+                )
+                .await
+            {
+                Ok(value) => match value.get("text") {
+                    Some(Value::String(text)) => {
+                        current = text.clone();
+                        rewritten = Some(text.clone());
+                    }
+                    None | Some(Value::Null) => {}
+                    Some(other) => tracing::warn!(
+                        plugin = %plugin.name,
+                        value = %other,
+                        "messageReceived 的 text 不是字符串，已忽略"
+                    ),
+                },
+                Err(error) => {
+                    tracing::warn!(plugin = %plugin.name, %error, "messageReceived 失败，已忽略");
+                }
+            }
+        }
+        MessageRewrite { text: rewritten }
+    }
+
+    /// 调用全部 `sessionStart`，汇总插件要求注入的初始消息。
+    ///
+    /// 非法条目只告警并跳过；总量受条数与字符预算约束，避免一个插件写爆会话。
+    pub async fn session_start(
+        &self,
+        event: &Value,
+        context: &CallContext,
+    ) -> Vec<InjectedMessage> {
+        let mut injected = Vec::new();
+        let mut budget = MAX_INJECTED_CHARS;
+        for (index, plugin) in self.plugins.iter().enumerate() {
+            if !plugin.alive() || !plugin.descriptor.has_hook(HookKind::SessionStart) {
+                continue;
+            }
+            match self
+                .invoke(
+                    index,
+                    CallOp::Hook(HookKind::SessionStart),
+                    event.clone(),
+                    context,
+                    false,
+                    None,
+                )
+                .await
+            {
+                Ok(value) => collect_injected(&plugin.name, &value, &mut injected, &mut budget),
+                Err(error) => {
+                    tracing::warn!(plugin = %plugin.name, %error, "sessionStart 失败，已忽略");
+                }
+            }
+        }
+        injected
+    }
+
+    /// 调用全部 `permissionRequested`，返回插件代答的选项 ID。
+    ///
+    /// 只接受本次实际提供的选项，且只允许一次性放行或拒绝；会话级授权必须由人选择。
+    pub async fn permission_requested(
+        &self,
+        event: &Value,
+        context: &CallContext,
+    ) -> Option<String> {
+        let offered = event.get("options").and_then(Value::as_array)?;
+        for (index, plugin) in self.plugins.iter().enumerate() {
+            if !plugin.alive() || !plugin.descriptor.has_hook(HookKind::PermissionRequested) {
+                continue;
+            }
+            let value = match self
+                .invoke(
+                    index,
+                    CallOp::Hook(HookKind::PermissionRequested),
+                    event.clone(),
+                    context,
+                    false,
+                    None,
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(plugin = %plugin.name, %error, "permissionRequested 失败，已忽略");
+                    continue;
+                }
+            };
+            let Some(option) = value.get("option").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(declared) = offered
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(option))
+            else {
+                tracing::warn!(
+                    plugin = %plugin.name,
+                    option,
+                    "permissionRequested 返回了未提供的选项，已忽略"
+                );
+                continue;
+            };
+            if !matches!(
+                declared.get("kind").and_then(Value::as_str),
+                Some("allow_once" | "reject_once")
+            ) {
+                tracing::warn!(
+                    plugin = %plugin.name,
+                    option,
+                    "permissionRequested 只能代答一次性选项，已忽略"
+                );
+                continue;
+            }
+            return Some(option.to_owned());
+        }
+        None
+    }
+
+    /// 按发现顺序调用全部 `agentStarted`，返回最后一个有效的任务改写。
+    pub async fn agent_started(&self, event: &Value, context: &CallContext) -> Option<String> {
+        let mut current = event
+            .get("task")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let mut rewritten = None;
+        for (index, plugin) in self.plugins.iter().enumerate() {
+            if !plugin.alive() || !plugin.descriptor.has_hook(HookKind::AgentStarted) {
+                continue;
+            }
+            let mut payload = event.clone();
+            payload["task"] = Value::String(current.clone());
+            match self
+                .invoke(
+                    index,
+                    CallOp::Hook(HookKind::AgentStarted),
+                    payload,
+                    context,
+                    false,
+                    None,
+                )
+                .await
+            {
+                Ok(value) => match value.get("task") {
+                    Some(Value::String(task)) if !task.trim().is_empty() => {
+                        current = task.clone();
+                        rewritten = Some(task.clone());
+                    }
+                    None | Some(Value::Null) => {}
+                    Some(_) => tracing::warn!(
+                        plugin = %plugin.name,
+                        "agentStarted 的 task 必须是非空字符串，已忽略"
+                    ),
+                },
+                Err(error) => {
+                    tracing::warn!(plugin = %plugin.name, %error, "agentStarted 失败，已忽略");
+                }
+            }
+        }
+        rewritten
+    }
+
+    /// 按发现顺序调用全部 `afterToolCall`，返回被改写的字段。
+    ///
+    /// 后一个插件看到前一个改写后的结果；抛错或超时的插件按 fail-open 跳过。
     pub async fn after_tool_call(
         &self,
         tool: &str,
         arguments: &Value,
         result: &ToolResult,
         context: &CallContext,
-    ) {
+    ) -> AfterToolCall {
+        let mut content = result.content.clone();
+        let mut structured = result.structured.clone();
+        let mut rewritten = AfterToolCall::default();
         for (index, plugin) in self.plugins.iter().enumerate() {
             if !plugin.alive() || !plugin.descriptor.has_hook(HookKind::AfterToolCall) {
                 continue;
@@ -720,16 +977,45 @@ impl PluginHost {
             let event = serde_json::json!({
                 "name": tool,
                 "arguments": arguments,
-                "content": result.content,
+                "content": content,
+                "structuredContent": structured,
                 "isError": result.is_error,
             });
-            if let Err(error) = self
-                .invoke(index, CallOp::AfterToolCall, event, context, false, None)
+            match self
+                .invoke(
+                    index,
+                    CallOp::Hook(HookKind::AfterToolCall),
+                    event,
+                    context,
+                    false,
+                    None,
+                )
                 .await
             {
-                tracing::warn!(plugin = %plugin.name, %error, "afterToolCall 失败，已忽略");
+                Ok(value) => {
+                    match value.get("content") {
+                        Some(Value::String(text)) => {
+                            content = text.clone();
+                            rewritten.content = Some(text.clone());
+                        }
+                        None | Some(Value::Null) => {}
+                        Some(other) => tracing::warn!(
+                            plugin = %plugin.name,
+                            value = %other,
+                            "afterToolCall 的 content 不是字符串，已忽略"
+                        ),
+                    }
+                    if let Some(value) = value.get("structuredContent") {
+                        structured = Some(value.clone());
+                        rewritten.structured = Some(value.clone());
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(plugin = %plugin.name, %error, "afterToolCall 失败，已忽略");
+                }
             }
         }
+        rewritten
     }
 
     /// 汇总各插件的提示词贡献；按插件名字典序拼接并截断到配置上限。
@@ -1141,6 +1427,54 @@ fn interpret_tool_result(value: Value) -> ToolResult {
     }
 }
 
+/// `sessionStart` 注入消息的条数上限。
+const MAX_INJECTED_MESSAGES: usize = 32;
+/// `sessionStart` 注入消息的总字符预算。
+const MAX_INJECTED_CHARS: usize = 64 * 1024;
+
+/// 把 `sessionStart` 返回值里的 `messages` 解析成注入消息，非法条目只告警。
+fn collect_injected(
+    plugin: &str,
+    value: &Value,
+    out: &mut Vec<InjectedMessage>,
+    budget: &mut usize,
+) {
+    let Some(items) = value.get("messages").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        if out.len() >= MAX_INJECTED_MESSAGES {
+            tracing::warn!(plugin, "sessionStart 注入的消息条数超过上限，剩余项已忽略");
+            break;
+        }
+        let Some(text) = item.get("text").and_then(Value::as_str) else {
+            tracing::warn!(plugin, "sessionStart 注入的消息缺少 text，已忽略");
+            continue;
+        };
+        let role = match item.get("role").and_then(Value::as_str) {
+            None | Some("user") => "user",
+            Some("system") => "system",
+            Some(other) => {
+                tracing::warn!(plugin, role = other, "注入消息的 role 只能是 system 或 user，已忽略");
+                continue;
+            }
+        };
+        let text: String = text.trim().chars().take(*budget).collect();
+        if text.is_empty() {
+            continue;
+        }
+        *budget = budget.saturating_sub(text.chars().count());
+        out.push(InjectedMessage {
+            role: role.to_owned(),
+            text,
+        });
+        if *budget == 0 {
+            tracing::warn!(plugin, "sessionStart 注入消息的字符预算已用尽，剩余项已忽略");
+            break;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1474,6 +1808,213 @@ mod tests {
         settings.max_prompt_chars = 10;
         let host = PluginHost::start(temp.path(), temp.path(), &settings, &[]).await;
         assert_eq!(host.prompt_text(&context()).await, "x".repeat(10));
+    }
+
+    /// 只有声明过的插件会收到事件；未声明的钩子不会触发任何 JS 调用。
+    #[tokio::test]
+    async fn lifecycle_events_only_reach_plugins_that_declare_them() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "watcher",
+            r#"
+            let starts = 0;
+            export default {
+              hooks: { sessionStart(event) { starts += event.atMs > 0 ? 1 : 0; } },
+              commands: { starts: { description: "读取计数", run: () => starts } }
+            };
+            "#,
+        );
+        install(temp.path(), "silent", r#"export default {};"#);
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        assert!(host.has_hook(crate::descriptor::HookKind::SessionStart));
+        assert!(!host.has_hook(crate::descriptor::HookKind::AfterPrompt));
+        host.emit(
+            crate::descriptor::HookKind::SessionStart,
+            serde_json::json!({"atMs": 1}),
+            &context(),
+        )
+        .await;
+        // 未声明的观察型钩子不会调用插件，计数保持 1。
+        host.emit(
+            crate::descriptor::HookKind::AfterPrompt,
+            serde_json::json!({"atMs": 2}),
+            &context(),
+        )
+        .await;
+        assert_eq!(
+            host.run_command("starts", "", &context()).await.unwrap(),
+            "1"
+        );
+    }
+
+    /// 多个插件的 `messageReceived` 按加载顺序串联，后一个看到前一个的改写。
+    #[tokio::test]
+    async fn message_received_chains_rewrites_in_load_order() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "first",
+            r#"export default { hooks: { messageReceived(event) { return { text: event.text + "A" }; } } };"#,
+        );
+        install(
+            temp.path(),
+            "second",
+            r#"export default { hooks: { messageReceived(event) { return { text: event.text + "B" }; } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let rewrite = host
+            .message_received(&serde_json::json!({"text": "x"}), &context())
+            .await;
+        assert_eq!(
+            rewrite,
+            MessageRewrite {
+                text: Some("xAB".into())
+            }
+        );
+    }
+
+    /// `sessionStart` 可以注入初始消息；非法条目被跳过而不是停用插件。
+    #[tokio::test]
+    async fn session_start_collects_injected_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "boot",
+            r#"export default { hooks: { sessionStart() {
+                return { messages: [
+                  { role: "system", text: "仓库约定" },
+                  { text: "第二条" },
+                  { role: "tool", text: "非法角色" },
+                  { role: "user", text: 42 }
+                ] };
+            } } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let injected = host
+            .session_start(&serde_json::json!({"atMs": 1}), &context())
+            .await;
+        assert_eq!(
+            injected,
+            vec![
+                InjectedMessage {
+                    role: "system".into(),
+                    text: "仓库约定".into()
+                },
+                InjectedMessage {
+                    role: "user".into(),
+                    text: "第二条".into()
+                },
+            ]
+        );
+        assert!(host.info()[0].error.is_none());
+    }
+
+    /// 权限代答只接受本次提供的一次性选项；会话级授权必须由人选择。
+    #[tokio::test]
+    async fn permission_hook_can_answer_once_but_not_grant_a_session() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "policy",
+            r#"export default { hooks: {
+                permissionRequested(event) {
+                  return { option: event.tool === "write" ? "allow_session" : "allow_once" };
+                }
+            } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let options = || {
+            serde_json::json!([
+                {"id": "allow_once", "label": "允许一次", "kind": "allow_once"},
+                {"id": "allow_session", "label": "本会话允许", "kind": "allow_session"},
+                {"id": "reject_once", "label": "拒绝", "kind": "reject_once"}
+            ])
+        };
+        assert_eq!(
+            host.permission_requested(
+                &serde_json::json!({"tool": "read", "options": options()}),
+                &context()
+            )
+            .await,
+            Some("allow_once".into())
+        );
+        assert_eq!(
+            host.permission_requested(
+                &serde_json::json!({"tool": "write", "options": options()}),
+                &context()
+            )
+            .await,
+            None,
+            "会话级授权不能被插件代答"
+        );
+    }
+
+    /// `agentStarted` 可以改写子代理任务；空串被忽略。
+    #[tokio::test]
+    async fn agent_started_can_rewrite_the_task() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "tasker",
+            r#"export default { hooks: {
+                agentStarted(event) { return { task: event.task + "（附仓库约定）" }; }
+            } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let task = host
+            .agent_started(&serde_json::json!({"task": "调查"}), &context())
+            .await;
+        assert_eq!(task.as_deref(), Some("调查（附仓库约定）"));
+    }
+
+    /// `afterToolCall` 的改写会被串联；非字符串返回值忽略且不停用插件。
+    #[tokio::test]
+    async fn after_tool_call_chains_rewrites_and_ignores_bad_types() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "bracket",
+            r#"export default { hooks: {
+                afterToolCall(event) {
+                  return { content: "[" + event.content + "]", structuredContent: { seen: true } };
+                }
+            } };"#,
+        );
+        install(
+            temp.path(),
+            "upper",
+            r#"export default { hooks: {
+                afterToolCall(event) { return { content: event.content.toUpperCase(), structuredContent: null }; }
+            } };"#,
+        );
+        install(
+            temp.path(),
+            "z-bad",
+            r#"export default { hooks: {
+                afterToolCall() { return { content: 42 }; }
+            } };"#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let result = ToolResult {
+            content: "raw".into(),
+            structured: Some(serde_json::json!({"raw": true})),
+            is_error: false,
+        };
+        let rewrite = host
+            .after_tool_call("read", &serde_json::json!({}), &result, &context())
+            .await;
+        assert_eq!(rewrite.content.as_deref(), Some("[RAW]"));
+        assert_eq!(rewrite.structured, Some(Value::Null));
+        // 最后一个插件返回非法类型，只告警，不影响已完成的改写，也不停用它。
+        assert!(
+            host.info().iter().all(|info| info.error.is_none()),
+            "非法返回值不应停用插件：{:?}",
+            host.info()
+                .iter()
+                .map(|info| (&info.name, &info.error))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]

@@ -51,6 +51,46 @@ pub(super) async fn steer(
         return Err(CoreError::Config("补充消息不能为空".into()));
     }
     let runtime = inner.runtime(&params.session_id).await;
+    if !runtime.steering.lock().await.accepting {
+        return Ok(SteerResult {
+            accepted: false,
+            id: None,
+        });
+    }
+    // 补充消息也走 `messageReceived`：与普通输入共享同一套改写语义。
+    let mut message = message;
+    if let Some(host) =
+        crate::service::plugin_events::host_for(inner, Path::new(&snapshot.session.cwd)).await
+    {
+        let context = crate::service::plugin_events::context(
+            &params.session_id,
+            &snapshot.session.cwd,
+            snapshot.mode,
+            snapshot.permission,
+            &snapshot.model,
+            snapshot.session.is_subagent(),
+        );
+        let images = message
+            .content
+            .iter()
+            .filter(|part| matches!(part, moc_llm::ContentPart::Image { .. }))
+            .count();
+        let rewrite = crate::service::plugin_events::message_received(
+            &host,
+            &context,
+            "steer",
+            &message.text(),
+            images,
+            None,
+        )
+        .await;
+        if let Some(text) = rewrite.text {
+            if text.trim().is_empty() {
+                return Err(CoreError::Config("补充消息不能为空".into()));
+            }
+            message = crate::service::plugin_events::rewrite_message_text(message, text);
+        }
+    }
     let mut steering = runtime.steering.lock().await;
     if !steering.accepting {
         return Ok(SteerResult {

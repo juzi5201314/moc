@@ -29,7 +29,9 @@ use crate::loader::{PluginLoader, PluginResolver};
 use crate::manifest::{valid_command_name, valid_tool_name};
 
 /// 宿主 API 版本；插件可用 `version` 判断兼容性。
-pub const API_VERSION: &str = "1";
+///
+/// `"2"` 在 `"1"` 之上增加了生命周期事件钩子；返回值契约见 `docs/plugins.md`。
+pub const API_VERSION: &str = "2";
 /// JS 栈上限，与 PTC worker 一致。
 const STACK_BYTES: usize = 256 * 1024;
 
@@ -60,8 +62,8 @@ pub(crate) enum CallOp {
     Deactivate,
     Tool,
     Command,
-    BeforeToolCall,
-    AfterToolCall,
+    /// 生命周期钩子；`payload` 是交给 JS 的 event，`context` 是会话快照。
+    Hook(HookKind),
     Prompt,
 }
 
@@ -582,12 +584,15 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
     if let Some(hooks) = hooks_value.into_object() {
         for key in hooks.keys::<String>() {
             let name = key.map_err(|error| js_error(ctx, error))?;
-            if !matches!(name.as_str(), "beforeToolCall" | "afterToolCall") {
+            let Some(kind) = HookKind::from_js_name(&name) else {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!("未知钩子 `{name}`（支持 beforeToolCall / afterToolCall）"),
+                    format!(
+                        "未知钩子 `{name}`（支持：{}）",
+                        HookKind::supported()
+                    ),
                 ));
-            }
+            };
             let value: JsValue = hooks
                 .get(name.as_str())
                 .map_err(|error| js_error(ctx, error))?;
@@ -600,10 +605,7 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
                     format!("钩子 `{name}` 必须是函数"),
                 ));
             }
-            descriptor.hooks.push(match name.as_str() {
-                "beforeToolCall" => HookKind::BeforeToolCall,
-                _ => HookKind::AfterToolCall,
-            });
+            descriptor.hooks.push(kind);
         }
         descriptor.hooks.sort_unstable();
         descriptor.hooks.dedup();
@@ -1223,14 +1225,15 @@ fn dispatch<'js>(
                 .map_err(|error| js_error(ctx, error))?;
             settle(ctx, result)
         }
-        CallOp::BeforeToolCall | CallOp::AfterToolCall => {
+        CallOp::Hook(kind) => {
             let export = export_object(ctx, functions)?;
             let hooks: JsValue = export.get("hooks").map_err(|error| js_error(ctx, error))?;
             let hooks = hooks
                 .into_object()
                 .ok_or_else(|| PluginError::new("E_PLUGIN_STATE", "模块没有导出 hooks"))?;
-            let function = optional_function(ctx, &hooks, op_name(op))?.ok_or_else(|| {
-                PluginError::new("E_PLUGIN_STATE", format!("钩子 `{}` 不存在", op_name(op)))
+            let name = kind.js_name();
+            let function = optional_function(ctx, &hooks, name)?.ok_or_else(|| {
+                PluginError::new("E_PLUGIN_STATE", format!("钩子 `{name}` 不存在"))
             })?;
             let event: JsValue = ctx
                 .json_parse(payload.to_string())
@@ -1249,14 +1252,6 @@ fn dispatch<'js>(
                 .map_err(|error| js_error(ctx, error))?;
             settle(ctx, result)
         }
-    }
-}
-
-fn op_name(op: CallOp) -> &'static str {
-    match op {
-        CallOp::BeforeToolCall => "beforeToolCall",
-        CallOp::AfterToolCall => "afterToolCall",
-        _ => "unknown",
     }
 }
 
@@ -1646,7 +1641,7 @@ mod tests {
         assert!(descriptor.has_hook(HookKind::BeforeToolCall));
         let value = call(
             &worker,
-            CallOp::BeforeToolCall,
+            CallOp::Hook(HookKind::BeforeToolCall),
             json!({"name":"read","arguments":{"path":"a"}}),
             SESSION,
             false,
@@ -1657,7 +1652,7 @@ mod tests {
         assert_eq!(value["arguments"]["injected"], json!(true));
         let value = call(
             &worker,
-            CallOp::BeforeToolCall,
+            CallOp::Hook(HookKind::BeforeToolCall),
             json!({"name":"blocked","arguments":{}}),
             SESSION,
             false,

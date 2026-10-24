@@ -149,19 +149,51 @@ export default {
 
 ### 钩子
 
-只有**模型发起的**工具调用会触发钩子：`run_code` 里的子调用、插件内部的工具调用都不重入。
+钩子按插件加载顺序串联：后一个看到前一个改写后的值。抛异常或超时只停用出错插件并通知，其余插件与核心操作继续。
 
-`beforeToolCall(event, ctx)`：
+**只有模型发起的工具调用会触发工具钩子**：`run_code` 里的子调用、插件内部的工具调用都不重入。
 
-- `event = { name, arguments }`
-- 返回 `{ deny: "原因" }` → 本次调用被拒绝，模型收到 `E_PLUGIN_DENIED`（含插件名与原因）
-- 返回 `{ arguments: {...} }` → 用新参数替换，**改写发生在沙盒判定、bash 规则与授权之前**
-- 返回 `undefined`/`null` → 不改
-- 抛异常或超时 → 本次调用 fail-open 放行，同时停用出错插件并通知（模型提醒 + 前端提示），恢复见「失败与恢复」
+**能改变行为的钩子**（只消费下表中的字段；字段类型不对就忽略并告警，不会停用插件）：
 
-多个插件按加载顺序串联，后一个看到的 `arguments` 是前一个改写后的结果；任一插件拒绝即中止。
+| 钩子 | 返回 | 应用点 |
+|---|---|---|
+| `beforeToolCall` | `{ deny?, arguments? }` | 沙盒判定、bash 规则与授权之前 |
+| `messageReceived` | `{ text? }` | 入站消息写入 transcript 之前；用户输入、steer、代理消息共用 |
+| `afterToolCall` | `{ content?, structuredContent? }` | 结果归档、落库、回灌模型与推前端之前 |
+| `sessionStart` | `{ messages?: [{ role?: "system"\|"user", text }] }` | 会话创建后、第一条用户消息之前落库 |
+| `permissionRequested` | `{ option? }` | 询问用户之前；只能选本次提供的一次性选项（`allow_once` / `reject_once`） |
+| `agentStarted` | `{ task? }` | 子代理首轮提示之前 |
 
-`afterToolCall(event, ctx)`：观察型。`event = { name, arguments, content, isError }`，返回值被忽略，失败停用该插件并通知，不改变已经完成的宿主工具结果。
+**纯观察钩子**（返回值忽略）：
+
+| 钩子 | 时机 | 载荷要点 |
+|---|---|---|
+| `beforePrompt` | 输入已落库、首次模型请求前 | `promptId, firstPrompt, model, mode, permission, source, text, images` |
+| `afterPrompt` | 提示成功 / 失败 / 取消后 | `promptId, finishReason, usage, durationMs, loopDetected, error` |
+| `sessionEnd` | 删除 / 卸载前 | `sessionId, reason(deleted\|unloaded)` |
+| `sessionConfigChanged` | 模式 / 模型 / 权限切换后 | `field, from, to` |
+| `beforeModelCall` | 每次上游请求尝试前 | `promptId, attempt, provider, model, effort, messages, tools, contextTokens, maxOutputTokens` |
+| `afterModelCall` | 每次尝试落定 | `promptId, attempt, finishReason, usage, firstTokenMs, durationMs, mismatch, error` |
+| `beforeCompaction` | 压缩入口 | `reason(threshold\|overflow\|manual\|pre_approve\|switch), instructions, model` |
+| `afterCompaction` | 压缩终态 | `reason, ok, method, tokensBefore, tokensAfter, full, durationMs, error` |
+| `permissionResolved` | 权限答复后 | `promptId, requestId, option(或 null)` |
+| `workspaceChanged` | 工作区 diff 非空 | `violation, changes[]` |
+| `planDecided` | 计划批准 / 拒绝后 | `planId, action` |
+| `agentFinished` | 子代理终态 | `agentId, parentSessionId, status, finishReason, lastMessage` |
+| `jobFinished` | 后台任务结束 | `jobId, command, exitCode, logPath` |
+| `userCommand` | 用户手动命令执行完 | `command, durationMs, isError, status, content` |
+
+为什么有些钩子只能观察：
+
+- `beforePrompt` / `afterPrompt`：消息已落库、请求已组装，改写在 `messageReceived` 处完成；提示结果在 `afterPrompt` 时已经定型。
+- `beforeModelCall` / `afterModelCall`：请求的组装、token 预算与缓存断点归 core；每轮动态文本用 `prompt(ctx)`（系统提示片段）表达。响应是流式发出的，事后无法改写。
+- `beforeCompaction` / `afterCompaction`：压缩策略由阈值与 `compaction.method_order` 决定；注入 `instructions` 会隐式把压缩切到 soft 路径，语义变化太大。
+- `sessionEnd`：删除是用户的明确意图，插件不应否决。
+- `permissionResolved` / `workspaceChanged` / `planDecided` / `agentFinished` / `jobFinished` / `userCommand`：动作已经提交到 transcript 或前端，再改会导致两处不一致。
+
+`sessionStart` 注入的消息会进入 transcript 与模型上下文；Web 前端创建会话后会拉取转写，因此立即可见；TUI 新建会话时不拉历史，注入内容在下次加载会话时显示。
+
+`"1" → "2"`：新增了上述生命周期钩子，原有钩子契约不变。
 
 ### 提示词
 
@@ -173,7 +205,7 @@ export default {
 
 | 导出 | 说明 |
 |---|---|
-| `version` | 宿主 API 版本（当前 `"1"`）。 |
+| `version` | 宿主 API 版本（当前 `"2"`）。 |
 | `session()` | 当前会话快照 `{ sessionId, cwd, mode, permission, model, isSubagent }`。在 `activate`/`deactivate` 里调用会抛 `E_PLUGIN_STATE`（那时没有会话）。 |
 | `log.debug/info/warn/error(...)` | 写 moc 日志，`RUST_LOG=moc_plugin=debug` 可见。 |
 | `tools.call(name, args)` | 调用宿主工具，返回 `{ content, structuredContent, isError }`。 |

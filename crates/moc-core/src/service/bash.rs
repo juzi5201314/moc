@@ -85,13 +85,14 @@ pub(super) async fn run(
         images: Vec::new(),
     };
     let arguments = serde_json::to_string(&params.command).expect("Bash 命令参数可以序列化");
+    let command_text = params.command.command.clone();
     inner
         .sessions
         .append(
             session_id,
             EntryPayload::Bash {
                 command: params.command,
-                output: content,
+                output: content.clone(),
                 tool: ToolExecution {
                     tool_call_id: call_id.clone(),
                     status,
@@ -118,6 +119,34 @@ pub(super) async fn run(
         )
         .await
         .map_err(protocol_to_rpc)?;
+    let state = record.state.lock().await.clone();
+    if let Some(host) =
+        crate::service::plugin_events::host_for(&inner, std::path::Path::new(&state.session.cwd))
+            .await
+    {
+        let context = crate::service::plugin_events::context(
+            session_id,
+            &state.session.cwd,
+            state.mode,
+            state.permission,
+            &state.model,
+            state.session.is_subagent(),
+        );
+        let status_name = serde_json::to_value(status)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        crate::service::plugin_events::user_command(
+            &host,
+            &context,
+            &command_text,
+            duration_ms,
+            is_error,
+            &status_name,
+            &content,
+        )
+        .await;
+    }
     Ok(BashResult {
         result,
         status,
