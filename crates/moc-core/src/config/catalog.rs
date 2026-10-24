@@ -612,6 +612,15 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "工具并发上限",
                 "标准模式一次工具批次中同时执行的只读工具数量。",
             ),
+            "max_total_calls" => (
+                "脚本调用总上限",
+                "单个 run_code 脚本最多发起的宿主调用次数。",
+            ),
+            "max_concurrent_runs" => ("脚本并发上限", "同一 Core 同时运行的 run_code 脚本数量。"),
+            "host_idle_timeout_secs" => (
+                "Host 空闲回收时间（秒）",
+                "长期 PTC Host 没有活跃脚本时，等待多久后回收。",
+            ),
             "max_candidate_files" => ("扫描文件上限", "搜索时最多检查多少个文件。"),
             "limit" => ("结果数量", "未指定时返回的结果条数。"),
             "max_running" => ("后台任务上限", "可同时运行的后台任务数量。"),

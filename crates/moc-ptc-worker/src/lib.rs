@@ -171,13 +171,13 @@ pub fn run<R: BufRead + Send + 'static, W: Write>(mut input: R, mut output: W) -
                 }
                 Event::Error(error) => return Err(error.into()),
                 Event::Step(execution_id, step) => {
-                    if !matches!(step.state, GuestState::Pending) {
-                        if let Some(execution) = executions.remove(&execution_id) {
-                            execution
-                                .join
-                                .join()
-                                .map_err(|_| "PTC execution 线程异常退出")?;
-                        }
+                    if !matches!(step.state, GuestState::Pending)
+                        && let Some(execution) = executions.remove(&execution_id)
+                    {
+                        execution
+                            .join
+                            .join()
+                            .map_err(|_| "PTC execution 线程异常退出")?;
                     }
                     let line = serde_json::to_vec(&GuestMessage::Step { execution_id, step })?;
                     if line.len() + 1 > MAX_FRAME_BYTES {
@@ -263,7 +263,7 @@ fn execute(
         emit(step)?;
         match commands.recv_timeout(control.deadline.saturating_duration_since(Instant::now())) {
             Ok(Command::Complete(completions)) => {
-                let values = completions
+                let values = match completions
                     .into_iter()
                     .map(|completion| {
                         let (value, error) = match completion.result {
@@ -272,8 +272,12 @@ fn execute(
                         };
                         Ok((completion.id, value, error))
                     })
-                    .collect::<Result<Vec<_>>>()?;
-                context.with(|ctx| -> rquickjs::Result<()> {
+                    .collect::<Result<Vec<_>>>()
+                {
+                    Ok(values) => values,
+                    Err(error) => return Ok(failed("E_PTC_PROTOCOL", error.to_string())),
+                };
+                if let Err(error) = context.with(|ctx| -> rquickjs::Result<()> {
                     let object = object.clone().restore(&ctx)?;
                     let complete: Function = object.get("complete")?;
                     for (id, value, error) in values {
@@ -284,7 +288,9 @@ fn execute(
                         ))?;
                     }
                     Ok(())
-                })?;
+                }) {
+                    return Ok(failed("E_PTC_PROTOCOL", error.to_string()));
+                }
             }
             Ok(Command::Cancel) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {

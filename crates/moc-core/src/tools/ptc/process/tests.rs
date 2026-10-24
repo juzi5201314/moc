@@ -55,6 +55,17 @@ async fn pid(host: &PtcHost, config: &PtcConfig) -> u64 {
 }
 
 #[tokio::test]
+async fn shutdown_is_idempotent_when_callers_race() {
+    let host = host();
+    tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(host.shutdown(), host.shutdown());
+    })
+    .await
+    .expect("并发 shutdown 不应互相等待");
+    assert!(host.start(request("pid"), &PtcConfig::default()).is_err());
+}
+
+#[tokio::test]
 async fn reuses_one_pid_and_routes_concurrent_executions() {
     let host = host();
     let config = PtcConfig::default();

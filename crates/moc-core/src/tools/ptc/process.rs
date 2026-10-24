@@ -8,13 +8,16 @@ use moc_ptc_protocol::wire::{
 use std::{
     collections::HashMap,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdout},
-    sync::{mpsc, oneshot},
+    sync::{mpsc, watch},
     task::JoinHandle,
     time::Instant,
 };
@@ -38,22 +41,34 @@ enum Request {
         id: u64,
         code: String,
     },
-    Shutdown(oneshot::Sender<()>),
+    Shutdown,
+}
+
+struct ShutdownState {
+    requested: AtomicBool,
+    done: watch::Sender<bool>,
 }
 
 /// 一个 Core 共享一个管理器；只有首次 execution 到来时才启动子进程。
 pub(crate) struct PtcHost {
     tx: mpsc::UnboundedSender<Request>,
     next_id: Mutex<u64>,
+    shutdown: Arc<ShutdownState>,
 }
 
 impl PtcHost {
     pub(crate) fn new(command: PtcWorkerCommand) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(manage(command, rx));
+        let (done, _) = watch::channel(false);
+        let shutdown = Arc::new(ShutdownState {
+            requested: AtomicBool::new(false),
+            done,
+        });
+        tokio::spawn(manage(command, rx, Arc::clone(&shutdown)));
         Self {
             tx,
             next_id: Mutex::new(0),
+            shutdown,
         }
     }
 
@@ -63,8 +78,11 @@ impl PtcHost {
         config: &PtcConfig,
     ) -> Result<Guest, ToolError> {
         let (steps, rx) = mpsc::unbounded_channel();
-        // 短锁覆盖 ID 分配和入队，跨 Tokio 线程也保持 Start 的 ID 顺序。
+        // 同一把锁覆盖 ID 分配、Start 入队和 shutdown 标记，避免关闭请求与新 execution 乱序。
         let mut next_id = self.next_id.lock().unwrap();
+        if self.shutdown.requested.load(Ordering::Acquire) {
+            return Err(worker_error("PTC Host 已关闭"));
+        }
         let id = *next_id;
         *next_id += 1;
         self.tx
@@ -86,9 +104,25 @@ impl PtcHost {
     }
 
     pub(crate) async fn shutdown(&self) {
-        let (tx, rx) = oneshot::channel();
-        if self.tx.send(Request::Shutdown(tx)).is_ok() {
-            let _ = rx.await;
+        let mut done = self.shutdown.done.subscribe();
+        let send_shutdown = {
+            let _next_id = self.next_id.lock().unwrap();
+            if self
+                .shutdown
+                .requested
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.tx.send(Request::Shutdown).is_err()
+            } else {
+                false
+            }
+        };
+        if send_shutdown {
+            self.shutdown.done.send_replace(true);
+        }
+        if !*done.borrow() {
+            let _ = done.changed().await;
         }
     }
 }
@@ -293,7 +327,11 @@ async fn fail(process: &mut Option<Process>, routes: &mut HashMap<u64, Route>, e
     }
 }
 
-async fn manage(command: PtcWorkerCommand, mut requests: mpsc::UnboundedReceiver<Request>) {
+async fn manage(
+    command: PtcWorkerCommand,
+    mut requests: mpsc::UnboundedReceiver<Request>,
+    shutdown: Arc<ShutdownState>,
+) {
     let mut process: Option<Process> = None;
     let mut routes = HashMap::<u64, Route>::new();
     let mut idle = Duration::from_secs(600);
@@ -344,10 +382,10 @@ async fn manage(command: PtcWorkerCommand, mut requests: mpsc::UnboundedReceiver
                         }
                     }
                 }
-                shutdown => {
+                None | Some(Request::Shutdown) => {
                     requests.close();
                     fail(&mut process, &mut routes, worker_error("PTC Host 已关闭")).await;
-                    if let Some(Request::Shutdown(done)) = shutdown { let _ = done.send(()); }
+                    shutdown.done.send_replace(true);
                     return;
                 }
             },
@@ -365,7 +403,12 @@ async fn manage(command: PtcWorkerCommand, mut requests: mpsc::UnboundedReceiver
                             continue;
                         };
                         if serde_json::to_vec(&step).map_or(true, |bytes| bytes.len() > route.limit) {
-                            fail(&mut process, &mut routes, worker_error("PTC Host execution 输出超限")).await;
+                            fail(
+                                &mut process,
+                                &mut routes,
+                                ToolError::new("E_OUTPUT_LIMIT", "PTC Host execution 输出超限"),
+                            )
+                            .await;
                             continue;
                         }
                         let terminal = !matches!(step.state, GuestState::Pending);

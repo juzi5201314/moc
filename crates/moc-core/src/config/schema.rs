@@ -370,6 +370,11 @@ pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreE
     if config.max_timeout_secs == 0 {
         return Err(fail("max_timeout_secs", "必须大于 0"));
     }
+    // `Duration::from_secs` 在超过纳秒表示范围时会 panic，配置加载阶段直接拒绝。
+    const MAX_DURATION_SECS: u64 = u64::MAX / 1_000_000_000;
+    if config.max_timeout_secs > MAX_DURATION_SECS {
+        return Err(fail("max_timeout_secs", "超出系统 Duration 可表示的范围"));
+    }
     if config.max_concurrent_calls == 0 {
         return Err(fail("max_concurrent_calls", "必须大于 0"));
     }
@@ -387,6 +392,12 @@ pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreE
     }
     if config.host_idle_timeout_secs == 0 {
         return Err(fail("host_idle_timeout_secs", "必须大于 0"));
+    }
+    if config.host_idle_timeout_secs > MAX_DURATION_SECS {
+        return Err(fail(
+            "host_idle_timeout_secs",
+            "超出系统 Duration 可表示的范围",
+        ));
     }
     if !(8 * 1024 * 1024..=u32::MAX as usize).contains(&config.memory_limit_bytes) {
         return Err(fail("memory_limit_bytes", "必须在 8 MiB..=u32::MAX 范围内"));
@@ -1027,5 +1038,16 @@ mod bash_config_tests {
         assert_eq!(config.max_timeout_secs, 3600);
         assert_eq!(config.max_output_bytes, 16 * 1024 * 1024);
         assert_eq!(config.persistent_log_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn ptc_duration_limits_are_rejected_before_runtime() {
+        let mut config = PtcConfig::default();
+        config.max_timeout_secs = u64::MAX;
+        assert!(validate_ptc(&config).is_err());
+
+        let mut config = PtcConfig::default();
+        config.host_idle_timeout_secs = u64::MAX;
+        assert!(validate_ptc(&config).is_err());
     }
 }

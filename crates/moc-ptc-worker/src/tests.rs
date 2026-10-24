@@ -297,6 +297,24 @@ fn cancellation_is_local_even_during_sync_loop() {
     done(&host.receive().1, json!(8));
 }
 #[test]
+fn malformed_completion_is_a_protocol_error_and_does_not_poison_the_host() {
+    let host = Host::new();
+    host.start(1, start("await tools.a();"));
+    let (id, step) = host.receive();
+    assert_eq!(id, 1);
+    assert_eq!(step.requests.len(), 1);
+    host.send(HostMessage::Complete {
+        execution_id: 1,
+        completions: vec![HostCompletion {
+            id: 99,
+            result: Ok(json!(null)),
+        }],
+    });
+    failed_with(&host.receive().1, "E_PTC_PROTOCOL");
+    host.start(2, start("return 7"));
+    done(&host.receive().1, json!(7));
+}
+#[test]
 fn output_and_pending_limits_remain_enforced() {
     let mut request = start("return 'x'.repeat(2048);");
     request.max_output_bytes = 128;
