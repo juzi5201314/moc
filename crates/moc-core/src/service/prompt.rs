@@ -515,12 +515,12 @@ async fn run_prompt_locked(
     let mut cycle_redirect = None;
     let summary = catalog.summary();
     // 声明与工具表用同一份快照渲染，保证提示里的签名和实际可调用的集合一致。
-    let tool_declarations = crate::tools::declarations::render(
+    // 只有内置签名进系统提示；MCP 索引随服务器刷新，走下面的尾部提醒。
+    let tool_declarations = crate::tools::declarations::render_signatures(
         &catalog,
         mode,
         ask_supported,
         &project_config,
-        model.context_window,
     )
     .unwrap_or_default();
     let context_files = inner.project_context_files(&params.session_id, &cwd).await;
@@ -616,6 +616,17 @@ async fn run_prompt_locked(
             reminder_messages.push(reminder_message(format!(
                 "<system-reminder>{roster}</system-reminder>"
             )));
+        }
+        // MCP 服务器可以在会话中途刷新工具列表：索引只出现在本轮提醒里，系统前缀
+        // 因此不会因为一次工具增删而失效。
+        if let Some(index) = crate::tools::declarations::render_mcp_index(
+            &catalog,
+            mode,
+            ask_supported,
+            &project_config,
+            model.context_window,
+        ) {
+            reminder_messages.push(reminder_message(index));
         }
         if let Some(detail) = cycle_redirect.take() {
             reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>")));

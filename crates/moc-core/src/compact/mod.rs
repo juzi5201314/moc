@@ -137,7 +137,6 @@ pub(crate) async fn model_context(
         .tool_declarations(
             state.mode,
             config,
-            model.context_window,
             inner.client_supports_ask(ctx.connection_id()),
         )
         .await?;

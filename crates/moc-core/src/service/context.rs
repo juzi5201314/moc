@@ -308,7 +308,6 @@ async fn snapshot(
         .tool_declarations(
             mode,
             &config,
-            model.context_window,
             inner.client_supports_ask(ctx.connection_id()),
         )
         .await

@@ -174,7 +174,8 @@ pub fn compose(pieces: Vec<PromptPiece>, model: &ResolvedModel) -> SystemPrompt 
     }
 }
 
-/// 生成稳定前缀的各个片段。时间、后台任务、工作区变更、MCP 状态和当前模式放在尾部提醒里，不进前缀。
+/// 生成稳定前缀的各个片段。时间、后台任务、工作区变更、MCP 服务器状态、MCP 工具索引
+/// 和当前模式放在尾部提醒里，不进前缀。
 #[allow(clippy::too_many_arguments)]
 pub fn pieces(
     config: &ResolvedConfig,

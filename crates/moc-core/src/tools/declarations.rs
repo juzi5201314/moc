@@ -5,6 +5,9 @@
 //! 给完整签名（成本与普通模式的原生工具表相当）；MCP 工具数量不可控，只给
 //! 名字加一行描述的紧凑索引，完整 schema 仍走 `catalog.describe`，并按上下文
 //! 窗口预算截断（算法对齐 skills 目录）。
+//!
+//! 两部分的稳定性不同：内置签名只随模式与配置变化，留在系统提示；MCP 集合每次
+//! 提示都可能刷新，作为尾部提醒注入，免得工具增删一次就改写整段前缀。
 
 use moc_protocol::SessionMode;
 
@@ -19,8 +22,43 @@ const DESCRIPTION_MAX_CHARS: usize = 110;
 /// TS 转换的最大嵌套深度；更深或无法表达的关键字降级为 `unknown`。
 const TS_MAX_DEPTH: usize = 5;
 
-/// 渲染 `<tool-declarations>` 片段；仅 Ptc 模式且存在可见工具时返回 `Some`。
-pub fn render(
+/// 渲染 `<tool-declarations>` 片段：只有内置工具签名。
+///
+/// 仅 Ptc 模式且存在可见内置工具时返回 `Some`。签名只随模式和配置变化，同一模式下
+/// 逐字节稳定，所以可以留在系统提示里；MCP 部分见 [`render_mcp_index`]。
+pub fn render_signatures(
+    catalog: &ToolCatalog,
+    mode: SessionMode,
+    ask_supported: bool,
+    config: &ResolvedConfig,
+) -> Option<String> {
+    if mode != SessionMode::Ptc {
+        return None;
+    }
+    let mut lines = vec![
+        "Tool signatures for run_code: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under run_code.".to_owned(),
+    ];
+    let mut builtins = 0usize;
+    for tool in catalog.visible(mode, ask_supported, config) {
+        if tool.origin() == ToolOrigin::Mcp {
+            continue;
+        }
+        builtins += 1;
+        lines.push(format!(
+            "tools.{}(args: {}): Promise<ToolResult> — {}",
+            tool.name(),
+            ts_type(&tool.def().parameters, TS_MAX_DEPTH),
+            short_description(tool.description()),
+        ));
+    }
+    (builtins > 0).then(|| wrap("tool-declarations", &lines))
+}
+
+/// 渲染 `<mcp-tool-index>` 片段：MCP 工具的名字与一行描述，按窗口预算截断。
+///
+/// 仅 Ptc 模式且存在可见 MCP 工具时返回 `Some`。MCP 服务器可以在会话中途刷新工具
+/// 列表，所以这段随每轮尾部提醒发送，不进系统前缀。
+pub fn render_mcp_index(
     catalog: &ToolCatalog,
     mode: SessionMode,
     ask_supported: bool,
@@ -30,61 +68,50 @@ pub fn render(
     if mode != SessionMode::Ptc {
         return None;
     }
-    let mut builtins = Vec::new();
-    let mut mcp = Vec::new();
-    for tool in catalog.visible(mode, ask_supported, config) {
-        match tool.origin() {
-            ToolOrigin::Mcp => mcp.push(tool),
-            _ => builtins.push(tool),
-        }
-    }
-    if builtins.is_empty() && mcp.is_empty() {
+    let mcp: Vec<_> = catalog
+        .visible(mode, ask_supported, config)
+        .filter(|tool| tool.origin() == ToolOrigin::Mcp)
+        .collect();
+    if mcp.is_empty() {
         return None;
     }
-    let mut lines = vec![
-        "Tool signatures for run_code: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under run_code.".to_owned(),
-    ];
-    for tool in builtins {
-        lines.push(format!(
-            "tools.{}(args: {}): Promise<ToolResult> — {}",
+    let mut lines =
+        vec!["MCP tool index; fetch full schemas with catalog.describe(name):".to_owned()];
+    let budget = context_window * MCP_INDEX_BUDGET_PERCENT / 100;
+    let mut budget = budget.max(MCP_INDEX_BUDGET_MIN_TOKENS);
+    let mut degraded = 0usize;
+    for tool in mcp {
+        let line = format!(
+            "{} — {}",
             tool.name(),
-            ts_type(&tool.def().parameters, TS_MAX_DEPTH),
-            short_description(tool.description()),
+            short_description(tool.description())
+        );
+        let cost = crate::compact::estimate_tokens(&line);
+        if cost <= budget {
+            budget -= cost;
+            lines.push(line);
+            continue;
+        }
+        let bare = tool.name().to_owned();
+        let cost = crate::compact::estimate_tokens(&bare);
+        if cost <= budget {
+            budget -= cost;
+            lines.push(bare);
+            degraded += 1;
+            continue;
+        }
+        degraded += 1;
+    }
+    if degraded > 0 {
+        lines.push(format!(
+            "({degraded} MCP tools omitted; call catalog.search({{query:\"\"}}) to list them)"
         ));
     }
-    if !mcp.is_empty() {
-        lines.push("MCP tool index; fetch full schemas with catalog.describe(name):".to_owned());
-        let budget = context_window * MCP_INDEX_BUDGET_PERCENT / 100;
-        let mut budget = budget.max(MCP_INDEX_BUDGET_MIN_TOKENS);
-        let mut degraded = 0usize;
-        for tool in mcp {
-            let line = format!("{} — {}", tool.name(), short_description(tool.description()));
-            let cost = crate::compact::estimate_tokens(&line);
-            if cost <= budget {
-                budget -= cost;
-                lines.push(line);
-                continue;
-            }
-            let bare = tool.name().to_owned();
-            let cost = crate::compact::estimate_tokens(&bare);
-            if cost <= budget {
-                budget -= cost;
-                lines.push(bare);
-                degraded += 1;
-                continue;
-            }
-            degraded += 1;
-        }
-        if degraded > 0 {
-            lines.push(format!(
-                "({degraded} MCP tools omitted; call catalog.search({{query:\"\"}}) to list them)"
-            ));
-        }
-    }
-    Some(format!(
-        "<tool-declarations>\n{}\n</tool-declarations>",
-        lines.join("\n")
-    ))
+    Some(wrap("mcp-tool-index", &lines))
+}
+
+fn wrap(tag: &str, lines: &[String]) -> String {
+    format!("<{tag}>\n{}\n</{tag}>", lines.join("\n"))
 }
 
 /// 取描述的第一句并截断，控制每行成本。
@@ -235,18 +262,26 @@ mod tests {
         let config = config();
         let catalog = catalog_with(Vec::new());
         assert!(
-            render(&catalog, SessionMode::Normal, false, &config, 200_000).is_none(),
+            render_signatures(&catalog, SessionMode::Normal, false, &config).is_none(),
             "普通模式由原生工具表提供 schema"
         );
-        assert!(render(&catalog, SessionMode::Ptc, false, &config, 200_000).is_some());
+        assert!(render_signatures(&catalog, SessionMode::Ptc, false, &config).is_some());
+        assert!(
+            render_mcp_index(&catalog, SessionMode::Ptc, false, &config, 200_000).is_none(),
+            "没有 MCP 工具时不渲染索引"
+        );
     }
 
     #[test]
     fn builtin_signatures_carry_required_and_optional() {
         let config = config();
         let catalog = catalog_with(Vec::new());
-        let text = render(&catalog, SessionMode::Ptc, false, &config, 200_000).unwrap();
+        let text = render_signatures(&catalog, SessionMode::Ptc, false, &config).unwrap();
         assert!(text.starts_with("<tool-declarations>"));
+        assert!(
+            !text.contains("MCP tool index"),
+            "MCP 索引不得留在系统提示：{text}"
+        );
         // serde_json 的对象键按字母序输出，断言按同序书写。
         assert!(
             text.contains(
@@ -273,7 +308,8 @@ mod tests {
             })
             .collect();
         let catalog = catalog_with(tools);
-        let text = render(&catalog, SessionMode::Ptc, false, &config, 1_000).unwrap();
+        let text = render_mcp_index(&catalog, SessionMode::Ptc, false, &config, 1_000).unwrap();
+        assert!(text.starts_with("<mcp-tool-index>"));
         assert!(
             text.contains("mcp__demo__tool_000 —"),
             "预算内保留完整行：{text}"
@@ -283,9 +319,36 @@ mod tests {
             "超预算应截断并指向 catalog.search：{text}"
         );
         // 大窗口放得下全部条目。
-        let text = render(&catalog, SessionMode::Ptc, false, &config, 2_000_000).unwrap();
+        let text = render_mcp_index(&catalog, SessionMode::Ptc, false, &config, 2_000_000).unwrap();
         assert!(text.contains("mcp__demo__tool_159"));
         assert!(!text.contains("MCP tools omitted"));
+    }
+
+    /// MCP 集合随时可能刷新：它只能改变尾部索引，不能改写系统提示里的签名。
+    #[test]
+    fn signatures_are_stable_when_mcp_tools_change() {
+        let config = config();
+        let plain = catalog_with(Vec::new());
+        let loaded = catalog_with(
+            (0..160)
+                .map(|index| {
+                    mcp_tool(
+                        &format!("tool_{index:03}"),
+                        "Serve the purpose of filling the index budget with a long description",
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(
+            render_signatures(&plain, SessionMode::Ptc, false, &config),
+            render_signatures(&loaded, SessionMode::Ptc, false, &config),
+            "MCP 工具变化不得改写系统提示里的签名"
+        );
+        assert_ne!(
+            render_mcp_index(&plain, SessionMode::Ptc, false, &config, 200_000),
+            render_mcp_index(&loaded, SessionMode::Ptc, false, &config, 200_000),
+            "变化的只有尾部索引"
+        );
     }
 
     #[test]
