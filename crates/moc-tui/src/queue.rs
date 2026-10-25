@@ -43,6 +43,9 @@ pub struct PendingSteer {
 }
 
 pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
+    if crate::btw::submit(app, connection) {
+        return;
+    }
     if app.prompt.is_empty() {
         return;
     }
@@ -477,17 +480,27 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     if total == 0 {
         return;
     }
-    let available = app.prompt_area.y.saturating_sub(2);
-    if available < 3 {
+    let (bottom, right, max_width, available) = if app.btw.area.is_empty() {
+        (
+            app.prompt_area.y,
+            app.prompt_area.right(),
+            app.prompt_area.width,
+            app.prompt_area.y.saturating_sub(2),
+        )
+    } else {
+        let area = app.scrollback_area;
+        (area.bottom(), area.right(), area.width, area.height)
+    };
+    if available < 3 || max_width < 4 {
         return;
     }
     let visible = total.min(usize::from(available.saturating_sub(2))).min(6);
     debug_assert!(visible <= 6, "队列预览上界为六行");
     let height = u16::try_from(visible).expect("队列视图最多六行") + 2;
-    let width = app.prompt_area.width.min(66);
+    let width = max_width.min(66);
     let area = Rect::new(
-        app.prompt_area.right().saturating_sub(width),
-        app.prompt_area.y.saturating_sub(height),
+        right.saturating_sub(width),
+        bottom.saturating_sub(height),
         width,
         height,
     );

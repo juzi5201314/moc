@@ -102,6 +102,11 @@ impl PromptState {
             .is_some_and(|paste| paste.content.starts_with('!'))
     }
 
+    /// 只读展开文本粘贴；命令分流必须早于任何输入历史写入。
+    pub fn expanded_text(&self) -> String {
+        self.expand_all_chips(self.text.clone())
+    }
+
     /// 移出当前草稿而不复制图片，也不带走输入历史。
     pub fn take_draft(&mut self) -> Self {
         self.break_history_browse();

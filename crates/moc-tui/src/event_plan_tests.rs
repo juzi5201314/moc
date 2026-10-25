@@ -109,12 +109,7 @@ impl PlanHarness {
 
     fn updates(&mut self) {
         while let Ok(params) = self.connection.updates.try_recv() {
-            apply_update_and_refresh(
-                &mut self.app,
-                &self.connection,
-                params.session_id,
-                params.update,
-            );
+            apply_ui_update(&mut self.app, &self.connection, params);
         }
     }
 

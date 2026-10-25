@@ -20,8 +20,27 @@ use moc_protocol::{
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender, channel};
 use tokio_util::sync::CancellationToken;
 
+/// 主流与旁路共用有界背压队列，不把旁路混入 SessionUpdate。
+///
+/// 两路共用容量 256 的有界队列；`SessionUpdateParams` 是热路径上的逐 delta 消息，
+/// 装箱会让每次增量多一次分配，因此按值存放。队列上界固定，整体内存有界。
+#[allow(clippy::large_enum_variant)]
+pub enum UiUpdate {
+    Session(SessionUpdateParams),
+    Btw(moc_protocol::BtwUpdateParams),
+}
+
 /// UI 事件队列承载的消息。
 pub enum AppEvent {
+    BtwReturned {
+        session_id: String,
+        request_id: u64,
+        result: anyhow::Result<moc_protocol::BtwResult>,
+    },
+    /// 成功卸载后才清掉该会话的旁路内存。
+    SessionClosed {
+        session_id: String,
+    },
     SettingsResponse {
         panel: u64,
         /// 该回执对应的请求类型。
@@ -166,7 +185,7 @@ pub enum ClipboardPayload {
 pub struct EmbeddedConnection {
     pub client: ClientHandle,
     /// 流式更新使用有界队列；队列满时阻塞协议读循环，向 core 传播背压。
-    pub updates: Receiver<SessionUpdateParams>,
+    pub updates: Receiver<UiUpdate>,
     /// 当前平台可用的沙盒模式，由 core 探测后下发。
     pub sandbox_modes: Vec<moc_protocol::SessionPermission>,
     server_connection: ServerConnection,
@@ -204,15 +223,24 @@ pub async fn connect_embedded(
 
     // 通知处理器在协议读循环内被顺序 await（保证事件有序），必须保持轻量：
     // 入队即返回，重活全部留给主循环。
-    let update_events: Sender<SessionUpdateParams> = update_tx;
+    let update_events: Sender<UiUpdate> = update_tx.clone();
     let builder = builder.on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
         let events = update_events.clone();
         async move {
-            if let Err(error) = events.send(params).await {
+            if let Err(error) = events.send(UiUpdate::Session(params)).await {
                 tracing::debug!(%error, "更新队列已关闭，丢弃通知");
             }
         }
     });
+    let builder =
+        builder.on_notification::<moc_protocol::BtwUpdateMethod, _, _>(move |params, _ctx| {
+            let events = update_tx.clone();
+            async move {
+                if let Err(error) = events.send(UiUpdate::Btw(params)).await {
+                    tracing::debug!(%error, "旁路更新队列已关闭，丢弃通知");
+                }
+            }
+        });
 
     let permission_events = events.clone();
     let builder = builder.on_request::<SessionRequestPermission, _, _>(

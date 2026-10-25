@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod btw;
 pub mod clipboard;
 pub mod config;
 pub mod event;

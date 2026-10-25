@@ -382,6 +382,10 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             (keys, *description)
         })
         .collect();
+    rows.insert(0, ("/btw 问题".into(), "旁路追问；仅内存，不写主历史"));
+    rows.insert(1, ("Alt+B / Tab".into(), "旁路展开与焦点切换"));
+    rows.insert(2, ("旁路 Esc / Ctrl+C".into(), "收起继续生成 / 只取消旁路"));
+    rows.insert(3, ("旁路 c / x".into(), "复制回答 / 清空并取消"));
     rows.insert(0, ("/confirm-plan".into(), "重新审阅待确认的计划"));
     rows.insert(
         1,

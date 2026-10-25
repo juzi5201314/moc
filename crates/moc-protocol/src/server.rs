@@ -34,14 +34,13 @@ use crate::frame::{DEFAULT_MAX_FRAME_BYTES, Framing};
 use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
-    AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, ClientInfo, ConfigGet, ConfigManage,
-    Initialize, Ping, PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams,
-    ResourceComplete,
-    SessionBash, SessionCancel, SessionCancelResult, SessionCompact, SessionContext,
-    SessionContextContent, SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew,
-    SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
-    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
-    SessionUnsteer, SessionUsage,
+    AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, BtwCancelResult, BtwUpdate,
+    ClientInfo, ConfigGet, ConfigManage, Initialize, Ping, PingResult, PluginList, PluginReload,
+    PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw, SessionBtwCancel,
+    SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
+    SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
+    SessionPrompt, SessionRename, SessionRewind, SessionSetMode, SessionSetModel,
+    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -255,13 +254,21 @@ impl ServerConnection {
     }
 }
 
-/// 连接内的服务端状态：握手、并发门禁、提示注册表。
+/// 连接内的服务端状态：握手、并发门禁、提示与旁路注册表。
 struct ServerDispatch<S: AgentService> {
     server: Arc<Server<S>>,
     connection: Arc<Connection>,
     handshake: Mutex<Handshake>,
     in_flight: Arc<Semaphore>,
     prompts: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// 在飞的旁路请求；与 `prompts` 完全独立，主提示的 busy / 取消互不波及。
+    btw_flights: Arc<Mutex<HashMap<String, BtwFlight>>>,
+}
+
+/// 一条在飞的旁路请求。
+struct BtwFlight {
+    request_id: u64,
+    cancel: CancellationToken,
 }
 
 /// 握手状态机。
@@ -293,12 +300,41 @@ enum PromptClaim {
     Busy,
 }
 
+/// `session/btw` 的占位结果。
+enum BtwClaim {
+    /// 不是旁路请求，或参数里读不出身份（后者交给任务报 `-32602`）。
+    NotBtw,
+    /// 占位成功；守卫按这两个字段摘除。
+    Claimed { session_id: String, request_id: u64 },
+    /// 同一会话已有进行中的旁路。
+    Busy,
+}
+
 impl Drop for PromptGuard {
     fn drop(&mut self) {
         self.prompts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&self.session_id);
+    }
+}
+
+/// 旁路注册表的摘除守卫：只摘自己那一条，迟到任务不会误删新请求。
+struct BtwGuard {
+    flights: Arc<Mutex<HashMap<String, BtwFlight>>>,
+    session_id: String,
+    request_id: u64,
+}
+
+impl Drop for BtwGuard {
+    fn drop(&mut self) {
+        let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
+        if flights
+            .get(&self.session_id)
+            .is_some_and(|flight| flight.request_id == self.request_id)
+        {
+            flights.remove(&self.session_id);
+        }
     }
 }
 
@@ -311,6 +347,7 @@ impl<S: AgentService> ServerDispatch<S> {
             handshake: Mutex::new(Handshake::Fresh),
             in_flight,
             prompts: Arc::new(Mutex::new(HashMap::new())),
+            btw_flights: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -322,6 +359,12 @@ impl<S: AgentService> ServerDispatch<S> {
 
     fn prompts(&self) -> std::sync::MutexGuard<'_, HashMap<String, CancellationToken>> {
         self.prompts.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn btw_flights(&self) -> std::sync::MutexGuard<'_, HashMap<String, BtwFlight>> {
+        self.btw_flights
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// 在读循环里为 `session/prompt` 占位提示注册表。
@@ -356,6 +399,60 @@ impl<S: AgentService> ServerDispatch<S> {
         }
     }
 
+    /// 在读循环里为 `session/btw` 占位旁路注册表。
+    ///
+    /// 同一连接、同一会话同时只允许一条旁路；`request_id` 是前端生成的稳定身份，
+    /// 定向取消据此匹配。占位与 `session/prompt` 完全分离：主提示在飞不影响旁路，
+    /// 旁路在飞也不占用提示注册表。
+    fn claim_btw(&self, request: &Request, cancel: &CancellationToken) -> BtwClaim {
+        if request.method.as_ref() != <SessionBtw as Method>::NAME {
+            return BtwClaim::NotBtw;
+        }
+        let Some(session_id) = request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("session_id"))
+            .and_then(Value::as_str)
+        else {
+            return BtwClaim::NotBtw;
+        };
+        let Some(request_id) = request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("request_id"))
+            .and_then(Value::as_u64)
+        else {
+            return BtwClaim::NotBtw;
+        };
+        let mut flights = self.btw_flights();
+        if flights.contains_key(session_id) {
+            return BtwClaim::Busy;
+        }
+        flights.insert(
+            session_id.to_owned(),
+            BtwFlight {
+                request_id,
+                cancel: cancel.clone(),
+            },
+        );
+        BtwClaim::Claimed {
+            session_id: session_id.to_owned(),
+            request_id,
+        }
+    }
+
+    /// 定向取消一条旁路；身份不匹配时是成功的空操作，不影响任何主提示。
+    fn cancel_btw(&self, session_id: &str, request_id: u64) -> BtwCancelResult {
+        let flights = self.btw_flights();
+        match flights.get(session_id) {
+            Some(flight) if flight.request_id == request_id => {
+                flight.cancel.cancel();
+                BtwCancelResult { cancelled: true }
+            }
+            _ => BtwCancelResult { cancelled: false },
+        }
+    }
+
     /// 已完成握手时取出前端信息。
     fn ready_client(&self) -> Option<ClientInfo> {
         match &*self.handshake() {
@@ -380,6 +477,7 @@ impl<S: AgentService> ServerDispatch<S> {
         request: Request,
         cancel: CancellationToken,
         claim: PromptClaim,
+        btw: BtwClaim,
     ) {
         // 守卫在读循环占位之后立刻建立：未握手被拒、方法未知、参数解析失败等任何
         // 提前返回路径都会摘掉占位，只有真正跑进 core 的提示才持占到结束。
@@ -392,6 +490,17 @@ impl<S: AgentService> ServerDispatch<S> {
             PromptClaim::NotPrompt => None,
             // 占位冲突在读循环里就回了 `-32011`，不会走到这里
             PromptClaim::Busy => None,
+        };
+        let _btw_guard = match btw {
+            BtwClaim::Claimed {
+                session_id,
+                request_id,
+            } => Some(BtwGuard {
+                flights: Arc::clone(&self.btw_flights),
+                session_id,
+                request_id,
+            }),
+            BtwClaim::NotBtw | BtwClaim::Busy => None,
         };
         let Request { id, method, params } = request;
         let payload = match method.as_ref() {
@@ -698,6 +807,28 @@ impl<S: AgentService> ServerDispatch<S> {
                 let params = params_from_value::<SessionPrompt>(params)?;
                 self.prompt(client, params, cancel).await
             }
+            <SessionBtw as Method>::NAME => {
+                let params = params_from_value::<SessionBtw>(params)?;
+                let ctx = self.context(client, cancel);
+                // `Started` 必须在 core 动手之前入队：前端据此把「Started 之前收到的
+                // 取消意图」换成真正的定向取消，不会因为取消早于登记而落空。
+                ctx.updates()
+                    .emit_btw(
+                        params.session_id.clone(),
+                        params.request_id,
+                        BtwUpdate::Started,
+                    )
+                    .await
+                    .map_err(|error| {
+                        RpcError::new(RpcErrorCode::InternalError.code(), error.to_string())
+                    })?;
+                value_from(self.server.service.session_btw(ctx, params).await?)
+            }
+            // 旁路取消只 trip 对应请求的令牌；主提示与其它旁路完全不受影响。
+            <SessionBtwCancel as Method>::NAME => {
+                let params = params_from_value::<SessionBtwCancel>(params)?;
+                value_from(self.cancel_btw(&params.session_id, params.request_id))
+            }
             // 取消由协议层自答：trip 令牌即可，不经过 core，也不受出站队列拥塞影响
             <SessionCancel as Method>::NAME => {
                 let params = params_from_value::<SessionCancel>(params)?;
@@ -791,28 +922,27 @@ impl<S: AgentService> Inbound for ServerDispatch<S> {
             });
             return;
         };
-        // 每请求令牌与提示的占位都在读循环里完成：`session/cancel` 是同一
-        // 条连接上的后续报文，因此「先提示后 cancel」的顺序是确定的，取消绝不会
-        // 因为任务调度顺序而落空。
+        // 每请求令牌与提示 / 旁路的占位都在读循环里完成：`session/cancel` 与
+        // `session/btw_cancel` 是同一连接上的后续报文，因此「先请求后取消」的顺序
+        // 是确定的，取消绝不会因为任务调度顺序而落空。
         let cancel = self.connection.closed().child_token();
-        match self.claim_prompt(&request, &cancel) {
-            PromptClaim::Busy => {
-                let connection = Arc::clone(&self.connection);
-                let id = Some(request.id);
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    connection
-                        .respond_error(id, RpcError::of(RpcErrorCode::SessionBusy))
-                        .await;
-                });
-            }
-            claim => {
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    self.dispatch(request, cancel, claim).await;
-                });
-            }
+        let claim = self.claim_prompt(&request, &cancel);
+        let btw = self.claim_btw(&request, &cancel);
+        if matches!(&claim, PromptClaim::Busy) || matches!(&btw, BtwClaim::Busy) {
+            let connection = Arc::clone(&self.connection);
+            let id = Some(request.id);
+            tasks.spawn(async move {
+                let _permit = permit;
+                connection
+                    .respond_error(id, RpcError::of(RpcErrorCode::SessionBusy))
+                    .await;
+            });
+            return;
         }
+        tasks.spawn(async move {
+            let _permit = permit;
+            self.dispatch(request, cancel, claim, btw).await;
+        });
     }
 
     fn on_notification(self: Arc<Self>, notification: Notification) -> BoxFuture<()> {

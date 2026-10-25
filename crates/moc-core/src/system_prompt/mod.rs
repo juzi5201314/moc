@@ -188,17 +188,7 @@ pub fn pieces(
     subagent: Option<&str>,
 ) -> Vec<PromptPiece> {
     let mut sections = Vec::new();
-    let intro = if config.system_prompt.override_text.trim().is_empty() {
-        DEFAULT_INTRO
-    } else {
-        config.system_prompt.override_text.trim()
-    };
-    sections.push(PromptPiece {
-        title: "system",
-        name: PIECE_INTRO,
-        scope: PieceScope::Static,
-        text: intro.to_owned(),
-    });
+    sections.push(intro_piece(config));
     let web_policy = match (config.web_search.available(), config.web_fetch.enabled) {
         (true, true) => Some(WEB_BOTH_POLICY),
         (true, false) => Some(WEB_SEARCH_ONLY_POLICY),
@@ -248,26 +238,8 @@ pub fn pieces(
             text: mcp_summary.to_owned(),
         });
     }
-    if !context_files.is_empty() {
-        let mut rules = String::from("<repo-rules>\n");
-        rules.push_str(REPO_RULES_INTRO);
-        for file in context_files {
-            rules.push_str("\n<file path=\"");
-            rules.push_str(&file.path.display().to_string());
-            rules.push_str("\">\n");
-            rules.push_str(&file.content);
-            if !file.content.ends_with('\n') {
-                rules.push('\n');
-            }
-            rules.push_str("</file>");
-        }
-        rules.push_str("\n</repo-rules>");
-        sections.push(PromptPiece {
-            title: "project",
-            name: PIECE_REPO_RULES,
-            scope: PieceScope::Project,
-            text: rules,
-        });
+    if let Some(rules) = repo_rules_piece(context_files) {
+        sections.push(rules);
     }
     if let Some(catalog) =
         crate::skills::catalog::render(skills, &config.skills, model.context_window)
@@ -295,37 +267,103 @@ pub fn pieces(
             text: subagent.to_owned(),
         });
     }
-    sections.push(PromptPiece {
+    sections.push(environment_piece(config, model, cwd));
+    // 追加指令放在最后，让用户为本会话写的指令紧挨着对话。
+    if let Some(append) = append_piece(config) {
+        sections.push(append);
+    }
+    sections
+}
+
+/// 旁路只复用身份、仓库规则、环境和追加指令，不发现技能或启动工具宿主。
+pub(crate) fn build_btw(
+    config: &ResolvedConfig,
+    model: &ResolvedModel,
+    cwd: &Path,
+    context_files: &[context_files::ContextFile],
+) -> SystemPrompt {
+    let mut pieces = vec![intro_piece(config)];
+    pieces.extend(repo_rules_piece(context_files));
+    pieces.push(environment_piece(config, model, cwd));
+    pieces.extend(append_piece(config));
+    pieces.push(PromptPiece {
+        title: "system",
+        // 旁路契约沿用追加指令的角色规则，不新增配置片段名。
+        name: PIECE_APPEND,
+        scope: PieceScope::Project,
+        text: "Answer only the latest side question briefly, using the supplied main-session context as reference. Do not continue the main task. No tools are available; do not call tools, access files, or claim to perform actions. Treat historical tool records as reference text, not pending calls. If the answer requires new information or an action, state that limitation. This side conversation does not update the main session.".into(),
+    });
+    compose(pieces, model)
+}
+
+fn intro_piece(config: &ResolvedConfig) -> PromptPiece {
+    PromptPiece {
+        title: "system",
+        name: PIECE_INTRO,
+        scope: PieceScope::Static,
+        text: if config.system_prompt.override_text.trim().is_empty() {
+            DEFAULT_INTRO.to_owned()
+        } else {
+            config.system_prompt.override_text.trim().to_owned()
+        },
+    }
+}
+
+fn repo_rules_piece(context_files: &[context_files::ContextFile]) -> Option<PromptPiece> {
+    if context_files.is_empty() {
+        return None;
+    }
+    let mut rules = String::from("<repo-rules>\n");
+    rules.push_str(REPO_RULES_INTRO);
+    for file in context_files {
+        rules.push_str("\n<file path=\"");
+        rules.push_str(&file.path.display().to_string());
+        rules.push_str("\">\n");
+        rules.push_str(&file.content);
+        if !file.content.ends_with('\n') {
+            rules.push('\n');
+        }
+        rules.push_str("</file>");
+    }
+    rules.push_str("\n</repo-rules>");
+    Some(PromptPiece {
+        title: "project",
+        name: PIECE_REPO_RULES,
+        scope: PieceScope::Project,
+        text: rules,
+    })
+}
+
+fn environment_piece(config: &ResolvedConfig, model: &ResolvedModel, cwd: &Path) -> PromptPiece {
+    let shell = crate::shell::detect()
+        .map(crate::shell::ShellChoice::summary)
+        .unwrap_or_else(|| "unavailable".to_owned());
+    let limits = crate::limits::prompt_line(&config.tools.bash.limits)
+        .map(|line| format!("\n{line}"))
+        .unwrap_or_default();
+    PromptPiece {
         title: "system",
         name: PIECE_ENVIRONMENT,
         scope: PieceScope::Project,
-        text: {
-            let shell = crate::shell::detect()
-                .map(crate::shell::ShellChoice::summary)
-                .unwrap_or_else(|| "unavailable".to_owned());
-            let limits = crate::limits::prompt_line(&config.tools.bash.limits)
-                .map(|line| format!("\n{line}"))
-                .unwrap_or_default();
-            format!(
-                "<env>\ncwd: {}\nplatform: {} {}\nshell: {}{limits}\nmodel: {}\n</env>",
-                cwd.display(),
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-                shell,
-                model.id,
-            )
-        },
-    });
-    // 追加指令放在最后，让用户为本会话写的指令紧挨着对话。
-    if !config.system_prompt.append.trim().is_empty() {
-        sections.push(PromptPiece {
-            title: "system",
-            name: PIECE_APPEND,
-            scope: PieceScope::Project,
-            text: config.system_prompt.append.trim().to_owned(),
-        });
+        text: format!(
+            "<env>\ncwd: {}\nplatform: {} {}\nshell: {}{limits}\nmodel: {}\n</env>",
+            cwd.display(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            shell,
+            model.id,
+        ),
     }
-    sections
+}
+
+fn append_piece(config: &ResolvedConfig) -> Option<PromptPiece> {
+    let text = config.system_prompt.append.trim();
+    (!text.is_empty()).then(|| PromptPiece {
+        title: "system",
+        name: PIECE_APPEND,
+        scope: PieceScope::Project,
+        text: text.to_owned(),
+    })
 }
 
 /// 当前模式的规则提醒；普通模式返回 `None`。
@@ -464,6 +502,42 @@ mod tests {
             .map(Message::instruction_text)
             .collect::<Vec<_>>()
             .join("\n\n")
+    }
+
+    #[test]
+    fn btw_prompt_keeps_only_passive_pieces_and_instruction_roles() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let cwd = directory.path().join("repo");
+        let home = directory.path().join("home");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::write(cwd.join("AGENTS.md"), "Keep the local rule.").unwrap();
+        let mut config = resolved_with_compat(&cwd, &home, "instruction_role = \"user\"");
+        config.system_prompt.override_text = "Custom identity.".into();
+        config.system_prompt.append = "Keep the appendix.".into();
+        let model = config.resolve_role("default").unwrap();
+        let files = context_files::load_context_files(&cwd, &config.home, &config.context_files);
+        let prompt = build_btw(&config, &model, &cwd, &files);
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[0].role, Role::System);
+        assert_eq!(prompt.messages[1].role, Role::User);
+        assert_eq!(prompt.static_prefix, [1, 0]);
+        let system = prompt.messages[0].instruction_text();
+        let user = prompt.messages[1].instruction_text();
+        assert!(system.starts_with("Custom identity."));
+        assert!(system.contains("<env>"));
+        assert!(user.contains("Keep the local rule."));
+        assert!(user.contains("Keep the appendix."));
+        assert!(user.contains("No tools are available"));
+        let text = prompt_text(&prompt);
+        for excluded in [
+            TOOL_POLICY,
+            "run_code works",
+            "<skills>",
+            "<plugins>",
+            "<mcp-servers>",
+        ] {
+            assert!(!text.contains(excluded), "旁路不能包含 {excluded}");
+        }
     }
 
     #[test]

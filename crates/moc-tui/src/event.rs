@@ -760,6 +760,7 @@ async fn event_loop(
     let mut next_marquee_tick = tokio::time::Instant::now() + render::todo_hud::MARQUEE_TICK;
     let mut dirty = true;
     loop {
+        crate::btw::flush_cancel(app, connection);
         if app.should_quit {
             return Ok(());
         }
@@ -826,16 +827,27 @@ async fn event_loop(
             update = connection.updates.recv() => {
                 dirty = true;
                 if let Some(params) = update {
-                    apply_update_and_refresh(app, connection, params.session_id, params.update);
+                    apply_ui_update(app, connection, params);
                     for _ in 0..64 {
                         let Some(next) = connection.updates.try_recv().ok() else { break };
-                        apply_update_and_refresh(app, connection, next.session_id, next.update);
+                        apply_ui_update(app, connection, next);
                     }
                 }
             }
             app_event = event_rx.recv() => {
                 dirty = true;
                 match app_event {
+                    Some(AppEvent::BtwReturned { session_id, request_id, result }) => {
+                        app.btw.finish(&session_id, request_id, result);
+                    }
+                    Some(AppEvent::SessionClosed { session_id }) => {
+                        app.btw.clear(&session_id);
+                        if app.session.as_ref().is_some_and(|session| session.id == session_id) {
+                            app.btw.expanded = false;
+                            if app.focus == Focus::Btw { app.focus = Focus::Prompt; }
+                            app.set_notice("会话已卸载，写租约已释放；旁路内存已清空");
+                        }
+                    }
                     Some(event @ (AppEvent::SettingsResponse {..} | AppEvent::ConfigurationLoaded(_)
                         | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..}
                         | AppEvent::UnsteerReturned { .. }
@@ -1212,6 +1224,9 @@ fn handle_mouse_with_connection(
         ) {
             handle_mouse(app, mouse);
         }
+        return;
+    }
+    if crate::btw::handle_mouse(app, mouse) {
         return;
     }
     if handle_mode_menu_mouse(app, connection, &mouse) {
@@ -1804,6 +1819,9 @@ fn handle_key(
         handle_modal_key(app, connection, modifiers, code);
         return;
     }
+    if crate::btw::handle_key(app, modifiers, code) {
+        return;
+    }
     if handle_mode_menu_key(app, connection, modifiers, code) {
         return;
     }
@@ -2001,7 +2019,14 @@ fn handle_key(
         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
             cycle_thinking_level(app, connection)
         }
-        (KeyCode::Tab, _) => app.focus = app.focus.toggle(),
+        (KeyCode::Tab, _) => {
+            app.focus = if app.focus == Focus::Prompt && app.btw.expanded {
+                app.selection = None;
+                Focus::Btw
+            } else {
+                app.focus.toggle()
+            };
+        }
         (KeyCode::Enter, KeyModifiers::ALT | KeyModifiers::SHIFT)
             if app.focus == crate::app::Focus::Prompt =>
         {
@@ -2111,6 +2136,9 @@ fn accept_completion(app: &mut App) -> bool {
 /// 提交输入：补全确认 > 斜杠命令 > Bash 命令或普通发送。
 fn commit_prompt(app: &mut App, connection: &EmbeddedConnection) {
     if accept_completion(app) {
+        return;
+    }
+    if crate::btw::submit(app, connection) {
         return;
     }
     let first_line = app.prompt_text().lines().next().unwrap_or_default();
@@ -3352,6 +3380,22 @@ fn start_plan_execution(
 /// - 已知子代理（其会话 ID 就是代理 ID）：折进侧栏的子代理视图；
 /// - 其余来源（运行中切走后的旧会话、别的会话）：内容一律丢弃，只按
 ///   `PromptFinished` 回收本前端的在飞记账——旧会话的 delta/工具块写进新会话就是串台。
+fn apply_ui_update(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    update: crate::protocol::UiUpdate,
+) {
+    match update {
+        crate::protocol::UiUpdate::Session(params) => {
+            apply_update_and_refresh(app, connection, params.session_id, params.update);
+        }
+        crate::protocol::UiUpdate::Btw(params) => {
+            app.btw.apply_update(params);
+            crate::btw::flush_cancel(app, connection);
+        }
+    }
+}
+
 fn apply_update_and_refresh(
     app: &mut App,
     connection: &EmbeddedConnection,
@@ -3983,6 +4027,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     let (name, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     match name {
+        "/btw" => crate::btw::reopen(app),
         "/confirm-plan" => confirm_plan(app, connection),
         "/close" => {
             let Some(session_id) = session_id else {
@@ -3994,13 +4039,12 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             tokio::spawn(async move {
                 match client
                     .call::<moc_protocol::SessionUnload>(moc_protocol::SessionUnloadParams {
-                        session_id,
+                        session_id: session_id.clone(),
                     })
                     .await
                 {
                     Ok(_) => {
-                        let _ =
-                            events.send(AppEvent::Notice("会话已卸载，写租约已释放".to_owned()));
+                        let _ = events.send(AppEvent::SessionClosed { session_id });
                     }
                     Err(error) => {
                         let _ = events.send(AppEvent::Notice(format!("卸载会话失败：{error}")));
@@ -4447,7 +4491,7 @@ fn selection_text(app: &App) -> String {
 }
 
 /// 通过 OSC52 把文本交给终端自身的剪贴板；与绘制同线程写出，不会与帧交错。
-fn write_osc52(text: &str) {
+pub(crate) fn write_osc52(text: &str) {
     use std::io::{IsTerminal, Write};
     let mut stdout = std::io::stdout();
     if !stdout.is_terminal() {
@@ -4986,7 +5030,9 @@ mod tests {
                     completed += 1;
                 }
                 while let Ok(update) = connection.updates.try_recv() {
-                    apply_update(&mut app, update.update);
+                    if let crate::protocol::UiUpdate::Session(update) = update {
+                        apply_update(&mut app, update.update);
+                    }
                 }
                 match event {
                     event @ (AppEvent::PromptReturned { .. } | AppEvent::SteerReturned { .. }) => {
@@ -4996,7 +5042,9 @@ mod tests {
                 }
             }
             while let Ok(update) = connection.updates.try_recv() {
-                apply_update(&mut app, update.update);
+                if let crate::protocol::UiUpdate::Session(update) = update {
+                    apply_update(&mut app, update.update);
+                }
             }
         })
         .await
@@ -5489,7 +5537,9 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while app.session.as_ref().unwrap().model != "test/tiny:off" {
                 let update = connection.updates.recv().await.unwrap();
-                apply_update(&mut app, update.update);
+                if let crate::protocol::UiUpdate::Session(update) = update {
+                    apply_update(&mut app, update.update);
+                }
             }
         })
         .await

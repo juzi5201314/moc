@@ -4,6 +4,7 @@
 //! 之间靠留白分隔；输入框随多行输入长高，其下边框兼作图例行（左＝帮助键提示，右＝模型 · 模式）。
 //! 整帧先铺主题底色，滚动区由 [`ScrollbackView`] 按行缓存直写 buffer。
 
+pub mod btw;
 pub mod canvas;
 pub mod chart;
 pub mod diff;
@@ -140,6 +141,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     } else {
         (scroll_area, Rect::default())
     };
+    let scroll_area = btw::split(app, scroll_area);
     app.scrollback_area = scroll_area;
     app.subagent_area = sidebar_area;
     app.prompt_area = prompt_area;
@@ -196,6 +198,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     }
 
     crate::queue::draw(frame, app);
+    btw::draw(frame, app);
     // 浮层最后画：补全菜单贴输入框上沿，就地模式菜单贴模式图例，居中模态覆盖全部。
     if let Some(completion) = &mut app.completion {
         modal::draw_completion_menu(frame, completion, prompt_area);
@@ -390,7 +393,7 @@ fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let border = match app.focus {
         Focus::Prompt => theme.border_active,
-        Focus::Scrollback => theme.border,
+        Focus::Scrollback | Focus::Btw => theme.border,
     };
     frame.render_widget(
         Paragraph::new(prompt_lines(app, area)).block(

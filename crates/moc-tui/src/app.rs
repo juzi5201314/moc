@@ -28,13 +28,14 @@ pub enum Focus {
     #[default]
     Prompt,
     Scrollback,
+    Btw,
 }
 
 impl Focus {
     pub fn toggle(self) -> Self {
         match self {
             Focus::Prompt => Focus::Scrollback,
-            Focus::Scrollback => Focus::Prompt,
+            Focus::Scrollback | Focus::Btw => Focus::Prompt,
         }
     }
 }
@@ -176,6 +177,8 @@ pub struct App {
     pub modal: Option<Modal>,
     /// 当前焦点。
     pub focus: Focus,
+    /// 旁路问答只驻留内存，独立于主转写、输入历史及用量。
+    pub btw: crate::btw::BtwState,
     /// 最近一次绘制的输入框区域，用于鼠标点击恢复焦点。
     pub prompt_area: Rect,
     /// 顶部上下文占用区域，用于鼠标点击打开详情。
@@ -460,6 +463,7 @@ impl App {
             completion_prefix: None,
             modal: None,
             focus: Focus::Prompt,
+            btw: crate::btw::BtwState::default(),
             prompt_area: Rect::default(),
             context_area: Rect::default(),
             mode_area: Rect::default(),
@@ -1270,6 +1274,14 @@ impl App {
     /// 会话范围的在飞记账（`inflight_prompts`/`inflight_session_ops`/`interrupt_pending`）
     /// 按会话保留：切回仍在运行的会话时，「运行中」的判定与排队派发才正确。
     pub fn switch_session(&mut self, info: SessionInfo, blocks: Vec<Entry>) {
+        if let Some(previous) = &self.session
+            && previous.id != info.id
+        {
+            self.btw.leave_session(&previous.id);
+            if self.focus == Focus::Btw {
+                self.focus = Focus::Prompt;
+            }
+        }
         let clm_active = info.mode == SessionMode::ClmExperimental;
         let session_id = info.id.clone();
         self.reset_prompt_state();

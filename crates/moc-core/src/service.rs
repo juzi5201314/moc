@@ -1740,6 +1740,15 @@ impl AgentService for Core {
         )
         .await
     }
+    async fn session_btw(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::methods::BtwParams,
+    ) -> Result<moc_protocol::methods::BtwResult, RpcError> {
+        self.run_operation(ctx.cancel(), btw::run(Arc::clone(&self.inner), ctx, params))
+            .await
+    }
+
     async fn session_prompt(
         &self,
         ctx: RequestContext,
@@ -1970,6 +1979,7 @@ mod compression_tests {
 }
 
 mod bash;
+mod btw;
 mod context;
 mod management;
 pub(crate) mod mode;

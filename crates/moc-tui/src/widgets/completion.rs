@@ -30,6 +30,10 @@ fn plugin_candidate(command: &moc_protocol::methods::PluginCommandInfo) -> Compl
 /// 内置斜杠命令表。
 pub const SLASH_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "/btw",
+        description: "旁路问答：带问题继续线程；不带问题重开面板",
+    },
+    SlashCommand {
         name: "/config",
         description: "打开设置：模型、供应商、界面等",
     },

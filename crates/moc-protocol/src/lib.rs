@@ -32,10 +32,13 @@
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
+//! | `session/btw` | 前端→core | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |
+//! | `session/btw_cancel` | 前端→core | 协议层自答 | 已初始化 | — |
 //! | `session/steer` / `session/unsteer` | 前端→core | core | 已初始化 | `-32010` / `-32014` |
 //! | `session/cancel` | 前端→core | 协议层自答 | 已初始化 | — |
 //! | `session/request_permission` / `session/request_ask` | core→前端 | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | `session/update` | core→前端 | 前端 | — | — |
+//! | `session/btw_update` | core→前端 | 前端 | — | — |
 //!
 //! 方向是强约束：服务端收到 `session/update` / `session/request_permission` /
 //! `session/request_ask` 一律按未知方法回 `-32601`。

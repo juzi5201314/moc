@@ -30,8 +30,9 @@ use crate::method::Method;
 use crate::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentSpawnParams,
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
-    CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult,
-    Empty, InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
+    BtwParams, BtwResult, BtwUpdate, BtwUpdateMethod, BtwUpdateParams, CompactResult,
+    ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult, Empty,
+    InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
     PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
@@ -298,6 +299,18 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: PromptParams,
     ) -> impl Future<Output = Result<PromptResult, RpcError>> + Send;
+
+    /// 在只读快照上跑一次旁路问答：不写会话、不抢主提示锁、不执行工具。
+    ///
+    /// 过程增量走 `session/btw_update`，正文以返回值为权威版本。实现必须尊重
+    /// `ctx.cancel()`（定向取消与连接关闭共用它），被取消时返回部分结果。
+    fn session_btw(
+        &self,
+        _ctx: RequestContext,
+        _params: BtwParams,
+    ) -> impl Future<Output = Result<BtwResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
 }
 
 /// 一次请求的上下文，按值传入服务方法。
@@ -414,6 +427,31 @@ impl UpdateSink {
         self.traffic
             .send(Outbound::Notification(Notification::new(
                 <SessionUpdateMethod as Method>::NAME,
+                Some(value),
+            )))
+            .await
+    }
+
+    /// 推送一条 `session/btw_update` 通知。
+    ///
+    /// 与 [`UpdateSink::emit`] 分开方法名，避免旁路增量误进主转写 reducer；
+    /// 背压与连接关闭语义完全相同。
+    pub async fn emit_btw(
+        &self,
+        session_id: impl Into<String>,
+        request_id: u64,
+        update: BtwUpdate,
+    ) -> Result<(), ProtocolError> {
+        let params = BtwUpdateParams {
+            session_id: session_id.into(),
+            request_id,
+            update,
+        };
+        let value = serde_json::to_value(params)
+            .map_err(|error| ProtocolError::Encode(error.to_string()))?;
+        self.traffic
+            .send(Outbound::Notification(Notification::new(
+                <BtwUpdateMethod as Method>::NAME,
                 Some(value),
             )))
             .await

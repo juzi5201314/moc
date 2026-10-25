@@ -14,6 +14,8 @@
 //! | [`plugin::PluginList`] / [`plugin::PluginRunCommand`] / [`plugin::PluginReload`] | C→S | core | 已初始化 + 插件可用 | `-32010` / `-32014` |
 //! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
+//! | [`btw::SessionBtw`] | C→S | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |
+//! | [`btw::SessionBtwCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
 //! | [`management::SessionSteer`] / [`management::SessionUnsteer`] | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
@@ -27,6 +29,7 @@
 pub mod agent;
 pub mod ask;
 pub mod bash;
+pub mod btw;
 pub mod config;
 pub mod diff;
 pub mod initialize;
@@ -50,6 +53,10 @@ pub use agent::{
 };
 pub use ask::{AskAnswer, AskOption, AskParams, AskQuestion, AskResult, SessionRequestAsk};
 pub use bash::{BashCommand, BashParams, BashResult, SessionBash};
+pub use btw::{
+    BtwCancelParams, BtwCancelResult, BtwExchange, BtwParams, BtwResult, BtwUpdate,
+    BtwUpdateMethod, BtwUpdateParams, MAX_BTW_HISTORY_TURNS, SessionBtw, SessionBtwCancel,
+};
 pub use config::{
     AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelInput, ModelPricing,
 };
@@ -156,6 +163,8 @@ mod tests {
             ),
             (<SessionUsage as Method>::NAME, "session/usage"),
             (<SessionPrompt as Method>::NAME, "session/prompt"),
+            (<SessionBtw as Method>::NAME, "session/btw"),
+            (<SessionBtwCancel as Method>::NAME, "session/btw_cancel"),
             (<SessionBash as Method>::NAME, "session/bash"),
             (<SessionCancel as Method>::NAME, "session/cancel"),
             (<PluginList as Method>::NAME, "plugin/list"),
@@ -181,6 +190,7 @@ mod tests {
             ),
             (<SessionRequestAsk as Method>::NAME, "session/request_ask"),
             (<SessionUpdateMethod as Method>::NAME, "session/update"),
+            (<BtwUpdateMethod as Method>::NAME, "session/btw_update"),
         ];
         for (actual, expected) in server_methods {
             assert_eq!(actual, expected);
@@ -197,6 +207,8 @@ mod tests {
         fn server_notification<M: ServerNotification>() {}
         client::<Initialize>();
         client::<SessionPrompt>();
+        client::<SessionBtw>();
+        client::<SessionBtwCancel>();
         client::<SessionRewind>();
         server_request::<SessionRequestPermission>();
         client::<SessionSetPermission>();
@@ -212,6 +224,7 @@ mod tests {
         client::<SessionContextContent>();
         server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();
+        server_notification::<BtwUpdateMethod>();
         assert_eq!(Empty {}, Empty::default());
     }
 }
