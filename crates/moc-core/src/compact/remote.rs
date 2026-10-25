@@ -63,6 +63,8 @@ pub(crate) async fn compact(
     let plugin_prompt = plugins
         .prompt_text(&crate::service::plugin_context(state, &model.selector))
         .await;
+    // 与普通请求同一份系统前缀：子代理的身份与任务块也要带上。
+    let subagent = crate::agents::subagent_prompt(inner, &state.session.id).await;
     full_messages.extend(
         crate::system_prompt::build(
             config,
@@ -73,7 +75,7 @@ pub(crate) async fn compact(
             &summary,
             &tool_declarations,
             &plugin_prompt,
-            None,
+            subagent.as_ref().map(|prompt| prompt.block.as_str()),
         )
         .messages,
     );

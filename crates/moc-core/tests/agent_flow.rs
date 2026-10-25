@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use moc_protocol::methods::{
     AgentList, AgentListParams, AgentMessage, AgentMessageOutcome, AgentMessageParams, AgentSpawn,
-    AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, SessionLoad, SessionLoadParams,
-    SessionRewind, SessionRewindParams,
+    AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, SessionCompact,
+    SessionCompactParams, SessionLoad, SessionLoadParams, SessionRewind, SessionRewindParams,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -775,6 +775,76 @@ async fn focused_child_session_keeps_subagent_contract_for_user_prompts() {
     assert!(
         !tools.contains(&"spawn_agent"),
         "子代理不得拿到派发工具：{tools:?}"
+    );
+    harness.close().await;
+}
+
+/// 压缩摘要请求必须复用子代理的系统前缀：身份、交付约定和任务都在系统提示里，
+/// 压缩时漏掉这一段会让缓存前缀在第 0 条消息就分叉。
+#[tokio::test]
+async fn subagent_compaction_reuses_the_subagent_system_prefix() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if body["stream"] != true {
+            // 摘要内容不合格时 soft 会重试并最终走确定性兜底，压缩仍然成立。
+            return ResponseTemplate::new(200).set_body_json(support::complete("压缩小结"));
+        }
+        if body.to_string().contains("子代理继续") {
+            text_response("好的")
+        } else {
+            yield_call("call_yield", "CHILD_REPORT")
+        }
+    })
+    .await;
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "test/gpt-test:off",
+        "test/gpt-test:off",
+        "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
+    )
+    .await;
+    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
+    wait_children(&harness, &parent_id, None, Some(5)).await;
+    harness.prompt(&child_id, "子代理继续").await;
+
+    harness
+        .client
+        .call::<SessionCompact>(SessionCompactParams {
+            session_id: child_id.clone(),
+            instructions: None,
+        })
+        .await
+        .expect("子代理会话必须能压缩");
+
+    let requests = upstream.received_requests().await.expect("上游请求");
+    let bodies: Vec<Value> = requests
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).expect("请求 JSON"))
+        .collect();
+    let plain = bodies
+        .iter()
+        .rev()
+        .find(|body| body["stream"] == true)
+        .expect("子代理普通请求");
+    let compaction = bodies
+        .iter()
+        .find(|body| body["stream"] != true)
+        .expect("压缩摘要请求");
+
+    let system = plain["messages"][0]["content"]
+        .as_str()
+        .expect("系统提示为字符串");
+    assert!(system.contains("<subagent>"), "{system}");
+    assert!(system.contains("CHILD_TASK"), "{system}");
+    assert_eq!(
+        compaction["messages"][0], plain["messages"][0],
+        "压缩请求必须逐字节复用子代理系统提示"
+    );
+    assert_eq!(
+        compaction["tools"], plain["tools"],
+        "压缩请求必须携带同一份工具表"
     );
     harness.close().await;
 }
