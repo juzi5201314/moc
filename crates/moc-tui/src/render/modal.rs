@@ -19,6 +19,14 @@ use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
 use crate::widgets::prompt::clamp_cursor;
 
+/// 计算斜杠补全菜单所需高度（与 draw_completion_menu 严格一致）。
+pub fn completion_menu_height(candidates_len: usize, prompt_y: u16) -> u16 {
+    let max_visible = 20usize.min(usize::from(prompt_y.saturating_sub(3)));
+    let visible = candidates_len.min(max_visible);
+    let rows = u16::try_from(visible).unwrap_or(u16::MAX) + u16::from(candidates_len > visible);
+    (rows + 3).min(prompt_y)
+}
+
 /// 斜杠补全菜单：贴着输入框上沿，选中行反色。
 pub fn draw_completion_menu(
     frame: &mut Frame,
@@ -28,9 +36,8 @@ pub fn draw_completion_menu(
     let total = completion.candidates.len();
     let max_visible = 20usize.min(usize::from(prompt_area.y.saturating_sub(3)));
     let visible = total.min(max_visible);
-    let rows = u16::try_from(visible).unwrap_or(u16::MAX) + u16::from(total > visible);
     let width = prompt_area.width.clamp(20, 72);
-    let height = (rows + 3).min(prompt_area.y);
+    let height = completion_menu_height(total, prompt_area.y);
     if height == 0 {
         return;
     }
@@ -46,7 +53,25 @@ pub fn draw_completion_menu(
 
     let theme = crate::theme::Theme::global();
     frame.render_widget(Clear, area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(Style::new().bg(theme.bg_base).fg(theme.text_primary));
+            }
+        }
+    }
     let content_width = usize::from(width.saturating_sub(4));
+    let max_label_len = completion
+        .candidates
+        .iter()
+        .skip(completion.offset)
+        .take(visible)
+        .map(|c| c.label.chars().count())
+        .max()
+        .unwrap_or(12)
+        .max(14);
+    let col_width = max_label_len + 3;
     let mut lines = Vec::with_capacity(visible + 2);
     for (rel_index, candidate) in completion
         .candidates
@@ -58,21 +83,56 @@ pub fn draw_completion_menu(
         let index = completion.offset + rel_index;
         let selected = index == completion.selected;
         let prefix = if selected { "❯ " } else { "  " };
-        let style = if selected {
-            Style::new()
-                .fg(theme.text_primary)
-                .bg(theme.bg_visual)
-                .add_modifier(Modifier::BOLD)
+        if 2 + col_width <= content_width {
+            let desc_budget = content_width.saturating_sub(2 + col_width);
+            let desc = ellipsize(&candidate.description, desc_budget);
+            let label_padded = format!("{:<col_width$}", candidate.label);
+            let spans = if selected {
+                vec![
+                    Span::styled(
+                        prefix,
+                        Style::new()
+                            .fg(theme.accent_user)
+                            .bg(theme.bg_visual)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        label_padded,
+                        Style::new()
+                            .fg(theme.text_primary)
+                            .bg(theme.bg_visual)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        desc,
+                        Style::new().fg(theme.text_secondary).bg(theme.bg_visual),
+                    ),
+                ]
+            } else {
+                vec![
+                    Span::styled(prefix, Style::new().fg(theme.text_primary)),
+                    Span::styled(label_padded, Style::new().fg(theme.text_primary)),
+                    Span::styled(desc, Style::new().fg(theme.gray_dim)),
+                ]
+            };
+            lines.push(Line::from(spans));
         } else {
-            Style::new().fg(theme.text_primary)
-        };
-        lines.push(Line::from(Span::styled(
-            ellipsize(
-                &format!("{prefix}{:<14}{}", candidate.label, candidate.description),
-                content_width,
-            ),
-            style,
-        )));
+            let style = if selected {
+                Style::new()
+                    .fg(theme.text_primary)
+                    .bg(theme.bg_visual)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text_primary)
+            };
+            lines.push(Line::from(Span::styled(
+                ellipsize(
+                    &format!("{prefix}{:<col_width$}{}", candidate.label, candidate.description),
+                    content_width,
+                ),
+                style,
+            )));
+        }
     }
     if total > visible {
         lines.push(Line::from(Span::styled(
@@ -85,11 +145,14 @@ pub fn draw_completion_menu(
         Style::new().fg(theme.gray_dim),
     )));
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::new().fg(theme.border_active)),
-        ),
+        Paragraph::new(lines)
+            .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
+            .block(
+                Block::bordered()
+                    .border_set(ratatui::symbols::border::ROUNDED)
+                    .border_style(Style::new().fg(theme.border_active))
+                    .style(Style::new().bg(theme.bg_base).fg(theme.text_primary)),
+            ),
         area,
     );
 }
@@ -112,17 +175,24 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
         .unwrap_or(u16::MAX)
         .min(frame_area.width);
     let height = u16::try_from(crate::app::MODES.len() + 2).unwrap_or(u16::MAX);
-    let anchor = app.mode_area;
-    let x = (anchor.x.saturating_add(anchor.width))
-        .saturating_sub(width)
-        .min(frame_area.width.saturating_sub(width))
-        .max(frame_area.x);
-    let area = Rect {
-        x,
-        y: anchor.y.saturating_sub(height).max(frame_area.y),
-        width,
-        height,
+    let area = if !menu.area.is_empty() {
+        menu.area
+    } else {
+        let anchor = app.mode_area;
+        let x = (anchor.x.saturating_add(anchor.width))
+            .saturating_sub(width)
+            .min(frame_area.width.saturating_sub(width))
+            .max(frame_area.x);
+        Rect {
+            x,
+            y: anchor.y.saturating_sub(height).max(frame_area.y),
+            width,
+            height,
+        }
     };
+    if let Some(menu_mut) = app.mode_menu.as_mut() {
+        menu_mut.area = area;
+    }
     let lines: Vec<Line<'static>> = crate::app::MODES
         .iter()
         .enumerate()
@@ -156,11 +226,15 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
         })
         .collect();
     frame.render_widget(Clear, area);
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().bg(theme.bg_base).fg(theme.text_primary));
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
                 .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::new().fg(theme.border_active)),
+                .border_style(Style::new().fg(theme.border_active))
+                .style(Style::new().bg(theme.bg_base).fg(theme.text_primary)),
         ),
         area,
     );
@@ -172,6 +246,7 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.plan_model_area = Rect::default();
+    app.modal_item_hits.clear();
     let area = frame.area();
     if area.width < 20 || area.height < 6 {
         return;
@@ -204,7 +279,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     let Some(modal) = &app.modal else {
         return;
     };
-    let max_content = usize::from(area.height.saturating_sub(6)).max(1);
+    let max_content = usize::from(area.height.saturating_sub(4)).max(1);
     let (width, content_width) = if matches!(modal, Modal::Help) {
         // 帮助是双列快捷键表：按内容自然宽度取值，窄终端由 help_lines 退回单列。
         let (_, natural) = help_lines(app, usize::from(area.width).saturating_sub(6), max_content);
@@ -228,7 +303,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         };
         (width, usize::from(width.saturating_sub(4)).max(8))
     };
-    let lines = modal_lines(app, modal, content_width, max_content);
+    let (lines, item_hits) = modal_lines_with_hits(app, modal, content_width, max_content);
     let content_height = u16::try_from(lines.len().max(1)).unwrap_or(u16::MAX);
     // 2 行给上下边框，1 行留作底部内边距：内容顶格，下沿不贴边框也不空一大片。
     let height = content_height
@@ -240,7 +315,23 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         width,
         height,
     };
+    let visible_rows = lines
+        .len()
+        .min(usize::from(modal_area.height.saturating_sub(2)));
     render_modal_card(frame, lines, modal.title(), theme, modal_area);
+    app.modal_item_hits = item_hits
+        .into_iter()
+        .filter_map(|(idx, row)| {
+            if row >= visible_rows {
+                return None;
+            }
+            let y = modal_area.y + 1 + u16::try_from(row).ok()?;
+            Some((
+                idx,
+                Rect::new(modal_area.x + 1, y, modal_area.width.saturating_sub(2), 1),
+            ))
+        })
+        .collect();
     if let Modal::Plan { state } = modal {
         let prefix_width =
             u16::try_from(str_width("执行模型：")).expect("固定标签宽度可表示为 u16");
@@ -270,12 +361,16 @@ fn render_modal_card(
     modal_area: Rect,
 ) {
     frame.render_widget(Clear, modal_area);
+    frame
+        .buffer_mut()
+        .set_style(modal_area, Style::new().bg(theme.bg_base).fg(theme.text_primary));
     frame.render_widget(
         Paragraph::new(lines)
             .block(
                 Block::bordered()
                     .border_set(ratatui::symbols::border::ROUNDED)
                     .border_style(Style::new().fg(theme.border_active))
+                    .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
                     // 左右各留 1 格内边距，正文不贴边框；标题自带同样的空格才能与正文左缘对齐。
                     .padding(Padding::horizontal(1))
                     .title(Span::styled(
@@ -297,7 +392,7 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(modal) = app.modal.as_ref() else {
         return;
     };
-    let max_content = usize::from(area.height.saturating_sub(6)).max(1);
+    let max_content = usize::from(area.height.saturating_sub(4)).max(1);
     let width = if area.width < 70 {
         area.width.saturating_sub(4).max(16)
     } else if modal.has_option_preview() {
@@ -343,14 +438,137 @@ const HELP_KEY_GAP: usize = 2;
 const HELP_COLUMN_GAP: usize = 4;
 /// 快捷键帮助：快捷键行左缩进（格）。
 const HELP_INDENT: usize = 2;
-/// 快捷键帮助：页脚（留白 + Esc 说明）占用的行数。
-const HELP_FOOTER_ROWS: usize = 2;
 
 /// 一列快捷键的（键位列宽，整列宽）。
 type HelpColumn = (usize, usize);
 
-/// 量出一列快捷键的键位列宽与整列宽。
-fn measure_column(rows: &[(String, &'static str)]) -> HelpColumn {
+struct HelpSection {
+    title: &'static str,
+    rows: Vec<(String, &'static str)>,
+}
+
+/// 快捷键帮助内容：分为 # 会话与通用、# 输入与编辑、# 旁路交互 三组结构化呈现。
+///
+/// 默认双列（组内双列排布），宽度不足时退回单列。
+/// 键位列按最长绑定取齐，返回内容的自然宽度，模态据此收窄到刚好容纳。
+fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'static>>, usize) {
+    let theme = app.theme;
+    let get_key = |act: &str| -> String {
+        app.preferences
+            .keybindings
+            .get(act)
+            .map_or_else(|| "—".to_owned(), |keys| crate::config::display_keys(keys))
+    };
+
+    let sections = [
+        HelpSection {
+            title: "# 会话与通用",
+            rows: vec![
+                (get_key("model"), "选择模型"),
+                (get_key("mode"), "切换会话模式"),
+                (get_key("config"), "打开设置"),
+                (get_key("agents"), "打开子代理管理"),
+                (get_key("resume"), "恢复会话"),
+                (get_key("thinking"), "切换思考显示档位"),
+                (get_key("thinking_level"), "切换思考等级"),
+                (get_key("tools"), "切换工具显示档位"),
+                (get_key("help"), "帮助菜单"),
+                ("/confirm-plan".into(), "重新审阅待确认的计划"),
+                ("/plugins [reload]".into(), "查看/重载已加载插件"),
+                ("/close".into(), "卸载会话并释放写租约"),
+            ],
+        },
+        HelpSection {
+            title: "# 输入与编辑",
+            rows: vec![
+                (get_key("send"), "发送消息"),
+                (get_key("queue"), "排队发送"),
+                (get_key("newline"), "插入换行"),
+                (get_key("cancel"), "停止当前生成 / 退出"),
+                (get_key("focus"), "切换输入焦点"),
+                (get_key("clear"), "清空输入"),
+                (get_key("line_start"), "移动到行首"),
+                (get_key("line_end"), "移动到行尾"),
+                (get_key("delete_word"), "删除前一词"),
+                (get_key("delete_to_end"), "删除至行尾"),
+                (get_key("paste_image"), "粘贴图片或文本"),
+                (get_key("queue_edit"), "编辑排队中的消息"),
+            ],
+        },
+        HelpSection {
+            title: "# 旁路交互 (BTW)",
+            rows: vec![
+                ("/btw <问题>".into(), "旁路追问(不写历史)"),
+                ("Alt+B / Tab".into(), "旁路展开与焦点切换"),
+                ("Esc / Ctrl+C".into(), "收起旁路 / 取消生成"),
+                ("c / x".into(), "复制回答 / 清空旁路"),
+            ],
+        },
+    ];
+
+    let all_rows: Vec<&(String, &'static str)> =
+        sections.iter().flat_map(|s| &s.rows).collect();
+    let unified = measure_column_refs(&all_rows);
+
+    let two_columns =
+        HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1 <= max_width;
+    let (columns, width) = if two_columns {
+        (
+            [unified, unified],
+            HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1,
+        )
+    } else {
+        ([unified, unified], HELP_INDENT + unified.1)
+    };
+
+    let mut lines = Vec::new();
+    for (sec_idx, section) in sections.iter().enumerate() {
+        if sec_idx > 0 {
+            lines.push(Line::from(String::new()));
+        }
+        lines.push(Line::from(vec![
+            Span::styled(" ".repeat(HELP_INDENT), Style::new()),
+            Span::styled(
+                section.title,
+                Style::new()
+                    .fg(theme.accent_warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+
+        if two_columns {
+            let split = section.rows.len().div_ceil(2);
+            for index in 0..split {
+                let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
+                spans.extend(help_cell(&section.rows[index], columns[0], theme));
+                if let Some(right) = section.rows.get(split + index) {
+                    spans.push(Span::styled(" ".repeat(HELP_COLUMN_GAP), Style::new()));
+                    spans.extend(help_cell(right, columns[1], theme));
+                }
+                lines.push(Line::from(spans));
+            }
+        } else {
+            for row in &section.rows {
+                let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
+                spans.extend(help_cell(row, columns[0], theme));
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+
+    lines.push(Line::from(String::new()));
+    lines.push(Line::from(vec![
+        Span::styled(" ".repeat(HELP_INDENT), Style::new()),
+        Span::styled("Esc 关闭帮助", Style::new().fg(theme.gray_dim)),
+    ]));
+
+    if lines.len() > max_lines && max_lines > 0 {
+        lines.truncate(max_lines);
+    }
+    (lines, width)
+}
+
+fn measure_column_refs(rows: &[&(String, &'static str)]) -> HelpColumn {
     let key_width = rows
         .iter()
         .map(|(key, _)| str_width(key))
@@ -362,82 +580,6 @@ fn measure_column(rows: &[(String, &'static str)]) -> HelpColumn {
         .max()
         .unwrap_or(0);
     (key_width, key_width + HELP_KEY_GAP + description_width)
-}
-
-/// 快捷键帮助内容：默认双列（左列先排满），宽度不足时退回单列。
-///
-/// 键位列按该列最长绑定取齐——键位可配置，固定宽度会让 `shift/alt + enter` 这类
-/// 长组合挤出描述列；返回内容的自然宽度，模态据此收窄到刚好容纳。
-/// 页脚只剩一行 Esc 说明，缩进与快捷键行一致，不再贴住卡片边框。
-fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'static>>, usize) {
-    let theme = app.theme;
-    let mut rows: Vec<(String, &'static str)> = crate::config::actions()
-        .iter()
-        .map(|(action, description, _)| {
-            let keys = app
-                .preferences
-                .keybindings
-                .get(*action)
-                .map_or_else(|| "—".to_owned(), |keys| crate::config::display_keys(keys));
-            (keys, *description)
-        })
-        .collect();
-    rows.insert(0, ("/btw 问题".into(), "旁路追问；仅内存，不写主历史"));
-    rows.insert(1, ("Alt+B / Tab".into(), "旁路展开与焦点切换"));
-    rows.insert(2, ("旁路 Esc / Ctrl+C".into(), "收起继续生成 / 只取消旁路"));
-    rows.insert(3, ("旁路 c / x".into(), "复制回答 / 清空并取消"));
-    rows.insert(0, ("/confirm-plan".into(), "重新审阅待确认的计划"));
-    rows.insert(
-        1,
-        (
-            "/plugins [reload]".into(),
-            "查看已加载的插件；reload 重载插件宿主",
-        ),
-    );
-    rows.insert(2, ("/close".into(), "卸载会话并释放写租约"));
-    // 双列按行序对半切开，两列各自收窄；退回单列时两列并作一列取并集。
-    let unified = measure_column(&rows);
-    let split = rows.len().div_ceil(2);
-    let (left, right) = rows.split_at(split);
-    let left_column = measure_column(left);
-    let right_column = measure_column(right);
-    let two_columns =
-        HELP_INDENT + left_column.1 + HELP_COLUMN_GAP + right_column.1 <= max_width && split > 0;
-    let (columns, width) = if two_columns {
-        (
-            [left_column, right_column],
-            HELP_INDENT + left_column.1 + HELP_COLUMN_GAP + right_column.1,
-        )
-    } else {
-        ([unified; 2], HELP_INDENT + unified.1)
-    };
-    let row_budget = max_lines
-        .saturating_sub(HELP_FOOTER_ROWS)
-        .max(1)
-        .saturating_mul(if two_columns { 2 } else { 1 });
-    rows.truncate(row_budget);
-    let split = if two_columns {
-        rows.len().div_ceil(2)
-    } else {
-        rows.len()
-    };
-    let mut lines: Vec<Line<'static>> = (0..split)
-        .map(|index| {
-            let mut spans = vec![Span::styled(" ".repeat(HELP_INDENT), Style::new())];
-            spans.extend(help_cell(&rows[index], columns[0], theme));
-            if let Some(right) = rows.get(split + index) {
-                spans.push(Span::styled(" ".repeat(HELP_COLUMN_GAP), Style::new()));
-                spans.extend(help_cell(right, columns[1], theme));
-            }
-            Line::from(spans)
-        })
-        .collect();
-    lines.push(Line::from(String::new()));
-    lines.push(Line::from(vec![
-        Span::styled(" ".repeat(HELP_INDENT), Style::new()),
-        Span::styled("Esc 关闭帮助", Style::new().fg(theme.gray_dim)),
-    ]));
-    (lines, width)
 }
 
 /// 帮助表的一格：键位右补齐到列内 `key_width`，整格再补齐到列宽。
@@ -712,8 +854,20 @@ const ASK_PREVIEW_SEPARATOR: &str = " │ ";
 const ASK_PREVIEW_MODAL_WIDTH: u16 = 120;
 
 /// 模态内容行（按类型分派）。
+#[allow(dead_code)]
 fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    modal_lines_with_hits(app, modal, width, max_lines).0
+}
+
+/// 模态内容行及可点击项行号（按类型分派）。
+fn modal_lines_with_hits(
+    app: &App,
+    modal: &Modal,
+    width: usize,
+    max_lines: usize,
+) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let theme = app.theme;
+    let mut hits = Vec::new();
     let mut lines = match modal {
         Modal::Permission {
             params,
@@ -752,6 +906,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             }
             lines.push(Line::from(String::new()));
             for (index, option) in params.options.iter().enumerate() {
+                hits.push((index, lines.len()));
                 let marker = if index == *selected { "❯ " } else { "  " };
                 let style = if index == *selected {
                     Style::new()
@@ -925,6 +1080,9 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
             // 候选比卡片短时补齐空行，卡片照样画满整张，右边缘才对得齐。
             let block = rows.len().max(if show_card { card.len() } else { 0 });
             for index in 0..block {
+                if index < rows.len() {
+                    hits.push((offset + index, lines.len()));
+                }
                 let mut spans = rows
                     .get(index)
                     .map(|row| row.spans.clone())
@@ -1138,6 +1296,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                 for (index, (_, session)) in filtered.iter().skip(offset).take(visible).enumerate()
                 {
                     let actual = offset + index;
+                    hits.push((actual, lines.len()));
                     let marker = if actual == picker.selected {
                         "❯ "
                     } else {
@@ -1272,18 +1431,19 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
                     Style::new().fg(theme.text_secondary),
                 )));
                 lines.push(Line::from(Span::styled(
-                    "可使用 /agent <task> 创建",
+                    "子代理由模型在复杂任务中自动派生",
                     Style::new().fg(theme.gray_dim),
                 )));
             } else {
                 for (index, agent) in filtered.iter().enumerate() {
                     let selected = index == picker.selected;
+                    let status_str = crate::render::scrollback::agent_status_label(agent.status);
                     lines.push(Line::from(Span::styled(
                         format!(
                             "{}{} · {} · {}",
                             if selected { "❯ " } else { "  " },
                             agent.title,
-                            agent.status as u8,
+                            status_str,
                             agent.model
                         ),
                         if selected {
@@ -1311,7 +1471,7 @@ fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<
         Modal::ContextContent { .. } => Vec::new(),
     };
     lines.truncate(max_lines.max(1));
-    lines
+    (lines, hits)
 }
 
 /// 提问卡片正文与命中行：`hits` 是每个选项（含自定义行，下标 `options.len()`）
@@ -2923,5 +3083,127 @@ mod tests {
     /// 一行渲染后的显示宽度（格）。
     fn line_width(text: &str) -> usize {
         crate::render::wrap::str_width(text)
+    }
+
+    #[test]
+    fn completion_menu_renders_solid_opaque_background() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::buffer::CellWidth;
+        use ratatui::layout::Rect;
+        use crate::widgets::completion::CompletionState;
+
+        let mut completion = CompletionState::derive("/he", &[]).expect("构造补全状态");
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        let prompt_area = Rect::new(0, 10, 80, 3);
+        terminal
+            .draw(|frame| {
+                // 用醒目底色填满缓冲，模拟底层聊天记录或透明终端
+                frame.buffer_mut().set_style(
+                    Rect::new(0, 0, 80, 24),
+                    ratatui::style::Style::new().bg(Color::Red),
+                );
+                super::draw_completion_menu(frame, &mut completion, prompt_area);
+            })
+            .expect("绘制成功");
+
+        let theme = Theme::global();
+        let area = completion.area;
+        assert!(area.width > 0 && area.height > 0);
+        let buffer = terminal.backend().buffer();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if x > area.x && buffer.cell((x - 1, y)).map_or(false, |c| c.cell_width() > 1) {
+                    continue;
+                }
+                let cell = buffer.cell((x, y)).expect("单元格存在");
+                assert_ne!(cell.bg, Color::Reset, "浮层区域不应出现 Reset 穿透：({x}, {y})");
+                assert_ne!(cell.bg, Color::Red, "浮层区域不应泄露底层颜色：({x}, {y})");
+                assert!(
+                    cell.bg == theme.bg_base || cell.bg == theme.bg_visual,
+                    "单元格背景必须为实色 base 或 visual 高亮：({x}, {y}) 实际为 {:?}",
+                    cell.bg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mode_menu_renders_solid_opaque_background() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use crate::app::ModeMenu;
+
+        let (events, _rx) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.mode_menu = Some(ModeMenu {
+            selected: 0,
+            area: Rect::default(),
+        });
+        app.mode_area = Rect::new(50, 20, 10, 1);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut().set_style(
+                    Rect::new(0, 0, 80, 24),
+                    ratatui::style::Style::new().bg(Color::Red),
+                );
+                super::draw_mode_menu(frame, &mut app);
+            })
+            .expect("绘制成功");
+
+        let theme = app.theme;
+        let menu_area = app.mode_menu.as_ref().unwrap().area;
+        assert!(menu_area.width > 0 && menu_area.height > 0);
+        let buffer = terminal.backend().buffer();
+        for y in menu_area.y..menu_area.y + menu_area.height {
+            for x in menu_area.x..menu_area.x + menu_area.width {
+                let cell = buffer.cell((x, y)).expect("单元格存在");
+                assert_ne!(cell.bg, Color::Reset, "模式菜单不应出现 Reset 穿透：({x}, {y})");
+                assert_ne!(cell.bg, Color::Red, "模式菜单不应泄露底层颜色：({x}, {y})");
+                assert!(
+                    cell.bg == theme.bg_base || cell.bg == theme.bg_visual,
+                    "单元格背景必须为实色 base 或 visual：({x}, {y}) 实际为 {:?}",
+                    cell.bg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn modal_card_renders_solid_opaque_background() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        let (events, _rx) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.modal = Some(Modal::Help);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut().set_style(
+                    Rect::new(0, 0, 100, 30),
+                    ratatui::style::Style::new().bg(Color::Red),
+                );
+                super::draw_modal(frame, &mut app);
+            })
+            .expect("绘制成功");
+
+        let theme = app.theme;
+        let buffer = terminal.backend().buffer();
+        // 居中卡片区域：在 100x30 终端下检查中心卡片覆盖的所有单元格
+        // 验证中心点必然是不透底的实色
+        let center_cell = buffer.cell((50, 15)).expect("中心单元格存在");
+        assert_ne!(center_cell.bg, Color::Reset, "模态卡片中心不应为 Reset");
+        assert_ne!(center_cell.bg, Color::Red, "模态卡片中心不应泄露底层背景");
+        assert!(
+            center_cell.bg == theme.bg_base || center_cell.bg == theme.bg_visual,
+            "模态卡片中心应为 bg_base，实际为 {:?}",
+            center_cell.bg
+        );
     }
 }

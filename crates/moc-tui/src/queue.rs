@@ -481,11 +481,20 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         return;
     }
     let (bottom, right, max_width, available) = if app.btw.area.is_empty() {
+        let completion_height = if let Some(completion) = &app.completion {
+            crate::render::modal::completion_menu_height(
+                completion.candidates.len(),
+                app.prompt_area.y,
+            )
+        } else {
+            0
+        };
+        let available = app.prompt_area.y.saturating_sub(completion_height);
         (
-            app.prompt_area.y,
+            app.prompt_area.y.saturating_sub(completion_height),
             app.prompt_area.right(),
             app.prompt_area.width,
-            app.prompt_area.y.saturating_sub(2),
+            available.saturating_sub(2),
         )
     } else {
         let area = app.scrollback_area;
@@ -497,6 +506,9 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     let visible = total.min(usize::from(available.saturating_sub(2))).min(6);
     debug_assert!(visible <= 6, "队列预览上界为六行");
     let height = u16::try_from(visible).expect("队列视图最多六行") + 2;
+    if bottom < height {
+        return;
+    }
     let width = max_width.min(66);
     let area = Rect::new(
         right.saturating_sub(width),
@@ -509,6 +521,7 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     frame.render_widget(Clear, area);
     frame.render_widget(
         Block::bordered()
+            .border_set(ratatui::symbols::border::ROUNDED)
             .title(format!(
                 " 待发送 {total} · 插队 {} / 队列 {queue_len} · 点击/× 撤回 ",
                 steers.len()
@@ -685,5 +698,40 @@ mod tests {
         assert!(compact.contains("排队内容"), "surface:\n{surface}");
         assert!(compact.contains("插队1."), "surface:\n{surface}");
         assert!(compact.contains("队列1."), "surface:\n{surface}");
+    }
+
+    #[test]
+    fn queue_popup_uses_rounded_borders() {
+        let mut app = app_with_session();
+        app.prompt_area = Rect::new(0, 10, 80, 3);
+        app.queues
+            .entry("ses_test".into())
+            .or_default()
+            .push_back(QueuedPrompt {
+                id: 1,
+                draft: PromptState::from_text("测试排队".into()),
+                mode: None,
+            });
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let area = app.queue_area;
+        assert!(area.width >= 4 && area.height >= 3);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((area.x, area.y)).unwrap().symbol(), "╭");
+        assert_eq!(
+            buffer.cell((area.right() - 1, area.y)).unwrap().symbol(),
+            "╮"
+        );
+        assert_eq!(
+            buffer.cell((area.x, area.bottom() - 1)).unwrap().symbol(),
+            "╰"
+        );
+        assert_eq!(
+            buffer
+                .cell((area.right() - 1, area.bottom() - 1))
+                .unwrap()
+                .symbol(),
+            "╯"
+        );
     }
 }

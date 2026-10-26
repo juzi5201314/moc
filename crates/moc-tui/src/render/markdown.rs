@@ -155,6 +155,9 @@ pub fn render_markdown_with(
         raw: Vec::new(),
         images: Vec::new(),
         image: None,
+        links: Vec::new(),
+        current_link_url: None,
+        current_link_text: String::new(),
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
@@ -306,6 +309,10 @@ struct MdRenderer<'a> {
     images: Vec<ImagePlacement>,
     /// 当前正在累积 alt 文本的图片。
     image: Option<ImageAcc>,
+    /// 文档内包含的链接列表 (展示文本, 目标URL)。
+    links: Vec<(String, String)>,
+    current_link_url: Option<String>,
+    current_link_text: String,
 }
 
 impl<'a> MdRenderer<'a> {
@@ -454,7 +461,11 @@ impl<'a> MdRenderer<'a> {
             Tag::Emphasis => self.italic += 1,
             Tag::Strong => self.bold += 1,
             Tag::Strikethrough => self.strike += 1,
-            Tag::Link { .. } => self.link_depth += 1,
+            Tag::Link { dest_url, .. } => {
+                self.link_depth += 1;
+                self.current_link_url = Some(dest_url.to_string());
+                self.current_link_text.clear();
+            }
             Tag::Image { dest_url, .. } => {
                 // 先不 flush：能否出图要到 `TagEnd::Image` 才知道。无条件在这里
                 // 结算 inline 会把「请看 ![远端图](https://…) 这个」劈成两行，
@@ -525,7 +536,15 @@ impl<'a> MdRenderer<'a> {
             TagEnd::Emphasis => self.italic = self.italic.saturating_sub(1),
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
-            TagEnd::Link => self.link_depth = self.link_depth.saturating_sub(1),
+            TagEnd::Link => {
+                self.link_depth = self.link_depth.saturating_sub(1);
+                if let Some(url) = self.current_link_url.take() {
+                    let label = std::mem::take(&mut self.current_link_text);
+                    if !url.is_empty() {
+                        self.links.push((label, url));
+                    }
+                }
+            }
             TagEnd::Image => self.finish_image(),
             TagEnd::MetadataBlock(_)
             | TagEnd::FootnoteDefinition
@@ -561,6 +580,9 @@ impl<'a> MdRenderer<'a> {
         if let Some(image) = &mut self.image {
             image.alt.push_str(text);
             return;
+        }
+        if self.link_depth > 0 {
+            self.current_link_text.push_str(text);
         }
         let style = self.current_style();
         self.push_inline_text(text, style);
@@ -885,6 +907,35 @@ impl<'a> MdRenderer<'a> {
     /// （那是用户主动打开的东西，必须随时能关掉）。
     fn finish(mut self) -> Rendered {
         self.flush_inline();
+        if !self.links.is_empty() {
+            self.ensure_block_gap();
+            self.out.push(Line::from(Span::styled(
+                "参考链接：",
+                Style::new()
+                    .fg(self.theme.gray_dim)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for (idx, (label, url)) in self.links.iter().enumerate() {
+                let num = format!("  [{}] ", idx + 1);
+                let label_prefix = if label.is_empty() || label == url {
+                    String::new()
+                } else {
+                    format!("{label}: ")
+                };
+                let prefix = format!("{num}{label_prefix}");
+                let prefix_width = str_width(&prefix);
+                let rem = self.width.saturating_sub(prefix_width).max(8);
+                self.out.push(Line::from(vec![
+                    Span::styled(prefix, Style::new().fg(self.theme.gray_dim)),
+                    Span::styled(
+                        crate::render::modal::ellipsize(url, rem),
+                        Style::new()
+                            .fg(self.theme.link)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ]));
+            }
+        }
         let open_tail = self.views.streaming
             && !self.tails
             && self.buttons.last().is_some_and(|(_, _, chart)| !chart);
@@ -1014,57 +1065,86 @@ impl<'a> MdRenderer<'a> {
         }
     }
 
-    /// 代码块结束：syntect 高亮并整体铺 code_bg。
+    /// 代码块结束：syntect 高亮并整体铺 code_bg，保留引用竖线与列表缩进。
     fn flush_code(&mut self) {
         let info = self.code_info.take().unwrap_or_default();
         let code = std::mem::take(&mut self.code_buf);
-        if code.trim().is_empty() && info.is_empty() {
-            return;
-        }
+
         if self.place_svg(&info, &code) {
             return;
         }
         let highlighted = highlight::highlight(&info, &code);
         let bg_style = Style::new().bg(self.theme.code_bg);
-        let code_width = self.width.saturating_sub(2).max(8);
+
+        let list_indent = if self.item_indent > 0 {
+            self.item_indent
+        } else {
+            self.list_stack.len() * 2
+        };
+        let quote = "│ ".repeat(self.quote_depth);
+        let quote_style = Style::new().fg(self.theme.border);
+        let prefix_width = str_width(&quote) + list_indent;
+        let code_width = self.width.saturating_sub(prefix_width + 2).max(8);
+
+        let make_prefix = || -> Vec<Span<'static>> {
+            let mut p = Vec::new();
+            if self.quote_depth > 0 {
+                p.push(Span::styled(quote.clone(), quote_style));
+            }
+            if list_indent > 0 {
+                p.push(Span::raw(" ".repeat(list_indent)));
+            }
+            p
+        };
+
         if !info.trim().is_empty() {
             let tag = info.trim();
-            let mut top_line = vec![
-                Span::styled("  ", bg_style),
-                Span::styled(
-                    tag.to_owned(),
-                    Style::new()
-                        .fg(self.theme.accent_tool)
-                        .bg(self.theme.code_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ];
+            let mut top_line = make_prefix();
+            top_line.push(Span::styled("  ", bg_style));
+            top_line.push(Span::styled(
+                tag.to_owned(),
+                Style::new()
+                    .fg(self.theme.accent_tool)
+                    .bg(self.theme.code_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
             let used = 2 + str_width(tag);
             if used < code_width {
                 top_line.push(Span::styled(" ".repeat(code_width - used), bg_style));
             }
             self.out.push(Line::from(top_line));
         }
-        for spans in &highlighted.lines {
-            let mut line: Vec<Span<'static>> = vec![Span::styled("  ", bg_style)];
-            let mut line_used = 2;
-            for span in spans {
-                let fg = span
-                    .fg
-                    .map(highlight::rgb_to_color)
-                    .unwrap_or(self.theme.text_primary);
-                line_used += str_width(&span.text);
-                line.push(Span::styled(
-                    span.text.clone(),
-                    Style::new().fg(fg).bg(self.theme.code_bg),
-                ));
-            }
-            if line_used < code_width {
-                line.push(Span::styled(" ".repeat(code_width - line_used), bg_style));
+        if highlighted.lines.is_empty() {
+            let mut line = make_prefix();
+            line.push(Span::styled("  ", bg_style));
+            if code_width > 2 {
+                line.push(Span::styled(" ".repeat(code_width - 2), bg_style));
             }
             self.out.push(Line::from(line));
+        } else {
+            for spans in &highlighted.lines {
+                let mut line = make_prefix();
+                line.push(Span::styled("  ", bg_style));
+                let mut line_used = 2;
+                for span in spans {
+                    let fg = span
+                        .fg
+                        .map(highlight::rgb_to_color)
+                        .unwrap_or(self.theme.text_primary);
+                    line_used += str_width(&span.text);
+                    line.push(Span::styled(
+                        span.text.clone(),
+                        Style::new().fg(fg).bg(self.theme.code_bg),
+                    ));
+                }
+                if line_used < code_width {
+                    line.push(Span::styled(" ".repeat(code_width - line_used), bg_style));
+                }
+                self.out.push(Line::from(line));
+            }
         }
-        self.out.push(Line::from(String::new()));
+        let gap = make_prefix();
+        self.out.push(Line::from(gap));
     }
 
     /// 表格：内容定列宽，单元格按列折行；表头与行之间用细线分隔。
@@ -1225,7 +1305,77 @@ fn fill_widths(widths: &mut [usize], cap: usize, target: usize) {
     }
 }
 
-/// 单行表格：每个单元格按列宽折行，行高取该行最多的行数。
+/// 单元格内联样式折行：保留粗体、斜体、代码等样式并按列宽规整换行。
+fn wrap_cell_runs(runs: &[Run], width: usize, base_style: Style) -> Vec<Vec<Span<'static>>> {
+    if runs.is_empty() {
+        return vec![vec![Span::styled(" ".repeat(width), base_style)]];
+    }
+    let chars: Vec<(char, Style)> = runs
+        .iter()
+        .flat_map(|run| {
+            let s = base_style.patch(run.style);
+            run.text.chars().map(move |c| (c, s))
+        })
+        .collect();
+
+    if chars.is_empty() {
+        return vec![vec![Span::styled(" ".repeat(width), base_style)]];
+    }
+
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current_line: Vec<Span<'static>> = Vec::new();
+    let mut current_line_width = 0;
+    let mut segment = String::new();
+    let mut segment_style: Option<Style> = None;
+
+    macro_rules! flush_seg {
+        () => {
+            if let Some(style) = segment_style.take() {
+                if !segment.is_empty() {
+                    current_line.push(Span::styled(std::mem::take(&mut segment), style));
+                }
+                segment.clear();
+            }
+        };
+    }
+
+    for (ch, style) in chars {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if current_line_width > 0 && current_line_width + cw > width {
+            flush_seg!();
+            if current_line_width < width {
+                current_line.push(Span::styled(" ".repeat(width - current_line_width), base_style));
+            }
+            result.push(std::mem::take(&mut current_line));
+            current_line_width = 0;
+        }
+        match segment_style {
+            Some(curr) if curr == style => segment.push(ch),
+            _ => {
+                flush_seg!();
+                segment.push(ch);
+                segment_style = Some(style);
+            }
+        }
+        current_line_width += cw;
+    }
+    flush_seg!();
+
+    if !current_line.is_empty() {
+        if current_line_width < width {
+            current_line.push(Span::styled(" ".repeat(width - current_line_width), base_style));
+        }
+        result.push(current_line);
+    }
+
+    if result.is_empty() {
+        result.push(vec![Span::styled(" ".repeat(width), base_style)]);
+    }
+
+    result
+}
+
+/// 单行表格：每个单元格按列宽折行，保留单元格内联样式，行高取该行最多的行数。
 fn table_row_lines(
     cells: &[Vec<Run>],
     widths: &[usize],
@@ -1233,35 +1383,35 @@ fn table_row_lines(
     theme: &Theme,
     header: bool,
 ) -> Vec<Line<'static>> {
-    let wrapped: Vec<Vec<String>> = widths
-        .iter()
-        .enumerate()
-        .map(|(index, width)| {
-            let text = table_cell_text(cells, index);
-            wrap_text(&text, (*width).max(1))
-        })
-        .collect();
-    let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
-    let style = if header {
+    let base_style = if header {
         Style::new()
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::new().fg(theme.text_primary)
     };
-    let gap = " ".repeat(gap);
+    let wrapped: Vec<Vec<Vec<Span<'static>>>> = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let empty = Vec::new();
+            let runs = cells.get(index).unwrap_or(&empty);
+            wrap_cell_runs(runs, (*width).max(1), base_style)
+        })
+        .collect();
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+    let gap_span = Span::styled(" ".repeat(gap), base_style);
     let mut lines = Vec::with_capacity(height);
     for line_index in 0..height {
         let mut spans = Vec::with_capacity(widths.len().saturating_mul(2));
         for (index, width) in widths.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled(gap.clone(), style));
+                spans.push(gap_span.clone());
             }
-            let text = wrapped[index].get(line_index).map_or("", String::as_str);
-            let used = str_width(text);
-            spans.push(Span::styled(text.to_owned(), style));
-            if used < *width {
-                spans.push(Span::styled(" ".repeat(width - used), style));
+            if let Some(cell_line) = wrapped[index].get(line_index) {
+                spans.extend(cell_line.iter().cloned());
+            } else {
+                spans.push(Span::styled(" ".repeat(*width), base_style));
             }
         }
         lines.push(Line::from(spans));

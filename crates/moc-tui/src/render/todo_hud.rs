@@ -23,8 +23,8 @@ pub const MARQUEE_TICK: Duration = Duration::from_millis(250);
 const MARQUEE_HOLD: Duration = Duration::from_millis(1200);
 /// 循环滚动时任务名之间的分隔。
 const MARQUEE_SEPARATOR: &str = "   ·   ";
-/// 胶囊最大占宽；更宽的任务名在内部滚动。
-const CHIP_MAX_WIDTH: u16 = 56;
+/// 胶囊最大占宽；更宽的任务名在内部滚动，保持在右上角紧凑呈现不遮挡转写正文。
+const CHIP_MAX_WIDTH: u16 = 34;
 /// 展开卡片最大占宽。
 const CARD_MAX_WIDTH: u16 = 66;
 /// 低于该宽度/高度时整个 HUD 隐藏，避免出现打不开的入口。
@@ -51,9 +51,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, header_visible: bool) 
     };
     let task = sanitize(&task);
     let theme = app.theme;
-    // warning 也贴转写区首行右端：让胶囊下移一行，告警保持可读。
+    // warning 也贴转写区首行右端：让胶囊下移一行，告警保持可读；优先占用顶部间隙区不遮挡正文。
     let warning_shift = u16::from(app.warning_visible() && area.height > 1);
-    let chip_y = area.y.saturating_add(warning_shift);
+    let chip_y = if header_visible && area.y > 0 {
+        area.y.saturating_sub(1).saturating_add(warning_shift)
+    } else {
+        area.y.saturating_add(warning_shift)
+    };
     let Some(chip) = build_chip(app, &task, status, done, total, area.width) else {
         app.todo_hud.on_hidden();
         return;
@@ -261,6 +265,7 @@ fn draw_card(
     ))
     .alignment(Alignment::Right);
     let block = Block::bordered()
+        .border_set(ratatui::symbols::border::ROUNDED)
         .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
         .border_style(Style::new().fg(if pinned {
             theme.border_active
@@ -524,5 +529,37 @@ mod tests {
         assert!(text.contains("▶ "));
         assert!(text.contains("☐ "));
         assert!(text.contains("1/3"));
+    }
+
+    #[test]
+    fn card_renders_with_rounded_borders() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        app.todos = vec![phase("阶段", &[(TodoStatus::InProgress, "进行中")])];
+        app.todo_hud.pinned = true;
+        let area = Rect::new(0, 0, 80, 20);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &mut app, area, true))
+            .unwrap();
+        let card_area = app.todo_hud.card_area;
+        assert!(card_area.width >= 4 && card_area.height >= 3);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((card_area.x, card_area.y)).unwrap().symbol(), "╭");
+        assert_eq!(
+            buffer.cell((card_area.right() - 1, card_area.y)).unwrap().symbol(),
+            "╮"
+        );
+        assert_eq!(
+            buffer.cell((card_area.x, card_area.bottom() - 1)).unwrap().symbol(),
+            "╰"
+        );
+        assert_eq!(
+            buffer
+                .cell((card_area.right() - 1, card_area.bottom() - 1))
+                .unwrap()
+                .symbol(),
+            "╯"
+        );
     }
 }

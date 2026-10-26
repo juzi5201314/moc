@@ -139,14 +139,12 @@ fn render_file(file: &ToolFileDiff, width: usize, theme: &Theme, out: &mut Vec<L
         for i in 0..hunk_lines.len().saturating_sub(1) {
             if hunk_lines[i].kind == DiffLineKind::Delete
                 && hunk_lines[i + 1].kind == DiffLineKind::Insert
-            {
-                if let Some((del_range, ins_range)) =
+                && let Some((del_range, ins_range)) =
                     find_intra_line_diff(&hunk_lines[i].text, &hunk_lines[i + 1].text)
                 {
                     intra_ranges[i] = Some(del_range);
                     intra_ranges[i + 1] = Some(ins_range);
                 }
-            }
         }
 
         for (line_idx, line) in hunk.lines.iter().enumerate() {

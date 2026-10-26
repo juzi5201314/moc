@@ -185,6 +185,12 @@ pub struct App {
     pub context_area: Rect,
     /// 输入框下边框右端模式名的屏幕区域（鼠标点击就地弹出模式菜单）。
     pub mode_area: Rect,
+    /// 输入框下边框模型名区域（鼠标点击打开模型选择）。
+    pub model_tag_area: Rect,
+    /// 输入框下边框权限区域（鼠标点击切换权限）。
+    pub permission_tag_area: Rect,
+    /// 模态选项行命中矩形（Permission、Model、Sessions 等）。
+    pub modal_item_hits: Vec<(usize, Rect)>,
     /// 计划审阅中的执行模型文本命中区。
     pub plan_model_area: Rect,
     /// 消息回退时间线区域（鼠标滚动/点击换算用）。
@@ -298,6 +304,7 @@ pub struct App {
     pub subagent_selected: Option<String>,
     pub subagent_area: Rect,
     pub subagent_hits: Vec<(String, Rect)>,
+    pub subagent_scroll: usize,
     pub subagent_generation: u64,
     /// 聚焦中的子代理；`Some` 时当前会话就是它，`Esc` 或双击 `←` 返回。
     pub focused: Option<FocusedAgent>,
@@ -467,6 +474,9 @@ impl App {
             prompt_area: Rect::default(),
             context_area: Rect::default(),
             mode_area: Rect::default(),
+            model_tag_area: Rect::default(),
+            permission_tag_area: Rect::default(),
+            modal_item_hits: Vec::new(),
             plan_model_area: Rect::default(),
             rewind_timeline_area: Rect::default(),
             rewind_detail_area: Rect::default(),
@@ -532,6 +542,7 @@ impl App {
             left_tap_pending: None,
             subagent_area: Rect::default(),
             subagent_hits: Vec::new(),
+            subagent_scroll: 0,
             subagent_generation: 0,
             queues: HashMap::new(),
             steers: HashMap::new(),
@@ -1026,7 +1037,7 @@ impl App {
         self.reset_prompt_state();
         self.prompt_running = false;
         if was_cancel_requested {
-            self.set_notice("Stopped");
+            self.set_notice("已停止");
         }
         let Some(elapsed) = elapsed else {
             return;
@@ -1519,8 +1530,8 @@ impl App {
             .cached_input_tokens
             .unwrap_or(0)
             .saturating_sub(previous.cached_input_tokens.unwrap_or(0));
-        if delta_in > 0 || delta_out > 0 {
-            if let Some(pricing) = self.current_pricing() {
+        if (delta_in > 0 || delta_out > 0)
+            && let Some(pricing) = self.current_pricing() {
                 // input_tokens 已折入缓存命中：非命中输入单独按全价计
                 let uncached = delta_in.saturating_sub(delta_cached);
                 let cache_price = pricing.cache_read.unwrap_or(pricing.input);
@@ -1528,7 +1539,6 @@ impl App {
                     + delta_out as f64 / 1e6 * pricing.output
                     + delta_cached as f64 / 1e6 * cache_price;
             }
-        }
         self.usage = usage;
         // reasoning_tokens 属于本次响应：没有思考块的响应（上游可能报 0）
         // 不能按「最近一块」写回，否则会把上一响应的 token 数抹掉。
@@ -2268,7 +2278,7 @@ mod tests {
 
         assert!(!app.prompt_running);
         assert!(!app.cancel_requested);
-        assert_eq!(app.notice.as_deref(), Some("Stopped"));
+        assert_eq!(app.notice.as_deref(), Some("已停止"));
     }
 
     /// 思考 token 只回填本次响应的思考块：下一响应若没有思考块，
@@ -2392,7 +2402,7 @@ mod tests {
         let mut app = super::App::new(crate::theme::Theme::global(), events);
 
         app.set_warning("effort max → high");
-        app.set_notice("Stopped");
+        app.set_notice("已停止");
         assert!(app.warning_visible());
         assert!(app.notice_visible());
         // 截止时刻必须落在未来，事件循环才能安全 sleep_until 而非空转

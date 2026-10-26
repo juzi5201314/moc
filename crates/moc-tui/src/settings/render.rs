@@ -912,6 +912,9 @@ fn draw_edit_popup(
             .buffer_mut()
             .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
         frame.render_widget(Clear, rect);
+        frame
+            .buffer_mut()
+            .set_style(rect, Style::new().bg(theme.bg_base).fg(theme.text_primary));
         let start = if edit.choice_selected >= visible_count {
             edit.choice_selected + 1 - visible_count
         } else {
@@ -959,6 +962,7 @@ fn draw_edit_popup(
                 Block::bordered()
                     .border_set(ratatui::symbols::border::ROUNDED)
                     .border_style(Style::new().fg(theme.border_active))
+                    .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
                     .title(Span::styled(
                         format!(" {} ", edit.title),
                         Style::new()
@@ -1038,6 +1042,9 @@ fn draw_edit_popup(
         .buffer_mut()
         .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
     frame.render_widget(Clear, rect);
+    frame
+        .buffer_mut()
+        .set_style(rect, Style::new().bg(theme.bg_base).fg(theme.text_primary));
     let inner = Rect {
         x: rect.x + 2,
         y: rect.y + 1,
@@ -1071,6 +1078,7 @@ fn draw_edit_popup(
             Block::bordered()
                 .border_set(ratatui::symbols::border::ROUNDED)
                 .border_style(Style::new().fg(theme.border_active))
+                .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
                 .title(Span::styled(
                     format!(" {} ", edit.title),
                     Style::new()
@@ -1286,5 +1294,79 @@ pub(super) fn display_value(value: &Value, field: &ConfigField) -> String {
             .collect::<Vec<_>>()
             .join("、"),
         _ => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{EditState, EditTarget, FieldKind, SettingsPanel, View};
+    use moc_protocol::ConfigScope;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn choice_popup_renders_solid_opaque_background() {
+        let theme = Theme::global();
+        let mut panel = SettingsPanel {
+            id: 1,
+            cwd: "/tmp".into(),
+            scope: ConfigScope::Global,
+            data: None,
+            tui: json!({}),
+            effective: json!({}),
+            fields: Vec::new(),
+            rows: Vec::new(),
+            collapsed: BTreeSet::new(),
+            expanded: BTreeSet::new(),
+            tab: 0,
+            selected: 0,
+            offset: 0,
+            advanced: false,
+            filter: String::new(),
+            edit: Some(EditState {
+                target: EditTarget::Filter,
+                kind: FieldKind::Choice(vec![moc_protocol::ChoiceOption {
+                    value: "a".into(),
+                    label: "选项A".into(),
+                }]),
+                input: crate::widgets::prompt::PromptState::default(),
+                reveal: false,
+                popup: true,
+                title: "选择选项".into(),
+                hint: "Esc 关闭".into(),
+                choice_selected: 0,
+            }),
+            error: None,
+            message: None,
+            busy: false,
+            hits: Vec::new(),
+            pending: None,
+            view: View::Fields,
+            history: Default::default(),
+            outcome: None,
+            restore: None,
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut().set_style(
+                    Rect::new(0, 0, 80, 24),
+                    Style::new().bg(Color::Red),
+                );
+                draw(frame, &mut panel, false, theme);
+            })
+            .expect("绘制成功");
+
+        let buffer = terminal.backend().buffer();
+        // 验证中心弹窗卡片位置不漏底
+        let center = buffer.cell((40, 12)).expect("中心格");
+        assert_ne!(center.bg, Color::Reset, "弹窗不应为 Reset");
+        assert_ne!(center.bg, Color::Red, "弹窗不应漏出底层红色");
+        assert!(center.bg == theme.bg_base || center.bg == theme.bg_visual);
     }
 }

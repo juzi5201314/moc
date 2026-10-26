@@ -456,23 +456,18 @@ impl RewindState {
         }
         if delta < 0 {
             if let Some(&prev_idx) = matches
-                .iter()
-                .filter(|&&idx| idx < self.selected && self.items[idx].is_user)
-                .next_back()
+                .iter().rfind(|&&idx| idx < self.selected && self.items[idx].is_user)
             {
                 self.selected = prev_idx;
                 self.sync_prompt_item_from_selected();
             }
-        } else if delta > 0 {
-            if let Some(&next_idx) = matches
-                .iter()
-                .filter(|&&idx| idx > self.selected && self.items[idx].is_user)
-                .next()
+        } else if delta > 0
+            && let Some(&next_idx) = matches
+                .iter().find(|&&idx| idx > self.selected && self.items[idx].is_user)
             {
                 self.selected = next_idx;
                 self.sync_prompt_item_from_selected();
             }
-        }
     }
 
     pub fn move_vertical(&mut self, delta: i32) {

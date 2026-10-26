@@ -48,6 +48,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let area = modal_area(area);
     frame.render_widget(Clear, area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                cell.set_char(' ');
+                cell.set_style(Style::new().bg(theme.bg_base).fg(theme.text_primary));
+            }
+        }
+    }
     let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
         return;
     };
@@ -142,10 +150,12 @@ fn draw_frame(frame: &mut Frame, area: Rect, theme: &Theme) {
         Block::bordered()
             .border_set(ratatui::symbols::border::ROUNDED)
             .border_style(Style::new().fg(theme.border_active))
+            .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
             .title(Span::styled(
                 "上下文内容",
                 Style::new()
                     .fg(theme.text_primary)
+                    .bg(theme.bg_base)
                     .add_modifier(Modifier::BOLD),
             )),
         area,
@@ -512,5 +522,37 @@ mod tests {
             state.scrollbar.thumb_top(state.scroll),
             state.scrollbar.track.height - state.scrollbar.thumb,
         );
+    }
+
+    #[test]
+    fn context_content_frame_renders_solid_opaque_background() {
+        use ratatui::buffer::CellWidth;
+        use ratatui::style::Color;
+        let mut app = app_with(vec![]);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
+        let area = Rect::new(0, 0, 100, 30);
+        terminal
+            .draw(|frame| {
+                frame.buffer_mut().set_style(
+                    Rect::new(0, 0, 100, 30),
+                    ratatui::style::Style::new().bg(Color::Red),
+                );
+                draw(frame, &mut app, area);
+            })
+            .expect("绘制成功");
+
+        let modal = modal_area(area);
+        let buffer = terminal.backend().buffer();
+        for y in modal.y..modal.y + modal.height {
+            for x in modal.x..modal.x + modal.width {
+                if x > modal.x && buffer.cell((x - 1, y)).map_or(false, |c| c.cell_width() > 1) {
+                    continue;
+                }
+                let cell = buffer.cell((x, y)).expect("单元格存在");
+                assert_ne!(cell.bg, Color::Reset, "正文窗区域不应出现 Reset 穿透：({x}, {y})");
+                assert_ne!(cell.bg, Color::Red, "正文窗区域不应泄露底层颜色：({x}, {y})");
+            }
+        }
     }
 }

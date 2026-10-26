@@ -251,13 +251,11 @@ fn fields_key(
     if code == KeyCode::Esc {
         if !panel.filter.is_empty() {
             // 如果搜索中光标停在某个字段上，顺带切到该字段所属的选项卡
-            if let Some(RowKind::Field(idx)) = panel.row() {
-                if let Some(field) = panel.fields.get(*idx) {
-                    if let Some(pos) = TABS.iter().position(|t| *t == field.tab) {
+            if let Some(RowKind::Field(idx)) = panel.row()
+                && let Some(field) = panel.fields.get(*idx)
+                    && let Some(pos) = TABS.iter().position(|t| *t == field.tab) {
                         panel.tab = pos;
                     }
-                }
-            }
             panel.filter.clear();
             panel.rebuild_rows();
             return false;
@@ -280,12 +278,11 @@ fn fields_key(
         KeyCode::Char('-') => Some(10),
         _ => None,
     };
-    if let Some(target_tab) = tab_jump {
-        if target_tab < TABS.len() {
+    if let Some(target_tab) = tab_jump
+        && target_tab < TABS.len() {
             panel.select_tab(target_tab);
             return false;
         }
-    }
     // 方括号 [ 和 ] 快速切页
     if code == KeyCode::Char('[') {
         let prev = panel.tab.checked_sub(1).unwrap_or(TABS.len() - 1);
@@ -415,11 +412,10 @@ fn collapse(panel: &mut SettingsPanel, expand: bool) {
                 }
             } else if is_expanded {
                 panel.toggle_group(&key, depth);
-            } else if depth > 0 {
-                if let Some(parent_idx) = find_parent_group(panel, panel.selected, depth) {
+            } else if depth > 0
+                && let Some(parent_idx) = find_parent_group(panel, panel.selected, depth) {
                     panel.selected = parent_idx;
                 }
-            }
         }
         RowKind::Field(_) => {
             if !expand {
@@ -438,11 +434,10 @@ fn find_parent_group(
     current_depth: u8,
 ) -> Option<usize> {
     for idx in (0..current_index).rev() {
-        if let Some(r) = panel.rows.get(idx) {
-            if r.depth < current_depth && matches!(r.kind, RowKind::Group(_)) {
+        if let Some(r) = panel.rows.get(idx)
+            && r.depth < current_depth && matches!(r.kind, RowKind::Group(_)) {
                 return Some(idx);
             }
-        }
     }
     None
 }

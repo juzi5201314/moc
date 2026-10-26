@@ -1248,11 +1248,42 @@ fn handle_mouse_with_connection(
             _ => {}
         }
     }
+    if app.subagent_area.contains((mouse.column, mouse.row).into()) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                app.subagent_scroll = app.subagent_scroll.saturating_sub(1);
+                return;
+            }
+            MouseEventKind::ScrollDown => {
+                app.subagent_scroll = app.subagent_scroll.saturating_add(1);
+                return;
+            }
+            _ => {}
+        }
+    }
     if handle_todo_hud_mouse(app, &mouse) {
         return;
     }
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         let position = (mouse.column, mouse.row);
+        if app.modal.is_some() {
+            if let Some((hit_idx, _)) = app
+                .modal_item_hits
+                .iter()
+                .find(|(_, area)| area.contains(position.into()))
+                .cloned()
+            {
+                if let Some(Modal::Permission { selected, .. }) = app.modal.as_mut() {
+                    *selected = hit_idx;
+                } else if let Some(Modal::Model { picker, .. }) = app.modal.as_mut() {
+                    picker.selected = hit_idx;
+                } else if let Some(Modal::Sessions { picker, .. }) = app.modal.as_mut() {
+                    picker.selected = hit_idx;
+                }
+                handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+                return;
+            }
+        }
         if let Some((agent_id, _)) = app
             .subagent_hits
             .iter()
@@ -1264,6 +1295,21 @@ fn handle_mouse_with_connection(
         }
         if app.modal.is_none() && app.mode_area.contains(position.into()) {
             app.open_mode_menu();
+            return;
+        }
+        if app.modal.is_none() && app.model_tag_area.contains(position.into()) {
+            app.open_model_picker();
+            return;
+        }
+        if app.modal.is_none() && app.permission_tag_area.contains(position.into()) {
+            if let Some(session) = app.session.as_ref() {
+                let modes = &app.sandbox_modes;
+                if !modes.is_empty() {
+                    let cur_idx = modes.iter().position(|m| *m == session.permission).unwrap_or(0);
+                    let next_mode = modes[(cur_idx + 1) % modes.len()];
+                    set_permission(app, connection, next_mode.as_str());
+                }
+            }
             return;
         }
         if let Some((id, _, cancel)) = app
@@ -1394,8 +1440,8 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 state.step(1);
             }
         }
-        MouseEventKind::Down(MouseButton::Left) => {
-            if in_timeline && timeline_area.height > 2 {
+        MouseEventKind::Down(MouseButton::Left)
+            if in_timeline && timeline_area.height > 2 => {
                 let inner_y = timeline_area.y + 1;
                 if mouse.row >= inner_y {
                     let rel_row = (mouse.row - inner_y) as usize;
@@ -1412,7 +1458,6 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                     }
                 }
             }
-        }
         _ => {}
     }
 }
@@ -1927,7 +1972,7 @@ fn handle_key(
                 } else {
                     app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
                     app.cancel_requested = true;
-                    app.set_notice("Stopping... Press Ctrl+C again to exit");
+                    app.set_notice("正在停止... 再次按 Ctrl+C 退出");
                     cancel_prompt(&connection.client, app);
                 }
             } else if !app.prompt_text().is_empty() {
@@ -1939,13 +1984,13 @@ fn handle_key(
                 } else {
                     app.ctrl_c_pending =
                         Some((CtrlCPending::ClearPrompt, std::time::Instant::now()));
-                    app.set_notice("clear input");
+                    app.set_notice("再次按 Ctrl+C 清空输入");
                 }
             } else if app.take_ctrl_c_pending(CtrlCPending::Quit) {
                 app.should_quit = true;
             } else {
                 app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
-                app.set_notice("Press Ctrl+C again to exit");
+                app.set_notice("再次按 Ctrl+C 退出");
             }
         }
         (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help),
@@ -1996,7 +2041,7 @@ fn handle_key(
             } else if app.prompt_running {
                 if !app.cancel_requested {
                     app.cancel_requested = true;
-                    app.set_notice("Stopping...");
+                    app.set_notice("正在停止...");
                     cancel_prompt(&connection.client, app);
                 }
             } else if app.focus == Focus::Prompt && !app.prompt_text().is_empty() {
@@ -2583,8 +2628,8 @@ fn handle_modal_key(
                     (KeyCode::Right, _) => state.jump_user(1),
                     (KeyCode::PageUp, _) => state.scroll_detail(-6),
                     (KeyCode::PageDown, _) => state.scroll_detail(6),
-                    (KeyCode::Enter, KeyModifiers::NONE) => {
-                        if !state.loading {
+                    (KeyCode::Enter, KeyModifiers::NONE)
+                        if !state.loading => {
                             let Some(selected) = state.selected().cloned() else {
                                 state.error = Some("当前会话没有可回退的消息".into());
                                 return;
@@ -2608,7 +2653,6 @@ fn handle_modal_key(
                                 let _ = events.send(AppEvent::Rewound { selected, result });
                             });
                         }
-                    }
                     _ => {}
                 }
             } else {
@@ -5034,11 +5078,8 @@ mod tests {
                         apply_update(&mut app, update.update);
                     }
                 }
-                match event {
-                    event @ (AppEvent::PromptReturned { .. } | AppEvent::SteerReturned { .. }) => {
-                        crate::interaction::handle_event(&mut app, &connection, event)
-                    }
-                    _ => {}
+                if let event @ (AppEvent::PromptReturned { .. } | AppEvent::SteerReturned { .. }) = event {
+                    crate::interaction::handle_event(&mut app, &connection, event)
                 }
             }
             while let Ok(update) = connection.updates.try_recv() {
@@ -6786,7 +6827,7 @@ mod tests {
         app.prompt.insert_text("hello moc");
         assert_eq!(app.prompt_text(), "hello moc");
 
-        // 第一次 Ctrl+C：提示 "clear input"，不应清空
+        // 第一次 Ctrl+C：提示 "再次按 Ctrl+C 清空输入"，不应清空
         handle_key(
             &mut app,
             &connection,
@@ -6794,7 +6835,7 @@ mod tests {
             KeyCode::Char('c'),
         );
         assert_eq!(app.prompt_text(), "hello moc");
-        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 清空输入"));
         assert!(!app.should_quit);
         assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
@@ -6816,7 +6857,7 @@ mod tests {
             KeyModifiers::CONTROL,
             KeyCode::Char('c'),
         );
-        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 退出"));
         assert!(!app.should_quit);
         assert!(app.has_ctrl_c_pending(CtrlCPending::Quit));
 
@@ -6845,11 +6886,11 @@ mod tests {
             KeyModifiers::CONTROL,
             KeyCode::Char('c'),
         );
-        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 清空输入"));
 
         // 模拟超过 3 秒
         if let Some((_, at)) = app.ctrl_c_pending.as_mut() {
-            *at = *at - std::time::Duration::from_secs(4);
+            *at -= std::time::Duration::from_secs(4);
         }
 
         // 再次按 Ctrl+C：超时，不应清空，应重新触发第一次提示
@@ -6860,7 +6901,7 @@ mod tests {
             KeyCode::Char('c'),
         );
         assert_eq!(app.prompt_text(), "some text");
-        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 清空输入"));
         assert!(app.has_ctrl_c_pending(CtrlCPending::ClearPrompt));
 
         // 清空后测试空输入框超时
@@ -6873,12 +6914,12 @@ mod tests {
             KeyModifiers::CONTROL,
             KeyCode::Char('c'),
         );
-        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 退出"));
         assert!(!app.should_quit);
 
         // 模拟超过 3 秒
         if let Some((_, at)) = app.ctrl_c_pending.as_mut() {
-            *at = *at - std::time::Duration::from_secs(4);
+            *at -= std::time::Duration::from_secs(4);
         }
 
         // 再次按 Ctrl+C：超时，不应退出
@@ -6889,7 +6930,7 @@ mod tests {
             KeyCode::Char('c'),
         );
         assert!(!app.should_quit);
-        assert_eq!(app.notice.as_deref(), Some("Press Ctrl+C again to exit"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 退出"));
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -6921,7 +6962,7 @@ mod tests {
             KeyCode::Char('c'),
         );
         assert_eq!(app.prompt_text(), "hello");
-        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 清空输入"));
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -7070,7 +7111,7 @@ mod tests {
             KeyModifiers::CONTROL,
             KeyCode::Char('c'),
         );
-        assert_eq!(app.notice.as_deref(), Some("clear input"));
+        assert_eq!(app.notice.as_deref(), Some("再次按 Ctrl+C 清空输入"));
 
         connection.shutdown().await;
         core.shutdown().await;

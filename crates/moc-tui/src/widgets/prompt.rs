@@ -331,12 +331,12 @@ impl PromptState {
             return;
         }
         let prefix = &self.text[..self.cursor];
-        let mut indices = prefix.char_indices().rev();
+        let indices = prefix.char_indices().rev();
         let mut target = 0;
         // 先跳过连续空白
         let mut saw_word = false;
         let mut word_alnum = false;
-        while let Some((idx, ch)) = indices.next() {
+        for (idx, ch) in indices {
             if ch.is_whitespace() {
                 if saw_word {
                     target = idx + ch.len_utf8();
@@ -367,11 +367,11 @@ impl PromptState {
             return;
         }
         let rest = &self.text[self.cursor..];
-        let mut chars = rest.char_indices();
+        let chars = rest.char_indices();
         let mut saw_word = false;
         let mut word_alnum = false;
         let mut target = self.text.len();
-        while let Some((idx, ch)) = chars.next() {
+        for (idx, ch) in chars {
             let abs_idx = self.cursor + idx;
             if ch.is_whitespace() {
                 if saw_word {
@@ -403,8 +403,11 @@ impl PromptState {
         self.text.matches('\n').count() + 1
     }
 
-    /// 上：光标在首行且已在开头时翻历史，否则在行首或向上移动。
+    /// 上：单行输入首按即翻历史；多行时在首行且已在开头时翻历史，否则在行首或向上移动。
     pub fn up(&mut self) -> bool {
+        if self.line_count() == 1 {
+            return self.history_up();
+        }
         if self.cursor_line() == 0 {
             if self.cursor == 0 {
                 return self.history_up();
@@ -416,8 +419,11 @@ impl PromptState {
         true
     }
 
-    /// 下：光标在末行且已在末尾时翻历史，否则在行尾或向下移动。
+    /// 下：单行输入首按即翻历史；多行时在末行且已在末尾时翻历史，否则在行尾或向下移动。
     pub fn down(&mut self) -> bool {
+        if self.line_count() == 1 {
+            return self.history_down();
+        }
         if self.cursor_line() + 1 == self.line_count() {
             if self.cursor == self.text.len() {
                 return self.history_down();

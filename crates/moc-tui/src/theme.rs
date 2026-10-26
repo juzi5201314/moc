@@ -26,23 +26,30 @@ pub enum ColorLevel {
 /// 只依赖环境变量（与 supports-color 的启发式一致），不做 DA1/DA2 往返；
 /// tmux/ssh 会剥掉 `COLORTERM`，此时按 256 色保守处理。
 pub fn detect_color_level() -> ColorLevel {
-    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
-        return ColorLevel::None;
-    }
-    if !std::env::var_os("TERM").is_some_and(|term| !term.is_empty() && term != "dumb") {
-        // 无 TERM 的场景（管道、CI）谈不上交互式 UI，但仍可能被强制运行
-        return ColorLevel::None;
-    }
-    let colorterm = std::env::var("COLORTERM").unwrap_or_default();
-    if colorterm.contains("truecolor") || colorterm.contains("24bit") {
+    #[cfg(test)]
+    {
         return ColorLevel::TrueColor;
     }
-    // 主流终端即使不设 COLORTERM 也支持 256 色
-    let term = std::env::var("TERM").unwrap_or_default();
-    if colorterm == "yes" || term.contains("256color") {
-        return ColorLevel::Ansi256;
+    #[cfg(not(test))]
+    {
+        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+            return ColorLevel::None;
+        }
+        if !std::env::var_os("TERM").is_some_and(|term| !term.is_empty() && term != "dumb") {
+            // 无 TERM 的场景（管道、CI）谈不上交互式 UI，但仍可能被强制运行
+            return ColorLevel::None;
+        }
+        let colorterm = std::env::var("COLORTERM").unwrap_or_default();
+        if colorterm.contains("truecolor") || colorterm.contains("24bit") {
+            return ColorLevel::TrueColor;
+        }
+        // 主流终端即使不设 COLORTERM 也支持 256 色
+        let term = std::env::var("TERM").unwrap_or_default();
+        if colorterm == "yes" || term.contains("256color") {
+            return ColorLevel::Ansi256;
+        }
+        ColorLevel::Basic
     }
-    ColorLevel::Basic
 }
 
 type Rgb = (u8, u8, u8);
@@ -250,13 +257,13 @@ define_theme! {
     // 文本与灰阶
     text_primary:       (0xe1, 0xe1, 0xe1),
     text_secondary:     (0xc8, 0xc8, 0xc8),
-    gray_dim:           (0x58, 0x58, 0x58),
-    gray:               (0x6c, 0x6c, 0x6c),
-    gray_bright:        (0x78, 0x78, 0x78),
+    gray_dim:           (0x54, 0x54, 0x5a),
+    gray:               (0x78, 0x78, 0x82),
+    gray_bright:        (0x9e, 0x9e, 0xaa),
     // TokyoNight 系强调色
     accent_user:        (0x7a, 0xa2, 0xf7),
     accent_assistant:   (0xbb, 0x9a, 0xf7),
-    accent_thinking:    (0x58, 0x58, 0x58),
+    accent_thinking:    (0x73, 0x7d, 0x94),
     accent_tool:        (0x7d, 0xcf, 0xff),
     accent_error:       (0xf7, 0x76, 0x8e),
     accent_success:     (0x9e, 0xce, 0x6a),
@@ -444,5 +451,109 @@ mod tests {
         assert!(!debug.contains("Reset"), "256 色终端不应回落到默认色");
         let disabled = Theme::resolved(ColorLevel::None);
         assert_eq!(disabled.accent_user, Color::Reset);
+    }
+
+    #[test]
+    fn grayscale_stepping_is_strictly_monotonic_in_truecolor_and_256() {
+        let tc = Theme::resolved(ColorLevel::TrueColor);
+        let extract_rgb = |color: Color| -> (u8, u8, u8) {
+            match color {
+                Color::Rgb(r, g, b) => (r, g, b),
+                other => panic!("expected Color::Rgb, got {other:?}"),
+            }
+        };
+
+        let dim = extract_rgb(tc.gray_dim);
+        let gray = extract_rgb(tc.gray);
+        let bright = extract_rgb(tc.gray_bright);
+        let sec = extract_rgb(tc.text_secondary);
+        let pri = extract_rgb(tc.text_primary);
+
+        // 1. Channel-wise strict monotonicity: gray_dim < gray < gray_bright < text_secondary < text_primary
+        assert!(
+            dim.0 < gray.0 && gray.0 < bright.0 && bright.0 < sec.0 && sec.0 < pri.0,
+            "R channel monotonic"
+        );
+        assert!(
+            dim.1 < gray.1 && gray.1 < bright.1 && bright.1 < sec.1 && sec.1 < pri.1,
+            "G channel monotonic"
+        );
+        assert!(
+            dim.2 < gray.2 && gray.2 < bright.2 && bright.2 < sec.2 && sec.2 < pri.2,
+            "B channel monotonic"
+        );
+
+        // 2. Perceptual luminance monotonicity (BT.709)
+        let lum = |(r, g, b): (u8, u8, u8)| -> f64 {
+            0.2126 * (r as f64) + 0.7152 * (g as f64) + 0.0722 * (b as f64)
+        };
+        assert!(lum(dim) < lum(gray), "gray_dim < gray luminance");
+        assert!(lum(gray) < lum(bright), "gray < gray_bright luminance");
+        assert!(lum(bright) < lum(sec), "gray_bright < text_secondary luminance");
+        assert!(lum(sec) < lum(pri), "text_secondary < text_primary luminance");
+
+        // 3. Ansi256 quantized stepping: strictly monotonic indexed colors
+        let a256 = Theme::resolved(ColorLevel::Ansi256);
+        let extract_idx = |color: Color| -> u8 {
+            match color {
+                Color::Indexed(idx) => idx,
+                other => panic!("expected Color::Indexed, got {other:?}"),
+            }
+        };
+
+        let idx_dim = extract_idx(a256.gray_dim);
+        let idx_gray = extract_idx(a256.gray);
+        let idx_bright = extract_idx(a256.gray_bright);
+        let idx_sec = extract_idx(a256.text_secondary);
+        let idx_pri = extract_idx(a256.text_primary);
+
+        assert!(
+            idx_dim < idx_gray
+                && idx_gray < idx_bright
+                && idx_bright < idx_sec
+                && idx_sec < idx_pri,
+            "Ansi256 grayscale levels must be strictly monotonic: {idx_dim} < {idx_gray} < {idx_bright} < {idx_sec} < {idx_pri}"
+        );
+        assert_eq!(idx_dim, 239);
+        assert_eq!(idx_gray, 243);
+        assert_eq!(idx_bright, 247);
+        assert_eq!(idx_sec, 251);
+        assert_eq!(idx_pri, 253);
+    }
+
+    #[test]
+    fn accent_thinking_is_distinct_slate_hue_and_quantizes_distinctly() {
+        let tc = Theme::resolved(ColorLevel::TrueColor);
+        let Color::Rgb(r, g, b) = tc.accent_thinking else {
+            panic!("expected Color::Rgb for accent_thinking in TrueColor");
+        };
+
+        // Slate tone: cool hue with prominent blue channel (b > g > r)
+        assert_eq!((r, g, b), (0x73, 0x7d, 0x94));
+        assert!(
+            b > g && g > r,
+            "accent_thinking should have slate/blue characteristic"
+        );
+        assert!(
+            b.saturating_sub(r) >= 25,
+            "accent_thinking should have noticeable chromatic divergence from flat gray"
+        );
+
+        // Distinct from grayscale and other accents
+        assert_ne!(tc.accent_thinking, tc.gray_dim);
+        assert_ne!(tc.accent_thinking, tc.gray);
+        assert_ne!(tc.accent_thinking, tc.gray_bright);
+        assert_ne!(tc.accent_thinking, tc.accent_user);
+        assert_ne!(tc.accent_thinking, tc.accent_assistant);
+
+        // In 256 colors: quantizes to 244 and remains distinct from surrounding gray slots
+        let a256 = Theme::resolved(ColorLevel::Ansi256);
+        let Color::Indexed(idx_thinking) = a256.accent_thinking else {
+            panic!("expected Color::Indexed for accent_thinking in Ansi256");
+        };
+        assert_eq!(idx_thinking, 244);
+        assert_ne!(idx_thinking, 239, "thinking must not collide with gray_dim");
+        assert_ne!(idx_thinking, 243, "thinking must not collide with gray");
+        assert_ne!(idx_thinking, 247, "thinking must not collide with gray_bright");
     }
 }

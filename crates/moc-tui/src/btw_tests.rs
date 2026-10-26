@@ -3,7 +3,7 @@
 use super::*;
 use crate::widgets::prompt::PromptState;
 use moc_protocol::{SessionInfo, SessionMode, SessionPermission};
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{Terminal, backend::TestBackend, buffer::CellWidth, layout::Rect, style::Style};
 
 fn session(id: &str) -> SessionInfo {
     SessionInfo {
@@ -323,3 +323,97 @@ fn dock_render_is_nonmodal_and_responsive() {
         assert_eq!(app.btw.area.height, 1);
     }
 }
+
+#[test]
+fn btw_dock_has_solid_opaque_background_both_states() {
+    for expanded in [false, true] {
+        let mut app = app();
+        let params = app.btw.begin("a".into(), "旁路问题".into());
+        app.btw.finish(
+            "a",
+            params.request_id,
+            Ok(result(&params, FinishReason::Stop)),
+        );
+        app.btw.expanded = expanded;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut view = crate::render::ScrollbackView::new();
+        terminal
+            .draw(|frame| {
+                // 预设底色为纯红
+                frame.buffer_mut().set_style(
+                    Rect::new(0, 0, 100, 30),
+                    Style::new().bg(ratatui::style::Color::Red),
+                );
+                crate::render::draw(frame, &mut app, &mut view);
+            })
+            .unwrap();
+
+            let dock = app.btw.area;
+            assert!(dock.width > 0 && dock.height > 0);
+            let buffer = terminal.backend().buffer();
+            let theme = app.theme;
+            for y in dock.y..dock.y + dock.height {
+                for x in dock.x..dock.x + dock.width {
+                    if x > dock.x && buffer.cell((x - 1, y)).map_or(false, |c| c.cell_width() > 1) {
+                        continue;
+                    }
+                    let cell = buffer.cell((x, y)).expect("格存在");
+                    assert_ne!(
+                        cell.bg,
+                        ratatui::style::Color::Reset,
+                        "BTW dock 在 ({x}, {y}) (expanded={expanded}) 不应为 Reset"
+                    );
+                    assert_ne!(
+                        cell.bg,
+                        ratatui::style::Color::Red,
+                        "BTW dock 在 ({x}, {y}) (expanded={expanded}) 不应漏底层背景色"
+                    );
+                    assert!(
+                        cell.bg == theme.bg_base
+                            || cell.bg == theme.code_bg
+                            || cell.bg == theme.bg_visual,
+                        "BTW dock 底色应为 theme 实色，实际为 {:?}",
+                        cell.bg
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn btw_dock_uses_rounded_borders_when_expanded() {
+        let (width, height) = (120u16, 30u16);
+        let mut app = app();
+        app.btw.expanded = true;
+        let params = app.btw.begin("a".into(), "旁路问题".into());
+        app.btw.finish(
+            "a",
+            params.request_id,
+            Ok(result(&params, FinishReason::Stop)),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut view = crate::render::ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, &mut app, &mut view))
+            .unwrap();
+        let area = app.btw.area;
+        assert!(area.width >= 4 && area.height >= 3);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((area.x, area.y)).unwrap().symbol(), "╭");
+        assert_eq!(
+            buffer.cell((area.right() - 1, area.y)).unwrap().symbol(),
+            "╮"
+        );
+        assert_eq!(
+            buffer.cell((area.x, area.bottom() - 1)).unwrap().symbol(),
+            "╰"
+        );
+        assert_eq!(
+            buffer
+                .cell((area.right() - 1, area.bottom() - 1))
+                .unwrap()
+                .symbol(),
+            "╯"
+        );
+    }

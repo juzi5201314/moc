@@ -100,6 +100,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // 外层边框
     let outer_block = Block::default()
         .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
         .border_style(Style::new().fg(theme.accent_user))
         .style(Style::new().bg(theme.bg_base))
         .title(Span::styled(
@@ -299,6 +300,7 @@ fn draw_body(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &The
 fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
             " 节点时间线 (Timeline) ",
@@ -483,6 +485,7 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
 fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
             " 回退影响与内容详情 ",
@@ -521,6 +524,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
 
     let banner_block = Block::default()
         .borders(Borders::ALL)
+        .border_set(ratatui::symbols::border::ROUNDED)
         .border_style(Style::new().fg(banner_border_color))
         .style(Style::new().bg(theme.bg_visual));
 
@@ -764,4 +768,68 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use moc_protocol::{Message, TranscriptEntry};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn rewind_modal_panels_render_with_rounded_borders() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let mut rewind_state = RewindState::default();
+        rewind_state.set_entries(vec![
+            TranscriptEntry {
+                id: "entry-1".into(),
+                at_ms: 1700000000000,
+                message: Message::user_text("提问一：详细提问内容"),
+                tool: None,
+                bash: None,
+                agent: None,
+            },
+            TranscriptEntry {
+                id: "entry-2".into(),
+                at_ms: 1700000001000,
+                message: Message::assistant_text("回复一：详细回复内容"),
+                tool: None,
+                bash: None,
+                agent: None,
+            },
+        ]);
+        rewind_state.selected = 0;
+        app.modal = Some(Modal::Rewind {
+            state: rewind_state,
+        });
+
+        let (width, height) = (100u16, 30u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw(frame, &mut app, area);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let win = modal_area(Rect::new(0, 0, width, height));
+        assert_eq!(buffer.cell((win.x, win.y)).unwrap().symbol(), "╭");
+        assert_eq!(buffer.cell((win.right() - 1, win.y)).unwrap().symbol(), "╮");
+        assert_eq!(buffer.cell((win.x, win.bottom() - 1)).unwrap().symbol(), "╰");
+        assert_eq!(buffer.cell((win.right() - 1, win.bottom() - 1)).unwrap().symbol(), "╯");
+
+        let all_symbols: String = (0..height)
+            .flat_map(|y| (0..width).map(move |x| buffer.cell((x, y)).unwrap().symbol()))
+            .collect();
+        assert!(all_symbols.contains('╭'), "必须包含圆角 ╭");
+        assert!(all_symbols.contains('╮'), "必须包含圆角 ╮");
+        assert!(all_symbols.contains('╰'), "必须包含圆角 ╰");
+        assert!(all_symbols.contains('╯'), "必须包含圆角 ╯");
+        assert!(!all_symbols.contains('┌'), "不应含有直角 ┌");
+        assert!(!all_symbols.contains('┐'), "不应含有直角 ┐");
+        assert!(!all_symbols.contains('└'), "不应含有直角 └");
+        assert!(!all_symbols.contains('┘'), "不应含有直角 ┘");
+    }
 }

@@ -69,6 +69,15 @@ pub async fn read_clipboard_image() -> Option<ClipboardImage> {
     if std::env::var_os("DISPLAY").is_some() && which("xclip") {
         return read_x11_image().await;
     }
+    if which("pngpaste") {
+        let output = run("pngpaste", &["-"], None, LOCAL_TIMEOUT).await?;
+        if !output.is_empty() {
+            return Some(ClipboardImage {
+                media_type: "image/png".into(),
+                bytes: output,
+            });
+        }
+    }
     None
 }
 
@@ -103,6 +112,11 @@ pub async fn read_clipboard_text() -> Option<String> {
             LOCAL_TIMEOUT,
         )
         .await?;
+        let text = String::from_utf8(output).ok()?;
+        return (!text.is_empty()).then_some(text);
+    }
+    if which("pbpaste") {
+        let output = run("pbpaste", &[], None, LOCAL_TIMEOUT).await?;
         let text = String::from_utf8(output).ok()?;
         return (!text.is_empty()).then_some(text);
     }
@@ -144,7 +158,13 @@ pub async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
         .context("启动 xclip 失败")?;
         return Ok(());
     }
-    anyhow::bail!("未找到 powershell.exe / wl-copy / xclip，无法访问系统剪贴板")
+    if which("pbcopy") {
+        run("pbcopy", &[], Some(text.as_bytes()), LOCAL_TIMEOUT)
+            .await
+            .context("启动 pbcopy 失败")?;
+        return Ok(());
+    }
+    anyhow::bail!("未找到 powershell.exe / wl-copy / xclip / pbcopy，无法访问系统剪贴板")
 }
 
 /// 通过终端写系统剪贴板的 OSC52 序列：SSH、容器或没装 wl-clipboard 时

@@ -2012,7 +2012,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
         "ask" => args
             .get("questions")
             .and_then(Value::as_array)
-            .and_then(|questions| {
+            .map(|questions| {
                 // 摘要只占一行：问题正文可含换行，取首行避免控制字符在标题里粘连；
                 // 多问时点明总量，后面的题不藏在首问后面。
                 let first = questions
@@ -2021,11 +2021,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                     .and_then(Value::as_str)
                     .and_then(|text| text.lines().next())
                     .unwrap_or_default();
-                Some(
-                    (questions.len() > 1)
-                        .then(|| format!("共 {} 问 · {}", questions.len(), first))
-                        .unwrap_or_else(|| first.to_owned()),
-                )
+                if questions.len() > 1 { format!("共 {} 问 · {}", questions.len(), first) } else { first.to_owned() }
             })
             .unwrap_or_default(),
         "job" | "write_plan" | "exit_plan" => String::new(),
@@ -3794,5 +3790,26 @@ mod tests {
             },
         );
         assert!(slots.is_empty(), "占位区超出视口宽度时不登记");
+    }
+
+    #[test]
+    fn thinking_block_and_rows_apply_thinking_and_grayscale_palette() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(crate::theme::Theme::global(), events);
+        let lines = thinking_block("test line", Some(10), Some(1_000), &app, 80, DetailLevel::Full);
+
+        // Title line: spans[1] is '◆ ' in accent_thinking, spans[2] is 'Thought' in gray_bright
+        let title_spans = &lines[0].spans;
+        assert_eq!(title_spans[1].content, "◆ ");
+        assert_eq!(title_spans[1].style.fg, Some(app.theme.accent_thinking));
+        assert_eq!(title_spans[2].content, "Thought");
+        assert_eq!(title_spans[2].style.fg, Some(app.theme.gray_bright));
+
+        // Thinking rows: first content row starts with '▏ ' in accent_thinking, content in gray
+        assert!(lines.len() >= 2);
+        let row_spans = &lines[1].spans;
+        assert_eq!(row_spans[1].content, "▏ ");
+        assert_eq!(row_spans[1].style.fg, Some(app.theme.accent_thinking));
+        assert_eq!(row_spans[2].style.fg, Some(app.theme.gray));
     }
 }

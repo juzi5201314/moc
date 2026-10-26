@@ -565,9 +565,9 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         (
             "Esc",
             if app.cancel_requested {
-                "Stopping"
+                "正在停止"
             } else {
-                "Stop"
+                "停止"
             },
             if app.cancel_requested {
                 theme.accent_warning
@@ -576,7 +576,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
             },
         )
     } else {
-        (help_key, "Help", theme.gray_dim)
+        (help_key, "帮助", theme.gray_dim)
     };
     let left_separator = " | ";
     let tips_width = str_width(left_key) + 1 + str_width(left_tip) + str_width(left_separator);
@@ -596,8 +596,11 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
-    let mode_start = right_start + cell_width(model) + cell_width(" | ");
+    let model_cells = cell_width(model);
+    let mode_start = right_start + model_cells + cell_width(" | ");
     let mode_cells = cell_width(mode);
+    let perm_start = mode_start + mode_cells + cell_width(" | ");
+    let perm_cells = cell_width(permission);
     let mut x = right_start;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
     for (text, color) in right {
@@ -605,11 +608,23 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         x += cell_width(text);
     }
     buffer.set_string(x, y, " ", Style::new());
+    app.model_tag_area = Rect {
+        x: right_start,
+        y,
+        width: model_cells,
+        height: 1,
+    };
     // 模式名单独留命中区：鼠标点击它就地图例弹出模式菜单，图例本身不变。
     app.mode_area = Rect {
         x: mode_start,
         y,
         width: mode_cells,
+        height: 1,
+    };
+    app.permission_tag_area = Rect {
+        x: perm_start,
+        y,
+        width: perm_cells,
         height: 1,
     };
 }
