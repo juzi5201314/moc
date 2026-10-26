@@ -32,8 +32,8 @@ use crate::methods::{
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
     BtwParams, BtwResult, BtwUpdate, BtwUpdateMethod, BtwUpdateParams, CompactResult,
     ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult, Empty,
-    InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
-    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
+    FsListDirParams, FsListDirResult, InitializeParams, InitializeResult, PermissionRequestParams,
+    PermissionResult, PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
@@ -156,6 +156,15 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: ResourceCompleteParams,
     ) -> impl Future<Output = Result<ResourceCompleteResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 列出目录下的子目录，供前端选择工作目录。
+    fn fs_list_dir(
+        &self,
+        _ctx: RequestContext,
+        _params: FsListDirParams,
+    ) -> impl Future<Output = Result<FsListDirResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

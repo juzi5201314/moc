@@ -1,0 +1,181 @@
+import { describe, expect, it } from "vitest";
+import type {
+  SessionInfo,
+  SessionUpdate,
+  ToolDiff,
+  TranscriptChildCall,
+  TranscriptEntry,
+} from "@/protocol/types";
+import { applyUpdate, createView, entriesToBlocks, type ToolBlock } from "./transcript-model";
+
+const INFO: SessionInfo = {
+  id: "ses_1",
+  title: "测试",
+  model: "m1",
+  permission: "workspace",
+  mode: "normal",
+  cwd: "/tmp/work",
+  created_at_ms: 0,
+  updated_at_ms: 0,
+};
+
+const DIFF: ToolDiff = {
+  files: [
+    {
+      path: "a.txt",
+      hunks: [
+        {
+          old_start: 1,
+          new_start: 1,
+          lines: [
+            { kind: "delete", old_no: 1, text: "old" },
+            { kind: "insert", new_no: 1, text: "new" },
+          ],
+        },
+      ],
+    },
+  ],
+  truncated: false,
+};
+
+describe("entriesToBlocks", () => {
+  const entries: TranscriptEntry[] = [
+    { id: "e1", at_ms: 1, message: { role: "User", content: [{ Text: "你好" }] } },
+    {
+      id: "e2",
+      at_ms: 2,
+      message: {
+        role: "Assistant",
+        content: [
+          { Reasoning: { Text: { text: "想一想", signature: null } } },
+          { Text: "先跑代码" },
+          { ToolCall: { id: "call_1", name: "run_code", arguments: '{"description":"x"}' } },
+        ],
+      },
+    },
+    {
+      id: "e3",
+      at_ms: 3,
+      message: {
+        role: "Tool",
+        content: [{ ToolResult: { tool_call_id: "call_1", content: "ok", is_error: false } }],
+      },
+      tool: { tool_call_id: "call_1", status: "completed", duration_ms: 42 },
+    },
+    {
+      id: "e4",
+      at_ms: 4,
+      message: { role: "User", content: [{ Text: "ls output" }] },
+      bash: { command: "ls", exclude_from_context: false },
+    },
+    {
+      id: "e5",
+      at_ms: 5,
+      message: {
+        role: "Tool",
+        content: [{ ToolResult: { tool_call_id: "orphan", content: "?", is_error: true } }],
+      },
+    },
+  ];
+  const childCalls: TranscriptChildCall[] = [
+    {
+      id: "child_1",
+      parent_tool_call_id: "call_1",
+      name: "read",
+      arguments: "{}",
+      result: "file",
+      status: "completed",
+      duration_ms: 5,
+    },
+  ];
+
+  it("按顺序生成块并配对工具结果", () => {
+    const blocks = entriesToBlocks(entries, childCalls);
+    expect(blocks.map((block) => block.kind)).toEqual([
+      "user",
+      "reasoning",
+      "text",
+      "tool",
+      "bash",
+      "tool",
+    ]);
+    const tool = blocks[3] as ToolBlock;
+    expect(tool.toolCallId).toBe("call_1");
+    expect(tool.status).toBe("completed");
+    expect(tool.result).toBe("ok");
+    expect(tool.durationMs).toBe(42);
+    expect(tool.children.map((child) => child.toolCallId)).toEqual(["child_1"]);
+    const bash = blocks[4];
+    expect(bash.kind === "bash" && bash.command).toBe("ls");
+    const orphan = blocks[5] as ToolBlock;
+    expect(orphan.name).toBe("工具结果");
+    expect(orphan.status).toBe("error");
+  });
+});
+
+describe("applyUpdate", () => {
+  it("流式两段生成，最后一段以 message 为准", () => {
+    const view = createView(INFO);
+    const updates: SessionUpdate[] = [
+      { type: "prompt_started", prompt_id: "p1", model: "m1", at_ms: 0 },
+      { type: "generation_started", prompt_id: "p1" },
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "reasoning", delta: "思考" } },
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "text", delta: "第一段" } },
+      {
+        type: "tool_started",
+        prompt_id: "p1",
+        tool_call_id: "c1",
+        name: "edit",
+        arguments: "{}",
+      },
+      {
+        type: "tool_finished",
+        prompt_id: "p1",
+        tool_call_id: "c1",
+        name: "edit",
+        arguments: "{}",
+        status: "completed",
+        result: { tool_call_id: "c1", content: "done", is_error: false },
+        duration_ms: 10,
+        diff: DIFF,
+      },
+      { type: "generation_started", prompt_id: "p1" },
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "text", delta: "第二段草稿" } },
+      {
+        type: "prompt_finished",
+        prompt_id: "p1",
+        message: { role: "Assistant", content: [{ Text: "第二段定稿" }] },
+        finish_reason: "Stop",
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          total_tokens: 2,
+          cached_input_tokens: null,
+          cache_creation_input_tokens: null,
+          reasoning_tokens: null,
+        },
+      },
+    ];
+    for (const [index, update] of updates.entries()) applyUpdate(view, update, 1000 + index * 100);
+
+    const texts = view.blocks.flatMap((block) => (block.kind === "text" ? [block.text] : []));
+    expect(texts).toEqual(["第一段", "第二段定稿"]);
+    expect(view.blocks.some((block) => block.kind === "reasoning" && block.text === "思考")).toBe(
+      true,
+    );
+    const tool = view.blocks.find((block) => block.kind === "tool") as ToolBlock;
+    expect(tool.status).toBe("completed");
+    expect(tool.diff).toEqual(DIFF);
+    expect(view.diffs).toHaveLength(1);
+    expect(view.running).toBe(false);
+    expect(view.live).toBeNull();
+    expect(view.blocks.at(-1)?.kind).toBe("footer");
+  });
+
+  it("未知类型不改变状态", () => {
+    const view = createView(INFO);
+    const before = JSON.stringify(view);
+    applyUpdate(view, { type: "future_thing" } as unknown as SessionUpdate);
+    expect(JSON.stringify(view)).toBe(before);
+  });
+});

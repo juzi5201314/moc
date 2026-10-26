@@ -1,5 +1,7 @@
 /target
 /.zcode/
+/crates/moc-web/web/node_modules/
+/crates/moc-web/web/dist/
 
 # Python 缓存（scripts/ 下的辅助脚本）
 __pycache__/

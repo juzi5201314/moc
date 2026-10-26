@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>moc</title>
+    <script>
+      // 首帧前设好 .dark，避免亮色闪屏；偏好与 store/prefs.ts 同一个 key。
+      (() => {
+        let theme = "system";
+        try {
+          theme = JSON.parse(localStorage.getItem("moc-web-prefs") || "{}").theme || "system";
+        } catch {}
+        const dark =
+          theme === "dark" ||
+          (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

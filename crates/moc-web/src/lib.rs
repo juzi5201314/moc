@@ -4,11 +4,12 @@
 //! `moc`（TUI）平级。多个浏览器标签共享同一个 core，同一会话的写互斥由 core
 //! 内的提示锁负责；另一个 `moc` 进程同时打开同一会话时，由跨进程写租约裁决。
 //!
-//! 传输格式是 NDJSON（一行一个 JSON-RPC 报文），与 TUI 内嵌连接一致。浏览器
-//! 侧只需要 `WebSocket` + `JSON`，不依赖任何前端构建链。
+//! 传输格式是 NDJSON（一行一个 JSON-RPC 报文），与 TUI 内嵌连接一致。前端由
+//! pnpm 构建（`crates/moc-web/web`），产物经 `build.rs` 嵌入二进制，部署仍只需一个可执行文件。
 
 mod assets;
 mod bridge;
+mod browser;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use moc_core::Core;
@@ -30,6 +31,8 @@ pub struct WebOptions {
     pub addr: SocketAddr,
     /// 访问令牌：浏览器必须用 `?token=` 带上它才能建立 WebSocket。
     pub token: String,
+    /// 启动后用系统默认浏览器打开 WebUI。
+    pub open_browser: bool,
 }
 
 /// 启动 Web 前端，直到进程退出。
@@ -47,7 +50,15 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
         server,
     };
 
-    println!("moc web 已启动：http://{addr}/?token={}", options.token);
+    let url = format!("http://{addr}/?token={}", options.token);
+    println!("moc web 已启动：{url}");
+    if options.open_browser {
+        match browser::open(&url) {
+            Ok(true) => println!("已在浏览器中打开；如未弹出，请手动访问上面的地址"),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "自动打开浏览器失败"),
+        }
+    }
     println!("按 Ctrl+C 停止服务");
     axum::serve(listener, routes(state)).await?;
     Ok(())
@@ -71,32 +82,49 @@ fn routes(state: AppState) -> Router {
         require_token,
     ));
     Router::new()
-        .route("/", get(index))
-        .route("/app.js", get(app_js))
-        .route("/style.css", get(style_css))
         .route("/ws", ws_route)
+        .fallback(get(static_handler))
         .with_state(state)
 }
 
-async fn index() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        assets::INDEX,
-    )
-}
-
-async fn app_js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        assets::APP_JS,
-    )
-}
-
-async fn style_css() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        assets::STYLE_CSS,
-    )
+/// 静态资源：精确命中嵌入表；`/assets/` 下的文件名带内容哈希，可永久缓存。
+/// `/assets/` 下未命中回 404（旧版本的过期 chunk 不能拿到 HTML）；
+/// 其余未命中回 `index.html`（SPA 回退），且不缓存，保证升级后拿到新入口。
+async fn static_handler(uri: Uri) -> Response {
+    match assets::lookup(uri.path()) {
+        Some(asset) => {
+            let cache = if asset.path.starts_with("/assets/") {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, asset.mime),
+                    (header::CACHE_CONTROL, cache),
+                ],
+                asset.body,
+            )
+                .into_response()
+        }
+        None if uri.path().starts_with("/assets/") => (
+            StatusCode::NOT_FOUND,
+            [(header::CACHE_CONTROL, "no-cache")],
+            "资源不存在",
+        )
+            .into_response(),
+        None => {
+            let index = assets::index();
+            (
+                [
+                    (header::CONTENT_TYPE, index.mime),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                index.body,
+            )
+                .into_response()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

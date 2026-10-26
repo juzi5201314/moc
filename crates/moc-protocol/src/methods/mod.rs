@@ -19,6 +19,7 @@
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
 //! | [`management::SessionSteer`] / [`management::SessionUnsteer`] | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
+//! | [`fs::FsListDir`] | C→S | core | 已初始化 | `-32602` / `-32014` |
 //! | [`permission::SessionRequestPermission`] / [`ask::SessionRequestAsk`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
 //!
@@ -32,6 +33,7 @@ pub mod bash;
 pub mod btw;
 pub mod config;
 pub mod diff;
+pub mod fs;
 pub mod initialize;
 pub mod management;
 pub mod permission;
@@ -64,6 +66,7 @@ pub use diff::{
     DiffHunk, DiffLine, DiffLineKind, LineChange, ToolDiff, ToolFileDiff, build_hunks,
     build_hunks_from_changes,
 };
+pub use fs::{FS_LIST_DIR_MAX_ENTRIES, FsDirEntry, FsListDir, FsListDirParams, FsListDirResult};
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
@@ -171,6 +174,7 @@ mod tests {
             (<PluginReload as Method>::NAME, "plugin/reload"),
             (<PluginRunCommand as Method>::NAME, "plugin/run_command"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
+            (<FsListDir as Method>::NAME, "fs/list_dir"),
             (<AgentSpawn as Method>::NAME, "agent/spawn"),
             (<AgentList as Method>::NAME, "agent/list"),
             (<AgentMessage as Method>::NAME, "agent/message"),

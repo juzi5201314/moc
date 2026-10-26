@@ -35,12 +35,13 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, BtwCancelResult, BtwUpdate,
-    ClientInfo, ConfigGet, ConfigManage, Initialize, Ping, PingResult, PluginList, PluginReload,
-    PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw, SessionBtwCancel,
-    SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
-    SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
-    SessionPrompt, SessionRename, SessionRewind, SessionSetMode, SessionSetModel,
-    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
+    ClientInfo, ConfigGet, ConfigManage, FsListDir, Initialize, Ping, PingResult, PluginList,
+    PluginReload, PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw,
+    SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact, SessionContext,
+    SessionContextContent, SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew,
+    SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
+    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
+    SessionUnsteer, SessionUsage,
 };
 
 use crate::service::{AgentService, RequestContext};
@@ -635,6 +636,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .resource_complete(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsListDir as Method>::NAME => {
+                let params = params_from_value::<FsListDir>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_list_dir(self.context(client, cancel), params)
                         .await?,
                 )
             }

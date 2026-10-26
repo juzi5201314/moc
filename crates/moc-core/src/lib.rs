@@ -10,6 +10,7 @@ pub mod compact;
 mod concurrency;
 pub mod config;
 mod error;
+mod fs_list;
 pub mod hashline;
 pub mod ids;
 pub mod limits;

@@ -53,6 +53,9 @@ pub struct CliArgs {
     /// `moc web` 的访问令牌；缺省随机生成并打印在启动信息里。
     #[arg(long)]
     pub token: Option<String>,
+    /// `moc web` 启动后不自动打开浏览器。
+    #[arg(long)]
+    pub no_open: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

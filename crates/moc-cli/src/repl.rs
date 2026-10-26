@@ -74,7 +74,16 @@ async fn run_frontend(core: Arc<Core>, args: CliArgs, web: bool) -> anyhow::Resu
             .clone()
             .unwrap_or_else(|| uuid::Uuid::now_v7().simple().to_string());
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
-        return moc_web::run(core, moc_web::WebOptions { addr, token }).await;
+        let open_browser = !args.no_open;
+        return moc_web::run(
+            core,
+            moc_web::WebOptions {
+                addr,
+                token,
+                open_browser,
+            },
+        )
+        .await;
     }
     if use_tui(&args) {
         moc_tui::run(core, tui_options(&args)).await

@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/* 暗色由 <html class="dark"> 控制：index.html 内联脚本在首帧前设好，避免闪白。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.22 0.01 90);
+  --panel: oklch(0.975 0.003 90);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.22 0.01 90);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.955 0.004 90);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.955 0.004 90);
+  --muted-foreground: oklch(0.55 0.01 90);
+  --accent: oklch(0.95 0.006 90);
+  --accent-foreground: var(--foreground);
+  --brand: oklch(0.66 0.16 50);
+  --brand-foreground: oklch(0.99 0 0);
+  --destructive: oklch(0.645 0.246 16.4);
+  --success: oklch(0.696 0.17 162.5);
+  --warn: oklch(0.769 0.188 70.1);
+  --border: oklch(0.92 0.004 90);
+  --input: oklch(0.92 0.004 90);
+  --ring: oklch(0.66 0.16 50);
+  --diff-insert: color-mix(in oklch, var(--success) 12%, transparent);
+  --diff-delete: color-mix(in oklch, var(--destructive) 12%, transparent);
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: oklch(0.17 0 0);
+  --foreground: oklch(0.93 0.005 90);
+  --panel: oklch(0.205 0.003 90);
+  --card: oklch(0.205 0.003 90);
+  --popover: oklch(0.22 0.003 90);
+  --primary: oklch(0.93 0.005 90);
+  --primary-foreground: oklch(0.17 0 0);
+  --secondary: oklch(0.25 0.004 90);
+  --muted: oklch(0.25 0.004 90);
+  --muted-foreground: oklch(0.65 0.01 90);
+  --accent: oklch(0.27 0.004 90);
+  --destructive: oklch(0.712 0.194 13.4);
+  --success: oklch(0.765 0.177 163.2);
+  --warn: oklch(0.828 0.189 84.4);
+  --border: oklch(0.28 0.004 90);
+  --input: oklch(0.3 0.004 90);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-diff-insert: var(--diff-insert);
+  --color-diff-delete: var(--diff-delete);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 14px;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--brand) 30%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: 减少动效必须压过 Tailwind 工具类的过渡 */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 同上 */
+    transition-duration: 0.01ms !important;
+  }
+}

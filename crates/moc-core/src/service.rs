@@ -12,18 +12,18 @@ use moc_protocol::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentProfile,
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
     AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
-    ContextContentResult, ContextUsageResult, Empty, InitializeParams, InitializeResult, ModelInfo,
-    ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo, PluginListParams,
-    PluginListResult, PluginReloadParams, PluginReloadResult, PluginRunCommandParams,
-    PluginRunCommandResult, PluginToolInfo, PromptResult, ResourceCompleteParams,
-    ResourceCompleteResult, ServerCapabilities, ServerInfo, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
-    SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams, SessionPermission,
-    SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams, SessionRewindParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUsageParams,
-    SessionUsageResult, UnsteerParams, UnsteerResult,
+    ContextContentResult, ContextUsageResult, Empty, FsListDirParams, FsListDirResult,
+    InitializeParams, InitializeResult, ModelInfo, ModelInput, ModelUsageSummary,
+    PluginCommandInfo, PluginInfo, PluginListParams, PluginListResult, PluginReloadParams,
+    PluginReloadResult, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo,
+    PromptResult, ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
+    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
+    SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
+    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
+    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -143,7 +143,8 @@ pub(crate) async fn emit_session_config_changed(
     if from == to {
         return;
     }
-    if let Some(host) = plugin_events::host_for(inner, std::path::Path::new(&state.session.cwd)).await
+    if let Some(host) =
+        plugin_events::host_for(inner, std::path::Path::new(&state.session.cwd)).await
     {
         let context = plugin_events::context(
             &state.session.id,
@@ -1009,6 +1010,20 @@ impl AgentService for Core {
         Ok(ResourceCompleteResult { candidates })
     }
 
+    async fn fs_list_dir(
+        &self,
+        _ctx: RequestContext,
+        params: FsListDirParams,
+    ) -> Result<FsListDirResult, RpcError> {
+        let default_cwd = self.inner.config().cwd.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::fs_list::list_dir(params.path.as_deref(), &default_cwd, params.show_hidden)
+        })
+        .await
+        .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+        .map_err(|error| invalid_params(error.to_string()))
+    }
+
     async fn session_new(
         &self,
         ctx: RequestContext,
@@ -1208,11 +1223,8 @@ impl AgentService for Core {
             .map_err(|error| write_lease_error(self, &child_id, &child, error))?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
-        if let Some(host) = plugin_events::host_for(
-            &self.inner,
-            std::path::Path::new(&loaded.session.cwd),
-        )
-        .await
+        if let Some(host) =
+            plugin_events::host_for(&self.inner, std::path::Path::new(&loaded.session.cwd)).await
         {
             let context = plugin_events::context_from_info(&loaded.session);
             let parent = loaded.session.forked_from.clone();

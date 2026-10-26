@@ -40,6 +40,8 @@ jobs:
       TARGET: ${{ matrix.target }}
       PLATFORM: ${{ matrix.name }}
       VERSION: ${{ inputs.tag || github.ref_name }}
+      # moc-web 的 build.rs 在 web/dist 缺失时直接失败，避免发布占位页
+      MOC_WEB_REQUIRE_DIST: "1"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,6 +57,24 @@ jobs:
         with:
           key: ${{ matrix.target }}
           cache-on-failure: true
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: crates/moc-web/web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/moc-web/web/pnpm-lock.yaml
+
+      - name: Build web UI
+        working-directory: crates/moc-web/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
