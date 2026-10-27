@@ -997,6 +997,34 @@ impl App {
         self.thinking_has_block = false;
     }
 
+    /// 撤掉上一条提示在转写尾部留下的块：那一轮已经被 `/retry` 从会话里剪掉了。
+    ///
+    /// 只撤「肯定不在会话里」的块——说明性提示、状态为取消的工具，以及（整轮被丢弃时）
+    /// 没跑完的助手正文与思考；碰到已落库的内容（跑完的工具、用户消息……）就停手，
+    /// 界面与会话不会因此错位。`keep_reply` 用于重放工具的情况：assistant 消息还留在
+    /// 会话里，它的正文不能跟着撤。
+    pub fn rewind_failed_turn(&mut self, keep_reply: bool) -> bool {
+        let mut removed = false;
+        while self
+            .blocks
+            .last()
+            .is_some_and(|entry| trimmable_tail_block(&entry.block, keep_reply))
+        {
+            self.blocks.pop();
+            removed = true;
+        }
+        if !removed {
+            return false;
+        }
+        self.generation_start = self.generation_start.map(|_| self.blocks.len());
+        self.tool_indices
+            .retain(|_, index| *index < self.blocks.len());
+        self.thinking_started_at = None;
+        self.thinking_has_block = false;
+        self.view_gen = self.view_gen.wrapping_add(1);
+        true
+    }
+
     /// 开始新的思考块：定稿上一块，并登记计时与 usage 回填目标。
     pub fn start_thinking(&mut self) {
         self.finish_thinking();
@@ -2062,6 +2090,19 @@ pub fn model_selector_label(selector: &str) -> &str {
     selector.strip_suffix(":off").unwrap_or(selector)
 }
 
+/// 这个块是否属于「没跑完、已经从会话里剪掉」的那一轮。
+///
+/// 说明性提示（错误说明、压缩进度）纯属界面产物，跟着一起撤；用户消息、跑完的工具
+/// 调用都是真实历史，不能算进来。
+fn trimmable_tail_block(block: &Block, keep_reply: bool) -> bool {
+    match block {
+        Block::Note { .. } => true,
+        Block::Tool(tool) => tool.status == Some(moc_protocol::methods::ToolStatus::Cancelled),
+        Block::Assistant { .. } | Block::Thinking { .. } => !keep_reply,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ModeMenu, mode_label, model_selector_label};
@@ -2418,6 +2459,40 @@ mod tests {
         assert!(app.notice_deadline().is_none());
         // 过期的槽位不再需要重绘，事件循环据此不再安排超时分支
         assert_eq!(app.warning.as_deref(), Some("effort max → high"));
+    }
+
+    /// `/retry` 已把失败的那一轮从会话里剪掉：转写里对应的块也必须撤掉。
+    #[test]
+    /// `/retry` 撤掉的是「没跑完」的那一轮，已经落库的内容一律留着。
+    fn rewind_drops_the_failed_tail_of_the_last_turn() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = super::App::new(crate::theme::Theme::global(), events);
+        app.push_block(crate::transcript::Block::User {
+            text: "先看看仓库".into(),
+        });
+        app.push_block(crate::transcript::Block::Assistant {
+            text: "上一轮的回答".into(),
+        });
+        app.push_block(crate::transcript::Block::User {
+            text: "继续".into(),
+        });
+        app.push_block(crate::transcript::Block::Assistant {
+            text: "半截正文".into(),
+        });
+        app.push_block(crate::transcript::Block::Note {
+            text: "错误：连接中断".into(),
+            error: true,
+        });
+
+        assert!(app.rewind_failed_turn(false));
+
+        assert_eq!(app.blocks.len(), 3, "只撤最后一条用户消息之后的块");
+        assert!(
+            matches!(&app.blocks[2].block, crate::transcript::Block::User { text } if text == "继续")
+        );
+        // 尾部本来就没有可撤的块：不报撤过，免得把上一轮的正文当成失败回合吃掉。
+        assert!(!app.rewind_failed_turn(false));
+        assert_eq!(app.blocks.len(), 3);
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //! | [`plugin::PluginList`] / [`plugin::PluginRunCommand`] / [`plugin::PluginReload`] | C→S | core | 已初始化 + 插件可用 | `-32010` / `-32014` |
 //! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
+//! | [`prompt::SessionRetry`] | C→S | core | 已初始化 + 该会话无进行中的提示 + 已有上下文 | `-32010` / `-32015` / `-32011` / `-32602` |
 //! | [`btw::SessionBtw`] | C→S | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |
 //! | [`btw::SessionBtwCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
@@ -91,7 +92,7 @@ pub use plugin::{
 };
 pub use prompt::{
     InputPart, PromptParams, PromptResult, SessionCancel, SessionCancelParams, SessionCancelResult,
-    SessionPrompt,
+    SessionPrompt, SessionRetry, SessionRetryParams,
 };
 pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
@@ -166,6 +167,7 @@ mod tests {
             ),
             (<SessionUsage as Method>::NAME, "session/usage"),
             (<SessionPrompt as Method>::NAME, "session/prompt"),
+            (<SessionRetry as Method>::NAME, "session/retry"),
             (<SessionBtw as Method>::NAME, "session/btw"),
             (<SessionBtwCancel as Method>::NAME, "session/btw_cancel"),
             (<SessionBash as Method>::NAME, "session/bash"),
@@ -211,6 +213,7 @@ mod tests {
         fn server_notification<M: ServerNotification>() {}
         client::<Initialize>();
         client::<SessionPrompt>();
+        client::<SessionRetry>();
         client::<SessionBtw>();
         client::<SessionBtwCancel>();
         client::<SessionRewind>();

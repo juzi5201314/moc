@@ -74,6 +74,10 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "本条消息按问答模式处理（只读）",
     },
     SlashCommand {
+        name: "/retry",
+        description: "接着现有上下文继续跑（不追加用户消息）",
+    },
+    SlashCommand {
         name: "/compact",
         description: "手动压缩上下文",
     },

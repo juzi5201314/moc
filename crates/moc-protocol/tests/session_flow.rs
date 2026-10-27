@@ -11,9 +11,9 @@ use moc_protocol::methods::{
     ServerCapabilities, SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams,
     SessionDelete, SessionDeleteParams, SessionList, SessionListParams, SessionLoad,
     SessionLoadParams, SessionMode, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt,
-    SessionRename, SessionRenameParams, SessionRequestAsk, SessionRequestPermission,
-    SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams, SessionUnlock,
-    SessionUnlockParams, SessionUpdate, SessionUpdateMethod, ToolStatus,
+    SessionRename, SessionRenameParams, SessionRequestAsk, SessionRequestPermission, SessionRetry,
+    SessionRetryParams, SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams,
+    SessionUnlock, SessionUnlockParams, SessionUpdate, SessionUpdateMethod, ToolStatus,
 };
 use moc_protocol::{
     ClientBuilder, FinishReason, PROTOCOL_VERSION, ProtocolError, RpcCallError, RpcErrorCode,
@@ -318,6 +318,14 @@ async fn same_session_second_prompt_is_busy_and_other_sessions_run_concurrently(
         .await
         .expect_err("活动提示期间拒绝压缩");
     assert_eq!(compact_busy.code(), Some(RpcErrorCode::SessionBusy.code()));
+    // 重试与提示共用同一份提示注册表：活动提示期间不允许在旁边再起一次。
+    let retry_busy = handle
+        .call::<SessionRetry>(SessionRetryParams {
+            session_id: "ses_1".to_owned(),
+        })
+        .await
+        .expect_err("活动提示期间拒绝重试");
+    assert_eq!(retry_busy.code(), Some(RpcErrorCode::SessionBusy.code()));
 
     // 另一个会话并发跑
     let second_handle = handle.clone();

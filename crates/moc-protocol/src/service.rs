@@ -39,10 +39,10 @@ use crate::methods::{
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRewindParams, SessionSetModeParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
-    SessionUsageResult, UnsteerParams, UnsteerResult,
+    SessionPlanApproveResult, SessionRenameParams, SessionRetryParams, SessionRewindParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -308,6 +308,20 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: PromptParams,
     ) -> impl Future<Output = Result<PromptResult, RpcError>> + Send;
+
+    /// 不追加任何用户消息，按会话现有上下文重跑一次提示。
+    ///
+    /// 与 [`Self::session_prompt`] 共用提示锁、取消令牌与 `prompt_started` /
+    /// `prompt_finished` 更新；语义区别只在输入：不落库用户消息，直接把当前
+    /// transcript 原样再请求一次模型。会话没有可重试的上下文时回
+    /// [`crate::RpcErrorCode::InvalidParams`]。
+    fn session_retry(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionRetryParams,
+    ) -> impl Future<Output = Result<PromptResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
 
     /// 在只读快照上跑一次旁路问答：不写会话、不抢主提示锁、不执行工具。
     ///

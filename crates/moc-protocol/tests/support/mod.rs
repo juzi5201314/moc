@@ -24,10 +24,10 @@ use moc_protocol::methods::{
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
     SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionSetModeParams,
-    SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
-    SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry,
-    default_options,
+    SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionRetryParams,
+    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
+    TranscriptEntry, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -887,6 +887,24 @@ impl AgentService for ScriptedService {
         self.with(|state| state.running_prompts -= 1);
         outcome
     }
+
+    async fn session_retry(
+        &self,
+        ctx: RequestContext,
+        params: SessionRetryParams,
+    ) -> Result<PromptResult, RpcError> {
+        // 脚本化 core 不区分输入来源：重试就是一次没有用户消息的提示。
+        self.session_prompt(
+            ctx,
+            PromptParams {
+                session_id: params.session_id,
+                input: Vec::new(),
+                mode: None,
+                agent_message: None,
+            },
+        )
+        .await
+    }
 }
 
 // ───────────────────────────── 前端侧辅助 ─────────────────────────────
@@ -976,6 +994,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::UpstreamMismatch { .. } => "upstream_mismatch",
         SessionUpdate::SteeringApplied { .. } => "steering_applied",
         SessionUpdate::Error { .. } => "error",
+        SessionUpdate::PromptRewound { .. } => "prompt_rewound",
     }
 }
 

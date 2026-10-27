@@ -12,7 +12,8 @@ use crate::{
 };
 use moc_protocol::{
     BashCommand, BashParams, ClientHandle, InputPart, PromptParams, SessionBash, SessionMode,
-    SessionPrompt, SessionSteer, SessionUnsteer, SteerParams, UnsteerParams,
+    SessionPrompt, SessionRetry, SessionRetryParams, SessionSteer, SessionUnsteer, SteerParams,
+    UnsteerParams,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -258,6 +259,26 @@ pub fn send_prompt(
                 input: parts,
                 mode,
                 agent_message: None,
+            })
+            .await
+            .map(|_| ())
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::PromptReturned {
+            session: session_id,
+            result,
+        });
+    });
+}
+
+/// `/retry`：不追加用户消息，按现有上下文重新发起一次提示。
+///
+/// 结果复用 [`AppEvent::PromptReturned`]，收尾、错误提示与队列派发都和普通提示一致。
+pub fn send_retry(client: &ClientHandle, session_id: String, events: UnboundedSender<AppEvent>) {
+    let client = client.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionRetry>(SessionRetryParams {
+                session_id: session_id.clone(),
             })
             .await
             .map(|_| ())

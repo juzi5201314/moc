@@ -12,9 +12,9 @@
 //! 4. 分发：`ping` 与 `session/cancel` 由协议层自答；其余进 [`AgentService`]。
 //! 5. 结果序列化失败 → `-32603`。
 //!
-//! `session/prompt` 额外过提示注册表：同一会话已有进行中的提示 → `-32011`，同样**不调用
-//! core**。该注册表同时是 `session/cancel` 的落点，也是协议层唯一持有的「会话相关」
-//! 状态——它只记「谁在飞」，不记任何会话内容。
+//! `session/prompt` / `session/retry` 额外过提示注册表：同一会话已有进行中的提示 →
+//! `-32011`，同样**不调用 core**。该注册表同时是 `session/cancel` 的落点，也是协议层
+//! 唯一持有的「会话相关」状态——它只记「谁在飞」，不记任何会话内容。
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ use crate::methods::{
     PluginReload, PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw,
     SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact, SessionContext,
     SessionContextContent, SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew,
-    SessionPlanApprove, SessionPrompt, SessionRename, SessionRewind, SessionSetMode,
+    SessionPlanApprove, SessionPrompt, SessionRename, SessionRetry, SessionRewind, SessionSetMode,
     SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
     SessionUnsteer, SessionUsage,
 };
@@ -374,7 +374,8 @@ impl<S: AgentService> ServerDispatch<S> {
     /// 数 MiB 的图片，读循环不该为它做一次完整反序列化。
     fn claim_prompt(&self, request: &Request, cancel: &CancellationToken) -> PromptClaim {
         let method = request.method.as_ref();
-        let is_prompt = method == <SessionPrompt as Method>::NAME;
+        let is_prompt =
+            method == <SessionPrompt as Method>::NAME || method == <SessionRetry as Method>::NAME;
         let is_compact = method == <SessionCompact as Method>::NAME;
         let is_bash = method == <SessionBash as Method>::NAME;
         if !is_prompt && !is_compact && !is_bash {
@@ -816,6 +817,16 @@ impl<S: AgentService> ServerDispatch<S> {
                 // `dispatch` 持有：解析失败、core 报错、未握手被拒都会摘掉占位
                 let params = params_from_value::<SessionPrompt>(params)?;
                 self.prompt(client, params, cancel).await
+            }
+            <SessionRetry as Method>::NAME => {
+                // 与提示共用注册表、守卫与取消落点；core 侧不追加用户消息。
+                let params = params_from_value::<SessionRetry>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .session_retry(self.context(client, cancel), params)
+                        .await?,
+                )
             }
             <SessionBtw as Method>::NAME => {
                 let params = params_from_value::<SessionBtw>(params)?;

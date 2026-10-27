@@ -12,9 +12,9 @@ use moc_protocol::methods::{
     SessionList, SessionListParams, SessionLoad, SessionLoadParams, SessionMode,
     SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
     SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRequestAsk,
-    SessionRequestPermission, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdateMethod,
-    SessionUsage, SessionUsageParams,
+    SessionRequestPermission, SessionRetry, SessionRetryParams, SessionSetMode,
+    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
+    SessionSetPermissionParams, SessionUpdateMethod, SessionUsage, SessionUsageParams,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -586,6 +586,9 @@ async fn run_command(
                 None => println!("模型已切换为 {}", session.model),
             }
         }
+        "retry" => {
+            send_retry(client, &session.id).await?;
+        }
         "agents" => {
             let result = client
                 .call::<moc_protocol::methods::AgentList>(moc_protocol::methods::AgentListParams {
@@ -621,6 +624,7 @@ const COMMANDS: &[&str] = &[
     "permission",
     "plan",
     "ask",
+    "retry",
     "approve",
     "agents",
     "compact",
@@ -640,6 +644,7 @@ const HELP_TEXT: &str = "\
 /permission <full|workspace|workspace-only|clear> 切换命令权限或清空本会话沙盒授权
 /plan <提示词>            切换计划模式并发送提示词
 /ask <问题>               仅本条消息按问答模式（只读）处理
+/retry                    接着现有上下文继续跑（不追加用户消息，仅空闲时可用）
 /approve <execute|compact|new|reject>  处理已提交的计划
 /agents                   列出当前会话的直接子代理（创建、交流、停止都在 TUI）
 /compact                  压缩当前上下文
@@ -819,6 +824,25 @@ async fn send_prompt(
             signal?;
             client.call::<SessionCancel>(SessionCancelParams { session_id: session_id.to_owned() }).await?;
             pending.await.map_err(Into::into)
+        }
+    }
+}
+
+/// `/retry`：接着现有上下文继续跑，不追加用户消息。
+///
+/// 上一轮没跑完（取消、上游中断）时，core 会先把那半截回合从会话里剪掉再继续，
+/// 所以这里只管发请求、等它结束。
+async fn send_retry(client: &ClientHandle, session_id: &str) -> anyhow::Result<()> {
+    let pending = client.call::<SessionRetry>(SessionRetryParams {
+        session_id: session_id.to_owned(),
+    });
+    tokio::pin!(pending);
+    tokio::select! {
+        result = &mut pending => result.map(|_| ()).map_err(Into::into),
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            client.call::<SessionCancel>(SessionCancelParams { session_id: session_id.to_owned() }).await?;
+            pending.await.map(|_| ()).map_err(Into::into)
         }
     }
 }

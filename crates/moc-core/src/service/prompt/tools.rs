@@ -1182,6 +1182,12 @@ async fn ask_permission(
     })
 }
 
+/// 提示被取消时，为「模型请求过、但这批工具还没开始跑」的调用补的结果正文。
+///
+/// `/retry` 靠这句原文区分「确实没执行」（可以安全重放）与「执行到一半被打断」
+/// （结果未知，只能让模型重新决定），所以改文案会改变重试行为。
+pub(super) const NOT_EXECUTED: &str = "Prompt cancelled; this call was not executed.";
+
 pub(super) async fn persist_tool_result(
     inner: &CoreInner,
     session_id: &str,

@@ -801,6 +801,15 @@ impl SessionTable {
         Ok(())
     }
 
+    /// 读回磁盘上的全部条目；`/retry` 用它裁剪上一轮没跑完的尾部。
+    ///
+    /// 返回原始 [`Entry`]（含 `finish_reason` 与条目 ID），这是内存里那份投影掉的
+    /// 信息；重写 transcript 需要按原样写回其余条目。
+    pub async fn read_entries(&self, session_id: &str) -> Result<Vec<Entry>, CoreError> {
+        let record = self.get(session_id).await?;
+        self.store.read_entries(&record.paths).await
+    }
+
     /// 释放本进程持有的写租约；返回是否确实持有。
     ///
     /// 不允许跨进程强夺：内核锁没有安全抢占方式，删掉别人正在用的锁文件只会让两个

@@ -3787,6 +3787,8 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::Error {
             message, retryable, ..
         } => {
+            // 请求失败了：这段没落库的流式预览不属于任何一次对话，撤掉。
+            app.discard_generation();
             app.push_note(
                 format!(
                     "错误：{message}{}",
@@ -3794,6 +3796,9 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 ),
                 true,
             );
+        }
+        SessionUpdate::PromptRewound { replayed_tools } => {
+            app.rewind_failed_turn(replayed_tools);
         }
     }
 }
@@ -4188,6 +4193,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/clm-experimental" => set_mode(app, connection, SessionMode::ClmExperimental),
         "/permission" => set_permission(app, connection, rest),
         "/ask" => ask_once(app, connection, rest),
+        "/retry" => retry(app, connection),
         "/model" => app.open_model_picker(),
         "/resume" => open_session_picker(app, connection),
         other => {
@@ -4269,6 +4275,29 @@ fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
         crate::widgets::prompt::PromptState::from_text(text.to_owned()),
         SessionMode::Ask,
     );
+}
+
+/// `/retry`：不追加任何用户消息，按现有上下文重新请求一次；只有空闲时可用。
+fn retry(app: &mut App, connection: &EmbeddedConnection) {
+    if app.read_only {
+        app.set_notice("会话只读：另一个 moc 进程正在写入，关闭它或退出后才能操作");
+        return;
+    }
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    // 重试复用同一条提示通道：正在生成或有压缩等会话操作时互斥，避免撞成 SessionBusy。
+    if app.prompt_running
+        || app.inflight_prompts.contains(&session_id)
+        || app.inflight_session_ops.contains(&session_id)
+    {
+        app.set_notice("正在运行中，暂时不能重试");
+        return;
+    }
+    app.inflight_prompts.insert(session_id.clone());
+    app.prompt_running = true;
+    crate::queue::send_retry(&connection.client, session_id, app.events.clone());
 }
 
 /// 请求 core 切换会话模式（模式循环与就地菜单共用）。
@@ -7649,6 +7678,96 @@ mod tests {
                 assert!(app.should_quit, "/quit 应走既有退出路径");
             }
         }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// `/retry` 只重发上下文：不往转写里塞用户块，但占用提示通道。
+    #[tokio::test]
+    async fn retry_starts_a_prompt_without_adding_a_user_block() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let session_id = app.session.as_ref().unwrap().id.clone();
+        let user_blocks = app
+            .blocks
+            .iter()
+            .filter(|entry| matches!(entry.block, crate::transcript::Block::User { .. }))
+            .count();
+
+        execute_command(&mut app, &connection, "/retry".to_owned());
+
+        assert_eq!(
+            app.blocks
+                .iter()
+                .filter(|entry| matches!(entry.block, crate::transcript::Block::User { .. }))
+                .count(),
+            user_blocks,
+            "重试不得追加用户消息"
+        );
+        assert!(app.prompt_running, "重试应占用提示通道");
+        assert!(app.inflight_prompts.contains(&session_id));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// core 剪掉失败回合后会回报 `prompt_rewound`：界面那段预览跟着消失。
+    #[test]
+    fn prompt_rewound_drops_the_trimmed_preview() {
+        use crate::transcript::{Block, ToolCallFinish, ToolCallStart};
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.push_block(Block::Assistant {
+            text: "半截正文".into(),
+        });
+        app.start_tool_block(ToolCallStart {
+            id: "call_1".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: "{}".into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_1".into(),
+            name: "read".into(),
+            parent_id: None,
+            arguments: "{}".into(),
+            status: ToolStatus::Cancelled,
+            result: ToolResult {
+                tool_call_id: "call_1".into(),
+                content: String::new(),
+                is_error: true,
+                images: Vec::new(),
+            },
+            duration_ms: None,
+            diff: None,
+        });
+
+        apply_update(
+            &mut app,
+            SessionUpdate::PromptRewound {
+                replayed_tools: false,
+            },
+        );
+
+        assert!(
+            app.blocks.is_empty(),
+            "失败回合的预览与占位工具块都要撤掉"
+        );
+    }
+
+    /// 生成中不能重试：原地提示，不占通道。
+    #[tokio::test]
+    async fn retry_is_rejected_while_a_prompt_is_running() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.prompt_running = true;
+
+        execute_command(&mut app, &connection, "/retry".to_owned());
+
+        assert_eq!(app.notice.as_deref(), Some("正在运行中，暂时不能重试"));
+        assert!(app.inflight_prompts.is_empty(), "被拒的重试不得占通道");
 
         connection.shutdown().await;
         core.shutdown().await;

@@ -313,6 +313,12 @@ pub enum SessionUpdate {
         message: String,
         retryable: bool,
     },
+    /// `session/retry` 已经剪掉上一轮没跑完的尾巴：前端应把那条提示留下的块撤掉。
+    ///
+    /// 只会紧跟在进行中的重试之前到达，被剪掉的内容已从会话文件里删除，重新加载后
+    /// 同样看不到。`replayed_tools` 表示那批工具调用被留下了、正在原样重放——此时
+    /// assistant 消息仍在会话里，前端不能把它的正文当成失败内容撤掉。
+    PromptRewound { replayed_tools: bool },
 }
 
 /// 工作区路径变化。
@@ -753,6 +759,12 @@ mod tests {
                     retryable: false,
                 },
                 json!({ "type": "error", "prompt_id": "prompt_1", "message": "失败", "retryable": false }),
+            ),
+            (
+                SessionUpdate::PromptRewound {
+                    replayed_tools: false,
+                },
+                json!({ "type": "prompt_rewound", "replayed_tools": false }),
             ),
         ];
         for (update, expected) in cases {

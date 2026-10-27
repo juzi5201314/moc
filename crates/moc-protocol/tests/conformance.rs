@@ -293,6 +293,21 @@ async fn rejected_before_handshake_releases_prompt_claim() {
         RpcErrorCode::SessionBusy.code(),
         "未握手时的 bash 请求不该占住会话提示"
     );
+
+    // retry 与提示共用注册表：未握手路径同样要摘掉占位，否则这里恒回 `-32011`。
+    // 握手后重试会真的跑进脚本化 core（它会发一次权限反向请求，由 helper 自动应答）。
+    peer.send(&request(
+        7,
+        "session/retry",
+        json!({ "session_id": "ses_3" }),
+    ))
+    .await;
+    let (response, _) = support::recv_with_auto_permission(&mut peer, 7, "allow_once").await;
+    assert!(
+        response.payload.is_ok(),
+        "未握手时被拒的重试请求不该占住会话：{:?}",
+        response.payload
+    );
 }
 
 #[tokio::test]

@@ -32,6 +32,7 @@
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
+//! | `session/retry` | 前端→core | core | 已初始化 + 该会话无进行中的提示 + 已有上下文 | `-32010` / `-32015` / `-32011` / `-32602` |
 //! | `session/btw` | 前端→core | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |
 //! | `session/btw_cancel` | 前端→core | 协议层自答 | 已初始化 | — |
 //! | `session/steer` / `session/unsteer` | 前端→core | core | 已初始化 | `-32010` / `-32014` |
@@ -43,6 +44,9 @@
 //!
 //! 方向是强约束：服务端收到 `session/update` / `session/request_permission` /
 //! `session/request_ask` 一律按未知方法回 `-32601`。
+//!
+//! `session/retry` 不追加用户消息：它剪掉上一轮没跑完的尾巴（被打断的回复、未执行工具
+//! 的占位结果），必要时直接重放那批工具，然后继续跑提示循环。
 //!
 //! # 线上形状
 //!

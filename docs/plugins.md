@@ -186,6 +186,7 @@ export default {
 为什么有些钩子只能观察：
 
 - `beforePrompt` / `afterPrompt`：消息已落库、请求已组装，改写在 `messageReceived` 处完成；提示结果在 `afterPrompt` 时已经定型。
+  `/retry` 继续上下文时没有新消息：`beforePrompt` 照常触发（`text` 为空串、`images` 为 `0`、`source` 仍为 `user`），`messageReceived` 不会触发；它剪掉的失败回合只影响会话记录，插件看到的是剪完后的上下文。
 - `beforeModelCall` / `afterModelCall`：请求的组装、token 预算与缓存断点归 core；每轮动态文本用 `prompt(ctx)`（系统提示片段）表达。响应是流式发出的，事后无法改写。
 - `beforeCompaction` / `afterCompaction`：压缩策略由阈值与 `compaction.method_order` 决定；注入 `instructions` 会隐式把压缩切到 soft 路径，语义变化太大。
 - `sessionEnd`：删除是用户的明确意图，插件不应否决。

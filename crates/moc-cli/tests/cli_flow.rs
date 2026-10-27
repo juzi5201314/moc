@@ -264,7 +264,12 @@ async fn repl_model_switch_confirms_before_compacting() {
 
 async fn wait_file(path: &Path) {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while !path.exists() {
+        // 重定向会先把文件建出来再写内容：只看存在性会读到空 pid。
+        while std::fs::read_to_string(path)
+            .map(|text| text.trim().to_owned())
+            .unwrap_or_default()
+            .is_empty()
+        {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     })

@@ -1,4 +1,4 @@
-//! 提示方法：`session/prompt` 与 `session/cancel`。
+//! 提示方法：`session/prompt`、`session/retry` 与 `session/cancel`。
 //!
 //! # 概念
 //!
@@ -40,6 +40,14 @@ use crate::{FinishReason, ImageDetail, ImageSource, Message, Usage};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionPrompt;
 
+/// `session/retry`：不追加任何用户消息，按会话现有上下文重跑一次提示。
+///
+/// 与 [`SessionPrompt`] 共用提示注册表、取消令牌和提示级更新（`prompt_started` /
+/// `prompt_finished` 等）；区别只在输入：`retry` 不落库任何用户消息，直接把当前
+/// transcript 原样再请求一次模型——即使最后一条不是用户消息。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionRetry;
+
 /// `session/cancel`：取消该会话进行中的提示。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionCancel;
@@ -62,6 +70,14 @@ pub struct PromptParams {
     /// 本条输入是代理间消息：携带来源元信息，落库为 `Entry::Message.agent`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_message: Option<super::agent::AgentMessageMeta>,
+}
+
+/// `session/retry` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRetryParams {
+    /// 目标会话；必须已经加载且当前没有进行中的提示。
+    pub session_id: String,
 }
 
 /// 一段用户输入。
@@ -122,6 +138,14 @@ impl Method for SessionPrompt {
 }
 
 impl ClientRequest for SessionPrompt {}
+
+impl Method for SessionRetry {
+    const NAME: &'static str = "session/retry";
+    type Params = SessionRetryParams;
+    type Result = PromptResult;
+}
+
+impl ClientRequest for SessionRetry {}
 
 impl Method for SessionCancel {
     const NAME: &'static str = "session/cancel";
@@ -187,6 +211,26 @@ mod tests {
         // 未知 type 必须报错（前端忽略未知更新的前提是「不认识就整条丢弃」）
         assert!(serde_json::from_value::<InputPart>(json!({ "type": "video" })).is_err());
         assert!(serde_json::from_value::<PromptParams>(json!({ "session_id": "s" })).is_err());
+    }
+
+    #[test]
+    fn retry_params_shape() {
+        let params = SessionRetryParams {
+            session_id: "ses_7f3a".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&params).expect("可序列化"),
+            json!({ "session_id": "ses_7f3a" })
+        );
+        // 重试不接受输入：多带任何字段都必须被拒绝，而不是静默忽略。
+        assert!(
+            serde_json::from_value::<SessionRetryParams>(json!({
+                "session_id": "ses_7f3a",
+                "input": [{ "type": "text", "text": "继续" }]
+            }))
+            .is_err()
+        );
+        assert!(serde_json::from_value::<SessionRetryParams>(json!({})).is_err());
     }
 
     #[test]

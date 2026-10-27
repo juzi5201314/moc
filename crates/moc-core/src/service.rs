@@ -21,9 +21,9 @@ use moc_protocol::methods::{
     SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
     SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
     SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
-    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    SessionRetryParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
+    SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -326,6 +326,7 @@ impl CoreInner {
                 params,
                 record,
                 prompt_lock,
+                false,
             );
             tokio::pin!(running);
             let result = tokio::select! {
@@ -1765,6 +1766,18 @@ impl AgentService for Core {
         self.run_operation(
             ctx.cancel(),
             prompt::run_prompt(Arc::clone(&self.inner), ctx, params),
+        )
+        .await
+    }
+
+    async fn session_retry(
+        &self,
+        ctx: RequestContext,
+        params: SessionRetryParams,
+    ) -> Result<PromptResult, RpcError> {
+        self.run_operation(
+            ctx.cancel(),
+            prompt::run_retry(Arc::clone(&self.inner), ctx, params),
         )
         .await
     }

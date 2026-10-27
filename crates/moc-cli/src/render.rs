@@ -262,6 +262,7 @@ impl Renderer {
             SessionUpdate::PermissionResolved { .. }
             | SessionUpdate::PromptStarted { .. }
             | SessionUpdate::SteeringApplied { .. }
+            | SessionUpdate::PromptRewound { .. }
             | SessionUpdate::LockChanged { .. } => {}
         }
     }

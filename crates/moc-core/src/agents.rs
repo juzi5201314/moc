@@ -243,9 +243,14 @@ pub(crate) async fn spawn(
     if let Some(host) = &plugin_host {
         // 子代理会话同样是「会话」：`sessionStart` 注入的初始消息进入它的 transcript。
         let child_context = crate::service::plugin_events::context_from_info(&session);
-        for message in
-            crate::service::plugin_events::session_start(host, &child_context, &session, "subagent", Some(&session_id))
-                .await
+        for message in crate::service::plugin_events::session_start(
+            host,
+            &child_context,
+            &session,
+            "subagent",
+            Some(&session_id),
+        )
+        .await
         {
             let role = if message.role == "system" {
                 Role::System
@@ -377,6 +382,7 @@ async fn activate(
             },
             record,
             prompt_lock,
+            false,
         )
         .await;
         finish(
@@ -471,11 +477,8 @@ async fn finish(
         )
         .await;
     if let Ok(parent) = parent_snapshot(&inner, &parent_id).await
-        && let Some(host) = crate::service::plugin_events::host_for(
-            &inner,
-            Path::new(&parent.session.cwd),
-        )
-        .await
+        && let Some(host) =
+            crate::service::plugin_events::host_for(&inner, Path::new(&parent.session.cwd)).await
     {
         let context = crate::service::plugin_events::context(
             &parent_id,
@@ -840,7 +843,14 @@ pub(crate) async fn drain_inbox(
     if count == 0 {
         return Ok(0);
     }
-    let plugin_state = inner.sessions.get(session).await?.state.lock().await.clone();
+    let plugin_state = inner
+        .sessions
+        .get(session)
+        .await?
+        .state
+        .lock()
+        .await
+        .clone();
     let plugin_host =
         crate::service::plugin_events::host_for(inner, Path::new(&plugin_state.session.cwd)).await;
     let plugin_context = plugin_host.as_ref().map(|_| {
