@@ -114,6 +114,30 @@ describe("entriesToBlocks", () => {
 });
 
 describe("applyUpdate", () => {
+  it("手动 !命令的 tool_finished 回填 bash 块，不产生重复行", () => {
+    const view = createView(INFO);
+    applyUpdate(view, {
+      type: "bash_started",
+      tool_call_id: "bash_1",
+      command: { command: "ls -la", exclude_from_context: false },
+    });
+    applyUpdate(view, {
+      type: "tool_finished",
+      prompt_id: "bash_1",
+      tool_call_id: "bash_1",
+      name: "bash",
+      arguments: '{"command":"ls -la","exclude_from_context":false}',
+      status: "completed",
+      result: { tool_call_id: "bash_1", content: "total 8", is_error: false },
+      duration_ms: 5,
+    });
+    expect(view.blocks.map((block) => block.kind)).toEqual(["bash"]);
+    const bash = view.blocks[0];
+    expect(bash.kind === "bash" && bash.command).toBe("ls -la");
+    expect(bash.kind === "bash" && bash.output).toBe("total 8");
+    expect(bash.kind === "bash" && bash.isError).toBe(false);
+  });
+
   it("流式两段生成，最后一段以 message 为准", () => {
     const view = createView(INFO);
     const updates: SessionUpdate[] = [

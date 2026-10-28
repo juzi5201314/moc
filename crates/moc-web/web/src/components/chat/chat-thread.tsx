@@ -1,18 +1,4 @@
-import {
-  AlertCircleIcon,
-  BrainIcon,
-  ChevronDownIcon,
-  CopyIcon,
-  FileDiffIcon,
-  FileTextIcon,
-  GitForkIcon,
-  InfoIcon,
-  Loader2Icon,
-  PencilIcon,
-  SearchIcon,
-  TerminalIcon,
-  WrenchIcon,
-} from "lucide-react";
+import { CopyIcon, FileDiffIcon, GitForkIcon, Loader2Icon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -38,10 +24,27 @@ import {
   type QuestionValue,
 } from "@/components/ai-elements/question";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import {
+  ActivityBrowseIcon,
+  ActivityChevronDownIcon,
+  ActivityChevronUpIcon,
+  ActivityCodeIcon,
+  ActivityEditIcon,
+  ActivityGlobeIcon,
+  ActivityPlanIcon,
+  ActivityQuestionIcon,
+  ActivitySearchIcon,
+  ActivitySparkleIcon,
+  ActivitySubagentIcon,
+  ActivityTerminalIcon,
+  ActivityThinkIcon,
+  ActivityWarningIcon,
+} from "@/components/chat/activity-icons";
 import { Button } from "@/components/ui/button";
 import { clockTime } from "@/lib/format";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import {
+  activityKind,
   activitySnippet,
   activityVerb,
   formatDuration,
@@ -64,30 +67,73 @@ type OpenRightTab = (tab: { kind: RightTab["kind"]; title?: string; path?: strin
 const EMPTY_PERMISSIONS: PermissionRequestParams[] = [];
 const EMPTY_ASKS: AskParams[] = [];
 
-/** 活动行首的动作图标：与 DSH 一样只保留一个 14px 单色字形，不做彩色底板。 */
-const ACTIVITY_ICON = "size-3.5 shrink-0 text-[var(--text-tertiary)]";
+/**
+ * 活动行首的动作图标：leading 为 16px 容器 + 右侧 6px 间距，字形随字号阶梯缩放。
+ */
+const LEADING =
+  "relative mr-1.5 flex size-[calc(16px_+_var(--moc-n))] shrink-0 items-center justify-center";
 
 function activityIcon(block: Block): ReactNode {
-  switch (block.kind) {
-    case "reasoning":
-      return <BrainIcon className={ACTIVITY_ICON} />;
-    case "bash":
-      return <TerminalIcon className={ACTIVITY_ICON} />;
+  if (block.kind === "status") return <ActivityWarningIcon />;
+  switch (activityKind(block)) {
+    case "thinking":
+      return <ActivityThinkIcon />;
+    case "commands":
+      return <ActivityTerminalIcon />;
+    case "code":
+      return <ActivityCodeIcon />;
+    case "read":
+    case "readImage":
+    case "webFetch":
+      return <ActivityBrowseIcon />;
+    case "search":
+      return <ActivitySearchIcon />;
+    case "webSearch":
+      return <ActivityGlobeIcon />;
+    case "edit":
+    case "write":
+      return <ActivityEditIcon />;
     case "plan":
-      return <FileDiffIcon className={ACTIVITY_ICON} />;
-    case "status":
-      return <InfoIcon className={ACTIVITY_ICON} />;
-    case "tool": {
-      const verb = activityVerb(block);
-      if (verb === "运行命令") return <TerminalIcon className={ACTIVITY_ICON} />;
-      if (verb === "读取文件") return <FileTextIcon className={ACTIVITY_ICON} />;
-      if (verb === "编辑文件") return <PencilIcon className={ACTIVITY_ICON} />;
-      if (verb === "搜索") return <SearchIcon className={ACTIVITY_ICON} />;
-      return <WrenchIcon className={ACTIVITY_ICON} />;
-    }
+      return <ActivityPlanIcon />;
+    case "questions":
+      return <ActivityQuestionIcon />;
+    case "subagents":
+      return <ActivitySubagentIcon />;
     default:
-      return <WrenchIcon className={ACTIVITY_ICON} />;
+      return <ActivitySparkleIcon />;
   }
+}
+
+/**
+ * 折叠行 leading 行为：闭合时显示活动图标、行悬停换 chevron-down；
+ * 展开后恒显 chevron-up（`staticWhenOpen`）。
+ */
+function DisclosureLeading({
+  icon,
+  open,
+  staticWhenOpen = false,
+}: {
+  icon: ReactNode;
+  open: boolean;
+  staticWhenOpen?: boolean;
+}) {
+  if (open && staticWhenOpen) {
+    return (
+      <span className={LEADING}>
+        <ActivityChevronUpIcon />
+      </span>
+    );
+  }
+  return (
+    <span className={LEADING}>
+      <span className="inline-flex transition-opacity duration-100 group-hover/disclosure:opacity-0">
+        {icon}
+      </span>
+      <span className="absolute inset-0 m-auto flex items-center justify-center opacity-0 transition-opacity duration-100 group-hover/disclosure:opacity-100">
+        {open ? <ActivityChevronUpIcon /> : <ActivityChevronDownIcon />}
+      </span>
+    </span>
+  );
 }
 
 export function ChatThread({ sessionId }: ChatThreadProps) {
@@ -320,22 +366,24 @@ function AssistantTurn({
         <button
           type="button"
           onClick={() => setManualOpen(!open)}
-          className="flex items-center gap-1 pb-2 text-left text-sm text-[var(--text-tertiary)] transition-colors hover:text-foreground"
+          className="flex items-center gap-1 pb-2 text-left text-[var(--moc-secondary-size)] leading-[calc(24px_+_var(--moc-n))] text-[var(--text-tertiary)] transition-colors duration-100 hover:text-muted-foreground"
         >
           <span>
             {isLive ? "深度求索中" : "已完成"}
             {durationMs !== undefined && !isLive ? `，用时 ${formatDuration(durationMs)}` : ""}
           </span>
-          <ChevronDownIcon
-            className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
-          />
+          <span className={`inline-flex shrink-0 transition-transform ${open ? "rotate-180" : ""}`}>
+            <ActivityChevronDownIcon />
+          </span>
         </button>
       ) : null}
 
       {turn.activity.length > 0 ? (
         <>
           <div className="border-t border-border/60" />
-          {open ? <ActivityList activity={turn.activity} openRightTab={openRightTab} /> : null}
+          {open ? (
+            <ActivityList activity={turn.activity} openRightTab={openRightTab} live={isLive} />
+          ) : null}
         </>
       ) : null}
 
@@ -366,32 +414,32 @@ function AssistantTurn({
   );
 }
 
-/** 活动分组：本轮所有思考/命令/工具的归纳标题 + 逐行列表。 */
+/** 活动分组：本轮所有思考/命令/工具的归纳标题 + 逐行列表（成员与组头同列）。 */
 function ActivityList({
   activity,
   openRightTab,
+  live,
 }: {
   activity: Block[];
   openRightTab: OpenRightTab;
+  live: boolean;
 }) {
-  const summary = summarizeActivity(activity);
+  const summary = summarizeActivity(activity, !live);
   const [open, setOpen] = useState(false);
+  const firstBlock = activity[0];
 
   return (
     <div className="flex flex-col py-1">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="group flex h-7 items-center gap-1.5 rounded-md px-2 text-left text-sm text-[var(--text-tertiary)] transition-colors hover:bg-[var(--accent)] hover:text-foreground"
+        className="group/disclosure flex h-[calc(24px_+_var(--moc-n))] min-w-0 items-center text-left text-[var(--moc-secondary-size)] leading-[calc(24px_+_var(--moc-n))] text-[var(--text-tertiary)] transition-colors duration-100 hover:text-muted-foreground"
       >
-        <TerminalIcon className="size-3.5 shrink-0" />
-        <span className="truncate">{summary || "执行记录"}</span>
-        <ChevronDownIcon
-          className={`size-3 opacity-0 transition-transform group-hover:opacity-100 ${open ? "rotate-180" : ""}`}
-        />
+        <DisclosureLeading icon={activityIcon(firstBlock)} open={open} staticWhenOpen />
+        <span className="min-w-0 flex-auto truncate">{summary || "执行记录"}</span>
       </button>
       {open ? (
-        <div className="mt-0.5 flex flex-col">
+        <div className="flex flex-col">
           {activity.map((block) => (
             <ActivityRow key={block.id} block={block} openRightTab={openRightTab} />
           ))}
@@ -401,7 +449,7 @@ function ActivityList({
   );
 }
 
-/** 单条活动行：一行摘要，点开才展示正文/命令/结果。 */
+/** 单条活动行：24px+n 行高、副档字号/400 tertiary，动词与摘要之间是 2px 圆点。 */
 function ActivityRow({ block, openRightTab }: { block: Block; openRightTab: OpenRightTab }) {
   const [open, setOpen] = useState(false);
   const verb = activityVerb(block) ?? "事件";
@@ -424,17 +472,33 @@ function ActivityRow({ block, openRightTab }: { block: Block; openRightTab: Open
       <button
         type="button"
         onClick={() => hasDetail && setOpen((value) => !value)}
-        className={`group flex h-7 items-center gap-1.5 rounded-md px-2 text-left text-[13px] transition-colors ${
-          hasDetail ? "hover:bg-[var(--accent)]" : "cursor-default"
+        className={`group/disclosure flex h-[calc(24px_+_var(--moc-n))] min-w-0 items-center text-left text-[var(--moc-secondary-size)] leading-[calc(24px_+_var(--moc-n))] text-[var(--text-tertiary)] transition-colors duration-100 ${
+          hasDetail ? "cursor-pointer hover:text-muted-foreground" : "cursor-default"
         }`}
       >
-        {activityIcon(block)}
-        <span className="shrink-0 font-medium text-foreground">{verb}</span>
-        {snippet ? <span className="truncate text-[var(--text-tertiary)]">{snippet}</span> : null}
-        {tone === "error" ? (
-          <AlertCircleIcon className="size-3.5 shrink-0 text-destructive" />
-        ) : block.kind === "tool" && block.status === "running" ? (
-          <Loader2Icon className="size-3 shrink-0 animate-spin text-primary" />
+        {hasDetail ? (
+          <DisclosureLeading icon={activityIcon(block)} open={open} staticWhenOpen />
+        ) : (
+          <span className={LEADING}>{activityIcon(block)}</span>
+        )}
+        <span className="flex-none">{verb}</span>
+        {snippet ? (
+          <>
+            <span
+              aria-hidden="true"
+              className="mx-2 size-0.5 flex-none rounded-[1px] bg-[var(--text-tertiary)]"
+            />
+            <span
+              className={`min-w-0 flex-auto truncate ${tone === "error" ? "text-destructive" : ""}`}
+            >
+              {snippet}
+            </span>
+          </>
+        ) : (
+          <span className="min-w-0 flex-auto" />
+        )}
+        {block.kind === "tool" && block.status === "running" ? (
+          <Loader2Icon className="ml-2 size-3 shrink-0 animate-spin text-primary" />
         ) : null}
       </button>
 
@@ -446,34 +510,38 @@ function ActivityRow({ block, openRightTab }: { block: Block; openRightTab: Open
 function ActivityDetail({ block, openRightTab }: { block: Block; openRightTab: OpenRightTab }) {
   if (block.kind === "reasoning") {
     return (
-      <p className="mt-1 mb-2 pl-8 whitespace-pre-wrap text-[13px] leading-6 text-[var(--text-tertiary)]">
+      <p className="py-1 pl-[calc(22px_+_var(--moc-n))] whitespace-pre-wrap text-[var(--moc-secondary-size)] leading-[calc(24px_+_var(--moc-n))] text-[var(--text-tertiary)]">
         {block.text}
       </p>
     );
   }
 
   if (block.kind === "bash") {
-    return (
-      <div className="mt-1 mb-2 flex flex-col gap-1.5 pl-8">
-        <CodeBlock label="命令" code={block.command} />
-        {block.output ? <CodeBlock label="输出" code={block.output} /> : null}
-      </div>
-    );
+    return <CommandCard command={block.command} output={block.output} isError={block.isError} />;
   }
 
   if (block.kind === "tool") {
     const tool = block as ToolBlock;
-    return (
-      <div className="mt-1 mb-2 flex flex-col gap-1.5 pl-8">
-        {tool.arguments ? <CodeBlock label="输入参数" code={tool.arguments} /> : null}
-        {tool.result ? <CodeBlock label="执行结果" code={tool.result} /> : null}
-      </div>
-    );
+    const { command, cwd, code } = commandArgs(tool.arguments);
+    if (command || code) {
+      return (
+        <CommandCard
+          command={command ?? tool.name}
+          cwd={cwd}
+          code={code}
+          output={tool.result}
+          isError={tool.isError}
+          running={tool.status === "running"}
+        />
+      );
+    }
+    if (!tool.arguments && !tool.result) return null;
+    return <IoCard input={tool.arguments} output={tool.result} isError={tool.isError} />;
   }
 
   if (block.kind === "agent-message") {
     return (
-      <p className="mt-1 mb-2 pl-8 whitespace-pre-wrap text-[13px] leading-6 text-[var(--text-tertiary)]">
+      <p className="py-1 pl-[calc(22px_+_var(--moc-n))] whitespace-pre-wrap text-[var(--moc-secondary-size)] leading-[calc(24px_+_var(--moc-n))] text-[var(--text-tertiary)]">
         {block.body}
       </p>
     );
@@ -481,7 +549,7 @@ function ActivityDetail({ block, openRightTab }: { block: Block; openRightTab: O
 
   if (block.kind === "plan") {
     return (
-      <div className="mt-1 mb-2 flex items-center gap-2 pl-8 text-[13px] text-[var(--text-tertiary)]">
+      <div className="flex items-center gap-2 py-1 pl-[calc(22px_+_var(--moc-n))] text-[var(--moc-secondary-size)] text-[var(--text-tertiary)]">
         <span className="truncate font-mono">{block.path}</span>
         <button
           type="button"
@@ -497,26 +565,136 @@ function ActivityDetail({ block, openRightTab }: { block: Block; openRightTab: O
   return null;
 }
 
-/** 代码块：DSH 的形态是"顶条标签 + 复制，正文吃 muted 底"，不带外描边。 */
-function CodeBlock({ label, code }: { label: string; code: string }) {
+/** 从工具参数里取命令行、工作目录与代码体，决定详情是否走终端卡片形态。 */
+function commandArgs(raw: string): { command?: string; cwd?: string; code?: string } {
+  try {
+    const args = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      command: typeof args.command === "string" ? args.command : undefined,
+      cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+      code: typeof args.code === "string" ? args.code : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 命令详情：终端卡片——30px 状态点 gutter、18px 行高、11px 等宽字、
+ * muted 底 + 发丝描边、大圆角；头部承载命令与 run_code 代码体
+ * （超 150px 自滚动），输出以发丝线分隔、限高 224px。
+ */
+function CommandCard({
+  command,
+  cwd,
+  code,
+  output,
+  isError = false,
+  running = false,
+}: {
+  command: string;
+  cwd?: string;
+  code?: string;
+  output?: string;
+  isError?: boolean;
+  running?: boolean;
+}) {
   const handleCopy = () => {
-    void navigator.clipboard.writeText(code);
+    void navigator.clipboard.writeText(code ?? command);
     toast.success("已复制");
   };
+  const prompt = cwd?.split(/[\\/]/).filter(Boolean).pop();
 
   return (
-    <div className="overflow-hidden rounded-md bg-muted">
-      <div className="flex h-8 items-center justify-between pl-2.5 pr-1.5">
-        <span className="text-[11px] text-[var(--text-tertiary)]">{label}</span>
-        <IconButton label={`复制${label}`} onClick={handleCopy}>
-          <CopyIcon className="size-3.5" />
-        </IconButton>
+    <div className="relative my-1 ml-1 overflow-hidden rounded-[var(--radius-lg)] border-[0.5px] border-border bg-muted pl-[30px] font-mono text-[var(--moc-code-size)] leading-[18px] text-foreground">
+      <div
+        className={`-ml-[30px] flex max-h-[150px] items-start gap-3 overflow-y-auto py-[9px] pr-3.5 pl-[30px] ${
+          output ? "border-b-[0.5px] border-border" : ""
+        }`}
+      >
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative flex min-w-0 items-baseline gap-2">
+            <span className="absolute top-[9px] -left-[22px] -translate-y-1/2">
+              <span
+                className={`block size-1.5 rounded-full ${
+                  running ? "animate-pulse bg-primary" : isError ? "bg-destructive" : "bg-success"
+                }`}
+              />
+            </span>
+            {prompt ? (
+              <span className="flex-none text-[var(--text-tertiary)]">{prompt}</span>
+            ) : null}
+            <span className="block min-w-0 flex-auto overflow-x-auto whitespace-pre-wrap [overflow-wrap:anywhere]">
+              {command}
+            </span>
+          </div>
+          {code ? <pre className="whitespace-pre-wrap [overflow-wrap:anywhere]">{code}</pre> : null}
+        </div>
+        <button
+          type="button"
+          onClick={handleCopy}
+          aria-label="复制命令"
+          className="sticky top-0 flex-none text-[11px] leading-[18px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          复制
+        </button>
       </div>
-      <pre className="max-h-80 overflow-auto border-t border-border/40 px-2.5 py-2 font-mono text-xs leading-5 text-foreground">
-        {code}
-      </pre>
+      {output ? (
+        <pre className="max-h-[224px] overflow-auto py-3 pr-3.5 whitespace-pre-wrap [overflow-wrap:anywhere]">
+          {output}
+        </pre>
+      ) : null}
     </div>
   );
+}
+
+/**
+ * 非命令类工具的详情卡：单卡片内的「输入 | 输出」两栏段——
+ * 左侧 caption 色标签列（粘性），右侧正文，段间 0.5px 发丝线。
+ */
+function IoCard({
+  input,
+  output,
+  isError = false,
+}: {
+  input?: string;
+  output?: string;
+  isError?: boolean;
+}) {
+  return (
+    <div className="my-1 ml-1 flex flex-col rounded-[var(--radius-lg)] border-[0.5px] border-border bg-muted font-mono text-[var(--moc-code-size)] leading-[calc(16px_+_var(--moc-code-n))]">
+      {input ? (
+        <div className="grid max-h-[150px] grid-cols-[max-content_1fr] gap-x-3.5 overflow-y-auto px-4 py-3">
+          <span className="sticky top-0 self-start text-[var(--text-tertiary)]">输入</span>
+          <span className="min-w-0 whitespace-pre-wrap break-words text-muted-foreground">
+            {prettyJson(input)}
+          </span>
+        </div>
+      ) : null}
+      {input && output ? <div className="h-0 border-t-[0.5px] border-border" /> : null}
+      {output ? (
+        <div className="grid max-h-[150px] grid-cols-[max-content_1fr] gap-x-3.5 overflow-y-auto px-4 py-3">
+          <span className="sticky top-0 self-start text-[var(--text-tertiary)]">输出</span>
+          <span
+            className={`min-w-0 whitespace-pre-wrap break-words ${
+              isError ? "text-destructive" : "text-muted-foreground"
+            }`}
+          >
+            {output}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 参数文本是合法 JSON 时美化缩进，否则原样（历史回放可能被截断成非法 JSON）。 */
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
 }
 
 function IconButton({

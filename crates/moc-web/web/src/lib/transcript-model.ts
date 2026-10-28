@@ -59,6 +59,7 @@ export type Block =
       toolCallId?: string;
       command: string;
       output?: string;
+      isError?: boolean;
       atMs: number;
     }
   | { kind: "agent-message"; id: string; from: string; body: string; atMs: number }
@@ -534,6 +535,21 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     case "tool_finished": {
       let block = findTool(view.blocks, update.tool_call_id);
       if (!block) {
+        // 手动 !命令由 bash_started 建块，完成事件按 toolCallId 回填 output，
+        // 不再另起一条重复的 tool 行。
+        let bash: Block | undefined;
+        for (let index = view.blocks.length - 1; index >= 0; index--) {
+          const item = view.blocks[index];
+          if (item.kind === "bash" && item.toolCallId === update.tool_call_id) {
+            bash = item;
+            break;
+          }
+        }
+        if (bash?.kind === "bash") {
+          bash.output = update.result.content;
+          bash.isError = update.result.is_error;
+          break;
+        }
         block = newTool(nextId(view), update.tool_call_id, update.name, update.arguments);
         const parent = update.parent_tool_call_id
           ? findTool(view.blocks, update.parent_tool_call_id)

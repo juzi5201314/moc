@@ -174,8 +174,8 @@
   --shadow-lg: 0 3px 8px 0 rgba(0, 0, 0, 0.039), 0 0 20px 0 rgba(0, 0, 0, 0.051);
   --shadow-xl: 0 12px 32px 0 rgba(0, 0, 0, 0.078), 0 4px 12px 0 rgba(0, 0, 0, 0.02);
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
 }
@@ -224,7 +224,7 @@
   background: color-mix(in srgb, var(--primary) 9%, var(--card));
 }
 
-/* DSH 用 superellipse 圆角做"圆而不软"的手感；不支持时无副作用地退回普通圆角。 */
+/* 用 superellipse 圆角做"圆而不软"的手感；不支持时无副作用地退回普通圆角。 */
 @supports (corner-shape: superellipse(1.5)) {
   *,
   ::before,
@@ -234,10 +234,31 @@
 }
 
 /* ---------------- 会话列宽 ----------------
-   DSH 的列宽随面板比例缩放：clamp(680, 列宽*0.64, 920)，输入卡片再宽 28。
+   列宽随面板比例缩放：clamp(680, 列宽*0.64, 920)，输入卡片再宽 28。
    用容器查询单位 cqi 实现，免得靠 JS 测量。 */
 .moc-chat-pane {
   container-type: inline-size;
+
+  /* 执行轨迹字号阶梯：所有行高/字号/图标跟随正文基准整体伸缩。
+     --moc-content-size 是唯一旋钮（基准 14px），改它整体放大缩小；
+     副档字号在 ≤14 时取正文-1、>14 时取正文-2。 */
+  --moc-content-size: 14px;
+  --moc-n: calc(var(--moc-content-size) - 14px);
+  --moc-secondary-size: calc(
+    var(--moc-content-size) -
+    1px -
+    clamp(0px, var(--moc-content-size) - 14px, 1px)
+  );
+  /* 详情卡片的代码体：独立小字号档（基准 11px）。 */
+  --moc-code-size: 11px;
+  --moc-code-n: calc(var(--moc-code-size) - 11px);
+}
+
+/* 活动行首图标跟随正文字号缩放（基准 14px）。 */
+.moc-activity-icon {
+  width: calc(14px + var(--moc-n));
+  height: calc(14px + var(--moc-n));
+  flex: none;
 }
 
 .moc-chat-column {
