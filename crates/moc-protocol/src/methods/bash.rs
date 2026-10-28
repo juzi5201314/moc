@@ -52,6 +52,21 @@ impl BashCommand {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BashParams {
+    pub session_id: String,
+    pub command: BashCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BashResult {
+    pub result: ToolResult,
+    pub status: ToolStatus,
+    pub duration_ms: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::BashCommand;
@@ -82,19 +97,4 @@ mod tests {
             })
         );
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BashParams {
-    pub session_id: String,
-    pub command: BashCommand,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BashResult {
-    pub result: ToolResult,
-    pub status: ToolStatus,
-    pub duration_ms: u64,
 }

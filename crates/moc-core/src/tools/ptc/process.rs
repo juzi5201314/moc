@@ -365,22 +365,20 @@ async fn manage(
                     }
                 }
                 Some(Request::Complete { id, completions }) => {
-                    if routes.get(&id).is_some_and(|route| !route.cancelling) {
-                        if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Complete { execution_id: id, completions }) {
+                    if routes.get(&id).is_some_and(|route| !route.cancelling)
+                        && let Err(error) = process.as_ref().unwrap().send(&HostMessage::Complete { execution_id: id, completions }) {
                             fail(&mut process, &mut routes, error).await;
                         }
-                    }
                 }
                 Some(Request::Cancel { id, code }) => {
-                    if let Some(route) = routes.get_mut(&id) {
-                        if !route.cancelling {
+                    if let Some(route) = routes.get_mut(&id)
+                        && !route.cancelling {
                             route.cancelling = true;
                             route.expires = route.expires.min(Instant::now() + CANCEL_GRACE);
                             if let Err(error) = process.as_ref().unwrap().send(&HostMessage::Cancel { execution_id: id, code }) {
                                 fail(&mut process, &mut routes, error).await;
                             }
                         }
-                    }
                 }
                 None | Some(Request::Shutdown) => {
                     requests.close();

@@ -1,54 +1,106 @@
 @import "tailwindcss";
 
-/* 暗色由 <html class="dark"> 控制：index.html 内联脚本在首帧前设好，避免闪白。 */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* =========================================================================
+   DeepSeek blue-gray semantic tokens
+   ========================================================================= */
+
 :root {
-  --background: oklch(0.99 0 0);
-  --foreground: oklch(0.22 0.01 90);
-  --panel: oklch(0.975 0.003 90);
-  --card: oklch(1 0 0);
-  --card-foreground: var(--foreground);
-  --popover: oklch(1 0 0);
-  --popover-foreground: var(--foreground);
-  --primary: oklch(0.22 0.01 90);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.955 0.004 90);
-  --secondary-foreground: var(--foreground);
-  --muted: oklch(0.955 0.004 90);
-  --muted-foreground: oklch(0.55 0.01 90);
-  --accent: oklch(0.95 0.006 90);
-  --accent-foreground: var(--foreground);
-  --brand: oklch(0.66 0.16 50);
-  --brand-foreground: oklch(0.99 0 0);
-  --destructive: oklch(0.645 0.246 16.4);
-  --success: oklch(0.696 0.17 162.5);
-  --warn: oklch(0.769 0.188 70.1);
-  --border: oklch(0.92 0.004 90);
-  --input: oklch(0.92 0.004 90);
-  --ring: oklch(0.66 0.16 50);
-  --diff-insert: color-mix(in oklch, var(--success) 12%, transparent);
-  --diff-delete: color-mix(in oklch, var(--destructive) 12%, transparent);
-  --radius: 0.625rem;
+  color-scheme: light;
+  --background: #f6f8fb;
+  --foreground: #202b3b;
+  --panel: #f0f3f8;
+  --card: #ffffff;
+  --card-foreground: #202b3b;
+  --popover: #ffffff;
+  --popover-foreground: #202b3b;
+  --primary: #4d6bfe;
+  --primary-foreground: #ffffff;
+  --secondary: #e9edf4;
+  --secondary-foreground: #334155;
+  --muted: #edf1f6;
+  --muted-foreground: #758196;
+  --accent: #e9eef8;
+  --accent-foreground: #2d3b53;
+  --brand: #4d6bfe;
+  --brand-foreground: #ffffff;
+  --destructive: #d64f58;
+  --success: #168b6b;
+  --warn: #b8761c;
+  --border: #dce3ec;
+  --border-strong: #c9d3e0;
+  --input: #d7e0eb;
+  --ring: rgba(77, 107, 254, 0.28);
+  --diff-insert: rgba(22, 139, 107, 0.12);
+  --diff-delete: rgba(214, 79, 88, 0.12);
+  --radius: 0.75rem;
+  --sidebar: #f1f4f8;
+  --sidebar-foreground: #273447;
+  --sidebar-accent: #e5ebf4;
+  --sidebar-accent-foreground: #25344a;
+  --surface-raised: #ffffff;
+  --surface-hover: #edf2f8;
+  --border-subtle: #e8edf3;
+  --text-tertiary: #98a3b3;
+  --shadow-soft: 0 1px 3px rgba(30, 48, 75, 0.06);
+  --shadow-floating: 0 10px 30px -10px rgba(30, 48, 75, 0.14), 0 0 0 1px rgba(30, 48, 75, 0.04);
+  --chart-1: #4d6bfe;
+  --chart-2: #52647d;
+  --chart-3: #8291a7;
+  --chart-4: #b1bdcb;
+  --chart-5: #168b6b;
+  --chart-6: #b8761c;
+  --chart-muted: #98a3b3;
+  --chart-negative: #d64f58;
 }
 
 .dark {
-  --background: oklch(0.17 0 0);
-  --foreground: oklch(0.93 0.005 90);
-  --panel: oklch(0.205 0.003 90);
-  --card: oklch(0.205 0.003 90);
-  --popover: oklch(0.22 0.003 90);
-  --primary: oklch(0.93 0.005 90);
-  --primary-foreground: oklch(0.17 0 0);
-  --secondary: oklch(0.25 0.004 90);
-  --muted: oklch(0.25 0.004 90);
-  --muted-foreground: oklch(0.65 0.01 90);
-  --accent: oklch(0.27 0.004 90);
-  --destructive: oklch(0.712 0.194 13.4);
-  --success: oklch(0.765 0.177 163.2);
-  --warn: oklch(0.828 0.189 84.4);
-  --border: oklch(0.28 0.004 90);
-  --input: oklch(0.3 0.004 90);
+  color-scheme: dark;
+  --background: #12161d;
+  --foreground: #e6eaf1;
+  --panel: #181e27;
+  --card: #1b222c;
+  --card-foreground: #e6eaf1;
+  --popover: #202833;
+  --popover-foreground: #e6eaf1;
+  --primary: #829aff;
+  --primary-foreground: #111827;
+  --secondary: #252d39;
+  --secondary-foreground: #d7deea;
+  --muted: #202731;
+  --muted-foreground: #9aa6b8;
+  --accent: #293344;
+  --accent-foreground: #e6ecf6;
+  --brand: #829aff;
+  --brand-foreground: #111827;
+  --destructive: #f0787c;
+  --success: #44b691;
+  --warn: #e6ad58;
+  --border: #2d3745;
+  --border-strong: #3a4657;
+  --input: #303b4a;
+  --ring: rgba(130, 154, 255, 0.36);
+  --diff-insert: rgba(68, 182, 145, 0.16);
+  --diff-delete: rgba(240, 120, 124, 0.16);
+  --sidebar: #151a22;
+  --sidebar-foreground: #dce2ec;
+  --sidebar-accent: #222a36;
+  --sidebar-accent-foreground: #e6ecf6;
+  --surface-raised: #1b222c;
+  --surface-hover: #242d39;
+  --border-subtle: #252e3a;
+  --text-tertiary: #737f91;
+  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.28);
+  --shadow-floating: 0 12px 36px -10px rgba(0, 0, 0, 0.56), 0 0 0 1px rgba(220, 230, 245, 0.08);
+  --chart-1: #829aff;
+  --chart-2: #d1d8e4;
+  --chart-3: #a4b0c1;
+  --chart-4: #687588;
+  --chart-5: #44b691;
+  --chart-6: #e6ad58;
+  --chart-muted: #737f91;
+  --chart-negative: #f0787c;
 }
 
 @theme inline {
@@ -77,12 +129,24 @@
   --color-ring: var(--ring);
   --color-diff-insert: var(--diff-insert);
   --color-diff-delete: var(--diff-delete);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-hover: var(--surface-hover);
+  --color-border-subtle: var(--border-subtle);
+  --color-text-tertiary: var(--text-tertiary);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: ui-sans-serif, system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --radius-2xl: calc(var(--radius) + 8px);
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
 }
 
 @layer base {
@@ -92,24 +156,90 @@
   html,
   body,
   #root {
+    width: 100%;
     height: 100%;
+    margin: 0;
+    overflow: hidden;
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    font-size: 14px;
+    font-size: 13.5px;
+    letter-spacing: 0;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    text-rendering: optimizeLegibility;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+  button {
+    touch-action: manipulation;
   }
   ::selection {
-    background: color-mix(in oklch, var(--brand) 30%, transparent);
+    color: var(--foreground);
+    background: color-mix(in srgb, var(--primary) 20%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+}
+
+.moc-empty-mark {
+  color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  background: color-mix(in srgb, var(--primary) 9%, var(--card));
+}
+
+.moc-workspace-chip {
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-soft);
+}
+
+/* 会话标题：静置时省略号截断；鼠标指向且确实溢出时才横向滚动露出全文。
+   AI Elements / shadcn 没有等价的滚动标题组件，这是唯一必要的自定义动画。 */
+.moc-scroll-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.moc-scroll-title[data-overflow]:hover .moc-scroll-title-text {
+  display: inline-block;
+  animation: moc-scroll-title var(--moc-title-duration, 4s) linear infinite alternate;
+}
+
+@keyframes moc-scroll-title {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--moc-title-shift, 0));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    /* biome-ignore lint/complexity/noImportantStyles: 减少动效必须压过 Tailwind 工具类的过渡 */
-    animation-duration: 0.01ms !important;
-    /* biome-ignore lint/complexity/noImportantStyles: 同上 */
-    transition-duration: 0.01ms !important;
+  .moc-scroll-title[data-overflow]:hover .moc-scroll-title-text {
+    animation: none;
   }
+}
+
+* {
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 20%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }

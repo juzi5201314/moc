@@ -1,4 +1,4 @@
-//! `fs/list_dir`：列出目录下的子目录，供前端选择工作目录。
+//! `fs/list_dir` / `fs/create_dir`：让前端浏览目录、新建子目录来选工作目录。
 //!
 //! 只列目录，不列文件；路径必须是绝对路径或以 `~` 开头。
 
@@ -63,6 +63,36 @@ pub struct FsDirEntry {
     pub git: bool,
 }
 
+/// `fs/create_dir`：在指定目录下新建一个子目录。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FsCreateDir;
+
+impl Method for FsCreateDir {
+    const NAME: &'static str = "fs/create_dir";
+    type Params = FsCreateDirParams;
+    type Result = FsCreateDirResult;
+}
+
+impl ClientRequest for FsCreateDir {}
+
+/// `fs/create_dir` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsCreateDirParams {
+    /// 父目录：绝对路径或以 `~` 开头，必须已存在。
+    pub parent: String,
+    /// 新目录名：单段名字，不接受路径分隔符与 `..`。
+    pub name: String,
+}
+
+/// `fs/create_dir` 的结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsCreateDirResult {
+    /// 新目录的绝对路径。
+    pub path: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +129,33 @@ mod tests {
                 "truncated": false
             })
         );
+    }
+
+    #[test]
+    fn create_dir_wire_shape_is_stable() {
+        assert_eq!(<FsCreateDir as Method>::NAME, "fs/create_dir");
+        let params = serde_json::to_value(FsCreateDirParams {
+            parent: "/a".into(),
+            name: "b".into(),
+        })
+        .expect("参数可序列化");
+        assert_eq!(params, serde_json::json!({"parent": "/a", "name": "b"}));
+        assert!(
+            serde_json::from_value::<FsCreateDirParams>(serde_json::json!({"parent": "/a"}))
+                .is_err(),
+            "缺少 name 必须拒绝"
+        );
+        assert!(
+            serde_json::from_value::<FsCreateDirParams>(
+                serde_json::json!({"parent": "/a", "name": "b", "extra": 1})
+            )
+            .is_err(),
+            "未知字段必须拒绝"
+        );
+        let result = serde_json::to_value(FsCreateDirResult {
+            path: "/a/b".into(),
+        })
+        .expect("结果可序列化");
+        assert_eq!(result, serde_json::json!({"path": "/a/b"}));
     }
 }

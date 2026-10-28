@@ -22,15 +22,11 @@ pub(crate) mod urlfs;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 enum BashLifecycle {
+    #[default]
     Monitored,
     Persistent,
-}
-
-impl Default for BashLifecycle {
-    fn default() -> Self {
-        Self::Monitored
-    }
 }
 
 /// `description` 参数的模型可见说明；与 dsh 的 bash 工具保持同一前端卡片契约。
@@ -72,13 +68,13 @@ fn resolve_timeout(
             "persistent lifecycle forbids timeout",
         ));
     }
-    if let Some(timeout) = args.timeout {
-        if !(1..=3600).contains(&timeout) {
-            return Err(ToolError::new(
-                "E_BAD_PAYLOAD",
-                "timeout must be between 1 and 3600 seconds",
-            ));
-        }
+    if let Some(timeout) = args.timeout
+        && !(1..=3600).contains(&timeout)
+    {
+        return Err(ToolError::new(
+            "E_BAD_PAYLOAD",
+            "timeout must be between 1 and 3600 seconds",
+        ));
     }
     Ok(match lifecycle {
         BashLifecycle::Monitored => Some(Duration::from_secs(

@@ -228,7 +228,6 @@ async fn invalid_params_returns_invalid_params() {
         "参数非法时不得调用 core：{:?}",
         service.calls()
     );
-    // 被拒的请求不该占住会话提示
     peer.send(&request(
         4,
         "session/cancel",
@@ -237,6 +236,38 @@ async fn invalid_params_returns_invalid_params() {
     .await;
     let raw = peer.recv_ok(4).await;
     assert_eq!(raw["cancelled"], false);
+}
+
+#[tokio::test]
+async fn chart_and_workspace_methods_validate_params_before_service_dispatch() {
+    let service = ScriptedService::new();
+    let (_server, _connection, mut peer) = raw_pair(service.clone(), ServerOptions::default());
+    handshake(&mut peer).await;
+
+    peer.send(&request(
+        2,
+        "chart/analyze",
+        json!({ "header": ["名称", "数量"], "rows": [["A", "2"]] }),
+    ))
+    .await;
+    assert_eq!(peer.recv_err(2).await, RpcErrorCode::NotSupported.code());
+
+    peer.send(&request(
+        3,
+        "workspace/git_branch",
+        json!({ "cwd": "/tmp" }),
+    ))
+    .await;
+    assert_eq!(peer.recv_err(3).await, RpcErrorCode::NotSupported.code());
+
+    peer.send(&request(
+        4,
+        "chart/analyze",
+        json!({ "header": [], "rows": [], "unknown": true }),
+    ))
+    .await;
+    assert_eq!(peer.recv_err(4).await, RpcErrorCode::InvalidParams.code());
+    assert!(service.calls().is_empty());
 }
 
 #[tokio::test]

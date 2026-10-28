@@ -30,10 +30,11 @@ use crate::method::Method;
 use crate::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentSpawnParams,
     AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams, AgentWaitResult,
-    BtwParams, BtwResult, BtwUpdate, BtwUpdateMethod, BtwUpdateParams, CompactResult,
-    ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult, Empty,
-    FsListDirParams, FsListDirResult, InitializeParams, InitializeResult, PermissionRequestParams,
-    PermissionResult, PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
+    BtwParams, BtwResult, BtwUpdate, BtwUpdateMethod, BtwUpdateParams, ChartAnalyzeParams,
+    ChartAnalyzeResult, CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult,
+    ContextUsageResult, Empty, FsCreateDirParams, FsCreateDirResult, FsListDirParams,
+    FsListDirResult, InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
+    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
@@ -42,7 +43,8 @@ use crate::methods::{
     SessionPlanApproveResult, SessionRenameParams, SessionRetryParams, SessionRewindParams,
     SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
     SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WorkspaceGitBranchParams,
+    WorkspaceGitBranchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -165,6 +167,33 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: FsListDirParams,
     ) -> impl Future<Output = Result<FsListDirResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 在指定目录下新建子目录，供前端的目录选择器建工作区。
+    fn fs_create_dir(
+        &self,
+        _ctx: RequestContext,
+        _params: FsCreateDirParams,
+    ) -> impl Future<Output = Result<FsCreateDirResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 根据已有 Core 图表语义生成浏览器可消费的数据描述。
+    fn chart_analyze(
+        &self,
+        _ctx: RequestContext,
+        _params: ChartAnalyzeParams,
+    ) -> impl Future<Output = Result<ChartAnalyzeResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 读取工作目录当前 Git 分支；不是仓库时返回空分支。
+    fn workspace_git_branch(
+        &self,
+        _ctx: RequestContext,
+        _params: WorkspaceGitBranchParams,
+    ) -> impl Future<Output = Result<WorkspaceGitBranchResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

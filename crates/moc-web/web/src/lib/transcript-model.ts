@@ -91,9 +91,17 @@ export type LiveTurn = {
   /** 当前一轮生成的思考块与正文块 id；首个增量到达时才创建。 */
   reasoningId?: string;
   textId?: string;
+  /** 当前 generation 创建的块；重试回退时只清理这一段。 */
+  generationBlockIds: string[];
   usage?: Usage;
   /** tool_call_id → batch_id，来自 tool_batch_started。 */
   batchOf: Record<string, string>;
+};
+
+type RewindableGeneration = {
+  promptId: string;
+  blockIds: string[];
+  footerId: string;
 };
 
 export type ToolDiffRecord = { toolCallId: string; name: string; atMs: number; diff: ToolDiff };
@@ -108,6 +116,8 @@ export type SessionView = {
   loadingOlder: boolean;
   running: boolean;
   live: LiveTurn | null;
+  /** 最近结束的 generation；只由 prompt_rewound 消费。 */
+  rewindable: RewindableGeneration | null;
   todos: TodoPhase[];
   plans: PlanInfo[];
   agents: Record<string, AgentInfo>;
@@ -130,6 +140,7 @@ export function createView(info: SessionInfo): SessionView {
     loadingOlder: false,
     running: false,
     live: null,
+    rewindable: null,
     todos: [],
     plans: [],
     agents: {},
@@ -339,8 +350,27 @@ function nextId(view: SessionView): string {
   return `l${view.seq}`;
 }
 
-function pushStatus(view: SessionView, tone: StatusTone, text: string, retryable?: boolean) {
-  view.blocks.push({ kind: "status", id: nextId(view), tone, text, retryable });
+function pushStatus(
+  view: SessionView,
+  tone: StatusTone,
+  text: string,
+  retryable?: boolean,
+): string {
+  const id = nextId(view);
+  view.blocks.push({ kind: "status", id, tone, text, retryable });
+  trackLiveBlock(view, id);
+  return id;
+}
+
+function pushPromptStatus(
+  view: SessionView,
+  promptId: string,
+  tone: StatusTone,
+  text: string,
+  retryable?: boolean,
+): void {
+  const id = pushStatus(view, tone, text, retryable);
+  if (view.rewindable?.promptId === promptId) view.rewindable.blockIds.push(id);
 }
 
 function closeReasoning(view: SessionView, now: number) {
@@ -356,19 +386,79 @@ function closeReasoning(view: SessionView, now: number) {
   }
 }
 
+function trackLiveBlock(view: SessionView, id: string): void {
+  view.live?.generationBlockIds.push(id);
+}
+
 function ensureLive(view: SessionView, promptId: string, now: number): LiveTurn {
   if (!view.live || view.live.promptId !== promptId) {
-    view.live = { promptId, model: view.info.model, startedAt: now, batchOf: {} };
+    view.live = {
+      promptId,
+      model: view.info.model,
+      startedAt: now,
+      generationBlockIds: [],
+      batchOf: {},
+    };
     view.running = true;
   }
   return view.live;
+}
+
+function removeRewoundBlocks(view: SessionView, replayedTools: boolean): void {
+  const rewind = view.rewindable;
+  const ids = new Set(rewind?.blockIds ?? view.live?.generationBlockIds ?? []);
+  if (rewind) ids.add(rewind.footerId);
+  if (ids.size === 0) {
+    view.live = null;
+    view.running = false;
+    view.rewindable = null;
+    return;
+  }
+
+  const removedToolCalls = new Set<string>();
+  const shouldRemove = (block: Block): boolean =>
+    ids.has(block.id) && (!replayedTools || (block.kind !== "text" && block.kind !== "reasoning"));
+  const collectRemovedTools = (block: Block): void => {
+    if (block.kind === "tool") {
+      if (shouldRemove(block)) removedToolCalls.add(block.toolCallId);
+      for (const child of block.children) collectRemovedTools(child);
+    }
+  };
+  for (const block of view.blocks) collectRemovedTools(block);
+  const pruneTools = (blocks: ToolBlock[]): ToolBlock[] =>
+    blocks.flatMap((block) => {
+      if (shouldRemove(block)) return [];
+      block.children = pruneTools(block.children);
+      return [block];
+    });
+  const prune = (blocks: Block[]): Block[] =>
+    blocks.flatMap((block) => {
+      if (shouldRemove(block)) return [];
+      if (block.kind === "tool") block.children = pruneTools(block.children);
+      return [block];
+    });
+
+  view.blocks = prune(view.blocks);
+  if (removedToolCalls.size > 0) {
+    view.diffs = view.diffs.filter((diff) => !removedToolCalls.has(diff.toolCallId));
+  }
+  view.live = null;
+  view.running = false;
+  view.rewindable = null;
 }
 
 /** 把一条 `session/update` 折进视图；未知类型保持不变。`now` 便于测试注入。 */
 export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date.now()): void {
   switch (update.type) {
     case "prompt_started":
-      view.live = { promptId: update.prompt_id, model: update.model, startedAt: now, batchOf: {} };
+      view.live = {
+        promptId: update.prompt_id,
+        model: update.model,
+        startedAt: now,
+        generationBlockIds: [],
+        batchOf: {},
+      };
+      view.rewindable = null;
       view.running = true;
       view.mismatch = null;
       break;
@@ -377,6 +467,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       const live = ensureLive(view, update.prompt_id, now);
       live.reasoningId = undefined;
       live.textId = undefined;
+      live.generationBlockIds = [];
       break;
     }
     case "assistant_delta": {
@@ -392,6 +483,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           const id = nextId(view);
           view.blocks.push({ kind: "reasoning", id, text: "", startedAt: now });
           live.reasoningId = id;
+          trackLiveBlock(view, id);
           block = view.blocks.at(-1);
         }
         if (block?.kind === "reasoning") block.text += delta.delta;
@@ -402,6 +494,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           const id = nextId(view);
           view.blocks.push({ kind: "text", id, text: "" });
           live.textId = id;
+          trackLiveBlock(view, id);
           block = view.blocks.at(-1);
         }
         if (block?.kind === "text") block.text += delta.delta;
@@ -428,6 +521,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         : undefined;
       if (parent) parent.children.push(block);
       else view.blocks.push(block);
+      trackLiveBlock(view, block.id);
       break;
     }
     case "tool_finished": {
@@ -439,6 +533,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           : undefined;
         if (parent) parent.children.push(block);
         else view.blocks.push(block);
+        trackLiveBlock(view, block.id);
       }
       block.status = update.status;
       block.result = update.result.content;
@@ -481,6 +576,9 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         if (block.kind === "tool" && block.awaitingPermission) block.awaitingPermission = false;
       }
       break;
+    case "prompt_rewound":
+      removeRewoundBlocks(view, update.replayed_tools);
+      break;
     case "prompt_finished": {
       closeReasoning(view, now);
       const live = view.live;
@@ -492,11 +590,20 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
           ? view.blocks.find((item) => item.id === live.textId)
           : undefined;
         if (textBlock?.kind === "text") textBlock.text = text;
-        else if (text) view.blocks.push({ kind: "text", id: nextId(view), text });
+        else if (text) {
+          const id = nextId(view);
+          view.blocks.push({ kind: "text", id, text });
+          live.generationBlockIds.push(id);
+        }
         const reasoningBlock = live.reasoningId
           ? view.blocks.find((item) => item.id === live.reasoningId)
           : undefined;
         if (reasoningBlock?.kind === "reasoning" && reasoning) reasoningBlock.text = reasoning;
+        else if (reasoning) {
+          const id = nextId(view);
+          view.blocks.push({ kind: "reasoning", id, text: reasoning });
+          live.generationBlockIds.push(id);
+        }
       } else if (text) {
         view.blocks.push({ kind: "text", id: nextId(view), text });
       }
@@ -504,23 +611,29 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       for (const block of view.blocks) {
         if (block.kind === "tool" && block.status === "running") block.status = "cancelled";
       }
+      const footerId = nextId(view);
       view.blocks.push({
         kind: "footer",
-        id: nextId(view),
+        id: footerId,
         model: live?.model,
         durationMs: live ? now - live.startedAt : undefined,
         finishReason: update.finish_reason,
         atMs: now,
       });
+      view.rewindable = {
+        promptId: live?.promptId ?? update.prompt_id,
+        blockIds: live ? [...live.generationBlockIds] : [],
+        footerId,
+      };
       view.live = null;
       view.running = false;
       break;
     }
     case "guard_notice":
-      pushStatus(view, update.terminal ? "error" : "warn", update.message);
+      pushPromptStatus(view, update.prompt_id, update.terminal ? "error" : "warn", update.message);
       break;
     case "error":
-      pushStatus(view, "error", update.message, update.retryable);
+      pushPromptStatus(view, update.prompt_id, "error", update.message, update.retryable);
       break;
     case "plugin_notice":
       view.pluginNotice = { plugin: update.plugin, code: update.code, message: update.message };

@@ -393,6 +393,35 @@ export type SteerResult = {
   id?: number;
 };
 
+export type ChartPoint = {
+  value: number;
+  text: string;
+  upper: number | null;
+  total: number | null;
+};
+
+export type ChartSeries = {
+  name: string;
+  dim: "Count" | "Percent" | "Duration" | "Bytes" | "Currency" | "Ratio" | "Fraction" | "Rate";
+  unit: string;
+  factor: number;
+  polarity: "Higher" | "Lower" | null;
+  points: Array<ChartPoint | null>;
+};
+
+export type ChartAnalyzeParams = { header: string[]; rows: string[][] };
+
+export type ChartSpec = {
+  kind: "Bar" | "Grouped" | "Paired" | "Line" | "Stacked" | "Progress" | "Heatmap" | "Scatter";
+  axis: string;
+  categories: string[];
+  series: ChartSeries[];
+  normalized: boolean;
+  diverging: boolean;
+  notes: Array<string | null>;
+};
+
+export type ChartAnalyzeResult = { spec: ChartSpec | null };
 // ---------- diff ----------
 
 export type DiffLineKind = "equal" | "delete" | "insert";
@@ -419,8 +448,9 @@ export type ToolDiff = {
   files: ToolFileDiff[];
   truncated: boolean;
 };
+export type WorkspaceGitBranchResult = { branch: string | null };
 
-// ---------- 反向请求 ----------
+// ---------- 权限与前端反向请求 ----------
 
 export type PermissionOptionKind = "allow_once" | "allow_session" | "reject_once";
 
@@ -564,7 +594,8 @@ export type SessionUpdate =
   | { type: "workspace_changed"; violation: boolean; changes: { path: string; kind: string }[] }
   | { type: "upstream_mismatch"; prompt_id: string; fields: UpstreamFieldMismatch[] }
   | { type: "steering_applied"; id: number; text: string }
-  | { type: "error"; prompt_id: string; message: string; retryable: boolean };
+  | { type: "error"; prompt_id: string; message: string; retryable: boolean }
+  | { type: "prompt_rewound"; replayed_tools: boolean };
 
 export type SessionUpdateType = SessionUpdate["type"];
 
@@ -602,6 +633,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   upstream_mismatch: true,
   steering_applied: true,
   error: true,
+  prompt_rewound: true,
 };
 
 export type SessionUpdateParams = {
@@ -693,6 +725,10 @@ export type FsListDirResult = {
 };
 
 export const FS_LIST_DIR_MAX_ENTRIES = 1000;
+
+export type FsCreateDirResult = {
+  path: string;
+};
 
 /** FinishReason 的展示用小写键。 */
 export function finishReasonKey(reason: FinishReason): string {

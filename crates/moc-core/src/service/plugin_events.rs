@@ -13,7 +13,7 @@ use moc_protocol::methods::{
     AgentInfo, AgentMessageMeta, PathChange, PermissionOption, SessionInfo, SessionMode,
     SessionPermission,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::CoreInner;
 
@@ -425,7 +425,12 @@ pub(crate) async fn workspace_changed(
     .await;
 }
 
-pub(crate) async fn plan_decided(host: &PluginHost, context: &CallContext, plan_id: &str, action: &str) {
+pub(crate) async fn plan_decided(
+    host: &PluginHost,
+    context: &CallContext,
+    plan_id: &str,
+    action: &str,
+) {
     emit(
         host,
         HookKind::PlanDecided,

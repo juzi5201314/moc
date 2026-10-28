@@ -27,7 +27,7 @@ impl ToolCatalog {
         manager: Arc<McpManager>,
         plugins: Vec<Arc<dyn Tool>>,
     ) -> Result<Self, ToolError> {
-        let mut tools: Vec<Arc<dyn Tool>> = registry.all().iter().cloned().collect();
+        let mut tools: Vec<Arc<dyn Tool>> = registry.all().to_vec();
         tools.extend(plugins);
         tools.extend(snapshot.tools.iter().map(|info| {
             Arc::new(super::mcp::McpTool::new(

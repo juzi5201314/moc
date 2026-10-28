@@ -3,14 +3,27 @@
 
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { setMode } from "@/components/composer/commands";
-import { runAction } from "@/components/layout/session-actions";
+import { rpc } from "@/protocol/client";
 import type { SessionMode } from "@/protocol/types";
-import { closeSession } from "@/store/lifecycle";
+import { useLayout } from "@/store/layout";
+import { closeSession, createQuickSession } from "@/store/lifecycle";
 import { type DetailTier, TIER_ORDER, usePrefs } from "@/store/prefs";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+
+async function setMode(sessionId: string, mode: SessionMode): Promise<void> {
+  await rpc.call("session/mode", { session_id: sessionId, mode });
+}
+
+async function runAction(fn: () => Promise<unknown>, label?: string): Promise<void> {
+  try {
+    await fn();
+    if (label) toast(label);
+  } catch (err) {
+    toast.error(err instanceof Error ? err.message : String(err));
+  }
+}
 
 const MODE_CYCLE: SessionMode[] = ["normal", "ask", "plan", "ptc"];
 const MODE_LABEL: Record<string, string> = {
@@ -59,7 +72,7 @@ function handleAlt(code: string): boolean {
   switch (code) {
     case "KeyN": {
       const cwd = active ? useTranscript.getState().bySession[active]?.info.cwd : undefined;
-      ui.set({ newSession: { open: true, cwd } });
+      void createQuickSession(cwd);
       return true;
     }
     case "KeyW": {
@@ -76,10 +89,11 @@ function handleAlt(code: string): boolean {
       switchTab(1);
       return true;
     case "KeyS":
-      prefs.set({ sidebarCollapsed: !prefs.sidebarCollapsed });
+    case "KeyB":
+      useLayout.getState().toggleSidebar();
       return true;
     case "KeyR":
-      prefs.setRightPanel({ open: !prefs.rightPanel.open });
+      useLayout.getState().toggleRightbar();
       return true;
     case "KeyP":
       if (active) ui.set({ modelPicker: active });
@@ -110,12 +124,20 @@ function handleCtrl(code: string): boolean {
     case "KeyK":
       ui.set({ palette: !ui.palette });
       return true;
+    case "KeyB":
+      useLayout.getState().toggleSidebar();
+      return true;
+    case "KeyN": {
+      const active = useTabs.getState().active;
+      const cwd = active ? useTranscript.getState().bySession[active]?.info.cwd : undefined;
+      void createQuickSession(cwd);
+      return true;
+    }
     case "Slash":
       ui.set({ help: !ui.help });
       return true;
     case "Semicolon":
-      usePrefs.getState().setRightPanel({ open: true, tab: "btw" });
-      useUi.setState((state) => ({ focusBtw: state.focusBtw + 1 }));
+      useLayout.getState().openRightTab({ kind: "terminal", title: "终端" });
       return true;
     default:
       return false;

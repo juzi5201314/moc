@@ -35,15 +35,14 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, BtwCancelResult, BtwUpdate,
-    ClientInfo, ConfigGet, ConfigManage, FsListDir, Initialize, Ping, PingResult, PluginList,
-    PluginReload, PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw,
-    SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact, SessionContext,
-    SessionContextContent, SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew,
-    SessionPlanApprove, SessionPrompt, SessionRename, SessionRetry, SessionRewind, SessionSetMode,
-    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
-    SessionUnsteer, SessionUsage,
+    ChartAnalyze, ClientInfo, ConfigGet, ConfigManage, FsCreateDir, FsListDir, Initialize, Ping,
+    PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams, ResourceComplete,
+    SessionBash, SessionBtw, SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact,
+    SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
+    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRetry,
+    SessionRewind, SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer,
+    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WorkspaceGitBranch,
 };
-
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
 use crate::{PROTOCOL_VERSION, major_version};
@@ -368,10 +367,13 @@ impl<S: AgentService> ServerDispatch<S> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 在读循环里为 `session/prompt` 占位提示注册表。
+    /// 在读循环里为 `session/prompt` / `session/retry` 占位提示注册表。
     ///
     /// 只从 `params` 里读 `session_id` 一个字段，不解析整个 DTO——参数里可能带着
     /// 数 MiB 的图片，读循环不该为它做一次完整反序列化。
+    ///
+    /// 重试必须和提示一样占位：注册表同时是 `session/cancel` 的落点，紧跟在
+    /// `session/retry` 后面到达的取消报文只能靠这里的登记才找得到令牌。
     fn claim_prompt(&self, request: &Request, cancel: &CancellationToken) -> PromptClaim {
         let method = request.method.as_ref();
         let is_prompt =
@@ -646,6 +648,33 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .fs_list_dir(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <FsCreateDir as Method>::NAME => {
+                let params = params_from_value::<FsCreateDir>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .fs_create_dir(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <ChartAnalyze as Method>::NAME => {
+                let params = params_from_value::<ChartAnalyze>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .chart_analyze(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <WorkspaceGitBranch as Method>::NAME => {
+                let params = params_from_value::<WorkspaceGitBranch>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .workspace_git_branch(self.context(client, cancel), params)
                         .await?,
                 )
             }

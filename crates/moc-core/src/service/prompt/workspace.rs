@@ -83,13 +83,8 @@ pub(super) async fn check_workspace(
         )
         .await
         .map_err(protocol_to_rpc)?;
-    crate::service::plugin_events::workspace_changed(
-        plugins,
-        plugin_context,
-        violation,
-        &changes,
-    )
-    .await;
+    crate::service::plugin_events::workspace_changed(plugins, plugin_context, violation, &changes)
+        .await;
     let paths = changes
         .iter()
         .map(|change| {

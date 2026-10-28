@@ -178,4 +178,186 @@ describe("applyUpdate", () => {
     applyUpdate(view, { type: "future_thing" } as unknown as SessionUpdate);
     expect(JSON.stringify(view)).toBe(before);
   });
+
+  it("回退失败生成时保留历史已提交内容", () => {
+    const view = createView(INFO);
+    const usage = {
+      input_tokens: 1,
+      output_tokens: 1,
+      total_tokens: 2,
+      cached_input_tokens: null,
+      cache_creation_input_tokens: null,
+      reasoning_tokens: null,
+    };
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p0", model: "m1", at_ms: 0 }, 0);
+    applyUpdate(view, { type: "generation_started", prompt_id: "p0" }, 1);
+    applyUpdate(
+      view,
+      { type: "assistant_delta", prompt_id: "p0", delta: { type: "text", delta: "历史" } },
+      2,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "prompt_finished",
+        prompt_id: "p0",
+        message: { role: "Assistant", content: [{ Text: "历史" }] },
+        finish_reason: "Stop",
+        usage,
+      },
+      3,
+    );
+
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p1", model: "m1", at_ms: 4 }, 4);
+    applyUpdate(view, { type: "generation_started", prompt_id: "p1" }, 5);
+    applyUpdate(
+      view,
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "text", delta: "半截" } },
+      6,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "prompt_finished",
+        prompt_id: "p1",
+        message: { role: "Assistant", content: [{ Text: "半截" }] },
+        finish_reason: "Cancelled",
+        usage,
+      },
+      7,
+    );
+    applyUpdate(
+      view,
+      { type: "guard_notice", prompt_id: "p1", message: "保护机制中止", terminal: true },
+      8,
+    );
+    applyUpdate(view, { type: "prompt_rewound", replayed_tools: false }, 9);
+
+    expect(view.blocks.flatMap((block) => (block.kind === "text" ? [block.text] : []))).toEqual([
+      "历史",
+    ]);
+    expect(view.blocks.filter((block) => block.kind === "footer")).toHaveLength(1);
+    expect(view.blocks.some((block) => block.kind === "status")).toBe(false);
+    expect(view.live).toBeNull();
+    expect(view.running).toBe(false);
+  });
+
+  it("重放工具时保留已提交正文但移除失败工具与尾栏", () => {
+    const view = createView(INFO);
+    const usage = {
+      input_tokens: 1,
+      output_tokens: 1,
+      total_tokens: 2,
+      cached_input_tokens: null,
+      cache_creation_input_tokens: null,
+      reasoning_tokens: null,
+    };
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p1", model: "m1", at_ms: 0 }, 0);
+    applyUpdate(view, { type: "generation_started", prompt_id: "p1" }, 1);
+    applyUpdate(
+      view,
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "text", delta: "正文" } },
+      2,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "tool_started",
+        prompt_id: "p1",
+        tool_call_id: "c1",
+        name: "read",
+        arguments: "{}",
+      },
+      3,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "prompt_finished",
+        prompt_id: "p1",
+        message: {
+          role: "Assistant",
+          content: [{ Text: "正文" }, { ToolCall: { id: "c1", name: "read", arguments: "{}" } }],
+        },
+        finish_reason: "Cancelled",
+        usage,
+      },
+      4,
+    );
+    applyUpdate(view, { type: "prompt_rewound", replayed_tools: true }, 5);
+
+    expect(view.blocks.flatMap((block) => (block.kind === "text" ? [block.text] : []))).toEqual([
+      "正文",
+    ]);
+    expect(view.blocks.some((block) => block.kind === "tool")).toBe(false);
+    expect(view.blocks.some((block) => block.kind === "footer")).toBe(false);
+  });
+
+  it("只回退同一 prompt 的最后 generation", () => {
+    const view = createView(INFO);
+    const usage = {
+      input_tokens: 1,
+      output_tokens: 1,
+      total_tokens: 2,
+      cached_input_tokens: null,
+      cache_creation_input_tokens: null,
+      reasoning_tokens: null,
+    };
+    applyUpdate(view, { type: "prompt_started", prompt_id: "p1", model: "m1", at_ms: 0 }, 0);
+    applyUpdate(view, { type: "generation_started", prompt_id: "p1" }, 1);
+    applyUpdate(
+      view,
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "text", delta: "前一轮" } },
+      2,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "tool_started",
+        prompt_id: "p1",
+        tool_call_id: "c1",
+        name: "read",
+        arguments: "{}",
+      },
+      3,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "tool_finished",
+        prompt_id: "p1",
+        tool_call_id: "c1",
+        name: "read",
+        arguments: "{}",
+        status: "completed",
+        result: { tool_call_id: "c1", content: "ok", is_error: false },
+      },
+      4,
+    );
+    applyUpdate(view, { type: "generation_started", prompt_id: "p1" }, 5);
+    applyUpdate(
+      view,
+      { type: "assistant_delta", prompt_id: "p1", delta: { type: "text", delta: "失败尾巴" } },
+      6,
+    );
+    applyUpdate(
+      view,
+      {
+        type: "prompt_finished",
+        prompt_id: "p1",
+        message: { role: "Assistant", content: [{ Text: "失败尾巴" }] },
+        finish_reason: "Cancelled",
+        usage,
+      },
+      7,
+    );
+    applyUpdate(view, { type: "prompt_rewound", replayed_tools: false }, 8);
+
+    expect(view.blocks.flatMap((block) => (block.kind === "text" ? [block.text] : []))).toEqual([
+      "前一轮",
+    ]);
+    const tool = view.blocks.find((block) => block.kind === "tool") as ToolBlock;
+    expect(tool?.toolCallId).toBe("c1");
+    expect(tool?.status).toBe("completed");
+  });
 });

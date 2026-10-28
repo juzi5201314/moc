@@ -60,7 +60,7 @@ pub async fn append_message(
     let Some(mut context) = current else {
         return Ok(());
     };
-    context.push_str("\n");
+    context.push('\n');
     context.push_str(&serde_json::to_string(message).expect("模型消息必须可序列化"));
     if context.len() > MAX_CONTEXT_BYTES {
         return Err(crate::error::CoreError::ContextOverflow(

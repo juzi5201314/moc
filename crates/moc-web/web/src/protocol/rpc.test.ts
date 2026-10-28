@@ -115,7 +115,12 @@ describe("RpcClient", () => {
       method: "session/update",
       params: { session_id: "s", update: { type: "title_changed", title: "x" } },
     });
-    expect(seen).toEqual(["title_changed"]);
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { session_id: "s", update: { type: "prompt_rewound", replayed_tools: false } },
+    });
+    expect(seen).toEqual(["title_changed", "prompt_rewound"]);
   });
 
   it("rejects all pending calls on disconnect", async () => {

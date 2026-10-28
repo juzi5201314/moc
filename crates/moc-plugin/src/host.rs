@@ -504,8 +504,8 @@ impl PluginHost {
             }
         }
         for index in 0..host.plugins.len() {
-            if host.plugins[index].alive() {
-                if let Err(error) = host
+            if host.plugins[index].alive()
+                && let Err(error) = host
                     .invoke_context(
                         index,
                         CallOp::Activate,
@@ -516,9 +516,8 @@ impl PluginHost {
                         host.plugins[index].activation_budget,
                     )
                     .await
-                {
-                    host.fail(index, error);
-                }
+            {
+                host.fail(index, error);
             }
         }
         host
@@ -1455,7 +1454,11 @@ fn collect_injected(
             None | Some("user") => "user",
             Some("system") => "system",
             Some(other) => {
-                tracing::warn!(plugin, role = other, "注入消息的 role 只能是 system 或 user，已忽略");
+                tracing::warn!(
+                    plugin,
+                    role = other,
+                    "注入消息的 role 只能是 system 或 user，已忽略"
+                );
                 continue;
             }
         };
@@ -1469,7 +1472,10 @@ fn collect_injected(
             text,
         });
         if *budget == 0 {
-            tracing::warn!(plugin, "sessionStart 注入消息的字符预算已用尽，剩余项已忽略");
+            tracing::warn!(
+                plugin,
+                "sessionStart 注入消息的字符预算已用尽，剩余项已忽略"
+            );
             break;
         }
     }

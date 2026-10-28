@@ -11,9 +11,14 @@ function loadTabs(): Persisted {
     const raw = localStorage.getItem(TABS_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : null;
     if (parsed && typeof parsed === "object" && "open" in parsed && Array.isArray(parsed.open)) {
-      const open = parsed.open.filter((item): item is string => typeof item === "string");
+      const open = parsed.open.filter(
+        (item): item is string => typeof item === "string" && item !== "draft-session",
+      );
       const active =
-        "active" in parsed && typeof parsed.active === "string" && open.includes(parsed.active)
+        "active" in parsed &&
+        typeof parsed.active === "string" &&
+        parsed.active !== "draft-session" &&
+        open.includes(parsed.active)
           ? parsed.active
           : (open[0] ?? null);
       return { open, active };
@@ -33,7 +38,9 @@ export type TabsState = Persisted & {
 };
 
 function save(state: Persisted) {
-  localStorage.setItem(TABS_KEY, JSON.stringify({ open: state.open, active: state.active }));
+  const open = state.open.filter((id) => id !== "draft-session");
+  const active = state.active === "draft-session" ? (open[0] ?? null) : state.active;
+  localStorage.setItem(TABS_KEY, JSON.stringify({ open, active }));
 }
 
 export const useTabs = create<TabsState>()((set, get) => {

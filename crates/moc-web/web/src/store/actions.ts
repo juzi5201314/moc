@@ -4,8 +4,9 @@ import { rpc } from "@/protocol/client";
 import { RpcError } from "@/protocol/errors";
 import type { InputPart, PromptResult, SessionMode } from "@/protocol/types";
 import { useComposer } from "./composer";
-import { syncEntryIds } from "./lifecycle";
+import { newSession, syncEntryIds } from "./lifecycle";
 import { useSessions } from "./sessions";
+import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
 
 export type SendOptions = { mode?: SessionMode; echo?: boolean };
@@ -13,6 +14,7 @@ export type SendOptions = { mode?: SessionMode; echo?: boolean };
 /**
  * 发送一条提示。本地先插入用户块（`echo` 默认 true），流式内容走 session/update；
  * 返回时提示已结束，再补 entry id 并刷新侧栏。
+ * 如果当前处于空白临时会话（draft-session），在此处创建真正的后端会话并无缝切换。
  */
 export async function sendPrompt(
   sessionId: string,
@@ -20,6 +22,22 @@ export async function sendPrompt(
   options: SendOptions = {},
 ): Promise<void> {
   if (input.length === 0) return;
+
+  // 1. 如果是临时草稿会话，先提交后端创建真实会话
+  if (sessionId === "draft-session") {
+    const draft = useSessions.getState().draftSession;
+    const realInfo = await newSession({
+      cwd: draft?.cwd,
+      model: draft?.model,
+      mode: options.mode ?? draft?.mode ?? "normal",
+    });
+    useSessions.getState().setDraftSession(null);
+    useTabs.getState().replace("draft-session", realInfo.id);
+    useTranscript.getState().drop("draft-session");
+    // 对真实的 session 发送提示词
+    return sendPrompt(realInfo.id, input, options);
+  }
+
   const store = useTranscript.getState();
   if (options.echo ?? true) {
     const text = input.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");

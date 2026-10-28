@@ -3,6 +3,7 @@
 // 只有 `session/load` 会取跨进程写租约，所以打开时先 load（max_entries=1，顺带拿
 // todos / plans），再用 `session/load_page` 取展示用的转写。
 
+import { toast } from "sonner";
 import { attachEntryIds, entriesToBlocks } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
@@ -15,9 +16,11 @@ import type {
   SessionMode,
 } from "@/protocol/types";
 import { useComposer } from "./composer";
+import { useConnection } from "./connection";
 import { useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
+import { requestComposerFocus } from "./ui";
 
 const PAGE_SIZE = 80;
 const MAX_MESSAGE_BYTES = 65536;
@@ -29,8 +32,13 @@ const opening = new Map<string, Promise<void>>();
 /** `readOnly`：强制只读打开（子代理会话不抢父进程的写租约）。 */
 export type OpenOptions = { activate?: boolean; readOnly?: boolean };
 
-/** 打开会话：加入标签并加载；已加载的只切换。 */
+/** 打开会话：加入标签并加载；已加载的只切换。若此前有未提交的空白新会话，自动丢弃。 */
 export function openSession(sessionId: string, options: OpenOptions = {}): Promise<void> {
+  if (sessionId !== "draft-session") {
+    useSessions.getState().setDraftSession(null);
+    useTranscript.getState().drop("draft-session");
+    useTabs.getState().close("draft-session");
+  }
   useTabs.getState().add(sessionId, options.activate ?? true);
   if (useTranscript.getState().bySession[sessionId]) return Promise.resolve();
   const existing = opening.get(sessionId);
@@ -186,10 +194,17 @@ function waitForIdle(sessionId: string): Promise<void> {
 }
 
 /**
- * 关闭标签。运行中的会话由调用方先确认；这里负责 cancel → 等收尾 → unload。
+ * 关闭标签。如果是空白临时新会话，直接丢弃且不触发后端 RPC。
+ * 运行中的会话由调用方先确认；这里负责 cancel → 等收尾 → unload。
  * 只读会话不持有租约，直接移除。
  */
 export async function closeSession(sessionId: string): Promise<void> {
+  if (sessionId === "draft-session") {
+    useSessions.getState().setDraftSession(null);
+    useTabs.getState().close(sessionId);
+    useTranscript.getState().drop(sessionId);
+    return;
+  }
   const view = useTranscript.getState().bySession[sessionId];
   if (view && !view.readOnly) {
     if (view.running) {
@@ -228,6 +243,60 @@ export async function newSession(options: NewSessionOptions = {}): Promise<Sessi
   return info;
 }
 
+/**
+ * 极速新建会话：对齐 deepseek-harness 交互。
+ * 不立即写入后端数据库，而是创建本地空白临时会话（draft）；
+ * 若用户离开或关闭，直接丢弃；仅在输入首条提示词后才向后端写入会话。
+ */
+export function createQuickSession(targetCwd?: string): SessionInfo {
+  let cwd = targetCwd;
+  if (!cwd) {
+    const activeId = useTabs.getState().active;
+    if (activeId && activeId !== "draft-session") {
+      cwd = useTranscript.getState().bySession[activeId]?.info?.cwd;
+    }
+  }
+  if (!cwd) {
+    const workspaces = useSessions.getState().workspaces;
+    const list = useSessions.getState().list;
+    cwd = workspaces[0] ?? list[0]?.cwd ?? "/home/soeur/project/moc";
+  }
+
+  const activeId = useTabs.getState().active;
+  const currentModel =
+    activeId && activeId !== "draft-session"
+      ? useTranscript.getState().bySession[activeId]?.info?.model
+      : undefined;
+  const models = useConnection.getState().config?.models;
+  const defaultModel = currentModel || models?.[0]?.id;
+
+  const draftId = "draft-session";
+  const draftInfo: SessionInfo = {
+    id: draftId,
+    title: "新会话",
+    cwd,
+    model: defaultModel ?? "",
+    mode: "normal",
+    permission: "full",
+    created_at_ms: Date.now(),
+    updated_at_ms: Date.now(),
+  };
+
+  useSessions.getState().setDraftSession({
+    id: draftId,
+    cwd,
+    title: "新会话",
+    isDraft: true,
+    model: defaultModel,
+    mode: "normal",
+  });
+
+  useTranscript.getState().ensureView(draftInfo);
+  useTabs.getState().add(draftId);
+  requestComposerFocus();
+  return draftInfo;
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   await rpc.call("session/delete", { session_id: sessionId });
   useTabs.getState().close(sessionId);
@@ -247,6 +316,28 @@ export async function renameSession(sessionId: string, title: string): Promise<v
   useTranscript.getState().mutate(sessionId, (view) => {
     view.info = info;
   });
+}
+
+/** 分叉/分支会话：继承当前会话的上下文工作区、模式与模型，开启独立新分支 */
+export async function forkSession(sessionId: string): Promise<SessionInfo | undefined> {
+  const current =
+    useTranscript.getState().bySession[sessionId]?.info ??
+    useSessions.getState().list.find((s) => s.id === sessionId);
+  if (!current) return undefined;
+  try {
+    const info = await newSession({
+      cwd: current.cwd,
+      model: current.model,
+      mode: current.mode,
+    });
+    const forkTitle = `${current.title || "会话"} (分支)`;
+    await renameSession(info.id, forkTitle).catch(() => undefined);
+    toast.success(`已分叉生成新会话: ${forkTitle}`);
+    return info;
+  } catch (error) {
+    toast.error(`分叉会话失败: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
 }
 
 /**

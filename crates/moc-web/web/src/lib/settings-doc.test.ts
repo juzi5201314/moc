@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { breadcrumbs } from "@/components/dialogs/folder-picker";
-import { toSplitRows } from "@/components/transcript/diff-view";
 import type { DiffLine } from "@/protocol/types";
+import { breadcrumbs, toSplitRows } from "./format";
 import { choiceDisplay, formatField, getPath, parseField, setPath } from "./settings-doc";
 
 describe("settings document paths", () => {

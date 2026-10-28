@@ -20,8 +20,8 @@
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
 //! | [`management::SessionSteer`] / [`management::SessionUnsteer`] | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
-//! | [`fs::FsListDir`] | C→S | core | 已初始化 | `-32602` / `-32014` |
-//! | [`permission::SessionRequestPermission`] / [`ask::SessionRequestAsk`] | S→C | 前端 | 前端已注册处理器 | 前端自定义 |
+//! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` |
+//! | [`workspace::WorkspaceGitBranch`] | C→S | core | 已初始化 | `-32602` |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
 //!
 //! 方向隔离是强制的：客户端向服务端发 `session/update` /
@@ -32,6 +32,7 @@ pub mod agent;
 pub mod ask;
 pub mod bash;
 pub mod btw;
+pub mod chart;
 pub mod config;
 pub mod diff;
 pub mod fs;
@@ -45,6 +46,7 @@ pub mod resources;
 pub mod session;
 pub mod todo;
 pub mod update;
+pub mod workspace;
 
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +62,7 @@ pub use btw::{
     BtwCancelParams, BtwCancelResult, BtwExchange, BtwParams, BtwResult, BtwUpdate,
     BtwUpdateMethod, BtwUpdateParams, MAX_BTW_HISTORY_TURNS, SessionBtw, SessionBtwCancel,
 };
+pub use chart::{ChartAnalyze, ChartAnalyzeParams, ChartAnalyzeResult};
 pub use config::{
     AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelInput, ModelPricing,
 };
@@ -67,7 +70,10 @@ pub use diff::{
     DiffHunk, DiffLine, DiffLineKind, LineChange, ToolDiff, ToolFileDiff, build_hunks,
     build_hunks_from_changes,
 };
-pub use fs::{FS_LIST_DIR_MAX_ENTRIES, FsDirEntry, FsListDir, FsListDirParams, FsListDirResult};
+pub use fs::{
+    FS_LIST_DIR_MAX_ENTRIES, FsCreateDir, FsCreateDirParams, FsCreateDirResult, FsDirEntry,
+    FsListDir, FsListDirParams, FsListDirResult,
+};
 pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
@@ -116,6 +122,7 @@ pub use update::{
     AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
     ToolBatchCall, UpstreamField, UpstreamFieldMismatch,
 };
+pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult};
 
 /// 空结果：序列化为 `{}`。
 ///
@@ -177,7 +184,9 @@ mod tests {
             (<PluginRunCommand as Method>::NAME, "plugin/run_command"),
             (<ResourceComplete as Method>::NAME, "resource/complete"),
             (<FsListDir as Method>::NAME, "fs/list_dir"),
-            (<AgentSpawn as Method>::NAME, "agent/spawn"),
+            (<FsCreateDir as Method>::NAME, "fs/create_dir"),
+            (<ChartAnalyze as Method>::NAME, "chart/analyze"),
+            (<WorkspaceGitBranch as Method>::NAME, "workspace/git_branch"),
             (<AgentList as Method>::NAME, "agent/list"),
             (<AgentMessage as Method>::NAME, "agent/message"),
             (<AgentStop as Method>::NAME, "agent/stop"),
@@ -232,6 +241,8 @@ mod tests {
         server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();
         server_notification::<BtwUpdateMethod>();
+        client::<ChartAnalyze>();
+        client::<WorkspaceGitBranch>();
         assert_eq!(Empty {}, Empty::default());
     }
 }

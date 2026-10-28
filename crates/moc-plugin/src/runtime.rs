@@ -587,10 +587,7 @@ fn parse_descriptor<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<(Descri
             let Some(kind) = HookKind::from_js_name(&name) else {
                 return Err(PluginError::new(
                     "E_PLUGIN_DESCRIPTOR",
-                    format!(
-                        "未知钩子 `{name}`（支持：{}）",
-                        HookKind::supported()
-                    ),
+                    format!("未知钩子 `{name}`（支持：{}）", HookKind::supported()),
                 ));
             };
             let value: JsValue = hooks
@@ -959,13 +956,12 @@ fn install_globals<'js>(
                 if let PersistenceOp::StateGet { key }
                 | PersistenceOp::StateSet { key, .. }
                 | PersistenceOp::StateDelete { key } = &op
+                    && (key.is_empty() || key.len() > 128)
                 {
-                    if key.is_empty() || key.len() > 128 {
-                        return Err(PluginError::new(
-                            "E_PLUGIN_STATE",
-                            "state 键必须是 1..128 UTF-8 字节",
-                        ));
-                    }
+                    return Err(PluginError::new(
+                        "E_PLUGIN_STATE",
+                        "state 键必须是 1..128 UTF-8 字节",
+                    ));
                 }
                 if matches!(
                     &op,

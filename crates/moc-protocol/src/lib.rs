@@ -37,7 +37,7 @@
 //! | `session/btw_cancel` | 前端→core | 协议层自答 | 已初始化 | — |
 //! | `session/steer` / `session/unsteer` | 前端→core | core | 已初始化 | `-32010` / `-32014` |
 //! | `session/cancel` | 前端→core | 协议层自答 | 已初始化 | — |
-//! | `fs/list_dir` | 前端→core | core | 已初始化 | `-32602` / `-32014` |
+//! | `fs/list_dir` / `fs/create_dir` | 前端→core | core | 已初始化 | `-32602` / `-32014` |
 //! | `session/request_permission` / `session/request_ask` | core→前端 | 前端 | 前端已注册处理器 | 前端自定义 |
 //! | `session/update` | core→前端 | 前端 | — | — |
 //! | `session/btw_update` | core→前端 | 前端 | — | — |

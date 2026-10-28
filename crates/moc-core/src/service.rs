@@ -11,12 +11,13 @@ use moc_llm::Client;
 use moc_protocol::methods::{
     AgentListParams, AgentListResult, AgentMessageParams, AgentMessageResult, AgentProfile,
     AgentSpawnParams, AgentSpawnResult, AgentStopParams, AgentStopResult, AgentWaitParams,
-    AgentWaitResult, ClientCapabilities, CompactResult, ConfigGetParams, ConfigGetResult,
-    ContextContentResult, ContextUsageResult, Empty, FsListDirParams, FsListDirResult,
-    InitializeParams, InitializeResult, ModelInfo, ModelInput, ModelUsageSummary,
-    PluginCommandInfo, PluginInfo, PluginListParams, PluginListResult, PluginReloadParams,
-    PluginReloadResult, PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo,
-    PromptResult, ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
+    AgentWaitResult, ChartAnalyzeParams, ChartAnalyzeResult, ClientCapabilities, CompactResult,
+    ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult, Empty,
+    FsCreateDirParams, FsCreateDirResult, FsListDirParams, FsListDirResult, InitializeParams,
+    InitializeResult, ModelInfo, ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo,
+    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
+    PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
+    ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
     SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
     SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
@@ -24,6 +25,7 @@ use moc_protocol::methods::{
     SessionRetryParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
     SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -1018,11 +1020,118 @@ impl AgentService for Core {
     ) -> Result<FsListDirResult, RpcError> {
         let default_cwd = self.inner.config().cwd.clone();
         tokio::task::spawn_blocking(move || {
-            crate::fs_list::list_dir(params.path.as_deref(), &default_cwd, params.show_hidden)
+            crate::fs::list_dir(params.path.as_deref(), &default_cwd, params.show_hidden)
         })
         .await
         .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
         .map_err(|error| invalid_params(error.to_string()))
+    }
+
+    async fn fs_create_dir(
+        &self,
+        _ctx: RequestContext,
+        params: FsCreateDirParams,
+    ) -> Result<FsCreateDirResult, RpcError> {
+        tokio::task::spawn_blocking(move || crate::fs::create_dir(&params.parent, &params.name))
+            .await
+            .map_err(|error| RpcError::new(RpcErrorCode::InternalError.code(), error.to_string()))?
+            .map_err(|error| invalid_params(error.to_string()))
+    }
+
+    async fn chart_analyze(
+        &self,
+        _ctx: RequestContext,
+        params: ChartAnalyzeParams,
+    ) -> Result<ChartAnalyzeResult, RpcError> {
+        let table = crate::chart::analyze(&crate::chart::RawTable {
+            header: params.header,
+            rows: params.rows,
+        });
+        let Some(plan) = crate::chart::plan(&table) else {
+            return Ok(ChartAnalyzeResult { spec: None });
+        };
+        let spec = crate::chart::build(&table, &plan);
+        let kind = match spec.kind {
+            crate::chart::ChartKind::Bar => "Bar",
+            crate::chart::ChartKind::Grouped => "Grouped",
+            crate::chart::ChartKind::Paired => "Paired",
+            crate::chart::ChartKind::Line => "Line",
+            crate::chart::ChartKind::Stacked => "Stacked",
+            crate::chart::ChartKind::Progress => "Progress",
+            crate::chart::ChartKind::Heatmap => "Heatmap",
+            crate::chart::ChartKind::Scatter => "Scatter",
+        };
+        let series = spec
+            .series
+            .into_iter()
+            .map(|item| {
+                let dim = match item.dim {
+                    crate::chart::Dimension::Count => "Count",
+                    crate::chart::Dimension::Percent => "Percent",
+                    crate::chart::Dimension::Duration => "Duration",
+                    crate::chart::Dimension::Bytes => "Bytes",
+                    crate::chart::Dimension::Currency => "Currency",
+                    crate::chart::Dimension::Ratio => "Ratio",
+                    crate::chart::Dimension::Fraction => "Fraction",
+                    crate::chart::Dimension::Rate => "Rate",
+                };
+                let polarity = item.polarity.map(|value| match value {
+                    crate::chart::Polarity::Higher => "Higher",
+                    crate::chart::Polarity::Lower => "Lower",
+                });
+                let points: Vec<_> = item
+                    .points
+                    .into_iter()
+                    .map(|point| {
+                        point.map(|point| {
+                            json!({
+                                "value": point.value,
+                                "text": point.text,
+                                "upper": point.upper,
+                                "total": point.total,
+                            })
+                        })
+                    })
+                    .collect();
+                json!({
+                    "name": item.name,
+                    "dim": dim,
+                    "unit": item.unit,
+                    "factor": item.factor,
+                    "polarity": polarity,
+                    "points": points,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(ChartAnalyzeResult {
+            spec: Some(json!({
+                "kind": kind,
+                "axis": spec.axis,
+                "categories": spec.categories,
+                "series": series,
+                "normalized": spec.normalized,
+                "diverging": spec.diverging,
+                "notes": spec.notes,
+            })),
+        })
+    }
+
+    async fn workspace_git_branch(
+        &self,
+        _ctx: RequestContext,
+        params: WorkspaceGitBranchParams,
+    ) -> Result<WorkspaceGitBranchResult, RpcError> {
+        let output = tokio::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(Path::new(&params.cwd))
+            .output()
+            .await
+            .ok();
+        let branch = output
+            .filter(|result| result.status.success())
+            .map(|result| String::from_utf8_lossy(&result.stdout).trim().to_owned())
+            .filter(|branch| !branch.is_empty());
+        Ok(WorkspaceGitBranchResult { branch })
     }
 
     async fn session_new(
