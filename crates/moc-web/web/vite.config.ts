@@ -17,7 +17,8 @@ export default defineConfig({
     outDir: "dist",
     assetsDir: "assets",
     emptyOutDir: true,
-    sourcemap: true,
+    // 产物会被压进二进制分发；sourcemap 占 dist 的三分之二且只对 `pnpm dev` 有用。
+    sourcemap: false,
   },
   server: {
     proxy: {

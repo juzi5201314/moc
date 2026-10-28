@@ -17,7 +17,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use moc_core::Core;
@@ -90,41 +90,59 @@ fn routes(state: AppState) -> Router {
 /// 静态资源：精确命中嵌入表；`/assets/` 下的文件名带内容哈希，可永久缓存。
 /// `/assets/` 下未命中回 404（旧版本的过期 chunk 不能拿到 HTML）；
 /// 其余未命中回 `index.html`（SPA 回退），且不缓存，保证升级后拿到新入口。
-async fn static_handler(uri: Uri) -> Response {
+async fn static_handler(uri: Uri, headers: HeaderMap) -> Response {
+    let accept_zstd = accepts_zstd(&headers);
     match assets::lookup(uri.path()) {
-        Some(asset) => {
-            let cache = if asset.path.starts_with("/assets/") {
-                "public, max-age=31536000, immutable"
-            } else {
-                "no-cache"
-            };
-            (
-                [
-                    (header::CONTENT_TYPE, asset.mime),
-                    (header::CACHE_CONTROL, cache),
-                ],
-                asset.body,
-            )
-                .into_response()
-        }
+        Some(asset) => render(asset, cache_control(asset.path()), accept_zstd),
         None if uri.path().starts_with("/assets/") => (
             StatusCode::NOT_FOUND,
             [(header::CACHE_CONTROL, "no-cache")],
             "资源不存在",
         )
             .into_response(),
-        None => {
-            let index = assets::index();
-            (
-                [
-                    (header::CONTENT_TYPE, index.mime),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                index.body,
-            )
-                .into_response()
-        }
+        None => render(assets::index(), "no-cache", accept_zstd),
     }
+}
+
+fn cache_control(path: &str) -> &'static str {
+    if path.starts_with("/assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
+/// 客户端在 `Accept-Encoding` 里声明 zstd 时才发压缩体，压缩结果在
+/// `Asset` 里只生成一次；`Vary` 让中间缓存按编码分开存。
+fn render(asset: &'static assets::Asset, cache: &'static str, accept_zstd: bool) -> Response {
+    let encoded = if accept_zstd { asset.encoded() } else { None };
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(asset.mime()));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    if encoded.is_some() {
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+    }
+    (headers, encoded.unwrap_or_else(|| asset.body())).into_response()
+}
+
+/// `Accept-Encoding` 是可重复头，`zstd;q=0` 表示明确拒绝。
+fn accepts_zstd(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|token| {
+            let mut parts = token.split(';');
+            let name = parts.next().unwrap_or_default().trim();
+            let weight = parts.find_map(|part| {
+                part.trim()
+                    .strip_prefix("q=")
+                    .and_then(|weight| weight.parse::<f32>().ok())
+            });
+            name.eq_ignore_ascii_case("zstd") && weight != Some(0.0)
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -192,4 +210,24 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         diff |= left ^ right;
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn accept_encoding(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT_ENCODING, value.parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn zstd_is_sent_only_when_the_client_accepts_it() {
+        assert!(!accepts_zstd(&HeaderMap::new()));
+        assert!(!accepts_zstd(&accept_encoding("gzip, br")));
+        assert!(accepts_zstd(&accept_encoding("gzip, zstd")));
+        assert!(accepts_zstd(&accept_encoding("ZSTD;q=1")));
+        assert!(!accepts_zstd(&accept_encoding("zstd;q=0")));
+    }
 }

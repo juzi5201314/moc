@@ -62,3 +62,8 @@ debug = 1
 
 [profile.test]
 debug = 1
+
+# 发布产物不带符号表：`moc` 的 strip 前后差约 15.8MB，
+# 而崩溃栈本来就不靠内嵌符号表还原。
+[profile.release]
+strip = true

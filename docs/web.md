@@ -48,6 +48,11 @@ pnpm --dir crates/moc-web/web build
 cargo build --release --bin moc
 ```
 
+嵌入前会把所有产物打成一条记录序列、整体压成单个 zstd 帧（19 级）：跨文件共享匹配窗口，
+比逐文件压缩小约两成。`*.map` 不进二进制（`vite.config.ts` 也已关闭 sourcemap 生成），
+调试前端用 `pnpm dev`。运行时首次请求解压归档，浏览器在 `Accept-Encoding` 里声明 zstd 时
+响应带 `Content-Encoding: zstd`。
+
 没有 `web/dist` 时 `cargo build` 仍能通过，但只嵌入一页「Web 前端未构建」提示；
 设 `MOC_WEB_REQUIRE_DIST=1` 则直接构建失败（release CI 使用）。
 
