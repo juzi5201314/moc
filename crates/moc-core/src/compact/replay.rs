@@ -7,13 +7,12 @@ use crate::session::entries::Entry;
 use crate::session::state::SessionState;
 
 /// 本地注入消息的固定前缀与对应的分块短名：压缩摘要、活动计划、todo 快照、
-/// Grok Build 的续接前言和运行时提醒。
-const INJECTED_PREFIXES: [(&str, &str); 5] = [
+/// Grok Build 的续接前言。运行时提醒不在此列——它有自己的 [`moc_llm::Role::Custom`]。
+const INJECTED_PREFIXES: [(&str, &str); 4] = [
     ("<compaction-summary", "compaction summary"),
     ("<active-plan", "active plan"),
     ("<active-todos", "active todos"),
     ("This session is being continued", "grok build summary"),
-    ("<system-reminder>", "system reminder"),
 ];
 
 /// 消息是否是 moc 注入的，而不是用户输入。
@@ -54,7 +53,7 @@ pub(crate) fn synthetic_messages(state: &SessionState, system: Option<&[Message]
             )));
         }
         if let Some(reminder) = &state.summary_reminder {
-            messages.push(Message::user_text(reminder.clone()));
+            messages.push(Message::custom(reminder.clone()));
         }
         return messages;
     }
@@ -545,7 +544,11 @@ mod tests {
         }
         // 注入消息不参与子代理任务推导，也不该被当成用户输入。
         assert!(is_injected_context(&messages[1]));
-        assert!(is_injected_context(&messages[2]));
+        assert_eq!(
+            messages[2].role,
+            Role::Custom,
+            "todo 快照是注入内容，走自定义角色而不必嗅探前缀"
+        );
         assert!(!is_injected_context(&messages[0]));
     }
 

@@ -156,6 +156,7 @@ fn encode_messages(
                 out.push(encode_instruction(cfg, message, breakpoint)?);
             }
             Role::User => out.push(encode_user(cfg, message, breakpoint)?),
+            Role::Custom => out.push(encode_custom(cfg, message, breakpoint)?),
             Role::Assistant => out.push(encode_assistant(cfg, plan, message, breakpoint)?),
             // tool 消息携带的图片无法进入 tool 角色，编码为紧随其后的 user 消息。
             Role::Tool => out.extend(encode_tool_result(cfg, message, breakpoint)?),
@@ -196,6 +197,24 @@ fn encode_user(_cfg: &LlmConfig, message: &Message, breakpoint: bool) -> Result<
         }
     }
     Ok(json!({"role": "user", "content": finish_content(blocks, breakpoint)?}))
+}
+
+/// 运行时注入消息：留在对话流里，支持 `developer` 的供应商走它，否则退回 `user`。
+fn encode_custom(cfg: &LlmConfig, message: &Message, breakpoint: bool) -> Result<Value, LlmError> {
+    for part in &message.content {
+        if !matches!(part, ContentPart::Text(_)) {
+            return Err(unsupported_part(message.role, part));
+        }
+    }
+    let role = if cfg.wire.developer_role {
+        "developer"
+    } else {
+        "user"
+    };
+    Ok(json!({
+        "role": role,
+        "content": finish_text_content(message.instruction_text(), breakpoint)?,
+    }))
 }
 
 fn encode_image(source: &ImageSource, detail: Option<ImageDetail>) -> Result<Value, LlmError> {
@@ -827,6 +846,34 @@ mod tests {
             .into_iter()
             .map(|event| event.unwrap())
             .collect()
+    }
+
+    #[test]
+    fn custom_messages_ride_as_developer_when_the_wire_supports_it() {
+        let req = ChatRequest {
+            messages: vec![
+                Message::user_text("做事"),
+                Message::custom("<system-reminder>Sandbox mode: full.</system-reminder>"),
+            ],
+            ..Default::default()
+        };
+        let body = encode_body(&config(), &req, false);
+        assert_eq!(
+            body["messages"],
+            json!([
+                {"role": "user", "content": "做事"},
+                {"role": "user", "content": "<system-reminder>Sandbox mode: full.</system-reminder>"},
+            ]),
+            "默认不带 developer 角色时降级为 user"
+        );
+
+        let mut with_developer = config();
+        with_developer.wire.developer_role = true;
+        let body = encode_body(&with_developer, &req, false);
+        assert_eq!(
+            body["messages"][1]["role"], "developer",
+            "支持 developer 的供应商用独立角色承载提醒"
+        );
     }
 
     #[test]

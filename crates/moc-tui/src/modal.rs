@@ -451,6 +451,7 @@ impl RewindItem {
             Role::User => "用户提问",
             Role::Assistant => "模型回复",
             Role::Tool => "工具结果",
+            Role::Custom => "运行时提醒",
             Role::System | Role::Developer => "系统消息",
         }
     }
@@ -502,8 +503,8 @@ impl RewindState {
         self.prompts.clear();
         self.items.clear();
         for entry in entries {
-            // `!!` 命令与代理消息都不是人类提问，不作为回退边界。
-            if entry.bash.is_some() || entry.agent.is_some() {
+            // `!!` 命令、代理消息与运行时提醒都不是人类提问，不作为回退边界。
+            if entry.bash.is_some() || entry.agent.is_some() || entry.reminder.is_some() {
                 continue;
             }
             if entry.message.role == Role::User {
@@ -1513,6 +1514,7 @@ mod tests {
             tool: None,
             bash: None,
             agent: None,
+            reminder: None,
         };
         let mut state = RewindState::default();
         state.set_entries(vec![
@@ -1543,6 +1545,7 @@ mod tests {
             tool: None,
             bash: None,
             agent: None,
+            reminder: None,
         };
         let mut state = RewindState::default();
         state.set_entries(vec![

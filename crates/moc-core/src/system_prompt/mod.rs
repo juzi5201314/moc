@@ -367,13 +367,13 @@ fn append_piece(config: &ResolvedConfig) -> Option<PromptPiece> {
     })
 }
 
-/// 当前模式的规则提醒；普通模式返回 `None`。
+/// 当前模式的规则提醒正文；普通模式返回 `None`。
 ///
-/// 模式规则只放在尾部提醒里：静态系统提示与模式无关，才能跨目录、跨会话复用缓存。
+/// 模式规则只放在运行时提醒里：静态系统提示与模式无关，才能跨目录、跨会话复用缓存。
 /// 所以提醒不能只写「当前是 X 模式，规则见上文」，必须把该模式的规则写全。
 /// 普通模式没有额外规则：工具齐全，静态政策也写明可以改工作区。没有模式提醒就表示
 /// 当前是普通模式。
-pub fn mode_contract(mode: SessionMode) -> Option<Message> {
+pub fn mode_contract(mode: SessionMode) -> Option<String> {
     let text = match mode {
         SessionMode::Normal => return None,
         SessionMode::Ask => {
@@ -387,15 +387,13 @@ pub fn mode_contract(mode: SessionMode) -> Option<Message> {
         }
         SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
-    Some(reminder_message(format!(
-        "<system-reminder>{text}</system-reminder>"
-    )))
+    Some(text.to_owned())
 }
 
-/// 当前沙盒模式的事实提醒；每轮都发，因为模式与路径授权会随用户操作变化。
+/// 当前沙盒模式的事实提醒正文。
 ///
 /// 这里只写模型需要据此调整行为的边界与升级方式，不重复配置项的逐字段说明。
-pub fn sandbox_contract(permission: SessionPermission, config: &ResolvedSandboxConfig) -> Message {
+pub fn sandbox_contract(permission: SessionPermission, config: &ResolvedSandboxConfig) -> String {
     let filesystem = match permission {
         SessionPermission::Full => {
             "Commands run directly on the host with no filesystem isolation."
@@ -426,29 +424,12 @@ pub fn sandbox_contract(permission: SessionPermission, config: &ResolvedSandboxC
     } else {
         "Escalation to full is disabled; use allowed paths or change settings."
     };
-    reminder_message(format!(
-        "<system-reminder>Sandbox mode: {}. {filesystem} {network} {approval} {escalation}</system-reminder>",
+    format!(
+        "Sandbox mode: {}. {filesystem} {network} {approval} {escalation}",
         permission.as_str()
-    ))
-}
-
-/// 把易变信息包成一条 user 消息，放在回放的历史之后，稳定前缀因此可以缓存。
-pub fn reminder_message(text: String) -> Message {
-    Message::user_text(text)
-}
-/// 把多条提醒合并成一条 user 消息，正文之间空一行。
-pub fn merge_reminders(messages: Vec<Message>) -> Vec<Message> {
-    if messages.is_empty() {
-        Vec::new()
-    } else {
-        vec![Message::user_text(
-            messages
-                .into_iter()
-                .map(|message| message.text())
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        )]
-    }
+    )
+    .trim_end()
+    .to_owned()
 }
 
 #[cfg(test)]
@@ -890,13 +871,7 @@ mod tests {
                 ["<clm-experimental>", "clm_context"].as_slice(),
             ),
         ] {
-            let text = mode_contract(mode)
-                .expect("非普通模式必须有模式提醒")
-                .text();
-            assert!(
-                text.starts_with("<system-reminder>") && text.ends_with("</system-reminder>"),
-                "{mode:?}: {text}"
-            );
+            let text = mode_contract(mode).expect("非普通模式必须有模式提醒");
             for needle in needles {
                 assert!(text.contains(needle), "{mode:?} 缺少「{needle}」：{text}");
             }
@@ -920,8 +895,8 @@ mod tests {
             deny_read_paths: Vec::new(),
             deny_write_paths: Vec::new(),
         };
-        let text = sandbox_contract(SessionPermission::WorkspaceOnly, &config).text();
-        assert!(text.starts_with("<system-reminder>Sandbox mode: workspace-only."));
+        let text = sandbox_contract(SessionPermission::WorkspaceOnly, &config);
+        assert!(text.starts_with("Sandbox mode: workspace-only."), "{text}");
         assert!(text.contains("host home and other host data are absent"));
         assert!(text.contains("Shell network access is blocked"));
         assert!(text.contains("sandbox_permissions"));

@@ -145,9 +145,13 @@ async fn retry_drops_the_interrupted_turn_before_asking_again() {
         .expect("重试成功");
     assert_eq!(result.message.text(), "续跑完成");
 
-    // 半截那一轮已经被剪掉：transcript 只剩原始用户消息与重试的回复。
+    // 半截那一轮已经被剪掉：transcript 只剩原始用户消息、运行时提醒与重试的回复。
     let entries = h.load(&id).await.entries;
-    let texts: Vec<String> = entries.iter().map(|entry| entry.message.text()).collect();
+    let texts: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.reminder.is_none())
+        .map(|entry| entry.message.text())
+        .collect();
     assert_eq!(texts, vec!["开始".to_owned(), "续跑完成".to_owned()]);
     assert_eq!(requests.load(Ordering::SeqCst), 2);
     // 前端据此撤掉那段已经不在会话里的预览。
@@ -287,10 +291,11 @@ async fn retry_resends_context_without_appending_user_message() {
     assert_eq!(result.message.text(), "收到");
 
     // 重试不发新请求以外的任何写入：transcript 仍是「一问一答」。
+    // 运行时提醒也是 user 角色，但它属于模型内部状态，不算用户消息。
     let entries = h.load(&id).await.entries;
     let user_texts: Vec<String> = entries
         .iter()
-        .filter(|entry| entry.message.role == Role::User)
+        .filter(|entry| entry.message.role == Role::User && entry.reminder.is_none())
         .map(|entry| entry.message.text())
         .collect();
     assert_eq!(

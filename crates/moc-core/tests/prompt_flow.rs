@@ -2572,8 +2572,8 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
         "{system:?}"
     );
 
-    // 用户消息与尾部提醒在 Anthropic 上合并为同一条线上消息：断点必须落在用户
-    // 这一块上，本轮才出现的提醒块不能落位。
+    // 用户消息与运行时提醒在 Anthropic 上合并为同一条线上消息。提醒已落库成为历史的一部分，
+    // 所以尾断点应该落在它上面：下个请求的前缀包含它，能直接命中。
     let messages = body["messages"].as_array().expect("线上消息");
     assert_eq!(messages.len(), 1, "{messages:?}");
     let content = messages[0]["content"].as_array().expect("消息内容块");
@@ -2585,8 +2585,8 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
             .contains("缓存冒烟")
     );
     assert!(
-        content[0].get("cache_control").is_some(),
-        "尾断点落在最后一条会持久化的消息上"
+        content[0].get("cache_control").is_none(),
+        "尾断点应落在最后一条会持久化的消息上"
     );
     assert!(
         content[1]["text"]
@@ -2595,8 +2595,8 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
             .contains("<system-reminder>")
     );
     assert!(
-        content[1].get("cache_control").is_none(),
-        "提醒不会进入历史，断点落在它上面永远不会命中"
+        content[1].get("cache_control").is_some(),
+        "提醒进入历史后前缀稳定，断点必须落在它上面"
     );
     h.close().await;
 }
@@ -2681,13 +2681,22 @@ async fn user_role_instructions_ride_in_a_user_message_with_their_own_breakpoint
         .position(|text| *text == "切换冒烟")
         .expect("本轮用户消息与指令合并成同一条线上消息");
     assert!(
-        content[task].get("cache_control").is_some(),
-        "尾断点落在最后一条会持久化的消息上：{content:?}"
+        content[task].get("cache_control").is_none(),
+        "尾断点应落在最后一条会持久化的消息上：{content:?}"
     );
-    for extra in &content[task + 1..] {
+    let last = content.len() - 1;
+    assert!(
+        texts[last].contains("<system-reminder>"),
+        "提醒排在用户消息之后：{content:?}"
+    );
+    assert!(
+        content[last].get("cache_control").is_some(),
+        "提醒进入历史后前缀稳定，断点必须落在它上面：{content:?}"
+    );
+    for middle in &content[task + 1..last] {
         assert!(
-            extra.get("cache_control").is_none(),
-            "本轮提醒不落断点：{content:?}"
+            middle.get("cache_control").is_none(),
+            "断点只落在最后一条消息上：{content:?}"
         );
     }
     h.close().await;
@@ -2937,5 +2946,152 @@ async fn plan_revision_supersedes_previous_version_and_emits_diff() {
         SessionUpdate::PlanSubmitted { plan }
             if plan.plan_id == v2.plan_id && plan.version == 2
     )));
+    h.close().await;
+}
+
+/// 运行时提醒按条目差分注入：一次提示内的后续请求不再重复注入没变的条目。
+#[tokio::test]
+async fn runtime_reminders_are_injected_once_per_change_not_per_request() {
+    let upstream = MockServer::builder().start().await;
+    // 第一轮让模型调一次工具，逼出同一次提示里的第二个请求。
+    let responses = [
+        support::tool_stream(vec![(
+            "call_read",
+            "read",
+            serde_json::json!({"path": "a.txt"}),
+        )]),
+        text_stream("完成"),
+    ];
+    let index = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&index);
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_: &wiremock::Request| {
+            let at = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_raw(responses[at].clone(), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    std::fs::write(
+        h.root.path().join("work").join("a.txt"),
+        "内容\n".repeat(400),
+    )
+    .expect("create read target");
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "开始").await;
+
+    let requests = upstream.received_requests().await.expect("请求记录");
+    assert_eq!(requests.len(), 2, "一次工具调用换来两个模型请求");
+    let reminder_texts = |request: &wiremock::Request| -> Vec<String> {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
+        body["messages"]
+            .as_array()
+            .expect("消息数组")
+            .iter()
+            .filter_map(|message| message["content"].as_str())
+            .filter(|text| text.starts_with("<system-reminder>"))
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        reminder_texts(&requests[0]).len(),
+        1,
+        "首个请求注入一条合并的提醒消息"
+    );
+    assert_eq!(
+        reminder_texts(&requests[1]).len(),
+        1,
+        "提醒已落库，第二个请求只应看到历史里的那一份，不得重复注入：{:?}",
+        reminder_texts(&requests[1])
+    );
+
+    // 提醒进入历史后不再变化，所以两个请求里的提醒正文相同。
+    assert_eq!(reminder_texts(&requests[0]), reminder_texts(&requests[1]));
+
+    // 会话重载后提醒仍然只有一份，且不被算作用户消息。
+    let loaded = h.load(&id).await;
+    let reminders: Vec<_> = loaded
+        .entries
+        .iter()
+        .filter(|entry| entry.reminder.is_some())
+        .collect();
+    assert_eq!(reminders.len(), 1, "一次示意：提醒不该按请求数量累积");
+    let users: Vec<_> = loaded
+        .entries
+        .iter()
+        .filter(|entry| entry.message.role == moc_protocol::Role::User && entry.reminder.is_none())
+        .collect();
+    assert_eq!(users.len(), 1, "提醒不得被算成用户消息");
+    h.close().await;
+}
+
+/// 条目只有变化时才注入：切模式后只多出一条模式条目，沙盒条目不再重发。
+#[tokio::test]
+async fn changing_the_mode_injects_only_the_mode_entry() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("ok"), "text/event-stream"),
+        )
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let id = h.session(SessionMode::Normal).await;
+    h.prompt(&id, "第一问").await;
+    h.client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: id.clone(),
+            mode: SessionMode::Ask,
+        })
+        .await
+        .expect("切换到 Ask 模式");
+    h.prompt(&id, "第二问").await;
+
+    let requests = upstream.received_requests().await.expect("请求记录");
+    assert_eq!(requests.len(), 2);
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[1].body).expect("第二个请求 JSON");
+    let reminders: Vec<String> = body["messages"]
+        .as_array()
+        .expect("消息数组")
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .filter(|text| text.starts_with("<system-reminder>"))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(reminders.len(), 2, "两次提示各留下一条提醒：{reminders:?}");
+
+    let loaded = h.load(&id).await;
+    let stamps: Vec<_> = loaded
+        .entries
+        .iter()
+        .filter_map(|entry| entry.reminder.as_ref())
+        .collect();
+    assert_eq!(stamps.len(), 2);
+    let first_keys: Vec<&str> = stamps[0]
+        .items
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect();
+    assert!(
+        first_keys.contains(&"sandbox") && first_keys.contains(&"local-time"),
+        "首次是全量：{first_keys:?}"
+    );
+    assert!(
+        !first_keys.contains(&"mode"),
+        "普通模式没有模式契约，本就不该有条目：{first_keys:?}"
+    );
+    let second_keys: Vec<&str> = stamps[1]
+        .items
+        .iter()
+        .map(|item| item.key.as_str())
+        .collect();
+    assert_eq!(
+        second_keys,
+        vec!["mode"],
+        "只有模式变了，沙盒与时间不该重发"
+    );
     h.close().await;
 }

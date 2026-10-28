@@ -421,6 +421,7 @@ impl SessionTable {
                 tool: entry.tool.clone(),
                 bash: entry.bash.clone(),
                 agent: entry.agent.clone(),
+                reminder: entry.reminder.clone(),
             });
         }
         let ids: std::collections::HashSet<&str> = entries
@@ -633,6 +634,20 @@ impl SessionTable {
             },
         )
         .await
+    }
+
+    /// 追加一条运行时提醒 entry。
+    ///
+    /// 提醒落库后成为历史的一部分，所以只在条目内容变化时写一次；`items` 是本次
+    /// 真正写进去的条目摘要，重放时据此判断哪些条目已经在历史里。
+    pub async fn append_reminder(
+        &self,
+        session_id: &str,
+        message: Message,
+        items: Vec<moc_protocol::ReminderItem>,
+    ) -> Result<Entry, CoreError> {
+        self.append(session_id, EntryPayload::Reminder { message, items })
+            .await
     }
 
     /// 原子替换 transcript，同时重建内存里的状态。

@@ -397,6 +397,7 @@ fn message_name(entry: &moc_protocol::methods::TranscriptEntry) -> &'static str 
         Role::User => "user",
         Role::Assistant => "assistant",
         Role::Tool => "tool result",
+        Role::Custom => "reminder",
         Role::System | Role::Developer => "system",
     }
 }

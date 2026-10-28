@@ -249,6 +249,10 @@ export function entriesToBlocks(
       });
       continue;
     }
+    // 运行时提醒是模型内部状态，不属于对话，不进对话流。
+    if (entry.reminder || message.role === "Custom") {
+      continue;
+    }
     switch (message.role) {
       case "User":
         blocks.push({

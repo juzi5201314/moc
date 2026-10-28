@@ -24,6 +24,13 @@ pub enum Role {
     Assistant,
     /// 工具执行结果；一条消息恰好承载一个 [`ToolResult`]。
     Tool,
+    /// 本地注入的运行时消息（提醒、中断通知）；不是用户输入，也不进对话展示。
+    ///
+    /// 三协议都没有对应角色，编码时按各自能力降级：Chat 在支持时用 `developer`、
+    /// 否则用 `user`；Anthropic 并入相邻的 `user` 消息；Responses 用 `developer`。
+    /// 独立角色的意义在于本地区分——压缩按轮次切分、历史回放、前端展示都靠它
+    /// 把注入内容与真实用户输入分开，不必再嗅探正文前缀。
+    Custom,
 }
 
 impl Role {
@@ -35,6 +42,7 @@ impl Role {
             Role::User => "user",
             Role::Assistant => "assistant",
             Role::Tool => "tool",
+            Role::Custom => "custom",
         }
     }
 }
@@ -55,6 +63,7 @@ impl std::fmt::Display for Role {
 /// | `User` | `Text`、`Image` |
 /// | `Assistant` | `Text`、`Reasoning`、`ToolCall` |
 /// | `Tool` | 恰好一个 `ToolResult` |
+/// | `Custom` | `Text` |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// 消息角色。
@@ -104,6 +113,14 @@ impl Message {
     pub fn assistant_text(text: impl Into<String>) -> Self {
         Self {
             role: Role::Assistant,
+            content: vec![ContentPart::Text(text.into())],
+        }
+    }
+
+    /// 本地注入的运行时纯文本消息。
+    pub fn custom(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::Custom,
             content: vec![ContentPart::Text(text.into())],
         }
     }

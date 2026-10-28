@@ -5,7 +5,7 @@ export const PROTOCOL_VERSION = "1.4";
 
 // ---------- moc-llm 内容类型（外部标签，serde 默认） ----------
 
-export type Role = "System" | "Developer" | "User" | "Assistant" | "Tool";
+export type Role = "System" | "Developer" | "User" | "Assistant" | "Tool" | "Custom";
 
 export type ImageSource = { Url: string } | { Base64: { media_type: string; data: string } };
 export type ImageDetail = "auto" | "low" | "high";
@@ -240,6 +240,15 @@ export type ToolProgressRow = {
   elapsed_ms: number;
 };
 
+export type ReminderItem = {
+  key: string;
+  digest: string;
+};
+
+export type ReminderStamp = {
+  items: ReminderItem[];
+};
+
 export type TranscriptEntry = {
   id: string;
   at_ms: number;
@@ -247,6 +256,7 @@ export type TranscriptEntry = {
   tool?: ToolExecution;
   bash?: BashCommand;
   agent?: AgentMessageMeta;
+  reminder?: ReminderStamp;
 };
 
 export type TranscriptChildCall = {

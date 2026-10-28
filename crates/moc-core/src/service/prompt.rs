@@ -6,7 +6,11 @@ use crate::{
     compact::replay::model_messages,
     service::{CoreInner, flush_plugin_notices, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
-    system_prompt::{build, merge_reminders, mode_contract, reminder_message, sandbox_contract},
+    system_prompt::{
+        build, mode_contract,
+        reminder::{self, Reminder},
+        sandbox_contract,
+    },
     tools::ToolCtx,
 };
 use moc_llm::{FinishReason, Message, Usage};
@@ -295,6 +299,33 @@ fn turn_inputs(
         native_input: state.native_input.clone(),
         server_compaction_disabled: state.server_compaction_disabled,
     }
+}
+
+/// 把候选提醒里变化过的条目写进历史。
+///
+/// 只写变化的部分：条目正文的摘要与历史里那份相同就跳过，所以一次提示里的后续请求
+/// 不再重复注入。写进去的提醒成为历史的一部分，可以吃到前缀缓存。
+async fn flush_reminders(
+    inner: &Arc<CoreInner>,
+    session_id: &str,
+    record: &Arc<crate::session::SessionRecord>,
+    candidates: &[Reminder],
+) -> Result<(), RpcError> {
+    // `pending` 的返回值只借用 `candidates`，所以状态锁在块结束时就能释放。
+    let selected = {
+        let state = record.state.lock().await;
+        reminder::pending(candidates, &state.reminder_digests)
+    };
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let (message, items) = reminder::render(&selected);
+    inner
+        .sessions
+        .append_reminder(session_id, message, items)
+        .await
+        .map_err(to_rpc)?;
+    Ok(())
 }
 
 async fn run_prompt_locked(
@@ -668,7 +699,7 @@ async fn run_prompt_locked(
                 crate::agents::drain_inbox(&inner, &update, &params.session_id, false)
                     .await
                     .map_err(to_rpc)?;
-                let mut reminder_messages = Vec::new();
+                let mut candidates = Vec::new();
                 // todo 停滞提醒：仍有未完成项，且距上次 todo 变更已累计足够多次工具调用时注入一次。
                 // 每个提示最多 `reminders_max` 次；前端把它显示成一行工具样式的占位，没有参数和结果。
                 if project_config.tools.todo.enabled
@@ -696,9 +727,10 @@ async fn run_prompt_locked(
                         state.tool_calls_since_todo = 0;
                         state.todo_reminders_sent += 1;
                         drop(state);
-                        reminder_messages.push(reminder_message(format!(
-                    "<system-reminder>{open_items} todo items still open. If you finished a task since the last todo update, mark it done now; otherwise keep working.</system-reminder>"
-                )));
+                        candidates.push(Reminder::once(
+                            reminder::key::TODO_STALL,
+                            format!("{open_items} todo items still open. If you finished a task since the last todo update, mark it done now; otherwise keep working."),
+                        ));
                         update
                             .emit(
                                 params.session_id.clone(),
@@ -712,15 +744,16 @@ async fn run_prompt_locked(
                     }
                 }
                 if let Some(contract) = mode_contract(mode) {
-                    reminder_messages.push(contract);
+                    candidates.push(Reminder::durable(reminder::key::MODE, contract));
                 }
-                reminder_messages.push(sandbox_contract(permission, &project_config.sandbox));
+                candidates.push(Reminder::durable(
+                    reminder::key::SANDBOX,
+                    sandbox_contract(permission, &project_config.sandbox),
+                ));
                 if let Some(roster) = &roster {
-                    reminder_messages.push(reminder_message(format!(
-                        "<system-reminder>{roster}</system-reminder>"
-                    )));
+                    candidates.push(Reminder::durable(reminder::key::ROSTER, roster.clone()));
                 }
-                // MCP 服务器可以在会话中途刷新工具列表：索引只出现在本轮提醒里，系统前缀
+                // MCP 服务器可以在会话中途刷新工具列表：索引走提醒通道，系统前缀
                 // 因此不会因为一次工具增删而失效。
                 if let Some(index) = crate::tools::declarations::render_mcp_index(
                     &catalog,
@@ -729,40 +762,34 @@ async fn run_prompt_locked(
                     &project_config,
                     model.context_window,
                 ) {
-                    reminder_messages.push(reminder_message(index));
+                    candidates.push(Reminder::durable(reminder::key::MCP_INDEX, index));
                 }
                 if let Some(detail) = cycle_redirect.take() {
-                    reminder_messages.push(reminder_message(format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>")));
+                    candidates.push(Reminder::once(
+                        reminder::key::CYCLE,
+                        format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>"),
+                    ));
                 }
+                // notice 是一次性事实，drain 之后就不可重复获取。
+                let notices = std::mem::take(&mut record.state.lock().await.notices);
+                candidates.extend(
+                    notices
+                        .into_iter()
+                        .map(|notice| Reminder::once(reminder::key::NOTICE, notice)),
+                );
                 if first_turn {
                     let mut reminder_state = runtime.reminders.lock().await;
-                    if let Some(reminder) =
+                    if let Some(text) =
                         reminder_state.render(&crate::system_prompt::reminder::local_time())
                     {
-                        reminder_messages.push(reminder_message(reminder));
+                        candidates.push(Reminder::durable(reminder::key::LOCAL_TIME, text));
                     }
-                    let notices = std::mem::take(&mut record.state.lock().await.notices);
-                    reminder_messages.extend(notices.into_iter().map(|notice| {
-                        reminder_message(format!("<system-reminder>{notice}</system-reminder>"))
-                    }));
-                } else {
-                    let notices = std::mem::take(&mut record.state.lock().await.notices);
-                    reminder_messages.extend(notices.into_iter().map(|notice| {
-                        reminder_message(format!("<system-reminder>{notice}</system-reminder>"))
-                    }));
                 }
-                let reminder_messages = merge_reminders(reminder_messages);
+                flush_reminders(&inner, &params.session_id, &record, &candidates).await?;
                 let mut inputs = {
                     let state = record.state.lock().await;
-                    turn_inputs(
-                        &state,
-                        &system.messages,
-                        &model,
-                        &tools_available,
-                        compact::messages_tokens(&reminder_messages),
-                    )
+                    turn_inputs(&state, &system.messages, &model, &tools_available, 0)
                 };
-                inputs.messages.extend(reminder_messages.iter().cloned());
                 let context_tokens = inputs.context_tokens;
                 // 提前摘要只改变 soft 压缩的输入来源，不改变 remote/shake 的顺序；触发条件在函数内部判断。
                 compact::grok_build::prefire::maybe_prefire(
@@ -792,7 +819,7 @@ async fn run_prompt_locked(
                         compact::CompactReason::Threshold,
                         None,
                         compact::ContextBudget {
-                            additional_tokens: compact::messages_tokens(&reminder_messages),
+                            additional_tokens: 0,
                         },
                         None,
                         None,
@@ -813,17 +840,14 @@ async fn run_prompt_locked(
                                 final_reason = FinishReason::Other("compacted".into());
                                 break 'turns;
                             }
+                            // 压缩重写了可见历史，先前写进去的提醒可能被摘要取代；
+                            // 状态层已经清空去重表，这里补一份仍生效的条目。
+                            flush_reminders(&inner, &params.session_id, &record, &candidates)
+                                .await?;
                             inputs = {
                                 let state = record.state.lock().await;
-                                turn_inputs(
-                                    &state,
-                                    &system.messages,
-                                    &model,
-                                    &tools_available,
-                                    compact::messages_tokens(&reminder_messages),
-                                )
+                                turn_inputs(&state, &system.messages, &model, &tools_available, 0)
                             };
-                            inputs.messages.extend(reminder_messages.iter().cloned());
                         }
                         Err(error) => {
                             tracing::warn!(session_id = %params.session_id, %error, "自动上下文压缩失败，继续请求")
@@ -839,7 +863,7 @@ async fn run_prompt_locked(
                     &params.session_id,
                     CacheAnchors {
                         instruction_static: &system.static_prefix,
-                        trailing_reminders: reminder_messages.len(),
+                        trailing_reminders: 0,
                     },
                 );
                 let mut overflow_attempts = 0;
@@ -953,7 +977,7 @@ async fn run_prompt_locked(
                                 compact::CompactReason::Overflow,
                                 None,
                                 compact::ContextBudget {
-                                    additional_tokens: compact::messages_tokens(&reminder_messages),
+                                    additional_tokens: 0,
                                 },
                                 None,
                                 None,
@@ -992,28 +1016,22 @@ async fn run_prompt_locked(
                                 final_reason = FinishReason::Other("compacted".into());
                                 break 'turns;
                             }
+                            flush_reminders(&inner, &params.session_id, &record, &candidates)
+                                .await?;
                             inputs = {
                                 let state = record.state.lock().await;
-                                turn_inputs(
-                                    &state,
-                                    &system.messages,
-                                    &model,
-                                    &tools_available,
-                                    compact::messages_tokens(&reminder_messages),
-                                )
+                                turn_inputs(&state, &system.messages, &model, &tools_available, 0)
                             };
-                            let mut retry_messages = inputs.messages;
-                            retry_messages.extend(reminder_messages.iter().cloned());
                             request = build_request(
                                 &model,
                                 &project_config,
-                                retry_messages,
+                                std::mem::take(&mut inputs.messages),
                                 tools_available.clone(),
                                 inputs.native_input.clone(),
                                 &params.session_id,
                                 CacheAnchors {
                                     instruction_static: &system.static_prefix,
-                                    trailing_reminders: reminder_messages.len(),
+                                    trailing_reminders: 0,
                                 },
                             );
                         }
@@ -1143,7 +1161,7 @@ async fn run_prompt_locked(
                         compact::CompactReason::Overflow,
                         None,
                         compact::ContextBudget {
-                            additional_tokens: compact::messages_tokens(&reminder_messages),
+                            additional_tokens: 0,
                         },
                         None,
                         None,
@@ -1266,7 +1284,6 @@ async fn run_prompt_locked(
                         .map_or(0, |serialized| compact::estimate_tokens(&serialized));
                     let tokens_after = compact::messages_tokens(&system.messages)
                         .saturating_add(compact::tools_tokens(&tools_available))
-                        .saturating_add(compact::messages_tokens(&reminder_messages))
                         .saturating_add(retained_tokens)
                         .saturating_add(native_tokens);
                     let tokens_before = response.usage.input_tokens;
@@ -1331,7 +1348,7 @@ async fn run_prompt_locked(
                     .sessions
                     .append_message(
                         &params.session_id,
-                        Message::user_text(
+                        Message::custom(
                             "Output hit the length limit. Continue from the cut without repeating text.",
                         ),
                         None,
@@ -1359,7 +1376,7 @@ async fn run_prompt_locked(
                                 .sessions
                                 .append_message(
                                     &params.session_id,
-                                    Message::user_text(reminder),
+                                    Message::custom(reminder),
                                     None,
                                     None,
                                 )

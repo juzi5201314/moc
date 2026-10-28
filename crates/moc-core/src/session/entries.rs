@@ -62,6 +62,9 @@ pub enum Entry {
         /// 代理间消息的来源信息；普通输入没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
+        /// 运行时提醒标记；`None` 表示普通对话消息。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reminder: Option<moc_protocol::ReminderStamp>,
     },
     /// 一次上下文压缩。
     Compaction {
@@ -194,6 +197,15 @@ pub enum EntryPayload {
         finish_reason: Option<FinishReason>,
         /// 代理间消息的来源信息；普通输入为 `None`。
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
+    },
+    /// 运行时提醒：一段按条目差分后写入历史的 user 消息。
+    ///
+    /// 与 `Message` 分开，是因为提醒不是对话内容：它要带条目摘要供重放时判断
+    /// 「哪些条目已经在历史里」，而且不能参与用户消息的计数。
+    Reminder {
+        message: Message,
+        /// 本条消息合并了哪些条目；只记摘要，正文在 `message` 里。
+        items: Vec<moc_protocol::ReminderItem>,
     },
     Bash {
         command: moc_protocol::BashCommand,
@@ -372,6 +384,18 @@ impl Entry {
                 finish_reason,
                 bash: None,
                 agent,
+                reminder: None,
+            },
+            EntryPayload::Reminder { message, items } => Self::Message {
+                id,
+                parent_id,
+                at_ms,
+                message,
+                tool: None,
+                finish_reason: None,
+                bash: None,
+                agent: None,
+                reminder: Some(moc_protocol::ReminderStamp { items }),
             },
             EntryPayload::Bash {
                 command,
@@ -386,6 +410,7 @@ impl Entry {
                 finish_reason: None,
                 bash: Some(command),
                 agent: None,
+                reminder: None,
             },
             EntryPayload::Compaction {
                 method,
@@ -670,6 +695,7 @@ impl Entry {
                 tool,
                 bash,
                 agent,
+                reminder,
                 ..
             } => Some(TranscriptEntry {
                 id: id.clone(),
@@ -678,6 +704,7 @@ impl Entry {
                 tool: tool.clone(),
                 bash: bash.clone(),
                 agent: agent.clone(),
+                reminder: reminder.clone(),
             }),
             _ => None,
         }

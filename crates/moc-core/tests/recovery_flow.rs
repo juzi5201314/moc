@@ -152,12 +152,13 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
     assert_eq!(result.finish_reason, FinishReason::Cancelled);
     assert_eq!(result.message.text(), "已收到部分正文");
     let loaded = h.load(&id).await;
-    assert_eq!(loaded.entries[1].message, result.message);
-    let repair = loaded.entries[2].message.tool_results().next().unwrap();
+    // [0] 用户消息、[1] 首轮运行时提醒、[2] 被中断的助手消息、[3] 未执行调用的占位结果。
+    assert_eq!(loaded.entries[2].message, result.message);
+    let repair = loaded.entries[3].message.tool_results().next().unwrap();
     assert_eq!(repair.tool_call_id, "unfinished");
     assert!(repair.is_error);
     assert_eq!(
-        loaded.entries[2].tool.as_ref().unwrap().status,
+        loaded.entries[3].tool.as_ref().unwrap().status,
         ToolStatus::Cancelled
     );
     let _ = release.send(());

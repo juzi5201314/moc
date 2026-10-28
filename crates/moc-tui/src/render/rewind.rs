@@ -789,6 +789,7 @@ mod tests {
                 tool: None,
                 bash: None,
                 agent: None,
+                reminder: None,
             },
             TranscriptEntry {
                 id: "entry-2".into(),
@@ -797,6 +798,7 @@ mod tests {
                 tool: None,
                 bash: None,
                 agent: None,
+                reminder: None,
             },
         ]);
         rewind_state.selected = 0;

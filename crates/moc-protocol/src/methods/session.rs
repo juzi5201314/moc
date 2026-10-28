@@ -456,6 +456,26 @@ pub struct TranscriptChildCall {
     pub duration_ms: Option<u64>,
 }
 
+/// 一条运行时提醒里的一条目。
+///
+/// 只记摘要不记正文：正文就是消息本身，摘要只用来判断「这个条目是否已经在历史里」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReminderItem {
+    /// 稳定条目键，例如 `sandbox`、`mode`、`mcp-index`。
+    pub key: String,
+    /// 该条目正文的摘要；正文变了才重新注入。
+    pub digest: String,
+}
+
+/// 挂在一条用户消息上的提醒标记。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReminderStamp {
+    /// 本条消息合并了哪些条目。
+    pub items: Vec<ReminderItem>,
+}
+
 /// 一条 transcript 条目。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -475,6 +495,9 @@ pub struct TranscriptEntry {
     /// 代理间消息的来源元信息；`None` 表示本地输入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<super::agent::AgentMessageMeta>,
+    /// 运行时提醒的来源标记；`None` 表示普通对话消息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder: Option<ReminderStamp>,
 }
 
 impl TranscriptEntry {

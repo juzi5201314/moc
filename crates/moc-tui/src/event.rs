@@ -666,8 +666,10 @@ fn apply_rewound(
             return;
         }
     };
-    // 代理消息也是 user role，但不能当成用户输入回填到输入框。
-    let restore_user = selected.message.role == Role::User && selected.agent.is_none();
+    // 代理消息与运行时提醒都不是用户输入，不能回填到输入框。
+    let restore_user = selected.message.role == Role::User
+        && selected.agent.is_none()
+        && selected.reminder.is_none();
     let selected_message = selected.message;
     // 分叉的出身只给用户看：新会话是独立会话，来源只出现在这条提示与 /resume 列表里。
     let source_title = if loaded.session.forked_from.is_some() {
@@ -5846,8 +5848,14 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(loaded.entries[0].message.text(), "弹窗关闭后继续执行");
-        assert_eq!(loaded.entries[1].message.text(), "队列已恢复");
+        // 运行时提醒也占 transcript 槽位，比对问答文本时先跳过。
+        let texts: Vec<String> = loaded
+            .entries
+            .iter()
+            .filter(|entry| entry.reminder.is_none())
+            .map(|entry| entry.message.text())
+            .collect();
+        assert_eq!(texts, vec!["弹窗关闭后继续执行", "队列已恢复"]);
         connection.shutdown().await;
         core.shutdown().await;
     }

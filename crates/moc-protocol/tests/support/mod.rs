@@ -288,6 +288,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
             }),
             bash: None,
             agent: None,
+            reminder: None,
         })
         .collect()
 }
@@ -479,6 +480,7 @@ impl ScriptedService {
                     tool: None,
                     bash: None,
                     agent: None,
+                    reminder: None,
                 });
             }
         });

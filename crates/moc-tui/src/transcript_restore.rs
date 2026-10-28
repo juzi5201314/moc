@@ -45,7 +45,12 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             }));
             continue;
         }
+        // 运行时提醒是模型内部状态，不属于对话，不进 scrollback。
+        if record.reminder.is_some() {
+            continue;
+        }
         match message.role {
+            Role::Custom => {}
             Role::User => {
                 let text = collect_text(&message.content);
                 if !text.is_empty() {
@@ -198,7 +203,29 @@ mod tests {
             tool,
             bash: None,
             agent: None,
+            reminder: None,
         }
+    }
+
+    #[test]
+    fn runtime_reminders_do_not_enter_the_scrollback() {
+        let mut reminder = entry(
+            Message::user_text("<system-reminder>Sandbox mode: full.</system-reminder>"),
+            None,
+        );
+        reminder.reminder = Some(moc_protocol::ReminderStamp {
+            items: vec![moc_protocol::ReminderItem {
+                key: "sandbox".into(),
+                digest: "abc".into(),
+            }],
+        });
+        let entries = [entry(Message::user_text("你好"), None), reminder];
+        let blocks = blocks_from_entries(&entries);
+        assert_eq!(blocks.len(), 1, "提醒是模型内部状态，不该进 scrollback");
+        assert!(matches!(
+            &blocks[0].block,
+            Block::User { text } if text == "你好"
+        ));
     }
 
     #[test]

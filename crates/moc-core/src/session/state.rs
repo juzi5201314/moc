@@ -86,6 +86,11 @@ pub struct SessionState {
     pub prompt_sequence: u64,
     pub job_sequence: u64,
     pub notices: Vec<String>,
+    /// 已经写进历史的运行时提醒：条目 key → 正文摘要。`None` 表示该条目从未注入。
+    ///
+    /// 由 transcript 重放得到，所以会话恢复后不会重复注入。压缩会重写可见历史，
+    /// 那时整表清空，让下一次请求补一份全量的。
+    pub reminder_digests: BTreeMap<String, String>,
     pub usage: Usage,
     pub model_usage: BTreeMap<String, ModelUsage>,
     /// 工具执行耗时之和（毫秒）；手动 bash 与嵌套子调用不计入。
@@ -157,6 +162,7 @@ impl SessionState {
             native_input: None,
             clm_context: None,
             notices: Vec::new(),
+            reminder_digests: BTreeMap::new(),
             last_entry_id: first.id().to_owned(),
         };
         state.entries.push(first.clone());
@@ -182,10 +188,22 @@ impl SessionState {
                 tool,
                 bash,
                 agent,
+                reminder,
                 ..
             } => {
-                if message.role == Role::User && bash.is_none() && agent.is_none() {
+                // 提醒是模型内部状态，不是用户提示：算进 `prompt_sequence` 会让 prompt ID 错位。
+                if message.role == Role::User
+                    && bash.is_none()
+                    && agent.is_none()
+                    && reminder.is_none()
+                {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
+                }
+                if let Some(stamp) = reminder {
+                    for item in &stamp.items {
+                        self.reminder_digests
+                            .insert(item.key.clone(), item.digest.clone());
+                    }
                 }
                 // 工具耗时随 transcript 持久化；手动 bash 与嵌套子调用不计入。
                 if bash.is_none()
@@ -216,6 +234,8 @@ impl SessionState {
             } => {
                 self.usage = Usage::default();
                 self.usage_at = 0;
+                // 压缩重写了可见历史，旧提醒可能已经被摘要取代；清表让下一次请求补全量。
+                self.reminder_digests.clear();
                 self.first_kept_id.clone_from(first_kept_id);
                 self.summary_model.clone_from(model);
                 self.summary_reminder.clone_from(reminder);
@@ -252,6 +272,8 @@ impl SessionState {
                 self.clm_context = None;
                 self.usage = Usage::default();
                 self.usage_at = 0;
+                // 历史被重置，旧提醒不再生效。
+                self.reminder_digests.clear();
             }
             Entry::ClmContext { content, .. } => {
                 self.clm_context = Some(content.clone());

@@ -247,7 +247,7 @@ fn encode_input(
     for (index, message) in req.messages.iter().enumerate() {
         let breakpoint = breakpoints.contains(&index);
         match message.role {
-            Role::System | Role::Developer | Role::User => {
+            Role::System | Role::Developer | Role::Custom | Role::User => {
                 items.push(encode_message_item(cfg, message, breakpoint)?);
             }
             Role::Assistant => {
@@ -278,7 +278,7 @@ fn encode_message_item(
 ) -> Result<Value, LlmError> {
     let (role, text_type) = match message.role {
         Role::System => ("system", "input_text"),
-        Role::Developer => ("developer", "input_text"),
+        Role::Developer | Role::Custom => ("developer", "input_text"),
         Role::User => ("user", "input_text"),
         other => {
             return Err(LlmError::Encode(format!(
@@ -287,7 +287,7 @@ fn encode_message_item(
         }
     };
     let mut blocks = Vec::with_capacity(message.content.len());
-    if matches!(message.role, Role::System | Role::Developer) {
+    if matches!(message.role, Role::System | Role::Developer | Role::Custom) {
         // 指令消息拍平成单块：块边界只是本地缓存断点的坐标，不是线上结构。
         for part in &message.content {
             if !matches!(part, ContentPart::Text(_)) {

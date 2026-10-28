@@ -330,7 +330,14 @@ fn normalize(
                     blocks: blocks_len,
                 });
             }
-            Role::User | Role::Tool => {
+            Role::User | Role::Tool | Role::Custom => {
+                if message.role == Role::Custom {
+                    for part in &message.content {
+                        if !matches!(part, ContentPart::Text(_)) {
+                            return Err(unsupported_part(message.role, part));
+                        }
+                    }
+                }
                 let blocks = encode_user_blocks(cfg, message)?;
                 if blocks.is_empty() {
                     continue;

@@ -111,6 +111,25 @@ describe("entriesToBlocks", () => {
     expect(orphan.name).toBe("工具结果");
     expect(orphan.status).toBe("error");
   });
+
+  it("运行时提醒不进对话流", () => {
+    const withReminder: TranscriptEntry[] = [
+      { id: "u1", at_ms: 1, message: { role: "User", content: [{ Text: "你好" }] } },
+      {
+        id: "r1",
+        at_ms: 2,
+        message: {
+          role: "User",
+          content: [{ Text: "<system-reminder>Sandbox mode: full.</system-reminder>" }],
+        },
+        reminder: { items: [{ key: "sandbox", digest: "abc" }] },
+      },
+    ];
+    const blocks = entriesToBlocks(withReminder, []);
+    expect(blocks.map((block) => block.kind)).toEqual(["user"]);
+    const user = blocks[0];
+    expect(user.kind === "user" && user.text).toBe("你好");
+  });
 });
 
 describe("applyUpdate", () => {

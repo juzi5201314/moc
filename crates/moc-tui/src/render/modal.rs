@@ -628,6 +628,7 @@ fn rewind_kind(role: Role) -> &'static str {
         Role::User => "用户请求",
         Role::Assistant => "模型回复",
         Role::Tool => "工具结果",
+        Role::Custom => "运行时提醒",
         Role::System | Role::Developer => "系统消息",
     }
 }
@@ -3335,6 +3336,7 @@ mod tests {
                 tool: None,
                 bash: None,
                 agent: None,
+                reminder: None,
             },
             TranscriptEntry {
                 id: "a1".into(),
@@ -3343,6 +3345,7 @@ mod tests {
                 tool: None,
                 bash: None,
                 agent: None,
+                reminder: None,
             },
         ]);
         app.modal = Some(Modal::Rewind {
