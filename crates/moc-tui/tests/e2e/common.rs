@@ -259,7 +259,10 @@ pub fn sample_ask_params(question: &str, options: &[&str]) -> AskParams {
 }
 
 /// Helper fixture for sample PermissionRequestParams.
-pub fn sample_permission_params(title: &str, options: &[&str]) -> moc_protocol::methods::PermissionRequestParams {
+pub fn sample_permission_params(
+    title: &str,
+    options: &[&str],
+) -> moc_protocol::methods::PermissionRequestParams {
     moc_protocol::methods::PermissionRequestParams {
         session_id: "ses_001".into(),
         prompt_id: "prm_001".into(),
@@ -296,7 +299,11 @@ pub fn sample_btw_turn(question: &str, reasoning: &str, answer: &str) -> moc_tui
 }
 
 /// Helper fixture for sample SubagentView.
-pub fn sample_subagent_view(id: &str, title: &str, status: AgentStatus) -> moc_tui::subagent::SubagentView {
+pub fn sample_subagent_view(
+    id: &str,
+    title: &str,
+    status: AgentStatus,
+) -> moc_tui::subagent::SubagentView {
     moc_tui::subagent::SubagentView::new(sample_agent_info(id, title, status))
 }
 
@@ -318,7 +325,10 @@ pub fn sample_completion_state(query: &str) -> moc_tui::widgets::completion::Com
 }
 
 /// Helper fixture for sample CompletionCandidate.
-pub fn sample_slash_candidate(label: &str, description: &str) -> moc_tui::widgets::completion::CompletionCandidate {
+pub fn sample_slash_candidate(
+    label: &str,
+    description: &str,
+) -> moc_tui::widgets::completion::CompletionCandidate {
     moc_tui::widgets::completion::CompletionCandidate {
         value: label.into(),
         label: label.into(),
@@ -329,7 +339,9 @@ pub fn sample_slash_candidate(label: &str, description: &str) -> moc_tui::widget
 }
 
 /// Helper fixture for custom CompletionState.
-pub fn sample_custom_completion(candidates: Vec<moc_tui::widgets::completion::CompletionCandidate>) -> moc_tui::widgets::completion::CompletionState {
+pub fn sample_custom_completion(
+    candidates: Vec<moc_tui::widgets::completion::CompletionCandidate>,
+) -> moc_tui::widgets::completion::CompletionState {
     moc_tui::widgets::completion::CompletionState {
         candidates,
         selected: 0,

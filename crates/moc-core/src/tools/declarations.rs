@@ -180,7 +180,9 @@ fn ts_type(schema: &serde_json::Value, depth: usize) -> String {
             format!("Array<{items}>")
         }
         Some("object") => {
-            let Some(properties) = schema.get("properties").and_then(serde_json::Value::as_object)
+            let Some(properties) = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
             else {
                 return "object".into();
             };
@@ -190,11 +192,7 @@ fn ts_type(schema: &serde_json::Value, depth: usize) -> String {
             let required: Vec<&str> = schema
                 .get("required")
                 .and_then(serde_json::Value::as_array)
-                .map(|list| {
-                    list.iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .collect()
-                })
+                .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
                 .unwrap_or_default();
             let fields: Vec<String> = properties
                 .iter()
@@ -380,7 +378,10 @@ mod tests {
             short_description("Read files. More detail follows."),
             "Read files."
         );
-        assert_eq!(short_description("Already terminated."), "Already terminated.");
+        assert_eq!(
+            short_description("Already terminated."),
+            "Already terminated."
+        );
         let long = "x".repeat(200);
         let short = short_description(&long);
         assert!(short.chars().count() <= DESCRIPTION_MAX_CHARS + 1);

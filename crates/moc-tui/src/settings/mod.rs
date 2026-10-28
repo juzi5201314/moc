@@ -1468,10 +1468,11 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         MouseEventKind::ScrollDown => {
             if let Some(edit) = &mut panel.edit {
                 if let FieldKind::Choice(options) = &edit.kind
-                    && !options.is_empty() {
-                        edit.choice_selected = (edit.choice_selected + 1) % options.len();
-                        return;
-                    }
+                    && !options.is_empty()
+                {
+                    edit.choice_selected = (edit.choice_selected + 1) % options.len();
+                    return;
+                }
                 return;
             }
             match &mut panel.view {
@@ -1495,13 +1496,14 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         MouseEventKind::ScrollUp => {
             if let Some(edit) = &mut panel.edit {
                 if let FieldKind::Choice(options) = &edit.kind
-                    && !options.is_empty() {
-                        edit.choice_selected = edit
-                            .choice_selected
-                            .checked_sub(1)
-                            .unwrap_or(options.len() - 1);
-                        return;
-                    }
+                    && !options.is_empty()
+                {
+                    edit.choice_selected = edit
+                        .choice_selected
+                        .checked_sub(1)
+                        .unwrap_or(options.len() - 1);
+                    return;
+                }
                 return;
             }
             match &mut panel.view {

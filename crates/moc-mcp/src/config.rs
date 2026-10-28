@@ -573,14 +573,16 @@ mod tests {
 
         // 缺失传输字段必须报错，而不是默默启动。
         assert!(resolve_server("bad", &RawServerSpec::default(), 15, 60, 1).is_err());
-        assert!(resolve_server(
-            "__bad__",
-            &serde_json::from_value(json!({"url": "http://x"})).unwrap(),
-            15,
-            60,
-            1,
-        )
-        .is_err());
+        assert!(
+            resolve_server(
+                "__bad__",
+                &serde_json::from_value(json!({"url": "http://x"})).unwrap(),
+                15,
+                60,
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -734,10 +736,7 @@ mod tests {
     fn per_server_concurrency_overrides_and_rejects_zero() {
         let config = resolve_server(
             "x",
-            &serde_json::from_value(
-                json!({"command": "c", "max_concurrent_calls": 4}),
-            )
-            .unwrap(),
+            &serde_json::from_value(json!({"command": "c", "max_concurrent_calls": 4})).unwrap(),
             15,
             60,
             1,
@@ -755,14 +754,17 @@ mod tests {
         .unwrap();
         assert_eq!(global.max_concurrent_calls, 8, "未覆盖时取全局默认");
 
-        assert!(resolve_server(
-            "z",
-            &serde_json::from_value(json!({"command": "c", "max_concurrent_calls": 0})).unwrap(),
-            15,
-            60,
-            1,
-        )
-        .is_err());
+        assert!(
+            resolve_server(
+                "z",
+                &serde_json::from_value(json!({"command": "c", "max_concurrent_calls": 0}))
+                    .unwrap(),
+                15,
+                60,
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]

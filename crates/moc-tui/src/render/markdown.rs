@@ -1344,7 +1344,10 @@ fn wrap_cell_runs(runs: &[Run], width: usize, base_style: Style) -> Vec<Vec<Span
         if current_line_width > 0 && current_line_width + cw > width {
             flush_seg!();
             if current_line_width < width {
-                current_line.push(Span::styled(" ".repeat(width - current_line_width), base_style));
+                current_line.push(Span::styled(
+                    " ".repeat(width - current_line_width),
+                    base_style,
+                ));
             }
             result.push(std::mem::take(&mut current_line));
             current_line_width = 0;
@@ -1363,7 +1366,10 @@ fn wrap_cell_runs(runs: &[Run], width: usize, base_style: Style) -> Vec<Vec<Span
 
     if !current_line.is_empty() {
         if current_line_width < width {
-            current_line.push(Span::styled(" ".repeat(width - current_line_width), base_style));
+            current_line.push(Span::styled(
+                " ".repeat(width - current_line_width),
+                base_style,
+            ));
         }
         result.push(current_line);
     }

@@ -224,9 +224,7 @@ impl HookKind {
 
     /// 从模块 `hooks` 的键名解析；未知名字返回 `None`。
     pub fn from_js_name(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|kind| kind.js_name() == name)
+        Self::ALL.into_iter().find(|kind| kind.js_name() == name)
     }
 
     /// 错误信息用的「支持哪些钩子」列表。
@@ -275,10 +273,17 @@ mod tests {
     fn hook_names_round_trip_and_are_unique() {
         let mut names = std::collections::BTreeSet::new();
         for kind in HookKind::ALL {
-            assert!(names.insert(kind.js_name()), "钩子名重复：{}", kind.js_name());
+            assert!(
+                names.insert(kind.js_name()),
+                "钩子名重复：{}",
+                kind.js_name()
+            );
             assert_eq!(HookKind::from_js_name(kind.js_name()), Some(kind));
         }
-        assert_eq!(HookKind::from_js_name("beforeToolCall"), Some(HookKind::BeforeToolCall));
+        assert_eq!(
+            HookKind::from_js_name("beforeToolCall"),
+            Some(HookKind::BeforeToolCall)
+        );
         assert_eq!(HookKind::from_js_name("eventLoop"), None);
         assert!(HookKind::supported().contains("userCommand"));
     }

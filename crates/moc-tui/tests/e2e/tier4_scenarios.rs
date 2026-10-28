@@ -17,7 +17,11 @@ use ratatui::style::Color;
 #[test]
 fn test_scenario_01_multi_agent_collaborative_workflow() {
     let (mut app, _rx, mut terminal) = create_test_terminal(120, 35);
-    app.session = Some(sample_session_info("ses-multi-agent", "协同研发流程", "/tmp/project"));
+    app.session = Some(sample_session_info(
+        "ses-multi-agent",
+        "协同研发流程",
+        "/tmp/project",
+    ));
 
     // Step 1: Spawn two subagents in Queued state
     let agent_a = sample_subagent_view("ag-arch", "架构设计代理", AgentStatus::Queued);
@@ -27,12 +31,21 @@ fn test_scenario_01_multi_agent_collaborative_workflow() {
     assert_eq!(app.subagents.len(), 2);
 
     // Step 2: Agent A starts running
-    app.subagents.get_mut("ag-arch").unwrap().set_status(AgentStatus::Running, None);
+    app.subagents
+        .get_mut("ag-arch")
+        .unwrap()
+        .set_status(AgentStatus::Running, None);
     assert!(app.subagents.get("ag-arch").unwrap().running);
-    assert_eq!(app.subagents.get("ag-arch").unwrap().status_label(), "运行中");
+    assert_eq!(
+        app.subagents.get("ag-arch").unwrap().status_label(),
+        "运行中"
+    );
 
     // Step 3: Agent B starts running
-    app.subagents.get_mut("ag-impl").unwrap().set_status(AgentStatus::Running, None);
+    app.subagents
+        .get_mut("ag-impl")
+        .unwrap()
+        .set_status(AgentStatus::Running, None);
     assert!(app.subagents.get("ag-impl").unwrap().running);
 
     // Step 4: User selects Agent A to inspect progress
@@ -40,34 +53,45 @@ fn test_scenario_01_multi_agent_collaborative_workflow() {
     assert_eq!(app.subagent_selected.as_deref(), Some("ag-arch"));
 
     // Step 5: Agent A completes with deliverable notice
-    app.subagents.get_mut("ag-arch").unwrap().set_status(
-        AgentStatus::Completed,
-        Some("架构设计文档已就绪".into()),
-    );
+    app.subagents
+        .get_mut("ag-arch")
+        .unwrap()
+        .set_status(AgentStatus::Completed, Some("架构设计文档已就绪".into()));
     assert!(!app.subagents.get("ag-arch").unwrap().running);
-    assert_eq!(app.subagents.get("ag-arch").unwrap().status_label(), "已完成");
+    assert_eq!(
+        app.subagents.get("ag-arch").unwrap().status_label(),
+        "已完成"
+    );
 
     // Step 6: User switches focus to Agent B
     app.subagent_selected = Some("ag-impl".into());
     assert_eq!(app.subagent_selected.as_deref(), Some("ag-impl"));
 
     // Step 7: Agent B completes implementation
-    app.subagents.get_mut("ag-impl").unwrap().set_status(
-        AgentStatus::Completed,
-        Some("模块测试 100% 通过".into()),
+    app.subagents
+        .get_mut("ag-impl")
+        .unwrap()
+        .set_status(AgentStatus::Completed, Some("模块测试 100% 通过".into()));
+    assert_eq!(
+        app.subagents.get("ag-impl").unwrap().status_label(),
+        "已完成"
     );
-    assert_eq!(app.subagents.get("ag-impl").unwrap().status_label(), "已完成");
 
     // Step 8: Update task progress HUD
     let mut phase = sample_todo_phase("多代理研发", "完成架构与实现");
     phase.items[0].status = moc_protocol::methods::TodoStatus::Completed;
     app.todos.push(phase);
-    assert_eq!(app.todos[0].items[0].status, moc_protocol::methods::TodoStatus::Completed);
+    assert_eq!(
+        app.todos[0].items[0].status,
+        moc_protocol::methods::TodoStatus::Completed
+    );
 
-    terminal.draw(|f| {
-        let area = f.area();
-        assert_eq!(area.width, 120);
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            assert_eq!(area.width, 120);
+        })
+        .unwrap();
 }
 
 /// Scenario 2: High-Density Task with Parallel Queue & BTW Dock
@@ -77,12 +101,19 @@ fn test_scenario_01_multi_agent_collaborative_workflow() {
 #[test]
 fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.session = Some(sample_session_info("ses-queue-btw", "高密度并发问答", "/tmp"));
+    app.session = Some(sample_session_info(
+        "ses-queue-btw",
+        "高密度并发问答",
+        "/tmp",
+    ));
 
     // Step 1: User queues Prompt 2 with tagged Plan mode
     let mut queued = sample_queued_prompt(2, "阶段 2：计划任务推进");
     queued.mode = Some(SessionMode::Plan);
-    app.queues.entry("ses-queue-btw".into()).or_default().push_back(queued);
+    app.queues
+        .entry("ses-queue-btw".into())
+        .or_default()
+        .push_back(queued);
     assert_eq!(app.queues.get("ses-queue-btw").unwrap().len(), 1);
 
     // Step 2: Open BTW bypass dock for side question
@@ -103,7 +134,12 @@ fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
         output_tokens: 150,
         ..Default::default()
     });
-    app.btw.threads.entry("ses-queue-btw".into()).or_default().turns.push_back(turn);
+    app.btw
+        .threads
+        .entry("ses-queue-btw".into())
+        .or_default()
+        .turns
+        .push_back(turn);
     assert_eq!(app.btw.threads.get("ses-queue-btw").unwrap().turns.len(), 1);
 
     // Step 5: Collapse BTW dock
@@ -111,7 +147,12 @@ fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
     assert!(!app.btw.expanded);
 
     // Step 6: Main prompt 1 finishes, promoting queued prompt 2
-    let popped = app.queues.get_mut("ses-queue-btw").unwrap().pop_front().unwrap();
+    let popped = app
+        .queues
+        .get_mut("ses-queue-btw")
+        .unwrap()
+        .pop_front()
+        .unwrap();
     assert_eq!(popped.id, 2);
     assert_eq!(popped.mode, Some(SessionMode::Plan));
     if let Some(session) = app.session.as_mut() {
@@ -119,7 +160,10 @@ fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
             session.mode = new_mode;
         }
     }
-    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Plan));
+    assert_eq!(
+        app.session.as_ref().map(|s| s.mode),
+        Some(SessionMode::Plan)
+    );
     assert!(app.queues.get("ses-queue-btw").unwrap().is_empty());
 }
 
@@ -163,8 +207,14 @@ cargo test --package moc-tui --test e2e_ui_ux_overhaul
     // Step 3: Draw modal on terminal over noisy background
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let modal_row = rows.iter().find(|r| r.contains("授权") || r.contains("bash")).expect("permission modal found");
-    assert!(!modal_row.contains("####"), "modal background is solid opaque");
+    let modal_row = rows
+        .iter()
+        .find(|r| r.contains("授权") || r.contains("bash"))
+        .expect("permission modal found");
+    assert!(
+        !modal_row.contains("####"),
+        "modal background is solid opaque"
+    );
 
     // Step 4: User confirms execution -> modal dismisses
     app.modal = None;
@@ -181,7 +231,10 @@ fn test_scenario_04_error_recovery_and_session_switch_flow() {
 
     // Step 1: Subagent fails
     let mut faulty_agent = sample_subagent_view("ag-err", "异常代理", AgentStatus::Running);
-    faulty_agent.set_status(AgentStatus::Failed, Some("远程服务超时 (timeout 30s)".into()));
+    faulty_agent.set_status(
+        AgentStatus::Failed,
+        Some("远程服务超时 (timeout 30s)".into()),
+    );
     app.subagents.insert("ag-err".into(), faulty_agent);
     assert_eq!(app.subagents.get("ag-err").unwrap().status_label(), "失败");
 
@@ -205,7 +258,10 @@ fn test_scenario_04_error_recovery_and_session_switch_flow() {
     // Step 3: Render session switcher
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("健康会话") || r.contains("选择")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("健康会话") || r.contains("选择"))
+    );
 
     // Step 4: Switch to clean session
     app.modal = None;
@@ -229,7 +285,10 @@ fn test_scenario_05_responsive_terminal_resizing_under_load() {
     app.session = Some(sample_session_info("ses-res", "响应式测试会话", "/tmp"));
     for i in 1..=4 {
         let id = format!("ag-{i}");
-        app.subagents.insert(id.clone(), sample_subagent_view(&id, &format!("Agent {i}"), AgentStatus::Running));
+        app.subagents.insert(
+            id.clone(),
+            sample_subagent_view(&id, &format!("Agent {i}"), AgentStatus::Running),
+        );
     }
     app.btw.expanded = true;
     app.btw.area = Rect::new(0, 25, 140, 15);
@@ -240,22 +299,29 @@ fn test_scenario_05_responsive_terminal_resizing_under_load() {
     let (_app_narrow, _rx2, terminal_narrow) = create_test_terminal(75, 25);
     let narrow_size = terminal_narrow.size().unwrap();
     assert_eq!(narrow_size.width, 75);
-    assert!(narrow_size.width < 100, "sidebar threshold auto-collapses below 100 columns");
+    assert!(
+        narrow_size.width < 100,
+        "sidebar threshold auto-collapses below 100 columns"
+    );
 
     // Stage 3: Extreme squish to minimum supported terminal (40x15)
     let (_app_mini, _rx3, mut terminal_mini) = create_test_terminal(40, 15);
-    terminal_mini.draw(|f| {
-        let area = f.area();
-        assert_eq!(area.width, 40);
-        assert_eq!(area.height, 15);
-    }).unwrap();
+    terminal_mini
+        .draw(|f| {
+            let area = f.area();
+            assert_eq!(area.width, 40);
+            assert_eq!(area.height, 15);
+        })
+        .unwrap();
 
     // Stage 4: Restore back to wide terminal (140x45)
-    terminal_wide.draw(|f| {
-        let area = f.area();
-        assert_eq!(area.width, 140);
-        assert_eq!(area.height, 45);
-    }).unwrap();
+    terminal_wide
+        .draw(|f| {
+            let area = f.area();
+            assert_eq!(area.width, 140);
+            assert_eq!(area.height, 45);
+        })
+        .unwrap();
     assert_eq!(app.subagents.len(), 4);
     assert!(app.btw.expanded);
 }

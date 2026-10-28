@@ -5,7 +5,7 @@ use super::common::*;
 use moc_protocol::methods::AgentStatus;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
-use moc_tui::render::modal::{draw_completion_menu, draw_mode_menu, draw_modal};
+use moc_tui::render::modal::{draw_completion_menu, draw_modal, draw_mode_menu};
 use moc_tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -30,8 +30,14 @@ fn test_f1_01_ask_modal_background_opaque_and_no_leak_through() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let modal_row = rows.iter().find(|r| r.contains("确认提问")).expect("modal header found");
-    assert!(!modal_row.contains("XXXX"), "noise leaked through ask modal header");
+    let modal_row = rows
+        .iter()
+        .find(|r| r.contains("确认提问"))
+        .expect("modal header found");
+    assert!(
+        !modal_row.contains("XXXX"),
+        "noise leaked through ask modal header"
+    );
 }
 
 #[test]
@@ -47,8 +53,14 @@ fn test_f1_02_model_picker_background_has_solid_panel_fill() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let title_row = rows.iter().find(|r| r.contains("选择模型")).expect("model picker header");
-    assert!(!title_row.contains("ZZZZ"), "noise leaked through model picker title");
+    let title_row = rows
+        .iter()
+        .find(|r| r.contains("选择模型"))
+        .expect("model picker header");
+    assert!(
+        !title_row.contains("ZZZZ"),
+        "noise leaked through model picker title"
+    );
 }
 
 #[test]
@@ -63,20 +75,35 @@ fn test_f1_03_sessions_modal_background_clears_underlying_buffer() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let title = rows.iter().find(|r| r.contains("恢复会话")).expect("sessions title");
-    assert!(!title.contains("####"), "noise leaked through sessions modal");
+    let title = rows
+        .iter()
+        .find(|r| r.contains("恢复会话"))
+        .expect("sessions title");
+    assert!(
+        !title.contains("####"),
+        "noise leaked through sessions modal"
+    );
 }
 
 #[test]
 fn test_f1_04_slash_completion_menu_has_solid_background() {
     let (_app, _rx, mut terminal) = create_test_terminal(80, 24);
     prefill_noise(&mut terminal, "@", Color::Blue);
-    let mut completion = sample_custom_completion(vec![sample_slash_candidate("/help", "显示帮助")]);
+    let mut completion =
+        sample_custom_completion(vec![sample_slash_candidate("/help", "显示帮助")]);
     let prompt_area = Rect::new(5, 18, 70, 4);
-    terminal.draw(|f| draw_completion_menu(f, &mut completion, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let help_row = rows.iter().find(|r| r.contains("/help")).expect("completion row");
-    assert!(!help_row.contains("@@@@"), "noise leaked through completion menu");
+    let help_row = rows
+        .iter()
+        .find(|r| r.contains("/help"))
+        .expect("completion row");
+    assert!(
+        !help_row.contains("@@@@"),
+        "noise leaked through completion menu"
+    );
 }
 
 #[test]
@@ -86,8 +113,15 @@ fn test_f1_05_btw_dock_has_solid_base_fill() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(sample_btw_turn("测试", "", "回答"));
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn("测试", "", "回答"));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let dock_row = rows.iter().find(|r| r.contains("BTW")).unwrap_or(&rows[0]);
     assert!(!dock_row.contains("....."), "noise leaked through BTW dock");
@@ -101,13 +135,21 @@ fn test_f1_05_btw_dock_has_solid_base_fill() {
 fn test_f2_01_queue_popup_uses_rounded_borders() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.prompt_area = Rect::new(5, 20, 90, 4);
-    app.queues.entry("main".into()).or_default().push_back(sample_queued_prompt(1, "待办提示词 1"));
+    app.queues
+        .entry("main".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "待办提示词 1"));
     app.session = Some(sample_session_info("main", "主会话", "/tmp"));
-    terminal.draw(|f| moc_tui::queue::draw(f, &mut app)).unwrap();
+    terminal
+        .draw(|f| moc_tui::queue::draw(f, &mut app))
+        .unwrap();
     let buffer = terminal.backend().buffer();
     if !app.queue_area.is_empty() {
         let is_rounded = is_rounded_box(buffer, app.queue_area);
-        assert!(is_rounded, "queue popup must use ROUNDED border characters (╭ ╮ ╰ ╯)");
+        assert!(
+            is_rounded,
+            "queue popup must use ROUNDED border characters (╭ ╮ ╰ ╯)"
+        );
     }
 }
 
@@ -117,12 +159,22 @@ fn test_f2_02_btw_dock_uses_rounded_borders() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(sample_btw_turn("测试", "", "回答"));
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn("测试", "", "回答"));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let buffer = terminal.backend().buffer();
     if !app.btw.area.is_empty() {
         let is_rounded = is_rounded_box(buffer, app.btw.area);
-        assert!(is_rounded, "BTW bypass dock must use ROUNDED border characters (╭ ╮ ╰ ╯)");
+        assert!(
+            is_rounded,
+            "BTW bypass dock must use ROUNDED border characters (╭ ╮ ╰ ╯)"
+        );
     }
 }
 
@@ -131,11 +183,16 @@ fn test_f2_03_todo_hud_task_card_uses_rounded_borders() {
     let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
     app.todos.push(sample_todo_phase("阶段一", "重构渲染模块"));
     app.todo_hud.pinned = true;
-    terminal.draw(|f| moc_tui::render::todo_hud::draw(f, &mut app, Rect::new(0, 0, 120, 30), true)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::todo_hud::draw(f, &mut app, Rect::new(0, 0, 120, 30), true))
+        .unwrap();
     let buffer = terminal.backend().buffer();
     if !app.todo_hud.card_area.is_empty() {
         let is_rounded = is_rounded_box(buffer, app.todo_hud.card_area);
-        assert!(is_rounded, "Todo HUD expanded card must use ROUNDED border characters");
+        assert!(
+            is_rounded,
+            "Todo HUD expanded card must use ROUNDED border characters"
+        );
     }
 }
 
@@ -147,8 +204,14 @@ fn test_f2_04_rewind_modal_outer_dialog_uses_rounded_borders() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let title_line = rows.iter().find(|r| r.contains("消息回退")).expect("rewind title");
-    assert!(title_line.contains("╭") || title_line.contains("─"), "Rewind dialog must use rounded border set");
+    let title_line = rows
+        .iter()
+        .find(|r| r.contains("消息回退"))
+        .expect("rewind title");
+    assert!(
+        title_line.contains("╭") || title_line.contains("─"),
+        "Rewind dialog must use rounded border set"
+    );
 }
 
 #[test]
@@ -161,8 +224,14 @@ fn test_f2_05_mode_menu_uses_rounded_borders() {
     app.mode_area = Rect::new(70, 20, 10, 1);
     terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let menu_line = rows.iter().find(|r| r.contains("模式") || r.contains("Normal")).unwrap_or(&rows[0]);
-    assert!(!menu_line.contains("┌"), "Mode menu should not have sharp 90-degree corners");
+    let menu_line = rows
+        .iter()
+        .find(|r| r.contains("模式") || r.contains("Normal"))
+        .unwrap_or(&rows[0]);
+    assert!(
+        !menu_line.contains("┌"),
+        "Mode menu should not have sharp 90-degree corners"
+    );
 }
 
 // ============================================================================
@@ -216,9 +285,17 @@ fn test_f3_05_grayscale_monotonicity_and_thinking_distinction() {
         theme.accent_thinking, theme.gray_dim,
         "accent_thinking must NOT be identical to gray_dim"
     );
-    if let (Color::Rgb(r1, _, _), Color::Rgb(r2, _, _), Color::Rgb(r3, _, _), Color::Rgb(r4, _, _)) =
-        (theme.gray_dim, theme.gray, theme.gray_bright, theme.text_secondary)
-    {
+    if let (
+        Color::Rgb(r1, _, _),
+        Color::Rgb(r2, _, _),
+        Color::Rgb(r3, _, _),
+        Color::Rgb(r4, _, _),
+    ) = (
+        theme.gray_dim,
+        theme.gray,
+        theme.gray_bright,
+        theme.text_secondary,
+    ) {
         assert!(r1 < r2, "gray_dim < gray");
         assert!(r2 < r3, "gray < gray_bright");
         assert!(r3 < r4, "gray_bright < text_secondary");
@@ -262,18 +339,32 @@ fn test_f4_04_prompt_legend_stopping_is_chinese() {
     app.prompt_running = true;
     app.cancel_requested = true;
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let prompt_border = rows.iter().find(|r| r.contains("停止") || r.contains("Stop")).unwrap_or(&rows[rows.len() - 3]);
-    assert!(!prompt_border.contains("Stopping"), "Prompt border legend should not contain English 'Stopping'");
+    let prompt_border = rows
+        .iter()
+        .find(|r| r.contains("停止") || r.contains("Stop"))
+        .unwrap_or(&rows[rows.len() - 3]);
+    assert!(
+        !prompt_border.contains("Stopping"),
+        "Prompt border legend should not contain English 'Stopping'"
+    );
 }
 
 #[test]
 fn test_f4_05_scrollback_thinking_header_is_chinese() {
     let theme = Theme::global();
     let lines = render_markdown("```thinking\n正在推理结构\n```", 80, theme);
-    let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-    assert!(!text.contains("Thought"), "Thinking block should use '思考' instead of 'Thought'");
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
+    assert!(
+        !text.contains("Thought"),
+        "Thinking block should use '思考' instead of 'Thought'"
+    );
 }
 
 // ============================================================================
@@ -289,37 +380,73 @@ fn test_f5_01_subagent_roster_running_status_label() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows.iter().find(|r| r.contains("CodeAgent")).expect("agent line found");
-    assert!(agent_line.contains("运行中"), "Running agent must be labeled '运行中': {}", agent_line);
-    assert!(!agent_line.contains(" · 0 · "), "Status must not be formatted as raw integer 0");
+    let agent_line = rows
+        .iter()
+        .find(|r| r.contains("CodeAgent"))
+        .expect("agent line found");
+    assert!(
+        agent_line.contains("运行中"),
+        "Running agent must be labeled '运行中': {}",
+        agent_line
+    );
+    assert!(
+        !agent_line.contains(" · 0 · "),
+        "Status must not be formatted as raw integer 0"
+    );
 }
 
 #[test]
 fn test_f5_02_subagent_roster_waiting_status_label() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_2", "ReviewAgent", AgentStatus::Queued)],
+        agents: vec![sample_agent_info(
+            "ag_2",
+            "ReviewAgent",
+            AgentStatus::Queued,
+        )],
         picker: PickerState::default(),
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows.iter().find(|r| r.contains("ReviewAgent")).expect("agent line found");
-    assert!(agent_line.contains("排队中") || agent_line.contains("等待中"), "Queued agent must have localized label");
-    assert!(!agent_line.contains(" · 1 · ") && !agent_line.contains(" · 0 · "), "Status must not be raw integer");
+    let agent_line = rows
+        .iter()
+        .find(|r| r.contains("ReviewAgent"))
+        .expect("agent line found");
+    assert!(
+        agent_line.contains("排队中") || agent_line.contains("等待中"),
+        "Queued agent must have localized label"
+    );
+    assert!(
+        !agent_line.contains(" · 1 · ") && !agent_line.contains(" · 0 · "),
+        "Status must not be raw integer"
+    );
 }
 
 #[test]
 fn test_f5_03_subagent_roster_completed_status_label() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_3", "BuildAgent", AgentStatus::Completed)],
+        agents: vec![sample_agent_info(
+            "ag_3",
+            "BuildAgent",
+            AgentStatus::Completed,
+        )],
         picker: PickerState::default(),
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows.iter().find(|r| r.contains("BuildAgent")).expect("agent line found");
-    assert!(agent_line.contains("已完成"), "Completed agent must be labeled '已完成'");
-    assert!(!agent_line.contains(" · 2 · "), "Status must not be raw integer 2");
+    let agent_line = rows
+        .iter()
+        .find(|r| r.contains("BuildAgent"))
+        .expect("agent line found");
+    assert!(
+        agent_line.contains("已完成"),
+        "Completed agent must be labeled '已完成'"
+    );
+    assert!(
+        !agent_line.contains(" · 2 · "),
+        "Status must not be raw integer 2"
+    );
 }
 
 #[test]
@@ -331,23 +458,45 @@ fn test_f5_04_subagent_roster_failed_status_label() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows.iter().find(|r| r.contains("TestAgent")).expect("agent line found");
-    assert!(agent_line.contains("失败"), "Failed agent must be labeled '失败'");
-    assert!(!agent_line.contains(" · 3 · "), "Status must not be raw integer 3");
+    let agent_line = rows
+        .iter()
+        .find(|r| r.contains("TestAgent"))
+        .expect("agent line found");
+    assert!(
+        agent_line.contains("失败"),
+        "Failed agent must be labeled '失败'"
+    );
+    assert!(
+        !agent_line.contains(" · 3 · "),
+        "Status must not be raw integer 3"
+    );
 }
 
 #[test]
 fn test_f5_05_subagent_roster_stopped_status_label() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_5", "DeployAgent", AgentStatus::Stopped)],
+        agents: vec![sample_agent_info(
+            "ag_5",
+            "DeployAgent",
+            AgentStatus::Stopped,
+        )],
         picker: PickerState::default(),
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let agent_line = rows.iter().find(|r| r.contains("DeployAgent")).expect("agent line found");
-    assert!(agent_line.contains("已停止"), "Stopped agent must be labeled '已停止'");
-    assert!(!agent_line.contains(" · 4 · "), "Status must not be raw integer 4");
+    let agent_line = rows
+        .iter()
+        .find(|r| r.contains("DeployAgent"))
+        .expect("agent line found");
+    assert!(
+        agent_line.contains("已停止"),
+        "Stopped agent must be labeled '已停止'"
+    );
+    assert!(
+        !agent_line.contains(" · 4 · "),
+        "Status must not be raw integer 4"
+    );
 }
 
 // ============================================================================
@@ -381,8 +530,13 @@ fn test_f6_02_empty_subagent_roster_displays_clean_empty_message() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let empty_row = rows.iter().find(|r| r.contains("当前会话还没有子代理") || r.contains("暂无子代理"));
-    assert!(empty_row.is_some(), "Empty roster should indicate no subagents exist");
+    let empty_row = rows
+        .iter()
+        .find(|r| r.contains("当前会话还没有子代理") || r.contains("暂无子代理"));
+    assert!(
+        empty_row.is_some(),
+        "Empty roster should indicate no subagents exist"
+    );
 }
 
 #[test]
@@ -405,7 +559,11 @@ fn test_f6_03_filtered_subagent_roster_empty_state_has_no_agent_command() {
 fn test_f6_04_populated_subagent_roster_does_not_show_empty_guidance() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.modal = Some(Modal::Subagents {
-        agents: vec![sample_agent_info("ag_1", "ExplorerAgent", AgentStatus::Running)],
+        agents: vec![sample_agent_info(
+            "ag_1",
+            "ExplorerAgent",
+            AgentStatus::Running,
+        )],
         picker: PickerState::default(),
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
@@ -417,8 +575,13 @@ fn test_f6_04_populated_subagent_roster_does_not_show_empty_guidance() {
 fn test_f6_05_subagent_sidebar_empty_when_no_subagents() {
     let (mut app, _rx, mut terminal) = create_test_terminal(120, 30);
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
-    assert!(app.subagent_area.is_empty(), "Sidebar should not be active when 0 subagents exist");
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
+    assert!(
+        app.subagent_area.is_empty(),
+        "Sidebar should not be active when 0 subagents exist"
+    );
 }
 
 // ============================================================================
@@ -433,9 +596,14 @@ fn test_f7_01_long_command_greater_than_14_chars_does_not_collide_with_descripti
         "切换 CLM 实验模式",
     )]);
     let prompt_area = Rect::new(5, 18, 90, 4);
-    terminal.draw(|f| draw_completion_menu(f, &mut completion, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let cmd_row = rows.iter().find(|r| r.contains("/clm-experimental")).expect("candidate row");
+    let cmd_row = rows
+        .iter()
+        .find(|r| r.contains("/clm-experimental"))
+        .expect("candidate row");
     assert!(
         !cmd_row.contains("/clm-experimental切换"),
         "Command name and description collided without gap: {}",
@@ -455,7 +623,9 @@ fn test_f7_02_dynamic_column_padding_at_least_two_spaces() {
         sample_slash_candidate("/help", "帮助信息"),
     ]);
     let prompt_area = Rect::new(5, 15, 90, 4);
-    terminal.draw(|f| draw_completion_menu(f, &mut completion, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let help_row = rows.iter().find(|r| r.contains("/help")).expect("help row");
     assert!(
@@ -470,9 +640,14 @@ fn test_f7_03_standard_short_commands_maintain_clean_layout() {
     let (_app, _rx, mut terminal) = create_test_terminal(80, 20);
     let mut completion = sample_custom_completion(vec![sample_slash_candidate("/clear", "清屏")]);
     let prompt_area = Rect::new(2, 14, 76, 4);
-    terminal.draw(|f| draw_completion_menu(f, &mut completion, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let clear_row = rows.iter().find(|r| r.contains("/clear")).expect("clear row");
+    let clear_row = rows
+        .iter()
+        .find(|r| r.contains("/clear"))
+        .expect("clear row");
     assert!(clear_row.contains("清屏"));
 }
 
@@ -484,10 +659,18 @@ fn test_f7_04_mixed_command_lengths_column_aligned() {
         sample_slash_candidate("/confirm-plan", "审批计划"),
     ]);
     let prompt_area = Rect::new(5, 15, 90, 4);
-    terminal.draw(|f| draw_completion_menu(f, &mut completion, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("/plugins") && r.contains("管理插件")));
-    assert!(rows.iter().any(|r| r.contains("/confirm-plan") && r.contains("审批计划")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("/plugins") && r.contains("管理插件"))
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("/confirm-plan") && r.contains("审批计划"))
+    );
 }
 
 #[test]
@@ -498,10 +681,19 @@ fn test_f7_05_long_command_descriptions_not_prematurely_truncated() {
         "切换 CLM 实验模式；启用后本会话固定使用 CLM",
     )]);
     let prompt_area = Rect::new(5, 15, 110, 4);
-    terminal.draw(|f| draw_completion_menu(f, &mut completion, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let cmd_row = rows.iter().find(|r| r.contains("/clm-experimental")).expect("candidate row");
-    assert!(cmd_row.contains("实验模式"), "Description must not be prematurely cut off: {}", cmd_row);
+    let cmd_row = rows
+        .iter()
+        .find(|r| r.contains("/clm-experimental"))
+        .expect("candidate row");
+    assert!(
+        cmd_row.contains("实验模式"),
+        "Description must not be prematurely cut off: {}",
+        cmd_row
+    );
 }
 
 // ============================================================================
@@ -515,10 +707,14 @@ fn test_f8_01_help_modal_contains_three_distinct_sections() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
-    let has_session_sec = text.contains("会话") || text.contains("系统命令") || text.contains("Session");
+    let has_session_sec =
+        text.contains("会话") || text.contains("系统命令") || text.contains("Session");
     let has_editing_sec = text.contains("编辑") || text.contains("输入") || text.contains("Edit");
     let has_bypass_sec = text.contains("旁路") || text.contains("Bypass");
-    assert!(has_session_sec && has_editing_sec && has_bypass_sec, "Help modal must partition into 3 distinct sections");
+    assert!(
+        has_session_sec && has_editing_sec && has_bypass_sec,
+        "Help modal must partition into 3 distinct sections"
+    );
 }
 
 #[test]
@@ -572,9 +768,12 @@ fn test_f8_05_help_modal_sections_rendered_with_header_styling() {
 #[test]
 fn test_f9_01_todo_hud_capsule_does_not_obscure_scrollback_row_zero() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.todos.push(sample_todo_phase("阶段一", "第一项重要任务"));
+    app.todos
+        .push(sample_todo_phase("阶段一", "第一项重要任务"));
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     assert!(
         app.todo_hud.chip_area.y != app.scrollback_area.y || app.todo_hud.chip_area.is_empty(),
         "Todo capsule should be in header/gap area, not over scrollback row: chip_y={}, scroll_y={}",
@@ -608,8 +807,13 @@ fn test_f9_04_todo_hud_hidden_when_modal_active() {
     app.todos.push(sample_todo_phase("阶段", "任务"));
     app.modal = Some(Modal::Help);
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
-    assert!(app.todo_hud.card_area.is_empty(), "Todo card should hide when modal is active");
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
+    assert!(
+        app.todo_hud.card_area.is_empty(),
+        "Todo card should hide when modal is active"
+    );
 }
 
 #[test]
@@ -617,7 +821,9 @@ fn test_f9_05_scrollback_text_unobscured_when_todos_exist() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.todos.push(sample_todo_phase("阶段", "任务内容"));
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(!rows.is_empty());
 }
@@ -631,13 +837,19 @@ fn test_f10_01_queue_popup_yields_when_completion_is_active() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.prompt_area = Rect::new(5, 22, 90, 4);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "排队消息 1"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "排队消息 1"));
     let completion = sample_custom_completion(vec![sample_slash_candidate("/help", "帮助")]);
     app.completion = Some(completion);
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     assert!(
-        app.queue_area.is_empty() || app.queue_area.bottom() <= app.completion.as_ref().unwrap().area.y,
+        app.queue_area.is_empty()
+            || app.queue_area.bottom() <= app.completion.as_ref().unwrap().area.y,
         "Queue popup must yield or stack above completion menu without overlap"
     );
 }
@@ -647,12 +859,20 @@ fn test_f10_02_queue_hits_cleared_when_yielded() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.prompt_area = Rect::new(5, 22, 90, 4);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "排队消息"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "排队消息"));
     app.completion = Some(sample_completion_state("/"));
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     if app.queue_area.is_empty() {
-        assert!(app.queue_hits.is_empty(), "Yielded queue must not leave stale hit targets");
+        assert!(
+            app.queue_hits.is_empty(),
+            "Yielded queue must not leave stale hit targets"
+        );
     }
 }
 
@@ -661,13 +881,21 @@ fn test_f10_03_completion_menu_unoccluded_by_queue() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.prompt_area = Rect::new(5, 22, 90, 4);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "排队消息"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "排队消息"));
     let completion = sample_custom_completion(vec![sample_slash_candidate("/model", "切换模型")]);
     app.completion = Some(completion);
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("/model")), "Completion menu candidate must be visible");
+    assert!(
+        rows.iter().any(|r| r.contains("/model")),
+        "Completion menu candidate must be visible"
+    );
 }
 
 #[test]
@@ -675,12 +903,21 @@ fn test_f10_04_queue_restores_immediately_upon_completion_dismissal() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.prompt_area = Rect::new(5, 22, 90, 4);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "恢复后可见的排队消息"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "恢复后可见的排队消息"));
     app.completion = None;
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("恢复后可见的排队消息") || r.contains("队列")), "Queue popup restores after completion");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("恢复后可见的排队消息") || r.contains("队列")),
+        "Queue popup restores after completion"
+    );
 }
 
 #[test]
@@ -688,12 +925,22 @@ fn test_f10_05_no_border_or_text_collision_between_queue_and_completion() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.prompt_area = Rect::new(5, 22, 90, 4);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "消息"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "消息"));
     app.completion = Some(sample_completion_state("/"));
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
-    if !app.queue_area.is_empty() && let Some(comp) = &app.completion {
-        assert!(app.queue_area.intersection(comp.area).is_empty(), "Areas must not collide");
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
+    if !app.queue_area.is_empty()
+        && let Some(comp) = &app.completion
+    {
+        assert!(
+            app.queue_area.intersection(comp.area).is_empty(),
+            "Areas must not collide"
+        );
     }
 }
 
@@ -707,12 +954,21 @@ fn test_f11_01_more_than_three_agents_triggers_sidebar_scrolling() {
     for i in 1..=5 {
         app.subagents.insert(
             format!("ag_{i}"),
-            sample_subagent_view(&format!("ag_{i}"), &format!("Subagent_{i}"), AgentStatus::Running),
+            sample_subagent_view(
+                &format!("ag_{i}"),
+                &format!("Subagent_{i}"),
+                AgentStatus::Running,
+            ),
         );
     }
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
-    assert!(!app.subagent_area.is_empty(), "Sidebar must be drawn on 120-width terminal");
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
+    assert!(
+        !app.subagent_area.is_empty(),
+        "Sidebar must be drawn on 120-width terminal"
+    );
 }
 
 #[test]
@@ -721,13 +977,22 @@ fn test_f11_02_sidebar_renders_scroll_progress_indicators() {
     for i in 1..=6 {
         app.subagents.insert(
             format!("ag_{i}"),
-            sample_subagent_view(&format!("ag_{i}"), &format!("Worker_{i}"), AgentStatus::Running),
+            sample_subagent_view(
+                &format!("ag_{i}"),
+                &format!("Worker_{i}"),
+                AgentStatus::Running,
+            ),
         );
     }
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("Worker")), "Sidebar agents rendered");
+    assert!(
+        rows.iter().any(|r| r.contains("Worker")),
+        "Sidebar agents rendered"
+    );
 }
 
 #[test]
@@ -742,7 +1007,9 @@ fn test_f11_03_visual_delimiters_separate_adjacent_agent_blocks() {
         sample_subagent_view("ag_2", "AgentBeta", AgentStatus::Queued),
     );
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(rows.iter().any(|r| r.contains("AgentAlpha")));
     assert!(rows.iter().any(|r| r.contains("AgentBeta")));
@@ -756,8 +1023,13 @@ fn test_f11_04_sidebar_hit_targets_registered_for_subagents() {
         sample_subagent_view("ag_target", "TargetAgent", AgentStatus::Running),
     );
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
-    assert!(app.subagent_hits.iter().any(|(id, _)| id == "ag_target"), "Hit target recorded for TargetAgent");
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
+    assert!(
+        app.subagent_hits.iter().any(|(id, _)| id == "ag_target"),
+        "Hit target recorded for TargetAgent"
+    );
 }
 
 #[test]
@@ -768,8 +1040,13 @@ fn test_f11_05_sidebar_disabled_on_narrow_terminal_width_under_100() {
         sample_subagent_view("ag_1", "AgentNarrow", AgentStatus::Running),
     );
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
-    assert!(app.subagent_area.is_empty(), "Sidebar must not display on width < 100");
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
+    assert!(
+        app.subagent_area.is_empty(),
+        "Sidebar must not display on width < 100"
+    );
 }
 
 // ============================================================================
@@ -783,11 +1060,16 @@ fn test_f12_01_btw_dock_renders_scroll_progress_when_lines_exceed_height() {
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
     for i in 0..50 {
-        app.btw.threads.entry("s1".into()).or_default().turns.push_back(
-            sample_btw_turn(&format!("问题 {i}"), "", "回答"),
-        );
+        app.btw
+            .threads
+            .entry("s1".into())
+            .or_default()
+            .turns
+            .push_back(sample_btw_turn(&format!("问题 {i}"), "", "回答"));
     }
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(rows.iter().any(|r| r.contains("BTW")));
 }
@@ -799,11 +1081,16 @@ fn test_f12_02_btw_dock_scroll_offset_clamps_to_max() {
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
     for i in 0..10 {
-        app.btw.threads.entry("s1".into()).or_default().turns.push_back(
-            sample_btw_turn(&format!("Q {i}"), "", "A"),
-        );
+        app.btw
+            .threads
+            .entry("s1".into())
+            .or_default()
+            .turns
+            .push_back(sample_btw_turn(&format!("Q {i}"), "", "A"));
     }
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     assert!(app.btw.scroll_max <= 100);
 }
 
@@ -813,12 +1100,23 @@ fn test_f12_03_narrow_viewport_compact_footer_no_overflow() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(0, 2, 75, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(sample_btw_turn("Q", "", "A"));
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn("Q", "", "A"));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let footer_row = rows.iter().find(|r| r.contains("Esc") || r.contains("Tab")).unwrap_or(&rows[rows.len() - 1]);
+    let footer_row = rows
+        .iter()
+        .find(|r| r.contains("Esc") || r.contains("Tab"))
+        .unwrap_or(&rows[rows.len() - 1]);
     assert!(
-        unicode_width::UnicodeWidthStr::width(footer_row.as_str()) <= 75 || footer_row.chars().count() <= 75,
+        unicode_width::UnicodeWidthStr::width(footer_row.as_str()) <= 75
+            || footer_row.chars().count() <= 75,
         "Footer shortcut text must not exceed terminal width: {}",
         footer_row
     );
@@ -830,10 +1128,20 @@ fn test_f12_04_btw_dock_footer_contains_essential_action_shortcuts() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(50, 2, 58, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(sample_btw_turn("Q", "", "A"));
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn("Q", "", "A"));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let footer_row = rows.iter().find(|r| r.contains("Esc") && r.contains("Tab")).expect("dock footer with shortcuts");
+    let footer_row = rows
+        .iter()
+        .find(|r| r.contains("Esc") && r.contains("Tab"))
+        .expect("dock footer with shortcuts");
     assert!(footer_row.contains("Esc") && footer_row.contains("Ctrl+C"));
 }
 
@@ -844,7 +1152,10 @@ fn test_f12_05_btw_dock_split_vertical_on_narrow_width() {
     app.btw.expanded = true;
     let scroll_area = Rect::new(3, 2, 84, 20);
     let split = moc_tui::render::btw::split(&mut app, scroll_area);
-    assert_eq!(split.width, scroll_area.width, "Narrow width should split vertically, keeping full width");
+    assert_eq!(
+        split.width, scroll_area.width,
+        "Narrow width should split vertically, keeping full width"
+    );
 }
 
 // ============================================================================
@@ -858,7 +1169,10 @@ fn test_f13_01_single_line_up_recalls_history_when_cursor_not_zero() {
     prompt.insert_text("current draft");
     prompt.cursor = 5;
     let handled = prompt.up();
-    assert!(handled, "Up key on single-line input must be handled immediately");
+    assert!(
+        handled,
+        "Up key on single-line input must be handled immediately"
+    );
 }
 
 #[test]
@@ -888,7 +1202,10 @@ fn test_f13_04_multiline_up_moves_line() {
     prompt.cursor = prompt.text.len();
     let handled = prompt.up();
     assert!(handled);
-    assert!(prompt.cursor < "first line\nsecond line".len(), "Cursor should move up into first line");
+    assert!(
+        prompt.cursor < "first line\nsecond line".len(),
+        "Cursor should move up into first line"
+    );
 }
 
 #[test]
@@ -910,7 +1227,9 @@ fn test_f14_01_model_tag_hit_area_recorded_in_prompt_border() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 25);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     assert!(!app.prompt_area.is_empty(), "Prompt area defined");
 }
 
@@ -919,7 +1238,9 @@ fn test_f14_02_permission_tag_hit_area_recorded() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 25);
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     let mut view = moc_tui::render::ScrollbackView::default();
-    terminal.draw(|f| moc_tui::render::draw(f, &mut app, &mut view)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
+        .unwrap();
     assert!(!app.prompt_area.is_empty());
 }
 
@@ -999,7 +1320,10 @@ async fn test_f15_03_copy_clipboard_fallback_error_mentions_platforms() {
     if let Err(err) = res {
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("powershell") || msg.contains("wl-copy") || msg.contains("xclip") || msg.contains("pbcopy"),
+            msg.contains("powershell")
+                || msg.contains("wl-copy")
+                || msg.contains("xclip")
+                || msg.contains("pbcopy"),
             "Error should list recognized clipboard tools: {msg}"
         );
     }
@@ -1024,7 +1348,10 @@ fn test_f16_01_home_key_moves_cursor_to_start() {
     let mut prompt = moc_tui::widgets::prompt::PromptState::default();
     prompt.insert_text("hello world");
     prompt.move_line_start();
-    assert_eq!(prompt.cursor, 0, "move_line_start must move cursor to position 0");
+    assert_eq!(
+        prompt.cursor, 0,
+        "move_line_start must move cursor to position 0"
+    );
 }
 
 #[test]
@@ -1033,7 +1360,11 @@ fn test_f16_02_end_key_moves_cursor_to_end() {
     prompt.insert_text("hello world");
     prompt.move_line_start();
     prompt.move_line_end();
-    assert_eq!(prompt.cursor, "hello world".len(), "move_line_end must move cursor to end");
+    assert_eq!(
+        prompt.cursor,
+        "hello world".len(),
+        "move_line_end must move cursor to end"
+    );
 }
 
 #[test]
@@ -1069,10 +1400,19 @@ fn test_f17_01_markdown_link_url_preserved_in_fallback_or_spans() {
     let theme = Theme::global();
     let md = "请访问 [MOC 文档](https://moc.soeur.dev/docs)";
     let lines = render_markdown(md, 80, theme);
-    let full_text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-    assert!(full_text.contains("MOC 文档"), "Link label must be rendered");
+    let full_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
     assert!(
-        full_text.contains("https://moc.soeur.dev/docs") || lines.iter().any(|l| l.spans.iter().any(|s| s.style.fg == Some(theme.link))),
+        full_text.contains("MOC 文档"),
+        "Link label must be rendered"
+    );
+    assert!(
+        full_text.contains("https://moc.soeur.dev/docs")
+            || lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.style.fg == Some(theme.link))),
         "Link URL or link styling must be preserved in markdown rendering"
     );
 }
@@ -1082,8 +1422,13 @@ fn test_f17_02_link_anchor_text_styled_with_theme_link() {
     let theme = Theme::global();
     let md = "[链接文字](https://example.com)";
     let lines = render_markdown(md, 80, theme);
-    let has_link_style = lines.iter().any(|l| l.spans.iter().any(|s| s.style.fg == Some(theme.link)));
-    assert!(has_link_style, "Link anchor text must be styled with theme.link");
+    let has_link_style = lines
+        .iter()
+        .any(|l| l.spans.iter().any(|s| s.style.fg == Some(theme.link)));
+    assert!(
+        has_link_style,
+        "Link anchor text must be styled with theme.link"
+    );
 }
 
 #[test]
@@ -1091,7 +1436,10 @@ fn test_f17_03_multiple_links_in_paragraph() {
     let theme = Theme::global();
     let md = "参考 [引擎](https://engine.dev) 与 [规范](https://spec.dev)";
     let lines = render_markdown(md, 80, theme);
-    let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
     assert!(text.contains("引擎") && text.contains("规范"));
 }
 
@@ -1100,7 +1448,10 @@ fn test_f17_04_links_with_special_characters_in_query() {
     let theme = Theme::global();
     let md = "[搜索结果](https://example.com/search?q=test&lang=zh#anchor)";
     let lines = render_markdown(md, 80, theme);
-    let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
     assert!(text.contains("搜索结果"));
 }
 
@@ -1109,7 +1460,10 @@ fn test_f17_05_bare_urls_rendered_properly() {
     let theme = Theme::global();
     let md = "访问 https://example.com 查看详情";
     let lines = render_markdown(md, 80, theme);
-    let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect();
     assert!(text.contains("https://example.com"));
 }
 
@@ -1122,8 +1476,15 @@ fn test_f18_01_table_cell_with_bold_retains_bold_modifier() {
     let theme = Theme::global();
     let md = "| 列名 |\n|---|\n| **粗体内容** |";
     let lines = render_markdown(md, 80, theme);
-    let cell_line = lines.iter().find(|l| l.spans.iter().any(|s| s.content.contains("粗体内容"))).expect("cell row found");
-    let bold_span = cell_line.spans.iter().find(|s| s.content.contains("粗体内容")).unwrap();
+    let cell_line = lines
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.contains("粗体内容")))
+        .expect("cell row found");
+    let bold_span = cell_line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("粗体内容"))
+        .unwrap();
     assert!(
         bold_span.style.add_modifier.contains(Modifier::BOLD),
         "Table cell with **bold** must retain Modifier::BOLD"
@@ -1135,8 +1496,15 @@ fn test_f18_02_table_cell_with_italic_retains_italic_modifier() {
     let theme = Theme::global();
     let md = "| 列名 |\n|---|\n| *斜体内容* |";
     let lines = render_markdown(md, 80, theme);
-    let cell_line = lines.iter().find(|l| l.spans.iter().any(|s| s.content.contains("斜体内容"))).expect("cell row found");
-    let italic_span = cell_line.spans.iter().find(|s| s.content.contains("斜体内容")).unwrap();
+    let cell_line = lines
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.contains("斜体内容")))
+        .expect("cell row found");
+    let italic_span = cell_line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("斜体内容"))
+        .unwrap();
     assert!(
         italic_span.style.add_modifier.contains(Modifier::ITALIC),
         "Table cell with *italic* must retain Modifier::ITALIC"
@@ -1148,8 +1516,15 @@ fn test_f18_03_table_cell_with_code_retains_code_background() {
     let theme = Theme::global();
     let md = "| 命令 |\n|---|\n| `cargo check` |";
     let lines = render_markdown(md, 80, theme);
-    let cell_line = lines.iter().find(|l| l.spans.iter().any(|s| s.content.contains("cargo check"))).expect("cell row found");
-    let code_span = cell_line.spans.iter().find(|s| s.content.contains("cargo check")).unwrap();
+    let cell_line = lines
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.contains("cargo check")))
+        .expect("cell row found");
+    let code_span = cell_line
+        .spans
+        .iter()
+        .find(|s| s.content.contains("cargo check"))
+        .unwrap();
     assert_eq!(
         code_span.style.bg,
         Some(theme.code_bg),
@@ -1162,8 +1537,14 @@ fn test_f18_04_table_cell_with_mixed_formatting() {
     let theme = Theme::global();
     let md = "| 状态 |\n|---|\n| **注意**：请运行 `moc-cli` |";
     let lines = render_markdown(md, 80, theme);
-    let cell_line = lines.iter().find(|l| l.spans.iter().any(|s| s.content.contains("注意"))).expect("mixed cell row");
-    assert!(cell_line.spans.len() >= 2, "Cell with mixed formatting must consist of multiple spans");
+    let cell_line = lines
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.contains("注意")))
+        .expect("mixed cell row");
+    assert!(
+        cell_line.spans.len() >= 2,
+        "Cell with mixed formatting must consist of multiple spans"
+    );
 }
 
 #[test]
@@ -1171,7 +1552,10 @@ fn test_f18_05_table_rules_and_column_widths_preserved() {
     let theme = Theme::global();
     let md = "| ID | 说明 |\n|---|---|\n| 1 | 第一行描述 |\n| 2 | 第二行描述 |";
     let lines = render_markdown(md, 80, theme);
-    let text = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect::<String>();
+    let text = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+        .collect::<String>();
     assert!(text.contains("第一行描述") && text.contains("第二行描述"));
 }
 
@@ -1184,7 +1568,10 @@ fn test_f19_01_fenced_code_inside_blockquote_retains_quote_guide() {
     let theme = Theme::global();
     let md = "> 提示：\n> ```sh\n> echo hello\n> ```";
     let lines = render_markdown(md, 80, theme);
-    let code_line = lines.iter().find(|l| l.to_string().contains("echo hello")).expect("code block row");
+    let code_line = lines
+        .iter()
+        .find(|l| l.to_string().contains("echo hello"))
+        .expect("code block row");
     let has_quote_char = code_line.spans.iter().any(|s| s.content.contains("│"));
     assert!(
         has_quote_char,
@@ -1198,7 +1585,10 @@ fn test_f19_02_fenced_code_inside_nested_blockquote_retains_depth_two_guides() {
     let theme = Theme::global();
     let md = "> 外层引用\n>> 内层引用代码：\n>> ```sh\n>> make test\n>> ```";
     let lines = render_markdown(md, 80, theme);
-    let code_line = lines.iter().find(|l| l.to_string().contains("make test")).expect("code line");
+    let code_line = lines
+        .iter()
+        .find(|l| l.to_string().contains("make test"))
+        .expect("code line");
     let full_row: String = code_line.spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         full_row.contains("│ │") || full_row.contains("││") || full_row.matches('│').count() >= 2,
@@ -1212,7 +1602,10 @@ fn test_f19_03_fenced_code_inside_unordered_list_retains_indentation() {
     let theme = Theme::global();
     let md = "- 列表项目一\n  ```rust\n  let x = 42;\n  ```";
     let lines = render_markdown(md, 80, theme);
-    let code_line = lines.iter().find(|l| l.to_string().contains("let x = 42;")).expect("code line");
+    let code_line = lines
+        .iter()
+        .find(|l| l.to_string().contains("let x = 42;"))
+        .expect("code line");
     let first_span = &code_line.spans[0];
     assert!(
         first_span.content.starts_with("  ") || first_span.content.starts_with("    "),
@@ -1226,7 +1619,10 @@ fn test_f19_04_fenced_code_inside_ordered_list_retains_indentation() {
     let theme = Theme::global();
     let md = "1. 第一步执行：\n   ```sh\n   cargo build\n   ```";
     let lines = render_markdown(md, 80, theme);
-    let code_line = lines.iter().find(|l| l.to_string().contains("cargo build")).expect("code line");
+    let code_line = lines
+        .iter()
+        .find(|l| l.to_string().contains("cargo build"))
+        .expect("code line");
     assert!(code_line.to_string().contains("cargo build"));
 }
 
@@ -1235,7 +1631,14 @@ fn test_f19_05_syntax_highlighting_preserved_inside_quoted_code_block() {
     let theme = Theme::global();
     let md = "> ```python\n> def main():\n>     return 1\n> ```";
     let lines = render_markdown(md, 80, theme);
-    let def_line = lines.iter().find(|l| l.spans.iter().any(|s| s.content.contains("def") || s.content.contains("main"))).expect("python line");
+    let def_line = lines
+        .iter()
+        .find(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.contains("def") || s.content.contains("main"))
+        })
+        .expect("python line");
     assert!(!def_line.spans.is_empty());
 }
 
@@ -1249,12 +1652,25 @@ fn test_f20_01_btw_dock_thinking_trace_has_thinking_diamond_header() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(
-        sample_btw_turn("测试问题", "深入分析当前系统的架构缺陷与演化路径", "回答"),
-    );
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn(
+            "测试问题",
+            "深入分析当前系统的架构缺陷与演化路径",
+            "回答",
+        ));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("◆ 思考") || r.contains("思考")), "BTW dock thinking header rendered");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("◆ 思考") || r.contains("思考")),
+        "BTW dock thinking header rendered"
+    );
 }
 
 #[test]
@@ -1263,12 +1679,20 @@ fn test_f20_02_btw_dock_thinking_guide_styled_with_accent_thinking() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(
-        sample_btw_turn("测试", "思考内容行", "回答"),
-    );
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn("测试", "思考内容行", "回答"));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("思考内容行") || r.contains("思考")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("思考内容行") || r.contains("思考"))
+    );
 }
 
 #[test]
@@ -1278,13 +1702,25 @@ fn test_f20_03_multiple_thinking_steps_in_btw_dock() {
     app.btw.area = Rect::new(60, 2, 58, 20);
     app.btw.expanded = true;
     for i in 1..=3 {
-        app.btw.threads.entry("s1".into()).or_default().turns.push_back(
-            sample_btw_turn(&format!("问题 {i}"), &format!("思考步骤分析 {i}"), "回答"),
-        );
+        app.btw
+            .threads
+            .entry("s1".into())
+            .or_default()
+            .turns
+            .push_back(sample_btw_turn(
+                &format!("问题 {i}"),
+                &format!("思考步骤分析 {i}"),
+                "回答",
+            ));
     }
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("思考步骤") || r.contains("思考")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("思考步骤") || r.contains("思考"))
+    );
 }
 
 #[test]
@@ -1301,10 +1737,18 @@ fn test_f20_05_narrow_btw_dock_formats_thinking_cleanly() {
     app.session = Some(sample_session_info("s1", "会话", "/tmp"));
     app.btw.area = Rect::new(0, 2, 80, 20);
     app.btw.expanded = true;
-    app.btw.threads.entry("s1".into()).or_default().turns.push_back(
-        sample_btw_turn("窄屏问题", "窄屏思考分析", "回答"),
-    );
-    terminal.draw(|f| moc_tui::render::btw::draw(f, &mut app)).unwrap();
+    app.btw
+        .threads
+        .entry("s1".into())
+        .or_default()
+        .turns
+        .push_back(sample_btw_turn("窄屏问题", "窄屏思考分析", "回答"));
+    terminal
+        .draw(|f| moc_tui::render::btw::draw(f, &mut app))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("窄屏思考分析") || r.contains("思考")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("窄屏思考分析") || r.contains("思考"))
+    );
 }

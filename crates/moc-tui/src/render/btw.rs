@@ -160,7 +160,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         String::new()
     };
-    let title = format!(" BTW · {status} · {} 轮{progress_suffix} ", thread.turns.len());
+    let title = format!(
+        " BTW · {status} · {} 轮{progress_suffix} ",
+        thread.turns.len()
+    );
 
     let footer_text = if area.width >= 56 {
         " Tab 主输入 · Esc 收起 · Ctrl+C 取消 · c 复制 · x 清空 "

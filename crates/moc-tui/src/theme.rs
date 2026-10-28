@@ -489,8 +489,14 @@ mod tests {
         };
         assert!(lum(dim) < lum(gray), "gray_dim < gray luminance");
         assert!(lum(gray) < lum(bright), "gray < gray_bright luminance");
-        assert!(lum(bright) < lum(sec), "gray_bright < text_secondary luminance");
-        assert!(lum(sec) < lum(pri), "text_secondary < text_primary luminance");
+        assert!(
+            lum(bright) < lum(sec),
+            "gray_bright < text_secondary luminance"
+        );
+        assert!(
+            lum(sec) < lum(pri),
+            "text_secondary < text_primary luminance"
+        );
 
         // 3. Ansi256 quantized stepping: strictly monotonic indexed colors
         let a256 = Theme::resolved(ColorLevel::Ansi256);
@@ -554,6 +560,9 @@ mod tests {
         assert_eq!(idx_thinking, 244);
         assert_ne!(idx_thinking, 239, "thinking must not collide with gray_dim");
         assert_ne!(idx_thinking, 243, "thinking must not collide with gray");
-        assert_ne!(idx_thinking, 247, "thinking must not collide with gray_bright");
+        assert_ne!(
+            idx_thinking, 247,
+            "thinking must not collide with gray_bright"
+        );
     }
 }

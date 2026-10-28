@@ -1302,9 +1302,9 @@ mod tests {
     use super::*;
     use crate::settings::{EditState, EditTarget, FieldKind, SettingsPanel, View};
     use moc_protocol::ConfigScope;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
-    use ratatui::Terminal;
     use serde_json::json;
     use std::collections::BTreeSet;
 
@@ -1354,10 +1354,9 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
         terminal
             .draw(|frame| {
-                frame.buffer_mut().set_style(
-                    Rect::new(0, 0, 80, 24),
-                    Style::new().bg(Color::Red),
-                );
+                frame
+                    .buffer_mut()
+                    .set_style(Rect::new(0, 0, 80, 24), Style::new().bg(Color::Red));
                 draw(frame, &mut panel, false, theme);
             })
             .expect("绘制成功");

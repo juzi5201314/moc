@@ -825,7 +825,9 @@ mod tests {
                 }
                 "slow" => {
                     let inflight = self.state.inflight.fetch_add(1, Ordering::SeqCst) + 1;
-                    self.state.max_inflight.fetch_max(inflight, Ordering::SeqCst);
+                    self.state
+                        .max_inflight
+                        .fetch_max(inflight, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(80)).await;
                     self.state.inflight.fetch_sub(1, Ordering::SeqCst);
                     Ok(CallToolResult::success(vec![ContentBlock::text("ok")]).into())
@@ -1097,7 +1099,9 @@ mod tests {
             let manager = Arc::clone(&manager);
             let info = Arc::clone(&slow);
             calls.push(tokio::spawn(async move {
-                manager.call(&info, json!({}), CancellationToken::new()).await
+                manager
+                    .call(&info, json!({}), CancellationToken::new())
+                    .await
             }));
         }
         for call in calls {
@@ -1117,11 +1121,9 @@ mod tests {
         let state = Arc::new(TestState::default());
         let mut config = test_server("test", true);
         config.max_concurrent_calls = 2;
-        let manager = McpManager::build(
-            vec![config],
-            CancellationToken::new(),
-            |_| test_connector(state.clone()),
-        );
+        let manager = McpManager::build(vec![config], CancellationToken::new(), |_| {
+            test_connector(state.clone())
+        });
         manager.start().await;
         let tools = connected_tools(&manager, Duration::from_secs(5)).await;
         let slow = Arc::clone(tools.iter().find(|t| t.name == "slow").unwrap());
@@ -1130,7 +1132,9 @@ mod tests {
             let manager = Arc::clone(&manager);
             let info = Arc::clone(&slow);
             calls.push(tokio::spawn(async move {
-                manager.call(&info, json!({}), CancellationToken::new()).await
+                manager
+                    .call(&info, json!({}), CancellationToken::new())
+                    .await
             }));
         }
         for call in calls {

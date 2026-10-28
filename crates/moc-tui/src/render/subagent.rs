@@ -137,10 +137,7 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 style,
             )));
             block_lines.push(Line::from(Span::styled(
-                crate::render::scrollback::truncate_to_width(
-                    view.info.title.clone(),
-                    sep_width,
-                ),
+                crate::render::scrollback::truncate_to_width(view.info.title.clone(), sep_width),
                 Style::new().fg(theme.text_primary),
             )));
             let model = view
@@ -150,18 +147,12 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .next()
                 .unwrap_or(&view.info.model);
             block_lines.push(Line::from(Span::styled(
-                crate::render::scrollback::truncate_to_width(
-                    model.to_owned(),
-                    sep_width,
-                ),
+                crate::render::scrollback::truncate_to_width(model.to_owned(), sep_width),
                 Style::new().fg(theme.gray_dim),
             )));
             if let Some(message) = &view.info.last_message {
                 block_lines.push(Line::from(Span::styled(
-                    crate::render::scrollback::truncate_to_width(
-                        message.clone(),
-                        sep_width,
-                    ),
+                    crate::render::scrollback::truncate_to_width(message.clone(), sep_width),
                     Style::new().fg(theme.gray_dim),
                 )));
             }
@@ -206,19 +197,27 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
 
-        let skipped = flat_lines.into_iter().skip(app.subagent_scroll).take(visible_height);
+        let skipped = flat_lines
+            .into_iter()
+            .skip(app.subagent_scroll)
+            .take(visible_height);
         let bottom = area.bottom();
         for (line_idx, (owner, line)) in skipped.enumerate() {
-            let row_y = area.y.saturating_add(1 + u16::try_from(line_idx).unwrap_or(u16::MAX));
+            let row_y = area
+                .y
+                .saturating_add(1 + u16::try_from(line_idx).unwrap_or(u16::MAX));
             if row_y < bottom {
                 if let Some(agent_id) = owner {
-                    if let Some((_, rect)) = app.subagent_hits.iter_mut().find(|(id, _)| *id == agent_id) {
-                        rect.height = rect.height.saturating_add(1).min(bottom.saturating_sub(rect.y));
+                    if let Some((_, rect)) =
+                        app.subagent_hits.iter_mut().find(|(id, _)| *id == agent_id)
+                    {
+                        rect.height = rect
+                            .height
+                            .saturating_add(1)
+                            .min(bottom.saturating_sub(rect.y));
                     } else {
-                        app.subagent_hits.push((
-                            agent_id,
-                            Rect::new(area.x, row_y, area.width, 1),
-                        ));
+                        app.subagent_hits
+                            .push((agent_id, Rect::new(area.x, row_y, area.width, 1)));
                     }
                 }
             }

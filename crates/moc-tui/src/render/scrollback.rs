@@ -2021,7 +2021,11 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                     .and_then(Value::as_str)
                     .and_then(|text| text.lines().next())
                     .unwrap_or_default();
-                if questions.len() > 1 { format!("共 {} 问 · {}", questions.len(), first) } else { first.to_owned() }
+                if questions.len() > 1 {
+                    format!("共 {} 问 · {}", questions.len(), first)
+                } else {
+                    first.to_owned()
+                }
             })
             .unwrap_or_default(),
         "job" | "write_plan" | "exit_plan" => String::new(),
@@ -3796,7 +3800,14 @@ mod tests {
     fn thinking_block_and_rows_apply_thinking_and_grayscale_palette() {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
         let app = App::new(crate::theme::Theme::global(), events);
-        let lines = thinking_block("test line", Some(10), Some(1_000), &app, 80, DetailLevel::Full);
+        let lines = thinking_block(
+            "test line",
+            Some(10),
+            Some(1_000),
+            &app,
+            80,
+            DetailLevel::Full,
+        );
 
         // Title line: spans[1] is '◆ ' in accent_thinking, spans[2] is 'Thought' in gray_bright
         let title_spans = &lines[0].spans;

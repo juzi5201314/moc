@@ -2,12 +2,12 @@
 //! Verifying interactions, coexistence, and layout synchronization across multiple features.
 
 use super::common::*;
-use moc_protocol::methods::AgentStatus;
 use moc_protocol::SessionMode;
+use moc_protocol::methods::AgentStatus;
 use moc_tui::app::ModeMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
-use moc_tui::render::modal::{draw_completion_menu, draw_mode_menu, draw_modal};
+use moc_tui::render::modal::{draw_completion_menu, draw_modal, draw_mode_menu};
 use moc_tui::theme::Theme;
 use moc_tui::widgets::prompt::PromptState;
 use ratatui::layout::Rect;
@@ -16,13 +16,18 @@ use ratatui::style::Color;
 #[test]
 fn test_combo_01_queue_and_slash_palette() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "排队任务 1"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "排队任务 1"));
     let mut comp = sample_custom_completion(vec![
         sample_slash_candidate("help", "查看帮助"),
         sample_slash_candidate("mode", "切换模式"),
     ]);
     let prompt_area = Rect::new(0, 25, 100, 3);
-    terminal.draw(|f| draw_completion_menu(f, &mut comp, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(rows.iter().any(|r| r.contains("help")));
     assert_eq!(app.queues.get("s1").unwrap().len(), 1);
@@ -38,13 +43,19 @@ fn test_combo_02_mode_switch_during_slash_palette() {
     });
     terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("normal") || r.contains("plan")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("normal") || r.contains("plan"))
+    );
 }
 
 #[test]
 fn test_combo_03_sidebar_and_btw_dock_simultaneous() {
     let (mut app, _rx, _terminal) = create_test_terminal(120, 35);
-    app.subagents.insert("ag-1".into(), sample_subagent_view("ag-1", "Worker 1", AgentStatus::Running));
+    app.subagents.insert(
+        "ag-1".into(),
+        sample_subagent_view("ag-1", "Worker 1", AgentStatus::Running),
+    );
     app.btw.expanded = true;
     app.btw.area = Rect::new(0, 20, 80, 10);
     assert_eq!(app.subagents.len(), 1);
@@ -54,8 +65,12 @@ fn test_combo_03_sidebar_and_btw_dock_simultaneous() {
 #[test]
 fn test_combo_04_sidebar_and_todo_hud_simultaneous() {
     let (mut app, _rx, _terminal) = create_test_terminal(120, 35);
-    app.subagents.insert("ag-1".into(), sample_subagent_view("ag-1", "Worker 1", AgentStatus::Running));
-    app.todos.push(sample_todo_phase("Phase 1", "Implementation"));
+    app.subagents.insert(
+        "ag-1".into(),
+        sample_subagent_view("ag-1", "Worker 1", AgentStatus::Running),
+    );
+    app.todos
+        .push(sample_todo_phase("Phase 1", "Implementation"));
     assert_eq!(app.subagents.len(), 1);
     assert_eq!(app.todos.len(), 1);
 }
@@ -77,7 +92,10 @@ fn test_combo_05_markdown_table_inside_ask_modal() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    let modal_row = rows.iter().find(|r| r.contains("确认提问")).expect("modal found");
+    let modal_row = rows
+        .iter()
+        .find(|r| r.contains("确认提问"))
+        .expect("modal found");
     assert!(!modal_row.contains("~~~~"));
 }
 
@@ -96,7 +114,10 @@ fn test_combo_06_context_gauge_and_session_search() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    let session_row = rows.iter().find(|r| r.contains("项目会话")).expect("session row");
+    let session_row = rows
+        .iter()
+        .find(|r| r.contains("项目会话"))
+        .expect("session row");
     assert!(!session_row.contains("===="));
     assert_eq!(app.context_used(), 190_000);
 }
@@ -109,7 +130,10 @@ fn test_combo_07_help_modal_over_expanded_btw() {
     app.modal = Some(Modal::Help);
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    let help_row = rows.iter().find(|r| r.contains("帮助")).expect("help modal header");
+    let help_row = rows
+        .iter()
+        .find(|r| r.contains("帮助"))
+        .expect("help modal header");
     assert!(!help_row.contains("####"));
 }
 
@@ -117,8 +141,14 @@ fn test_combo_07_help_modal_over_expanded_btw() {
 fn test_combo_08_model_picker_with_subagents_running() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     prefill_noise(&mut terminal, "+", Color::Green);
-    app.subagents.insert("a1".into(), sample_subagent_view("a1", "Worker 1", AgentStatus::Running));
-    app.subagents.insert("a2".into(), sample_subagent_view("a2", "Worker 2", AgentStatus::Running));
+    app.subagents.insert(
+        "a1".into(),
+        sample_subagent_view("a1", "Worker 1", AgentStatus::Running),
+    );
+    app.subagents.insert(
+        "a2".into(),
+        sample_subagent_view("a2", "Worker 2", AgentStatus::Running),
+    );
     app.modal = Some(Modal::Model {
         entries: vec![sample_model_entry("gpt-4o", "GPT-4o")],
         current: "gpt-4o".into(),
@@ -128,7 +158,10 @@ fn test_combo_08_model_picker_with_subagents_running() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    let model_row = rows.iter().find(|r| r.contains("选择模型")).expect("model header");
+    let model_row = rows
+        .iter()
+        .find(|r| r.contains("选择模型"))
+        .expect("model header");
     assert!(!model_row.contains("++++"));
     assert_eq!(app.subagents.len(), 2);
 }
@@ -136,8 +169,14 @@ fn test_combo_08_model_picker_with_subagents_running() {
 #[test]
 fn test_combo_09_multiline_prompt_expansion_with_queue() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "Q1"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(2, "Q2"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "Q1"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(2, "Q2"));
     let mut prompt = PromptState::default();
     prompt.insert_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
     assert_eq!(prompt.expanded_text().lines().count(), 5);
@@ -156,7 +195,10 @@ fn test_combo_10_copy_mode_with_btw_expanded() {
 #[test]
 fn test_combo_11_responsive_collapse_sidebar_and_btw() {
     let (mut app, _rx, terminal) = create_test_terminal(70, 20);
-    app.subagents.insert("ag-1".into(), sample_subagent_view("ag-1", "Worker 1", AgentStatus::Running));
+    app.subagents.insert(
+        "ag-1".into(),
+        sample_subagent_view("ag-1", "Worker 1", AgentStatus::Running),
+    );
     app.btw.expanded = true;
     let size = terminal.size().unwrap();
     assert_eq!(size.width, 70);
@@ -178,10 +220,16 @@ fn test_combo_13_subagent_failure_updates_status() {
     let mut view = sample_subagent_view("failing-agent", "Worker", AgentStatus::Running);
     assert_eq!(view.info.status, AgentStatus::Running);
     assert!(view.running);
-    view.set_status(AgentStatus::Failed, Some("Process exited with code 1".into()));
+    view.set_status(
+        AgentStatus::Failed,
+        Some("Process exited with code 1".into()),
+    );
     assert_eq!(view.info.status, AgentStatus::Failed);
     assert!(!view.running);
-    assert_eq!(view.info.last_message.as_deref(), Some("Process exited with code 1"));
+    assert_eq!(
+        view.info.last_message.as_deref(),
+        Some("Process exited with code 1")
+    );
 }
 
 #[test]
@@ -232,7 +280,10 @@ fn test_combo_17_btw_multi_turn_with_markdown_rendering() {
 fn test_combo_18_ask_modal_multiple_questions_narrow_screen() {
     let (mut app, _rx, mut terminal) = create_test_terminal(60, 25);
     app.modal = Some(Modal::Ask {
-        params: sample_ask_params("请确认多项执行参数？", &["是，立即执行并记录日志", "否，暂缓"]),
+        params: sample_ask_params(
+            "请确认多项执行参数？",
+            &["是，立即执行并记录日志", "否，暂缓"],
+        ),
         question: 0,
         highlight: vec![0],
         selected: vec![vec!["是，立即执行并记录日志".into()]],
@@ -252,7 +303,10 @@ fn test_combo_19_todo_hud_completion_and_subagent_completion() {
     phase.items[0].status = moc_protocol::methods::TodoStatus::Completed;
     let mut agent = sample_subagent_view("ag-complete", "Worker", AgentStatus::Running);
     agent.set_status(AgentStatus::Completed, Some("All tasks finished".into()));
-    assert_eq!(phase.items[0].status, moc_protocol::methods::TodoStatus::Completed);
+    assert_eq!(
+        phase.items[0].status,
+        moc_protocol::methods::TodoStatus::Completed
+    );
     assert_eq!(agent.info.status, AgentStatus::Completed);
 }
 
@@ -268,5 +322,8 @@ fn test_combo_20_mode_menu_selection_updates_session_mode() {
     if let Some(session) = app.session.as_mut() {
         session.mode = SessionMode::Plan;
     }
-    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Plan));
+    assert_eq!(
+        app.session.as_ref().map(|s| s.mode),
+        Some(SessionMode::Plan)
+    );
 }

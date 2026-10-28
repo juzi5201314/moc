@@ -546,12 +546,24 @@ mod tests {
         let buffer = terminal.backend().buffer();
         for y in modal.y..modal.y + modal.height {
             for x in modal.x..modal.x + modal.width {
-                if x > modal.x && buffer.cell((x - 1, y)).map_or(false, |c| c.cell_width() > 1) {
+                if x > modal.x
+                    && buffer
+                        .cell((x - 1, y))
+                        .map_or(false, |c| c.cell_width() > 1)
+                {
                     continue;
                 }
                 let cell = buffer.cell((x, y)).expect("单元格存在");
-                assert_ne!(cell.bg, Color::Reset, "正文窗区域不应出现 Reset 穿透：({x}, {y})");
-                assert_ne!(cell.bg, Color::Red, "正文窗区域不应泄露底层颜色：({x}, {y})");
+                assert_ne!(
+                    cell.bg,
+                    Color::Reset,
+                    "正文窗区域不应出现 Reset 穿透：({x}, {y})"
+                );
+                assert_ne!(
+                    cell.bg,
+                    Color::Red,
+                    "正文窗区域不应泄露底层颜色：({x}, {y})"
+                );
             }
         }
     }

@@ -7,7 +7,7 @@ use moc_protocol::{SessionMode, Usage};
 use moc_tui::app::ModeMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
-use moc_tui::render::modal::{draw_completion_menu, draw_mode_menu, draw_modal};
+use moc_tui::render::modal::{draw_completion_menu, draw_modal, draw_mode_menu};
 use moc_tui::theme::Theme;
 use moc_tui::widgets::prompt::PromptState;
 use ratatui::layout::Rect;
@@ -33,8 +33,14 @@ fn test_f1_b1_ask_modal_zero_options_opacity() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let modal_row = rows.iter().find(|r| r.contains("确认提问")).expect("modal header found");
-    assert!(!modal_row.contains("QQQQ"), "noise leaked through empty ask modal");
+    let modal_row = rows
+        .iter()
+        .find(|r| r.contains("确认提问"))
+        .expect("modal header found");
+    assert!(
+        !modal_row.contains("QQQQ"),
+        "noise leaked through empty ask modal"
+    );
 }
 
 #[test]
@@ -61,15 +67,25 @@ fn test_f1_b3_massive_terminal_modal_opacity() {
     let (mut app, _rx, mut terminal) = create_test_terminal(250, 100);
     prefill_noise(&mut terminal, "*", Color::DarkGray);
     app.modal = Some(Modal::Sessions {
-        sessions: vec![sample_session_info("ses_huge", "Big Terminal Session", "/tmp")],
+        sessions: vec![sample_session_info(
+            "ses_huge",
+            "Big Terminal Session",
+            "/tmp",
+        )],
         cwd: "/tmp".into(),
         scope: SessionScope::All,
         picker: PickerState::default(),
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let session_row = rows.iter().find(|r| r.contains("Big Terminal Session")).expect("session found");
-    assert!(!session_row.contains("****"), "noise leaked through huge terminal session modal");
+    let session_row = rows
+        .iter()
+        .find(|r| r.contains("Big Terminal Session"))
+        .expect("session found");
+    assert!(
+        !session_row.contains("****"),
+        "noise leaked through huge terminal session modal"
+    );
 }
 
 #[test]
@@ -83,7 +99,10 @@ fn test_f1_b4_mode_menu_popup_opacity_clears_noise() {
     });
     terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let mode_row = rows.iter().find(|r| r.contains("normal") || r.contains("plan")).expect("mode menu row");
+    let mode_row = rows
+        .iter()
+        .find(|r| r.contains("normal") || r.contains("plan"))
+        .expect("mode menu row");
     assert!(!mode_row.contains("@@@@"), "noise leaked through mode menu");
 }
 
@@ -97,10 +116,18 @@ fn test_f1_b5_completion_menu_opacity_clears_underlying_noise() {
     ]);
     comp.area = Rect::new(10, 15, 50, 6);
     let prompt_area = Rect::new(0, 20, 100, 3);
-    terminal.draw(|f| draw_completion_menu(f, &mut comp, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let comp_row = rows.iter().find(|r| r.contains("help") && r.contains("查看帮助")).expect("completion candidate row");
-    assert!(!comp_row.contains("^^^^"), "noise leaked through completion menu");
+    let comp_row = rows
+        .iter()
+        .find(|r| r.contains("help") && r.contains("查看帮助"))
+        .expect("completion candidate row");
+    assert!(
+        !comp_row.contains("^^^^"),
+        "noise leaked through completion menu"
+    );
 }
 
 // ============================================================================
@@ -114,7 +141,9 @@ fn test_f2_b1_border_sharp_corner_consistency_across_modals() {
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let border_chars: Vec<char> = rows.iter().flat_map(|r| r.chars()).collect();
-    let has_border = border_chars.iter().any(|&c| ['┌', '╭', '+', '│', '─', '┐', '╮', '└', '╰', '┘', '╯'].contains(&c));
+    let has_border = border_chars
+        .iter()
+        .any(|&c| ['┌', '╭', '+', '│', '─', '┐', '╮', '└', '╰', '┘', '╯'].contains(&c));
     assert!(has_border, "help modal must draw a bordered container");
 }
 
@@ -154,7 +183,10 @@ fn test_f2_b4_nested_border_contrast() {
     });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("选择模型")), "model modal header intact");
+    assert!(
+        rows.iter().any(|r| r.contains("选择模型")),
+        "model modal header intact"
+    );
 }
 
 #[test]
@@ -167,7 +199,10 @@ fn test_f2_b5_mode_menu_four_corners_intact() {
     terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let top_border = &rows[5];
-    assert!(top_border.contains('┌') || top_border.contains('╭') || top_border.contains('+'), "top left corner present");
+    assert!(
+        top_border.contains('┌') || top_border.contains('╭') || top_border.contains('+'),
+        "top left corner present"
+    );
 }
 
 // ============================================================================
@@ -189,32 +224,38 @@ fn test_f3_b2_terminal_width_100_sidebar_threshold() {
 #[test]
 fn test_f3_b3_terminal_height_15_minimum() {
     let (_app, _rx, mut terminal) = create_test_terminal(40, 15);
-    terminal.draw(|f| {
-        let area = f.area();
-        assert_eq!(area.width, 40);
-        assert_eq!(area.height, 15);
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            assert_eq!(area.width, 40);
+            assert_eq!(area.height, 15);
+        })
+        .unwrap();
     assert_eq!(terminal.size().unwrap().height, 15);
 }
 
 #[test]
 fn test_f3_b4_terminal_height_5_extreme_squish() {
     let (_app, _rx, mut terminal) = create_test_terminal(80, 5);
-    terminal.draw(|f| {
-        let area = f.area();
-        assert_eq!(area.height, 5);
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            assert_eq!(area.height, 5);
+        })
+        .unwrap();
     assert_eq!(terminal.size().unwrap().height, 5);
 }
 
 #[test]
 fn test_f3_b5_aspect_ratio_extreme_tall() {
     let (_app, _rx, mut terminal) = create_test_terminal(40, 120);
-    terminal.draw(|f| {
-        let area = f.area();
-        assert_eq!(area.width, 40);
-        assert_eq!(area.height, 120);
-    }).unwrap();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            assert_eq!(area.width, 40);
+            assert_eq!(area.height, 120);
+        })
+        .unwrap();
     assert_eq!(terminal.size().unwrap().height, 120);
 }
 
@@ -228,7 +269,10 @@ fn test_f4_b1_help_modal_empty_bindings() {
     app.modal = Some(Modal::Help);
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("帮助")), "help modal title rendered");
+    assert!(
+        rows.iter().any(|r| r.contains("帮助")),
+        "help modal title rendered"
+    );
 }
 
 #[test]
@@ -237,7 +281,10 @@ fn test_f4_b2_help_modal_scroll_clamp() {
     app.modal = Some(Modal::Help);
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("帮助")), "help modal survives draw");
+    assert!(
+        rows.iter().any(|r| r.contains("帮助")),
+        "help modal survives draw"
+    );
 }
 
 #[test]
@@ -246,7 +293,10 @@ fn test_f4_b3_help_modal_top_render() {
     app.modal = Some(Modal::Help);
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("帮助")), "help modal rendered at top scroll offset");
+    assert!(
+        rows.iter().any(|r| r.contains("帮助")),
+        "help modal rendered at top scroll offset"
+    );
 }
 
 #[test]
@@ -279,9 +329,14 @@ fn test_f5_b1_slash_command_empty_input() {
         sample_slash_candidate("clear", "清屏"),
     ]);
     let prompt_area = Rect::new(0, 20, 100, 3);
-    terminal.draw(|f| draw_completion_menu(f, &mut comp, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("help")), "help candidate visible");
+    assert!(
+        rows.iter().any(|r| r.contains("help")),
+        "help candidate visible"
+    );
 }
 
 #[test]
@@ -289,7 +344,9 @@ fn test_f5_b2_slash_command_unmatched_query_empty_candidates() {
     let (_app, _rx, mut terminal) = create_test_terminal(100, 30);
     let mut comp = sample_custom_completion(vec![]);
     let prompt_area = Rect::new(0, 20, 100, 3);
-    terminal.draw(|f| draw_completion_menu(f, &mut comp, prompt_area)).unwrap();
+    terminal
+        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(!rows.is_empty(), "empty candidates menu does not panic");
 }
@@ -333,7 +390,10 @@ fn test_f6_b1_queue_empty_no_indicator() {
 #[test]
 fn test_f6_b2_queue_single_item_indicator() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "单个排队任务"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "单个排队任务"));
     assert_eq!(app.queues.get("s1").unwrap().len(), 1, "queue length is 1");
 }
 
@@ -341,15 +401,25 @@ fn test_f6_b2_queue_single_item_indicator() {
 fn test_f6_b3_queue_overflow_25_items() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     for i in 0..25 {
-        app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(i, &format!("任务 {i}")));
+        app.queues
+            .entry("s1".into())
+            .or_default()
+            .push_back(sample_queued_prompt(i, &format!("任务 {i}")));
     }
-    assert_eq!(app.queues.get("s1").unwrap().len(), 25, "queue handles 25 items");
+    assert_eq!(
+        app.queues.get("s1").unwrap().len(),
+        25,
+        "queue handles 25 items"
+    );
 }
 
 #[test]
 fn test_f6_b4_queue_empty_string_draft() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(100, ""));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(100, ""));
     let item = app.queues.get("s1").unwrap().front().unwrap();
     assert_eq!(item.draft.text, "", "empty string draft queued cleanly");
 }
@@ -357,12 +427,21 @@ fn test_f6_b4_queue_empty_string_draft() {
 #[test]
 fn test_f6_b5_queue_drain_to_empty() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(1, "A"));
-    app.queues.entry("s1".into()).or_default().push_back(sample_queued_prompt(2, "B"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(1, "A"));
+    app.queues
+        .entry("s1".into())
+        .or_default()
+        .push_back(sample_queued_prompt(2, "B"));
     assert_eq!(app.queues.get("s1").unwrap().len(), 2);
     app.queues.get_mut("s1").unwrap().pop_front();
     app.queues.get_mut("s1").unwrap().pop_front();
-    assert!(app.queues.get("s1").unwrap().is_empty(), "queue drained to empty");
+    assert!(
+        app.queues.get("s1").unwrap().is_empty(),
+        "queue drained to empty"
+    );
 }
 
 // ============================================================================
@@ -397,7 +476,10 @@ fn test_f7_b4_prompt_100_lines_scroll() {
     for i in 0..100 {
         prompt.insert_text(&format!("Line {i}\n"));
     }
-    assert!(prompt.text.lines().count() >= 100, "prompt manages 100 lines");
+    assert!(
+        prompt.text.lines().count() >= 100,
+        "prompt manages 100 lines"
+    );
 }
 
 #[test]
@@ -416,7 +498,10 @@ fn test_f7_b5_prompt_unicode_cjk_backspace() {
 fn test_f8_b1_mode_tag_plan_styling() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-1", "Session", "/tmp"));
-    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Normal));
+    assert_eq!(
+        app.session.as_ref().map(|s| s.mode),
+        Some(SessionMode::Normal)
+    );
     assert_ne!(SessionMode::Plan, SessionMode::Normal);
 }
 
@@ -436,12 +521,21 @@ fn test_f8_b3_mode_tag_exec_default() {
 fn test_f8_b4_mode_preserved_across_queue() {
     let mut queued = sample_queued_prompt(1, "规划模式提示");
     queued.mode = Some(SessionMode::Plan);
-    assert_eq!(queued.mode, Some(SessionMode::Plan), "queued prompt preserves mode tag");
+    assert_eq!(
+        queued.mode,
+        Some(SessionMode::Plan),
+        "queued prompt preserves mode tag"
+    );
 }
 
 #[test]
 fn test_f8_b5_mode_toggle_cycle() {
-    let modes = [SessionMode::Normal, SessionMode::Plan, SessionMode::Ask, SessionMode::Ptc];
+    let modes = [
+        SessionMode::Normal,
+        SessionMode::Plan,
+        SessionMode::Ask,
+        SessionMode::Ptc,
+    ];
     for (i, mode) in modes.iter().enumerate() {
         let next = modes[(i + 1) % modes.len()];
         assert_ne!(*mode, next);
@@ -570,7 +664,11 @@ fn test_f11_b4_btw_keyboard_toggle_shortcut() {
 fn test_f11_b5_btw_50_turns_handling() {
     let mut turns = Vec::new();
     for i in 0..50 {
-        turns.push(sample_btw_turn(&format!("q_{i}"), &format!("reason_{i}"), "Completed"));
+        turns.push(sample_btw_turn(
+            &format!("q_{i}"),
+            &format!("reason_{i}"),
+            "Completed",
+        ));
     }
     assert_eq!(turns.len(), 50);
 }
@@ -600,7 +698,10 @@ fn test_f12_b3_code_block_unclosed_fence() {
     let text = "```rust\nfn unclosed() {\n";
     let theme = Theme::global();
     let rendered = render_markdown(text, 80, &theme);
-    assert!(!rendered.is_empty(), "unclosed code block fence degrades gracefully");
+    assert!(
+        !rendered.is_empty(),
+        "unclosed code block fence degrades gracefully"
+    );
 }
 
 #[test]
@@ -617,7 +718,10 @@ fn test_f12_b5_code_block_extreme_line_length() {
     let text = format!("```\n{long_line}\n```");
     let theme = Theme::global();
     let rendered = render_markdown(&text, 80, &theme);
-    assert!(!rendered.is_empty(), "extreme line length code block renders");
+    assert!(
+        !rendered.is_empty(),
+        "extreme line length code block renders"
+    );
 }
 
 // ============================================================================
@@ -637,7 +741,10 @@ fn test_f13_b2_table_mismatched_columns() {
     let table = "| A | B | C |\n|---|---|---|\n| 1 | 2 |";
     let theme = Theme::global();
     let rendered = render_markdown(table, 80, &theme);
-    assert!(!rendered.is_empty(), "mismatched column counts render padded cells");
+    assert!(
+        !rendered.is_empty(),
+        "mismatched column counts render padded cells"
+    );
 }
 
 #[test]
@@ -688,7 +795,10 @@ fn test_f14_b3_multiple_code_blocks_selection() {
     let text = "```python\nprint(1)\n```\n\n```python\nprint(2)\n```";
     let theme = Theme::global();
     let rendered = render_markdown(text, 80, &theme);
-    assert!(!rendered.is_empty(), "multiple code blocks render sequentially");
+    assert!(
+        !rendered.is_empty(),
+        "multiple code blocks render sequentially"
+    );
 }
 
 #[test]
@@ -720,7 +830,10 @@ fn test_f15_b1_subagent_sidebar_zero_agents() {
 #[test]
 fn test_f15_b2_subagent_sidebar_single_agent() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.subagents.insert("agent-1".into(), sample_subagent_view("agent-1", "Single Worker", AgentStatus::Running));
+    app.subagents.insert(
+        "agent-1".into(),
+        sample_subagent_view("agent-1", "Single Worker", AgentStatus::Running),
+    );
     assert_eq!(app.subagents.len(), 1, "exactly 1 agent registered");
 }
 
@@ -729,9 +842,16 @@ fn test_f15_b3_subagent_sidebar_3_agents_no_overflow() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     for i in 1..=3 {
         let id = format!("ag-{i}");
-        app.subagents.insert(id.clone(), sample_subagent_view(&id, &format!("Worker {i}"), AgentStatus::Running));
+        app.subagents.insert(
+            id.clone(),
+            sample_subagent_view(&id, &format!("Worker {i}"), AgentStatus::Running),
+        );
     }
-    assert_eq!(app.subagents.len(), 3, "3 agents fit within standard sidebar view");
+    assert_eq!(
+        app.subagents.len(),
+        3,
+        "3 agents fit within standard sidebar view"
+    );
 }
 
 #[test]
@@ -739,7 +859,10 @@ fn test_f15_b4_subagent_sidebar_4_agents_overflow_1() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     for i in 1..=4 {
         let id = format!("ag-{i}");
-        app.subagents.insert(id.clone(), sample_subagent_view(&id, &format!("Worker {i}"), AgentStatus::Running));
+        app.subagents.insert(
+            id.clone(),
+            sample_subagent_view(&id, &format!("Worker {i}"), AgentStatus::Running),
+        );
     }
     assert_eq!(app.subagents.len(), 4, "4 agents triggers +1 more overflow");
 }
@@ -749,9 +872,16 @@ fn test_f15_b5_subagent_sidebar_10_agents_overflow_7() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     for i in 1..=10 {
         let id = format!("ag-{i}");
-        app.subagents.insert(id.clone(), sample_subagent_view(&id, &format!("Worker {i}"), AgentStatus::Running));
+        app.subagents.insert(
+            id.clone(),
+            sample_subagent_view(&id, &format!("Worker {i}"), AgentStatus::Running),
+        );
     }
-    assert_eq!(app.subagents.len(), 10, "10 agents triggers +7 more overflow");
+    assert_eq!(
+        app.subagents.len(),
+        10,
+        "10 agents triggers +7 more overflow"
+    );
 }
 
 // ============================================================================
@@ -795,7 +925,10 @@ fn test_f16_b5_agent_status_stopped_badge() {
 #[test]
 fn test_f17_b1_subagent_empty_last_message() {
     let view = sample_subagent_view("l1", "Log Agent", AgentStatus::Running);
-    assert!(view.info.last_message.is_none(), "last_message starts empty");
+    assert!(
+        view.info.last_message.is_none(),
+        "last_message starts empty"
+    );
 }
 
 #[test]
@@ -821,8 +954,14 @@ fn test_f17_b4_subagent_status_completed_label() {
 #[test]
 fn test_f17_b5_subagent_switch_active_agent_selection() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.subagents.insert("a1".into(), sample_subagent_view("a1", "Agent 1", AgentStatus::Running));
-    app.subagents.insert("a2".into(), sample_subagent_view("a2", "Agent 2", AgentStatus::Running));
+    app.subagents.insert(
+        "a1".into(),
+        sample_subagent_view("a1", "Agent 1", AgentStatus::Running),
+    );
+    app.subagents.insert(
+        "a2".into(),
+        sample_subagent_view("a2", "Agent 2", AgentStatus::Running),
+    );
     app.subagent_selected = Some("a1".into());
     assert_eq!(app.subagent_selected.as_deref(), Some("a1"));
 }
@@ -847,7 +986,10 @@ fn test_f18_b2_todo_phase_with_zero_items() {
 fn test_f18_b3_todo_all_completed_100_percent() {
     let mut phase = sample_todo_phase("Phase Done", "Task 1");
     phase.items[0].status = moc_protocol::methods::TodoStatus::Completed;
-    assert_eq!(phase.items[0].status, moc_protocol::methods::TodoStatus::Completed);
+    assert_eq!(
+        phase.items[0].status,
+        moc_protocol::methods::TodoStatus::Completed
+    );
 }
 
 #[test]
@@ -934,13 +1076,19 @@ fn test_f20_b3_mode_switch_updates_theme_accents() {
     if let Some(session) = app.session.as_mut() {
         session.mode = SessionMode::Plan;
     }
-    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Plan));
+    assert_eq!(
+        app.session.as_ref().map(|s| s.mode),
+        Some(SessionMode::Plan)
+    );
 }
 
 #[test]
 fn test_f20_b4_mode_menu_esc_dismiss() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.mode_menu = Some(ModeMenu { selected: 1, area: Rect::default() });
+    app.mode_menu = Some(ModeMenu {
+        selected: 1,
+        area: Rect::default(),
+    });
     assert!(app.mode_menu.is_some());
     app.mode_menu = None;
     assert!(app.mode_menu.is_none());
@@ -956,5 +1104,8 @@ fn test_f20_b5_mode_menu_options_count() {
     });
     terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    assert!(rows.iter().any(|r| r.contains("normal") || r.contains("plan")));
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("normal") || r.contains("plan"))
+    );
 }

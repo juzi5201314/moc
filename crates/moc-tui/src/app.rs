@@ -1567,14 +1567,15 @@ impl App {
             .unwrap_or(0)
             .saturating_sub(previous.cached_input_tokens.unwrap_or(0));
         if (delta_in > 0 || delta_out > 0)
-            && let Some(pricing) = self.current_pricing() {
-                // input_tokens 已折入缓存命中：非命中输入单独按全价计
-                let uncached = delta_in.saturating_sub(delta_cached);
-                let cache_price = pricing.cache_read.unwrap_or(pricing.input);
-                self.cost_usd += uncached as f64 / 1e6 * pricing.input
-                    + delta_out as f64 / 1e6 * pricing.output
-                    + delta_cached as f64 / 1e6 * cache_price;
-            }
+            && let Some(pricing) = self.current_pricing()
+        {
+            // input_tokens 已折入缓存命中：非命中输入单独按全价计
+            let uncached = delta_in.saturating_sub(delta_cached);
+            let cache_price = pricing.cache_read.unwrap_or(pricing.input);
+            self.cost_usd += uncached as f64 / 1e6 * pricing.input
+                + delta_out as f64 / 1e6 * pricing.output
+                + delta_cached as f64 / 1e6 * cache_price;
+        }
         self.usage = usage;
         // reasoning_tokens 属于本次响应：没有思考块的响应（上游可能报 0）
         // 不能按「最近一块」写回，否则会把上一响应的 token 数抹掉。

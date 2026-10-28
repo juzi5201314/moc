@@ -774,7 +774,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
 mod tests {
     use super::*;
     use moc_protocol::{Message, TranscriptEntry};
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn rewind_modal_panels_render_with_rounded_borders() {
@@ -819,8 +819,17 @@ mod tests {
         let win = modal_area(Rect::new(0, 0, width, height));
         assert_eq!(buffer.cell((win.x, win.y)).unwrap().symbol(), "╭");
         assert_eq!(buffer.cell((win.right() - 1, win.y)).unwrap().symbol(), "╮");
-        assert_eq!(buffer.cell((win.x, win.bottom() - 1)).unwrap().symbol(), "╰");
-        assert_eq!(buffer.cell((win.right() - 1, win.bottom() - 1)).unwrap().symbol(), "╯");
+        assert_eq!(
+            buffer.cell((win.x, win.bottom() - 1)).unwrap().symbol(),
+            "╰"
+        );
+        assert_eq!(
+            buffer
+                .cell((win.right() - 1, win.bottom() - 1))
+                .unwrap()
+                .symbol(),
+            "╯"
+        );
 
         let all_symbols: String = (0..height)
             .flat_map(|y| (0..width).map(move |x| buffer.cell((x, y)).unwrap().symbol()))

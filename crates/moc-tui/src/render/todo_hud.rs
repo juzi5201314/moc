@@ -538,20 +538,30 @@ mod tests {
         app.todos = vec![phase("阶段", &[(TodoStatus::InProgress, "进行中")])];
         app.todo_hud.pinned = true;
         let area = Rect::new(0, 0, 80, 20);
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
         terminal
             .draw(|frame| draw(frame, &mut app, area, true))
             .unwrap();
         let card_area = app.todo_hud.card_area;
         assert!(card_area.width >= 4 && card_area.height >= 3);
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((card_area.x, card_area.y)).unwrap().symbol(), "╭");
         assert_eq!(
-            buffer.cell((card_area.right() - 1, card_area.y)).unwrap().symbol(),
+            buffer.cell((card_area.x, card_area.y)).unwrap().symbol(),
+            "╭"
+        );
+        assert_eq!(
+            buffer
+                .cell((card_area.right() - 1, card_area.y))
+                .unwrap()
+                .symbol(),
             "╮"
         );
         assert_eq!(
-            buffer.cell((card_area.x, card_area.bottom() - 1)).unwrap().symbol(),
+            buffer
+                .cell((card_area.x, card_area.bottom() - 1))
+                .unwrap()
+                .symbol(),
             "╰"
         );
         assert_eq!(
