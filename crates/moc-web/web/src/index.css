@@ -3,104 +3,114 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* =========================================================================
-   DeepSeek blue-gray semantic tokens
+   DSH 语义色板
+   取值对齐 @deepseek-ai/dsh-client-ui-theme：light 见 body 覆盖、dark 见
+   body[data-ds-dark-theme] 覆盖。描边走 --dsw-alias-border-l* 的半透明黑/白，
+   阴影走 --dsw-elevation-*。圆角（--radius 及派生值）暂未对齐。
    ========================================================================= */
 
 :root {
   color-scheme: light;
-  --background: #f6f8fb;
-  --foreground: #202b3b;
-  --panel: #f0f3f8;
-  --card: #ffffff;
-  --card-foreground: #202b3b;
+  /* 画布：内容区纯白（--dsw-alias-bg-base），侧栏 #f9fafb（--dsw-specific-sidebar-fill） */
+  --background: #ffffff;
+  --foreground: #0f1115; /* --dsw-alias-label-primary */
+  --panel: #f9fafb;
+  --card: #ffffff; /* --dsw-alias-bg-layer-1 */
+  --card-foreground: #0f1115;
   --popover: #ffffff;
-  --popover-foreground: #202b3b;
-  --primary: #4d6bfe;
+  --popover-foreground: #0f1115;
+  --primary: #4176e6; /* --dsw-static-deepseek-500，即 --dsw-alias-link */
   --primary-foreground: #ffffff;
-  --secondary: #e9edf4;
-  --secondary-foreground: #334155;
-  --muted: #edf1f6;
-  --muted-foreground: #758196;
-  --accent: #e9eef8;
-  --accent-foreground: #2d3b53;
-  --brand: #4d6bfe;
+  --secondary: #ebeef2; /* --dsw-static-neutral-bluish-100 */
+  --secondary-foreground: #0f1115;
+  --muted: #f5f6f7; /* --dsw-static-neutral-bluish-60 */
+  --muted-foreground: #61666b; /* --dsw-alias-label-secondary */
+  --accent: rgba(38, 49, 72, 0.06); /* --dsw-alias-interactive-bg-hover */
+  --accent-foreground: #0f1115;
+  --brand: #4176e6;
   --brand-foreground: #ffffff;
-  --destructive: #d64f58;
-  --success: #168b6b;
-  --warn: #b8761c;
-  --border: #dce3ec;
-  --border-strong: #c9d3e0;
-  --input: #d7e0eb;
-  --ring: rgba(77, 107, 254, 0.28);
-  --diff-insert: rgba(22, 139, 107, 0.12);
-  --diff-delete: rgba(214, 79, 88, 0.12);
+  --destructive: #ec1313; /* --dsw-static-red-600 */
+  --success: #22c55e; /* --dsw-static-green-500 */
+  --warn: #dd8629; /* --dsw-alias-state-warn-label */
+  --border: rgba(0, 0, 0, 0.1); /* --dsw-alias-border-l2 */
+  --border-strong: rgba(0, 0, 0, 0.16); /* --dsw-alias-border-l4 */
+  --input: rgba(0, 0, 0, 0.12); /* --dsw-alias-border-l3 */
+  --ring: rgba(65, 118, 230, 0.36);
+  --diff-insert: rgba(34, 197, 94, 0.08); /* --dsw-static-green-500-a08 */
+  --diff-delete: rgba(236, 19, 19, 0.08); /* --dsw-static-red-600-a08 */
   --radius: 0.75rem;
-  --sidebar: #f1f4f8;
-  --sidebar-foreground: #273447;
-  --sidebar-accent: #e5ebf4;
-  --sidebar-accent-foreground: #25344a;
+  --sidebar: #f9fafb;
+  --sidebar-foreground: #0f1115;
+  --sidebar-accent: #ebeef2; /* --dsw-specific-sidebar-nav-item-active */
+  --sidebar-accent-foreground: #0f1115;
   --surface-raised: #ffffff;
-  --surface-hover: #edf2f8;
-  --border-subtle: #e8edf3;
-  --text-tertiary: #98a3b3;
-  --shadow-soft: 0 1px 3px rgba(30, 48, 75, 0.06);
-  --shadow-floating: 0 10px 30px -10px rgba(30, 48, 75, 0.14), 0 0 0 1px rgba(30, 48, 75, 0.04);
-  --chart-1: #4d6bfe;
-  --chart-2: #52647d;
-  --chart-3: #8291a7;
-  --chart-4: #b1bdcb;
-  --chart-5: #168b6b;
-  --chart-6: #b8761c;
-  --chart-muted: #98a3b3;
-  --chart-negative: #d64f58;
+  --surface-hover: #f1f3f5; /* --dsw-alias-interactive-bg-hover-solid */
+  --border-subtle: rgba(0, 0, 0, 0.04); /* --dsw-alias-border-l1 */
+  --text-tertiary: #81858c; /* --dsw-alias-label-tertiary */
+  --shadow-soft:
+    0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 3px 8px rgba(0, 0, 0, 0.031), 0 0 16px rgba(0, 0, 0, 0.02); /* --dsw-elevation-panel */
+  --shadow-floating:
+    0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 3px 8px rgba(0, 0, 0, 0.039), 0 0 20px rgba(0, 0, 0, 0.051); /* --dsw-elevation-prominent */
+  --chart-1: #4176e6;
+  --chart-2: #61666b;
+  --chart-3: #979da6;
+  --chart-4: #cfd3d6;
+  --chart-5: #22c55e;
+  --chart-6: #dd8629;
+  --chart-muted: #adb2b8;
+  --chart-negative: #ec1313;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #12161d;
-  --foreground: #e6eaf1;
-  --panel: #181e27;
-  --card: #1b222c;
-  --card-foreground: #e6eaf1;
-  --popover: #202833;
-  --popover-foreground: #e6eaf1;
-  --primary: #829aff;
-  --primary-foreground: #111827;
-  --secondary: #252d39;
-  --secondary-foreground: #d7deea;
-  --muted: #202731;
-  --muted-foreground: #9aa6b8;
-  --accent: #293344;
-  --accent-foreground: #e6ecf6;
-  --brand: #829aff;
-  --brand-foreground: #111827;
-  --destructive: #f0787c;
-  --success: #44b691;
-  --warn: #e6ad58;
-  --border: #2d3745;
-  --border-strong: #3a4657;
-  --input: #303b4a;
-  --ring: rgba(130, 154, 255, 0.36);
-  --diff-insert: rgba(68, 182, 145, 0.16);
-  --diff-delete: rgba(240, 120, 124, 0.16);
-  --sidebar: #151a22;
-  --sidebar-foreground: #dce2ec;
-  --sidebar-accent: #222a36;
-  --sidebar-accent-foreground: #e6ecf6;
-  --surface-raised: #1b222c;
-  --surface-hover: #242d39;
-  --border-subtle: #252e3a;
-  --text-tertiary: #737f91;
-  --shadow-soft: 0 1px 3px rgba(0, 0, 0, 0.28);
-  --shadow-floating: 0 12px 36px -10px rgba(0, 0, 0, 0.56), 0 0 0 1px rgba(220, 230, 245, 0.08);
-  --chart-1: #829aff;
-  --chart-2: #d1d8e4;
-  --chart-3: #a4b0c1;
-  --chart-4: #687588;
-  --chart-5: #44b691;
-  --chart-6: #e6ad58;
-  --chart-muted: #737f91;
-  --chart-negative: #f0787c;
+  --background: #151517; /* --dsw-static-neutral-bluish-950 */
+  --foreground: #f9fafb; /* --dsw-alias-label-primary */
+  --panel: #1b1b1c;
+  --card: #232324; /* --dsw-alias-bg-layer-1 */
+  --card-foreground: #f9fafb;
+  --popover: #2c2c2e; /* --dsw-alias-bg-layer-2 */
+  --popover-foreground: #f9fafb;
+  --primary: #7aaaff; /* --dsw-static-deepseek-400，即 --dsw-alias-link */
+  --primary-foreground: #0f1115;
+  --secondary: #43454a; /* --dsw-static-neutral-bluish-750 */
+  --secondary-foreground: #f9fafb;
+  --muted: #2c2c2e;
+  --muted-foreground: #cfd3d6; /* --dsw-alias-label-secondary */
+  --accent: rgba(255, 255, 255, 0.08); /* --dsw-alias-interactive-bg-hover */
+  --accent-foreground: #f9fafb;
+  --brand: #7aaaff;
+  --brand-foreground: #0f1115;
+  --destructive: #f25a5a; /* --dsw-static-red-400 */
+  --success: #22c55e;
+  --warn: #dd8629;
+  --border: rgba(255, 255, 255, 0.12); /* --dsw-alias-border-l2 */
+  --border-strong: rgba(255, 255, 255, 0.2); /* --dsw-alias-border-l4 */
+  --input: rgba(255, 255, 255, 0.16); /* --dsw-alias-border-l3 */
+  --ring: rgba(122, 170, 255, 0.4);
+  --diff-insert: rgba(34, 197, 94, 0.12); /* --dsw-static-green-500-a12 */
+  --diff-delete: rgba(245, 90, 90, 0.12); /* --dsw-static-red-400-a12 */
+  --sidebar: #1b1b1c; /* --dsw-specific-sidebar-fill */
+  --sidebar-foreground: #f9fafb;
+  --sidebar-accent: #43454a; /* --dsw-specific-sidebar-nav-item-active */
+  --sidebar-accent-foreground: #f9fafb;
+  --surface-raised: #2c2c2e;
+  --surface-hover: #353638; /* --dsw-alias-interactive-bg-hover-solid */
+  --border-subtle: rgba(255, 255, 255, 0.06); /* --dsw-alias-border-l1 */
+  --text-tertiary: #adb2b8; /* --dsw-alias-label-tertiary */
+  --shadow-soft:
+    0 0 0 0.5px rgba(255, 255, 255, 0.2), 0 3px 8px rgba(0, 0, 0, 0.031),
+    0 0 16px rgba(0, 0, 0, 0.02);
+  --shadow-floating:
+    0 0 0 0.5px rgba(255, 255, 255, 0.2), 0 3px 8px rgba(0, 0, 0, 0.039),
+    0 0 20px rgba(0, 0, 0, 0.051);
+  --chart-1: #7aaaff;
+  --chart-2: #cfd3d6;
+  --chart-3: #979da6;
+  --chart-4: #61666b;
+  --chart-5: #22c55e;
+  --chart-6: #dd8629;
+  --chart-muted: #81858c;
+  --chart-negative: #f25a5a;
 }
 
 @theme inline {
@@ -142,6 +152,14 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
   --radius-2xl: calc(var(--radius) + 8px);
+  /* 阴影：取 --dsw-elevation-* / --dsw-shadow-lv* 的柔和多层级，去掉描边那层
+     （组件本身已有 border，重复描边会压出硬边）。 */
+  --shadow-2xs: 0 1px 1px 0 rgba(0, 0, 0, 0.031);
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.031);
+  --shadow-sm: 0 2px 6px 0 rgba(0, 0, 0, 0.039), 0 0 12px 0 rgba(0, 0, 0, 0.02);
+  --shadow-md: 0 3px 8px 0 rgba(0, 0, 0, 0.031), 0 0 16px 0 rgba(0, 0, 0, 0.02);
+  --shadow-lg: 0 3px 8px 0 rgba(0, 0, 0, 0.039), 0 0 20px 0 rgba(0, 0, 0, 0.051);
+  --shadow-xl: 0 12px 32px 0 rgba(0, 0, 0, 0.078), 0 4px 12px 0 rgba(0, 0, 0, 0.02);
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
