@@ -22,14 +22,50 @@ impl Default for StreamGuardConfig {
     }
 }
 
+/// 重复内容命中的通道。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoopChannel {
+    /// 正文。
+    Text,
+    /// 思维链。只有这一通道值得纠偏后重试，其余只能终止。
+    Reasoning,
+    /// 工具参数。
+    Arguments,
+    /// 跨轮次的工具调用周期，由 core 侧的工具循环检测给出。
+    Tool,
+}
+
+impl LoopChannel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Text => "正文",
+            Self::Reasoning => "思考",
+            Self::Arguments => "工具参数",
+            Self::Tool => "工具",
+        }
+    }
+}
+
 /// 重复内容检测命中；提示落地由调用方决定，传输层不得按失败重试。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("检测到{channel}循环：{detail}")]
 pub struct LoopViolation {
-    /// 命中的通道：正文、思考或工具参数。
+    /// 命中的通道。
     pub channel: &'static str,
+    /// 命中通道的分类，供调用方决定是终止还是纠偏。
+    pub kind: LoopChannel,
     /// 命中描述，用于终止通知。
     pub detail: String,
+}
+
+impl LoopViolation {
+    pub fn new(kind: LoopChannel, detail: String) -> Self {
+        Self {
+            channel: kind.label(),
+            kind,
+            detail,
+        }
+    }
 }
 
 const TAIL: usize = 4096;
@@ -46,11 +82,11 @@ enum Channel {
 }
 
 impl Channel {
-    fn label(self) -> &'static str {
+    fn kind(self) -> LoopChannel {
         match self {
-            Self::Text => "正文",
-            Self::Reasoning => "思考",
-            Self::Arguments => "工具参数",
+            Self::Text => LoopChannel::Text,
+            Self::Reasoning => LoopChannel::Reasoning,
+            Self::Arguments => LoopChannel::Arguments,
         }
     }
 }
@@ -91,10 +127,7 @@ impl StreamGuard {
                 if self.config.loop_detection {
                     for (channel, _, detector) in &mut self.blocks {
                         if let Some(detail) = detector.flush() {
-                            return Err(LoopViolation {
-                                channel: channel.label(),
-                                detail,
-                            });
+                            return Err(LoopViolation::new(channel.kind(), detail));
                         }
                     }
                 }
@@ -126,10 +159,7 @@ impl StreamGuard {
         if self.config.loop_detection
             && let Some(detail) = self.blocks[slot].2.push(text)
         {
-            return Err(LoopViolation {
-                channel: channel.label(),
-                detail,
-            });
+            return Err(LoopViolation::new(channel.kind(), detail));
         }
         Ok(())
     }

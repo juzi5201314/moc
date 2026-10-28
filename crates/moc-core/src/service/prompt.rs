@@ -41,6 +41,9 @@ pub async fn run_prompt(
     run_prompt_entry(inner, ctx, params, false).await
 }
 
+/// 思维链重复后最多纠偏几次；再重复就按循环终止。
+const MAX_THINKING_REDIRECTS: usize = 3;
+
 /// 不追加任何用户消息，按会话现有上下文继续跑一次提示。
 ///
 /// 内部仍走同一套提示循环：提示锁、取消、工具执行、压缩与收尾完全复用。`retry` 只
@@ -641,6 +644,9 @@ async fn run_prompt_locked(
     let mut yield_reminders = 0usize;
     let mut stream_overflows = 0usize;
     let mut cycle_redirect = None;
+    // 思维链重复时先纠偏再重试；只有反复命中才按循环终止。
+    let mut thinking_redirect = None;
+    let mut thinking_redirects = 0usize;
     let summary = catalog.summary();
     // 声明与工具表用同一份快照渲染，保证提示里的签名和实际可调用的集合一致。
     // 只有内置签名进系统提示；MCP 索引随服务器刷新，走下面的尾部提醒。
@@ -768,6 +774,12 @@ async fn run_prompt_locked(
                     candidates.push(Reminder::once(
                         reminder::key::CYCLE,
                         format!("<system-interrupt reason=\"tool_loop\">{detail}. Stop repeating it: gather new evidence or summarize and finish. Another no-progress loop ends this prompt.</system-interrupt>"),
+                    ));
+                }
+                if let Some(detail) = thinking_redirect.take() {
+                    candidates.push(Reminder::once(
+                        reminder::key::THINKING,
+                        format!("<system-interrupt reason=\"thinking_loop\">{detail}. Your reasoning is repeating instead of progressing: stop restating the same analysis and either act on what you already know or state the blocker and finish.</system-interrupt>"),
                     ));
                 }
                 // notice 是一次性事实，drain 之后就不可重复获取。
@@ -1095,6 +1107,17 @@ async fn run_prompt_locked(
                                         connection_error = Some(protocol_to_rpc(error));
                                         break Some(stream.interrupt());
                                     }
+                                }
+                                Some(Err(moc_llm::LlmError::Guard(violation)))
+                                    if violation.kind == moc_llm::LoopChannel::Reasoning
+                                        && thinking_redirects < MAX_THINKING_REDIRECTS =>
+                                {
+                                    // 重复的思维链不会自己停下来：丢弃这次流、写一条纠偏提醒，
+                                    // 然后重新请求。提醒落库后模型在新的请求里就能看到它。
+                                    thinking_redirects += 1;
+                                    thinking_redirect = Some(violation.detail);
+                                    let _ = stream.discard(FinishReason::Cancelled);
+                                    continue 'turns;
                                 }
                                 Some(Err(moc_llm::LlmError::Guard(violation))) => {
                                     guard.stop(violation);
@@ -1447,10 +1470,10 @@ async fn run_prompt_locked(
                         .map_err(protocol_to_rpc)?;
                     cycle_redirect = Some(detail);
                 }
-                CycleAction::Stop(detail) => guard.stop(moc_llm::LoopViolation {
-                    channel: "工具",
+                CycleAction::Stop(detail) => guard.stop(moc_llm::LoopViolation::new(
+                    moc_llm::LoopChannel::Tool,
                     detail,
-                }),
+                )),
             }
         }
         if control_end || cancel.is_cancelled() {

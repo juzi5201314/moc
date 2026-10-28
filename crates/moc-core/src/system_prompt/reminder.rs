@@ -22,6 +22,7 @@ pub mod key {
     pub const TODO_STALL: &str = "todo-stall";
     pub const LOCAL_TIME: &str = "local-time";
     pub const CYCLE: &str = "cycle";
+    pub const THINKING: &str = "thinking";
     pub const NOTICE: &str = "notice";
 }
 

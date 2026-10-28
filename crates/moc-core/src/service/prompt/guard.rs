@@ -242,6 +242,7 @@ pub(super) async fn observe_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use moc_llm::LoopChannel;
 
     #[test]
     fn repeated_and_alternating_cycles_redirect_once_then_stop() {
@@ -291,17 +292,11 @@ mod tests {
     fn first_violation_wins_and_stop_cancels_both_tokens() {
         let guard = PromptGuard::new(CancellationToken::new(), None);
         assert_eq!(guard.reason(), FinishReason::Cancelled);
-        guard.stop(LoopViolation {
-            channel: "工具",
-            detail: "重复".into(),
-        });
+        guard.stop(LoopViolation::new(LoopChannel::Tool, "重复".into()));
         assert!(guard.cancel.is_cancelled());
         assert!(guard.stopped.is_cancelled());
         assert_eq!(guard.reason(), FinishReason::LoopDetected);
-        guard.stop(LoopViolation {
-            channel: "正文",
-            detail: "后到".into(),
-        });
+        guard.stop(LoopViolation::new(LoopChannel::Text, "后到".into()));
         assert_eq!(
             guard.violation().map(|violation| violation.channel),
             Some("工具")
@@ -312,10 +307,7 @@ mod tests {
     fn parent_stop_reaches_descendants_and_supplies_their_reason() {
         let parent = PromptGuard::new(CancellationToken::new(), None);
         let child = PromptGuard::new(parent.cancel.child_token(), Some(Arc::clone(&parent)));
-        parent.stop(LoopViolation {
-            channel: "工具",
-            detail: "重复".into(),
-        });
+        parent.stop(LoopViolation::new(LoopChannel::Tool, "重复".into()));
         assert!(child.cancel.is_cancelled());
         assert!(child.stopped.is_cancelled());
         assert_eq!(child.reason(), FinishReason::LoopDetected);

@@ -16,7 +16,8 @@ use wiremock::{
 
 #[tokio::test]
 async fn loops_discard_failed_generation_release_lock_and_do_not_poison_next_prompt() {
-    for field in ["content", "reasoning_content"] {
+    // 正文重复直接终止；思维链重复先纠偏再重试，两者行为不同，分开验证。
+    for (field, terminates) in [("content", true), ("reasoning_content", false)] {
         let upstream = MockServer::builder().start().await;
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&requests);
@@ -37,8 +38,22 @@ async fn loops_discard_failed_generation_release_lock_and_do_not_poison_next_pro
         .await;
         let id = h.session(SessionMode::Normal).await;
         let result = h.prompt(&id, "执行循环场景").await;
-        assert_eq!(result.finish_reason, FinishReason::LoopDetected);
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        if terminates {
+            assert_eq!(result.finish_reason, FinishReason::LoopDetected);
+            assert_eq!(requests.load(Ordering::SeqCst), 1);
+        } else {
+            // 思维链重复是软纠偏：写入提醒后重新请求，第二次拿到正常响应。
+            assert_eq!(result.finish_reason, FinishReason::Stop);
+            assert_eq!(result.message.text(), "下一提示正常完成");
+            assert_eq!(requests.load(Ordering::SeqCst), 2);
+            let replay: serde_json::Value =
+                serde_json::from_slice(&upstream.received_requests().await.unwrap()[1].body)
+                    .unwrap();
+            assert!(
+                replay["messages"].to_string().contains("thinking_loop"),
+                "纠偏提醒必须进到重试请求里"
+            );
+        }
         assert!(!h.root.path().join("work/bad.txt").exists());
         let loaded = h.load(&id).await;
         // 循环中止的提示不能毒化下一次提示；写租约本身持有到会话卸载。
@@ -114,6 +129,62 @@ async fn repeated_tools_redirect_once_then_terminate_without_another_request() {
             1
         );
     }
+    h.close().await;
+}
+
+/// 思维链反复重复且供应商每次都重复时，纠偏达到上限后按循环终止，不会无限重试。
+#[tokio::test]
+async fn thinking_loop_gives_up_after_the_redirect_budget() {
+    let upstream = MockServer::builder().start().await;
+    let requests = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&requests);
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_: &wiremock::Request| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            let delta = json!({"choices":[{"index":0,"delta":{
+                "reasoning_content":"反复检查现有情况，然后再次确认当前结果。".repeat(150)
+            },"finish_reason":null}]});
+            ResponseTemplate::new(200)
+                .set_body_raw(format!("data: {delta}\n\n"), "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
+    let id = h.session(SessionMode::Normal).await;
+    let result = h.prompt(&id, "反复思考").await;
+    assert_eq!(
+        result.finish_reason,
+        FinishReason::LoopDetected,
+        "纠偏预算耗尽后仍应按循环终止"
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        4,
+        "首次请求 + 3 次纠偏重试"
+    );
+    // 首轮常规提醒一条 + 每次纠偏各一条。
+    let loaded = h.load(&id).await;
+    let thinking = loaded
+        .entries
+        .iter()
+        .filter(|entry| entry.message.text().contains("thinking_loop"))
+        .count();
+    assert_eq!(thinking, 3, "三次纠偏各留一条思维链提醒");
+    assert!(
+        loaded
+            .entries
+            .iter()
+            .filter(|entry| entry.message.role == Role::User && entry.reminder.is_none())
+            .count()
+            == 1,
+        "提醒不得被算成用户消息"
+    );
     h.close().await;
 }
 

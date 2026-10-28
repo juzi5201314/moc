@@ -69,7 +69,7 @@ pub use config::{
     Protocol, ResponseFormatDialect, ThinkingWire, ToolChoiceDialect, WireConfig,
 };
 pub use error::{ApiError, ApiErrorKind, LlmError, TransportError, TransportKind};
-pub use guard::{LoopViolation, StreamGuardConfig};
+pub use guard::{LoopChannel, LoopViolation, StreamGuardConfig};
 pub use retry::RetryPolicy;
 pub use stream::ChatStream;
 pub use types::{
