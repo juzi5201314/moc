@@ -380,7 +380,7 @@ pub fn mode_contract(mode: SessionMode) -> Option<Message> {
             "Ask mode is active: the workspace is read-only, including inside run_code; read and search freely."
         }
         SessionMode::Plan => {
-            "Plan mode is active: the workspace is read-only, including inside run_code. When the plan is complete, save it with write_plan, then call exit_plan to request review."
+            "Plan mode is active: the workspace is read-only, including inside run_code. Draft with write_plan as often as you need; each call saves a new revision. Before calling exit_plan, make sure the plan is finished: exit_plan submits the last saved plan, ends this prompt immediately, and puts the session into plan review — no tool call runs after it. When the user returns review notes, revise the plan, save it with write_plan, and call exit_plan again."
         }
         SessionMode::Ptc => {
             "PTC mode is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
@@ -849,7 +849,17 @@ mod tests {
             crate::skills::discovery::discover_index(&cwd, &home, Some(&home), &config.skills);
         let context_files =
             context_files::load_context_files(&cwd, &config.home, &config.context_files);
-        let prompt = build(&config, &model, &cwd, &context_files, &skills, "", "", "", None);
+        let prompt = build(
+            &config,
+            &model,
+            &cwd,
+            &context_files,
+            &skills,
+            "",
+            "",
+            "",
+            None,
+        );
         let text = prompt_text(&prompt);
         assert!(text.contains("<skills>"));
         assert!(text.contains("- demo: demo skill"));

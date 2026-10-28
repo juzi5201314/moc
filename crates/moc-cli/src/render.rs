@@ -165,15 +165,20 @@ impl Renderer {
             SessionUpdate::TodoReminder { open_items, .. } => {
                 let _ = writeln!(out, "\n[TodoReminder：{open_items} 项待办仍未关闭]");
             }
-            SessionUpdate::PlanSubmitted {
-                plan_id,
-                title,
-                path,
-                markdown,
-            } => {
+            SessionUpdate::PlanSubmitted { plan } => {
                 let _ = writeln!(
                     out,
-                    "\n[计划已提交：{title} ({plan_id})，{path}]\n{markdown}"
+                    "\n[计划已提交（v{}）：{} ({})，{}]\n{}",
+                    plan.version, plan.title, plan.plan_id, plan.path, plan.markdown
+                );
+            }
+            SessionUpdate::PlanUpdated { plan } => {
+                let _ = writeln!(
+                    out,
+                    "\n[计划状态：{} ({}) → {}]",
+                    plan.title,
+                    plan.plan_id,
+                    plan_status_label(plan.status)
                 );
             }
             SessionUpdate::ContextCompactionStarted => {
@@ -294,4 +299,16 @@ fn announce_call(out: &mut impl Write, call: &mut ToolCallView) {
 
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or_default().to_owned()
+}
+
+/// 计划状态的中文标签（非交互输出里用于标记状态迁移）。
+fn plan_status_label(status: moc_protocol::methods::PlanStatus) -> &'static str {
+    match status {
+        moc_protocol::methods::PlanStatus::Draft => "起草中",
+        moc_protocol::methods::PlanStatus::Submitted => "待审阅",
+        moc_protocol::methods::PlanStatus::Revised => "等待修订",
+        moc_protocol::methods::PlanStatus::Superseded => "已被取代",
+        moc_protocol::methods::PlanStatus::Approved => "已批准",
+        moc_protocol::methods::PlanStatus::Rejected => "已拒绝",
+    }
 }

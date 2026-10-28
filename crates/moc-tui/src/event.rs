@@ -17,8 +17,9 @@ use moc_protocol::{
     SessionContext, SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
     SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
     SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionRewind,
-    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
+    SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanRevise, SessionPlanReviseParams,
+    SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
     SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
     SessionUsage, SessionUsageParams, UpstreamField,
 };
@@ -26,7 +27,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::app::{App, ChartHit, CtrlCPending, Focus, MODES, ScrollbackDrag};
 use crate::input::{InputEvent, InputThread};
-use crate::modal::{CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, SessionScope};
+use crate::modal::{
+    CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, PlanPane, SessionScope,
+};
 use crate::protocol::{AppEvent, ClipboardPayload, EmbeddedConnection, connect_embedded};
 use crate::render;
 use crate::render::wrap::str_width;
@@ -852,11 +855,14 @@ async fn event_loop(
                         | AppEvent::PromptReturned {..} | AppEvent::SteerReturned {..}
                         | AppEvent::UnsteerReturned { .. }
                         | AppEvent::PlanApproval(_) | AppEvent::PlanExecutionLoaded { .. }
+                        | AppEvent::PlanRevised(_) | AppEvent::PlanDiff(_)
                         | AppEvent::ModelSwitchConfirm { .. }
                         | AppEvent::SessionControlSettled { .. })) => {
                         crate::interaction::handle_event(app, connection, event);
                     }
-                    Some(AppEvent::PlanReview(result)) => apply_plan_review(app, result),
+                    Some(AppEvent::PlanReview(result)) => {
+                        apply_plan_review(app, connection, result)
+                    }
                     Some(AppEvent::RewindLoaded(result)) => apply_rewind_loaded(app, result),
                     Some(AppEvent::Rewound { selected, result }) => {
                         apply_rewound(app, connection, selected, result);
@@ -1212,6 +1218,10 @@ fn handle_mouse_with_connection(
             handle_ask_mouse(app, connection, mouse);
             return;
         }
+        if matches!(app.modal, Some(Modal::Plan { .. })) {
+            handle_plan_mouse(app, mouse);
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && app
                 .plan_model_area
@@ -1305,7 +1315,10 @@ fn handle_mouse_with_connection(
             if let Some(session) = app.session.as_ref() {
                 let modes = &app.sandbox_modes;
                 if !modes.is_empty() {
-                    let cur_idx = modes.iter().position(|m| *m == session.permission).unwrap_or(0);
+                    let cur_idx = modes
+                        .iter()
+                        .position(|m| *m == session.permission)
+                        .unwrap_or(0);
                     let next_mode = modes[(cur_idx + 1) % modes.len()];
                     set_permission(app, connection, next_mode.as_str());
                 }
@@ -1413,6 +1426,72 @@ fn handle_context_content_mouse(app: &mut App, mouse: crossterm::event::MouseEve
     }
 }
 
+/// 计划审阅的鼠标交互：执行模型可点选；批注视图按住拖动即可选行。
+fn handle_plan_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let height = usize::from(app.plan_body_area.height).max(1);
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+        && app
+            .plan_model_area
+            .contains((mouse.column, mouse.row).into())
+    {
+        app.open_plan_model_picker();
+        return;
+    }
+    let body_area = app.plan_body_area;
+    let row_map = app.plan_row_map.clone();
+    let Some(Modal::Plan { state }) = app.modal.as_mut() else {
+        return;
+    };
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            if state.pane == PlanPane::Read {
+                state.scroll_offset = state.scroll_offset.saturating_sub(1);
+            } else {
+                state.move_cursor(-1, false);
+                state.ensure_cursor_visible(height);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if state.pane == PlanPane::Read {
+                state.scroll_offset = state.scroll_offset.saturating_add(1);
+            } else {
+                state.move_cursor(1, false);
+                state.ensure_cursor_visible(height);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left)
+            if state.pane == PlanPane::Annotate
+                && body_area.contains((mouse.column, mouse.row).into()) =>
+        {
+            let row = usize::from(mouse.row.saturating_sub(body_area.y));
+            if let Some(index) = row_map.get(row).copied() {
+                state.cursor = index;
+                state.anchor = Some(index);
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) if state.pane == PlanPane::Annotate => {
+            if row_map.is_empty() {
+                return;
+            }
+            if mouse.row < body_area.y {
+                state.cursor = row_map.first().copied().unwrap_or_default();
+            } else if mouse.row >= body_area.y.saturating_add(body_area.height) {
+                state.cursor = row_map.last().copied().unwrap_or_default();
+            } else {
+                let row = usize::from(mouse.row.saturating_sub(body_area.y));
+                if let Some(index) = row_map.get(row).copied() {
+                    state.cursor = index;
+                }
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) if state.pane == PlanPane::Annotate => {
+            state.ensure_cursor_visible(height);
+        }
+        _ => {}
+    }
+}
+
 /// 消息回退视图的鼠标处理：滚动时间线列表或详情预览、点击直接选择时间线节点。
 fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     use crossterm::event::{MouseButton, MouseEventKind};
@@ -1440,24 +1519,23 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 state.step(1);
             }
         }
-        MouseEventKind::Down(MouseButton::Left)
-            if in_timeline && timeline_area.height > 2 => {
-                let inner_y = timeline_area.y + 1;
-                if mouse.row >= inner_y {
-                    let rel_row = (mouse.row - inner_y) as usize;
-                    let item_height = if timeline_area.height.saturating_sub(2) >= 14 {
-                        2
-                    } else {
-                        1
-                    };
-                    let item_click = rel_row / item_height + state.list_scroll;
-                    let matches = state.filtered_indices();
-                    if item_click < matches.len() {
-                        state.selected = matches[item_click];
-                        state.sync_prompt_item_from_selected();
-                    }
+        MouseEventKind::Down(MouseButton::Left) if in_timeline && timeline_area.height > 2 => {
+            let inner_y = timeline_area.y + 1;
+            if mouse.row >= inner_y {
+                let rel_row = (mouse.row - inner_y) as usize;
+                let item_height = if timeline_area.height.saturating_sub(2) >= 14 {
+                    2
+                } else {
+                    1
+                };
+                let item_click = rel_row / item_height + state.list_scroll;
+                let matches = state.filtered_indices();
+                if item_click < matches.len() {
+                    state.selected = matches[item_click];
+                    state.sync_prompt_item_from_selected();
                 }
             }
+        }
         _ => {}
     }
 }
@@ -2259,6 +2337,299 @@ const ASK_PREVIEW_SCROLL_STEP: usize = 8;
 ///
 /// `app.modal` 以 `as_mut` 借用；需要关闭模态或访问会话的分支通过
 /// `close` 标志延后到借用结束后生效。
+/// 计划审阅窗口的按键：编辑器 → 批注视图 → 阅读视图逐级分派。
+fn plan_modal_key(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) {
+    let editing = matches!(&app.modal, Some(Modal::Plan { state }) if state.editor.is_some());
+    if editing {
+        plan_editor_key(app, modifiers, code);
+        return;
+    }
+    let pane = match &app.modal {
+        Some(Modal::Plan { state }) => state.pane,
+        _ => return,
+    };
+    match pane {
+        PlanPane::Annotate => plan_annotate_key(app, connection, modifiers, code),
+        PlanPane::Read => plan_read_key(app, connection, modifiers, code),
+    }
+}
+
+fn plan_editor_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
+    if code == KeyCode::Esc {
+        if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+            state.editor = None;
+        }
+        return;
+    }
+    if code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+            state.save_editor();
+        }
+        return;
+    }
+    if code == KeyCode::Char('g') && modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+            insert_suggestion_block(state);
+        }
+        return;
+    }
+    if let Some(Modal::Plan { state }) = app.modal.as_mut()
+        && let Some(editor) = state.editor.as_mut()
+    {
+        crate::widgets::prompt::edit_input(&mut editor.body, modifiers, code);
+    }
+}
+
+/// 在批注正文里插入 suggestion 围栏，并预填选中的源码行。
+fn insert_suggestion_block(state: &mut crate::modal::PlanReviewState) {
+    let prefill = match state.editor.as_ref() {
+        Some(editor) => {
+            let lines = state.source_lines();
+            if lines.is_empty() {
+                return;
+            }
+            let start = editor.start_line.saturating_sub(1).min(lines.len() - 1);
+            let end = editor.end_line.saturating_sub(1).min(lines.len() - 1);
+            lines[start..=end].join("\n")
+        }
+        None => return,
+    };
+    let Some(editor) = state.editor.as_mut() else {
+        return;
+    };
+    let mut block = String::new();
+    if !editor.body.text.is_empty() && !editor.body.text.ends_with('\n') {
+        block.push('\n');
+    }
+    block.push_str("```suggestion\n");
+    block.push_str(&prefill);
+    block.push_str("\n```\n");
+    for character in block.chars() {
+        editor.body.insert_char(character);
+    }
+}
+
+fn plan_annotate_key(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) {
+    let height = usize::from(app.plan_body_area.height).max(1);
+    // 提交与视图切换先处理，避免与 `state` 的借用冲突。
+    match (code, modifiers) {
+        (KeyCode::Char('s'), KeyModifiers::NONE) => {
+            submit_plan_review(app, connection);
+            return;
+        }
+        (KeyCode::Esc, _) | (KeyCode::Char('a'), KeyModifiers::NONE) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.pane = PlanPane::Read;
+                state.anchor = None;
+                state.scroll_offset = 0;
+            }
+            return;
+        }
+        (KeyCode::Char('d'), KeyModifiers::NONE) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.pane = PlanPane::Read;
+                state.anchor = None;
+                state.scroll_offset = 0;
+                if state.previous_plan_id.is_some() {
+                    state.show_diff = !state.show_diff;
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+    let Some(Modal::Plan { state }) = app.modal.as_mut() else {
+        return;
+    };
+    match (code, modifiers) {
+        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            // 选行模式下方向键延长选区（类 vim visual），否则只移动光标。
+            let select = state.anchor.is_some();
+            state.move_cursor(-1, select);
+            state.ensure_cursor_visible(height);
+        }
+        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+            let select = state.anchor.is_some();
+            state.move_cursor(1, select);
+            state.ensure_cursor_visible(height);
+        }
+        (KeyCode::PageUp, _) => {
+            let select = state.anchor.is_some();
+            state.move_cursor(-10, select);
+            state.ensure_cursor_visible(height);
+        }
+        (KeyCode::PageDown, _) => {
+            let select = state.anchor.is_some();
+            state.move_cursor(10, select);
+            state.ensure_cursor_visible(height);
+        }
+        (KeyCode::Char('v'), KeyModifiers::NONE) => {
+            state.anchor = if state.anchor.is_some() {
+                None
+            } else {
+                Some(state.cursor)
+            };
+        }
+        (KeyCode::Char('c'), KeyModifiers::NONE) | (KeyCode::Enter, KeyModifiers::NONE) => {
+            state.open_editor();
+        }
+        (KeyCode::Char('x'), KeyModifiers::NONE) => state.remove_draft_at_cursor(),
+        _ => {}
+    }
+}
+
+fn plan_read_key(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) {
+    let session_id = app.session.as_ref().map(|session| session.id.clone());
+    let (plan_id, execution_model, selected, status) = match app.modal.as_ref() {
+        Some(Modal::Plan { state }) => (
+            state.plan_id.clone(),
+            state.execution_model.clone(),
+            state.selected,
+            state.status,
+        ),
+        _ => return,
+    };
+    match (code, modifiers) {
+        (KeyCode::Esc, _) => app.modal = None,
+        (KeyCode::Char('a'), KeyModifiers::NONE) => plan_toggle_annotate(app),
+        (KeyCode::Char('d'), KeyModifiers::NONE) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut()
+                && state.previous_plan_id.is_some()
+            {
+                state.show_diff = !state.show_diff;
+                state.scroll_offset = 0;
+            }
+        }
+        (KeyCode::Char('s'), KeyModifiers::NONE) => submit_plan_review(app, connection),
+        (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => plan_scroll(app, -1),
+        (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => plan_scroll(app, 1),
+        (KeyCode::PageUp, _) => plan_scroll(app, -10),
+        (KeyCode::PageDown, _) => plan_scroll(app, 10),
+        (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.selected = state.selected.saturating_sub(1);
+            }
+        }
+        (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.selected = (state.selected + 1).min(3);
+            }
+        }
+        (KeyCode::Tab, _) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.selected = (state.selected + 1) % 4;
+            }
+        }
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            if status != moc_protocol::methods::PlanStatus::Submitted {
+                return;
+            }
+            if selected == 3 {
+                app.modal = None;
+                return;
+            }
+            let Some(session_id) = session_id else {
+                return;
+            };
+            let action = match selected {
+                0 => moc_protocol::methods::PlanAction::Execute,
+                1 => moc_protocol::methods::PlanAction::ExecuteCompacted,
+                2 => moc_protocol::methods::PlanAction::ExecuteNewSession,
+                _ => return,
+            };
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.submitting = true;
+                state.error = None;
+            }
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            tokio::spawn(async move {
+                let result = client
+                    .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                        session_id,
+                        plan_id,
+                        action,
+                        execution_model: Some(execution_model),
+                    })
+                    .await
+                    .map_err(anyhow::Error::from);
+                let _ = events.send(AppEvent::PlanApproval(result));
+            });
+        }
+        _ => {}
+    }
+}
+
+fn plan_scroll(app: &mut App, delta: isize) {
+    if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+        state.scroll_offset = state.scroll_offset.saturating_add_signed(delta);
+    }
+}
+
+fn plan_toggle_annotate(app: &mut App) {
+    let Some(Modal::Plan { state }) = app.modal.as_mut() else {
+        return;
+    };
+    if !state.can_annotate() {
+        state.error = Some("只有待审阅的计划可以批注".into());
+        return;
+    }
+    state.pane = PlanPane::Annotate;
+    state.cursor = 0;
+    state.anchor = None;
+    state.scroll_offset = 0;
+    state.error = None;
+}
+
+/// 把草稿批注提交给 core；回执里的修订提示随后当普通提示发送。
+fn submit_plan_review(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    let (plan_id, annotations) = match app.modal.as_ref() {
+        Some(Modal::Plan { state }) => {
+            if !state.can_annotate() || state.drafts.is_empty() {
+                return;
+            }
+            (state.plan_id.clone(), state.annotations())
+        }
+        _ => return,
+    };
+    if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+        state.submitting = true;
+        state.error = None;
+    }
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionPlanRevise>(SessionPlanReviseParams {
+                session_id,
+                plan_id,
+                annotations,
+                note: None,
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::PlanRevised(result));
+    });
+}
+
 fn handle_modal_key(
     app: &mut App,
     connection: &EmbeddedConnection,
@@ -2273,6 +2644,9 @@ fn handle_modal_key(
             app.open_plan_model_picker();
             return;
         }
+        // 计划审阅有自己的编辑/选区语义，整体交给 `plan_modal_key`。
+        plan_modal_key(app, connection, modifiers, code);
+        return;
     }
     let session_id = app.session.as_ref().map(|session| session.id.clone());
     let events = app.events.clone();
@@ -2628,31 +3002,30 @@ fn handle_modal_key(
                     (KeyCode::Right, _) => state.jump_user(1),
                     (KeyCode::PageUp, _) => state.scroll_detail(-6),
                     (KeyCode::PageDown, _) => state.scroll_detail(6),
-                    (KeyCode::Enter, KeyModifiers::NONE)
-                        if !state.loading => {
-                            let Some(selected) = state.selected().cloned() else {
-                                state.error = Some("当前会话没有可回退的消息".into());
-                                return;
-                            };
-                            let Some(session_id) = session_id.clone() else {
-                                state.error = Some("当前没有活动会话".into());
-                                return;
-                            };
-                            state.loading = true;
-                            state.error = None;
-                            let client = connection.client.clone();
-                            let events = events.clone();
-                            tokio::spawn(async move {
-                                let result = client
-                                    .call::<SessionRewind>(SessionRewindParams {
-                                        session_id,
-                                        entry_id: selected.id.clone(),
-                                    })
-                                    .await
-                                    .map_err(anyhow::Error::from);
-                                let _ = events.send(AppEvent::Rewound { selected, result });
-                            });
-                        }
+                    (KeyCode::Enter, KeyModifiers::NONE) if !state.loading => {
+                        let Some(selected) = state.selected().cloned() else {
+                            state.error = Some("当前会话没有可回退的消息".into());
+                            return;
+                        };
+                        let Some(session_id) = session_id.clone() else {
+                            state.error = Some("当前没有活动会话".into());
+                            return;
+                        };
+                        state.loading = true;
+                        state.error = None;
+                        let client = connection.client.clone();
+                        let events = events.clone();
+                        tokio::spawn(async move {
+                            let result = client
+                                .call::<SessionRewind>(SessionRewindParams {
+                                    session_id,
+                                    entry_id: selected.id.clone(),
+                                })
+                                .await
+                                .map_err(anyhow::Error::from);
+                            let _ = events.send(AppEvent::Rewound { selected, result });
+                        });
+                    }
                     _ => {}
                 }
             } else {
@@ -3004,57 +3377,8 @@ fn handle_modal_key(
                 _ => {}
             }
         }
-        Modal::Plan { state } => match (code, modifiers) {
-            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
-                state.scroll_offset = state.scroll_offset.saturating_sub(1);
-            }
-            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
-                state.scroll_offset = state.scroll_offset.saturating_add(1);
-            }
-            (KeyCode::PageUp, _) => state.scroll_offset = state.scroll_offset.saturating_sub(10),
-            (KeyCode::PageDown, _) => state.scroll_offset = state.scroll_offset.saturating_add(10),
-            (KeyCode::Left, _) | (KeyCode::Char('h'), KeyModifiers::NONE) => {
-                state.selected = state.selected.saturating_sub(1);
-            }
-            (KeyCode::Right, _) | (KeyCode::Char('l'), KeyModifiers::NONE) => {
-                state.selected = (state.selected + 1).min(3);
-            }
-            (KeyCode::Tab, _) => state.selected = (state.selected + 1) % 4,
-            (KeyCode::Enter, KeyModifiers::NONE) => {
-                if state.selected == 3 {
-                    close = true;
-                } else if !state.submitting
-                    && let Some(session_id) = session_id
-                {
-                    let action = match state.selected {
-                        0 => moc_protocol::methods::PlanAction::Execute,
-                        1 => moc_protocol::methods::PlanAction::ExecuteCompacted,
-                        2 => moc_protocol::methods::PlanAction::ExecuteNewSession,
-                        _ => unreachable!("计划审阅选项已限制为四项"),
-                    };
-                    state.submitting = true;
-                    state.error = None;
-                    let client = connection.client.clone();
-                    let plan_id = state.plan_id.clone();
-                    let execution_model = state.execution_model.clone();
-                    let events = app.events.clone();
-                    tokio::spawn(async move {
-                        let result = client
-                            .call::<SessionPlanApprove>(SessionPlanApproveParams {
-                                session_id,
-                                plan_id,
-                                action,
-                                execution_model: Some(execution_model),
-                            })
-                            .await
-                            .map_err(anyhow::Error::from);
-                        let _ = events.send(AppEvent::PlanApproval(result));
-                    });
-                }
-            }
-            (KeyCode::Esc, _) => close = true,
-            _ => {}
-        },
+        // 计划审阅在 `handle_modal_key` 开头整体分派，这里不会走到。
+        Modal::Plan { .. } => {}
         Modal::Help | Modal::Context { .. } => {
             if matches!(
                 (code, modifiers),
@@ -3304,7 +3628,51 @@ fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanInfo) {
     });
 }
 
-fn apply_plan_review(app: &mut App, result: anyhow::Result<moc_protocol::methods::PlanInfo>) {
+/// 为当前计划版本拉取与上一版的差异。
+fn request_plan_diff(app: &mut App, connection: &EmbeddedConnection, plan_id: String) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        return;
+    };
+    if let Some(Modal::Plan { state }) = app.modal.as_mut()
+        && state.plan_id == plan_id
+    {
+        state.diff_loading = true;
+        state.diff_error = None;
+    }
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        let result = client
+            .call::<SessionPlanDiff>(SessionPlanDiffParams {
+                session_id,
+                plan_id,
+            })
+            .await
+            .map_err(anyhow::Error::from);
+        let _ = events.send(AppEvent::PlanDiff(result));
+    });
+}
+
+pub(crate) fn apply_plan_diff(app: &mut App, result: anyhow::Result<SessionPlanDiffResult>) {
+    let Some(Modal::Plan { state }) = app.modal.as_mut() else {
+        return;
+    };
+    state.diff_loading = false;
+    match result {
+        Ok(diff) => {
+            if diff.plan_id == state.plan_id {
+                state.diff = Some(diff.diff);
+            }
+        }
+        Err(error) => state.diff_error = Some(error.to_string()),
+    }
+}
+
+fn apply_plan_review(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    result: anyhow::Result<moc_protocol::methods::PlanInfo>,
+) {
     match result {
         Ok(plan)
             if app.session.as_ref().is_some_and(|session| {
@@ -3312,10 +3680,37 @@ fn apply_plan_review(app: &mut App, result: anyhow::Result<moc_protocol::methods
                     && plan.path == format!("local://{}.md", plan.plan_id)
             }) =>
         {
-            open_plan_review(app, plan)
+            let needs_diff = plan.previous_plan_id.is_some();
+            let plan_id = plan.plan_id.clone();
+            open_plan_review(app, plan);
+            if needs_diff {
+                request_plan_diff(app, connection, plan_id);
+            }
         }
         Ok(_) => app.set_notice("当前会话已变化，不能打开该计划"),
         Err(error) => app.set_notice(format!("无法审阅计划：{error}")),
+    }
+}
+
+/// 批注已落库：关闭审阅窗口并发送 core 生成的修订提示。
+pub(crate) fn apply_plan_revised(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    result: anyhow::Result<moc_protocol::methods::SessionPlanReviseResult>,
+) {
+    match result {
+        Ok(result) => {
+            app.modal = None;
+            start_auto_prompt(app, connection, Some(result.prompt));
+        }
+        Err(error) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                state.submitting = false;
+                state.error = Some(error.to_string());
+            } else {
+                app.set_notice(format!("提交批注失败：{error}"));
+            }
+        }
     }
 }
 
@@ -3332,7 +3727,7 @@ pub(crate) fn apply_plan_approval(
                 .as_ref()
                 .is_some_and(|session| session.id == result.session_id)
             {
-                start_plan_execution(app, connection, result.auto_prompt);
+                start_auto_prompt(app, connection, result.auto_prompt);
             } else {
                 let client = connection.client.clone();
                 let events = app.events.clone();
@@ -3387,7 +3782,7 @@ pub(crate) fn apply_plan_execution_loaded(
             refresh_context(app, connection, false);
             refresh_usage(app, connection, false);
             load_subagents_for_parent(app, &connection.client, Some(id));
-            start_plan_execution(app, connection, auto_prompt);
+            start_auto_prompt(app, connection, auto_prompt);
         }
         Err(error) => app.set_notice(format!(
             "计划已批准，但加载执行会话失败：{error}；可通过 /resume 恢复"
@@ -3395,11 +3790,7 @@ pub(crate) fn apply_plan_execution_loaded(
     }
 }
 
-fn start_plan_execution(
-    app: &mut App,
-    connection: &EmbeddedConnection,
-    auto_prompt: Option<String>,
-) {
+fn start_auto_prompt(app: &mut App, connection: &EmbeddedConnection, auto_prompt: Option<String>) {
     let Some(prompt) = auto_prompt else {
         return;
     };
@@ -3538,7 +3929,17 @@ fn apply_update_and_refresh(
         &update,
         SessionUpdate::PromptFinished { .. } | SessionUpdate::ContextCompacted { .. }
     );
+    // 有上一版时，提交后立刻把「本版改动」拉下来；审阅窗口默认展示它。
+    let revised_plan = match &update {
+        SessionUpdate::PlanSubmitted { plan } if plan.previous_plan_id.is_some() => {
+            Some(plan.plan_id.clone())
+        }
+        _ => None,
+    };
     apply_update(app, update);
+    if let Some(plan_id) = revised_plan {
+        request_plan_diff(app, connection, plan_id);
+    }
     if prompt_started && app.cancel_requested {
         cancel_prompt(&connection.client, app);
     }
@@ -3725,22 +4126,17 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::TodoChanged { phases } => app.update_todos(phases),
         SessionUpdate::TodoReminder { .. } => app.push_todo_reminder(),
-        SessionUpdate::PlanSubmitted {
-            plan_id,
-            title,
-            path,
-            markdown,
-        } => {
-            open_plan_review(
-                app,
-                moc_protocol::methods::PlanInfo {
-                    plan_id,
-                    title,
-                    path,
-                    markdown,
-                    status: moc_protocol::methods::PlanStatus::Submitted,
-                },
-            );
+        SessionUpdate::PlanSubmitted { plan } => open_plan_review(app, plan),
+        SessionUpdate::PlanUpdated { plan } => {
+            // 同一次审阅里计划被改写（收到批注、被取代、批准）：只更新投影，保留草稿。
+            if let Some(Modal::Plan { state }) = app.modal.as_mut()
+                && state.plan_id == plan.plan_id
+            {
+                state.status = plan.status;
+                state.version = plan.version;
+                state.previous_plan_id = plan.previous_plan_id;
+                state.submitted = plan.annotations;
+            }
         }
         SessionUpdate::ContextCompactionStarted => app.start_compaction(),
         SessionUpdate::ContextCompacted {
@@ -5107,7 +5503,9 @@ mod tests {
                         apply_update(&mut app, update.update);
                     }
                 }
-                if let event @ (AppEvent::PromptReturned { .. } | AppEvent::SteerReturned { .. }) = event {
+                if let event @ (AppEvent::PromptReturned { .. } | AppEvent::SteerReturned { .. }) =
+                    event
+                {
                     crate::interaction::handle_event(&mut app, &connection, event)
                 }
             }
@@ -7752,10 +8150,7 @@ mod tests {
             },
         );
 
-        assert!(
-            app.blocks.is_empty(),
-            "失败回合的预览与占位工具块都要撤掉"
-        );
+        assert!(app.blocks.is_empty(), "失败回合的预览与占位工具块都要撤掉");
     }
 
     /// 生成中不能重试：原地提示，不占通道。

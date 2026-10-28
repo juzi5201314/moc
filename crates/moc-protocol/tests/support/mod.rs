@@ -24,10 +24,11 @@ use moc_protocol::methods::{
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
     SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRequestAsk, SessionRetryParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
-    TranscriptEntry, default_options,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams, SessionRequestAsk,
+    SessionRetryParams, SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams,
+    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution,
+    ToolStatus, TranscriptEntry, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -789,6 +790,22 @@ impl AgentService for ScriptedService {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
 
+    async fn session_plan_revise(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionPlanReviseParams,
+    ) -> Result<SessionPlanReviseResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
+    async fn session_plan_diff(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionPlanDiffParams,
+    ) -> Result<SessionPlanDiffResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
     async fn session_compact(
         &self,
         _ctx: RequestContext,
@@ -986,6 +1003,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::TodoChanged { .. } => "todo_changed",
         SessionUpdate::TodoReminder { .. } => "todo_reminder",
         SessionUpdate::PlanSubmitted { .. } => "plan_submitted",
+        SessionUpdate::PlanUpdated { .. } => "plan_updated",
         SessionUpdate::ContextCompactionStarted => "context_compaction_started",
         SessionUpdate::ContextCompacted { .. } => "context_compacted",
         SessionUpdate::ContextCompactionFailed { .. } => "context_compaction_failed",

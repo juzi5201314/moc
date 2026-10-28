@@ -272,8 +272,17 @@ export type TodoPhase = {
   items: TodoItem[];
 };
 
-export type PlanStatus = "submitted" | "approved" | "rejected";
+export type PlanStatus = "draft" | "submitted" | "revised" | "superseded" | "approved" | "rejected";
 export type PlanAction = "execute" | "execute_compacted" | "execute_new_session" | "reject";
+
+/** 计划批注：行号是计划源码的 1-based 行，`body` 可含 ```suggestion 围栏。 */
+export type PlanAnnotation = {
+  id: string;
+  start_line: number;
+  end_line: number;
+  quote: string;
+  body: string;
+};
 
 export type PlanInfo = {
   plan_id: string;
@@ -281,6 +290,24 @@ export type PlanInfo = {
   path: string;
   markdown: string;
   status: PlanStatus;
+  /** 审阅版本号，从 1 开始；草稿为 0。 */
+  version: number;
+  previous_plan_id?: string | null;
+  annotations: PlanAnnotation[];
+};
+
+export type SessionPlanReviseResult = {
+  session_id: string;
+  mode: SessionMode;
+  /** 由 core 生成的修订提示；前端按普通用户消息发送。 */
+  prompt: string;
+};
+
+export type SessionPlanDiffResult = {
+  session_id: string;
+  plan_id: string;
+  previous_plan_id?: string | null;
+  diff: ToolDiff;
 };
 
 export type SessionPlanApproveResult = {
@@ -574,7 +601,8 @@ export type SessionUpdate =
   | { type: "model_changed"; model: string }
   | { type: "todo_changed"; phases: TodoPhase[] }
   | { type: "todo_reminder"; prompt_id: string; open_items: number }
-  | { type: "plan_submitted"; plan_id: string; title: string; path: string; markdown: string }
+  | { type: "plan_submitted"; plan: PlanInfo }
+  | { type: "plan_updated"; plan: PlanInfo }
   | { type: "context_compaction_started" }
   | {
       type: "context_compacted";
@@ -625,6 +653,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   todo_changed: true,
   todo_reminder: true,
   plan_submitted: true,
+  plan_updated: true,
   context_compaction_started: true,
   context_compacted: true,
   context_compaction_failed: true,

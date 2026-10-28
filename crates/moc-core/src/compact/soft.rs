@@ -510,7 +510,15 @@ fn summary_prompt(
         .plans
         .iter()
         .rev()
-        .find(|plan| plan.status == moc_protocol::methods::PlanStatus::Submitted)
+        // 待审阅与「已收到批注、等待修订」都属于待定计划：修订轮开始时上下文里
+        // 必须还有完整计划，否则模型会按压缩摘要猜原文。
+        .find(|plan| {
+            matches!(
+                plan.status,
+                moc_protocol::methods::PlanStatus::Submitted
+                    | moc_protocol::methods::PlanStatus::Revised
+            )
+        })
     {
         prompt.push_str("<pending-plan>\n");
         prompt.push_str(&plan.markdown);

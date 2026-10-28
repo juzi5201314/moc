@@ -84,6 +84,8 @@ fn prompt_content_rows(app: &App, width: u16) -> usize {
 
 pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.plan_model_area = Rect::default();
+    app.plan_body_area = Rect::default();
+    app.plan_row_map.clear();
     app.todo_hud.begin_frame();
     let saving = app.saving_config();
     if let Some(panel) = &mut app.settings {

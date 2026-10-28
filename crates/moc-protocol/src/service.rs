@@ -40,11 +40,12 @@ use crate::methods::{
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionRenameParams, SessionRetryParams, SessionRewindParams,
-    SessionSetModeParams, SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WorkspaceGitBranchParams,
-    WorkspaceGitBranchResult,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams, SessionRetryParams,
+    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
+    SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -290,6 +291,20 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionPlanApproveParams,
     ) -> impl Future<Output = Result<SessionPlanApproveResult, RpcError>> + Send;
+
+    /// 提交计划批注并生成修订提示。
+    fn session_plan_revise(
+        &self,
+        ctx: RequestContext,
+        params: SessionPlanReviseParams,
+    ) -> impl Future<Output = Result<SessionPlanReviseResult, RpcError>> + Send;
+
+    /// 计划版本与上一版的差异。
+    fn session_plan_diff(
+        &self,
+        ctx: RequestContext,
+        params: SessionPlanDiffParams,
+    ) -> impl Future<Output = Result<SessionPlanDiffResult, RpcError>> + Send;
 
     /// 手动压缩会话上下文。
     fn session_compact(

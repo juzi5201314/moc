@@ -39,9 +39,10 @@ use crate::methods::{
     PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams, ResourceComplete,
     SessionBash, SessionBtw, SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact,
     SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
-    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPrompt, SessionRename, SessionRetry,
-    SessionRewind, SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer,
-    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WorkspaceGitBranch,
+    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanRevise,
+    SessionPrompt, SessionRename, SessionRetry, SessionRewind, SessionSetMode, SessionSetModel,
+    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
+    WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -792,6 +793,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_plan_approve(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionPlanRevise as Method>::NAME => {
+                let params = params_from_value::<SessionPlanRevise>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_plan_revise(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionPlanDiff as Method>::NAME => {
+                let params = params_from_value::<SessionPlanDiff>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_plan_diff(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

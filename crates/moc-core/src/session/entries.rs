@@ -2,8 +2,8 @@
 
 use moc_llm::{FinishReason, Message};
 use moc_protocol::methods::{
-    PlanStatus, SessionInfo, SessionLockInfo, SessionMode, SessionPermission, TodoPhase,
-    ToolExecution, TranscriptEntry,
+    PlanAnnotation, PlanStatus, SessionInfo, SessionLockInfo, SessionMode, SessionPermission,
+    TodoPhase, ToolExecution, TranscriptEntry,
 };
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +127,22 @@ pub enum Entry {
         path: String,
         markdown: String,
         status: PlanStatus,
+        /// 审阅版本号；起草中的计划为 0。
+        #[serde(default)]
+        version: u32,
+        /// 本次修订基于的上一版；旧记录没有这个字段。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_plan_id: Option<String>,
+    },
+    /// 用户对某个计划版本提交的一批批注。
+    PlanFeedback {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        plan_id: String,
+        annotations: Vec<PlanAnnotation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     /// PTC 子工具结果；独立于模型 transcript。
     ChildTool {
@@ -218,6 +234,14 @@ pub enum EntryPayload {
         path: String,
         markdown: String,
         status: PlanStatus,
+        version: u32,
+        previous_plan_id: Option<String>,
+    },
+    /// 用户提交的审阅批注；只更新计划投影，不进入模型 transcript。
+    PlanFeedback {
+        plan_id: String,
+        annotations: Vec<PlanAnnotation>,
+        note: Option<String>,
     },
     ChildTool {
         call: moc_protocol::methods::session::TranscriptChildCall,
@@ -236,6 +260,25 @@ pub enum EntryPayload {
         content: String,
     },
     ResetBoundary,
+}
+
+impl EntryPayload {
+    /// 由计划投影构造一条计划状态条目。
+    ///
+    /// 所有写计划状态的地方都走这里，`Plan` 条目新增字段时不必逐个调用点补。
+    /// 批注不进入条目：它只由 [`EntryPayload::PlanFeedback`] 写入，回放时沿用
+    /// 已有投影。
+    pub fn plan(plan: &moc_protocol::methods::PlanInfo, status: PlanStatus) -> Self {
+        Self::Plan {
+            plan_id: plan.plan_id.clone(),
+            title: plan.title.clone(),
+            path: plan.path.clone(),
+            markdown: plan.markdown.clone(),
+            status,
+            version: plan.version,
+            previous_plan_id: plan.previous_plan_id.clone(),
+        }
+    }
 }
 
 /// 会话的来源。两个字段互斥：
@@ -404,6 +447,8 @@ impl Entry {
                 path,
                 markdown,
                 status,
+                version,
+                previous_plan_id,
             } => Self::Plan {
                 id,
                 parent_id,
@@ -413,6 +458,20 @@ impl Entry {
                 path,
                 markdown,
                 status,
+                version,
+                previous_plan_id,
+            },
+            EntryPayload::PlanFeedback {
+                plan_id,
+                annotations,
+                note,
+            } => Self::PlanFeedback {
+                id,
+                parent_id,
+                at_ms,
+                plan_id,
+                annotations,
+                note,
             },
             EntryPayload::ChildTool { call } => Self::ChildTool {
                 id,
@@ -468,6 +527,7 @@ impl Entry {
             | Self::TitleChange { id, .. }
             | Self::Todos { id, .. }
             | Self::Plan { id, .. }
+            | Self::PlanFeedback { id, .. }
             | Self::ChildTool { id, .. }
             | Self::PtcState { id, .. }
             | Self::Usage { id, .. }
@@ -487,6 +547,7 @@ impl Entry {
             | Self::TitleChange { parent_id, .. }
             | Self::Todos { parent_id, .. }
             | Self::Plan { parent_id, .. }
+            | Self::PlanFeedback { parent_id, .. }
             | Self::ChildTool { parent_id, .. }
             | Self::PtcState { parent_id, .. }
             | Self::Usage { parent_id, .. }
@@ -522,6 +583,9 @@ impl Entry {
             | Self::Plan {
                 parent_id: value, ..
             }
+            | Self::PlanFeedback {
+                parent_id: value, ..
+            }
             | Self::ChildTool {
                 parent_id: value, ..
             }
@@ -551,6 +615,7 @@ impl Entry {
             | Self::TitleChange { at_ms, .. }
             | Self::Todos { at_ms, .. }
             | Self::Plan { at_ms, .. }
+            | Self::PlanFeedback { at_ms, .. }
             | Self::ChildTool { at_ms, .. }
             | Self::PtcState { at_ms, .. }
             | Self::Usage { at_ms, .. }

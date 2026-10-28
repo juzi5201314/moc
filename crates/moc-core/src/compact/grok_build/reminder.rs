@@ -135,13 +135,14 @@ async fn running_agents(inner: &CoreInner, state: &SessionState) -> Option<Strin
     ))
 }
 
-/// 已批准或已提交的最新计划；计划本身不进摘要，必须整段重新注入。
+/// 已批准、已提交或已收到修订意见的最新计划；计划本身不进摘要，必须整段重新注入。
 fn active_plan(state: &SessionState) -> Option<String> {
-    let plan = state
-        .plans
-        .iter()
-        .rev()
-        .find(|plan| matches!(plan.status, PlanStatus::Approved | PlanStatus::Submitted))?;
+    let plan = state.plans.iter().rev().find(|plan| {
+        matches!(
+            plan.status,
+            PlanStatus::Approved | PlanStatus::Submitted | PlanStatus::Revised
+        )
+    })?;
     if plan.markdown.trim().is_empty() {
         return None;
     }
@@ -284,6 +285,9 @@ mod tests {
                 path: "/tmp/a.md".into(),
                 markdown: "# 旧计划".into(),
                 status: PlanStatus::Rejected,
+                version: 1,
+                previous_plan_id: None,
+                annotations: Vec::new(),
             },
             PlanInfo {
                 plan_id: "plan_b".into(),
@@ -291,6 +295,9 @@ mod tests {
                 path: "/tmp/b.md".into(),
                 markdown: "# 新计划".into(),
                 status: PlanStatus::Submitted,
+                version: 2,
+                previous_plan_id: None,
+                annotations: Vec::new(),
             },
         ];
         assert_eq!(

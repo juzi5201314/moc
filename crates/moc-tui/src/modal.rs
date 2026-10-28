@@ -115,34 +115,269 @@ impl LevelState {
     }
 }
 
+/// 计划审阅窗口的视图：渲染后的正文（阅读）或带行号的源码（批注）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlanPane {
+    /// 渲染后的计划正文。
+    #[default]
+    Read,
+    /// 带行号的源码视图；批注在这里按行锚定。
+    Annotate,
+}
+
+/// 还没提交给 core 的一条计划批注。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanAnnotationDraft {
+    /// 前端 id，提交时随批注一起带上。
+    pub id: String,
+    /// 起始行（1-based，含）。
+    pub start_line: usize,
+    /// 结束行（1-based，含）。
+    pub end_line: usize,
+    /// 锚定的源码文本；只用于界面回显。
+    pub quote: String,
+    /// 批注正文，可含 ```` ```suggestion ```` 围栏。
+    pub body: String,
+}
+
+impl PlanAnnotationDraft {
+    /// 这一行是否落在这条批注的区间内。
+    pub fn covers(&self, line: usize) -> bool {
+        (self.start_line..=self.end_line).contains(&line)
+    }
+}
+
+/// 正在编辑的一条批注。
+pub struct PlanAnnotationEditor {
+    /// 正在编辑的草稿下标；`None` 表示新建。
+    pub editing: Option<usize>,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub quote: String,
+    pub body: crate::widgets::prompt::PromptState,
+}
+
 /// 计划审阅窗口的完整状态。
-#[derive(Debug, Clone)]
 pub struct PlanReviewState {
     pub plan_id: String,
     pub title: String,
     pub path: String,
     pub markdown: String,
+    pub status: moc_protocol::methods::PlanStatus,
+    /// 审阅版本号（从 1 开始）。
+    pub version: u32,
+    /// 上一版计划；有值时默认展示「本版改动」。
+    pub previous_plan_id: Option<String>,
+    /// core 里已经提交过的批注（只读）。
+    pub submitted: Vec<moc_protocol::methods::PlanAnnotation>,
+    /// 本次窗口里还没提交的草稿。
+    pub drafts: Vec<PlanAnnotationDraft>,
+    /// 下一次新建批注使用的 id 序号。
+    pub next_annotation_id: u64,
+    /// 当前视图。
+    pub pane: PlanPane,
+    /// 源码视图光标（0-based 行下标）。
+    pub cursor: usize,
+    /// 选区锚点；`Some` 时选区为 `anchor..=cursor`。
+    pub anchor: Option<usize>,
+    /// 正在编辑的批注。
+    pub editor: Option<PlanAnnotationEditor>,
     pub selected: usize,
     pub scroll_offset: usize,
     pub execution_model: String,
     pub submitting: bool,
     pub error: Option<String>,
+    /// 与上一版的差异；`None` 表示没有上一版或还没加载。
+    pub diff: Option<moc_protocol::methods::ToolDiff>,
+    /// 差异请求进行中。
+    pub diff_loading: bool,
+    /// 差异请求失败原因。
+    pub diff_error: Option<String>,
+    /// 阅读视图当前展示差异而不是计划正文。
+    pub show_diff: bool,
 }
 
 impl PlanReviewState {
     pub fn new(plan: moc_protocol::methods::PlanInfo, execution_model: String) -> Self {
+        // 有上一版时优先让用户看「改了什么」，没有才看正文。
+        let show_diff = plan.previous_plan_id.is_some();
         Self {
             plan_id: plan.plan_id,
             title: plan.title,
             path: plan.path,
             markdown: plan.markdown,
+            status: plan.status,
+            version: plan.version,
+            previous_plan_id: plan.previous_plan_id,
+            submitted: plan.annotations,
+            drafts: Vec::new(),
+            next_annotation_id: 1,
+            pane: PlanPane::Read,
+            cursor: 0,
+            anchor: None,
+            editor: None,
             selected: 0,
             scroll_offset: 0,
             execution_model,
             submitting: false,
             error: None,
+            diff: None,
+            diff_loading: false,
+            diff_error: None,
+            show_diff,
         }
     }
+
+    /// 计划源码行（0-based）。
+    pub fn source_lines(&self) -> Vec<&str> {
+        self.markdown.lines().collect()
+    }
+
+    /// 当前选区（0-based，含端点）；没有选区时是光标所在单行。
+    pub fn selection(&self) -> (usize, usize) {
+        let cursor = self.cursor;
+        let anchor = self.anchor.unwrap_or(cursor);
+        (cursor.min(anchor), cursor.max(anchor))
+    }
+
+    /// 当前版本是否还能批注（只有待审阅的计划可以）。
+    pub fn can_annotate(&self) -> bool {
+        self.status == moc_protocol::methods::PlanStatus::Submitted
+    }
+
+    /// 与选区重叠的第一条草稿。
+    pub fn draft_at_cursor(&self) -> Option<usize> {
+        let (start, end) = self.selection();
+        let (start, end) = (start + 1, end + 1);
+        self.drafts
+            .iter()
+            .position(|draft| draft.start_line <= end && draft.end_line >= start)
+    }
+
+    /// 打开编辑器：选区落在已有草稿上就编辑它，否则新建一条。
+    pub fn open_editor(&mut self) {
+        if !self.can_annotate() {
+            self.error = Some("当前版本不可批注".into());
+            return;
+        }
+        let lines = self.source_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let (start, end) = self.selection();
+        let editing = self.draft_at_cursor();
+        let (start_line, end_line, quote, body) = match editing {
+            Some(index) => {
+                let draft = &self.drafts[index];
+                (
+                    draft.start_line,
+                    draft.end_line,
+                    draft.quote.clone(),
+                    draft.body.clone(),
+                )
+            }
+            None => (
+                start + 1,
+                end + 1,
+                lines[start..=end].join("\n"),
+                String::new(),
+            ),
+        };
+        self.error = None;
+        self.editor = Some(PlanAnnotationEditor {
+            editing,
+            start_line,
+            end_line,
+            quote,
+            body: crate::widgets::prompt::PromptState::from_text(body),
+        });
+    }
+
+    /// 保存编辑器里的批注；正文为空时不落草稿。
+    pub fn save_editor(&mut self) {
+        let Some(editor) = self.editor.as_ref() else {
+            return;
+        };
+        let body = editor.body.text.trim_end().to_owned();
+        if body.trim().is_empty() {
+            self.error = Some("批注正文不能为空".into());
+            return;
+        }
+        let draft = PlanAnnotationDraft {
+            id: format!("a{}", self.next_annotation_id),
+            start_line: editor.start_line,
+            end_line: editor.end_line,
+            quote: truncate_chars(&editor.quote, 4096),
+            body,
+        };
+        let editing = editor.editing;
+        self.next_annotation_id += 1;
+        self.editor = None;
+        self.error = None;
+        match editing {
+            Some(index) if index < self.drafts.len() => self.drafts[index] = draft,
+            _ => self.drafts.push(draft),
+        }
+    }
+
+    /// 删除光标/选区上的草稿。
+    pub fn remove_draft_at_cursor(&mut self) {
+        if let Some(index) = self.draft_at_cursor() {
+            self.drafts.remove(index);
+        }
+    }
+
+    /// 移动光标；`select` 为真时同步推进选区端点。
+    pub fn move_cursor(&mut self, delta: isize, select: bool) {
+        let lines = self.source_lines().len();
+        if lines == 0 {
+            return;
+        }
+        let next = self
+            .cursor
+            .saturating_add_signed(delta)
+            .min(lines.saturating_sub(1));
+        self.cursor = next;
+        if !select {
+            self.anchor = None;
+        } else if self.anchor.is_none() {
+            self.anchor = Some(next);
+        }
+    }
+
+    /// 让光标落在给定视口高度内。
+    pub fn ensure_cursor_visible(&mut self, height: usize) {
+        if height == 0 {
+            return;
+        }
+        if self.cursor < self.scroll_offset {
+            self.scroll_offset = self.cursor;
+        } else if self.cursor >= self.scroll_offset.saturating_add(height) {
+            self.scroll_offset = self.cursor + 1 - height;
+        }
+    }
+
+    /// 提交用的批注列表。
+    pub fn annotations(&self) -> Vec<moc_protocol::methods::PlanAnnotation> {
+        self.drafts
+            .iter()
+            .map(|draft| moc_protocol::methods::PlanAnnotation {
+                id: draft.id.clone(),
+                start_line: u32::try_from(draft.start_line).unwrap_or(u32::MAX),
+                end_line: u32::try_from(draft.end_line).unwrap_or(u32::MAX),
+                quote: draft.quote.clone(),
+                body: draft.body.clone(),
+            })
+            .collect()
+    }
+}
+
+/// 按字符数截断，避免把多字节字符切断。
+fn truncate_chars(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    text.chars().take(limit).collect()
 }
 
 /// 同一模型选择器可切换会话模型，也可只选择计划执行模型。
@@ -456,18 +691,20 @@ impl RewindState {
         }
         if delta < 0 {
             if let Some(&prev_idx) = matches
-                .iter().rfind(|&&idx| idx < self.selected && self.items[idx].is_user)
+                .iter()
+                .rfind(|&&idx| idx < self.selected && self.items[idx].is_user)
             {
                 self.selected = prev_idx;
                 self.sync_prompt_item_from_selected();
             }
         } else if delta > 0
             && let Some(&next_idx) = matches
-                .iter().find(|&&idx| idx > self.selected && self.items[idx].is_user)
-            {
-                self.selected = next_idx;
-                self.sync_prompt_item_from_selected();
-            }
+                .iter()
+                .find(|&&idx| idx > self.selected && self.items[idx].is_user)
+        {
+            self.selected = next_idx;
+            self.sync_prompt_item_from_selected();
+        }
     }
 
     pub fn move_vertical(&mut self, delta: i32) {

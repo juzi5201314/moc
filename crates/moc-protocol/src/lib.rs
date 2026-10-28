@@ -154,6 +154,8 @@
 //!     SessionContextContentParams, SessionContextParams,
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
+//!     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams,
+//!     SessionPlanReviseResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
 //!     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
 //!     SessionUpdate, PromptResult,
@@ -281,6 +283,12 @@
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_plan_approve(&self, _ctx: RequestContext, _params: SessionPlanApproveParams) -> Result<SessionPlanApproveResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_plan_revise(&self, _ctx: RequestContext, _params: SessionPlanReviseParams) -> Result<SessionPlanReviseResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_plan_diff(&self, _ctx: RequestContext, _params: SessionPlanDiffParams) -> Result<SessionPlanDiffResult, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_compact(&self, _ctx: RequestContext, _params: SessionCompactParams) -> Result<CompactResult, RpcError> {

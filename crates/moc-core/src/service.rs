@@ -21,7 +21,8 @@ use moc_protocol::methods::{
     SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
     SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
     SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
-    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionRenameParams,
+    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
+    SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams,
     SessionRetryParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
     SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
@@ -1748,6 +1749,22 @@ impl AgentService for Core {
         Ok(result)
     }
 
+    async fn session_plan_revise(
+        &self,
+        ctx: RequestContext,
+        params: SessionPlanReviseParams,
+    ) -> Result<SessionPlanReviseResult, RpcError> {
+        mode::revise_plan(&self.inner, ctx, params).await
+    }
+
+    async fn session_plan_diff(
+        &self,
+        _ctx: RequestContext,
+        params: SessionPlanDiffParams,
+    ) -> Result<SessionPlanDiffResult, RpcError> {
+        mode::plan_diff(&self.inner, params).await
+    }
+
     async fn session_compact(
         &self,
         ctx: RequestContext,
@@ -2045,6 +2062,8 @@ mod compression_tests {
                             path: "local://plan_test.md".into(),
                             markdown: "测试计划".into(),
                             status: moc_protocol::PlanStatus::Submitted,
+                            version: 1,
+                            previous_plan_id: None,
                         },
                     )
                     .await

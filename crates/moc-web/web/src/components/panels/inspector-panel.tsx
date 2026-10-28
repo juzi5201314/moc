@@ -25,6 +25,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { DiffFile } from "@/components/panels/diff-file";
+import { PlanReview } from "@/components/plan/plan-review";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { rpc } from "@/protocol/client";
 import type {
@@ -49,6 +51,7 @@ interface InspectorPanelProps {
 type BashRun = { id: number; command: string; result: BashResult };
 type AgentSpawnResult = { agent: AgentInfo };
 type AgentStopResult = { stopped: boolean; status: AgentInfo["status"] };
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -76,61 +79,6 @@ function formatDuration(milliseconds: number): string {
 
 function formatTokens(value: number | undefined): string {
   return (value ?? 0).toLocaleString();
-}
-
-function DiffFile({ file }: { file: ToolFileDiff }) {
-  const additions = file.hunks
-    .flatMap((hunk) => hunk.lines)
-    .filter((line) => line.kind === "insert").length;
-  const deletions = file.hunks
-    .flatMap((hunk) => hunk.lines)
-    .filter((line) => line.kind === "delete").length;
-
-  return (
-    <section className="min-w-0 border-b border-border last:border-b-0">
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border/60 bg-background px-3 py-2 text-xs">
-        <span className="truncate font-mono" title={file.path}>
-          {file.path}
-        </span>
-        <span className="shrink-0 font-mono text-[10px]">
-          <span className="text-emerald-600">+{additions}</span>{" "}
-          <span className="text-rose-500">-{deletions}</span>
-        </span>
-      </header>
-      <div className="overflow-x-auto py-1 font-mono text-[11px] leading-5">
-        {file.hunks.map((hunk) => (
-          <div key={`${hunk.old_start}:${hunk.new_start}`}>
-            <div className="bg-muted/50 px-3 py-1 text-[10px] text-muted-foreground">
-              @@ -{hunk.old_start} +{hunk.new_start} @@
-            </div>
-            {hunk.lines.map((line) => (
-              <div
-                key={`${line.old_no ?? "-"}:${line.new_no ?? "-"}:${line.kind}:${line.text}`}
-                className={`grid min-w-max grid-cols-[3rem_3rem_1rem_minmax(0,1fr)] px-2 ${
-                  line.kind === "insert"
-                    ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300"
-                    : line.kind === "delete"
-                      ? "bg-rose-500/10 text-rose-800 dark:text-rose-300"
-                      : "text-foreground"
-                }`}
-              >
-                <span className="select-none text-right text-muted-foreground/60">
-                  {line.old_no ?? ""}
-                </span>
-                <span className="select-none text-right text-muted-foreground/60">
-                  {line.new_no ?? ""}
-                </span>
-                <span className="select-none text-center text-muted-foreground/60">
-                  {line.kind === "insert" ? "+" : line.kind === "delete" ? "-" : " "}
-                </span>
-                <span className="whitespace-pre pr-4">{line.text || " "}</span>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function IconAction({
@@ -447,9 +395,27 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
           typeof activeTab.data.plan_id === "string"
         ? activeTab.data.plan_id
         : undefined;
-  const visiblePlans = (view?.plans ?? []).filter(
-    (plan) => tabPlanId === undefined || plan.plan_id === tabPlanId,
-  );
+  const visiblePlans = useMemo<PlanInfo[]>(() => {
+    const plans = view?.plans ?? [];
+    if (plans.length === 0) return [];
+    // 指定了 plan_id 就沿 previous 链跟到最新版本：提交批注后新版本是一个新 plan_id。
+    let current: PlanInfo | undefined = tabPlanId
+      ? plans.find((plan) => plan.plan_id === tabPlanId)
+      : undefined;
+    if (!current) {
+      const latest = [...plans].sort((left, right) => right.version - left.version)[0];
+      return latest ? [latest] : [];
+    }
+    for (let guard = 0; guard < 16; guard += 1) {
+      const parentId: string = current.plan_id;
+      const next = plans
+        .filter((plan) => plan.previous_plan_id === parentId)
+        .sort((left, right) => right.version - left.version)[0];
+      if (!next) break;
+      current = next;
+    }
+    return [current];
+  }, [view?.plans, tabPlanId]);
 
   return (
     <div className="flex h-full w-full flex-col bg-[var(--panel)] text-foreground">
@@ -892,61 +858,19 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
             ) : null}
           </div>
         ) : tabKind === "plan" ? (
-          <div className="space-y-3 p-3 text-xs select-text">
-            <div className="flex items-center justify-between">
-              <h3 className="font-medium">计划审阅</h3>
-              <span className="text-[10px] text-muted-foreground">{visiblePlans.length} 项</span>
-            </div>
-            {planError && <PanelError message={planError} />}
+          <div className="min-h-full select-text">
             {visiblePlans.length === 0 ? (
               <PanelMessage>当前会话没有计划。</PanelMessage>
             ) : (
               visiblePlans.map((plan) => (
-                <section
+                <PlanReview
                   key={plan.plan_id}
-                  className="overflow-hidden rounded-md border border-border/70"
-                >
-                  <header className="flex items-center justify-between gap-2 border-b border-border/60 bg-muted/30 px-2.5 py-2">
-                    <span className="truncate font-medium">{plan.title}</span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {plan.status}
-                    </span>
-                  </header>
-                  <div className="space-y-2 p-2.5">
-                    <p
-                      className="truncate font-mono text-[10px] text-muted-foreground"
-                      title={plan.path}
-                    >
-                      {plan.path}
-                    </p>
-                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
-                      {plan.markdown}
-                    </pre>
-                    {plan.status === "submitted" && (
-                      <div className="flex justify-end gap-2 border-t border-border/60 pt-2">
-                        <button
-                          type="button"
-                          onClick={() => void handlePlanAction(plan, "reject")}
-                          disabled={planActionId === plan.plan_id}
-                          className="h-7 rounded-md border border-border px-2.5 text-[11px] hover:bg-muted disabled:opacity-50"
-                        >
-                          拒绝
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handlePlanAction(plan, "execute")}
-                          disabled={planActionId === plan.plan_id}
-                          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-[11px] text-primary-foreground disabled:opacity-50"
-                        >
-                          {planActionId === plan.plan_id && (
-                            <Loader2Icon className="size-3 animate-spin" />
-                          )}
-                          批准并执行
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </section>
+                  sessionId={sessionId}
+                  plan={plan}
+                  busy={planActionId === plan.plan_id}
+                  actionError={planError}
+                  onAction={(target, action) => void handlePlanAction(target, action)}
+                />
               ))
             )}
           </div>

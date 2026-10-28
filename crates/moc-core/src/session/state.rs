@@ -2,7 +2,7 @@
 
 use moc_llm::{Role, Usage};
 use moc_protocol::methods::{
-    PlanInfo, SessionInfo, SessionMode, SessionPermission, TodoPhase, TranscriptEntry,
+    PlanInfo, PlanStatus, SessionInfo, SessionMode, SessionPermission, TodoPhase, TranscriptEntry,
 };
 
 use crate::error::CoreError;
@@ -308,20 +308,44 @@ impl SessionState {
                 path,
                 markdown,
                 status,
+                version,
+                previous_plan_id,
                 ..
             } => {
+                // 状态变更条目只带自己关心的字段：批注与「上一版」沿用已有投影，
+                // 只有明确给出上一版时才覆盖，避免批准/拒绝之类的状态重写把它们冲掉。
+                let existing = self.plans.iter().find(|plan| plan.plan_id == *plan_id);
+                let annotations = existing
+                    .map(|plan| plan.annotations.clone())
+                    .unwrap_or_default();
+                let previous_plan_id = previous_plan_id
+                    .clone()
+                    .or_else(|| existing.and_then(|plan| plan.previous_plan_id.clone()));
                 let info = PlanInfo {
                     plan_id: plan_id.clone(),
                     title: title.clone(),
                     path: path.clone(),
                     markdown: markdown.clone(),
                     status: *status,
+                    version: *version,
+                    previous_plan_id,
+                    annotations,
                 };
                 if let Some(existing) = self.plans.iter_mut().find(|plan| plan.plan_id == *plan_id)
                 {
                     *existing = info;
                 } else {
                     self.plans.push(info);
+                }
+            }
+            Entry::PlanFeedback {
+                plan_id,
+                annotations,
+                ..
+            } => {
+                if let Some(plan) = self.plans.iter_mut().find(|plan| plan.plan_id == *plan_id) {
+                    plan.annotations.clone_from(annotations);
+                    plan.status = PlanStatus::Revised;
                 }
             }
             Entry::ChildTool { call, .. } => self.child_calls.push(call.clone()),
@@ -546,6 +570,8 @@ mod tests {
                 path: "/tmp/plan.md".into(),
                 markdown: "# 计划".into(),
                 status: PlanStatus::Approved,
+                version: 1,
+                previous_plan_id: None,
             },
             todo_id,
             13,
@@ -571,6 +597,81 @@ mod tests {
         assert_eq!(state.plans[0].status, PlanStatus::Approved);
         assert_eq!(state.session.updated_at_ms, 14);
         assert_eq!(state.prompt_sequence, 1);
+    }
+
+    /// 计划状态重写不得冲掉批注与版本；`PlanFeedback` 只改批注并把状态推到修订中。
+    #[test]
+    fn replay_keeps_plan_version_and_annotations_across_status_rewrites() {
+        fn entries(extra: Vec<EntryPayload>) -> Vec<Entry> {
+            let header = Entry::header(
+                "ses_123456789abc".into(),
+                "/tmp/project".into(),
+                "p/model".into(),
+                SessionMode::Plan,
+                SessionPermission::Full,
+                SessionOrigin::root(),
+                "标题".into(),
+                10,
+            );
+            let mut parent = header.id().to_owned();
+            let mut at_ms = 11;
+            let mut entries = vec![header];
+            let mut push = |entries: &mut Vec<Entry>, payload: EntryPayload| {
+                let entry = Entry::from_payload(payload, parent.clone(), at_ms);
+                parent = entry.id().to_owned();
+                at_ms += 1;
+                entries.push(entry);
+            };
+            let plan_payload = |status, version| EntryPayload::Plan {
+                plan_id: "plan_1".into(),
+                title: "计划".into(),
+                path: "local://plan_1.md".into(),
+                markdown: "# 计划\n\n1. 先看代码\n".into(),
+                status,
+                version,
+                previous_plan_id: None,
+            };
+            push(&mut entries, plan_payload(PlanStatus::Draft, 0));
+            push(&mut entries, plan_payload(PlanStatus::Submitted, 1));
+            push(
+                &mut entries,
+                EntryPayload::PlanFeedback {
+                    plan_id: "plan_1".into(),
+                    annotations: vec![moc_protocol::methods::PlanAnnotation {
+                        id: "a1".into(),
+                        start_line: 3,
+                        end_line: 3,
+                        quote: "先看代码".into(),
+                        body: "具体到文件".into(),
+                    }],
+                    note: Some("整体保持简洁".into()),
+                },
+            );
+            for payload in extra {
+                push(&mut entries, payload);
+            }
+            entries
+        }
+
+        let state = SessionState::from_entries(entries(vec![EntryPayload::Plan {
+            plan_id: "plan_1".into(),
+            title: "计划".into(),
+            path: "local://plan_1.md".into(),
+            markdown: "# 计划\n\n1. 先看代码\n".into(),
+            status: PlanStatus::Approved,
+            version: 1,
+            previous_plan_id: None,
+        }]))
+        .expect("记录链完整");
+        assert_eq!(state.plans.len(), 1);
+        assert_eq!(state.plans[0].status, PlanStatus::Approved);
+        assert_eq!(state.plans[0].version, 1);
+        assert_eq!(state.plans[0].annotations.len(), 1);
+        assert_eq!(state.plans[0].annotations[0].body, "具体到文件");
+
+        let revised = SessionState::from_entries(entries(Vec::new())).expect("记录链完整");
+        assert_eq!(revised.plans[0].status, PlanStatus::Revised);
+        assert_eq!(revised.plans[0].annotations.len(), 1);
     }
 
     #[test]

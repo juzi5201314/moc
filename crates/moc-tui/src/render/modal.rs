@@ -4,7 +4,7 @@
 //! 普通模态上限 96 列，带选项预览的提问放宽到 120 列），高度按内容收缩。全部使用主题槽位。
 
 use moc_protocol::Role;
-use moc_protocol::methods::ContextUsageResult;
+use moc_protocol::methods::{ContextUsageResult, PlanStatus};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
 
 use crate::app::App;
-use crate::modal::{Modal, SessionScope};
+use crate::modal::{Modal, PlanPane, PlanReviewState, SessionScope};
 use crate::render::context_content;
 use crate::render::wrap::str_width;
 use crate::theme::Theme;
@@ -127,7 +127,10 @@ pub fn draw_completion_menu(
             };
             lines.push(Line::from(Span::styled(
                 ellipsize(
-                    &format!("{prefix}{:<col_width$}{}", candidate.label, candidate.description),
+                    &format!(
+                        "{prefix}{:<col_width$}{}",
+                        candidate.label, candidate.description
+                    ),
                     content_width,
                 ),
                 style,
@@ -349,6 +352,20 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             model_width,
             1,
         );
+        if state.pane == PlanPane::Annotate {
+            // 批注视图是一行源码对一行屏幕行，鼠标拖选直接按行换算。
+            let window = plan_source_window(state, max_content);
+            app.plan_body_area = Rect::new(
+                modal_area.x + 2,
+                modal_area.y + 1 + u16::try_from(PLAN_HEADER_ROWS).unwrap_or(0),
+                u16::try_from(content_width).unwrap_or(u16::MAX),
+                u16::try_from(window.len()).unwrap_or(u16::MAX),
+            );
+            app.plan_row_map = window;
+        }
+        if state.editor.is_some() {
+            draw_plan_editor(frame, app, modal_area, area);
+        }
     }
 }
 
@@ -361,9 +378,10 @@ fn render_modal_card(
     modal_area: Rect,
 ) {
     frame.render_widget(Clear, modal_area);
-    frame
-        .buffer_mut()
-        .set_style(modal_area, Style::new().bg(theme.bg_base).fg(theme.text_primary));
+    frame.buffer_mut().set_style(
+        modal_area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
     frame.render_widget(
         Paragraph::new(lines)
             .block(
@@ -506,12 +524,10 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
         },
     ];
 
-    let all_rows: Vec<&(String, &'static str)> =
-        sections.iter().flat_map(|s| &s.rows).collect();
+    let all_rows: Vec<&(String, &'static str)> = sections.iter().flat_map(|s| &s.rows).collect();
     let unified = measure_column_refs(&all_rows);
 
-    let two_columns =
-        HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1 <= max_width;
+    let two_columns = HELP_INDENT + unified.1 + HELP_COLUMN_GAP + unified.1 <= max_width;
     let (columns, width) = if two_columns {
         (
             [unified, unified],
@@ -1328,79 +1344,7 @@ fn modal_lines_with_hits(
             )));
             lines
         }
-        Modal::Plan { state } => {
-            let prefix = "执行模型：";
-            let mut lines = vec![Line::from(vec![
-                Span::styled(prefix, Style::new().fg(theme.text_secondary)),
-                Span::styled(
-                    ellipsize(
-                        crate::app::model_selector_label(&state.execution_model),
-                        width.saturating_sub(str_width(prefix)),
-                    ),
-                    Style::new()
-                        .fg(theme.accent_model)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-            ])];
-            lines.extend(
-                crate::render::wrap::wrap_text(&state.path, width)
-                    .into_iter()
-                    .map(|text| Line::from(Span::styled(text, Style::new().fg(theme.gray)))),
-            );
-            let labels = [
-                "执行（当前会话）",
-                "压缩当前会话后执行",
-                "在新会话执行",
-                "继续计划",
-            ];
-            let feedback = usize::from(state.error.is_some() || state.submitting);
-            let content_rows = max_lines.saturating_sub(lines.len() + labels.len() + 1 + feedback);
-            let all_lines = crate::render::markdown::render_markdown(&state.markdown, width, theme);
-            let total = all_lines.len();
-            let offset = state.scroll_offset.min(total.saturating_sub(content_rows));
-            lines.extend(all_lines.into_iter().skip(offset).take(content_rows));
-            lines.push(Line::from(Span::styled(
-                ellipsize(
-                    "↑↓/PgUp/PgDn 滚动 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型",
-                    width,
-                ),
-                Style::new().fg(theme.gray_dim),
-            )));
-            for (index, label) in labels.iter().enumerate() {
-                let style = if state.submitting {
-                    Style::new().fg(theme.gray_dim)
-                } else if state.selected == index {
-                    Style::new()
-                        .fg(theme.accent_success)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
-                lines.push(Line::from(Span::styled(
-                    ellipsize(
-                        &format!(
-                            "{} {label}",
-                            if state.selected == index { "❯" } else { " " }
-                        ),
-                        width,
-                    ),
-                    style,
-                )));
-            }
-            if let Some(error) = &state.error {
-                lines.push(Line::from(Span::styled(
-                    ellipsize(&format!("错误：{error}"), width),
-                    Style::new().fg(theme.accent_error),
-                )));
-            } else if state.submitting {
-                lines.push(Line::from(Span::styled(
-                    "正在提交…",
-                    Style::new().fg(theme.accent_running),
-                )));
-            }
-            lines
-        }
+        Modal::Plan { state } => plan_lines(state, width, max_lines, theme, &mut hits),
         Modal::Context { usage } => {
             let mut lines = match usage {
                 Some(usage) => context_lines(usage, width, theme),
@@ -2075,6 +2019,406 @@ fn ask_preview_lines(
         Style::new().fg(theme.gray_dim),
     )));
     out
+}
+
+// ---------- 计划审阅：阅读 / 批注视图 ----------
+
+/// 计划审阅卡片顶部的固定行数：执行模型、标题/版本、路径。
+pub(crate) const PLAN_HEADER_ROWS: usize = 3;
+
+/// 待审阅计划的动作列表。
+const PLAN_ACTIONS: [&str; 4] = [
+    "执行（当前会话）",
+    "压缩当前会话后执行",
+    "在新会话执行",
+    "继续计划",
+];
+
+/// 状态文字与配色。
+fn plan_status_label(theme: &Theme, status: PlanStatus) -> (&'static str, Color) {
+    match status {
+        PlanStatus::Draft => ("起草中", theme.accent_running),
+        PlanStatus::Submitted => ("待审阅", theme.accent_success),
+        PlanStatus::Revised => ("等待修订", theme.accent_warning),
+        PlanStatus::Superseded => ("已被取代", theme.gray),
+        PlanStatus::Approved => ("已批准", theme.accent_success),
+        PlanStatus::Rejected => ("已拒绝", theme.accent_error),
+    }
+}
+
+/// 非待审阅版本的说明行。
+fn plan_status_note(status: PlanStatus) -> &'static str {
+    match status {
+        PlanStatus::Draft => "计划仍在起草中。",
+        PlanStatus::Revised => "已提交修改意见，等待模型修订。",
+        PlanStatus::Superseded => "已被新版本取代。",
+        PlanStatus::Approved => "计划已批准。",
+        PlanStatus::Rejected => "计划已拒绝。",
+        PlanStatus::Submitted => "",
+    }
+}
+
+/// 正文之外的固定行数；渲染与鼠标命中都走它，两边算出的正文窗口才会一致。
+pub(crate) fn plan_fixed_rows(state: &PlanReviewState) -> usize {
+    let mut fixed = PLAN_HEADER_ROWS + 1;
+    if state.pane == PlanPane::Read && state.status == PlanStatus::Submitted {
+        fixed += PLAN_ACTIONS.len();
+    }
+    if state.status != PlanStatus::Submitted {
+        fixed += 1;
+    }
+    if state.error.is_some() || state.submitting {
+        fixed += 1;
+    }
+    fixed
+}
+
+/// 正文可见行数。
+pub(crate) fn plan_body_rows(state: &PlanReviewState, max_lines: usize) -> usize {
+    max_lines.saturating_sub(plan_fixed_rows(state)).max(1)
+}
+
+/// 批注视图当前可见的源码行（0-based，与屏幕行一一对应）。
+pub(crate) fn plan_source_window(state: &PlanReviewState, max_lines: usize) -> Vec<usize> {
+    let rows = plan_body_rows(state, max_lines);
+    let total = state.source_lines().len();
+    let offset = state.scroll_offset.min(total.saturating_sub(rows));
+    (offset..(offset + rows).min(total)).collect()
+}
+
+/// 计划审阅卡片的内容行。
+fn plan_lines(
+    state: &PlanReviewState,
+    width: usize,
+    max_lines: usize,
+    theme: &Theme,
+    hits: &mut Vec<(usize, usize)>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(max_lines);
+    let prefix = "执行模型：";
+    lines.push(Line::from(vec![
+        Span::styled(prefix, Style::new().fg(theme.text_secondary)),
+        Span::styled(
+            ellipsize(
+                crate::app::model_selector_label(&state.execution_model),
+                width.saturating_sub(str_width(prefix)),
+            ),
+            Style::new()
+                .fg(theme.accent_model)
+                .add_modifier(Modifier::UNDERLINED),
+        ),
+    ]));
+    let (status_label, status_color) = plan_status_label(theme, state.status);
+    lines.push(Line::from(vec![
+        Span::styled(
+            ellipsize(&format!("{} · v{}", state.title, state.version), width),
+            Style::new()
+                .fg(theme.text_primary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" · {status_label}"), Style::new().fg(status_color)),
+    ]));
+    let mut location = state.path.clone();
+    if state.previous_plan_id.is_some() {
+        location.push_str(&format!(" · 对比 v{}", state.version.saturating_sub(1)));
+    }
+    if !state.drafts.is_empty() || !state.submitted.is_empty() {
+        location.push_str(&format!(
+            " · {} 条待提交 / {} 条已提交",
+            state.drafts.len(),
+            state.submitted.len()
+        ));
+    }
+    lines.push(Line::from(Span::styled(
+        ellipsize(&location, width),
+        Style::new().fg(theme.gray),
+    )));
+
+    let body_rows = plan_body_rows(state, max_lines);
+    match state.pane {
+        PlanPane::Read => {
+            if state.show_diff && state.previous_plan_id.is_some() {
+                if let Some(error) = &state.diff_error {
+                    lines.push(Line::from(Span::styled(
+                        ellipsize(&format!("无法加载改动：{error}"), width),
+                        Style::new().fg(theme.accent_error),
+                    )));
+                } else if let Some(diff) = &state.diff {
+                    let rendered = crate::render::diff::render_diff(diff, width, theme, usize::MAX);
+                    if rendered.is_empty() {
+                        lines.push(Line::from(Span::styled(
+                            "本版没有文本改动。",
+                            Style::new().fg(theme.gray),
+                        )));
+                    } else {
+                        lines.extend(
+                            rendered
+                                .into_iter()
+                                .skip(state.scroll_offset)
+                                .take(body_rows),
+                        );
+                    }
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        "正在加载本版改动…",
+                        Style::new().fg(theme.accent_running),
+                    )));
+                }
+            } else {
+                let rendered =
+                    crate::render::markdown::render_markdown(&state.markdown, width, theme);
+                if rendered.is_empty() {
+                    lines.push(Line::from(String::new()));
+                } else {
+                    lines.extend(
+                        rendered
+                            .into_iter()
+                            .skip(state.scroll_offset)
+                            .take(body_rows),
+                    );
+                }
+            }
+        }
+        PlanPane::Annotate => {
+            let source = state.source_lines();
+            for index in plan_source_window(state, max_lines) {
+                lines.push(plan_source_line(state, &source, index, width, theme));
+            }
+        }
+    }
+
+    let hint = match state.pane {
+        PlanPane::Read if state.show_diff && state.previous_plan_id.is_some() => {
+            "↑↓/PgUp/PgDn 滚动 · D 看计划 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型"
+        }
+        PlanPane::Read => {
+            "↑↓/PgUp/PgDn 滚动 · D 看改动 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型"
+        }
+        PlanPane::Annotate => {
+            "↑↓ 移动 · v 选行 · c 批注 · Ctrl+G 建议改法 · x 删除 · s 发送 · A 返回阅读 · Esc 返回"
+        }
+    };
+    lines.push(Line::from(Span::styled(
+        ellipsize(hint, width),
+        Style::new().fg(theme.gray_dim),
+    )));
+
+    if state.pane == PlanPane::Read && state.status == PlanStatus::Submitted {
+        for (index, label) in PLAN_ACTIONS.iter().enumerate() {
+            hits.push((index, lines.len()));
+            let style = if state.submitting {
+                Style::new().fg(theme.gray_dim)
+            } else if state.selected == index {
+                Style::new()
+                    .fg(theme.accent_success)
+                    .bg(theme.bg_visual)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text_secondary)
+            };
+            lines.push(Line::from(Span::styled(
+                ellipsize(
+                    &format!(
+                        "{} {label}",
+                        if state.selected == index { "❯" } else { " " }
+                    ),
+                    width,
+                ),
+                style,
+            )));
+        }
+    } else if state.status != PlanStatus::Submitted {
+        lines.push(Line::from(Span::styled(
+            ellipsize(plan_status_note(state.status), width),
+            Style::new().fg(theme.gray),
+        )));
+    }
+
+    if let Some(error) = &state.error {
+        lines.push(Line::from(Span::styled(
+            ellipsize(&format!("错误：{error}"), width),
+            Style::new().fg(theme.accent_error),
+        )));
+    } else if state.submitting {
+        lines.push(Line::from(Span::styled(
+            "正在提交…",
+            Style::new().fg(theme.accent_running),
+        )));
+    }
+    lines
+}
+
+/// 批注视图的一行源码：行号 gutter + 内容，选区铺底、光标加粗、有批注的行标 `●`。
+fn plan_source_line(
+    state: &PlanReviewState,
+    source: &[&str],
+    index: usize,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let line_no = index + 1;
+    let annotated = state.drafts.iter().any(|draft| draft.covers(line_no))
+        || state.submitted.iter().any(|annotation| {
+            annotation.start_line as usize <= line_no && line_no <= annotation.end_line as usize
+        });
+    let (sel_start, sel_end) = state.selection();
+    let selected = index >= sel_start && index <= sel_end;
+    let cursor = index == state.cursor;
+    let base = if selected {
+        Style::new().bg(theme.bg_visual)
+    } else {
+        Style::new()
+    };
+    let gutter = format!("{line_no:>4} {} ", if annotated { "●" } else { "│" });
+    let gutter_width = str_width(&gutter);
+    let mut text = ellipsize(
+        source.get(index).copied().unwrap_or(""),
+        width.saturating_sub(gutter_width),
+    );
+    // 补到整行宽度，让选区底色铺满整行而不是只盖住文字。
+    let text_width = str_width(&text);
+    if let Some(pad) = width.checked_sub(gutter_width + text_width) {
+        text.push_str(&" ".repeat(pad));
+    }
+    let mut text_style = base.fg(theme.text_primary);
+    if cursor {
+        text_style = text_style.add_modifier(Modifier::BOLD);
+    }
+    Line::from(vec![
+        Span::styled(
+            gutter,
+            base.fg(if annotated {
+                theme.accent_warning
+            } else {
+                theme.gray_dim
+            }),
+        ),
+        Span::styled(text, text_style),
+    ])
+}
+
+/// 折行后的输入内容与光标位置。
+struct WrappedInput {
+    lines: Vec<String>,
+    cursor_row: usize,
+    cursor_column: usize,
+}
+
+/// 多行输入按宽度折行（无掩码），并给出光标所在行与列。
+fn wrap_input(input: &crate::widgets::prompt::PromptState, width: usize) -> WrappedInput {
+    let width = width.max(1);
+    let text = input.text.as_str();
+    let prefix = &input.text[..input.cursor];
+    let cursor_line = prefix.matches('\n').count();
+    let mut lines: Vec<String> = Vec::new();
+    let mut cursor_row = 0;
+    let mut cursor_column = 0;
+    for (index, line) in text.split('\n').enumerate() {
+        if index == cursor_line {
+            let head = prefix.rsplit('\n').next().unwrap_or_default();
+            let wrapped = crate::render::wrap::wrap_text(head, width);
+            cursor_row = lines.len() + wrapped.len().max(1) - 1;
+            cursor_column = wrapped.last().map_or(0, |line| str_width(line));
+        }
+        let wrapped = crate::render::wrap::wrap_text(line, width);
+        if wrapped.is_empty() {
+            lines.push(String::new());
+        } else {
+            lines.extend(wrapped);
+        }
+    }
+    WrappedInput {
+        lines,
+        cursor_row,
+        cursor_column,
+    }
+}
+
+/// 批注编辑器：居中覆盖在模态卡片之上，光标落在正文里。
+fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) {
+    let theme = app.theme;
+    let Some(Modal::Plan { state }) = &app.modal else {
+        return;
+    };
+    let Some(editor) = &state.editor else {
+        return;
+    };
+    let width = area
+        .width
+        .saturating_sub(8)
+        .clamp(32, 76)
+        .min(modal_area.width);
+    let inner_width = usize::from(width.saturating_sub(4)).max(8);
+    let wrapped = wrap_input(&editor.body, inner_width);
+    let quote_rows: Vec<String> = editor
+        .quote
+        .lines()
+        .take(2)
+        .map(|line| ellipsize(&format!("> {line}"), inner_width))
+        .collect();
+    let hint = "Ctrl+S 保存 · Ctrl+G 插入建议改法 · Esc 取消";
+    // 边框 2 行 + 引用 + 标签 + 正文 + 提示。
+    let content_rows = quote_rows.len() + 1 + wrapped.lines.len().max(1) + 1;
+    let height = u16::try_from(content_rows.saturating_add(2))
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(4).max(6));
+    let rect = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    let visible_rows = usize::from(rect.height.saturating_sub(2));
+    let fixed = quote_rows.len() + 2;
+    let body_space = visible_rows.saturating_sub(fixed).max(1);
+    let start = wrapped
+        .cursor_row
+        .saturating_sub(body_space.saturating_sub(1));
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows);
+    for row in &quote_rows {
+        lines.push(Line::from(Span::styled(
+            row.clone(),
+            Style::new().fg(theme.gray),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "批注正文（可用 ```suggestion 围栏给出替换文本）",
+        Style::new().fg(theme.text_secondary),
+    )));
+    for row in wrapped.lines.iter().skip(start).take(body_space) {
+        lines.push(Line::from(Span::styled(
+            row.clone(),
+            Style::new().fg(theme.text_primary),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        ellipsize(hint, inner_width),
+        Style::new().fg(theme.gray_dim),
+    )));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_set(ratatui::symbols::border::ROUNDED)
+                .border_style(Style::new().fg(theme.border_active))
+                .style(Style::new().bg(theme.bg_base))
+                .padding(Padding::horizontal(1))
+                .title(Span::styled(
+                    format!(" 批注 · 第 {}-{} 行 ", editor.start_line, editor.end_line),
+                    Style::new()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        ),
+        rect,
+    );
+    let cursor_row = wrapped.cursor_row.saturating_sub(start);
+    let y = rect.y + 1 + u16::try_from(quote_rows.len() + 1 + cursor_row).unwrap_or(u16::MAX);
+    let x = rect.x + 2 + u16::try_from(wrapped.cursor_column).unwrap_or(u16::MAX);
+    frame.set_cursor_position((
+        x.min(rect.right().saturating_sub(2)),
+        y.min(rect.bottom().saturating_sub(2)),
+    ));
 }
 
 #[cfg(test)]
@@ -3087,11 +3431,11 @@ mod tests {
 
     #[test]
     fn completion_menu_renders_solid_opaque_background() {
+        use crate::widgets::completion::CompletionState;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::buffer::CellWidth;
         use ratatui::layout::Rect;
-        use crate::widgets::completion::CompletionState;
 
         let mut completion = CompletionState::derive("/he", &[]).expect("构造补全状态");
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
@@ -3113,11 +3457,19 @@ mod tests {
         let buffer = terminal.backend().buffer();
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
-                if x > area.x && buffer.cell((x - 1, y)).map_or(false, |c| c.cell_width() > 1) {
+                if x > area.x
+                    && buffer
+                        .cell((x - 1, y))
+                        .map_or(false, |c| c.cell_width() > 1)
+                {
                     continue;
                 }
                 let cell = buffer.cell((x, y)).expect("单元格存在");
-                assert_ne!(cell.bg, Color::Reset, "浮层区域不应出现 Reset 穿透：({x}, {y})");
+                assert_ne!(
+                    cell.bg,
+                    Color::Reset,
+                    "浮层区域不应出现 Reset 穿透：({x}, {y})"
+                );
                 assert_ne!(cell.bg, Color::Red, "浮层区域不应泄露底层颜色：({x}, {y})");
                 assert!(
                     cell.bg == theme.bg_base || cell.bg == theme.bg_visual,
@@ -3130,10 +3482,10 @@ mod tests {
 
     #[test]
     fn mode_menu_renders_solid_opaque_background() {
+        use crate::app::ModeMenu;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
-        use crate::app::ModeMenu;
 
         let (events, _rx) = unbounded_channel();
         let mut app = App::new(Theme::global(), events);
@@ -3161,7 +3513,11 @@ mod tests {
         for y in menu_area.y..menu_area.y + menu_area.height {
             for x in menu_area.x..menu_area.x + menu_area.width {
                 let cell = buffer.cell((x, y)).expect("单元格存在");
-                assert_ne!(cell.bg, Color::Reset, "模式菜单不应出现 Reset 穿透：({x}, {y})");
+                assert_ne!(
+                    cell.bg,
+                    Color::Reset,
+                    "模式菜单不应出现 Reset 穿透：({x}, {y})"
+                );
                 assert_ne!(cell.bg, Color::Red, "模式菜单不应泄露底层颜色：({x}, {y})");
                 assert!(
                     cell.bg == theme.bg_base || cell.bg == theme.bg_visual,

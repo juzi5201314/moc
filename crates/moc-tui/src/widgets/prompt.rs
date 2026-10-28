@@ -637,6 +637,48 @@ impl PromptState {
     }
 }
 
+/// 模态/弹窗内编辑多行输入时的按键映射。
+///
+/// 与主输入框共用同一套光标语义（字节偏移、可跨行），只是把回车换成「插入
+/// 换行」：提交与取消由调用方按自己的规则处理。
+pub(crate) fn edit_input(
+    input: &mut PromptState,
+    mods: crossterm::event::KeyModifiers,
+    code: crossterm::event::KeyCode,
+) {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    match (code, mods) {
+        (KeyCode::Enter, _) => input.insert_char('\n'),
+        (KeyCode::Backspace, _) | (KeyCode::Char('h'), KeyModifiers::CONTROL) => input.backspace(),
+        (KeyCode::Delete, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => input.delete(),
+        (KeyCode::Left, KeyModifiers::ALT)
+        | (KeyCode::Left, KeyModifiers::CONTROL)
+        | (KeyCode::Char('b'), KeyModifiers::ALT) => input.move_word_back(),
+        (KeyCode::Right, KeyModifiers::ALT)
+        | (KeyCode::Right, KeyModifiers::CONTROL)
+        | (KeyCode::Char('f'), KeyModifiers::ALT) => input.move_word_forward(),
+        (KeyCode::Left, _) => input.left(),
+        (KeyCode::Right, _) => input.right(),
+        (KeyCode::Up, _) => {
+            input.up();
+        }
+        (KeyCode::Down, _) => {
+            input.down();
+        }
+        (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL) => input.move_line_start(),
+        (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => input.move_line_end(),
+        (KeyCode::Char('k'), KeyModifiers::CONTROL) => input.clear_line_to_end(),
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => input.clear(),
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => input.delete_word_back(),
+        (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            if !character.is_control() =>
+        {
+            input.insert_char(character)
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::PromptState;

@@ -248,13 +248,12 @@ pub enum SessionUpdate {
         /// 仍未完成的待办数。
         open_items: usize,
     },
-    /// 提交新计划。
-    PlanSubmitted {
-        plan_id: String,
-        title: String,
-        path: String,
-        markdown: String,
-    },
+    /// 提交新计划；`plan` 是该版本的完整投影。
+    PlanSubmitted { plan: super::plan::PlanInfo },
+    /// 计划投影变化（收到批注、被新版取代、批准或拒绝）。
+    ///
+    /// 前端按 `plan.plan_id` 覆盖本地投影，不要自己推断状态迁移。
+    PlanUpdated { plan: super::plan::PlanInfo },
     /// 上下文压缩开始：前端应开始计时，并在完成或失败时原位替换这条提示。
     ///
     /// 只有需要等待上游模型的压缩（`remote` / `soft`）才发这条；纯本地裁剪
@@ -614,12 +613,24 @@ mod tests {
             ),
             (
                 SessionUpdate::PlanSubmitted {
-                    plan_id: "plan_1".into(),
-                    title: "标题".into(),
-                    path: "/tmp/plan.md".into(),
-                    markdown: "# 计划".into(),
+                    plan: crate::methods::plan::PlanInfo {
+                        plan_id: "plan_1".into(),
+                        title: "标题".into(),
+                        path: "/tmp/plan.md".into(),
+                        markdown: "# 计划".into(),
+                        status: crate::methods::plan::PlanStatus::Submitted,
+                        version: 1,
+                        previous_plan_id: None,
+                        annotations: Vec::new(),
+                    },
                 },
-                json!({ "type": "plan_submitted", "plan_id": "plan_1", "title": "标题", "path": "/tmp/plan.md", "markdown": "# 计划" }),
+                json!({
+                    "type": "plan_submitted",
+                    "plan": {
+                        "plan_id": "plan_1", "title": "标题", "path": "/tmp/plan.md",
+                        "markdown": "# 计划", "status": "submitted", "version": 1
+                    }
+                }),
             ),
             (
                 SessionUpdate::ContextCompactionStarted,

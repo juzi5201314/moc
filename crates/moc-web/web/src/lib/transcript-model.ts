@@ -72,7 +72,14 @@ export type Block =
       text: string;
       retryable?: boolean;
     }
-  | { kind: "plan"; id: string; planId: string; title: string; path: string }
+  | {
+      kind: "plan";
+      id: string;
+      planId: string;
+      title: string;
+      path: string;
+      version: number;
+    }
   | {
       kind: "footer";
       id: string;
@@ -661,13 +668,7 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       pushStatus(view, "info", `提醒：还有 ${update.open_items} 项待办未完成`);
       break;
     case "plan_submitted": {
-      const plan: PlanInfo = {
-        plan_id: update.plan_id,
-        title: update.title,
-        path: update.path,
-        markdown: update.markdown,
-        status: "submitted",
-      };
+      const plan = update.plan;
       const index = view.plans.findIndex((item) => item.plan_id === plan.plan_id);
       if (index >= 0) view.plans[index] = plan;
       else view.plans.push(plan);
@@ -677,7 +678,16 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
         planId: plan.plan_id,
         title: plan.title,
         path: plan.path,
+        version: plan.version,
       });
+      break;
+    }
+    // 同一计划的投影被改写（批注、被取代、批准）：只换状态，不新增块。
+    case "plan_updated": {
+      const plan = update.plan;
+      const index = view.plans.findIndex((item) => item.plan_id === plan.plan_id);
+      if (index >= 0) view.plans[index] = plan;
+      else view.plans.push(plan);
       break;
     }
     case "context_compaction_started": {

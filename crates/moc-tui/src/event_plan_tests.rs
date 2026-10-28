@@ -408,7 +408,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             .expect("权威计划载入")
             .expect("事件");
         if let AppEvent::PlanReview(result) = event {
-            apply_plan_review(&mut h.app, result);
+            apply_plan_review(&mut h.app, &h.connection, result);
             break;
         }
     }
@@ -461,7 +461,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             .expect("事件");
         if let AppEvent::PlanReview(result) = event {
             assert!(result.is_err());
-            apply_plan_review(&mut h.app, result);
+            apply_plan_review(&mut h.app, &h.connection, result);
             break;
         }
     }
@@ -489,5 +489,118 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             .len(),
         1
     );
+    h.close().await;
+}
+
+/// 批注 → 修订提示 → 自动发送：选区、编辑器、suggestion 围栏与提示内容都走真实 core。
+#[tokio::test]
+async fn plan_annotate_flow_sends_revision_prompt() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+
+    // a 进入批注视图，v 选行，c 写批注。
+    h.key(KeyCode::Char('a'));
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Char('v'));
+    h.key(KeyCode::Down);
+    h.key(KeyCode::Char('c'));
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("审阅窗口仍在");
+    };
+    assert_eq!(state.pane, crate::modal::PlanPane::Annotate);
+    let editor = state.editor.as_ref().expect("编辑器已打开");
+    assert_eq!((editor.start_line, editor.end_line), (2, 3));
+
+    for character in "请写具体".chars() {
+        h.key(KeyCode::Char(character));
+    }
+    handle_modal_key(
+        &mut h.app,
+        &h.connection,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('g'),
+    );
+    handle_modal_key(
+        &mut h.app,
+        &h.connection,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('s'),
+    );
+    let Some(Modal::Plan { state }) = h.app.modal.as_ref() else {
+        panic!("保存后审阅窗口仍在");
+    };
+    assert!(state.editor.is_none());
+    assert_eq!(state.drafts.len(), 1);
+    assert!(
+        state.drafts[0].body.contains("```suggestion"),
+        "Ctrl+G 预填建议围栏"
+    );
+
+    // s 提交给 core，等待修订提示回执。
+    h.key(KeyCode::Char('s'));
+    let prompt = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), h.events.recv())
+            .await
+            .expect("修订回执到达")
+            .expect("事件通道");
+        if let AppEvent::PlanRevised(result) = event {
+            break result.expect("批注提交成功").prompt;
+        }
+    };
+    assert!(prompt.contains("### 1. Lines 2-3"), "{prompt}");
+    assert!(prompt.contains("> 保持接口"), "{prompt}");
+    assert!(prompt.contains("请写具体"), "{prompt}");
+    assert!(prompt.contains("```suggestion"), "{prompt}");
+    h.close().await;
+}
+
+/// 修订回执到达后，审阅窗口关闭并把 core 生成的提示当普通提示发出去。
+#[tokio::test]
+async fn plan_revised_closes_review_and_sends_prompt() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let session = h.app.session.as_ref().expect("会话").id.clone();
+    crate::event::apply_plan_revised(
+        &mut h.app,
+        &h.connection,
+        Ok(moc_protocol::methods::SessionPlanReviseResult {
+            session_id: session.clone(),
+            mode: SessionMode::Plan,
+            prompt: "已根据批注修订".into(),
+        }),
+    );
+    assert!(h.app.modal.is_none());
+    assert!(h.app.inflight_prompts.contains(&session));
+    assert!(h.app.prompt_running);
+    assert!(h.app.blocks.iter().any(|entry| match &entry.block {
+        crate::transcript::Block::User { text } => text == "已根据批注修订",
+        _ => false,
+    }));
+    h.close().await;
+}
+
+/// 批注视图与编辑器绘制：正文几何与行列映射可用，光标落在编辑框里。
+#[tokio::test]
+async fn plan_annotate_pane_draws_body_and_editor() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    h.key(KeyCode::Char('a'));
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
+    let mut view = render::ScrollbackView::new();
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制批注视图");
+    assert!(!h.app.plan_row_map.is_empty());
+    assert_eq!(h.app.plan_row_map[0], 0);
+    assert!(h.app.plan_body_area.height > 0);
+    h.key(KeyCode::Char('c'));
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制批注编辑器");
+    assert!(matches!(
+        h.app.modal,
+        Some(Modal::Plan { ref state }) if state.editor.is_some()
+    ));
     h.close().await;
 }

@@ -193,6 +193,10 @@ pub struct App {
     pub modal_item_hits: Vec<(usize, Rect)>,
     /// 计划审阅中的执行模型文本命中区。
     pub plan_model_area: Rect,
+    /// 计划批注视图的正文区域（鼠标行选择换算用）。
+    pub plan_body_area: Rect,
+    /// 计划批注视图可见源码行号（屏幕行 → 0-based 源码行）。
+    pub plan_row_map: Vec<usize>,
     /// 消息回退时间线区域（鼠标滚动/点击换算用）。
     pub rewind_timeline_area: Rect,
     /// 消息回退详情区域（鼠标滚动换算用）。
@@ -478,6 +482,8 @@ impl App {
             permission_tag_area: Rect::default(),
             modal_item_hits: Vec::new(),
             plan_model_area: Rect::default(),
+            plan_body_area: Rect::default(),
+            plan_row_map: Vec::new(),
             rewind_timeline_area: Rect::default(),
             rewind_detail_area: Rect::default(),
             ask_option_hits: Vec::new(),
@@ -1339,6 +1345,8 @@ impl App {
         self.blocks = blocks;
         self.context_usage = None;
         self.plan_model_area = Rect::default();
+        self.plan_body_area = Rect::default();
+        self.plan_row_map.clear();
         if clm_active {
             self.set_notice("CLM 实验模式已启用：模型将维护实时上下文");
         }

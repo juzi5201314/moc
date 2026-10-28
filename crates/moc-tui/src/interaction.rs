@@ -54,6 +54,8 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         AppEvent::PlanApproval(result) => {
             crate::event::apply_plan_approval(app, connection, result)
         }
+        AppEvent::PlanRevised(result) => crate::event::apply_plan_revised(app, connection, result),
+        AppEvent::PlanDiff(result) => crate::event::apply_plan_diff(app, result),
         AppEvent::PlanExecutionLoaded {
             result,
             auto_prompt,

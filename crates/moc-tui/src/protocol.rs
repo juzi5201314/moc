@@ -66,6 +66,10 @@ pub enum AppEvent {
         result: anyhow::Result<bool>,
     },
     PlanApproval(anyhow::Result<moc_protocol::methods::SessionPlanApproveResult>),
+    /// 批注已落库；`prompt` 是 core 生成、由前端按普通提示发送的修订消息。
+    PlanRevised(anyhow::Result<moc_protocol::methods::SessionPlanReviseResult>),
+    /// 计划版本 diff 回执。
+    PlanDiff(anyhow::Result<moc_protocol::methods::SessionPlanDiffResult>),
     /// 从权威会话状态重新载入待审计划。
     PlanReview(anyhow::Result<moc_protocol::methods::PlanInfo>),
     /// 新执行会话加载完成后，前端才能发起执行提示。

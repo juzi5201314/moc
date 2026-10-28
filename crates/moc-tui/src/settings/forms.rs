@@ -236,7 +236,7 @@ fn edit_key(
         }
         return false;
     }
-    edit_input(&mut edit.input, mods, code);
+    crate::widgets::prompt::edit_input(&mut edit.input, mods, code);
     panel.edit = Some(edit);
     false
 }
@@ -818,39 +818,6 @@ fn moc_mcp_name(name: &str) -> anyhow::Result<()> {
         "MCP 名使用字母、数字、-、_，不能含 __"
     );
     Ok(())
-}
-
-fn edit_input(input: &mut PromptState, mods: KeyModifiers, code: KeyCode) {
-    match (code, mods) {
-        (KeyCode::Enter, _) => input.insert_char('\n'),
-        (KeyCode::Backspace, _) | (KeyCode::Char('h'), KeyModifiers::CONTROL) => input.backspace(),
-        (KeyCode::Delete, _) | (KeyCode::Char('d'), KeyModifiers::CONTROL) => input.delete(),
-        (KeyCode::Left, KeyModifiers::ALT)
-        | (KeyCode::Left, KeyModifiers::CONTROL)
-        | (KeyCode::Char('b'), KeyModifiers::ALT) => input.move_word_back(),
-        (KeyCode::Right, KeyModifiers::ALT)
-        | (KeyCode::Right, KeyModifiers::CONTROL)
-        | (KeyCode::Char('f'), KeyModifiers::ALT) => input.move_word_forward(),
-        (KeyCode::Left, _) => input.left(),
-        (KeyCode::Right, _) => input.right(),
-        (KeyCode::Up, _) => {
-            input.up();
-        }
-        (KeyCode::Down, _) => {
-            input.down();
-        }
-        (KeyCode::Home, _) | (KeyCode::Char('a'), KeyModifiers::CONTROL) => input.move_line_start(),
-        (KeyCode::End, _) | (KeyCode::Char('e'), KeyModifiers::CONTROL) => input.move_line_end(),
-        (KeyCode::Char('k'), KeyModifiers::CONTROL) => input.clear_line_to_end(),
-        (KeyCode::Char('u'), KeyModifiers::CONTROL) => input.clear(),
-        (KeyCode::Char('w'), KeyModifiers::CONTROL) => input.delete_word_back(),
-        (KeyCode::Char(character), KeyModifiers::NONE | KeyModifiers::SHIFT)
-            if !character.is_control() =>
-        {
-            input.insert_char(character)
-        }
-        _ => {}
-    }
 }
 
 pub(super) fn parse_thinking_levels(text: &str) -> anyhow::Result<Value> {

@@ -39,10 +39,11 @@ use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope,
-    InputPart, PlanAction, PlanStatus, PromptParams, SessionCompact, SessionCompactParams,
-    SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction, SessionNew,
-    SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionSetMode,
-    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
+    DiffLineKind, InputPart, PlanAction, PlanAnnotation, PlanStatus, PromptParams, SessionCompact,
+    SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction,
+    SessionNew, SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
+    SessionPlanDiffParams, SessionPlanRevise, SessionPlanReviseParams, SessionPrompt,
+    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
     SessionUnloadParams, SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams,
     UpstreamField,
 };
@@ -2740,5 +2741,201 @@ async fn usage_records_first_token_wait_for_streaming_calls() {
         })
         .expect("usage entry 已落盘");
     assert!(ttft.is_some(), "首 token 等待必须随 usage entry 持久化");
+    h.close().await;
+}
+
+/// 审阅批注 → 修订 → 新版提交：旧版被取代、批注保留、diff 指向上一版。
+#[tokio::test]
+async fn plan_revision_supersedes_previous_version_and_emits_diff() {
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let first_plan = "# 计划\n\n1. 先看代码\n2. 再做修改\n";
+    let second_plan = "# 计划\n\n1. 先看 InspectorPanel\n2. 再做修改\n";
+    let responses = [
+        support::tool_stream(vec![
+            (
+                "save_one",
+                "write_plan",
+                json!({"title": "改版方案", "markdown": first_plan}),
+            ),
+            ("exit_one", "exit_plan", json!({})),
+        ]),
+        support::tool_stream(vec![
+            (
+                "save_two",
+                "write_plan",
+                json!({"title": "改版方案", "markdown": second_plan}),
+            ),
+            ("exit_two", "exit_plan", json!({})),
+        ]),
+    ];
+    let response_index = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&response_index);
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let index = counter.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_raw(
+                responses[index.min(responses.len() - 1)].clone(),
+                "text/event-stream",
+            )
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let session = h.session(SessionMode::Plan).await;
+    h.prompt(&session, "先出方案").await;
+
+    let first = h.load(&session).await;
+    let v1 = first
+        .plans
+        .iter()
+        .find(|plan| plan.status == PlanStatus::Submitted)
+        .expect("首版提交")
+        .clone();
+    assert_eq!(v1.version, 1);
+    assert_eq!(v1.previous_plan_id, None);
+    assert!(v1.annotations.is_empty());
+
+    let annotations = vec![
+        PlanAnnotation {
+            id: "a1".into(),
+            start_line: 3,
+            end_line: 3,
+            quote: "先看代码".into(),
+            body: "太笼统\n\n```suggestion\n1. 先看 crates/moc-web/web/src/components/panels/inspector-panel.tsx\n```"
+                .into(),
+        },
+        PlanAnnotation {
+            id: "a2".into(),
+            start_line: 4,
+            end_line: 4,
+            quote: String::new(),
+            body: "这一步保留".into(),
+        },
+    ];
+    let revised = h
+        .client
+        .call::<SessionPlanRevise>(SessionPlanReviseParams {
+            session_id: session.clone(),
+            plan_id: v1.plan_id.clone(),
+            annotations: annotations.clone(),
+            note: Some("整体保持简洁".into()),
+        })
+        .await
+        .expect("提交批注");
+    assert_eq!(revised.mode, SessionMode::Plan);
+    assert!(
+        revised.prompt.contains("### 1. Lines 3-3"),
+        "{}",
+        revised.prompt
+    );
+    assert!(
+        revised.prompt.contains("> 1. 先看代码"),
+        "原文引用取自已保存的计划：{}",
+        revised.prompt
+    );
+    assert!(
+        revised.prompt.contains("```suggestion"),
+        "{}",
+        revised.prompt
+    );
+    assert!(revised.prompt.contains("### Overall"), "{}", revised.prompt);
+    assert!(
+        revised.prompt.contains("整体保持简洁"),
+        "{}",
+        revised.prompt
+    );
+
+    let pending = h.load(&session).await;
+    let pending_v1 = pending
+        .plans
+        .iter()
+        .find(|plan| plan.plan_id == v1.plan_id)
+        .expect("旧版仍在");
+    assert_eq!(pending_v1.status, PlanStatus::Revised);
+    assert_eq!(pending_v1.annotations.len(), 2);
+    assert_eq!(pending_v1.annotations[0].body, annotations[0].body);
+
+    h.prompt(&session, &revised.prompt).await;
+
+    let after = h.load(&session).await;
+    let old = after
+        .plans
+        .iter()
+        .find(|plan| plan.plan_id == v1.plan_id)
+        .expect("旧版保留");
+    assert_eq!(old.status, PlanStatus::Superseded);
+    assert_eq!(old.annotations.len(), 2, "旧版批注必须保留");
+    let v2 = after
+        .plans
+        .iter()
+        .find(|plan| plan.status == PlanStatus::Submitted)
+        .expect("新版提交")
+        .clone();
+    assert_eq!(v2.version, 2);
+    assert_eq!(v2.previous_plan_id.as_deref(), Some(v1.plan_id.as_str()));
+    assert_eq!(v2.markdown, second_plan);
+
+    let diff = h
+        .client
+        .call::<SessionPlanDiff>(SessionPlanDiffParams {
+            session_id: session.clone(),
+            plan_id: v2.plan_id.clone(),
+        })
+        .await
+        .expect("取版本 diff");
+    assert_eq!(diff.previous_plan_id.as_deref(), Some(v1.plan_id.as_str()));
+    assert_eq!(diff.diff.files.len(), 1);
+    let hunk_lines: Vec<(DiffLineKind, String)> = diff.diff.files[0]
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter().map(|line| (line.kind, line.text.clone())))
+        .collect();
+    assert!(
+        hunk_lines
+            .iter()
+            .any(|(kind, text)| *kind == DiffLineKind::Delete && text == "1. 先看代码")
+    );
+    assert!(
+        hunk_lines
+            .iter()
+            .any(|(kind, text)| *kind == DiffLineKind::Insert && text == "1. 先看 InspectorPanel")
+    );
+
+    let first_diff = h
+        .client
+        .call::<SessionPlanDiff>(SessionPlanDiffParams {
+            session_id: session.clone(),
+            plan_id: v1.plan_id.clone(),
+        })
+        .await
+        .expect("首版没有上一版");
+    assert_eq!(first_diff.previous_plan_id, None);
+    assert!(first_diff.diff.files.is_empty());
+
+    // 模型确实看到了批注正文、建议改法与整体意见。
+    let requests = upstream.received_requests().await.expect("捕获请求");
+    let second_body = requests
+        .last()
+        .map(|request| String::from_utf8_lossy(&request.body).to_string())
+        .expect("第二次请求");
+    assert!(second_body.contains("suggestion"), "{second_body}");
+    assert!(second_body.contains("整体保持简洁"), "{second_body}");
+    assert!(second_body.contains("太笼统"), "{second_body}");
+
+    // 状态迁移对前端是显式的，不靠前端本地推断。
+    assert!(h.updates.lock().iter().any(|update| matches!(
+        update,
+        SessionUpdate::PlanUpdated { plan }
+            if plan.plan_id == v1.plan_id && plan.status == PlanStatus::Superseded
+    )));
+    assert!(h.updates.lock().iter().any(|update| matches!(
+        update,
+        SessionUpdate::PlanSubmitted { plan }
+            if plan.plan_id == v2.plan_id && plan.version == 2
+    )));
     h.close().await;
 }
