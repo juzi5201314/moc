@@ -251,7 +251,7 @@ export function WorkspaceSidebar() {
             type="button"
             variant="outline"
             onClick={() => createQuickSession()}
-            className="h-10 w-full justify-center gap-2 rounded-lg border-border bg-background text-sm font-medium shadow-none hover:bg-accent"
+            className="h-10 w-full justify-center gap-2 rounded-md border-border bg-background text-sm font-medium shadow-none hover:bg-accent"
           >
             <MessageSquarePlusIcon className="size-4" />
             新会话
@@ -281,9 +281,7 @@ export function WorkspaceSidebar() {
           sidebarCollapsed ? "justify-center" : "justify-between px-3",
         )}
       >
-        {!sidebarCollapsed && (
-          <span className="text-[13px] font-medium text-muted-foreground">工作区</span>
-        )}
+        {!sidebarCollapsed && <span className="text-sm text-[var(--text-tertiary)]">工作区</span>}
 
         <div className={cn("flex items-center", sidebarCollapsed ? "flex-col gap-1" : "gap-0.5")}>
           <Tooltip>
@@ -431,7 +429,7 @@ export function WorkspaceSidebar() {
                         handleToggleWorkspaceFold(workspace.cwd);
                       }
                     }}
-                    className="group/ws flex h-9 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60"
+                    className="group/ws flex h-[34px] cursor-pointer items-center gap-2 rounded-md px-2 text-sm font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60"
                   >
                     <FolderIcon
                       className={cn(
@@ -514,7 +512,7 @@ export function WorkspaceSidebar() {
                             }
                           }}
                           className={cn(
-                            "flex h-9 cursor-pointer items-center rounded-lg px-2 text-sm transition-colors",
+                            "flex h-8 cursor-pointer items-center rounded-md px-2 text-sm transition-colors",
                             active === "draft-session"
                               ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                               : "text-foreground/75 hover:bg-sidebar-accent/50 hover:text-foreground",
@@ -545,7 +543,7 @@ export function WorkspaceSidebar() {
                               }
                             }}
                             className={cn(
-                              "group/session relative flex h-9 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-sm transition-colors",
+                              "group/session relative flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 text-sm transition-colors",
                               isSelected
                                 ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                                 : "text-foreground/75 hover:bg-sidebar-accent/50 hover:text-foreground",
@@ -581,7 +579,7 @@ export function WorkspaceSidebar() {
                             {/* 右侧：常驻相对时间；悬停时换成操作菜单（原位覆盖，不改变布局）
                                 这里用 visibility 而不是 display，否则菜单打开时锚点元素失去盒子，
                                 Radix 会把弹出层重新定位到视口左上角。 */}
-                            <span className="shrink-0 text-[12px] text-muted-foreground/60 group-hover/session:invisible">
+                            <span className="shrink-0 text-[11px] text-[var(--text-tertiary)] group-hover/session:invisible">
                               {relativeTime(session.updated_at_ms)}
                             </span>
 
@@ -653,7 +651,7 @@ export function WorkspaceSidebar() {
                         <button
                           type="button"
                           onClick={() => handleToggleWatermark(workspace.cwd)}
-                          className="flex h-8 w-full items-center rounded-lg px-2 text-[12px] text-muted-foreground/70 transition-colors hover:text-foreground"
+                          className="flex h-8 w-full items-center rounded-md px-2 text-[12px] text-[var(--text-tertiary)] transition-colors hover:text-foreground"
                         >
                           {isWatermarkExpanded ? "收起" : `展开其余 ${hiddenCount} 个会话`}
                         </button>
@@ -684,14 +682,14 @@ export function WorkspaceSidebar() {
                   }
                 }}
                 className={cn(
-                  "group/session flex h-9 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-sm transition-colors",
+                  "group/session flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-2 text-sm transition-colors",
                   active === session.id
                     ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                     : "text-foreground/75 hover:bg-sidebar-accent/50 hover:text-foreground",
                 )}
               >
                 <ScrollableTitle text={session.title || "未命名会话"} className="min-w-0 flex-1" />
-                <span className="shrink-0 text-[12px] text-muted-foreground/60">
+                <span className="shrink-0 text-[11px] text-[var(--text-tertiary)]">
                   {relativeTime(session.updated_at_ms)}
                 </span>
               </div>

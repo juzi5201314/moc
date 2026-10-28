@@ -9,7 +9,6 @@ import {
   PencilIcon,
   ShieldCheckIcon,
   Trash2Icon,
-  UsersIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -117,8 +116,8 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
   };
 
   return (
-    <div className="flex flex-col border-b border-border bg-background select-none z-10 shrink-0">
-      {/* 1. 顶部 Header 栏 (对齐 Image 1 / 2) */}
+    <div className="flex flex-col border-b border-border bg-background z-10 shrink-0">
+      {/* 1. 顶部 Header 栏：标题 + 模式 + 右侧工具图标 */}
       <header className="flex h-11 items-center justify-between px-3.5">
         {/* 左侧：标题 + 智能体团队预设 + 模式选择 */}
         <div className="flex min-w-0 items-center gap-2">
@@ -139,51 +138,24 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
             <button
               type="button"
               onClick={handleStartRename}
-              className="group flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold text-foreground hover:bg-muted/60 transition-colors"
+              className="group flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-[var(--accent)]"
               title="点击重命名会话"
             >
-              <span className="truncate max-w-[240px] sm:max-w-[320px]">{title}</span>
-              <PencilIcon className="size-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+              <span className="max-w-[240px] truncate sm:max-w-[320px]">{title}</span>
+              <PencilIcon className="size-3 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
             </button>
           )}
-
-          {/* 👥 智能体团队 */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              >
-                <UsersIcon className="size-3 text-primary" />
-                <span>智能体团队</span>
-                <ChevronDownIcon className="size-2.5 opacity-60" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-48 text-xs">
-              <DropdownMenuLabel className="text-[11px] font-medium text-muted-foreground">
-                智能体预设配置
-              </DropdownMenuLabel>
-              <DropdownMenuItem className="gap-2 font-medium">
-                <UsersIcon className="size-3.5 text-primary" />
-                <span className="flex-1">智能体团队 (协同)</span>
-                <span className="text-[10px] text-muted-foreground">默认</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem className="gap-2">
-                <span>独立智能体 (单代理)</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
 
           {/* 🛡 模式选择 (标准模式 ⌵) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                className="flex items-center gap-1.5 rounded-md px-[7px] py-[3px] text-xs text-[var(--text-tertiary)] transition-colors hover:bg-[var(--accent)] hover:text-foreground"
               >
-                <ShieldCheckIcon className="size-3 text-emerald-500" />
+                <ShieldCheckIcon className="size-3.5" />
                 <span>{currentModeItem.label}</span>
-                <ChevronDownIcon className="size-2.5 opacity-60" />
+                <ChevronDownIcon className="size-3 opacity-60" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-52 text-xs">
@@ -293,15 +265,15 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
         </div>
       </header>
 
-      {/* 2. 二级视图切换栏：对话 | 轨迹 (对齐 Image 1 / 2) */}
-      <div className="flex h-7.5 items-center px-3 gap-4 border-t border-border/40 text-xs">
+      {/* 2. 二级视图切换栏：对话 | 轨迹 */}
+      <div className="flex h-[30px] items-center gap-5 px-3 text-[13px]">
         <button
           type="button"
           onClick={() => onTabChange?.("chat")}
-          className={`relative h-full flex items-center font-medium transition-colors ${
+          className={`relative flex h-full items-center pb-[9px] font-medium transition-colors ${
             activeTab === "chat"
-              ? "text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary"
-              : "text-muted-foreground hover:text-foreground"
+              ? "text-primary after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary"
+              : "text-[var(--text-tertiary)] hover:text-foreground"
           }`}
         >
           对话
@@ -310,10 +282,10 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
         <button
           type="button"
           onClick={() => onTabChange?.("trajectory")}
-          className={`relative h-full flex items-center font-medium transition-colors ${
+          className={`relative flex h-full items-center pb-[9px] font-medium transition-colors ${
             activeTab === "trajectory"
-              ? "text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-primary"
-              : "text-muted-foreground hover:text-foreground"
+              ? "text-primary after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-primary"
+              : "text-[var(--text-tertiary)] hover:text-foreground"
           }`}
         >
           轨迹

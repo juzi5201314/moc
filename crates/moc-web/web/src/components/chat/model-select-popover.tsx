@@ -77,15 +77,10 @@ export function ModelSelectPopover({ sessionId, currentModelId }: ModelSelectPop
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-[var(--accent)] hover:text-foreground"
           aria-label="选择模型"
         >
-          <span className="truncate max-w-[160px] font-mono">{activeModel.id}</span>
-          {activeModel.context_window ? (
-            <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary font-semibold">
-              {Math.round(activeModel.context_window / 1000)}k
-            </span>
-          ) : null}
+          <span className="max-w-[180px] truncate font-mono">{activeModel.id}</span>
           <ChevronDownIcon className="size-3 opacity-60" />
         </button>
       </PopoverTrigger>

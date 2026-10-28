@@ -27,6 +27,7 @@
   --muted-foreground: #61666b; /* --dsw-alias-label-secondary */
   --accent: rgba(38, 49, 72, 0.06); /* --dsw-alias-interactive-bg-hover */
   --accent-foreground: #0f1115;
+  --bubble: #edf3fe; /* --dsw-static-deepseek-50：用户气泡底色 */
   --brand: #4176e6;
   --brand-foreground: #ffffff;
   --destructive: #ec1313; /* --dsw-static-red-600 */
@@ -51,6 +52,10 @@
     0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 3px 8px rgba(0, 0, 0, 0.031), 0 0 16px rgba(0, 0, 0, 0.02); /* --dsw-elevation-panel */
   --shadow-floating:
     0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 3px 8px rgba(0, 0, 0, 0.039), 0 0 20px rgba(0, 0, 0, 0.051); /* --dsw-elevation-prominent */
+  /* 浮层描边：DSH 输入框/回底按钮用 0.5px 半透明环代替 border，边缘更薄 */
+  --elevation-ring: 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  --elevation-card:
+    0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 4px 16px rgba(0, 0, 0, 0.03), 0 0 24px rgba(0, 0, 0, 0.03);
   --chart-1: #4176e6;
   --chart-2: #61666b;
   --chart-3: #979da6;
@@ -78,6 +83,7 @@
   --muted-foreground: #cfd3d6; /* --dsw-alias-label-secondary */
   --accent: rgba(255, 255, 255, 0.08); /* --dsw-alias-interactive-bg-hover */
   --accent-foreground: #f9fafb;
+  --bubble: #1e2a40; /* 会话气泡：深色下取深蓝，避免纯灰和品牌色脱节 */
   --brand: #7aaaff;
   --brand-foreground: #0f1115;
   --destructive: #f25a5a; /* --dsw-static-red-400 */
@@ -103,6 +109,10 @@
   --shadow-floating:
     0 0 0 0.5px rgba(255, 255, 255, 0.2), 0 3px 8px rgba(0, 0, 0, 0.039),
     0 0 20px rgba(0, 0, 0, 0.051);
+  --elevation-ring: 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+  --elevation-card:
+    0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 4px 16px rgba(0, 0, 0, 0.36),
+    0 0 24px rgba(0, 0, 0, 0.24);
   --chart-1: #7aaaff;
   --chart-2: #cfd3d6;
   --chart-3: #979da6;
@@ -147,11 +157,14 @@
   --color-surface-hover: var(--surface-hover);
   --color-border-subtle: var(--border-subtle);
   --color-text-tertiary: var(--text-tertiary);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
+  /* 圆角阶对齐 --dsw-radius-*：4 / 8 / 12 / 16 / 20 / 28。
+     大圆角面（输入框卡片 28、气泡与入口卡 20）在组件里用显式 px，避免语义漂移。 */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
   /* 阴影：取 --dsw-elevation-* / --dsw-shadow-lv* 的柔和多层级，去掉描边那层
      （组件本身已有 border，重复描边会压出硬边）。 */
   --shadow-2xs: 0 1px 1px 0 rgba(0, 0, 0, 0.031);
@@ -181,7 +194,7 @@
   }
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    font-size: 13.5px;
+    font-size: 14px;
     letter-spacing: 0;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     text-rendering: optimizeLegibility;
@@ -211,10 +224,80 @@
   background: color-mix(in srgb, var(--primary) 9%, var(--card));
 }
 
-.moc-workspace-chip {
-  border: 1px solid var(--border);
-  background: var(--surface-raised);
-  box-shadow: var(--shadow-soft);
+/* DSH 用 superellipse 圆角做"圆而不软"的手感；不支持时无副作用地退回普通圆角。 */
+@supports (corner-shape: superellipse(1.5)) {
+  *,
+  ::before,
+  ::after {
+    corner-shape: superellipse(1.5);
+  }
+}
+
+/* ---------------- 会话列宽 ----------------
+   DSH 的列宽随面板比例缩放：clamp(680, 列宽*0.64, 920)，输入卡片再宽 28。
+   用容器查询单位 cqi 实现，免得靠 JS 测量。 */
+.moc-chat-pane {
+  container-type: inline-size;
+}
+
+.moc-chat-column {
+  width: clamp(680px, 64cqi, 920px);
+  max-width: calc(100% - 32px);
+  margin-inline: auto;
+}
+
+.moc-composer-card {
+  width: clamp(712px, calc(64cqi + 28px), 948px);
+  max-width: calc(100% - 16px);
+  margin-inline: auto;
+}
+
+@supports not (width: 1cqi) {
+  .moc-chat-column {
+    width: min(calc(100% - 32px), 920px);
+  }
+  .moc-composer-card {
+    width: min(calc(100% - 16px), 948px);
+  }
+}
+
+/* ---------------- Markdown 代码块 ----------------
+   streamdown 默认是「外框卡片 + 内层白框 + 浮动工具条」的三层结构，
+   DSH 只有一个 muted 底 + 顶部标签条；这里按它暴露的 data-streamdown 标记收敛。 */
+[data-streamdown="code-block"] {
+  margin: 12px 0;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--muted);
+}
+
+[data-streamdown="code-block-header"] {
+  height: 32px;
+  padding: 0 12px;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+[data-streamdown="code-block-header"] span {
+  font-size: 11px;
+}
+
+/* 内层滚动容器：去掉白框与内边距，融进 muted 底 */
+[data-streamdown="code-block"] > div:has(> pre) {
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* 右上角的下载/复制浮动条：去掉自成一块的描边与底色 */
+[data-streamdown="code-block"] > div.absolute > div {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
 }
 
 /* 会话标题：静置时省略号截断；鼠标指向且确实溢出时才横向滚动露出全文。

@@ -44,6 +44,8 @@ import { useUi } from "@/store/ui";
 
 interface ComposerBarProps {
   sessionId: string;
+  /** 空态用：不套底部 dock 的留白，直接内嵌在居中列里。 */
+  inline?: boolean;
 }
 
 const PERMISSIONS: { id: SessionPermission; label: string; desc: string }[] = [
@@ -92,7 +94,7 @@ function readImage(file: File): Promise<ComposerAttachment> {
   });
 }
 
-export function ComposerBar({ sessionId }: ComposerBarProps) {
+export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const [taskExpanded, setTaskExpanded] = useState(false);
   const [isReadingImages, setIsReadingImages] = useState(false);
 
@@ -123,6 +125,14 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
     }
   }, [focusCount]);
 
+  // 输入框随内容长高，最高 336px（与 DSH 的上限一致）
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el || el.value !== text) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 336)}px`;
+  }, [text]);
+
   // 任务清单数据 (从 TodoPhase 折叠提取各项 TodoItem)
   const allTodoItems = useMemo(
     (): TodoItem[] => (view?.todos ?? []).flatMap((phase) => phase.items),
@@ -141,7 +151,8 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
 
   // 轮次与步数统计
   const turnsCount = view?.blocks.filter((b) => b.kind === "user").length ?? 0;
-  const stepsCount = view?.blocks.length ?? 0;
+  // 步数只算真正动过手的步骤（工具与命令），正文/思考不计入，避免数字虚高
+  const stepsCount = view?.blocks.filter((b) => b.kind === "tool" || b.kind === "bash").length ?? 0;
   const slashSuggestions =
     text.startsWith("/") && !text.includes(" ")
       ? SLASH_COMMANDS.filter(({ command }) => command.startsWith(text))
@@ -319,15 +330,15 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
   };
 
   return (
-    <div className="relative border-t border-border/40 bg-background/95 px-4 pt-2 pb-3 backdrop-blur-xs select-none">
-      <div className="mx-auto max-w-4xl space-y-2">
+    <div className={inline ? "relative w-full" : "relative w-full bg-background px-4 pt-2 pb-3"}>
+      <div className={inline ? "space-y-2" : "moc-composer-card space-y-2"}>
         {/* 1. 任务清单折叠条 (对齐 dsh := 任务 X已完成 ^) */}
         {allTodoItems.length > 0 && (
-          <div className="rounded-t-lg border border-b-0 border-border bg-muted/40 text-xs overflow-hidden">
+          <div className="overflow-hidden rounded-t-lg bg-muted text-xs">
             <button
               type="button"
               onClick={() => setTaskExpanded((v) => !v)}
-              className="flex h-8 w-full items-center justify-between px-3 text-muted-foreground hover:text-foreground transition-colors"
+              className="flex h-8 w-full items-center justify-between px-3 text-muted-foreground transition-colors hover:text-foreground"
             >
               <div className="flex items-center gap-2">
                 <CheckSquareIcon className="size-3.5 text-primary" />
@@ -401,8 +412,8 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
           </ul>
         )}
 
-        {/* 2. 主输入框 */}
-        <div className="relative rounded-xl border border-border bg-background shadow-xs focus-within:ring-1 focus-within:ring-primary/40 focus-within:border-primary/60 transition-all">
+        {/* 2. 主输入框：DSH 用 28px 大圆角 + 半透明细环代替描边 */}
+        <div className="relative rounded-[28px] bg-background shadow-[var(--elevation-card)]">
           {slashSuggestions.length > 0 && (
             <div className="absolute bottom-full left-2 z-20 mb-2 w-64 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-md">
               {slashSuggestions.map(({ command, description }) => (
@@ -449,17 +460,16 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
 
           <textarea
             ref={textareaRef}
-            rows={3}
             value={text}
             onChange={(e) => useComposer.getState().setText(sessionId, e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isReadOnly}
             placeholder="发消息或创建任务，输入 / 查看指令"
-            className="w-full resize-none bg-transparent px-3.5 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground/60 leading-relaxed font-normal"
+            className="max-h-[336px] min-h-[52px] w-full resize-none overflow-y-auto bg-transparent px-4 pt-3 pb-1 text-sm font-normal leading-6 outline-none placeholder:text-muted-foreground/70"
           />
 
           {/* 底部内嵌工具条 */}
-          <div className="flex h-10 items-center justify-between px-2.5 pb-1">
+          <div className="flex h-10 items-center justify-between px-2 pb-1">
             <div className="flex items-center gap-1.5">
               <input ref={fileInputRef} type="file" multiple hidden onChange={handlePickFiles} />
               <Tooltip>
@@ -467,7 +477,7 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                    className="flex size-7 items-center justify-center rounded-full bg-muted text-muted-foreground transition-colors hover:text-foreground"
                     aria-label="添加附件或文件"
                   >
                     <PlusIcon className="size-4" />
@@ -481,9 +491,9 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-[var(--accent)] hover:text-foreground"
                   >
-                    <ShieldCheckIcon className="size-3.5 text-emerald-500" />
+                    <ShieldCheckIcon className="size-3.5" />
                     <span>{currentPermissionItem.label}</span>
                     <ChevronDownIcon className="size-3 opacity-60" />
                   </button>
@@ -511,7 +521,7 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
               </DropdownMenu>
             </div>
 
-            {/* 右侧：模型选择框 (带 Max 徽标) + 圆形蓝色发送/停止按钮 */}
+            {/* 右侧：模型选择 + 圆形发送/停止按钮 */}
             <div className="flex items-center gap-2">
               <ModelSelectPopover sessionId={sessionId} currentModelId={currentModelId} />
 
@@ -521,7 +531,7 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
                     <button
                       type="button"
                       onClick={handleStop}
-                      className="flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 transition-transform active:scale-95"
+                      className="flex size-[34px] items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:bg-primary/90 active:scale-95"
                       aria-label="停止当前生成"
                     >
                       <SquareIcon className="size-3.5 fill-current" />
@@ -538,7 +548,7 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
                       disabled={
                         (!text.trim() && images.length === 0) || isReadOnly || isReadingImages
                       }
-                      className="flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 transition-transform active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="flex size-[34px] items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:bg-primary/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                       aria-label="发送消息"
                     >
                       <ArrowUpIcon className="size-4 stroke-[2.5]" />
@@ -551,37 +561,75 @@ export function ComposerBar({ sessionId }: ComposerBarProps) {
           </div>
         </div>
 
-        {/* 3. 会话状态与真实上下文用量 */}
-        <div className="flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-          <span className="inline-flex items-center gap-1.5">
-            <GaugeIcon className="size-3 opacity-70" />
-            <span>
-              {turnsCount > 0 ? `${turnsCount} 轮 ${stepsCount} 步` : "未开始"}
-              {isRunning ? " · 处理中" : ""}
-            </span>
-          </span>
-
-          {context && contextPercent !== null && (
-            <div className="flex min-w-0 items-center gap-2">
-              <DatabaseIcon className="size-3 shrink-0 opacity-70" />
-              <span className="font-mono text-[10px]">
-                {(context.total_tokens / 1000).toFixed(1)}k /{" "}
-                {(context.context_window / 1000).toFixed(0)}k tok
+        {/* 3. 会话状态与真实上下文用量：居中一簇，不两端顶死 */}
+        {inline ? null : (
+          <div className="flex items-center justify-center gap-5 text-[11px] text-[var(--text-tertiary)]">
+            <span className="inline-flex items-center gap-1.5">
+              <GaugeIcon className="size-3" />
+              <span>
+                {turnsCount > 0 ? `${turnsCount} 轮 ${stepsCount} 步` : "未开始"}
+                {isRunning ? " · 处理中" : ""}
               </span>
-              <meter
-                className={
-                  contextPercent > 80 ? "h-1.5 w-16 accent-amber-500" : "h-1.5 w-16 accent-primary"
-                }
-                min={0}
-                max={100}
-                value={contextPercent}
-                aria-label="上下文用量"
-              />
-              <span className="font-mono text-[10px]">{contextPercent}%</span>
-            </div>
-          )}
-        </div>
+            </span>
+
+            {context && contextPercent !== null && (
+              <>
+                <span className="inline-flex items-center gap-1.5">
+                  <DatabaseIcon className="size-3 shrink-0" />
+                  <span className="font-mono">
+                    {(context.total_tokens / 1000).toFixed(1)}k /{" "}
+                    {(context.context_window / 1000).toFixed(0)}k tok
+                  </span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <ContextGauge percent={contextPercent} />
+                  <span className="font-mono">{contextPercent}%</span>
+                </span>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+/** 上下文占用圆环：12px，超过 80% 转成警示色。 */
+function ContextGauge({ percent }: { percent: number }) {
+  const size = 12;
+  const stroke = 1.6;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(100, percent));
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      className={`shrink-0 -rotate-90 ${clamped > 80 ? "text-warn" : "text-primary"}`}
+      aria-hidden="true"
+    >
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity={0.22}
+        strokeWidth={stroke}
+      />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - clamped / 100)}
+      />
+    </svg>
   );
 }

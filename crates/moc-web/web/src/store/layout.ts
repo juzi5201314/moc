@@ -119,7 +119,8 @@ export const useLayout = create<LayoutState>()((set, get) => {
   return {
     sidebarCollapsed: initial.sidebarCollapsed,
     sidebarWidth: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, initial.sidebarWidth)),
-    rightbarOpen: true,
+    // 与 DSH 一致：右栏默认收起，由顶栏按钮或具体入口按需打开
+    rightbarOpen: false,
     rightbarWidth: Math.max(RIGHTBAR_MIN, initial.rightbarWidth),
     rightbarFullscreen: false,
     openRightTabs: DEFAULT_TABS,

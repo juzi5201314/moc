@@ -1,12 +1,19 @@
 import {
-  CheckCircle2Icon,
-  ChevronRightIcon,
+  AlertCircleIcon,
+  BrainIcon,
+  ChevronDownIcon,
   CopyIcon,
   FileDiffIcon,
+  FileTextIcon,
   GitForkIcon,
+  InfoIcon,
   Loader2Icon,
+  PencilIcon,
+  SearchIcon,
+  TerminalIcon,
+  WrenchIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   Confirmation,
@@ -18,9 +25,9 @@ import {
 import {
   Conversation,
   ConversationContent,
-  ConversationEmptyState,
+  ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
-import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import { MessageResponse } from "@/components/ai-elements/message";
 import {
   Question,
   QuestionActions,
@@ -30,13 +37,19 @@ import {
   QuestionPrompt,
   type QuestionValue,
 } from "@/components/ai-elements/question";
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
-import { Terminal } from "@/components/ai-elements/terminal";
-import { Tool, ToolContent } from "@/components/ai-elements/tool";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
-import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { clockTime } from "@/lib/format";
-import type { ToolBlock } from "@/lib/transcript-model";
+import type { Block, ToolBlock } from "@/lib/transcript-model";
+import {
+  activitySnippet,
+  activityVerb,
+  formatDuration,
+  groupTurns,
+  summarizeActivity,
+  type Turn,
+  turnDurationMs,
+} from "@/lib/turn";
 import type { AskParams, PermissionRequestParams } from "@/protocol/types";
 import { type RightTab, useLayout } from "@/store/layout";
 import { forkSession } from "@/store/lifecycle";
@@ -46,8 +59,36 @@ interface ChatThreadProps {
   sessionId: string;
 }
 
+type OpenRightTab = (tab: { kind: RightTab["kind"]; title?: string; path?: string }) => void;
+
 const EMPTY_PERMISSIONS: PermissionRequestParams[] = [];
 const EMPTY_ASKS: AskParams[] = [];
+
+/** 活动行首的动作图标：与 DSH 一样只保留一个 14px 单色字形，不做彩色底板。 */
+const ACTIVITY_ICON = "size-3.5 shrink-0 text-[var(--text-tertiary)]";
+
+function activityIcon(block: Block): ReactNode {
+  switch (block.kind) {
+    case "reasoning":
+      return <BrainIcon className={ACTIVITY_ICON} />;
+    case "bash":
+      return <TerminalIcon className={ACTIVITY_ICON} />;
+    case "plan":
+      return <FileDiffIcon className={ACTIVITY_ICON} />;
+    case "status":
+      return <InfoIcon className={ACTIVITY_ICON} />;
+    case "tool": {
+      const verb = activityVerb(block);
+      if (verb === "运行命令") return <TerminalIcon className={ACTIVITY_ICON} />;
+      if (verb === "读取文件") return <FileTextIcon className={ACTIVITY_ICON} />;
+      if (verb === "编辑文件") return <PencilIcon className={ACTIVITY_ICON} />;
+      if (verb === "搜索") return <SearchIcon className={ACTIVITY_ICON} />;
+      return <WrenchIcon className={ACTIVITY_ICON} />;
+    }
+    default:
+      return <WrenchIcon className={ACTIVITY_ICON} />;
+  }
+}
 
 export function ChatThread({ sessionId }: ChatThreadProps) {
   const view = useTranscript((state) => state.bySession[sessionId]);
@@ -69,181 +110,49 @@ export function ChatThread({ sessionId }: ChatThreadProps) {
     return () => clearInterval(timer);
   }, [view?.running]);
 
-  const handleCopyText = (content: string) => {
-    void navigator.clipboard.writeText(content);
-    toast.success("已复制到剪贴板");
-  };
+  const blocks = view?.blocks ?? [];
+  const turns = useMemo(() => groupTurns(blocks), [blocks]);
+  const isEmpty = blocks.length === 0;
 
   const handleFork = () => {
     void forkSession(sessionId);
   };
 
-  const blocks = view?.blocks ?? [];
-  const isEmpty = blocks.length === 0;
-
-  // 格式化用时：分秒
-  const formatLiveDuration = (totalSec: number) => {
-    const mins = Math.floor(totalSec / 60);
-    const secs = totalSec % 60;
-    return mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
-  };
-
   return (
-    <div className="relative flex-1 flex overflow-hidden">
+    <div className="moc-chat-pane relative flex min-h-0 flex-1 overflow-hidden">
       <Conversation className="flex-1">
-        <ConversationContent className="mx-auto max-w-4xl p-4 sm:p-6 gap-5">
+        <ConversationContent className="moc-chat-column gap-8 px-0 py-6">
           {isEmpty ? (
-            <ConversationEmptyState
-              title="有什么我可以帮你的？"
-              description="选择工作区并描述你要完成的任务。"
-            >
-              {view?.info.cwd && (
-                <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-muted-foreground font-mono">
-                  <span>工作区: {view.info.cwd}</span>
-                </div>
-              )}
-            </ConversationEmptyState>
+            <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-center">
+              <p className="text-sm font-medium text-foreground">有什么我可以帮你的？</p>
+              <p className="text-sm text-[var(--text-tertiary)]">
+                选择工作区并描述你要完成的任务。
+              </p>
+            </div>
           ) : (
-            blocks.map((block) => {
-              switch (block.kind) {
-                // 1. 用户提问轮次
-                case "user":
-                  return (
-                    <div key={block.id} className="group relative">
-                      <Message from="user">
-                        <MessageContent className="text-sm font-normal leading-relaxed">
-                          {block.text ? <MessageResponse>{block.text}</MessageResponse> : null}
-                          {block.images.length > 0 ? (
-                            <div className="flex flex-wrap gap-2">
-                              {block.images.map((image) => {
-                                const imageKey =
-                                  "Url" in image
-                                    ? `${block.id}-url-${image.Url}`
-                                    : `${block.id}-base64-${image.Base64.data.slice(0, 32)}`;
-                                return "Url" in image ? (
-                                  <img
-                                    key={imageKey}
-                                    src={image.Url}
-                                    alt="图片附件"
-                                    className="max-h-64 max-w-full rounded-md object-contain"
-                                  />
-                                ) : (
-                                  <img
-                                    key={imageKey}
-                                    src={`data:${image.Base64.media_type};base64,${image.Base64.data}`}
-                                    alt="图片附件"
-                                    className="max-h-64 max-w-full rounded-md object-contain"
-                                  />
-                                );
-                              })}
-                            </div>
-                          ) : null}
-                        </MessageContent>
-                      </Message>
-
-                      {/* 悬停快捷按钮 */}
-                      <div className="absolute right-0 -bottom-3 hidden group-hover:flex items-center gap-1 bg-background/90 backdrop-blur-xs border border-border rounded-md px-1.5 py-0.5 shadow-2xs text-[10px]">
-                        <button
-                          type="button"
-                          onClick={() => handleCopyText(block.text)}
-                          className="flex items-center gap-1 px-1 py-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-                          title="复制提问"
-                        >
-                          <CopyIcon className="size-3" />
-                          <span>复制</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleFork}
-                          className="flex items-center gap-1 px-1 py-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-                          title="分叉新会话"
-                        >
-                          <GitForkIcon className="size-3" />
-                          <span>分支</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-
-                // 2. 助手正文内容
-                case "text":
-                  return (
-                    <Message key={block.id} from="assistant">
-                      <MessageContent>
-                        <MessageResponse>{block.text}</MessageResponse>
-                      </MessageContent>
-                    </Message>
-                  );
-
-                // 3. 链式思考 (⚙ 思考 · <snippet>)
-                case "reasoning": {
-                  return (
-                    <ReasoningDisclosure
-                      key={block.id}
-                      text={block.text}
-                      durationMs={block.durationMs}
-                    />
-                  );
-                }
-
-                // 4. 终端执行 (> 运行命令 · <command>)
-                case "bash": {
-                  return (
-                    <BashDisclosure key={block.id} command={block.command} output={block.output} />
-                  );
-                }
-
-                // 5. 工具调用 (📄 读取 / ✏ 编辑 / 🔍 搜索 / :: 任务)
-                case "tool": {
-                  return (
-                    <ToolDisclosure key={block.id} block={block} openRightTab={openRightTab} />
-                  );
-                }
-
-                // 6. 轮次尾部统计与反馈栏
-                case "footer": {
-                  return (
-                    <div
-                      key={block.id}
-                      className="flex items-center justify-between border-t border-border/40 pt-2 text-[11px] text-muted-foreground select-none"
-                    >
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={handleFork}
-                          className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                          title="从此处分叉会话"
-                          aria-label="从此处分叉会话"
-                        >
-                          <GitForkIcon className="size-3.5" />
-                        </button>
-                      </div>
-
-                      <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground/70">
-                        {block.durationMs ? (
-                          <span>{(block.durationMs / 1000).toFixed(1)}s</span>
-                        ) : null}
-                        <span>{clockTime(block.atMs)}</span>
-                      </div>
-                    </div>
-                  );
-                }
-
-                default:
-                  return null;
-              }
-            })
+            turns.map((turn, index) => (
+              <TurnView
+                key={turn.id}
+                turn={turn}
+                isLast={index === turns.length - 1}
+                running={Boolean(view?.running)}
+                openRightTab={openRightTab}
+                onFork={handleFork}
+              />
+            ))
           )}
 
-          {/* 7. 深度求索中的实时动画状态栏 (✈ 深度求索中，用时 X分Y秒...) */}
+          {/* 运行中的实时状态：品牌色微光扫过，替代原来的 emoji 状态栏 */}
           {view?.running && (
-            <div className="flex items-center gap-2 py-2 text-xs text-primary font-medium select-none animate-pulse">
-              <span className="text-sm">✈</span>
-              <span>深度求索中，用时 {formatLiveDuration(runningSeconds)}...</span>
+            <div className="flex items-center gap-2 py-1 text-[13px] leading-6">
+              <Loader2Icon className="size-3.5 animate-spin text-primary" />
+              <Shimmer className="font-medium" duration={1.6}>
+                {`深度求索中，用时 ${formatLiveDuration(runningSeconds)}`}
+              </Shimmer>
             </div>
           )}
 
-          {/* 8. 权限审批请求 (HITL) */}
+          {/* 权限审批请求 (HITL) */}
           {permissions.map((req) => (
             <Confirmation
               key={req.request_id}
@@ -254,10 +163,10 @@ export function ChatThread({ sessionId }: ChatThreadProps) {
                 操作权限申请：{req.title || "工具请求调用系统能力"}
               </ConfirmationTitle>
               <ConfirmationRequest>
-                <div className="space-y-2 text-xs">
+                <div className="space-y-2 text-sm">
                   <div className="font-medium text-foreground">{req.tool_name}</div>
                   {req.body ? (
-                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[11px]">
+                    <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-xs leading-5">
                       {req.body}
                     </pre>
                   ) : null}
@@ -267,8 +176,10 @@ export function ChatThread({ sessionId }: ChatThreadProps) {
                 {req.options.map((option) => (
                   <ConfirmationAction
                     key={option.id}
-                    onClick={() => resolvePermission(sessionId, req.request_id, option.id)}
-                    variant={option.kind === "reject_once" ? "outline" : "default"}
+                    onClick={() => {
+                      void resolvePermission(sessionId, req.request_id, option.id);
+                    }}
+                    variant={option.id === "deny" ? "outline" : "default"}
                   >
                     {option.label}
                   </ConfirmationAction>
@@ -277,25 +188,431 @@ export function ChatThread({ sessionId }: ChatThreadProps) {
             </Confirmation>
           ))}
 
-          {/* 9. 提问交互请求 */}
-          {asks.map((ask) => (
-            <AskRequestCard key={ask.request_id} request={ask} sessionId={sessionId} />
+          {/* 提问卡片 */}
+          {asks.map((request) => (
+            <AskCard key={request.request_id} sessionId={sessionId} request={request} />
           ))}
         </ConversationContent>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+          <div className="moc-chat-column flex justify-end">
+            <ConversationScrollButton className="pointer-events-auto size-[34px] rounded-full border-0 bg-background text-foreground shadow-[var(--elevation-card)] hover:bg-muted" />
+          </div>
+        </div>
       </Conversation>
     </div>
   );
 }
 
-function AskRequestCard({ request, sessionId }: { request: AskParams; sessionId: string }) {
-  const [answers, setAnswers] = useState<Record<string, QuestionValue>>(() =>
-    Object.fromEntries(
-      request.questions.map((question) => [question.id, { selectedValues: [], text: "" }]),
-    ),
+function formatLiveDuration(totalSec: number): string {
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
+}
+
+/** 一轮对话：用户气泡 + 助手侧折叠结构。 */
+function TurnView({
+  turn,
+  isLast,
+  running,
+  openRightTab,
+  onFork,
+}: {
+  turn: Turn;
+  isLast: boolean;
+  running: boolean;
+  openRightTab: OpenRightTab;
+  onFork: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      {turn.user ? <UserBubble block={turn.user} onFork={onFork} /> : null}
+      <AssistantTurn
+        turn={turn}
+        isLast={isLast}
+        running={running}
+        openRightTab={openRightTab}
+        onFork={onFork}
+      />
+    </div>
   );
+}
+
+function UserBubble({
+  block,
+  onFork,
+}: {
+  block: Extract<Block, { kind: "user" }>;
+  onFork: () => void;
+}) {
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(block.text);
+    toast.success("已复制提问");
+  };
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-[20px] bg-[var(--bubble)] px-4 py-2.5 text-sm leading-6 text-foreground">
+        {block.text || "（空消息）"}
+        {block.images.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-2">
+            {block.images.map((image) => (
+              <img
+                key={
+                  "Url" in image
+                    ? `${block.id}-url`
+                    : `${block.id}-${image.Base64.data.slice(0, 16)}`
+                }
+                src={
+                  "Url" in image
+                    ? image.Url
+                    : `data:${image.Base64.media_type};base64,${image.Base64.data}`
+                }
+                alt="图片附件"
+                className="max-h-64 max-w-full rounded-md object-contain"
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-1 text-[11px] text-[var(--text-tertiary)]">
+        <span className="font-mono">{clockTime(block.atMs)}</span>
+        <IconButton label="复制提问" onClick={handleCopy}>
+          <CopyIcon className="size-3.5" />
+        </IconButton>
+        <IconButton label="从此处分叉" onClick={onFork}>
+          <GitForkIcon className="size-3.5" />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
+function AssistantTurn({
+  turn,
+  isLast,
+  running,
+  openRightTab,
+  onFork,
+}: {
+  turn: Turn;
+  isLast: boolean;
+  running: boolean;
+  openRightTab: OpenRightTab;
+  onFork: () => void;
+}) {
+  const durationMs = turnDurationMs(turn);
+  const isLive = running && isLast;
+  const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  const open = manualOpen ?? isLive;
+
+  const deliverableFiles = useMemo(() => collectChangedFiles(turn.activity), [turn.activity]);
+  const text = turn.texts.map((block) => block.text).join("\n\n");
+
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(text);
+    toast.success("已复制回复");
+  };
+
+  return (
+    <div className="flex flex-col">
+      {turn.activity.length > 0 || durationMs !== undefined || isLive ? (
+        <button
+          type="button"
+          onClick={() => setManualOpen(!open)}
+          className="flex items-center gap-1 pb-2 text-left text-sm text-[var(--text-tertiary)] transition-colors hover:text-foreground"
+        >
+          <span>
+            {isLive ? "深度求索中" : "已完成"}
+            {durationMs !== undefined && !isLive ? `，用时 ${formatDuration(durationMs)}` : ""}
+          </span>
+          <ChevronDownIcon
+            className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+          />
+        </button>
+      ) : null}
+
+      {turn.activity.length > 0 ? (
+        <>
+          <div className="border-t border-border/60" />
+          {open ? <ActivityList activity={turn.activity} openRightTab={openRightTab} /> : null}
+        </>
+      ) : null}
+
+      {turn.texts.length > 0 ? (
+        <div
+          className={`text-sm leading-6 text-foreground ${turn.activity.length > 0 ? "mt-3" : ""}`}
+        >
+          <MessageResponse>{text}</MessageResponse>
+        </div>
+      ) : null}
+
+      {deliverableFiles.length > 0 ? (
+        <DeliverablesCard files={deliverableFiles} openRightTab={openRightTab} />
+      ) : null}
+
+      {text || turn.footer ? (
+        <div className="mt-2 flex items-center gap-1 text-[11px] text-[var(--text-tertiary)]">
+          <IconButton label="复制回复" onClick={handleCopy}>
+            <CopyIcon className="size-3.5" />
+          </IconButton>
+          <IconButton label="从此处分叉" onClick={onFork}>
+            <GitForkIcon className="size-3.5" />
+          </IconButton>
+          <span className="ml-1 font-mono">{turn.footer ? clockTime(turn.footer.atMs) : ""}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 活动分组：本轮所有思考/命令/工具的归纳标题 + 逐行列表。 */
+function ActivityList({
+  activity,
+  openRightTab,
+}: {
+  activity: Block[];
+  openRightTab: OpenRightTab;
+}) {
+  const summary = summarizeActivity(activity);
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="flex flex-col py-1">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="group flex h-7 items-center gap-1.5 rounded-md px-2 text-left text-sm text-[var(--text-tertiary)] transition-colors hover:bg-[var(--accent)] hover:text-foreground"
+      >
+        <TerminalIcon className="size-3.5 shrink-0" />
+        <span className="truncate">{summary || "执行记录"}</span>
+        <ChevronDownIcon
+          className={`size-3 opacity-0 transition-transform group-hover:opacity-100 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open ? (
+        <div className="mt-0.5 flex flex-col">
+          {activity.map((block) => (
+            <ActivityRow key={block.id} block={block} openRightTab={openRightTab} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 单条活动行：一行摘要，点开才展示正文/命令/结果。 */
+function ActivityRow({ block, openRightTab }: { block: Block; openRightTab: OpenRightTab }) {
+  const [open, setOpen] = useState(false);
+  const verb = activityVerb(block) ?? "事件";
+  const snippet = activitySnippet(block);
+  const tone =
+    block.kind === "status"
+      ? block.tone
+      : block.kind === "tool" && block.isError
+        ? "error"
+        : "info";
+  const hasDetail =
+    block.kind === "reasoning" ||
+    block.kind === "bash" ||
+    block.kind === "tool" ||
+    block.kind === "plan" ||
+    block.kind === "agent-message";
+
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        onClick={() => hasDetail && setOpen((value) => !value)}
+        className={`group flex h-7 items-center gap-1.5 rounded-md px-2 text-left text-[13px] transition-colors ${
+          hasDetail ? "hover:bg-[var(--accent)]" : "cursor-default"
+        }`}
+      >
+        {activityIcon(block)}
+        <span className="shrink-0 font-medium text-foreground">{verb}</span>
+        {snippet ? <span className="truncate text-[var(--text-tertiary)]">{snippet}</span> : null}
+        {tone === "error" ? (
+          <AlertCircleIcon className="size-3.5 shrink-0 text-destructive" />
+        ) : block.kind === "tool" && block.status === "running" ? (
+          <Loader2Icon className="size-3 shrink-0 animate-spin text-primary" />
+        ) : null}
+      </button>
+
+      {open ? <ActivityDetail block={block} openRightTab={openRightTab} /> : null}
+    </div>
+  );
+}
+
+function ActivityDetail({ block, openRightTab }: { block: Block; openRightTab: OpenRightTab }) {
+  if (block.kind === "reasoning") {
+    return (
+      <p className="mt-1 mb-2 pl-8 whitespace-pre-wrap text-[13px] leading-6 text-[var(--text-tertiary)]">
+        {block.text}
+      </p>
+    );
+  }
+
+  if (block.kind === "bash") {
+    return (
+      <div className="mt-1 mb-2 flex flex-col gap-1.5 pl-8">
+        <CodeBlock label="命令" code={block.command} />
+        {block.output ? <CodeBlock label="输出" code={block.output} /> : null}
+      </div>
+    );
+  }
+
+  if (block.kind === "tool") {
+    const tool = block as ToolBlock;
+    return (
+      <div className="mt-1 mb-2 flex flex-col gap-1.5 pl-8">
+        {tool.arguments ? <CodeBlock label="输入参数" code={tool.arguments} /> : null}
+        {tool.result ? <CodeBlock label="执行结果" code={tool.result} /> : null}
+      </div>
+    );
+  }
+
+  if (block.kind === "agent-message") {
+    return (
+      <p className="mt-1 mb-2 pl-8 whitespace-pre-wrap text-[13px] leading-6 text-[var(--text-tertiary)]">
+        {block.body}
+      </p>
+    );
+  }
+
+  if (block.kind === "plan") {
+    return (
+      <div className="mt-1 mb-2 flex items-center gap-2 pl-8 text-[13px] text-[var(--text-tertiary)]">
+        <span className="truncate font-mono">{block.path}</span>
+        <button
+          type="button"
+          onClick={() => openRightTab({ kind: "plan", title: "计划审阅" })}
+          className="shrink-0 text-primary hover:underline"
+        >
+          查看计划
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+/** 代码块：DSH 的形态是"顶条标签 + 复制，正文吃 muted 底"，不带外描边。 */
+function CodeBlock({ label, code }: { label: string; code: string }) {
+  const handleCopy = () => {
+    void navigator.clipboard.writeText(code);
+    toast.success("已复制");
+  };
+
+  return (
+    <div className="overflow-hidden rounded-md bg-muted">
+      <div className="flex h-8 items-center justify-between pl-2.5 pr-1.5">
+        <span className="text-[11px] text-[var(--text-tertiary)]">{label}</span>
+        <IconButton label={`复制${label}`} onClick={handleCopy}>
+          <CopyIcon className="size-3.5" />
+        </IconButton>
+      </div>
+      <pre className="max-h-80 overflow-auto border-t border-border/40 px-2.5 py-2 font-mono text-xs leading-5 text-foreground">
+        {code}
+      </pre>
+    </div>
+  );
+}
+
+function IconButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="flex size-6 items-center justify-center rounded-md text-[var(--text-tertiary)] transition-colors hover:bg-[var(--accent)] hover:text-foreground"
+    >
+      {children}
+    </button>
+  );
+}
+
+type ChangedFileItem = {
+  path: string;
+  hunks?: { lines?: { kind: string }[] }[];
+};
+
+function collectChangedFiles(activity: Block[]): ChangedFileItem[] {
+  const files: ChangedFileItem[] = [];
+  for (const block of activity) {
+    if (block.kind !== "tool") continue;
+    for (const file of block.diff?.files ?? []) files.push(file);
+  }
+  return files;
+}
+
+/** 交付物卡片：对齐 DSH 的「Edited <文件> +X -Y」窄条。 */
+function DeliverablesCard({
+  files,
+  openRightTab,
+}: {
+  files: ChangedFileItem[];
+  openRightTab: OpenRightTab;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isFoldable = files.length > 3;
+  const visibleFiles = isFoldable && !expanded ? files.slice(0, 3) : files;
+
+  return (
+    <div className="mt-3 flex flex-col gap-1 rounded-xl bg-muted/60 p-2">
+      {visibleFiles.map((file) => {
+        let added = 0;
+        let deleted = 0;
+        for (const hunk of file.hunks ?? []) {
+          for (const line of hunk.lines ?? []) {
+            if (line.kind === "insert") added++;
+            if (line.kind === "delete") deleted++;
+          }
+        }
+        return (
+          <button
+            key={file.path}
+            type="button"
+            onClick={() => openRightTab({ kind: "doc", path: file.path })}
+            className="flex h-8 items-center gap-2 rounded-lg px-2 text-left text-[13px] transition-colors hover:bg-[var(--accent)]"
+          >
+            <FileDiffIcon className="size-3.5 shrink-0 text-[var(--text-tertiary)]" />
+            <span className="truncate font-mono text-foreground">{file.path}</span>
+            <span className="ml-auto shrink-0 font-mono text-[11px] text-[var(--text-tertiary)]">
+              {added > 0 ? <span className="text-success">+{added}</span> : null}
+              {added > 0 && deleted > 0 ? " " : null}
+              {deleted > 0 ? <span className="text-destructive">-{deleted}</span> : null}
+            </span>
+          </button>
+        );
+      })}
+      {isFoldable ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="h-7 shrink-0 self-start rounded-md px-2 text-[11px] text-[var(--text-tertiary)] hover:text-foreground"
+        >
+          {expanded ? "收起" : `全部 ${files.length} 个文件`}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function AskCard({ sessionId, request }: { sessionId: string; request: AskParams }) {
+  const [answers, setAnswers] = useState<Record<string, QuestionValue>>({});
+
+  return (
+    <div className="flex flex-col gap-3">
       {request.questions.map((question) => {
         const value = answers[question.id] ?? { selectedValues: [], text: "" };
         return (
@@ -344,226 +661,6 @@ function AskRequestCard({ request, sessionId }: { request: AskParams; sessionId:
           </Question>
         );
       })}
-    </div>
-  );
-}
-
-/** 思考折叠卡片（AI Elements Reasoning）。 */
-function ReasoningDisclosure({ text, durationMs }: { text: string; durationMs?: number }) {
-  const [open, setOpen] = useState(false);
-  const snippet = text.slice(0, 40).replace(/\n/g, " ") || "正在梳理思路...";
-  const durationText = durationMs ? `（${Math.round(durationMs / 1000)}s）` : "";
-
-  return (
-    <Reasoning
-      open={open}
-      onOpenChange={setOpen}
-      defaultOpen={false}
-      isStreaming={false}
-      duration={durationMs ? Math.round(durationMs / 1000) : undefined}
-      className="mb-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2"
-    >
-      <ReasoningTrigger className="text-xs">
-        <span className="font-medium text-foreground/80">思考</span>
-        <span className="truncate text-muted-foreground">· {snippet}</span>
-        {durationText ? (
-          <span className="ml-auto font-mono text-[10px]">{durationText}</span>
-        ) : null}
-      </ReasoningTrigger>
-      <ReasoningContent className="mt-2 whitespace-pre-wrap font-mono text-xs leading-relaxed">
-        {text}
-      </ReasoningContent>
-    </Reasoning>
-  );
-}
-
-/** 终端执行卡片（AI Elements Terminal）。 */
-function BashDisclosure({ command, output }: { command: string; output?: string }) {
-  return (
-    <div className="space-y-1.5">
-      <div className="font-mono text-[11px] text-muted-foreground">$ {command}</div>
-      <Terminal output={output || "（无输出）"} className="rounded-lg border border-border/70" />
-    </div>
-  );
-}
-
-type ChangedFileItem = {
-  path: string;
-  hunks?: { lines?: { kind: string }[] }[];
-};
-
-type RightTabTarget = {
-  kind: RightTab["kind"];
-  path?: string;
-  title?: string;
-};
-
-/** 工具调用卡片 (📄 读取 / ✏ 编辑 / 🔍 搜索 / :: 任务) + 变更交付物 */
-function ToolDisclosure({
-  block,
-  openRightTab,
-}: {
-  block: ToolBlock;
-  openRightTab: (tab: RightTabTarget) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const diffFiles = block.diff?.files ?? [];
-
-  // 解析工具调用描述
-  let title = "工具调用";
-  let icon = "⚙";
-  let paramSummary = "";
-
-  try {
-    const args = JSON.parse(block.arguments || "{}");
-    if (block.name.includes("read") || block.name === "read_file") {
-      title = "读取";
-      icon = "📄";
-      paramSummary = args.path || args.file_path || "";
-    } else if (
-      block.name.includes("edit") ||
-      block.name.includes("write") ||
-      block.name === "edit_file"
-    ) {
-      title = "编辑";
-      icon = "✏";
-      paramSummary = args.path || args.file_path || "";
-    } else if (block.name.includes("todo") || block.name.includes("task")) {
-      title = "更新任务清单";
-      icon = "::";
-      paramSummary = "已更新";
-    } else if (block.name.includes("search") || block.name.includes("grep")) {
-      title = "搜索";
-      icon = "🔍";
-      paramSummary = args.query || args.pattern || args.path || "";
-    } else {
-      title = block.name;
-      paramSummary = Object.values(args).join(", ");
-    }
-  } catch {
-    paramSummary = block.arguments.slice(0, 30);
-  }
-
-  return (
-    <div className="space-y-2">
-      <Tool
-        open={open}
-        onOpenChange={setOpen}
-        className="mb-0 rounded-lg border border-border/70 bg-muted/20 text-xs"
-      >
-        <CollapsibleTrigger className="flex h-9 w-full items-center justify-between gap-3 px-3 text-left text-muted-foreground hover:text-foreground">
-          <span className="flex min-w-0 items-center gap-1.5 truncate">
-            <ChevronRightIcon
-              className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
-            />
-            <span className="font-medium text-foreground/80">
-              {icon} {title}
-            </span>
-            <span className="text-muted-foreground/60">·</span>
-            <span className="truncate font-mono text-muted-foreground">{paramSummary}</span>
-          </span>
-          {block.status === "running" ? (
-            <Loader2Icon className="size-3 shrink-0 animate-spin text-primary" />
-          ) : block.isError ? (
-            <span className="text-[10px] text-destructive">失败</span>
-          ) : (
-            <CheckCircle2Icon className="size-3 shrink-0 text-emerald-500" />
-          )}
-        </CollapsibleTrigger>
-        <ToolContent className="space-y-2 border-t border-border/40 bg-background/50 p-3 font-mono text-[11px]">
-          {block.arguments ? (
-            <div>
-              <span className="font-semibold text-muted-foreground">输入参数</span>
-              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-muted/40 p-2 text-xs">
-                {block.arguments}
-              </pre>
-            </div>
-          ) : null}
-          {block.result ? (
-            <div>
-              <span className="font-semibold text-muted-foreground">执行结果</span>
-              <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded bg-muted/40 p-2 text-xs">
-                {block.result}
-              </pre>
-            </div>
-          ) : null}
-        </ToolContent>
-      </Tool>
-
-      {diffFiles.length > 0 && <DeliverablesCard files={diffFiles} openRightTab={openRightTab} />}
-    </div>
-  );
-}
-
-/** Deliverables 交付物卡片 (已编辑 X 个文件 +X -Y) */
-function DeliverablesCard({
-  files,
-  openRightTab,
-}: {
-  files: ChangedFileItem[];
-  openRightTab: (tab: RightTabTarget) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const totalFiles = files.length;
-  const isFoldable = totalFiles > 4;
-  const visibleFiles = isFoldable && !expanded ? files.slice(0, 4) : files;
-
-  // 统计增删总行数
-  let totalAdd = 0;
-  let totalDel = 0;
-  for (const f of files) {
-    for (const h of f.hunks ?? []) {
-      for (const l of h.lines ?? []) {
-        if (l.kind === "insert") totalAdd++;
-        if (l.kind === "delete") totalDel++;
-      }
-    }
-  }
-
-  return (
-    <div className="rounded-lg border border-border bg-card p-3 text-xs space-y-2 shadow-2xs">
-      <div className="flex items-center justify-between font-medium">
-        <div className="flex items-center gap-1.5 text-foreground">
-          <FileDiffIcon className="size-3.5 text-primary" />
-          <span>已编辑 {totalFiles} 个文件</span>
-          {(totalAdd > 0 || totalDel > 0) && (
-            <span className="text-[11px] font-mono">
-              <span className="text-emerald-500">+{totalAdd}</span>{" "}
-              <span className="text-rose-500">-{totalDel}</span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      <ul className="divide-y divide-border/30 rounded border border-border/50 bg-muted/10 overflow-hidden">
-        {visibleFiles.map((file) => (
-          <li
-            key={file.path}
-            onClick={() => openRightTab({ kind: "doc", path: file.path })}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                openRightTab({ kind: "doc", path: file.path });
-              }
-            }}
-            className="flex items-center justify-between px-2.5 py-1.5 hover:bg-muted/40 cursor-pointer transition-colors"
-          >
-            <span className="font-mono text-muted-foreground truncate max-w-[70%]">
-              {file.path}
-            </span>
-            <span className="text-[10px] text-primary hover:underline">查看差异</span>
-          </li>
-        ))}
-      </ul>
-
-      {isFoldable && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="text-[11px] text-primary hover:underline flex items-center gap-1 pt-1"
-        >
-          <span>{expanded ? "收起" : `全部 ${totalFiles} 个文件 ⌵`}</span>
-        </button>
-      )}
     </div>
   );
 }

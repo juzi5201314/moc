@@ -452,12 +452,12 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
   );
 
   return (
-    <div className="flex h-full w-full flex-col bg-background text-foreground select-none">
-      <div className="flex h-11 shrink-0 items-center justify-between border-b border-border/60 bg-background px-3.5">
-        <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-foreground">
+    <div className="flex h-full w-full flex-col bg-[var(--panel)] text-foreground">
+      <div className="flex h-11 shrink-0 items-center justify-between px-3.5">
+        <div className="flex min-w-0 items-center gap-2 text-[13px] text-[var(--text-tertiary)]">
           {tabKind === "guide" ? (
-            <span className="flex items-center gap-1.5 font-semibold">
-              <CompassIcon className="size-3.5 text-muted-foreground" />
+            <span className="flex items-center gap-1.5">
+              <CompassIcon className="size-3.5" />
               <span>开始</span>
             </span>
           ) : (
@@ -465,16 +465,16 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
               <button
                 type="button"
                 onClick={() => openInspectorTab("guide", "开始")}
-                className="shrink-0 text-xs font-normal text-muted-foreground hover:text-foreground"
+                className="shrink-0 text-[13px] text-[var(--text-tertiary)] hover:text-foreground"
               >
                 开始
               </button>
-              <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/60" />
-              <span className="truncate font-semibold">{tabTitle}</span>
+              <ChevronRightIcon className="size-3 shrink-0 opacity-60" />
+              <span className="truncate text-[13px] font-medium text-foreground">{tabTitle}</span>
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1 text-muted-foreground">
+        <div className="flex items-center gap-1 text-[var(--text-tertiary)]">
           <IconAction
             label={rightbarFullscreen ? "退出全屏" : "全屏最大化"}
             onClick={toggleRightbarFullscreen}
@@ -494,18 +494,18 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tabKind === "guide" ? (
           <div className="flex min-h-full flex-col items-center justify-center p-6 text-center">
-            <div className="mb-6 text-muted-foreground/30">
+            <div className="mb-8 text-muted-foreground/25">
               <CompassIcon className="size-14 stroke-[1.25]" />
             </div>
-            <div className="w-full max-w-sm space-y-2 text-left">
+            <div className="flex w-full max-w-[380px] flex-col gap-3.5 text-left">
               <GuideEntry
-                icon={<FolderIcon className="size-5" />}
+                icon={<FolderIcon className="size-5 text-warn" />}
                 title="工作区目录"
                 description="浏览会话工作区中的目录"
                 onClick={() => openInspectorTab("files", "工作区目录")}
               />
               <GuideEntry
-                icon={<TerminalIcon className="size-5" />}
+                icon={<TerminalIcon className="size-5 text-primary" />}
                 title="运行命令"
                 description="在会话工作区执行 Bash 命令"
                 onClick={() => openInspectorTab("terminal", "运行命令")}
@@ -530,7 +530,7 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
               />
               {visiblePlans.some((plan) => plan.status === "submitted") && (
                 <GuideEntry
-                  icon={<FileDiffIcon className="size-5" />}
+                  icon={<FileDiffIcon className="size-5 text-primary" />}
                   title="待审计划"
                   description="审批或拒绝当前会话提交的计划"
                   onClick={() => openInspectorTab("plan", "计划审阅")}
@@ -538,7 +538,7 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
               )}
               {changedFiles.length > 0 && (
                 <GuideEntry
-                  icon={<FileDiffIcon className="size-5" />}
+                  icon={<FileDiffIcon className="size-5 text-primary" />}
                   title="代码变更"
                   description={`查看 ${changedFiles.length} 个变更文件的 diff`}
                   onClick={() => openInspectorTab("changes", "代码变更")}
@@ -993,14 +993,16 @@ function GuideEntry({
     <button
       type="button"
       onClick={onClick}
-      className="group flex w-full items-center gap-3 rounded-md border border-border bg-card p-3 text-left transition-colors hover:border-primary/40 hover:bg-muted/40"
+      className="group flex w-full items-center gap-3.5 rounded-[20px] border border-[rgba(0,0,0,0.12)] bg-card px-5 py-3.5 text-left transition-colors hover:bg-muted/50 dark:border-[rgba(255,255,255,0.12)]"
     >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+      <span className="flex size-[26px] shrink-0 items-center justify-center text-[var(--text-tertiary)]">
         {icon}
       </span>
-      <span className="min-w-0">
-        <span className="block text-xs font-semibold text-foreground">{title}</span>
-        <span className="mt-0.5 block text-[11px] text-muted-foreground">{description}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-foreground">{title}</span>
+        <span className="mt-0.5 block text-[11px] leading-4 text-[var(--text-tertiary)]">
+          {description}
+        </span>
       </span>
     </button>
   );
