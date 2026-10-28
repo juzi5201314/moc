@@ -25,6 +25,10 @@ pub(crate) fn is_injected_context(message: &Message) -> bool {
 
 /// 注入消息的分块短名；用户和模型的消息返回 `None`。
 pub(crate) fn injected_name(message: &Message) -> Option<&'static str> {
+    // 运行时注入内容不靠前缀识别：角色本身就是标记。
+    if message.role == Role::Custom {
+        return Some("reminder");
+    }
     let text = message.text();
     let trimmed = text.trim_start();
     INJECTED_PREFIXES

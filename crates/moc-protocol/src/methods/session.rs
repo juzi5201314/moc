@@ -468,7 +468,7 @@ pub struct ReminderItem {
     pub digest: String,
 }
 
-/// 挂在一条用户消息上的提醒标记。
+/// 挂在一条 `Custom` 消息上的提醒标记。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReminderStamp {

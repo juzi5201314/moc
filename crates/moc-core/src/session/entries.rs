@@ -198,7 +198,7 @@ pub enum EntryPayload {
         /// 代理间消息的来源信息；普通输入为 `None`。
         agent: Option<moc_protocol::methods::AgentMessageMeta>,
     },
-    /// 运行时提醒：一段按条目差分后写入历史的 user 消息。
+    /// 运行时提醒：一段按条目差分后写入历史的 `Role::Custom` 消息。
     ///
     /// 与 `Message` 分开，是因为提醒不是对话内容：它要带条目摘要供重放时判断
     /// 「哪些条目已经在历史里」，而且不能参与用户消息的计数。

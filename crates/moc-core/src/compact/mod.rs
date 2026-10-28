@@ -117,7 +117,7 @@ pub(crate) struct ModelContext {
     pub messages: Vec<Message>,
     /// 系统提示和工具定义本身的 token 数（不含 transcript 和附加内容）。
     pub fixed_tokens: u64,
-    /// 完整的上下文估算，算法与提示执行时一致（含 `additional_tokens`）。
+    /// 完整的上下文估算，算法与提示执行时一致。
     pub tokens: u64,
 }
 
@@ -128,7 +128,6 @@ pub(crate) async fn model_context(
     state: &crate::session::state::SessionState,
     config: &ResolvedConfig,
     model: &crate::ResolvedModel,
-    additional_tokens: u64,
 ) -> Result<ModelContext, CoreError> {
     let cwd = std::path::Path::new(&state.session.cwd);
     let skills = inner.project_skills(cwd)?;
@@ -174,7 +173,7 @@ pub(crate) async fn model_context(
     let mut measured = Vec::with_capacity(system.len() + messages.len());
     measured.extend(system.iter().cloned());
     measured.extend(messages.iter().cloned());
-    let tokens = context_tokens_with_additional(state, &measured, &tools, additional_tokens);
+    let tokens = context_tokens(state, &measured, &tools);
     let fixed_tokens = messages_tokens(&system).saturating_add(tools_tokens(&tools));
     Ok(ModelContext {
         system,
@@ -188,16 +187,14 @@ pub(crate) async fn model_context(
 
 /// 有上游返回的用量时以它为基准，只估算那次响应之后追加的消息；同时用完整的本地估算
 /// 作下限，避免请求前对历史的变换导致低估。
-pub(crate) fn context_tokens_with_additional(
+pub(crate) fn context_tokens(
     state: &crate::session::state::SessionState,
     messages: &[Message],
     tools: &[ToolDef],
-    additional_tokens: u64,
 ) -> u64 {
     let stored_estimate = messages_tokens(messages)
         .saturating_add(tools_tokens(tools))
-        .saturating_add(native_input_tokens(state))
-        .saturating_add(additional_tokens);
+        .saturating_add(native_input_tokens(state));
     if state.usage.input_tokens == 0 || state.usage_at == 0 {
         return stored_estimate;
     }
@@ -211,8 +208,7 @@ pub(crate) fn context_tokens_with_additional(
         .usage
         .input_tokens
         .saturating_add(state.usage.output_tokens)
-        .saturating_add(added)
-        .saturating_add(additional_tokens);
+        .saturating_add(added);
     provider_anchor.max(stored_estimate)
 }
 
@@ -225,12 +221,6 @@ pub fn threshold(config: &ResolvedConfig, context_window: u64) -> u64 {
         crate::config::CompactionThreshold::Tokens(tokens) => tokens,
     }
 }
-/// 一次压缩中，当前请求里不属于 transcript 的内容。
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ContextBudget {
-    pub additional_tokens: u64,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CompactionBudget {
     pub tokens_before: u64,
@@ -276,7 +266,6 @@ pub(crate) async fn manual(
         session_id,
         CompactReason::Manual,
         instructions,
-        ContextBudget::default(),
         model_selector,
         plan,
     )
@@ -284,17 +273,12 @@ pub(crate) async fn manual(
     .map(|report| report.result)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "压缩的入参各自独立，打包成结构体只是把同样多的字段搬一遍"
-)]
 pub(crate) async fn compact(
     inner: &CoreInner,
     ctx: &RequestContext,
     session_id: &str,
     reason: CompactReason,
     instructions: Option<&str>,
-    context: ContextBudget,
     model_selector: Option<&str>,
     plan: Option<&str>,
 ) -> Result<CompactReport, CoreError> {
@@ -307,20 +291,10 @@ pub(crate) async fn compact(
         ));
     }
     let model = config.resolve_model(model_selector.unwrap_or(&state.model))?;
-    let mut measured = model_context(
-        inner,
-        ctx,
-        &state,
-        &config,
-        &model,
-        context.additional_tokens,
-    )
-    .await?;
+    let mut measured = model_context(inner, ctx, &state, &config, &model).await?;
     let budget = CompactionBudget {
         tokens_before: measured.tokens,
-        fixed_tokens: measured
-            .fixed_tokens
-            .saturating_add(context.additional_tokens),
+        fixed_tokens: measured.fixed_tokens,
     };
     let required_tokens = required_tokens(&config, model.context_window, reason);
     let reason_name = match reason {
@@ -824,7 +798,7 @@ mod tests {
         assert!(tools_tokens(&tools) > 0);
         let state = SessionState::from_entries(vec![header_entry()]).unwrap();
         assert_eq!(
-            context_tokens_with_additional(&state, &messages, &tools, 0),
+            context_tokens(&state, &messages, &tools),
             messages_tokens(&messages) + tools_tokens(&tools)
         );
         // 有 usage 时上游的数字已经包含工具 schema，只追加新消息，不重复计入。
@@ -833,18 +807,11 @@ mod tests {
             SessionState::from_entries(vec![header.clone(), message_entry(&header)]).unwrap();
         state.usage.input_tokens = 100;
         state.usage_at = state.transcript.len();
-        assert_eq!(
-            context_tokens_with_additional(&state, &messages, &tools, 0),
-            100
-        );
-        assert_eq!(
-            context_tokens_with_additional(&state, &messages, &tools, 20),
-            120
-        );
+        assert_eq!(context_tokens(&state, &messages, &tools), 100);
 
         let long_messages = vec![Message::user_text("x".repeat(800))];
         assert_eq!(
-            context_tokens_with_additional(&state, &long_messages, &[], 0),
+            context_tokens(&state, &long_messages, &[]),
             messages_tokens(&long_messages)
         );
     }

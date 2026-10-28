@@ -3048,9 +3048,17 @@ async fn changing_the_mode_injects_only_the_mode_entry() {
         .await
         .expect("切换到 Ask 模式");
     h.prompt(&id, "第二问").await;
+    h.client
+        .call::<SessionSetMode>(SessionSetModeParams {
+            session_id: id.clone(),
+            mode: SessionMode::Normal,
+        })
+        .await
+        .expect("切回 Normal 模式");
+    h.prompt(&id, "第三问").await;
 
     let requests = upstream.received_requests().await.expect("请求记录");
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     let body: serde_json::Value =
         serde_json::from_slice(&requests[1].body).expect("第二个请求 JSON");
     let reminders: Vec<String> = body["messages"]
@@ -3069,29 +3077,51 @@ async fn changing_the_mode_injects_only_the_mode_entry() {
         .iter()
         .filter_map(|entry| entry.reminder.as_ref())
         .collect();
-    assert_eq!(stamps.len(), 2);
+    assert_eq!(stamps.len(), 3);
     let first_keys: Vec<&str> = stamps[0]
         .items
         .iter()
         .map(|item| item.key.as_str())
         .collect();
     assert!(
-        first_keys.contains(&"sandbox") && first_keys.contains(&"local-time"),
-        "首次是全量：{first_keys:?}"
+        first_keys.contains(&"sandbox")
+            && first_keys.contains(&"local-time")
+            && first_keys.contains(&"mode"),
+        "首次是全量，普通模式也有模式契约：{first_keys:?}"
     );
-    assert!(
-        !first_keys.contains(&"mode"),
-        "普通模式没有模式契约，本就不该有条目：{first_keys:?}"
-    );
-    let second_keys: Vec<&str> = stamps[1]
-        .items
-        .iter()
-        .map(|item| item.key.as_str())
-        .collect();
+    let entry_keys = |index: usize| -> Vec<&str> {
+        stamps[index]
+            .items
+            .iter()
+            .map(|item| item.key.as_str())
+            .collect()
+    };
     assert_eq!(
-        second_keys,
+        entry_keys(1),
         vec!["mode"],
         "只有模式变了，沙盒与时间不该重发"
+    );
+    assert_eq!(
+        entry_keys(2),
+        vec!["mode"],
+        "切回普通模式同样只更新模式条目"
+    );
+    let third_body: serde_json::Value =
+        serde_json::from_slice(&requests[2].body).expect("第三个请求 JSON");
+    let visible: Vec<&str> = third_body["messages"]
+        .as_array()
+        .expect("消息数组")
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    let last_reminder = visible
+        .iter()
+        .rev()
+        .find(|text| text.starts_with("<system-reminder>"))
+        .expect("第三个请求里要能看到最新提醒");
+    assert!(
+        last_reminder.contains("Normal mode is active"),
+        "回到普通模式后必须更正旧的只读契约：{last_reminder}"
     );
     h.close().await;
 }

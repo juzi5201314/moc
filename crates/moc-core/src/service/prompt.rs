@@ -291,11 +291,9 @@ fn turn_inputs(
     system: &[Message],
     model: &crate::ResolvedModel,
     tools: &[moc_llm::ToolDef],
-    additional_tokens: u64,
 ) -> TurnInputs {
     let messages = model_messages(state, Some(system), Some(model));
-    let context_tokens =
-        compact::context_tokens_with_additional(state, &messages, tools, additional_tokens);
+    let context_tokens = compact::context_tokens(state, &messages, tools);
     TurnInputs {
         messages,
         context_tokens,
@@ -749,15 +747,20 @@ async fn run_prompt_locked(
                             .map_err(protocol_to_rpc)?;
                     }
                 }
-                if let Some(contract) = mode_contract(mode) {
-                    candidates.push(Reminder::durable(reminder::key::MODE, contract));
-                }
+                candidates.push(Reminder::durable(reminder::key::MODE, mode_contract(mode)));
                 candidates.push(Reminder::durable(
                     reminder::key::SANDBOX,
                     sandbox_contract(permission, &project_config.sandbox),
                 ));
-                if let Some(roster) = &roster {
-                    candidates.push(Reminder::durable(reminder::key::ROSTER, roster.clone()));
+                match &roster {
+                    Some(roster) => {
+                        candidates.push(Reminder::durable(reminder::key::ROSTER, roster.clone()));
+                    }
+                    // 清单消失时撤回旧条目：否则会话里会一直留着一份失效的可通信代理清单。
+                    None => candidates.push(Reminder::retract(
+                        reminder::key::ROSTER,
+                        "The earlier agent roster no longer applies: this session currently has no parent agent or siblings to coordinate with.",
+                    )),
                 }
                 // MCP 服务器可以在会话中途刷新工具列表：索引走提醒通道，系统前缀
                 // 因此不会因为一次工具增删而失效。
@@ -769,6 +772,11 @@ async fn run_prompt_locked(
                     model.context_window,
                 ) {
                     candidates.push(Reminder::durable(reminder::key::MCP_INDEX, index));
+                } else {
+                    candidates.push(Reminder::retract(
+                        reminder::key::MCP_INDEX,
+                        "The earlier MCP tool index no longer applies: no MCP tools are currently available.",
+                    ));
                 }
                 if let Some(detail) = cycle_redirect.take() {
                     candidates.push(Reminder::once(
@@ -789,18 +797,23 @@ async fn run_prompt_locked(
                         .into_iter()
                         .map(|notice| Reminder::once(reminder::key::NOTICE, notice)),
                 );
-                if first_turn {
+                {
                     let mut reminder_state = runtime.reminders.lock().await;
-                    if let Some(text) =
-                        reminder_state.render(&crate::system_prompt::reminder::local_time())
-                    {
-                        candidates.push(Reminder::durable(reminder::key::LOCAL_TIME, text));
+                    if first_turn {
+                        reminder_state.render(&crate::system_prompt::reminder::local_time());
+                    }
+                    // 已注入过的本地时间每轮都作为候选：压缩清空去重表后要补回历史。
+                    if let Some(text) = reminder_state.last_text() {
+                        candidates.push(Reminder::durable(
+                            reminder::key::LOCAL_TIME,
+                            text.to_owned(),
+                        ));
                     }
                 }
                 flush_reminders(&inner, &params.session_id, &record, &candidates).await?;
                 let mut inputs = {
                     let state = record.state.lock().await;
-                    turn_inputs(&state, &system.messages, &model, &tools_available, 0)
+                    turn_inputs(&state, &system.messages, &model, &tools_available)
                 };
                 let context_tokens = inputs.context_tokens;
                 // 提前摘要只改变 soft 压缩的输入来源，不改变 remote/shake 的顺序；触发条件在函数内部判断。
@@ -830,9 +843,6 @@ async fn run_prompt_locked(
                         &params.session_id,
                         compact::CompactReason::Threshold,
                         None,
-                        compact::ContextBudget {
-                            additional_tokens: 0,
-                        },
                         None,
                         None,
                     )
@@ -858,7 +868,7 @@ async fn run_prompt_locked(
                                 .await?;
                             inputs = {
                                 let state = record.state.lock().await;
-                                turn_inputs(&state, &system.messages, &model, &tools_available, 0)
+                                turn_inputs(&state, &system.messages, &model, &tools_available)
                             };
                         }
                         Err(error) => {
@@ -988,9 +998,6 @@ async fn run_prompt_locked(
                                 &params.session_id,
                                 compact::CompactReason::Overflow,
                                 None,
-                                compact::ContextBudget {
-                                    additional_tokens: 0,
-                                },
                                 None,
                                 None,
                             )
@@ -1032,7 +1039,7 @@ async fn run_prompt_locked(
                                 .await?;
                             inputs = {
                                 let state = record.state.lock().await;
-                                turn_inputs(&state, &system.messages, &model, &tools_available, 0)
+                                turn_inputs(&state, &system.messages, &model, &tools_available)
                             };
                             request = build_request(
                                 &model,
@@ -1183,9 +1190,6 @@ async fn run_prompt_locked(
                         &params.session_id,
                         compact::CompactReason::Overflow,
                         None,
-                        compact::ContextBudget {
-                            additional_tokens: 0,
-                        },
                         None,
                         None,
                     )

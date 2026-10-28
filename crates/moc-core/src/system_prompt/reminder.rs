@@ -26,6 +26,19 @@ pub mod key {
     pub const NOTICE: &str = "notice";
 }
 
+/// 条目的注入策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderKind {
+    /// 持久条目：内容不变就不再注入。
+    Durable,
+    /// 一次性条目：每次出现都注入，且不写入去重表——相同的文字也可能是新事实。
+    Once,
+    /// 撤回条目：只在历史里已注入过同 key 条目时才注入，用来声明旧条目失效；
+    /// 它本身记入去重表，所以同一份撤回只写一次。条目不再产生时旧提醒仍留在
+    /// 历史里，撤回项是把「没有新条目」这个事实讲给模型听的方式。
+    Retract,
+}
+
 /// 一个待注入的运行时提醒条目。
 #[derive(Debug, Clone)]
 pub struct Reminder {
@@ -33,8 +46,8 @@ pub struct Reminder {
     pub key: &'static str,
     /// 条目正文，不含 `<system-reminder>` 外壳。
     pub text: String,
-    /// 一次性条目不计入去重表：它每次出现都是新事实，相同的文字也可能需要重发。
-    pub ephemeral: bool,
+    /// 注入策略。
+    pub kind: ReminderKind,
 }
 
 impl Reminder {
@@ -43,7 +56,7 @@ impl Reminder {
         Self {
             key,
             text,
-            ephemeral: false,
+            kind: ReminderKind::Durable,
         }
     }
 
@@ -52,7 +65,16 @@ impl Reminder {
         Self {
             key,
             text,
-            ephemeral: true,
+            kind: ReminderKind::Once,
+        }
+    }
+
+    /// 一个撤回条目：该 key 以前注入过内容时才注入，声明旧条目失效。
+    pub fn retract(key: &'static str, text: impl Into<String>) -> Self {
+        Self {
+            key,
+            text: text.into(),
+            kind: ReminderKind::Retract,
         }
     }
 }
@@ -64,15 +86,20 @@ pub fn digest(text: &str) -> String {
 
 /// 从候选条目里挑出需要注入的那些。
 ///
-/// 一次性条目总是入选；持久条目只在从未注入或正文变化时入选。
+/// 一次性条目总是入选；持久条目只在从未注入或正文变化时入选；撤回条目只在
+/// 历史里已有同 key 条目且还没撤回过时入选。
 pub fn pending<'a>(
     candidates: &'a [Reminder],
     known: &BTreeMap<String, String>,
 ) -> Vec<&'a Reminder> {
     candidates
         .iter()
-        .filter(|reminder| {
-            reminder.ephemeral || known.get(reminder.key) != Some(&digest(&reminder.text))
+        .filter(|reminder| match reminder.kind {
+            ReminderKind::Once => true,
+            ReminderKind::Durable => known.get(reminder.key) != Some(&digest(&reminder.text)),
+            ReminderKind::Retract => known
+                .get(reminder.key)
+                .is_some_and(|known| *known != digest(&reminder.text)),
         })
         .collect()
 }
@@ -81,15 +108,22 @@ pub fn pending<'a>(
 ///
 /// 每个条目各自包一层 `<system-reminder>`：模型据此区分提醒与用户输入，人也认得。
 /// 角色本身已经是 `Custom`，所以重放与压缩不必再嗅探这个前缀。条目之间空一行。
+/// 自带系统级标签的条目（如 `<system-interrupt>`）不再套壳，保留原标签语义。
 pub fn render(selected: &[&Reminder]) -> (Message, Vec<ReminderItem>) {
     let text = selected
         .iter()
-        .map(|reminder| format!("<system-reminder>{}</system-reminder>", reminder.text))
+        .map(|reminder| {
+            if reminder.text.starts_with("<system-") {
+                reminder.text.clone()
+            } else {
+                format!("<system-reminder>{}</system-reminder>", reminder.text)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
     let items = selected
         .iter()
-        .filter(|reminder| !reminder.ephemeral)
+        .filter(|reminder| reminder.kind != ReminderKind::Once)
         .map(|reminder| ReminderItem {
             key: reminder.key.to_owned(),
             digest: digest(&reminder.text),
@@ -101,6 +135,8 @@ pub fn render(selected: &[&Reminder]) -> (Message, Vec<ReminderItem>) {
 #[derive(Debug, Clone, Default)]
 pub struct ReminderState {
     last_day: Option<String>,
+    /// 上次注入的提醒正文：同一提示里压缩清空去重表后，要靠它把条目补回历史。
+    last_text: Option<String>,
 }
 
 impl ReminderState {
@@ -111,7 +147,14 @@ impl ReminderState {
             return None;
         }
         self.last_day = Some(day.to_owned());
-        Some(format!("Current local time: {now_local}."))
+        let text = format!("Current local time: {now_local}.");
+        self.last_text = Some(text.clone());
+        Some(text)
+    }
+
+    /// 上次注入过的提醒正文；还没注入过为 `None`。
+    pub fn last_text(&self) -> Option<&str> {
+        self.last_text.as_deref()
     }
 }
 
@@ -223,5 +266,45 @@ mod tests {
         assert_eq!(selected.len(), 1, "一次性条目相同文本也要重发");
         let (_, items) = render(&selected);
         assert!(items.is_empty(), "一次性条目不该被记下去重表");
+    }
+
+    #[test]
+    fn retraction_fires_once_and_yields_to_a_returning_entry() {
+        let durable = || Reminder::durable(key::ROSTER, "Peers: alpha.".into());
+        let retract = || Reminder::retract(key::ROSTER, "The earlier roster no longer applies.");
+
+        let candidates = [retract()];
+        assert!(
+            pending(&candidates, &BTreeMap::new()).is_empty(),
+            "历史里没有同 key 条目时撤回无事可撤"
+        );
+
+        let candidates = [durable()];
+        let known = known_of(render(&pending(&candidates, &BTreeMap::new())).1);
+        let candidates = [retract()];
+        let selected = pending(&candidates, &known);
+        assert_eq!(selected.len(), 1, "条目消失后撤回一次");
+        let (_, items) = render(&selected);
+        assert_eq!(items.len(), 1, "撤回本身记入去重表");
+        let known = known_of(items);
+
+        assert!(
+            pending(&candidates, &known).is_empty(),
+            "撤回已记录就不再重复注入"
+        );
+        let candidates = [durable()];
+        assert_eq!(pending(&candidates, &known).len(), 1, "条目恢复时重新注入");
+    }
+
+    #[test]
+    fn system_tagged_text_is_not_wrapped_again() {
+        let interrupt = Reminder::once(
+            key::CYCLE,
+            "<system-interrupt reason=\"tool_loop\">stop.</system-interrupt>".into(),
+        );
+        let (message, _) = render(&[&interrupt]);
+        let text = message.text();
+        assert!(text.starts_with("<system-interrupt"));
+        assert!(!text.contains("<system-reminder>"));
     }
 }

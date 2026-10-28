@@ -9,7 +9,7 @@ use moc_protocol::methods::{
 
 use super::CoreInner;
 use crate::ResolvedModel;
-use crate::compact::{self, CompactReason, ContextBudget};
+use crate::compact::{self, CompactReason};
 use crate::error::CoreError;
 
 /// 一次模型切换的结果。
@@ -41,7 +41,7 @@ pub(crate) async fn switch(
     }
     let config = inner.project_config(Path::new(&state.session.cwd))?;
     let overflow = if config.compaction.enabled && state.mode != SessionMode::ClmExperimental {
-        let tokens = compact::model_context(inner, ctx, &state, &config, model, 0)
+        let tokens = compact::model_context(inner, ctx, &state, &config, model)
             .await?
             .tokens;
         let context_window = model.context_window;
@@ -88,7 +88,6 @@ pub(crate) async fn switch(
             session_id,
             CompactReason::Switch,
             None,
-            ContextBudget::default(),
             None,
             None,
         )

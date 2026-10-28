@@ -367,15 +367,17 @@ fn append_piece(config: &ResolvedConfig) -> Option<PromptPiece> {
     })
 }
 
-/// 当前模式的规则提醒正文；普通模式返回 `None`。
+/// 当前模式的规则提醒正文。
 ///
 /// 模式规则只放在运行时提醒里：静态系统提示与模式无关，才能跨目录、跨会话复用缓存。
 /// 所以提醒不能只写「当前是 X 模式，规则见上文」，必须把该模式的规则写全。
-/// 普通模式没有额外规则：工具齐全，静态政策也写明可以改工作区。没有模式提醒就表示
-/// 当前是普通模式。
-pub fn mode_contract(mode: SessionMode) -> Option<String> {
+/// 普通模式也要发一条事实：提醒是持久条目、按正文差分——从只读模式切回 Normal 却
+/// 什么都不写，历史里旧的只读契约会继续生效。
+pub fn mode_contract(mode: SessionMode) -> String {
     let text = match mode {
-        SessionMode::Normal => return None,
+        SessionMode::Normal => {
+            "Normal mode is active: the workspace is writable and the enabled tools may be used directly."
+        }
         SessionMode::Ask => {
             "Ask mode is active: the workspace is read-only, including inside run_code; read and search freely."
         }
@@ -387,7 +389,7 @@ pub fn mode_contract(mode: SessionMode) -> Option<String> {
         }
         SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
-    Some(text.to_owned())
+    text.to_owned()
 }
 
 /// 当前沙盒模式的事实提醒正文。
@@ -846,14 +848,15 @@ mod tests {
         assert!(text.contains("- demo: demo skill"));
     }
 
-    /// 普通模式不发模式提醒；其余模式的提醒要写全规则，不能只报模式名。
+    /// 每个模式都要发模式提醒——包括普通模式：否则切回普通模式时历史里旧的只读
+    /// 契约没有东西去纠正。
     #[test]
-    fn mode_contract_only_declares_non_normal_modes() {
-        assert!(
-            mode_contract(SessionMode::Normal).is_none(),
-            "普通模式没有额外规则，不应发提醒"
-        );
+    fn mode_contract_declares_every_mode() {
         for (mode, needles) in [
+            (
+                SessionMode::Normal,
+                ["Normal mode is active", "writable"].as_slice(),
+            ),
             (
                 SessionMode::Ask,
                 ["Ask mode is active", "read-only"].as_slice(),
@@ -871,7 +874,7 @@ mod tests {
                 ["<clm-experimental>", "clm_context"].as_slice(),
             ),
         ] {
-            let text = mode_contract(mode).expect("非普通模式必须有模式提醒");
+            let text = mode_contract(mode);
             for needle in needles {
                 assert!(text.contains(needle), "{mode:?} 缺少「{needle}」：{text}");
             }
