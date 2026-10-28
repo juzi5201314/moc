@@ -5,3 +5,6 @@
 
 # Python 缓存（scripts/ 下的辅助脚本）
 __pycache__/
+
+# 本地代码图谱缓存
+/.codegraph/
