@@ -397,7 +397,7 @@ pub fn mode_reminder(mode: crate::service::mode::Mode) -> Option<String> {
             "Ask mode applies to this prompt only: the workspace is read-only, including inside run_code; read and search freely. The restriction ends when this prompt ends."
         }
         Mode::Plan => {
-            "Plan mode is active: the workspace is read-only, including inside run_code. Draft with write_plan as often as you need; each call saves a new revision. Before calling exit_plan, make sure the plan is finished: exit_plan submits the last saved plan, ends this prompt immediately, and puts the session into plan review — no tool call runs after it. When the user returns review notes, revise the plan, save it with write_plan, and call exit_plan again."
+            "Plan mode is active: the workspace is read-only, including inside run_code. Save the plan with plan(markdown); read the saved plan file for anchors and refine it with plan(edits) — after review notes, plan(edits) on the reviewed version produces the next draft. Before calling exit_plan, make sure the plan is finished: exit_plan submits the working draft, ends this prompt immediately, and puts the session into plan review — no tool call runs after it."
         }
     };
     Some(text.to_owned())
@@ -894,7 +894,7 @@ mod tests {
         let ask = mode_reminder(Mode::Ask).expect("ask 模式提醒");
         assert!(ask.contains("read-only") && ask.contains("prompt"), "{ask}");
         let plan = mode_reminder(Mode::Plan).expect("plan 模式提醒");
-        for needle in ["Plan mode is active", "write_plan", "exit_plan"] {
+        for needle in ["Plan mode is active", "plan(markdown)", "exit_plan"] {
             assert!(plan.contains(needle), "plan 模式缺少「{needle}」：{plan}");
         }
     }

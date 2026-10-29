@@ -181,7 +181,7 @@ cargo run -p moc-cli -- --resume SESSION_ID
 - `workspace` 仍可读宿主文件（除 `[sandbox].deny_read_paths`），不是保密边界；`workspace-only` 才隐藏宿主 HOME。MCP、`web_fetch`、`web_search` 与 PTC worker 在 core 进程执行，不受 OS 沙盒约束。
 - ask/plan 不注册 edit/write；bash 仍受当前会话 permission 控制。工作区检测会报告只读模式违规，不回滚用户可能同时进行的修改。
 - 计划模式进入时应用 `models.roles.plan`（`none` 时沿用当前模型），手动退出时恢复进入前的模型；审批退出改用选定执行模型。`session/new` 直接以计划模式创建会话同样应用计划角色模型。
-- `write_plan` 只保存会话计划文件和 Submitted entry；`exit_plan({})` 触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话以选定模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
+- `plan` 保存/修订会话计划文件与 Draft entry（`markdown` 全量写草稿、`edits` 锚点增量修订，对已评审版可播种新草稿）；`exit_plan({})` 提交工作草稿触发审阅并结束当前模型轮次，不退出计划模式。前三种审批执行动作使用同一执行模型，其中 `ExecuteCompacted` 的摘要、预算和执行请求均使用该模型；压缩失败保持计划待审且不提前切换模式或模型。新会话执行将计划标记为 Approved，源会话仍保持计划模式，新会话以选定模型开始 Normal 执行（独立会话，只在会话头记出身，不建立父子链接）。CLI 的 `/approve execute|compact|new|reject` 继续可用，未指定模型时沿用当前会话模型。
 - 文件写入使用原子替换。撤销拒绝覆盖编辑之后的外部修改；跨文件 move 分别记录两个文件的撤销，需要两次 `/undo` 恢复两者。覆盖超过读写容量上限（`tools.output.max_file_bytes`，默认 100 MiB）的旧文件时不产出 diff、也不记录撤销，工具结果里会说明。撤销栈每个文件最多保留 8 份、全会话合计 64 MiB，超限淘汰最旧记录，被淘汰的快照不能恢复。
 - 取消会保存已经收到的 assistant 内容并补齐未执行调用的工具结果。后台任务继续运行，直至完成、被 kill、会话卸载或 core 退出。
 - 会话使用追加式 JSONL，逐条 flush；`session/new` 只登记内存，首次写入 entry 时才创建 transcript 文件，因此从未产生对话内容的空会话不会落盘、也不会出现在 `session/list` 中。压缩与历史重写使用临时文件加 rename。它不是每条记录都 fsync 的事务数据库。

@@ -93,7 +93,7 @@ fn normalize_args(args: Value) -> Result<NormalizedArgs, ToolError> {
     Ok((path, edits, move_lines))
 }
 
-fn normalize_edit_item(index: usize, item: Value) -> Result<[String; 3], ToolError> {
+pub(crate) fn normalize_edit_item(index: usize, item: Value) -> Result<[String; 3], ToolError> {
     match item {
         Value::Array(values) if values.len() == 2 || values.len() == 3 => {
             let strings: Result<Vec<_>, _> = values
@@ -248,6 +248,17 @@ pub(crate) fn preview_arguments(ctx: &ToolCtx, args: &Value) -> Option<moc_proto
     .ok()
 }
 
+/// `edits` 数组元素的 schema；`edit` 与 `plan` 共用同一组写法。
+pub(crate) fn edits_items_schema() -> Value {
+    serde_json::json!({
+        "anyOf": [
+            {"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"},"description":"[from, to, replace] with inclusive anchors."},
+            {"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"},"description":"[anchor, text] inserts text after that line."},
+            {"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"},"replace":{"type":"string"}},"required":["from","to","replace"],"additionalProperties":false,"description":"Object form of [from, to, replace]."}
+        ]
+    })
+}
+
 fn edit_schema() -> Value {
     serde_json::json!({
         "type": "object",
@@ -256,13 +267,7 @@ fn edit_schema() -> Value {
             "edits": {
                 "type":"array","minItems":1,
                 "description":"Ordered edits; applied together, and the whole call is rejected if any one fails.",
-                "items": {
-                    "anyOf": [
-                        {"type":"array","minItems":3,"maxItems":3,"items":{"type":"string"},"description":"[from, to, replace] with inclusive anchors."},
-                        {"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"},"description":"[anchor, text] inserts text after that line."},
-                        {"type":"object","properties":{"from":{"type":"string"},"to":{"type":"string"},"replace":{"type":"string"}},"required":["from","to","replace"],"additionalProperties":false,"description":"Object form of [from, to, replace]."}
-                    ]
-                }
+                "items": edits_items_schema()
             },
             "move": {
                 "type":"object","additionalProperties":false,
@@ -323,34 +328,45 @@ async fn apply_one(
     .await
     {
         Ok(output) => Ok(Ok(output)),
-        Err(EditError::Tool(mut content)) => {
-            let error_code = content
-                .split_once(']')
-                .and_then(|(prefix, _)| prefix.strip_prefix('['))
-                .filter(|code| code.starts_with("E_"))
-                .unwrap_or("E_TOOL")
-                .to_owned();
-            if ANCHOR_ERRORS.contains(&error_code.as_str()) {
-                append_anchor_feedback(
-                    ctx,
-                    &request,
-                    &source_path,
-                    target_path.as_deref(),
-                    &mut content,
-                );
-            }
-            Ok(Err(ToolOutcome {
-                content: content.into(),
-                is_error: true,
-                structured_content: None,
-                error_code: Some(error_code),
-                images: Vec::new(),
-                control: ToolControl::Continue,
-                status: None,
-                diff: None,
-            }))
-        }
+        Err(EditError::Tool(content)) => Ok(Err(error_outcome(
+            ctx,
+            &request,
+            &source_path,
+            target_path.as_deref(),
+            content,
+        ))),
         Err(error) => Err(ToolError::new("E_ACCESS", error.to_string())),
+    }
+}
+
+/// `EditError::Tool` 的结果包装：解析错误码；锚点类错误附上当前文件的带锚点内容。
+///
+/// `edit` 与 `plan`（计划文件增量修订）共用，错误回显保持一致。
+pub(crate) fn error_outcome(
+    ctx: &ToolCtx,
+    request: &EditRequest,
+    source_path: &std::path::Path,
+    target_path: Option<&std::path::Path>,
+    mut content: String,
+) -> ToolOutcome {
+    let error_code = content
+        .split_once(']')
+        .and_then(|(prefix, _)| prefix.strip_prefix('['))
+        .filter(|code| code.starts_with("E_"))
+        .unwrap_or("E_TOOL")
+        .to_owned();
+    if ANCHOR_ERRORS.contains(&error_code.as_str()) {
+        append_anchor_feedback(ctx, request, source_path, target_path, &mut content);
+    }
+    ToolOutcome {
+        content: content.into(),
+        is_error: true,
+        structured_content: None,
+        error_code: Some(error_code),
+        images: Vec::new(),
+        control: ToolControl::Continue,
+        status: None,
+        diff: None,
     }
 }
 

@@ -462,7 +462,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
                     support::tool_stream(vec![
                         (
                             "plan",
-                            "write_plan",
+                            "plan",
                             serde_json::json!({
                                 "title": "实施计划",
                                 "markdown": "# 实施计划\n## 实施步骤\n1. 改 A\n2. 改 B\n3. 改 C\n"

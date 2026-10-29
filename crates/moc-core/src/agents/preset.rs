@@ -125,7 +125,7 @@ impl PresetRegistry {
 ///
 /// 禁项逐项对应 CC 的 `disallowedTools`：`edit`/`write`（含 `clm_context` 这类
 /// 写会话上下文的）↔ Edit/Write/NotebookEdit，`spawn_agent` ↔ Agent，
-/// `stop_agent`/`wait_agent` 随之而去（explore 恒为叶节点），`write_plan`/
+/// `stop_agent`/`wait_agent` 随之而去（explore 恒为叶节点），`plan`/
 /// `exit_plan` ↔ ExitPlanMode。`ask` 排除：子代理的提问应经 `message_agent`
 /// 路由给父代理，直接弹用户违反委托契约。
 fn builtin_explore() -> AgentPreset {
@@ -135,7 +135,7 @@ fn builtin_explore() -> AgentPreset {
         "spawn_agent",
         "stop_agent",
         "wait_agent",
-        "write_plan",
+        "plan",
         "exit_plan",
         "clm_context",
         "ask",

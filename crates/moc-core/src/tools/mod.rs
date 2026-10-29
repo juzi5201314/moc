@@ -361,7 +361,7 @@ impl ToolRegistry {
                 Arc::new(agent::StopAgentTool),
                 Arc::new(agent::WaitAgentTool),
                 Arc::new(agent::YieldTool),
-                Arc::new(plan::WritePlanTool),
+                Arc::new(plan::PlanTool),
                 Arc::new(plan::ExitPlanTool),
                 Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::RunCodeTool),

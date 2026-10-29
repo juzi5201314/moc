@@ -130,7 +130,7 @@ fn mode_mask(mode: Mode) -> ModeMask {
 /// 插件可以回调的宿主工具白名单：纯读取与联网检索。
 ///
 /// 只按 `Tier::Read` 放行会连带放出 `job`（能杀后台任务）、`ask`（要人机交互）、
-/// `todo`、`write_plan`/`exit_plan`（会结束回合）和 `skill`，所以这里显式列举。
+/// `todo`、`plan`/`exit_plan`（会结束回合）和 `skill`，所以这里显式列举。
 const HOST_TOOLS: &[&str] = &["read", "grep", "find", "web_search", "web_fetch"];
 
 fn host_tool_allowed(name: &str) -> bool {
@@ -262,7 +262,7 @@ mod tests {
             "job",
             "ask",
             "todo",
-            "write_plan",
+            "plan",
             "exit_plan",
             "skill",
             "bash",

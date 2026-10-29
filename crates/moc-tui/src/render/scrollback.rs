@@ -2159,7 +2159,7 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                 }
             })
             .unwrap_or_default(),
-        "job" | "write_plan" | "exit_plan" => String::new(),
+        "job" | "plan" | "exit_plan" => String::new(),
         "run_code" => ui_description(args).unwrap_or_default().to_owned(),
         _ => {
             // 未知工具：参数截断展示

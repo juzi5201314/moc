@@ -41,9 +41,9 @@ use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope,
     DiffLineKind, InputPart, PlanAction, PlanAnnotation, PlanStatus, PromptMode, PromptParams,
     SessionCompact, SessionCompactParams, SessionEngine, SessionLoad, SessionLoadParams,
-    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPlanApprove,
-    SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams, SessionPlanMode,
-    SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams, SessionPrompt,
+    SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams,
+    SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams, SessionPrompt,
     SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate,
     SessionUpdateMethod, SessionUsage, SessionUsageParams, UpstreamField,
 };
@@ -720,7 +720,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
                     "index": 0,
                     "id": "call_plan",
                     "type": "function",
-                    "function": {"name": "write_plan", "arguments": plan_arguments},
+                    "function": {"name": "plan", "arguments": plan_arguments},
                 }, {
                     "index": 1,
                     "id": "call_exit",
@@ -833,7 +833,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
         submitted
             .message
             .tool_calls()
-            .any(|call| call.name == "write_plan")
+            .any(|call| call.name == "plan")
     );
     let notifications = updates.lock();
     let exit_started = notifications
@@ -943,7 +943,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
     assert!(
         plan_tools
             .iter()
-            .any(|tool| tool["function"]["name"] == "write_plan")
+            .any(|tool| tool["function"]["name"] == "plan")
     );
     // 模式不裁剪声明面：写工具 schema 仍在表中，执行时才被 plan 模式拒绝。
     assert!(
@@ -2018,7 +2018,7 @@ async fn plan_approval_defaults_to_current_session_model() {
     });
     let responses = [
         support::tool_stream(vec![
-            ("call_plan", "write_plan", plan_arguments),
+            ("call_plan", "plan", plan_arguments),
             ("call_exit", "exit_plan", json!({})),
         ]),
         text_stream("Implementation started."),
@@ -2124,7 +2124,7 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
                     support::tool_stream(vec![
                         (
                             "save",
-                            "write_plan",
+                            "plan",
                             json!({"title":"执行方案", "markdown":"# 方案\n保留接口"}),
                         ),
                         ("exit", "exit_plan", json!({})),
@@ -2232,7 +2232,7 @@ async fn plan_new_session_uses_selected_execution_model() {
                 support::tool_stream(vec![
                     (
                         "save",
-                        "write_plan",
+                        "plan",
                         json!({"title":"子会话方案", "markdown":"# 方案\n实现接口"}),
                     ),
                     ("exit", "exit_plan", json!({})),
@@ -2303,12 +2303,12 @@ async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
                 0 => ("missing", "exit_plan", json!({})),
                 1 => (
                     "invalid_write",
-                    "write_plan",
+                    "plan",
                     json!({"title":"方案", "markdown":"# 方案", "extra":true}),
                 ),
                 2 => (
                     "save",
-                    "write_plan",
+                    "plan",
                     json!({"title":"方案", "markdown":"# 方案"}),
                 ),
                 3 => ("invalid_exit", "exit_plan", json!({"extra":true})),
@@ -2782,7 +2782,7 @@ async fn plan_revision_supersedes_previous_version_and_emits_diff() {
         support::tool_stream(vec![
             (
                 "save_one",
-                "write_plan",
+                "plan",
                 json!({"title": "改版方案", "markdown": first_plan}),
             ),
             ("exit_one", "exit_plan", json!({})),
@@ -2790,7 +2790,7 @@ async fn plan_revision_supersedes_previous_version_and_emits_diff() {
         support::tool_stream(vec![
             (
                 "save_two",
-                "write_plan",
+                "plan",
                 json!({"title": "改版方案", "markdown": second_plan}),
             ),
             ("exit_two", "exit_plan", json!({})),
@@ -2963,6 +2963,250 @@ async fn plan_revision_supersedes_previous_version_and_emits_diff() {
         SessionUpdate::PlanSubmitted { plan }
             if plan.plan_id == v2.plan_id && plan.version == 2
     )));
+    h.close().await;
+}
+
+/// `plan(edits)` 三态：草稿原地修订、已评审版本播种新草稿、审阅中拒绝。
+#[tokio::test]
+async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::{Value, json};
+
+    /// 指定工具调用的结果文本；锚点和 URI 只从工具结果里取（系统提示也含 local://）。
+    fn result_text(body: &Value, call_id: &str) -> String {
+        body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|message| message["tool_call_id"].as_str() == Some(call_id))
+            .map(|message| match &message["content"] {
+                Value::String(text) => text.clone(),
+                Value::Array(parts) => parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            })
+            .unwrap_or_default()
+    }
+    /// 修订提示是最后一条 user 消息，里面带底版的 `local://` 路径。
+    fn last_user_text(body: &Value) -> String {
+        body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|message| message["role"].as_str() == Some("user"))
+            .filter_map(|message| message["content"].as_str())
+            .last()
+            .unwrap_or_default()
+            .to_owned()
+    }
+    fn plan_uri(text: &str) -> String {
+        let start = text.find("local://").expect("消息里应有计划 URI");
+        let tail = &text[start..];
+        let end = tail.find(".md").map(|at| at + 3).unwrap_or(tail.len());
+        tail[..end].to_owned()
+    }
+    /// `read` 输出里取目标行的锚点前缀（`{anchor}│{line}`）。
+    fn anchor_for(text: &str, needle: &str) -> String {
+        text.lines()
+            .filter_map(|line| line.split_once('│'))
+            .find(|(_, content)| *content == needle)
+            .map(|(anchor, _)| anchor.to_owned())
+            .unwrap_or_else(|| panic!("行 {needle} 应有锚点：{text}"))
+    }
+
+    let markdown_a = "# 方案\n1. 第一步\n2. 第二步\n3. 第三步\n";
+    let markdown_b = "# 方案\n1. 第一步\n2. 第二步\n3. 第三步\n4. 第四步\n";
+    let upstream = MockServer::builder().start().await;
+    let index = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&index);
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |request: &wiremock::Request| {
+            let at = counter.fetch_add(1, Ordering::SeqCst);
+            let response = match at {
+                0 => support::tool_stream(vec![(
+                    "save_a",
+                    "plan",
+                    json!({"title": "实施", "markdown": markdown_a}),
+                )]),
+                1 => support::tool_stream(vec![(
+                    "save_b",
+                    "plan",
+                    json!({"markdown": markdown_b}),
+                )]),
+                2 => {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    support::tool_stream(vec![(
+                        "read_draft",
+                        "read",
+                        json!({"path": plan_uri(&result_text(&body, "save_b"))}),
+                    )])
+                }
+                3 => {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    let anchor = anchor_for(&result_text(&body, "read_draft"), "2. 第二步");
+                    support::tool_stream(vec![
+                        (
+                            "patch_draft",
+                            "plan",
+                            json!({"edits": [[anchor, anchor, "2a. 新增的第二步"]]}),
+                        ),
+                        ("exit_draft", "exit_plan", json!({})),
+                    ])
+                }
+                // 审阅中尝试 edits：应在锚点校验之前就被拒绝。
+                4 => support::tool_stream(vec![(
+                    "blocked",
+                    "plan",
+                    json!({"edits": [["1aa", "1aa", "篡改"]]}),
+                )]),
+                5 => text_stream("等审阅结果"),
+                // 批注返回后：读冻结底版 → edits 播种新草稿 → 提交。
+                6 => {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    support::tool_stream(vec![(
+                        "read_v1",
+                        "read",
+                        json!({"path": plan_uri(&last_user_text(&body))}),
+                    )])
+                }
+                7 => {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap();
+                    let read_output = result_text(&body, "read_v1");
+                    let from = anchor_for(&read_output, "3. 第三步");
+                    let to = anchor_for(&read_output, "4. 第四步");
+                    support::tool_stream(vec![
+                        (
+                            "seed_draft",
+                            "plan",
+                            json!({"edits": [[from, to, "3. 细化后的第三步\n4. 第四步"]]}),
+                        ),
+                        ("exit_seed", "exit_plan", json!({})),
+                    ])
+                }
+                _ => text_stream("修订完成"),
+            };
+            ResponseTemplate::new(200).set_body_raw(response, "text/event-stream")
+        })
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
+    let session = h.session_plan(SessionEngine::Standard).await;
+    let sessions = h.root.path().join("sessions");
+    let plans_dir = |loaded: &SessionLoadResult| {
+        moc_core::session::store::SessionStore::new(&sessions)
+            .paths_for(
+                std::path::Path::new(&loaded.session.cwd),
+                &session,
+                loaded.session.created_at_ms,
+            )
+            .plans()
+    };
+
+    // 第一次提示：markdown 两次保存复用同一 plan_id，edits 原地修订后提交。
+    h.prompt(&session, "起草计划").await;
+    let loaded = h.load(&session).await;
+    let v1 = loaded
+        .plans
+        .iter()
+        .find(|plan| plan.status == PlanStatus::Submitted)
+        .expect("提交的 v1")
+        .clone();
+    assert_eq!(v1.version, 1);
+    let expected_v1 =
+        "# 方案\n1. 第一步\n2. 第二步\n2a. 新增的第二步\n3. 第三步\n4. 第四步\n";
+    assert_eq!(v1.markdown, expected_v1);
+    let v1_file = plans_dir(&loaded).join(format!("{}.md", v1.plan_id));
+    assert_eq!(
+        std::fs::read_to_string(&v1_file).expect("v1 计划文件"),
+        expected_v1
+    );
+
+    // 审阅中调用 edits 被拒绝，冻结版不受影响。
+    h.prompt(&session, "趁审阅改计划").await;
+    let blocked = h
+        .load(&session)
+        .await
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .find(|result| result.tool_call_id == "blocked")
+        .expect("拒绝的工具结果")
+        .clone();
+    assert!(blocked.is_error);
+    assert!(
+        blocked.content.contains("under review"),
+        "{}",
+        blocked.content
+    );
+    assert_eq!(
+        std::fs::read_to_string(&v1_file).expect("v1 计划文件"),
+        expected_v1
+    );
+
+    // 用户批注后：edits 命中已评审版本，播种出新草稿再提交为 v2。
+    let revised = h
+        .client
+        .call::<SessionPlanRevise>(SessionPlanReviseParams {
+            session_id: session.clone(),
+            plan_id: v1.plan_id.clone(),
+            annotations: vec![PlanAnnotation {
+                id: "a1".into(),
+                start_line: 5,
+                end_line: 5,
+                quote: "3. 第三步".into(),
+                body: "第三步再细化".into(),
+            }],
+            note: None,
+        })
+        .await
+        .expect("提交批注");
+    h.prompt(&session, &revised.prompt).await;
+
+    let after = h.load(&session).await;
+    let old = after
+        .plans
+        .iter()
+        .find(|plan| plan.plan_id == v1.plan_id)
+        .expect("v1 保留");
+    assert_eq!(old.status, PlanStatus::Superseded);
+    // 被播种的底版是冻结 artifact：文件内容与批注都不能被修订过程改写。
+    assert_eq!(
+        std::fs::read_to_string(&v1_file).expect("v1 计划文件"),
+        expected_v1
+    );
+    assert_eq!(old.annotations.len(), 1);
+
+    let v2 = after
+        .plans
+        .iter()
+        .find(|plan| plan.status == PlanStatus::Submitted)
+        .expect("提交的 v2")
+        .clone();
+    assert_ne!(v2.plan_id, v1.plan_id);
+    assert_eq!(v2.version, 2);
+    assert_eq!(v2.previous_plan_id.as_deref(), Some(v1.plan_id.as_str()));
+    let expected_v2 =
+        "# 方案\n1. 第一步\n2. 第二步\n2a. 新增的第二步\n3. 细化后的第三步\n4. 第四步\n";
+    assert_eq!(v2.markdown, expected_v2);
+    assert_eq!(v2.title, v1.title);
+    assert_eq!(
+        std::fs::read_to_string(plans_dir(&after).join(format!("{}.md", v2.plan_id)))
+            .expect("v2 计划文件"),
+        expected_v2
+    );
+
+    // 没有遗留的 Draft：新草稿已被 exit_plan 提走，底版不是 Draft。
+    assert!(
+        after
+            .plans
+            .iter()
+            .all(|plan| plan.status != PlanStatus::Draft)
+    );
     h.close().await;
 }
 

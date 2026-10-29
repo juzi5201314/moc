@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, directory, or session resource URI; returns hashline anchors for edit."
+        "Read a text file, directory, or session resource URI; returns hashline anchors for edit and plan edits."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -56,11 +56,11 @@ impl Tool for ReadTool {
         Box::pin(async move {
             let args: ReadArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let (path, display, immutable) = match ResourceRouter::resolve_read(ctx, &args.path)
+            let (path, display) = match ResourceRouter::resolve_read(ctx, &args.path)
                 .map_err(|error| ToolError::new(error.code, error.message))?
             {
                 Some(resource) => match resource.backing {
-                    ResourceBacking::File(path) => (path, resource.uri, true),
+                    ResourceBacking::File(path) => (path, resource.uri),
                     ResourceBacking::Namespace { listing, .. } => {
                         return Ok(ToolOutcome::success(render_text_resource(
                             &resource.uri,
@@ -70,11 +70,7 @@ impl Tool for ReadTool {
                         )));
                     }
                 },
-                None => (
-                    resolve_path(&ctx.cwd, &args.path)?,
-                    args.path.clone(),
-                    false,
-                ),
+                None => (resolve_path(&ctx.cwd, &args.path)?, args.path.clone()),
             };
             if path.is_dir() {
                 return Ok(ToolOutcome::success(list_directory(&path, &ctx.cwd)?));
@@ -116,7 +112,7 @@ impl Tool for ReadTool {
                 .read
                 .line_max_bytes
                 .min(page_budget.saturating_sub(7));
-            let anchored = !immutable && snapshot.bytes.len() <= 4 * 1024 * 1024;
+            let anchored = snapshot.bytes.len() <= 4 * 1024 * 1024;
             let mut selected = Vec::new();
             let mut modes = Vec::new();
             let mut rendered_bytes = 0usize;
@@ -197,7 +193,7 @@ impl Tool for ReadTool {
             if has_uneditable_shown {
                 output.push_str("\nLines shown as a size notice instead of an anchor are not editable; inspect them with bash or rewrite the file with write.");
             }
-            if !anchored && !immutable {
+            if !anchored {
                 ctx.anchors.invalidate(&path);
             }
             Ok(ToolOutcome::success(output))

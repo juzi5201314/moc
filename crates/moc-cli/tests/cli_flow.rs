@@ -143,8 +143,8 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
         if body["stream"] != true { return ResponseTemplate::new(200).set_body_json(json!({"id":"s","choices":[{"index":0,"message":{"role":"assistant","content":"保留已批准计划"},"finish_reason":"stop"}]})); }
         let response = match seen.fetch_add(1, Ordering::SeqCst) {
             0 => {
-                assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "write_plan"));
-                call("plan", "write_plan", json!({"title":"实施方案","markdown":"# 可审阅计划\n保留公开接口。"}))
+                assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "plan"));
+                call("plan", "plan", json!({"title":"实施方案","markdown":"# 可审阅计划\n保留公开接口。"}))
             }
             1 => call("exit", "exit_plan", json!({})),
             _ => {
@@ -172,7 +172,7 @@ async fn interactive_plan_approval_and_invalid_command_preserve_the_repl() {
     assert!(stdout.contains("上下文压缩"));
     assert!(stdout.contains("模型 p/gpt-test:off：调用"), "{stdout}");
     assert!(
-        stdout.contains("→ write_plan: {"),
+        stdout.contains("→ plan: {"),
         "工具行必须带上参数摘要：{stdout}"
     );
     let stderr = String::from_utf8(output.stderr).unwrap();

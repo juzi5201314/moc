@@ -256,7 +256,7 @@ impl ResourceRouter {
             None => Ok(()),
             Some(_) => Err(ResourceError::new(
                 "E_URI_READ_ONLY",
-                "session resource URIs are read-only; plans are saved with write_plan",
+                "session resource URIs are read-only; plans are saved with the plan tool",
             )),
         }
     }

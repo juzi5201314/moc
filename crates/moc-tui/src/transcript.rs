@@ -431,7 +431,7 @@ pub(crate) fn tool_body_policy(name: &str) -> ToolBody {
         "read" => ToolBody::FullOnly,
         "grep" | "find" => ToolBody::Count,
         "todo" | "TodoReminder" | "skill" | "clm_context" | "spawn_agent" | "list_agents"
-        | "stop_agent" | "yield" | "write_plan" | "exit_plan" => ToolBody::None,
+        | "stop_agent" | "yield" | "plan" | "exit_plan" => ToolBody::None,
         _ => ToolBody::Preview,
     }
 }

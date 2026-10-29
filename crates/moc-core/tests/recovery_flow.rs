@@ -361,7 +361,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                 tool_stream(vec![
                     (
                         "plan",
-                        "write_plan",
+                        "plan",
                         json!({"title":"实施计划","markdown":"# 保留接口\n1. 完成实现"}),
                     ),
                     ("exit", "exit_plan", json!({})),
@@ -422,7 +422,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                     tool_stream(vec![
                         (
                             "save",
-                            "write_plan",
+                            "plan",
                             json!({"title":"失败后重试", "markdown":"# 保留计划"}),
                         ),
                         ("exit", "exit_plan", json!({})),

@@ -632,7 +632,7 @@ fn build_moves(edits: &[VerifiedEdit]) -> Vec<(usize, isize)> {
     moves
 }
 
-fn encode_file(snapshot: &FileSnapshot, lines: &[String]) -> Vec<u8> {
+pub(crate) fn encode_file(snapshot: &FileSnapshot, lines: &[String]) -> Vec<u8> {
     let line_ending = snapshot.line_ending.bytes();
     let mut output = Vec::with_capacity(snapshot.bytes.len());
     if snapshot.bom {

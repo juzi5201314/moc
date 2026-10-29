@@ -189,13 +189,13 @@ pub struct PlanInfo {
 
 /// 计划生命周期状态。
 ///
-/// 一次计划审阅的典型轨迹：`write_plan` 反复起草（`draft`）→ `exit_plan`
+/// 一次计划审阅的典型轨迹：`plan` 反复起草/修订（`draft`）→ `exit_plan`
 /// 提交（`submitted`）→ 用户提交批注（`revised`）→ 模型写出新版后旧版
 /// （`superseded`）。`approved` / `rejected` 是终态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanStatus {
-    /// `write_plan` 已保存、还没 `exit_plan`；不进入审阅列表。
+    /// `plan` 已保存、还没 `exit_plan`；不进入审阅列表。
     Draft,
     /// 已提交，等待用户审阅。
     Submitted,

@@ -862,7 +862,7 @@ fn is_subagent_request(body: &Value) -> bool {
 
 /// `explore` preset 只应裁掉写入/计划/委托面，基础与通信面全开。
 #[tokio::test]
-async fn explore_preset_denies_write_plan_and_control_but_keeps_the_rest() {
+async fn explore_preset_denies_plan_and_control_but_keeps_the_rest() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |body| {
         if is_subagent_request(body) {
@@ -903,7 +903,7 @@ async fn explore_preset_denies_write_plan_and_control_but_keeps_the_rest() {
         "spawn_agent",
         "stop_agent",
         "wait_agent",
-        "write_plan",
+        "plan",
         "exit_plan",
         "clm_context",
         "ask",

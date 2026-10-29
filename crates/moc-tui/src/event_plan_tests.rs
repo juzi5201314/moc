@@ -46,7 +46,7 @@ impl PlanHarness {
                 serde_json::json!({"role":"assistant", "content":"执行完成"})
             } else {
                 serde_json::json!({"role":"assistant", "tool_calls":[
-                    {"index":0,"id":"save","type":"function","function":{"name":"write_plan","arguments":serde_json::json!({"title":"审阅计划","markdown":"# 实施方案\n保持接口\n完成实现"}).to_string()}},
+                    {"index":0,"id":"save","type":"function","function":{"name":"plan","arguments":serde_json::json!({"title":"审阅计划","markdown":"# 实施方案\n保持接口\n完成实现"}).to_string()}},
                     {"index":1,"id":"exit","type":"function","function":{"name":"exit_plan","arguments":"{}"}}
                 ]})
             };

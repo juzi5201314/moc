@@ -24,7 +24,7 @@ pub enum Mode {
     Default,
     /// `/ask` 声明的单次提示只读模式，提示结束即失效。
     Ask,
-    /// plan 模式：目标收敛到产出计划，写工具被拒，`write_plan`/`exit_plan` 放行。
+    /// plan 模式：目标收敛到产出计划，写工具被拒，`plan`/`exit_plan` 放行。
     Plan,
 }
 
@@ -642,7 +642,7 @@ pub fn compose_revision_prompt(
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str(&format!(
-        "I reviewed plan {} (v{}: {}) and left the notes below. Revise the plan accordingly, change only what the notes require, and keep the rest intact. A fenced suggestion block inside a note is the exact replacement for the quoted lines; keep its content as written. Save the complete revised plan with write_plan, then call exit_plan to submit it for review again. The plan text is also at {}.\n",
+        "I reviewed plan {} (v{}: {}) and left the notes below. Revise the plan accordingly, change only what the notes require, and keep the rest intact. A fenced suggestion block inside a note is the exact replacement for the quoted lines; keep its content as written. Read the plan file for anchors, apply plan(edits) to produce the revised draft — or rewrite it with plan(markdown) — then call exit_plan to submit it for review again. The plan text is at {}.\n",
         plan.plan_id, plan.version, plan.title, plan.path
     ));
     let lines: Vec<&str> = plan.markdown.lines().collect();
@@ -716,7 +716,7 @@ const ASK_MODE_TOOLS: &[&str] = &[
     "web_fetch",
 ];
 
-/// plan 模式的白名单：ask 的全部只读能力外加 `write_plan`/`exit_plan`。
+/// plan 模式的白名单：ask 的全部只读能力外加 `plan`/`exit_plan`。
 const PLAN_MODE_TOOLS: &[&str] = &[
     "read",
     "grep",
@@ -727,7 +727,7 @@ const PLAN_MODE_TOOLS: &[&str] = &[
     "ask",
     "skill",
     "clm_context",
-    "write_plan",
+    "plan",
     "exit_plan",
     "run_code",
     "web_search",
@@ -745,7 +745,7 @@ fn mode_tools(mode: Mode) -> Option<&'static [&'static str]> {
 
 /// 引擎的原生工具表：只随引擎变化，模式切换不重写表（前缀缓存因此稳定）。
 ///
-/// `write_plan`/`exit_plan` 常驻引擎面（dsh 式）：进出 plan 不动 schema，工具自己
+/// `plan`/`exit_plan` 常驻引擎面（dsh 式）：进出 plan 不动 schema，工具自己
 /// 在非 plan 模式下拒绝执行；`clm_context` 是 CLM 专属工具，其它引擎下由
 /// [`mode_allows`] 拒绝。
 pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
@@ -768,7 +768,7 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "yield",
             "skill",
             "clm_context",
-            "write_plan",
+            "plan",
             "exit_plan",
             "run_code",
             "web_search",
@@ -905,7 +905,7 @@ mod agent_mode_tests {
         // 引擎表常驻写工具与 plan 工具：进出模式不重写表。
         for engine in [SessionEngine::Standard, SessionEngine::ClmExperimental] {
             let allowed = allowed_tools(engine);
-            for tool in ["edit", "write", "write_plan", "exit_plan"] {
+            for tool in ["edit", "write", "plan", "exit_plan"] {
                 assert!(allowed.contains(&tool), "{engine:?} 引擎面缺 {tool}");
             }
         }
@@ -920,14 +920,14 @@ mod agent_mode_tests {
         assert!(mode_allows(
             SessionEngine::Standard,
             Mode::Plan,
-            "write_plan",
+            "plan",
             Tier::Write,
             ToolOrigin::Builtin,
         ));
         assert!(!mode_allows(
             SessionEngine::Standard,
             Mode::Ask,
-            "write_plan",
+            "plan",
             Tier::Write,
             ToolOrigin::Builtin,
         ));
