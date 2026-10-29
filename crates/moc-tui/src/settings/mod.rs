@@ -674,6 +674,12 @@ impl SettingsPanel {
                 vec!["models".into(), "roles".into()],
                 None,
             )),
+            Some("models") if second == Some("fusion") => chain.push((
+                "models/fusion".into(),
+                "Fusion 组合".into(),
+                vec!["models".into(), "fusion".into()],
+                None,
+            )),
             Some("defaults") if path.len() >= 3 => {
                 let Some(pattern) = path.get(2) else {
                     return chain;
@@ -771,7 +777,9 @@ impl SettingsPanel {
             [root, provider, models, model] if root == "providers" && models == "models" => {
                 self.model_summary(provider, model)
             }
-            [root, roles] if root == "models" && roles == "roles" => String::new(),
+            [root, roles] if root == "models" && (roles == "roles" || roles == "fusion") => {
+                String::new()
+            }
             [root, name] if root == "mcp" => match self.value(group).map(server_address) {
                 Some(address) if !address.is_empty() => address,
                 _ => String::new(),
@@ -1229,22 +1237,31 @@ impl SettingsPanel {
     }
 }
 
-/// 模型角色字段（`models.roles.*`）的角色名；其余路径返回 `None`。
+/// 走共用模型选择器的字段（`models.roles.*` 与 `models.fusion.*`）的名字；
+/// 其余路径返回 `None`。`models.fusion.*` 没有角色伪值，只用于识别字段类型。
 fn model_role(path: &[String]) -> Option<&str> {
     match path {
-        [root, roles, role] if root == "models" && roles == "roles" => Some(role),
+        [root, roles, role] if root == "models" && (roles == "roles" || roles == "fusion") => {
+            Some(role)
+        }
         _ => None,
     }
 }
 
-/// 角色字段在模型选择器里的伪值：explore 可沿用主模型，plan 还可沿用当前会话模型。
+/// 角色字段在模型选择器里的伪值：explore 可沿用主模型，plan 还可沿用当前
+/// 会话模型；default 与 plan 都能选 `models.fusion` 组合。
 fn role_specials(role: &str) -> &'static [(&'static str, &'static str)] {
     const INHERIT: [(&str, &str); 1] = [("inherit", "沿用主模型")];
-    const INHERIT_OR_NONE: [(&str, &str); 2] =
-        [("inherit", "沿用主模型"), ("none", "沿用当前会话模型")];
+    const FUSION: [(&str, &str); 1] = [("fusion", "Fusion（models.fusion 组合）")];
+    const PLAN: [(&str, &str); 3] = [
+        ("inherit", "沿用主模型"),
+        ("none", "沿用当前会话模型"),
+        ("fusion", "Fusion（models.fusion 组合）"),
+    ];
     match role {
         "explore" => &INHERIT,
-        "plan" => &INHERIT_OR_NONE,
+        "default" => &FUSION,
+        "plan" => &PLAN,
         _ => &[],
     }
 }
@@ -1862,11 +1879,18 @@ mod tests {
             None,
             "只有模型角色字段走共用选择器"
         );
-        assert!(role_specials("default").is_empty());
+        assert_eq!(
+            role_specials("default"),
+            [("fusion", "Fusion（models.fusion 组合）")]
+        );
         assert_eq!(role_specials("explore"), [("inherit", "沿用主模型")]);
         assert_eq!(
             role_specials("plan"),
-            [("inherit", "沿用主模型"), ("none", "沿用当前会话模型")]
+            [
+                ("inherit", "沿用主模型"),
+                ("none", "沿用当前会话模型"),
+                ("fusion", "Fusion（models.fusion 组合）")
+            ]
         );
     }
 

@@ -397,6 +397,42 @@ pub enum ModelTarget {
         /// 字段标签，用作改动提示的前缀。
         label: String,
     },
+    /// Fusion 组合里的单侧槽位：从 `Modal::Fusion` 打开的普通选择器，
+    /// 选中后回到 Fusion 配置卡并填入该侧。
+    FusionSlot {
+        slot: FusionSlot,
+        /// 暂存的草稿：返回 Fusion 卡时原样带回。
+        draft: FusionDraft,
+        /// 最终应用 `fusion:lead+sidekick` 的目标。
+        origin: Box<ModelTarget>,
+    },
+}
+
+/// `Modal::Fusion` 的一侧槽位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FusionSlot {
+    Lead,
+    Sidekick,
+}
+
+/// `Modal::Fusion` 的编辑草稿：两侧各存一份带等级的 selector。
+#[derive(Debug, Clone, Default)]
+pub struct FusionDraft {
+    pub lead: String,
+    pub sidekick: String,
+}
+
+/// Fusion 选择器在模型选择器里的特殊条目 selector。
+pub const FUSION_ENTRY_SELECTOR: &str = "fusion";
+
+/// 解析规范 Fusion selector（`fusion:<lead>+<sidekick>`）的两侧；非法形式返回 `None`。
+pub fn parse_fusion(selector: &str) -> Option<(&str, &str)> {
+    selector.strip_prefix("fusion:")?.split_once('+')
+}
+
+/// 把两侧 selector 拼成规范 Fusion selector。
+pub fn fusion_selector(lead: &str, sidekick: &str) -> String {
+    format!("fusion:{lead}+{sidekick}")
 }
 
 impl PickerState {
@@ -1093,6 +1129,16 @@ pub enum Modal {
         agents: Vec<moc_protocol::methods::AgentInfo>,
         picker: PickerState,
     },
+    /// Fusion 组合配置：Lead/Sidekick 两侧各自套用普通模型选择器。
+    Fusion {
+        draft: FusionDraft,
+        /// 焦点行：0 = Lead，1 = Sidekick，2 = 应用。
+        focus: usize,
+        /// 应用 `fusion:lead+sidekick` 的目标（Session 或 PlanReview）。
+        origin: Box<ModelTarget>,
+        loading: bool,
+        error: Option<String>,
+    },
     /// 计划审批（`session/plan_approve`）。
     Plan { state: PlanReviewState },
     /// 快捷键帮助。
@@ -1153,6 +1199,7 @@ impl Modal {
                 SessionScope::All => "恢复会话（全部目录）".into(),
             },
             Modal::Subagents { .. } => "子代理".into(),
+            Modal::Fusion { .. } => "Fusion".into(),
             Modal::Plan { state } => format!("计划审批：{}", state.title),
             Modal::Help => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
@@ -1190,6 +1237,7 @@ impl Modal {
                 })
                 .count(),
             Modal::Plan { .. } => 4,
+            Modal::Fusion { .. } => 3,
             Modal::Help | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
             Modal::SwitchModel { .. } => 2,
         }
@@ -1236,6 +1284,9 @@ impl Modal {
             Modal::SwitchModel { option, .. } => {
                 *option = (*option as i32 + delta).clamp(0, count as i32 - 1) as usize;
             }
+            Modal::Fusion { focus, .. } => {
+                *focus = (*focus as i32 + delta).rem_euclid(3) as usize;
+            }
             Modal::Model { picker, .. }
             | Modal::Sessions { picker, .. }
             | Modal::Subagents { picker, .. } => {
@@ -1278,7 +1329,7 @@ impl Modal {
     /// 由调用方改成通知，避免错误被静默丢弃。
     pub fn set_error(&mut self, message: &str) -> bool {
         match self {
-            Modal::SwitchModel { loading, error, .. } => {
+            Modal::SwitchModel { loading, error, .. } | Modal::Fusion { loading, error, .. } => {
                 *loading = false;
                 *error = Some(message.to_owned());
                 true
@@ -1361,10 +1412,25 @@ pub fn short_session_id(id: &str) -> &str {
 mod tests {
     use super::{
         CustomAnswer, LevelState, Modal, ModelEntry, PickerState, RewindState, filtered_entries,
+        fusion_selector, parse_fusion,
     };
 
     use moc_protocol::methods::{AskOption, AskParams, AskQuestion, TranscriptEntry};
     use moc_protocol::{Message, Role};
+
+    /// Fusion selector 的解析与拼装：规范形式拆两侧，非 Fusion 返回 None。
+    #[test]
+    fn fusion_selector_round_trip() {
+        let selector = fusion_selector("test/lead:off", "test/side:high");
+        assert_eq!(selector, "fusion:test/lead:off+test/side:high");
+        assert_eq!(
+            parse_fusion(&selector),
+            Some(("test/lead:off", "test/side:high"))
+        );
+        assert_eq!(parse_fusion("test/model:off"), None);
+        assert_eq!(parse_fusion("fusion"), None);
+        assert_eq!(parse_fusion("fusion:test/lead"), None, "没有 + 不算组合");
+    }
 
     /// 等级默认用候选里最高的那个；手动值仍在候选内时优先，掉了就回退最高。
     #[test]

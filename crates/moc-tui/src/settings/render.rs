@@ -688,8 +688,10 @@ fn draw_fields(
                 "（○ 使用系统默认值）"
             };
             let description = format!("{} {}", field.description, state);
-            // 模型角色字段由共用的模型选择器接管：Enter 打开搜索框，可同时挑思考等级。
-            let is_model_role = field.path.starts_with(&["models".into(), "roles".into()]);
+            // 模型角色与 Fusion 组合字段由共用的模型选择器接管：
+            // Enter 打开搜索框，可同时挑思考等级。
+            let is_model_role = field.path.starts_with(&["models".into(), "roles".into()])
+                || field.path.starts_with(&["models".into(), "fusion".into()]);
             let is_choice = matches!(field.kind, FieldKind::Choice(_))
                 || (field.path.last().is_some_and(|k| k == "input")
                     && field.path.iter().any(|p| p == "models"));

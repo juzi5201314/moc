@@ -341,7 +341,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         let available = u16::try_from(content_width)
             .expect("正文宽度受终端 u16 宽度约束")
             .saturating_sub(prefix_width);
-        let model_width = u16::try_from(str_width(crate::app::model_selector_label(
+        let model_width = u16::try_from(str_width(&crate::app::model_selector_label(
             &state.execution_model,
         )))
         .unwrap_or(u16::MAX)
@@ -1125,7 +1125,7 @@ fn modal_lines_with_hits(
                 Span::styled("当前  ".to_owned(), Style::new().fg(theme.gray_dim)),
                 Span::styled(
                     ellipsize(
-                        crate::app::model_selector_label(current),
+                        &crate::app::model_selector_label(current),
                         width.saturating_sub(6),
                     ),
                     Style::new().fg(theme.text_secondary),
@@ -1146,10 +1146,34 @@ fn modal_lines_with_hits(
                     }),
                 ),
             ]));
+            let fusion_highlighted = highlighted
+                .is_some_and(|entry| entry.selector == crate::modal::FUSION_ENTRY_SELECTOR);
             if full_gap {
                 lines.push(Line::from(String::new()));
             }
-            lines.extend(level_lines(theme, highlighted, resolved.as_deref(), width));
+            if fusion_highlighted {
+                // Fusion 特殊项没有等级条：改显组合配置卡的初始草稿。
+                let draft = crate::app::initial_fusion_draft(app, current);
+                for (label, value) in [("Lead", &draft.lead), ("Sidekick", &draft.sidekick)] {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{label:<9}"), Style::new().fg(theme.gray_dim)),
+                        Span::styled(
+                            if value.is_empty() {
+                                "未选择".to_owned()
+                            } else {
+                                crate::app::model_selector_label(value)
+                            },
+                            Style::new().fg(if value.is_empty() {
+                                theme.gray
+                            } else {
+                                theme.text_secondary
+                            }),
+                        ),
+                    ]));
+                }
+            } else {
+                lines.extend(level_lines(theme, highlighted, resolved.as_deref(), width));
+            }
             if full_gap {
                 lines.push(Line::from(String::new()));
             }
@@ -1162,7 +1186,11 @@ fn modal_lines_with_hits(
             } else {
                 0
             };
-            let card = model_meta_lines(theme, highlighted, card_width);
+            let card = if fusion_highlighted {
+                Vec::new()
+            } else {
+                model_meta_lines(theme, highlighted, card_width)
+            };
             let show_card = !card.is_empty() && card.len() <= visible;
             let list_width = if show_card {
                 width - card_width - CARD_GAP
@@ -1269,7 +1297,9 @@ fn modal_lines_with_hits(
             // 页脚按可用宽度降档：完整提示 → 去掉搜索提示的中档 → 只留关键键的紧凑档。
             // 阈值就是各串的显示宽度，保证 Paragraph 不折行、不会多占一行把列表挤掉；
             // 最后再用 ellipsize 兜住更窄的终端。
-            let footer = if has_levels {
+            let footer = if fusion_highlighted {
+                "Enter 配置 Fusion 组合 · Esc 关闭"
+            } else if has_levels {
                 if width >= 57 {
                     "↑↓ 移动 · Tab 切换等级 · 输入搜索 · Enter 确认 · Esc 关闭"
                 } else if width >= 46 {
@@ -1284,6 +1314,83 @@ fn modal_lines_with_hits(
             };
             lines.push(Line::from(Span::styled(
                 ellipsize(footer, width),
+                Style::new().fg(theme.gray_dim),
+            )));
+            lines
+        }
+        Modal::Fusion {
+            draft,
+            focus,
+            loading,
+            error,
+            ..
+        } => {
+            let mut lines = vec![
+                Line::from(String::new()),
+                Line::from(Span::styled(
+                    "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证",
+                    Style::new().fg(theme.text_secondary),
+                )),
+                Line::from(String::new()),
+            ];
+            for (index, label, value) in [
+                (0usize, "Lead", &draft.lead),
+                (1, "Sidekick", &draft.sidekick),
+                (2, "应用", &String::new()),
+            ] {
+                hits.push((index, lines.len()));
+                let selected = index == *focus;
+                let marker = if selected { "❯ " } else { "  " };
+                let style = if selected {
+                    Style::new()
+                        .fg(theme.accent_user)
+                        .bg(theme.bg_visual)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme.text_primary)
+                };
+                let shown = if value.is_empty() {
+                    if index == 2 {
+                        String::new()
+                    } else {
+                        "未选择".to_owned()
+                    }
+                } else {
+                    crate::app::model_selector_label(value)
+                };
+                let value_style = if selected {
+                    style
+                } else if shown == "未选择" {
+                    Style::new().fg(theme.gray)
+                } else {
+                    Style::new().fg(theme.text_secondary)
+                };
+                let mut spans = vec![
+                    Span::styled(marker, style),
+                    Span::styled(format!("{label:<9}"), value_style),
+                ];
+                if !shown.is_empty() {
+                    spans.push(Span::styled(
+                        ellipsize(&shown, width.saturating_sub(11)),
+                        value_style,
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+            lines.push(Line::from(String::new()));
+            if *loading {
+                lines.push(Line::from(Span::styled(
+                    "正在切换模型…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            } else if let Some(error) = error {
+                lines.push(Line::from(Span::styled(
+                    format!("错误：{error}"),
+                    Style::new().fg(theme.accent_error),
+                )));
+            }
+            lines.push(Line::from(Span::styled(
+                ellipsize("↑↓ 移动 · Enter 选择 · Esc 返回", width),
                 Style::new().fg(theme.gray_dim),
             )));
             lines
@@ -2549,7 +2656,7 @@ fn plan_lines(
         Span::styled(prefix, Style::new().fg(theme.text_secondary)),
         Span::styled(
             ellipsize(
-                crate::app::model_selector_label(&state.execution_model),
+                &crate::app::model_selector_label(&state.execution_model),
                 width.saturating_sub(str_width(prefix)),
             ),
             Style::new()

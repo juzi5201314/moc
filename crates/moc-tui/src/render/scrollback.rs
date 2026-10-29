@@ -1284,6 +1284,7 @@ fn render_tool(
     let name = match tool.name.as_str() {
         // 代理间消息沿用 `!! bash` 的自定义标题先例。
         "message_agent" => "IRC",
+        "sidekick" => "Sidekick",
         _ => match args.get("exclude_from_context").and_then(Value::as_bool) {
             Some(true) => "!! bash · 不进入上下文",
             Some(false) => "! bash",
@@ -1451,6 +1452,10 @@ fn tool_body(
         lines.extend(rows);
     } else if tool.name == "wait_agent" {
         let (rows, omitted) = wait_agent_tool_rows(tool, theme, limit);
+        dropped += omitted;
+        lines.extend(rows);
+    } else if tool.name == "sidekick" && !is_error {
+        let (rows, omitted) = sidekick_tool_rows(tool, inner_width, theme, limit);
         dropped += omitted;
         lines.extend(rows);
     } else if tool.name == "ask" && !is_error {
@@ -1777,6 +1782,10 @@ fn tool_body_rows(
         let (count, omitted) = wait_agent_rows_count(tool, limit);
         rows += count;
         dropped += omitted;
+    } else if tool.name == "sidekick" && !is_error {
+        let (count, omitted) = sidekick_rows_count(tool, inner_width, limit);
+        rows += count;
+        dropped += omitted;
     } else if tool.name == "ask" && !is_error {
         // 每问恒占一行（与 [`tool_body`] 同规则）：行数上限 = 答案条数。
         let count = ask_answer_pairs(tool, args).len();
@@ -1929,6 +1938,108 @@ fn wait_agent_rows_count(tool: &ToolCallBlock, limit: usize) -> (usize, usize) {
         None => wait_result(tool).map_or(0, |result| result.agents.len()),
     };
     (total.min(limit), total.saturating_sub(limit))
+}
+
+/// `sidekick` 卡片正文：运行中沿用 `wait_agent` 的进度行；落定后解析 JSON
+/// 结果——状态行（glyph + 交付方式 + 状态）、可选 note 与报告正文；
+/// 非 JSON 正文（错误文本等）退回通用截断渲染。
+fn sidekick_tool_rows(
+    tool: &ToolCallBlock,
+    width: usize,
+    theme: &Theme,
+    limit: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let Some(result) = tool.result.as_deref() else {
+        return wait_agent_tool_rows(tool, theme, limit);
+    };
+    let Ok(json) = serde_json::from_str::<Value>(result) else {
+        let clamped = clamp_rows(result, width.saturating_sub(2), limit, BodyEdge::Head);
+        let lines = clamped
+            .rows
+            .into_iter()
+            .map(|row| {
+                Line::from(Span::styled(
+                    format!("  {row}"),
+                    Style::new().fg(theme.text_secondary),
+                ))
+            })
+            .collect();
+        return (lines, clamped.dropped);
+    };
+    let mut lines = Vec::new();
+    let mut dropped = 0usize;
+    let status = json
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let (glyph, color) = match status {
+        "completed" => ("◆", theme.accent_tool),
+        "failed" => ("✘", theme.accent_error),
+        "stopped" => ("◼", theme.gray_dim),
+        _ => ("▸", theme.accent_running),
+    };
+    let mut spans = vec![
+        Span::styled(format!("  {glyph} "), Style::new().fg(color)),
+        Span::styled("Sidekick", Style::new().fg(theme.text_primary)),
+    ];
+    if let Some(delivery) = json.get("delivery").and_then(Value::as_str) {
+        spans.push(Span::styled(
+            format!(" · {delivery}"),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
+    if !status.is_empty() {
+        spans.push(Span::styled(format!(" · {status}"), Style::new().fg(color)));
+    }
+    lines.push(Line::from(spans));
+    if let Some(note) = json.get("note").and_then(Value::as_str)
+        && !note.is_empty()
+    {
+        lines.push(Line::from(Span::styled(
+            format!("  {note}"),
+            Style::new().fg(theme.gray_dim),
+        )));
+    }
+    if let Some(report) = json.get("report").and_then(Value::as_str)
+        && !report.is_empty()
+    {
+        let budget = limit.saturating_sub(lines.len()).max(1);
+        let clamped = clamp_rows(report, width.saturating_sub(2), budget, BodyEdge::Head);
+        dropped += clamped.dropped;
+        for row in clamped.rows {
+            lines.push(Line::from(Span::styled(
+                format!("  {row}"),
+                Style::new().fg(theme.text_primary),
+            )));
+        }
+    }
+    (lines, dropped)
+}
+
+/// `sidekick` 卡片行数：与 [`sidekick_tool_rows`] 同规则。
+fn sidekick_rows_count(tool: &ToolCallBlock, width: usize, limit: usize) -> (usize, usize) {
+    let Some(result) = tool.result.as_deref() else {
+        return wait_agent_rows_count(tool, limit);
+    };
+    let Ok(json) = serde_json::from_str::<Value>(result) else {
+        let clamped = clamp_rows(result, width.saturating_sub(2), limit, BodyEdge::Head);
+        return (clamped.shown, clamped.dropped);
+    };
+    let mut rows = 1 + usize::from(
+        json.get("note")
+            .and_then(Value::as_str)
+            .is_some_and(|note| !note.is_empty()),
+    );
+    let mut dropped = 0;
+    if let Some(report) = json.get("report").and_then(Value::as_str)
+        && !report.is_empty()
+    {
+        let budget = limit.saturating_sub(rows).max(1);
+        let clamped = clamp_rows(report, width.saturating_sub(2), budget, BodyEdge::Head);
+        rows += clamped.shown;
+        dropped += clamped.dropped;
+    }
+    (rows, dropped)
 }
 
 /// ask 转写卡 key 列宽上限（格）：对齐答案正文，超长 header/id 截断。
@@ -2122,6 +2233,19 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                 if failed > 0 {
                     summary.push_str(&format!(" · {failed} 失败"));
                 }
+            }
+            summary
+        }
+        "sidekick" => {
+            // 摘要只占一行：handoff 首行；后台执行（block=false）时标注。
+            let mut summary = args
+                .get("message")
+                .and_then(Value::as_str)
+                .and_then(|text| text.lines().next())
+                .unwrap_or_default()
+                .to_owned();
+            if args.get("block").and_then(Value::as_bool) == Some(false) {
+                summary.push_str(" · 后台");
             }
             summary
         }

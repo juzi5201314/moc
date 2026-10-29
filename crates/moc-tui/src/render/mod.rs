@@ -546,7 +546,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         .as_ref()
         .map_or("full", |session| session.permission.as_str());
     let right = [
-        (model, theme.gray),
+        (model.as_str(), theme.gray),
         (" | ", theme.border),
         (status.as_str(), theme.accent_model),
         (" | ", theme.border),
@@ -598,7 +598,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
-    let model_cells = cell_width(model);
+    let model_cells = cell_width(model.as_str());
     let status_start = right_start + model_cells + cell_width(" | ");
     let status_cells = cell_width(status.as_str());
     let perm_start = status_start + status_cells + cell_width(" | ");

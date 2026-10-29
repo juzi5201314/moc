@@ -141,6 +141,8 @@ pub struct App {
     pub sandbox_modes: Vec<SessionPermission>,
     /// 可选模型集合（`config/get` 拉取，/model 菜单与 statusline 用）。
     pub models: Vec<ModelInfo>,
+    /// `config/get` 下发的 `[models.fusion]` 默认组合；双侧都配置时才有值。
+    pub fusion_defaults: Option<moc_protocol::methods::FusionPair>,
     /// 转写条目（用户消息、回复、工具调用、todo……）。
     pub blocks: Vec<Entry>,
     /// 是否仍有未加载的更早 transcript。
@@ -465,6 +467,7 @@ impl App {
             theme,
             events,
             session: None,
+            fusion_defaults: None,
             read_only: false,
             sandbox_modes: vec![SessionPermission::Full],
             models: Vec::new(),
@@ -696,10 +699,11 @@ impl App {
     }
 
     /// 当前模型展示名；未连接时显示 `idle`。
-    pub fn model_display(&self) -> &str {
-        self.session
-            .as_ref()
-            .map_or("idle", |session| model_selector_label(&session.model))
+    pub fn model_display(&self) -> String {
+        self.session.as_ref().map_or_else(
+            || "idle".to_owned(),
+            |session| model_selector_label(&session.model),
+        )
     }
     /// 找到指定调用 ID 的工具条目。
     pub fn tool_entry_mut(&mut self, tool_call_id: &str) -> Option<&mut Entry> {
@@ -1215,7 +1219,7 @@ impl App {
         );
     }
 
-    fn open_model_picker_for(
+    pub(crate) fn open_model_picker_for(
         &mut self,
         current: String,
         specials: &[(&str, &str)],
@@ -1225,18 +1229,31 @@ impl App {
             self.set_notice("没有可用的模型，请先在设置中添加");
             return;
         }
-        let entries = Self::picker_entries(&self.models, specials);
+        // Fusion 组合只对「切换会话模型」和「计划执行模型」两个目标提供：
+        // /config 的角色字段和 Fusion 槽位选择器都不列这个特殊项。
+        let fusion_entry = matches!(
+            target,
+            crate::modal::ModelTarget::Session | crate::modal::ModelTarget::PlanReview(_)
+        );
+        let entries = Self::picker_entries(&self.models, specials, fusion_entry);
 
-        let current_id = current
-            .rsplit_once(':')
-            .map_or(current.as_str(), |(id, _)| id);
+        // 当前值本身是规范 Fusion selector 时不能 rsplit：末尾的等级分隔符在
+        // sidekick 侧，整体应高亮 Fusion 特殊项而不是某个模型。
+        let current_id = if crate::modal::parse_fusion(&current).is_some() {
+            crate::modal::FUSION_ENTRY_SELECTOR
+        } else {
+            current
+                .rsplit_once(':')
+                .map_or(current.as_str(), |(id, _)| id)
+        };
         let selected = entries
             .iter()
             .position(|entry| entry.selector == current_id)
             .unwrap_or(0);
         let mut level = crate::modal::LevelState::default();
         // 当前值已经写明等级、且该条目仍支持它时沿用；否则用高亮模型的最高等级。
-        if let Some((_, level_text)) = current.rsplit_once(':')
+        if crate::modal::parse_fusion(&current).is_none()
+            && let Some((_, level_text)) = current.rsplit_once(':')
             && let Some(entry) = entries.get(selected)
             && entry.levels.iter().any(|candidate| candidate == level_text)
         {
@@ -1256,12 +1273,27 @@ impl App {
         });
     }
 
-    /// 选择器候选：角色伪值排在模型前面，模型带上各自的思考等级与上下文窗口。
+    /// 选择器候选：Fusion 特殊项与角色伪值排在模型前面，
+    /// 模型带上各自的思考等级与上下文窗口。
     fn picker_entries(
         models: &[ModelInfo],
         specials: &[(&str, &str)],
+        fusion_entry: bool,
     ) -> Vec<crate::modal::ModelEntry> {
-        let mut entries = Vec::with_capacity(models.len() + specials.len());
+        let mut entries = Vec::with_capacity(models.len() + specials.len() + 1);
+        if fusion_entry {
+            entries.push(crate::modal::ModelEntry {
+                selector: crate::modal::FUSION_ENTRY_SELECTOR.to_owned(),
+                label: "Fusion".to_owned(),
+                display_name: "fusion lead sidekick 组合".to_owned(),
+                levels: Vec::new(),
+                context_window: None,
+                max_output_tokens: None,
+                inputs: Vec::new(),
+                remote_compaction: false,
+                pricing: None,
+            });
+        }
         for (selector, label) in specials {
             entries.push(crate::modal::ModelEntry {
                 selector: (*selector).to_owned(),
@@ -1549,21 +1581,26 @@ impl App {
 
     // ---------- statusline 数据 ----------
 
+    /// 计费与上下文窗口对应的模型 id：普通会话是 `provider/model`；
+    /// Fusion 会话真实发请求的是 lead 侧，取其模型并去等级。
+    fn billed_model_id(&self) -> Option<&str> {
+        let model = self.session.as_ref()?.model.as_str();
+        let lead = crate::modal::parse_fusion(model).map_or(model, |(lead, _)| lead);
+        lead.split(':').next()
+    }
+
     /// 当前模型的定价（从模型目录按 selector 匹配）。
     pub fn current_pricing(&self) -> Option<&moc_protocol::methods::ModelPricing> {
-        let model = self.session.as_ref()?.model.as_str();
-        let base = model.split(':').next()?;
+        let base = self.billed_model_id()?;
         self.models
             .iter()
             .find(|candidate| candidate.id == base)
-            .as_ref()
             .and_then(|info| info.pricing.as_ref())
     }
 
     /// 当前模型的上下文窗口。
     pub fn context_window(&self) -> Option<u64> {
-        let model = self.session.as_ref()?.model.as_str();
-        let base = model.split(':').next()?;
+        let base = self.billed_model_id()?;
         self.models
             .iter()
             .find(|candidate| candidate.id == base)
@@ -2130,9 +2167,39 @@ impl EngineMenu {
     }
 }
 
-/// 模型展示名：选择串即 `供应商/模型:等级`，思考关闭时省掉 `:off` 后缀。
-pub fn model_selector_label(selector: &str) -> &str {
-    selector.strip_suffix(":off").unwrap_or(selector)
+/// Fusion 配置卡的初始草稿：当前 selector 本身是 Fusion 就沿用它的两侧；
+/// 否则取 `config/get` 下发的 `models.fusion` 默认；都没有就把非 Fusion 的
+/// 当前值放进 lead，sidekick 留空待选。
+pub fn initial_fusion_draft(app: &App, current: &str) -> crate::modal::FusionDraft {
+    if let Some((lead, sidekick)) = crate::modal::parse_fusion(current) {
+        return crate::modal::FusionDraft {
+            lead: lead.to_owned(),
+            sidekick: sidekick.to_owned(),
+        };
+    }
+    if let Some(defaults) = &app.fusion_defaults {
+        return crate::modal::FusionDraft {
+            lead: defaults.lead.clone(),
+            sidekick: defaults.sidekick.clone(),
+        };
+    }
+    crate::modal::FusionDraft {
+        lead: current.to_owned(),
+        sidekick: String::new(),
+    }
+}
+
+/// 模型展示名：选择串即 `供应商/模型:等级`，思考关闭时省掉 `:off` 后缀；
+/// 规范 Fusion selector 展示为 `Fusion · lead + sidekick`。
+pub fn model_selector_label(selector: &str) -> String {
+    if let Some((lead, sidekick)) = crate::modal::parse_fusion(selector) {
+        return format!(
+            "Fusion · {} + {}",
+            lead.strip_suffix(":off").unwrap_or(lead),
+            sidekick.strip_suffix(":off").unwrap_or(sidekick)
+        );
+    }
+    selector.strip_suffix(":off").unwrap_or(selector).to_owned()
 }
 
 /// 这个块是否属于「没跑完、已经从会话里剪掉」的那一轮。
@@ -2245,6 +2312,10 @@ mod tests {
         assert_eq!(model_selector_label("test/model:off"), "test/model");
         assert_eq!(model_selector_label("test/model:high"), "test/model:high");
         assert_eq!(model_selector_label("test/model"), "test/model");
+        assert_eq!(
+            model_selector_label("fusion:test/lead:off+test/side:high"),
+            "Fusion · test/lead + test/side:high"
+        );
         assert_eq!(engine_label(SessionEngine::Standard), "standard");
         assert_eq!(engine_label(SessionEngine::Ptc), "ptc");
         assert_eq!(engine_label(SessionEngine::ClmExperimental), "(clm)");
@@ -2594,5 +2665,53 @@ mod tests {
         assert!(
             matches!(&app.blocks[0].block, crate::transcript::Block::Assistant { text } if text.ends_with("追加正文"))
         );
+    }
+
+    /// Fusion 会话的定价与上下文窗口都按 lead 侧模型取。
+    #[test]
+    fn fusion_session_bills_the_lead_model() {
+        use super::App;
+        use moc_protocol::methods::{ModelInfo, SessionInfo};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.models = vec![ModelInfo {
+            id: "test/lead".into(),
+            display_name: "Lead".into(),
+            thinking_levels: None,
+            context_window: Some(100_000),
+            max_output_tokens: None,
+            pricing: Some(moc_protocol::methods::ModelPricing {
+                input: 3.0,
+                output: 15.0,
+                cache_read: Some(0.3),
+                cache_write: None,
+            }),
+            inputs: Vec::new(),
+            remote_compaction: false,
+        }];
+        app.session = Some(SessionInfo {
+            id: "ses_fusion".into(),
+            title: "Fusion".into(),
+            model: "fusion:test/lead:off+test/side:off".into(),
+            permission: moc_protocol::SessionPermission::Full,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
+            plan_active: false,
+            engine_locked: false,
+            parent_session_id: None,
+            forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
+            cwd: "/tmp".into(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            lock: None,
+        });
+        assert_eq!(
+            app.current_pricing().map(|pricing| pricing.input),
+            Some(3.0)
+        );
+        assert_eq!(app.context_window(), Some(100_000));
     }
 }

@@ -14,6 +14,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         }
         AppEvent::ConfigurationLoaded(config) => {
             app.models = config.models;
+            app.fusion_defaults = config.fusion;
             if app.session.is_none() && config.default_model.is_some() {
                 if app.settings.is_some() && !app.saving_config() {
                     app.settings = None;
@@ -239,7 +240,8 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
         } => {
             // 选择器那次调用已收尾；随后由卡片自身挡住派发，无需保留忙标记。
             app.inflight_session_ops.remove(&session_id);
-            if matches!(app.modal, Some(Modal::Model { .. })) {
+            // 模型选择器与 Fusion 配置卡都可能发起这次切换。
+            if matches!(app.modal, Some(Modal::Model { .. } | Modal::Fusion { .. })) {
                 app.modal = Some(Modal::SwitchModel {
                     session_id,
                     selector,
@@ -261,7 +263,9 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     // 只关闭这次操作打开的选择器与确认卡片，不碰用户后来打开的模态。
                     if matches!(
                         app.modal,
-                        Some(Modal::Model { .. } | Modal::SwitchModel { .. })
+                        Some(
+                            Modal::Model { .. } | Modal::SwitchModel { .. } | Modal::Fusion { .. }
+                        )
                     ) {
                         app.modal = None;
                     }
