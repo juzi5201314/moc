@@ -1146,9 +1146,17 @@ fn print_usage(result: &moc_protocol::SessionUsageResult) {
         };
         let ttft = average_ttft(summary).map_or_else(|| "—".to_owned(), format_duration);
         let tps = usage_tps(summary).map_or_else(|| "—".to_owned(), |tps| format!("{tps:.2}"));
+        // 后代会话的用量行标出来源：Fusion sidekick 与普通子代理。
+        let model_label = match summary.source {
+            moc_protocol::methods::UsageSource::Sidekick => {
+                format!("{} (sidekick)", summary.model)
+            }
+            moc_protocol::methods::UsageSource::Subagent => format!("{} (子代理)", summary.model),
+            moc_protocol::methods::UsageSource::Session => summary.model.clone(),
+        };
         println!(
             "模型 {}：调用 {} 次，输入 {}，输出 {}，缓存命中 {} ({cache_rate:.1}%)，缓存写入 {}，思考 {}，用时 {}{split}，首 token 平均 {ttft}，TPS {tps}",
-            summary.model,
+            model_label,
             summary.calls,
             summary.input_tokens,
             summary.output_tokens,

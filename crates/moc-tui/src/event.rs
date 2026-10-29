@@ -4366,11 +4366,24 @@ fn apply_update_and_refresh(
             | SessionUpdate::PermissionChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
     ) || matches!(&update, SessionUpdate::ToolFinished { prompt_id, .. } if prompt_id.starts_with("bash_"));
-    // 用量只在这些事件后变化：一次提示（含工具轮次）结束，或压缩本身花掉一次调用。
+    // 用量只在这些事件后变化：一次提示（含工具轮次）结束，或压缩本身花掉一次调用；
+    // 非阻塞的 sidekick/子代理到达终态（完成/停止/失败/空闲）时同样刷新——
+    // 它们的用量记在后代会话上，不等下一次提示。
     let usage_changed = matches!(
         &update,
         SessionUpdate::PromptFinished { .. } | SessionUpdate::ContextCompacted { .. }
-    );
+    ) || (is_current
+        && matches!(
+            &update,
+            SessionUpdate::AgentStatusChanged { status, .. }
+                if matches!(
+                    status,
+                    moc_protocol::methods::AgentStatus::Completed
+                        | moc_protocol::methods::AgentStatus::Stopped
+                        | moc_protocol::methods::AgentStatus::Failed
+                        | moc_protocol::methods::AgentStatus::Idle
+                )
+        ));
     // unattended 自主程度下计划提交不弹审阅：直接自动批准「压缩并执行」。
     let unattended_plan = match &update {
         SessionUpdate::PlanSubmitted { plan }
@@ -4816,7 +4829,16 @@ fn usage_table(result: &moc_protocol::SessionUsageResult, max_width: usize) -> V
     let mut rows: Vec<[String; 9]> = result
         .models
         .iter()
-        .map(|summary| usage_row(summary, &summary.model))
+        .map(|summary| {
+            let label = crate::app::model_selector_label(&summary.model);
+            // 后代会话的用量行标出来源：Fusion sidekick 与普通子代理。
+            let label = match summary.source {
+                moc_protocol::methods::UsageSource::Sidekick => format!("{label} (sidekick)"),
+                moc_protocol::methods::UsageSource::Subagent => format!("{label} (子代理)"),
+                moc_protocol::methods::UsageSource::Session => label,
+            };
+            usage_row(summary, &label)
+        })
         .collect();
     rows.push(usage_row(&result.total, "合计"));
 
@@ -5586,6 +5608,7 @@ mod tests {
 
         let summary = |model: &str, calls| ModelUsageSummary {
             model: model.into(),
+            source: moc_protocol::methods::UsageSource::Session,
             calls,
             input_tokens: 1_200_000,
             output_tokens: 12_345,
@@ -5680,6 +5703,7 @@ mod tests {
                 models: Vec::new(),
                 total: ModelUsageSummary {
                     model: "total".into(),
+                    source: moc_protocol::methods::UsageSource::Session,
                     calls: 0,
                     input_tokens: 0,
                     output_tokens: 0,
@@ -10314,6 +10338,42 @@ mod config_picker_tests {
         );
         connection.shutdown().await;
         core.shutdown().await;
+    }
+    /// 后代会话的用量行在 /usage 表上标出来源。
+    #[test]
+    fn usage_table_marks_descendant_sources() {
+        use moc_protocol::methods::UsageSource;
+        use moc_protocol::{ModelUsageSummary, SessionUsageResult};
+
+        let summary = |model: &str, source| ModelUsageSummary {
+            model: model.into(),
+            source,
+            calls: 1,
+            input_tokens: 100,
+            output_tokens: 10,
+            cached_input_tokens: None,
+            cache_creation_input_tokens: None,
+            reasoning_tokens: None,
+            active_ms: 10,
+            ttft_ms: 0,
+            ttft_calls: 0,
+            gen_ms: 0,
+        };
+        let lines = usage_table(
+            &SessionUsageResult {
+                models: vec![
+                    summary("p/lead:off", UsageSource::Session),
+                    summary("p/cheap:off", UsageSource::Sidekick),
+                    summary("p/lead:off", UsageSource::Subagent),
+                ],
+                total: summary("total", UsageSource::Session),
+                tool_ms: 0,
+            },
+            100,
+        );
+        let text = lines.join("\n");
+        assert!(text.contains("p/lead (子代理)"), "{text}");
+        assert!(text.contains("p/cheap (sidekick)"), "{text}");
     }
 }
 

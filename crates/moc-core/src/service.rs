@@ -3,7 +3,7 @@
 pub(crate) mod plugin_events;
 mod plugin_persistence;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -718,6 +718,40 @@ pub(crate) async fn record_model_usage(
         )
         .await
         .map(|_| ())
+}
+
+/// `session_usage` 的聚合范围：从根会话按 `parent_session_id` 广度优先遍历全部
+/// 后代；被各层父会话标记为孤儿的子树整体排除（与回退后自身用量收缩同口径）。
+/// 返回 (来源, session_id)，不含根自身。
+async fn usage_descendants(
+    inner: &CoreInner,
+    root: &str,
+) -> Result<Vec<(moc_protocol::methods::UsageSource, String)>, RpcError> {
+    use moc_protocol::methods::UsageSource;
+    let known = inner.sessions.known().await.map_err(to_rpc)?;
+    let mut found = Vec::new();
+    let mut queue: VecDeque<String> = VecDeque::from([root.to_owned()]);
+    let mut seen: BTreeSet<String> = BTreeSet::from([root.to_owned()]);
+    while let Some(parent) = queue.pop_front() {
+        let orphans = inner.sessions.orphan_marks(&parent).await;
+        for info in &known {
+            if info.parent_session_id.as_deref() != Some(parent.as_str())
+                || orphans.contains(&info.id)
+                || !seen.insert(info.id.clone())
+            {
+                continue;
+            }
+            let source =
+                if info.agent_preset.as_deref() == Some(crate::agents::preset::SIDEKICK_PRESET) {
+                    UsageSource::Sidekick
+                } else {
+                    UsageSource::Subagent
+                };
+            found.push((source, info.id.clone()));
+            queue.push_back(info.id.clone());
+        }
+    }
+    Ok(found)
 }
 
 impl AgentService for Core {
@@ -1890,52 +1924,63 @@ impl AgentService for Core {
         _ctx: RequestContext,
         params: SessionUsageParams,
     ) -> Result<SessionUsageResult, RpcError> {
-        let record = self
-            .inner
-            .sessions
-            .get(&params.session_id)
-            .await
-            .map_err(to_rpc)?;
-        let state = record.state.lock().await;
-        let mut models = Vec::with_capacity(state.model_usage.len());
+        // 聚合范围：会话自身 + 未被回退孤立的全部后代（Fusion sidekick 与普通
+        // 子代理都算）。行按 (来源, 模型) 分组——sidekick 与主会话共用模型时
+        // 也能分辨用量花在谁身上。
+        let mut groups: BTreeMap<
+            (moc_protocol::methods::UsageSource, String),
+            crate::session::state::ModelUsage,
+        > = BTreeMap::new();
         let mut total = crate::session::state::ModelUsage::default();
-        for (model, summary) in &state.model_usage {
-            total.calls = total.calls.saturating_add(summary.calls);
-            crate::session::state::add_usage(&mut total.usage, summary.usage);
-            total.active_ms = total.active_ms.saturating_add(summary.active_ms);
-            total.ttft_ms = total.ttft_ms.saturating_add(summary.ttft_ms);
-            total.ttft_calls = total.ttft_calls.saturating_add(summary.ttft_calls);
-            total.gen_ms = total.gen_ms.saturating_add(summary.gen_ms);
-            models.push(ModelUsageSummary {
-                model: model.clone(),
-                calls: summary.calls,
-                input_tokens: summary.usage.input_tokens,
-                output_tokens: summary.usage.output_tokens,
-                cached_input_tokens: summary.usage.cached_input_tokens,
-                cache_creation_input_tokens: summary.usage.cache_creation_input_tokens,
-                reasoning_tokens: summary.usage.reasoning_tokens,
-                active_ms: summary.active_ms,
-                ttft_ms: summary.ttft_ms,
-                ttft_calls: summary.ttft_calls,
-                gen_ms: summary.gen_ms,
-            });
+        let mut tool_ms = 0u64;
+        let mut members = vec![(
+            moc_protocol::methods::UsageSource::Session,
+            params.session_id.clone(),
+        )];
+        members.extend(usage_descendants(&self.inner, &params.session_id).await?);
+        for (source, session_id) in members {
+            let record = self
+                .inner
+                .sessions
+                .get(&session_id)
+                .await
+                .map_err(to_rpc)?;
+            let state = record.state.lock().await;
+            tool_ms = tool_ms.saturating_add(state.tool_ms);
+            for (model, usage) in &state.model_usage {
+                groups
+                    .entry((source, model.clone()))
+                    .or_default()
+                    .merge(usage);
+                total.merge(usage);
+            }
         }
+        let summary = |model: String,
+                       source: moc_protocol::methods::UsageSource,
+                       usage: &crate::session::state::ModelUsage| {
+            ModelUsageSummary {
+                model,
+                source,
+                calls: usage.calls,
+                input_tokens: usage.usage.input_tokens,
+                output_tokens: usage.usage.output_tokens,
+                cached_input_tokens: usage.usage.cached_input_tokens,
+                cache_creation_input_tokens: usage.usage.cache_creation_input_tokens,
+                reasoning_tokens: usage.usage.reasoning_tokens,
+                active_ms: usage.active_ms,
+                ttft_ms: usage.ttft_ms,
+                ttft_calls: usage.ttft_calls,
+                gen_ms: usage.gen_ms,
+            }
+        };
+        let models = groups
+            .iter()
+            .map(|((source, model), usage)| summary(model.clone(), *source, usage))
+            .collect();
         Ok(SessionUsageResult {
             models,
-            total: ModelUsageSummary {
-                model: "total".into(),
-                calls: total.calls,
-                input_tokens: total.usage.input_tokens,
-                output_tokens: total.usage.output_tokens,
-                cached_input_tokens: total.usage.cached_input_tokens,
-                cache_creation_input_tokens: total.usage.cache_creation_input_tokens,
-                reasoning_tokens: total.usage.reasoning_tokens,
-                active_ms: total.active_ms,
-                ttft_ms: total.ttft_ms,
-                ttft_calls: total.ttft_calls,
-                gen_ms: total.gen_ms,
-            },
-            tool_ms: state.tool_ms,
+            total: summary("total".into(), Default::default(), &total),
+            tool_ms,
         })
     }
 

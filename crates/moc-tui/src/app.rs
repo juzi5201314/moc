@@ -1619,6 +1619,7 @@ impl App {
     }
 
     /// 应用一次请求级 usage 刷新：费用累计与上下文占用读它。
+    /// 成本只在快照（`apply_session_usage`）与本函数累计之间换算。
     pub fn apply_usage(&mut self, usage: Usage) {
         let previous = &self.usage;
         let delta_in = usage.input_tokens.saturating_sub(previous.input_tokens);
@@ -1630,12 +1631,7 @@ impl App {
         if (delta_in > 0 || delta_out > 0)
             && let Some(pricing) = self.current_pricing()
         {
-            // input_tokens 已折入缓存命中：非命中输入单独按全价计
-            let uncached = delta_in.saturating_sub(delta_cached);
-            let cache_price = pricing.cache_read.unwrap_or(pricing.input);
-            self.cost_usd += uncached as f64 / 1e6 * pricing.input
-                + delta_out as f64 / 1e6 * pricing.output
-                + delta_cached as f64 / 1e6 * cache_price;
+            self.cost_usd += model_cost(delta_in, delta_cached, delta_out, pricing);
         }
         self.usage = usage;
         // reasoning_tokens 属于本次响应：没有思考块的响应（上游可能报 0）
@@ -1666,11 +1662,33 @@ impl App {
     }
 
     /// 应用一次会话用量回执：比已应用结果更旧的（乱序或跨会话迟到）直接丢弃。
+    /// 成本按快照整体重算——每一行（含 sidekick/子代理）按各自模型定价折算，
+    /// 无定价信息的行按 0 计；在飞请求仍由 `apply_usage` 继续累加，
+    /// 下一次快照到来时再整体覆盖。
     pub fn apply_session_usage(&mut self, request: u64, usage: SessionUsageResult) {
         if request <= self.usage_applied {
             return;
         }
         self.usage_applied = request;
+        self.cost_usd = usage
+            .models
+            .iter()
+            .map(|summary| {
+                let base = summary.model.split(':').next().unwrap_or_default();
+                self.models
+                    .iter()
+                    .find(|model| model.id == base)
+                    .and_then(|info| info.pricing.as_ref())
+                    .map_or(0.0, |pricing| {
+                        model_cost(
+                            summary.input_tokens,
+                            summary.cached_input_tokens.unwrap_or(0),
+                            summary.output_tokens,
+                            pricing,
+                        )
+                    })
+            })
+            .sum();
         self.session_usage = Some(usage);
     }
 
@@ -2189,6 +2207,21 @@ pub fn initial_fusion_draft(app: &App, current: &str) -> crate::modal::FusionDra
     }
 }
 
+/// 单份模型用量折算美元成本：`input_tokens` 已折入缓存命中，非命中部分按全价、
+/// 命中部分按缓存价（无缓存价时退回输入价）计费。
+fn model_cost(
+    input_tokens: u64,
+    cached_tokens: u64,
+    output_tokens: u64,
+    pricing: &moc_protocol::methods::ModelPricing,
+) -> f64 {
+    let uncached = input_tokens.saturating_sub(cached_tokens);
+    let cache_price = pricing.cache_read.unwrap_or(pricing.input);
+    uncached as f64 / 1e6 * pricing.input
+        + output_tokens as f64 / 1e6 * pricing.output
+        + cached_tokens as f64 / 1e6 * cache_price
+}
+
 /// 模型展示名：选择串即 `供应商/模型:等级`，思考关闭时省掉 `:off` 后缀；
 /// 规范 Fusion selector 展示为 `Fusion · lead + sidekick`。
 pub fn model_selector_label(selector: &str) -> String {
@@ -2483,6 +2516,7 @@ mod tests {
         let mut app = App::new(crate::theme::Theme::global(), events);
         let summary = |output: u64, active_ms: u64| ModelUsageSummary {
             model: "p/m".into(),
+            source: moc_protocol::methods::UsageSource::Session,
             calls: 2,
             input_tokens: 12_000,
             output_tokens: output,
@@ -2713,5 +2747,61 @@ mod tests {
             Some(3.0)
         );
         assert_eq!(app.context_window(), Some(100_000));
+    }
+
+    /// 用量快照的成本按每一行各自的模型定价折算；无定价信息的行按 0 计。
+    #[test]
+    fn session_usage_snapshot_prices_rows_by_their_own_model() {
+        use super::App;
+        use moc_protocol::methods::{ModelInfo, UsageSource};
+        use moc_protocol::{ModelUsageSummary, SessionUsageResult};
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.models = vec![ModelInfo {
+            id: "p/m".into(),
+            display_name: "M".into(),
+            thinking_levels: None,
+            context_window: None,
+            max_output_tokens: None,
+            pricing: Some(moc_protocol::methods::ModelPricing {
+                input: 2.0,
+                output: 10.0,
+                cache_read: Some(0.2),
+                cache_write: None,
+            }),
+            inputs: Vec::new(),
+            remote_compaction: false,
+        }];
+        let summary =
+            |model: &str, source, input: u64, cached: u64, output: u64| ModelUsageSummary {
+                model: model.into(),
+                source,
+                calls: 1,
+                input_tokens: input,
+                output_tokens: output,
+                cached_input_tokens: Some(cached),
+                cache_creation_input_tokens: None,
+                reasoning_tokens: None,
+                active_ms: 0,
+                ttft_ms: 0,
+                ttft_calls: 0,
+                gen_ms: 0,
+            };
+        app.apply_session_usage(
+            1,
+            SessionUsageResult {
+                models: vec![
+                    summary("p/m:off", UsageSource::Session, 1_000_000, 400_000, 100_000),
+                    summary("p/m:off", UsageSource::Sidekick, 500_000, 0, 50_000),
+                    // 无定价信息的行按 0 计。
+                    summary("x/unknown", UsageSource::Subagent, 9_000_000, 0, 9_000_000),
+                ],
+                total: summary("total", UsageSource::Session, 0, 0, 0),
+                tool_ms: 0,
+            },
+        );
+        // 会话行 0.6M*2 + 0.4M*0.2 + 0.1M*10 = 2.28；sidekick 行 0.5M*2 + 0.05M*10 = 1.5。
+        assert!((app.cost_usd - 3.78).abs() < 1e-9, "{}", app.cost_usd);
     }
 }

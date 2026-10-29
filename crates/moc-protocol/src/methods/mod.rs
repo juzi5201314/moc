@@ -122,6 +122,7 @@ pub use session::{
     SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams, SessionUnload,
     SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams,
     SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry,
+    UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{

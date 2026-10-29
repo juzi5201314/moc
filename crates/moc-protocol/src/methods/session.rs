@@ -187,7 +187,8 @@ pub struct SessionContext;
 /// `session/context_content`：读取当前上下文里的真实正文，按分块返回。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionContextContent;
-/// `session/usage`：读取当前会话累计的模型调用用量。
+/// `session/usage`：读取当前会话累计的模型调用用量
+/// （会话自身 + 未被回退孤立的全部后代会话）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUsage;
 
@@ -199,12 +200,34 @@ pub struct SessionUsageParams {
     pub session_id: String,
 }
 
+/// 用量来源：会话自身、Fusion sidekick 子会话，或普通子代理（含其后代）。
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    #[default]
+    Session,
+    Sidekick,
+    Subagent,
+}
+
+impl UsageSource {
+    /// serde `skip_serializing_if` 用的判定：自身用量不写字段保持旧报文形状。
+    pub fn is_session(&self) -> bool {
+        matches!(self, UsageSource::Session)
+    }
+}
+
 /// 一个模型在当前会话中的累计用量。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelUsageSummary {
     /// 模型选择器。
     pub model: String,
+    /// 这行用量属于会话自身还是后代会话；自身用量序列化时省略。
+    #[serde(default, skip_serializing_if = "UsageSource::is_session")]
+    pub source: UsageSource,
     /// 模型请求次数。
     pub calls: u64,
     /// 输入 token 总数，包含缓存命中与缓存写入部分。
@@ -233,11 +256,12 @@ pub struct ModelUsageSummary {
     pub gen_ms: u64,
 }
 
-/// 当前会话的模型用量与全部模型总和。
+/// 当前会话的模型用量与全部模型总和
+/// （会话自身 + 未被回退孤立的全部后代会话）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionUsageResult {
-    /// 按模型选择器排序的明细。
+    /// 按来源与模型选择器排序的明细（会话自身、sidekick、普通子代理）。
     pub models: Vec<ModelUsageSummary>,
     /// 全部模型的总和；`model` 固定为 `total`。
     pub total: ModelUsageSummary,

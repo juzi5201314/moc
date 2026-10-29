@@ -53,6 +53,18 @@ pub struct ModelUsage {
     pub gen_ms: u64,
 }
 
+impl ModelUsage {
+    /// 把另一份累计用量逐项加进来。
+    pub fn merge(&mut self, other: &ModelUsage) {
+        self.calls = self.calls.saturating_add(other.calls);
+        add_usage(&mut self.usage, other.usage);
+        self.active_ms = self.active_ms.saturating_add(other.active_ms);
+        self.ttft_ms = self.ttft_ms.saturating_add(other.ttft_ms);
+        self.ttft_calls = self.ttft_calls.saturating_add(other.ttft_calls);
+        self.gen_ms = self.gen_ms.saturating_add(other.gen_ms);
+    }
+}
+
 /// 一个会话的 transcript 和当前状态。
 #[derive(Debug, Clone)]
 pub struct SessionState {

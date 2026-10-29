@@ -10,7 +10,7 @@ use moc_protocol::methods::{
     AgentList, AgentListParams, AgentMessage, AgentMessageOutcome, AgentMessageParams, AgentSpawn,
     AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, SessionCompact,
     SessionCompactParams, SessionLoad, SessionLoadParams, SessionRedo, SessionRedoParams,
-    SessionRewind, SessionRewindParams,
+    SessionRewind, SessionRewindParams, SessionUsage, SessionUsageParams, UsageSource,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -1604,6 +1604,37 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
         .expect("spawn 成功");
     assert_eq!(spawned.agent.model, "test/gpt-test:off");
     wait_children(&harness, &lead_id, Some(vec![spawned.agent.id]), Some(10)).await;
+
+    // session/usage 聚合整棵会话树：自身 + sidekick + 普通子代理各占一行。
+    let usage = harness
+        .client
+        .call::<SessionUsage>(SessionUsageParams {
+            session_id: lead_id.clone(),
+        })
+        .await
+        .expect("usage 查询成功");
+    let find = |source: UsageSource, model: &str| {
+        usage
+            .models
+            .iter()
+            .find(|summary| summary.source == source && summary.model == model)
+            .unwrap_or_else(|| panic!("缺少 {source:?} 的 {model} 用量行"))
+    };
+    assert!(find(UsageSource::Session, "test/gpt-test:off").calls >= 4);
+    assert_eq!(find(UsageSource::Sidekick, "test/gpt-cheap:off").calls, 2);
+    assert!(find(UsageSource::Subagent, "test/gpt-test:off").calls >= 1);
+    assert_eq!(usage.models.len(), 3, "{:?}", usage.models);
+    let calls: u64 = usage.models.iter().map(|summary| summary.calls).sum();
+    let input: u64 = usage
+        .models
+        .iter()
+        .map(|summary| summary.input_tokens)
+        .sum();
+    assert_eq!(
+        (usage.total.calls, usage.total.input_tokens),
+        (calls, input),
+        "合计应等于各行之和"
+    );
     harness.close().await;
 }
 
