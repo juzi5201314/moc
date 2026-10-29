@@ -154,7 +154,7 @@
 //!     SessionContextContentParams, SessionContextParams,
 //!     SessionDeleteParams, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
-//!     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams,
+//!     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams,
 //!     SessionPlanReviseResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
 //!     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
@@ -277,6 +277,9 @@
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_set_mode(&self, _ctx: RequestContext, _params: SessionSetModeParams) -> Result<SessionInfo, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_plan_mode(&self, _ctx: RequestContext, _params: SessionPlanModeParams) -> Result<SessionInfo, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_set_model(&self, _ctx: RequestContext, _params: SessionSetModelParams) -> Result<SessionSetModelResult, RpcError> {

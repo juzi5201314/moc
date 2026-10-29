@@ -38,6 +38,7 @@ import type { ImageSource, SessionPermission, SteerResult, TodoItem } from "@/pr
 import { retryLast, sendPrompt } from "@/store/actions";
 import { type Attachment as ComposerAttachment, toInput, useComposer } from "@/store/composer";
 import { dispatchNext } from "@/store/dispatch";
+import { togglePlanMode } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
@@ -59,6 +60,8 @@ const EMPTY_PENDING: ReturnType<typeof useComposer.getState>["pending"][string] 
 const SLASH_COMMANDS = [
   { command: "/retry", description: "重试上一次提交" },
   { command: "/clear", description: "清空当前草稿" },
+  { command: "/plan", description: "进入/退出计划状态（可带提示词）" },
+  { command: "/ask", description: "仅本条消息只读问答" },
 ];
 
 function imageDataUrl(source: ImageSource): string {
@@ -153,10 +156,13 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const turnsCount = view?.blocks.filter((b) => b.kind === "user").length ?? 0;
   // 步数只算真正动过手的步骤（工具与命令），正文/思考不计入，避免数字虚高
   const stepsCount = view?.blocks.filter((b) => b.kind === "tool" || b.kind === "bash").length ?? 0;
-  const slashSuggestions =
-    text.startsWith("/") && !text.includes(" ")
-      ? SLASH_COMMANDS.filter(({ command }) => command.startsWith(text))
-      : [];
+  const slashSuggestions = text.startsWith("/")
+    ? SLASH_COMMANDS.filter(({ command }) =>
+        text.includes(" ")
+          ? `${command} ` === text.slice(0, command.length + 1)
+          : command.startsWith(text),
+      )
+    : [];
 
   useEffect(
     () =>
@@ -206,6 +212,40 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       }
       useComposer.getState().clearDraft(sessionId);
       retryLast(sessionId);
+      return true;
+    }
+    if (command === "/plan" || command.startsWith("/plan ")) {
+      const argument = command.slice("/plan".length).trim();
+      const active = argument ? true : !view?.info.plan_active;
+      useComposer.getState().clearDraft(sessionId);
+      void togglePlanMode(sessionId, active)
+        .then(() => {
+          toast.success(active ? "已进入计划状态" : "已退出计划状态");
+          if (argument) void sendPrompt(sessionId, toInput(argument, []));
+        })
+        .catch((err) =>
+          toast.error(`切换计划状态失败: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      return true;
+    }
+    if (command.startsWith("/ask")) {
+      const argument = command.slice("/ask".length).trim();
+      if (!argument) {
+        toast.info("用法：/ask <问题>");
+        return true;
+      }
+      useComposer.getState().clearDraft(sessionId);
+      if (!isRunning) {
+        void sendPrompt(sessionId, toInput(argument, []), { contract: "ask" });
+      } else {
+        useComposer.getState().pushPending(sessionId, {
+          key: nanoid(),
+          kind: "queue",
+          text: argument,
+          images: [],
+          contract: "ask",
+        });
+      }
       return true;
     }
     return false;

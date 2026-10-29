@@ -3,6 +3,8 @@ import {
   CopyIcon,
   ExternalLinkIcon,
   GitForkIcon,
+  ListTodoIcon,
+  LockIcon,
   MoreHorizontalIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -25,7 +27,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { rpc } from "@/protocol/client";
 import type { SessionInfo, SessionMode } from "@/protocol/types";
 import { useLayout } from "@/store/layout";
-import { deleteSession, forkSession, renameSession } from "@/store/lifecycle";
+import { deleteSession, forkSession, renameSession, togglePlanMode } from "@/store/lifecycle";
 import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 
@@ -35,11 +37,11 @@ interface SessionHeaderProps {
   onTabChange?: (tab: "chat" | "trajectory") => void;
 }
 
+/** 会话方言：锁定整个会话的交互形态；plan 是叠加态，不在这里。 */
 const MODES: { id: SessionMode; label: string; desc: string }[] = [
-  { id: "normal", label: "标准模式", desc: "通用交互与自动工具调用" },
-  { id: "plan", label: "计划模式", desc: "分步规划，并在执行前提交审核" },
-  { id: "ask", label: "问答模式", desc: "只解答疑问，不直接执行写入操作" },
-  { id: "ptc", label: "PTC 模式", desc: "程序化思考与代码执行模式" },
+  { id: "normal", label: "标准", desc: "通用交互与自动工具调用" },
+  { id: "ptc", label: "PTC", desc: "程序化思考与代码执行模式" },
+  { id: "clm_experimental", label: "CLM 实验", desc: "实时上下文视图的实验方言" },
 ];
 
 export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: SessionHeaderProps) {
@@ -73,6 +75,8 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
       useTranscript.getState().mutate(sessionId, (v) => {
         v.info.mode = selectedMode;
       });
+      const draft = useSessions.getState().draftSession;
+      if (draft) useSessions.getState().setDraftSession({ ...draft, mode: selectedMode });
       return;
     }
     try {
@@ -84,9 +88,19 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
       useTranscript.getState().mutate(sessionId, (session) => {
         session.info = info;
       });
-      toast.success(`已切换模式至: ${MODES.find((m) => m.id === selectedMode)?.label}`);
+      toast.success(`已切换方言至: ${MODES.find((m) => m.id === selectedMode)?.label}`);
     } catch (err) {
-      toast.error(`切换模式失败: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`切换方言失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleTogglePlan = async () => {
+    const next = !view.info.plan_active;
+    try {
+      await togglePlanMode(sessionId, next);
+      toast.success(next ? "已进入计划状态" : "已退出计划状态");
+    } catch (err) {
+      toast.error(`切换计划状态失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -146,25 +160,31 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
             </button>
           )}
 
-          {/* 🛡 模式选择 (标准模式 ⌵) */}
+          {/* 🛡 方言选择（会话跑过首条提示后锁定）+ plan 叠加态开关 */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
                 className="flex items-center gap-1.5 rounded-md px-[7px] py-[3px] text-xs text-[var(--text-tertiary)] transition-colors hover:bg-[var(--accent)] hover:text-foreground"
+                title={view.info.mode_locked ? "方言已锁定；换方言请新建会话" : "选择会话方言"}
               >
                 <ShieldCheckIcon className="size-3.5" />
                 <span>{currentModeItem.label}</span>
-                <ChevronDownIcon className="size-3 opacity-60" />
+                {view.info.mode_locked ? (
+                  <LockIcon className="size-3 opacity-60" />
+                ) : (
+                  <ChevronDownIcon className="size-3 opacity-60" />
+                )}
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-52 text-xs">
               <DropdownMenuLabel className="text-[11px] font-medium text-muted-foreground">
-                选择运行模式
+                {view.info.mode_locked ? "方言已锁定（新建会话可换）" : "选择会话方言"}
               </DropdownMenuLabel>
               {MODES.map((item) => (
                 <DropdownMenuItem
                   key={item.id}
+                  disabled={view.info.mode_locked}
                   onClick={() => void handleSelectMode(item.id)}
                   className="flex flex-col items-start py-1.5"
                 >
@@ -179,6 +199,27 @@ export function SessionHeader({ sessionId, activeTab = "chat", onTabChange }: Se
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* plan 叠加态：与方言正交，可随时进出 */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => void handleTogglePlan()}
+                className={`flex items-center gap-1 rounded-md px-[7px] py-[3px] text-xs transition-colors ${
+                  view.info.plan_active
+                    ? "bg-primary/10 text-primary"
+                    : "text-[var(--text-tertiary)] hover:bg-[var(--accent)] hover:text-foreground"
+                }`}
+              >
+                <ListTodoIcon className="size-3.5" />
+                <span>计划</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              {view.info.plan_active ? "退出计划状态" : "进入计划状态（先写计划再执行）"}
+            </TooltipContent>
+          </Tooltip>
         </div>
 
         {/* 右侧：弹出在新窗口 ↗、更多操作 ···、右侧栏开关 */}

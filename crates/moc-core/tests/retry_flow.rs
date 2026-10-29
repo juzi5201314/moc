@@ -105,7 +105,7 @@ async fn retry_drops_the_interrupted_turn_before_asking_again() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -206,7 +206,7 @@ async fn retry_replays_tools_that_never_ran_without_asking_the_model() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await

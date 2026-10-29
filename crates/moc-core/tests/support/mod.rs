@@ -118,6 +118,22 @@ impl Harness {
                 model: None,
                 title: None,
                 mode,
+                plan_active: false,
+            })
+            .await
+            .unwrap()
+            .id
+    }
+
+    /// 会话直接带 plan 叠加态创建（对应旧的 `SessionMode::Plan`）。
+    pub async fn session_plan(&self, mode: SessionMode) -> String {
+        self.client
+            .call::<SessionNew>(SessionNewParams {
+                cwd: None,
+                model: None,
+                title: None,
+                mode,
+                plan_active: true,
             })
             .await
             .unwrap()
@@ -129,7 +145,7 @@ impl Harness {
             .call::<SessionPrompt>(PromptParams {
                 session_id: id.into(),
                 input: vec![InputPart::Text { text: text.into() }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await

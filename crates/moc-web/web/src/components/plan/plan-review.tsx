@@ -27,11 +27,13 @@ import type {
   PlanAction,
   PlanAnnotation,
   PlanInfo,
+  SessionMode,
   SessionPlanDiffResult,
   SessionPlanReviseResult,
   ToolDiff,
 } from "@/protocol/types";
 import { sendPrompt } from "@/store/actions";
+import { useTranscript } from "@/store/transcript";
 
 type EditorState = {
   /** 正在编辑的草稿 id；`undefined` 表示新建。 */
@@ -47,8 +49,14 @@ type Props = {
   plan: PlanInfo;
   busy: boolean;
   actionError: string | null;
-  onAction: (plan: PlanInfo, action: PlanAction) => void;
+  onAction: (plan: PlanInfo, action: PlanAction, executionMode?: SessionMode) => void;
 };
+
+const EXECUTION_MODES: { id: SessionMode; label: string }[] = [
+  { id: "normal", label: "标准" },
+  { id: "ptc", label: "PTC" },
+  { id: "clm_experimental", label: "CLM 实验" },
+];
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -84,6 +92,8 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showSubmitted, setShowSubmitted] = useState(false);
+  const sourceMode = useTranscript((state) => state.bySession[sessionId]?.info.mode ?? "normal");
+  const [executionMode, setExecutionMode] = useState<SessionMode>(sourceMode);
 
   const lines = useMemo(() => sourceLines(plan.markdown), [plan.markdown]);
 
@@ -437,6 +447,29 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             {busy && <Loader2Icon className="size-3 animate-spin" />}
             批准并执行
           </button>
+          <span className="inline-flex h-7 items-center overflow-hidden rounded-md border border-border text-[11px]">
+            <select
+              value={executionMode}
+              onChange={(event) => setExecutionMode(event.target.value as SessionMode)}
+              disabled={busy || submitting}
+              title="新会话执行的方言"
+              className="h-full bg-background px-1.5 text-[11px] outline-none disabled:opacity-50"
+            >
+              {EXECUTION_MODES.map((mode) => (
+                <option key={mode.id} value={mode.id}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => onAction(plan, "execute_new_session", executionMode)}
+              disabled={busy || submitting}
+              className="h-full border-l border-border px-2 hover:bg-muted disabled:opacity-50"
+            >
+              在新会话执行
+            </button>
+          </span>
         </div>
       )}
       {annotatable && suggestionCount > 0 && (

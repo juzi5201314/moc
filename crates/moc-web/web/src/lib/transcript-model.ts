@@ -678,6 +678,9 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     case "mode_changed":
       view.info.mode = update.mode;
       break;
+    case "plan_mode_changed":
+      view.info.plan_active = update.active;
+      break;
     case "model_changed":
       view.info.model = update.model;
       break;

@@ -24,7 +24,7 @@ use moc_protocol::methods::{
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
     SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
     SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams, SessionRequestAsk,
     SessionRetryParams, SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams,
     SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution,
@@ -152,6 +152,8 @@ impl ScriptedService {
                         model: "deepseek-flash".to_owned(),
                         permission: SessionPermission::Full,
                         mode: SessionMode::Normal,
+                        plan_active: false,
+                        mode_locked: false,
                         parent_session_id: None,
                         forked_from: None,
                         cwd: "/home/soeur/project/moc".to_owned(),
@@ -596,6 +598,8 @@ impl AgentService for ScriptedService {
             updated_at_ms: 1_000,
             lock: None,
             mode: params.mode,
+            plan_active: params.plan_active,
+            mode_locked: false,
         };
         state.sessions.insert(
             id,
@@ -768,6 +772,14 @@ impl AgentService for ScriptedService {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
 
+    async fn session_plan_mode(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionPlanModeParams,
+    ) -> Result<SessionInfo, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
     async fn session_set_permission(
         &self,
         _ctx: RequestContext,
@@ -918,7 +930,7 @@ impl AgentService for ScriptedService {
             PromptParams {
                 session_id: params.session_id,
                 input: Vec::new(),
-                mode: None,
+                contract: None,
                 agent_message: None,
             },
         )
@@ -1000,6 +1012,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::TitleChanged { .. } => "title_changed",
         SessionUpdate::LockChanged { .. } => "lock_changed",
         SessionUpdate::ModeChanged { .. } => "mode_changed",
+        SessionUpdate::PlanModeChanged { .. } => "plan_mode_changed",
         SessionUpdate::PermissionChanged { .. } => "permission_changed",
         SessionUpdate::ModelChanged { .. } => "model_changed",
         SessionUpdate::TodoChanged { .. } => "todo_changed",
@@ -1090,7 +1103,7 @@ pub fn prompt_params(session_id: &str, text: &str) -> PromptParams {
         input: vec![InputPart::Text {
             text: text.to_owned(),
         }],
-        mode: None,
+        contract: None,
         agent_message: None,
     }
 }

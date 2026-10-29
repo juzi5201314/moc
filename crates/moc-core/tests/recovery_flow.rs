@@ -117,7 +117,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -242,7 +242,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
             input: vec![InputPart::Text {
                 text: "失败请求".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await;
@@ -258,9 +258,9 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
             .is_some_and(|lock| lock.pid == std::process::id())
     );
     h.client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: id,
-            mode: SessionMode::Ask,
+            active: true,
         })
         .await
         .unwrap();
@@ -382,7 +382,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         PlanAction::ExecuteCompacted,
         PlanAction::Reject,
     ] {
-        let id = h.session(SessionMode::Plan).await;
+        let id = h.session_plan(SessionMode::Normal).await;
         h.prompt(&id, "提交计划").await;
         let plan = h.load(&id).await.plans.pop().unwrap();
         let result = h
@@ -392,13 +392,14 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                 plan_id: plan.plan_id,
                 action,
                 execution_model: None,
+                execution_mode: None,
             })
             .await
             .unwrap();
         let loaded = h.load(&id).await;
         if action == PlanAction::Reject {
             assert_eq!(loaded.plans[0].status, PlanStatus::Rejected);
-            assert_eq!(result.mode, SessionMode::Plan);
+            assert!(result.plan_active);
             assert!(result.auto_prompt.is_none());
         } else {
             assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
@@ -432,7 +433,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         })
         .mount(&upstream)
         .await;
-    let id = h.session(SessionMode::Plan).await;
+    let id = h.session_plan(SessionMode::Normal).await;
     h.prompt(&id, "保存计划").await;
     let before = h.load(&id).await;
     let error = h
@@ -442,6 +443,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
             plan_id: before.plans[0].plan_id.clone(),
             action: PlanAction::ExecuteCompacted,
             execution_model: None,
+            execution_mode: None,
         })
         .await;
     assert!(error.is_err(), "空摘要不能批准计划");
@@ -491,7 +493,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -1138,7 +1140,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
                 input: vec![InputPart::Text {
                     text: "压缩时取消".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await

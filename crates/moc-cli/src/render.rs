@@ -250,7 +250,14 @@ impl Renderer {
                 let _ = writeln!(out, "\n[错误：{message}]");
             }
             SessionUpdate::ModeChanged { mode } => {
-                let _ = writeln!(out, "\n[模式：{mode:?}]");
+                let _ = writeln!(out, "\n[方言：{mode:?}]");
+            }
+            SessionUpdate::PlanModeChanged { active } => {
+                let _ = writeln!(
+                    out,
+                    "\n[计划状态：{}]",
+                    if active { "开启" } else { "关闭" }
+                );
             }
             SessionUpdate::ModelChanged { model } => {
                 let _ = writeln!(out, "\n[模型：{model}]");

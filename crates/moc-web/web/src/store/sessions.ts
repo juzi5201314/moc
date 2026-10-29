@@ -35,6 +35,7 @@ export type DraftSession = {
   isDraft: true;
   model?: string;
   mode?: SessionMode;
+  plan?: boolean;
 };
 
 export type Workspace = {

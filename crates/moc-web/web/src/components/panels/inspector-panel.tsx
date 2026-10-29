@@ -37,11 +37,14 @@ import type {
   FsListDirResult,
   PlanAction,
   PlanInfo,
+  SessionMode,
   SessionPlanApproveResult,
   SessionUsageResult,
   ToolFileDiff,
 } from "@/protocol/types";
+import { sendPrompt } from "@/store/actions";
 import { type RightTab, useLayout } from "@/store/layout";
+import { openSession } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 
 interface InspectorPanelProps {
@@ -351,19 +354,31 @@ export function InspectorPanel({ sessionId }: InspectorPanelProps) {
     };
   }, [tabKind, activeTabKey, sessionId, usageRefresh]);
 
-  const handlePlanAction = async (plan: PlanInfo, action: PlanAction) => {
+  const handlePlanAction = async (
+    plan: PlanInfo,
+    action: PlanAction,
+    executionMode?: SessionMode,
+  ) => {
     setPlanActionId(plan.plan_id);
     setPlanError(null);
     try {
-      await rpc.call<SessionPlanApproveResult>("session/plan_approve", {
+      const result = await rpc.call<SessionPlanApproveResult>("session/plan_approve", {
         session_id: sessionId,
         plan_id: plan.plan_id,
         action,
+        ...(executionMode ? { execution_mode: executionMode } : {}),
       });
       useTranscript.getState().mutate(sessionId, (sessionView) => {
         const current = sessionView.plans.find((item) => item.plan_id === plan.plan_id);
         if (current) current.status = action === "reject" ? "rejected" : "approved";
       });
+      // 新会话执行：切到返回的会话并发起执行提示。
+      if (action === "execute_new_session") {
+        void openSession(result.session_id);
+      }
+      if (result.auto_prompt) {
+        void sendPrompt(result.session_id, [{ type: "text", text: result.auto_prompt }]);
+      }
     } catch (error) {
       setPlanError(errorMessage(error));
     } finally {

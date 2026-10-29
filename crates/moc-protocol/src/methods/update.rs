@@ -235,8 +235,10 @@ pub enum SessionUpdate {
     PermissionChanged {
         permission: super::session::SessionPermission,
     },
-    /// 会话工作模式变化。
+    /// 会话模式方言变化（`session/set_mode`；只在空白会话期可能发生）。
     ModeChanged { mode: SessionMode },
+    /// plan 叠加态变化（`session/plan_mode`，或计划批准退出 plan）。
+    PlanModeChanged { active: bool },
     /// 会话模型变化（`session/set_model`，或计划模式切换引起的模型覆盖与恢复）。
     ModelChanged { model: String },
     /// Todo 清单变化。
@@ -590,9 +592,13 @@ mod tests {
             ),
             (
                 SessionUpdate::ModeChanged {
-                    mode: SessionMode::Ask,
+                    mode: SessionMode::Ptc,
                 },
-                json!({ "type": "mode_changed", "mode": "ask" }),
+                json!({ "type": "mode_changed", "mode": "ptc" }),
+            ),
+            (
+                SessionUpdate::PlanModeChanged { active: true },
+                json!({ "type": "plan_mode_changed", "active": true }),
             ),
             (
                 SessionUpdate::ModelChanged {

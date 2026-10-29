@@ -11,9 +11,12 @@ pub struct CliArgs {
     /// 覆盖会话模型 selector。
     #[arg(long)]
     pub model: Option<String>,
-    /// 新会话的工作模式。
+    /// 新会话的方言（模型与工具的交互形态；跑过首条提示后锁定）。
     #[arg(long, value_enum, default_value_t = ModeArg::Normal)]
     pub mode: ModeArg,
+    /// 新会话直接进入 plan 叠加态（可与任意方言共存）。
+    #[arg(long)]
+    pub plan: bool,
     /// 会话工作目录。
     #[arg(long)]
     pub cwd: Option<PathBuf>,
@@ -61,7 +64,6 @@ pub struct CliArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ModeArg {
     Normal,
-    Plan,
     Ptc,
     ClmExperimental,
 }
@@ -88,7 +90,6 @@ impl From<ModeArg> for SessionMode {
     fn from(mode: ModeArg) -> Self {
         match mode {
             ModeArg::Normal => Self::Normal,
-            ModeArg::Plan => Self::Plan,
             ModeArg::Ptc => Self::Ptc,
             ModeArg::ClmExperimental => Self::ClmExperimental,
         }

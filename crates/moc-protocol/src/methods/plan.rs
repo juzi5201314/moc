@@ -6,9 +6,37 @@ use super::diff::ToolDiff;
 use super::session::SessionMode;
 use crate::method::{ClientRequest, Method};
 
+/// `session/plan_mode`：进入或退出 plan 叠加态。
+///
+/// plan 是叠加在会话方言上的持久协作态：进入时会话模型切到
+/// `models.roles.plan` 指定的模型（该角色为 `none` 时沿用当前模型），退出时
+/// 恢复进入前的模型；模型切换经 [`super::update::SessionUpdate::ModelChanged`]
+/// 推送，plan 状态本身经 [`super::update::SessionUpdate::PlanModeChanged`] 推送。
+/// 可在任意方言、会话任意阶段进出，不影响原生工具表。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionPlanMode;
+
+impl Method for SessionPlanMode {
+    const NAME: &'static str = "session/plan_mode";
+    type Params = SessionPlanModeParams;
+    type Result = super::session::SessionInfo;
+}
+
+impl ClientRequest for SessionPlanMode {}
+
+/// plan 叠加态切换参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPlanModeParams {
+    /// 目标会话。
+    pub session_id: String,
+    /// `true` 进入 plan，`false` 退出。
+    pub active: bool,
+}
+
 /// `session/plan_approve`：批准或拒绝已提交计划。
 ///
-/// 批准后原地执行退出计划模式并使用指定执行模型；新会话执行也使用该模型。
+/// 批准后原地执行退出 plan 叠加态并使用指定执行模型；新会话执行也使用该模型。
 /// execution_model 缺省时使用审批发生时的当前会话模型。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionPlanApprove;
@@ -31,6 +59,10 @@ pub struct SessionPlanApproveParams {
     /// 缺省时使用审批发生时的会话模型；完整 selector 可保留推理强度。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_model: Option<String>,
+    /// `execute_new_session` 的目标会话方言；缺省沿用源会话方言。
+    /// 其他动作下忽略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<SessionMode>,
 }
 
 /// 用户对计划的处理动作。
@@ -48,7 +80,10 @@ pub enum PlanAction {
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanApproveResult {
     pub session_id: String,
+    /// 批准后生效的会话方言：`execute_new_session` 是新会话方言，其余是源会话方言。
     pub mode: SessionMode,
+    /// 批准后 `session_id` 所指会话的 plan 状态。
+    pub plan_active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,7 +125,10 @@ pub struct SessionPlanReviseParams {
 #[serde(deny_unknown_fields)]
 pub struct SessionPlanReviseResult {
     pub session_id: String,
+    /// 会话方言；修订在 plan 叠加态内进行，方言本身不变。
     pub mode: SessionMode,
+    /// 会话 plan 状态；修订要求它保持 `true`。
+    pub plan_active: bool,
     /// 由 core 生成的修订提示；前端按普通用户消息发送。
     pub prompt: String,
 }
@@ -219,6 +257,7 @@ mod tests {
         let result = SessionPlanApproveResult {
             session_id: "ses_2".into(),
             mode: SessionMode::Normal,
+            plan_active: false,
             auto_prompt: Some("开始执行计划。".into()),
             plan_markdown: Some("# 计划".into()),
         };
@@ -227,6 +266,7 @@ mod tests {
             plan_id: "plan_1".into(),
             action: PlanAction::Execute,
             execution_model: None,
+            execution_mode: None,
         };
         assert_eq!(
             serde_json::to_value(params).expect("缺省执行模型可序列化"),
@@ -253,16 +293,17 @@ mod tests {
             serde_json::to_value(SessionPlanApproveParams {
                 session_id: "ses_1".into(),
                 plan_id: "plan_1".into(),
-                action: PlanAction::Execute,
+                action: PlanAction::ExecuteNewSession,
                 execution_model: Some("vendor/model:high".into()),
+                execution_mode: Some(SessionMode::Ptc),
             })
-            .expect("执行模型可序列化"),
-            serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute", "execution_model": "vendor/model:high"})
+            .expect("执行模型与方言可序列化"),
+            serde_json::json!({"session_id": "ses_1", "plan_id": "plan_1", "action": "execute_new_session", "execution_model": "vendor/model:high", "execution_mode": "ptc"})
         );
         assert_eq!(
             serde_json::to_value(result).expect("结果可序列化"),
             serde_json::json!({
-                "session_id": "ses_2", "mode": "normal",
+                "session_id": "ses_2", "mode": "normal", "plan_active": false,
                 "auto_prompt": "开始执行计划。", "plan_markdown": "# 计划"
             })
         );
@@ -321,12 +362,13 @@ mod tests {
         );
         let result = SessionPlanReviseResult {
             session_id: "ses_1".into(),
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
             prompt: "请按批注修订".into(),
         };
         assert_eq!(
             serde_json::to_value(result).expect("修订结果可序列化"),
-            serde_json::json!({"session_id": "ses_1", "mode": "plan", "prompt": "请按批注修订"})
+            serde_json::json!({"session_id": "ses_1", "mode": "normal", "plan_active": true, "prompt": "请按批注修订"})
         );
         let diff = SessionPlanDiffResult {
             plan_id: "plan_2".into(),

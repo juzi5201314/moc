@@ -48,11 +48,10 @@ fn note_protocol_fault(stop_reason: &mut Option<RpcError>, committed: &Committed
 async fn run_step(
     inner: &CoreInner,
     ctx: &ToolCtx,
-    mode: moc_protocol::methods::SessionMode,
     call: &moc_llm::ToolCall,
     start: Instant,
 ) -> Result<CommittedTool, CoreError> {
-    let (outcome, protocol_fault) = match execute_tool(inner, ctx, mode, call).await {
+    let (outcome, protocol_fault) = match execute_tool(inner, ctx, call).await {
         Ok(outcome) => (outcome, None),
         Err(CoreError::Protocol(message)) => (
             ToolOutcome::failure("E_PROTOCOL", message.clone()),
@@ -164,7 +163,6 @@ pub(super) async fn execute_tool_batch(
     tool_ctx: &ToolCtx,
     runtime: &Arc<SessionRuntime>,
     record: &Arc<crate::session::SessionRecord>,
-    mode: moc_protocol::methods::SessionMode,
     calls: &[moc_llm::ToolCall],
 ) -> Result<ToolBatchResult, RpcError> {
     let config = &tool_ctx.config;
@@ -195,10 +193,13 @@ pub(super) async fn execute_tool_batch(
             .await
             .map_err(protocol_to_rpc)?;
     }
-    let tool_batch_before = if matches!(
-        mode,
-        moc_protocol::methods::SessionMode::Normal | moc_protocol::methods::SessionMode::Ptc
-    ) && config.workspace.watch
+    // 只读契约不跟踪工作区写入；CLM 方言走自己的实时上下文视图。
+    let tool_batch_before = if tool_ctx.contract == crate::service::mode::ModeContract::None
+        && matches!(
+            tool_ctx.mode,
+            moc_protocol::methods::SessionMode::Normal | moc_protocol::methods::SessionMode::Ptc
+        )
+        && config.workspace.watch
     {
         Some(
             snapshot_workspace(cwd.clone(), config.workspace.max_scan_entries)
@@ -273,7 +274,7 @@ pub(super) async fn execute_tool_batch(
         let start = Instant::now();
         if parallel {
             pending.push(Box::pin(async move {
-                (index, run_step(inner, tool_ctx, mode, call, start).await)
+                (index, run_step(inner, tool_ctx, call, start).await)
             }));
             if pending.len() == parallel_limit
                 && let Some((done, committed)) = pending.next().await
@@ -283,7 +284,7 @@ pub(super) async fn execute_tool_batch(
                 slots[done] = Some(committed);
             }
         } else {
-            let committed = run_step(inner, tool_ctx, mode, call, start)
+            let committed = run_step(inner, tool_ctx, call, start)
                 .await
                 .map_err(to_rpc)?;
             note_protocol_fault(&mut stop_reason, &committed);
@@ -352,7 +353,7 @@ pub(super) async fn execute_tool_batch(
             result: tool_result,
             ..
         } = committed;
-        if mode == moc_protocol::methods::SessionMode::ClmExperimental {
+        if tool_ctx.mode == moc_protocol::methods::SessionMode::ClmExperimental {
             let message = Message {
                 role: Role::Tool,
                 content: vec![ContentPart::ToolResult(tool_result.clone())],
@@ -401,7 +402,7 @@ pub(super) async fn execute_tool_batch(
             session_id,
             cwd,
             config,
-            mode,
+            contract: tool_ctx.contract,
             before_tools: tool_batch_before.as_ref(),
         },
         &tool_ctx.plugins,
@@ -441,7 +442,6 @@ pub(super) async fn execute_tool_batch(
 async fn execute_tool(
     inner: &CoreInner,
     ctx: &ToolCtx,
-    mode: moc_protocol::methods::SessionMode,
     call: &moc_llm::ToolCall,
 ) -> Result<ToolOutcome, CoreError> {
     if ctx.cancel.is_cancelled() {
@@ -485,7 +485,7 @@ async fn execute_tool(
             "yield is available only to subagents",
         ));
     }
-    if !tool.visible_in(mode) {
+    if !tool.permitted_in(ctx.mode, ctx.contract) {
         return Ok(ToolOutcome::failure(
             "E_MODE",
             "This tool is not allowed in the current mode",
@@ -678,12 +678,11 @@ pub(crate) async fn execute_nested_tool(
     nested.call_grants = crate::sandbox::SandboxGrants::default();
     // 一次性的 bash 升级只属于那次调用，不能泄漏给 PTC 嵌套工具。
     nested.permission = ctx.state.lock().await.permission;
-    let mode = if ctx.mode == moc_protocol::SessionMode::Ptc {
-        moc_protocol::SessionMode::Normal
-    } else {
-        ctx.mode
-    };
-    execute_tool(inner, &nested, mode, call).await
+    // PTC 的嵌套调用按 Normal 方言判定可达面，契约照常生效（如 PTC+plan 只读）。
+    if nested.mode == moc_protocol::SessionMode::Ptc {
+        nested.mode = moc_protocol::SessionMode::Normal;
+    }
+    execute_tool(inner, &nested, call).await
 }
 
 /// 调用全部插件的 `beforeToolCall`；拒绝时返回原因，允许时就地改写参数。

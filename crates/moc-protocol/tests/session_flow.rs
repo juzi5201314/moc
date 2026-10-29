@@ -93,7 +93,7 @@ async fn new_session_methods_are_dispatched_to_core() {
     let error = handle
         .call::<SessionSetMode>(SessionSetModeParams {
             session_id: "ses_1".to_owned(),
-            mode: SessionMode::Ask,
+            mode: SessionMode::Ptc,
         })
         .await
         .expect_err("脚本 core 不实现模式切换");
@@ -105,6 +105,7 @@ async fn new_session_methods_are_dispatched_to_core() {
             plan_id: "plan_12345678".to_owned(),
             action: PlanAction::Execute,
             execution_model: None,
+            execution_mode: None,
         })
         .await
         .expect_err("脚本 core 不实现计划批准");

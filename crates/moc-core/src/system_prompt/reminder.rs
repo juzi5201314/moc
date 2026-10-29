@@ -17,6 +17,7 @@ use moc_protocol::ReminderItem;
 pub mod key {
     pub const SANDBOX: &str = "sandbox";
     pub const MODE: &str = "mode";
+    pub const CONTRACT: &str = "contract";
     pub const MCP_INDEX: &str = "mcp-index";
     pub const ROSTER: &str = "roster";
     pub const TODO_STALL: &str = "todo-stall";

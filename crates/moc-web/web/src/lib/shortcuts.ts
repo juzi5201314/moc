@@ -6,14 +6,23 @@ import { toast } from "sonner";
 import { rpc } from "@/protocol/client";
 import type { SessionMode } from "@/protocol/types";
 import { useLayout } from "@/store/layout";
-import { closeSession, createQuickSession } from "@/store/lifecycle";
+import { closeSession, createQuickSession, togglePlanMode } from "@/store/lifecycle";
 import { type DetailTier, TIER_ORDER, usePrefs } from "@/store/prefs";
+import { useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 
 async function setMode(sessionId: string, mode: SessionMode): Promise<void> {
-  await rpc.call("session/mode", { session_id: sessionId, mode });
+  if (sessionId === "draft-session") {
+    useTranscript.getState().mutate(sessionId, (view) => {
+      view.info.mode = mode;
+    });
+    const draft = useSessions.getState().draftSession;
+    if (draft) useSessions.getState().setDraftSession({ ...draft, mode });
+    return;
+  }
+  await rpc.call("session/set_mode", { session_id: sessionId, mode });
 }
 
 async function runAction(fn: () => Promise<unknown>, label?: string): Promise<void> {
@@ -25,12 +34,11 @@ async function runAction(fn: () => Promise<unknown>, label?: string): Promise<vo
   }
 }
 
-const MODE_CYCLE: SessionMode[] = ["normal", "ask", "plan", "ptc"];
+const MODE_CYCLE: SessionMode[] = ["normal", "ptc", "clm_experimental"];
 const MODE_LABEL: Record<string, string> = {
   normal: "标准",
-  ask: "问答",
-  plan: "计划",
   ptc: "PTC",
+  clm_experimental: "CLM 实验",
 };
 const TIER_LABEL: Record<DetailTier, string> = { hidden: "隐藏", brief: "简要", full: "完整" };
 
@@ -41,13 +49,20 @@ function nextTier(tier: DetailTier): DetailTier {
 function cycleMode(sessionId: string): void {
   const view = useTranscript.getState().bySession[sessionId];
   if (!view || view.readOnly) return;
-  if (view.info.mode === "clm_experimental") {
-    toast("CLM 模式下不能切换模式");
+  if (view.info.mode_locked) {
+    toast("会话方言已锁定；换方言请新建会话");
     return;
   }
   const index = MODE_CYCLE.indexOf(view.info.mode);
   const next = MODE_CYCLE[(index + 1) % MODE_CYCLE.length] ?? "normal";
-  void runAction(() => setMode(sessionId, next), `模式：${MODE_LABEL[next]}`);
+  void runAction(() => setMode(sessionId, next), `方言：${MODE_LABEL[next]}`);
+}
+
+function cyclePlan(sessionId: string): void {
+  const view = useTranscript.getState().bySession[sessionId];
+  if (!view || view.readOnly) return;
+  const next = !view.info.plan_active;
+  void runAction(() => togglePlanMode(sessionId, next), next ? "已进入计划状态" : "已退出计划状态");
 }
 
 function switchTab(offset: number): void {
@@ -100,6 +115,9 @@ function handleAlt(code: string): boolean {
       return true;
     case "KeyM":
       if (active) cycleMode(active);
+      return true;
+    case "KeyJ":
+      if (active) cyclePlan(active);
       return true;
     case "KeyT": {
       const thinkingTier = nextTier(prefs.thinkingTier);

@@ -143,7 +143,11 @@ async fn perform(
         } else {
             let ask = ctx.core.client_supports_ask(ctx.request.connection_id());
             match request.operation {
-                Operation::Servers => Ok(ctx.catalog.servers(ctx.mode, ask, &ctx.config)),
+                Operation::Servers => {
+                    Ok(ctx
+                        .catalog
+                        .servers(ctx.mode, ctx.contract, ask, &ctx.config))
+                }
                 Operation::Search {
                     query,
                     server,
@@ -153,6 +157,7 @@ async fn perform(
                     .catalog
                     .search(
                         ctx.mode,
+                        ctx.contract,
                         ask,
                         &ctx.config,
                         query.as_deref().unwrap_or(""),
@@ -163,7 +168,7 @@ async fn perform(
                     .map_err(|err| error(err.code, err.message)),
                 Operation::Describe { name } => ctx
                     .catalog
-                    .describe(ctx.mode, ask, &ctx.config, &name)
+                    .describe(ctx.mode, ctx.contract, ask, &ctx.config, &name)
                     .map_err(|err| error(err.code, err.message)),
                 operation => super::state::execute(ctx, operation).await,
             }

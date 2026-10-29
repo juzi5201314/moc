@@ -28,11 +28,15 @@ pub(crate) async fn host_for(inner: &CoreInner, cwd: &Path) -> Option<Arc<Plugin
     }
 }
 
-/// 会话状态对应的插件上下文；模式与权限用本次实际生效的值。
+/// 会话状态对应的插件上下文；方言、契约与权限用本次实际生效的值。
+///
+/// `mode` 沿用旧词表：契约激活时报契约名（`ask`/`plan`），否则报方言名——插件的
+/// `modes` 声明与契约同词表；`writable` 反映契约是否只读。
 pub(crate) fn context(
     session_id: &str,
     cwd: &str,
     mode: SessionMode,
+    contract: crate::service::mode::ModeContract,
     permission: SessionPermission,
     model: &str,
     is_subagent: bool,
@@ -40,20 +44,24 @@ pub(crate) fn context(
     CallContext {
         session_id: session_id.to_owned(),
         cwd: cwd.to_owned(),
-        mode: mode_name(mode),
+        mode: match contract {
+            crate::service::mode::ModeContract::None => mode_name(mode),
+            contract => contract.name().to_owned(),
+        },
         permission: permission.as_str().to_owned(),
         model: model.to_owned(),
         is_subagent,
-        writable: true,
+        writable: !contract.read_only(),
     }
 }
 
-/// 会话创建瞬间的插件上下文。
+/// 会话信息对应的插件上下文；plan 叠加态折算成契约。
 pub(crate) fn context_from_info(info: &SessionInfo) -> CallContext {
     context(
         &info.id,
         &info.cwd,
         info.mode,
+        crate::service::mode::ModeContract::effective(info.plan_active, None),
         info.permission,
         &info.model,
         info.is_subagent(),
@@ -200,7 +208,7 @@ pub(crate) fn prompt_started_payload(
     prompt_id: &str,
     first_prompt: bool,
     model: &str,
-    mode: SessionMode,
+    mode: &str,
     permission: SessionPermission,
     source: &str,
     text: &str,

@@ -142,7 +142,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
                 input: vec![InputPart::Text {
                     text: "开始任务".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -224,7 +224,7 @@ async fn unsteer_removes_pending_steering_before_boundary() {
                 input: vec![InputPart::Text {
                     text: "开始任务".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await

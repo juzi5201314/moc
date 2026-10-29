@@ -39,7 +39,13 @@ pub fn render_signatures(
         "Tool signatures for run_code: `const r = await tools.<name>(args)`; `?` marks optional properties. ToolResult fields are documented under run_code.".to_owned(),
     ];
     let mut builtins = 0usize;
-    for tool in catalog.visible(mode, ask_supported, config) {
+    // 声明渲染方言面：契约只拦执行，不改写这段签名（系统前缀因此跨契约稳定）。
+    for tool in catalog.visible(
+        mode,
+        crate::service::mode::ModeContract::None,
+        ask_supported,
+        config,
+    ) {
         if tool.origin() == ToolOrigin::Mcp {
             continue;
         }
@@ -69,7 +75,12 @@ pub fn render_mcp_index(
         return None;
     }
     let mcp: Vec<_> = catalog
-        .visible(mode, ask_supported, config)
+        .visible(
+            mode,
+            crate::service::mode::ModeContract::None,
+            ask_supported,
+            config,
+        )
         .filter(|tool| tool.origin() == ToolOrigin::Mcp)
         .collect();
     if mcp.is_empty() {

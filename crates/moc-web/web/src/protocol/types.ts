@@ -175,7 +175,10 @@ export type ConfigReply =
 
 // ---------- 会话 ----------
 
-export type SessionMode = "normal" | "ask" | "plan" | "ptc" | "clm_experimental";
+/** 会话方言：模型与工具的交互形态。跑过首条提示后锁定（`mode_locked`）。 */
+export type SessionMode = "normal" | "ptc" | "clm_experimental";
+/** 单次提示的执行契约；只约束这一次 prompt，结束即失效。 */
+export type PromptContract = "ask";
 export type SessionPermission = "full" | "workspace" | "workspace_only";
 
 export type SessionLockInfo = {
@@ -191,6 +194,10 @@ export type SessionInfo = {
   model: string;
   permission: SessionPermission;
   mode: SessionMode;
+  /** plan 叠加态是否激活；与方言正交，可随时进出。 */
+  plan_active: boolean;
+  /** 方言是否已锁定：会话跑过第一条用户提示后为真。 */
+  mode_locked: boolean;
   parent_session_id?: string;
   forked_from?: string;
   cwd: string;
@@ -309,6 +316,7 @@ export type PlanInfo = {
 export type SessionPlanReviseResult = {
   session_id: string;
   mode: SessionMode;
+  plan_active: boolean;
   /** 由 core 生成的修订提示；前端按普通用户消息发送。 */
   prompt: string;
 };
@@ -323,6 +331,7 @@ export type SessionPlanDiffResult = {
 export type SessionPlanApproveResult = {
   session_id: string;
   mode: SessionMode;
+  plan_active: boolean;
   auto_prompt?: string;
   plan_markdown?: string;
 };
@@ -608,6 +617,7 @@ export type SessionUpdate =
   | { type: "lock_changed"; lock: SessionLockInfo | null }
   | { type: "permission_changed"; permission: SessionPermission }
   | { type: "mode_changed"; mode: SessionMode }
+  | { type: "plan_mode_changed"; active: boolean }
   | { type: "model_changed"; model: string }
   | { type: "todo_changed"; phases: TodoPhase[] }
   | { type: "todo_reminder"; prompt_id: string; open_items: number }
@@ -659,6 +669,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   lock_changed: true,
   permission_changed: true,
   mode_changed: true,
+  plan_mode_changed: true,
   model_changed: true,
   todo_changed: true,
   todo_reminder: true,

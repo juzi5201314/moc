@@ -210,6 +210,8 @@ pub fn sample_session_info(id: &str, title: &str, cwd: &str) -> SessionInfo {
         model: "provider/model".into(),
         permission: SessionPermission::Full,
         mode: SessionMode::Normal,
+        plan_active: false,
+        mode_locked: false,
         parent_session_id: None,
         forked_from: None,
         cwd: cwd.into(),
@@ -314,7 +316,7 @@ pub fn sample_queued_prompt(id: u64, text: &str) -> moc_tui::queue::QueuedPrompt
     moc_tui::queue::QueuedPrompt {
         id,
         draft,
-        mode: None,
+        contract: None,
     }
 }
 

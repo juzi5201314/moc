@@ -166,7 +166,7 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
         return;
     };
     let theme = app.theme;
-    let current = app.display_mode();
+    let current = app.session.as_ref().map(|session| session.mode);
     let selected = menu.selected;
     let label_width = crate::app::MODES
         .iter()
@@ -483,7 +483,7 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             title: "# 会话与通用",
             rows: vec![
                 (get_key("model"), "选择模型"),
-                (get_key("mode"), "切换会话模式"),
+                (get_key("mode"), "切换会话方言"),
                 (get_key("config"), "打开设置"),
                 (get_key("agents"), "打开子代理管理"),
                 (get_key("resume"), "恢复会话"),
@@ -2027,13 +2027,20 @@ fn ask_preview_lines(
 /// 计划审阅卡片顶部的固定行数：执行模型、标题/版本、路径。
 pub(crate) const PLAN_HEADER_ROWS: usize = 3;
 
-/// 待审阅计划的动作列表。
-const PLAN_ACTIONS: [&str; 4] = [
-    "执行（当前会话）",
-    "压缩当前会话后执行",
-    "在新会话执行",
-    "继续计划",
-];
+/// 待审阅计划的动作列表；「在新会话执行」带上所选目标方言。
+fn plan_action_label(state: &PlanReviewState, index: usize) -> String {
+    match index {
+        0 => "执行（当前会话）".to_owned(),
+        1 => "压缩当前会话后执行".to_owned(),
+        2 => format!(
+            "在新会话执行（{}）",
+            crate::app::mode_label(state.execution_mode)
+        ),
+        _ => "继续计划".to_owned(),
+    }
+}
+
+const PLAN_ACTIONS_LEN: usize = 4;
 
 /// 状态文字与配色。
 fn plan_status_label(theme: &Theme, status: PlanStatus) -> (&'static str, Color) {
@@ -2063,7 +2070,7 @@ fn plan_status_note(status: PlanStatus) -> &'static str {
 pub(crate) fn plan_fixed_rows(state: &PlanReviewState) -> usize {
     let mut fixed = PLAN_HEADER_ROWS + 1;
     if state.pane == PlanPane::Read && state.status == PlanStatus::Submitted {
-        fixed += PLAN_ACTIONS.len();
+        fixed += PLAN_ACTIONS_LEN;
     }
     if state.status != PlanStatus::Submitted {
         fixed += 1;
@@ -2190,10 +2197,10 @@ fn plan_lines(
 
     let hint = match state.pane {
         PlanPane::Read if state.show_diff && state.previous_plan_id.is_some() => {
-            "↑↓/PgUp/PgDn 滚动 · D 看计划 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型"
+            "↑↓/PgUp/PgDn 滚动 · D 看计划 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换方言"
         }
         PlanPane::Read => {
-            "↑↓/PgUp/PgDn 滚动 · D 看改动 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型"
+            "↑↓/PgUp/PgDn 滚动 · D 看改动 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换方言"
         }
         PlanPane::Annotate => {
             "↑↓ 移动 · v 选行 · c 批注 · Ctrl+G 建议改法 · x 删除 · s 发送 · A 返回阅读 · Esc 返回"
@@ -2205,7 +2212,8 @@ fn plan_lines(
     )));
 
     if state.pane == PlanPane::Read && state.status == PlanStatus::Submitted {
-        for (index, label) in PLAN_ACTIONS.iter().enumerate() {
+        for index in 0..PLAN_ACTIONS_LEN {
+            let label = plan_action_label(state, index);
             hits.push((index, lines.len()));
             let style = if state.submitting {
                 Style::new().fg(theme.gray_dim)
@@ -2743,6 +2751,8 @@ mod tests {
             model: "p/model".into(),
             permission: SessionPermission::Full,
             mode: SessionMode::Normal,
+            plan_active: false,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: forked_from.map(str::to_owned),
             cwd: cwd.into(),

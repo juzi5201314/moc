@@ -290,6 +290,7 @@ async fn grok_build_ladder_shrinks_after_context_length() {
             model: Some("test/small".into()),
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .unwrap()

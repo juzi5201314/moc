@@ -2,7 +2,7 @@
 //! Derived directly from ORIGINAL_REQUEST.md and PROJECT.md specifications.
 
 use super::common::*;
-use moc_protocol::methods::AgentStatus;
+use moc_protocol::methods::{AgentStatus, PromptContract};
 use moc_protocol::{SessionMode, Usage};
 use moc_tui::app::ModeMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
@@ -502,13 +502,16 @@ fn test_f8_b1_mode_tag_plan_styling() {
         app.session.as_ref().map(|s| s.mode),
         Some(SessionMode::Normal)
     );
-    assert_ne!(SessionMode::Plan, SessionMode::Normal);
+    app.session.as_mut().unwrap().plan_active = true;
+    assert_eq!(app.display_mode(), "normal+plan", "plan 是叠加态，不改方言");
 }
 
 #[test]
 fn test_f8_b2_mode_tag_ask_styling() {
-    let ask_mode = SessionMode::Ask;
-    assert_ne!(ask_mode, SessionMode::Normal);
+    let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
+    app.session = Some(sample_session_info("ses-1", "Session", "/tmp"));
+    app.transient_contract = Some(PromptContract::Ask);
+    assert_eq!(app.display_mode(), "normal+ask");
 }
 
 #[test]
@@ -519,12 +522,12 @@ fn test_f8_b3_mode_tag_exec_default() {
 
 #[test]
 fn test_f8_b4_mode_preserved_across_queue() {
-    let mut queued = sample_queued_prompt(1, "规划模式提示");
-    queued.mode = Some(SessionMode::Plan);
+    let mut queued = sample_queued_prompt(1, "只读问答提示");
+    queued.contract = Some(PromptContract::Ask);
     assert_eq!(
-        queued.mode,
-        Some(SessionMode::Plan),
-        "queued prompt preserves mode tag"
+        queued.contract,
+        Some(PromptContract::Ask),
+        "queued prompt preserves contract tag"
     );
 }
 
@@ -532,9 +535,8 @@ fn test_f8_b4_mode_preserved_across_queue() {
 fn test_f8_b5_mode_toggle_cycle() {
     let modes = [
         SessionMode::Normal,
-        SessionMode::Plan,
-        SessionMode::Ask,
         SessionMode::Ptc,
+        SessionMode::ClmExperimental,
     ];
     for (i, mode) in modes.iter().enumerate() {
         let next = modes[(i + 1) % modes.len()];
@@ -1074,12 +1076,9 @@ fn test_f20_b3_mode_switch_updates_theme_accents() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-1", "Session", "/tmp"));
     if let Some(session) = app.session.as_mut() {
-        session.mode = SessionMode::Plan;
+        session.mode = SessionMode::Ptc;
     }
-    assert_eq!(
-        app.session.as_ref().map(|s| s.mode),
-        Some(SessionMode::Plan)
-    );
+    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Ptc));
 }
 
 #[test]

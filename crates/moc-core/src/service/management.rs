@@ -66,6 +66,7 @@ pub(super) async fn steer(
             &params.session_id,
             &snapshot.session.cwd,
             snapshot.mode,
+            crate::service::mode::ModeContract::effective(snapshot.plan_active, None),
             snapshot.permission,
             &snapshot.model,
             snapshot.session.is_subagent(),

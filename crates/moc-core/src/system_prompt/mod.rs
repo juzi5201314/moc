@@ -367,29 +367,40 @@ fn append_piece(config: &ResolvedConfig) -> Option<PromptPiece> {
     })
 }
 
-/// 当前模式的规则提醒正文。
+/// 当前方言的规则提醒正文。
 ///
-/// 模式规则只放在运行时提醒里：静态系统提示与模式无关，才能跨目录、跨会话复用缓存。
-/// 所以提醒不能只写「当前是 X 模式，规则见上文」，必须把该模式的规则写全。
-/// 普通模式也要发一条事实：提醒是持久条目、按正文差分——从只读模式切回 Normal 却
-/// 什么都不写，历史里旧的只读契约会继续生效。
+/// 方言规则只放在运行时提醒里：静态系统提示与方言无关，才能跨目录、跨会话复用
+/// 缓存。方言在会话生命周期内不可变，这份事实一般只注入一次（压缩清空去重表后
+/// 会补回历史）；可叠加的执行契约见 [`contract_reminder`]。
 pub fn mode_contract(mode: SessionMode) -> String {
     let text = match mode {
         SessionMode::Normal => {
-            "Normal mode is active: the workspace is writable and the enabled tools may be used directly."
-        }
-        SessionMode::Ask => {
-            "Ask mode is active: the workspace is read-only, including inside run_code; read and search freely."
-        }
-        SessionMode::Plan => {
-            "Plan mode is active: the workspace is read-only, including inside run_code. Draft with write_plan as often as you need; each call saves a new revision. Before calling exit_plan, make sure the plan is finished: exit_plan submits the last saved plan, ends this prompt immediately, and puts the session into plan review — no tool call runs after it. When the user returns review notes, revise the plan, save it with write_plan, and call exit_plan again."
+            "Normal dialect is active: native tool calls run directly; the workspace is writable unless an overlay contract says otherwise."
         }
         SessionMode::Ptc => {
-            "PTC mode is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
+            "PTC dialect is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, contract policy, and the bash sandbox."
         }
         SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
     text.to_owned()
+}
+
+/// 执行契约的规则提醒正文；`None` 契约返回 `None`，调用方据此发 Retract 撤掉旧条目。
+///
+/// 契约与方言正交：契约不写方言规则，只写它收紧的边界与期限。ask 契约是单次提示
+/// 的只读声明；plan 是持续到批准/退出为止的叠加态。
+pub fn contract_reminder(contract: crate::service::mode::ModeContract) -> Option<String> {
+    use crate::service::mode::ModeContract;
+    let text = match contract {
+        ModeContract::None => return None,
+        ModeContract::Ask => {
+            "Ask contract applies to this prompt only: the workspace is read-only, including inside run_code; read and search freely. The restriction ends when this prompt ends."
+        }
+        ModeContract::Plan => {
+            "Plan mode is active: the workspace is read-only, including inside run_code. Draft with write_plan as often as you need; each call saves a new revision. Before calling exit_plan, make sure the plan is finished: exit_plan submits the last saved plan, ends this prompt immediately, and puts the session into plan review — no tool call runs after it. When the user returns review notes, revise the plan, save it with write_plan, and call exit_plan again."
+        }
+    };
+    Some(text.to_owned())
 }
 
 /// 当前沙盒模式的事实提醒正文。
@@ -848,26 +859,17 @@ mod tests {
         assert!(text.contains("- demo: demo skill"));
     }
 
-    /// 每个模式都要发模式提醒——包括普通模式：否则切回普通模式时历史里旧的只读
-    /// 契约没有东西去纠正。
+    /// 每个方言都要发方言提醒；契约提醒单独成条目，契约退出时靠 Retract 撤掉。
     #[test]
-    fn mode_contract_declares_every_mode() {
+    fn mode_contract_declares_every_dialect() {
         for (mode, needles) in [
             (
                 SessionMode::Normal,
-                ["Normal mode is active", "writable"].as_slice(),
-            ),
-            (
-                SessionMode::Ask,
-                ["Ask mode is active", "read-only"].as_slice(),
-            ),
-            (
-                SessionMode::Plan,
-                ["Plan mode is active", "write_plan", "exit_plan"].as_slice(),
+                ["Normal dialect is active", "writable"].as_slice(),
             ),
             (
                 SessionMode::Ptc,
-                ["PTC mode is active", "only through run_code"].as_slice(),
+                ["PTC dialect is active", "only through run_code"].as_slice(),
             ),
             (
                 SessionMode::ClmExperimental,
@@ -880,8 +882,20 @@ mod tests {
             }
             assert!(
                 !text.contains("follow the tool policies above"),
-                "{mode:?} 不能只报模式名、让模型去上文找规则：{text}"
+                "{mode:?} 不能只报方言名、让模型去上文找规则：{text}"
             );
+        }
+    }
+
+    #[test]
+    fn contract_reminder_covers_overlays() {
+        use crate::service::mode::ModeContract;
+        assert!(contract_reminder(ModeContract::None).is_none());
+        let ask = contract_reminder(ModeContract::Ask).expect("ask 契约提醒");
+        assert!(ask.contains("read-only") && ask.contains("prompt"), "{ask}");
+        let plan = contract_reminder(ModeContract::Plan).expect("plan 契约提醒");
+        for needle in ["Plan mode is active", "write_plan", "exit_plan"] {
+            assert!(plan.contains(needle), "plan 契约缺少「{needle}」：{plan}");
         }
     }
 

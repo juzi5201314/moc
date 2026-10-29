@@ -206,10 +206,10 @@ pub struct App {
     pub ask_option_hits: Vec<(usize, Rect)>,
     /// 就地模式菜单；`None` = 关闭。
     pub mode_menu: Option<ModeMenu>,
-    /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
+    /// 当前这条用户消息的临时契约覆盖（`/ask` 注入）；整条消息回复完毕才清空。
     ///
-    /// 只影响图例与状态栏的展示，会话持久模式仍以 `session.mode` 为准。
-    pub transient_mode: Option<SessionMode>,
+    /// 只影响图例与状态栏的展示，会话方言与 plan 叠加态仍以 `session` 为准。
+    pub transient_contract: Option<moc_protocol::methods::PromptContract>,
     /// Core 估算的上下文组成与总量。
     pub context_usage: Option<ContextUsageResult>,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
@@ -299,6 +299,8 @@ pub struct App {
     pub config_queue: Option<ConfigWrite>,
     pub startup_cwd: String,
     pub startup_mode: SessionMode,
+    /// 启动时新会话是否直接进 plan 叠加态（`--plan`）。
+    pub startup_plan: bool,
     pub startup_pending: Option<String>,
     /// 本工作区插件注册的斜杠命令，供补全与命令分派使用。
     pub plugin_commands: Vec<moc_protocol::methods::PluginCommandInfo>,
@@ -488,7 +490,7 @@ impl App {
             rewind_detail_area: Rect::default(),
             ask_option_hits: Vec::new(),
             mode_menu: None,
-            transient_mode: None,
+            transient_contract: None,
             context_usage: None,
             scroll_offset: 0,
             prompt_running: false,
@@ -538,6 +540,7 @@ impl App {
             config_queue: None,
             startup_cwd: String::new(),
             startup_mode: SessionMode::Normal,
+            startup_plan: false,
             startup_pending: None,
             plugin_commands: Vec::new(),
             plugins: Vec::new(),
@@ -1275,15 +1278,20 @@ impl App {
         entries
     }
 
-    /// 打开就地模式菜单：高亮当前模式，并让出可能叠在输入框上方的补全菜单。
+    /// 打开就地模式菜单：高亮当前方言，并让出可能叠在输入框上方的补全菜单。
+    /// 会话跑过第一条提示后方言锁定，菜单不再提供。
     pub fn open_mode_menu(&mut self) {
-        if self.session.is_none() {
+        let Some(session) = self.session.as_ref() else {
             self.set_notice("当前没有活动会话");
+            return;
+        };
+        if session.mode_locked {
+            self.set_notice("会话方言已锁定；换方言请新建会话");
             return;
         }
 
         self.completion = None;
-        let current = self.display_mode();
+        let current = self.session.as_ref().map(|session| session.mode);
         self.mode_menu = Some(ModeMenu {
             selected: current
                 .and_then(|mode| MODES.iter().position(|candidate| *candidate == mode))
@@ -1380,7 +1388,7 @@ impl App {
         self.prompt_started_at = None;
         self.cancel_requested = false;
         self.ctrl_c_pending = None;
-        self.transient_mode = None;
+        self.transient_contract = None;
     }
 
     pub fn set_history_cursor(&mut self, has_more: bool, before_entry_id: Option<String>) {
@@ -1657,10 +1665,19 @@ impl App {
         (done, total)
     }
 
-    /// 图例与状态栏展示的模式：本次提示覆盖优先，否则取会话模式。
-    pub fn display_mode(&self) -> Option<SessionMode> {
-        self.transient_mode
-            .or_else(|| self.session.as_ref().map(|session| session.mode))
+    /// 图例与状态栏展示的模式标签：会话方言 + plan 叠加态 + 本次提示的临时契约。
+    pub fn display_mode(&self) -> String {
+        let Some(session) = self.session.as_ref() else {
+            return "idle".to_owned();
+        };
+        let mut label = mode_label(session.mode).to_owned();
+        if session.plan_active {
+            label.push_str("+plan");
+        }
+        if self.transient_contract.is_some() {
+            label.push_str("+ask");
+        }
+        label
     }
 }
 
@@ -1836,21 +1853,19 @@ mod tool_recovery_tests {
     }
 }
 
-/// 会话模式的展示名；CLM 以括号标识，保持实验状态始终可见。
+/// 会话方言的展示名；CLM 以括号标识，保持实验状态始终可见。
 pub fn mode_label(mode: SessionMode) -> &'static str {
     match mode {
         SessionMode::Normal => "normal",
-        SessionMode::Ask => "ask",
-        SessionMode::Plan => "plan",
         SessionMode::Ptc => "ptc",
         SessionMode::ClmExperimental => "(clm)",
     }
 }
 
-/// 会话模式顺序：就地菜单条目与键盘循环共用同一份顺序。
-pub const MODES: [SessionMode; 4] = [
+/// 会话方言顺序：就地菜单条目与键盘循环共用同一份顺序。
+/// plan/ask 不是方言，不在此列。
+pub const MODES: [SessionMode; 3] = [
     SessionMode::Normal,
-    SessionMode::Plan,
     SessionMode::Ptc,
     SessionMode::ClmExperimental,
 ];
@@ -2137,6 +2152,8 @@ mod tests {
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
             mode: SessionMode::Normal,
+            plan_active: false,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: None,
             cwd: "/tmp".into(),
@@ -2151,7 +2168,7 @@ mod tests {
         app.prompt_started_at = Some(std::time::Instant::now());
         app.thinking_started_at = Some(std::time::Instant::now());
         app.cancel_requested = true;
-        app.transient_mode = Some(SessionMode::Ask);
+        app.transient_contract = Some(moc_protocol::methods::PromptContract::Ask);
         app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
         app.usage = Usage {
             input_tokens: 10,
@@ -2181,7 +2198,7 @@ mod tests {
         assert!(app.ctrl_c_pending.is_none());
         assert!(app.prompt_started_at.is_none());
         assert!(app.thinking_started_at.is_none());
-        assert!(app.transient_mode.is_none());
+        assert!(app.transient_contract.is_none());
         assert_eq!(app.usage, Usage::default());
         assert_eq!(app.cost_usd, 0.0);
         assert!(app.todos.is_empty());
@@ -2205,8 +2222,6 @@ mod tests {
         assert_eq!(model_selector_label("test/model:high"), "test/model:high");
         assert_eq!(model_selector_label("test/model"), "test/model");
         assert_eq!(mode_label(SessionMode::Normal), "normal");
-        assert_eq!(mode_label(SessionMode::Ask), "ask");
-        assert_eq!(mode_label(SessionMode::Plan), "plan");
         assert_eq!(mode_label(SessionMode::Ptc), "ptc");
         assert_eq!(mode_label(SessionMode::ClmExperimental), "(clm)");
     }
@@ -2221,7 +2236,7 @@ mod tests {
         assert_eq!(menu.entry_at(11, 5), None, "上边框不是条目");
         assert_eq!(menu.entry_at(11, 6), Some(0));
         assert_eq!(menu.entry_at(11, 8), Some(2));
-        assert_eq!(menu.entry_at(11, 9), Some(3));
+        assert_eq!(menu.entry_at(11, 9), None, "末行之下不命中");
         assert_eq!(menu.entry_at(11, 10), None, "下边框不是条目");
         assert_eq!(menu.entry_at(9, 6), None, "左缘之外不命中");
         assert_eq!(menu.entry_at(34, 6), None, "右缘之外不命中");
@@ -2431,6 +2446,8 @@ mod tests {
                 model: "p/m".into(),
                 permission: moc_protocol::SessionPermission::Full,
                 mode: moc_protocol::SessionMode::Normal,
+                plan_active: false,
+                mode_locked: false,
                 parent_session_id: None,
                 forked_from: None,
                 cwd: "/tmp".into(),

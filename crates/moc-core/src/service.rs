@@ -121,18 +121,15 @@ pub(crate) fn plugin_context(
     state: &crate::session::state::SessionState,
     model: &str,
 ) -> moc_plugin::CallContext {
-    moc_plugin::CallContext {
-        session_id: state.session.id.clone(),
-        cwd: state.session.cwd.clone(),
-        mode: serde_json::to_value(state.mode)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_default(),
-        permission: state.permission.as_str().to_owned(),
-        model: model.to_owned(),
-        is_subagent: state.session.is_subagent(),
-        writable: true,
-    }
+    plugin_events::context(
+        &state.session.id,
+        &state.session.cwd,
+        state.mode,
+        crate::service::mode::ModeContract::effective(state.plan_active, None),
+        state.permission,
+        model,
+        state.session.is_subagent(),
+    )
 }
 
 /// 会话配置变更事件：模式 / 模型 / 权限切换成功后广播给插件。
@@ -153,6 +150,7 @@ pub(crate) async fn emit_session_config_changed(
             &state.session.id,
             &state.session.cwd,
             state.mode,
+            crate::service::mode::ModeContract::effective(state.plan_active, None),
             state.permission,
             &state.model,
             state.session.is_subagent(),
@@ -1188,24 +1186,31 @@ impl AgentService for Core {
             .ensure_write_lease(&info.id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &info.id, &record, error))?;
-        // 以计划模式创建会话：header 记下会话本来的模型，随后立即切到计划模型，
-        // 退出计划模式时再切回。
-        if params.mode == SessionMode::Plan
-            && let Some(plan_model) = config
+        // 以 plan 叠加态创建会话：header 记下会话本来的模型，随后立即切到计划模型，
+        // 退出叠加态时再切回。
+        if params.plan_active {
+            info = self
+                .inner
+                .sessions
+                .set_plan_active(&info.id, true)
+                .await
+                .map_err(to_rpc)?;
+            if let Some(plan_model) = config
                 .resolve_plan_mode_model()
                 .map_err(to_rpc)?
                 .map(|model| model.selector)
                 .filter(|plan_model| *plan_model != model.selector)
-        {
-            info = self
-                .inner
-                .sessions
-                .set_model(&info.id, plan_model)
-                .await
-                .map_err(to_rpc)?;
+            {
+                info = self
+                    .inner
+                    .sessions
+                    .set_model(&info.id, plan_model)
+                    .await
+                    .map_err(to_rpc)?;
+            }
         }
         info.permission = self.inner.effective_permission(info.permission);
-        if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) && config.workspace.watch {
+        if params.plan_active && config.workspace.watch {
             let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
                 .await
                 .map_err(to_rpc)?;
@@ -1393,6 +1398,7 @@ impl AgentService for Core {
                 &params.session_id,
                 &state.session.cwd,
                 state.mode,
+                crate::service::mode::ModeContract::effective(state.plan_active, None),
                 state.permission,
                 &state.model,
                 state.session.is_subagent(),
@@ -1466,6 +1472,7 @@ impl AgentService for Core {
                 &params.session_id,
                 &state.session.cwd,
                 state.mode,
+                crate::service::mode::ModeContract::effective(state.plan_active, None),
                 state.permission,
                 &state.model,
                 state.session.is_subagent(),
@@ -1598,52 +1605,17 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
-        let (cwd, from, model_before) = {
-            let state = record.state.lock().await;
-            (
-                PathBuf::from(state.session.cwd.clone()),
-                state.mode,
-                state.model.clone(),
-            )
-        };
-        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
-        // 进入计划模式前先解析计划模型，避免解析失败时模式已切换而模型没切换。
-        let plan_model = if params.mode == SessionMode::Plan && from != SessionMode::Plan {
-            config
-                .resolve_plan_mode_model()
-                .map_err(to_rpc)?
-                .map(|model| model.selector)
-        } else {
-            None
-        };
+        let from = record.state.lock().await.mode;
+        // 方言锁在 `Sessions::set_mode` 里判定：有提示历史即拒绝。
         let mut info = self
             .inner
             .sessions
             .set_mode(&params.session_id, params.mode)
             .await
             .map_err(to_rpc)?;
-        let switched = mode::sync_plan_model(
-            &self.inner,
-            &params.session_id,
-            from,
-            params.mode,
-            plan_model,
-        )
-        .await
-        .map_err(to_rpc)?;
-        if switched.is_some() {
-            info = record.state.lock().await.session_info();
-        }
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
-        let runtime = self.inner.runtime(&params.session_id).await;
-        if matches!(params.mode, SessionMode::Ask | SessionMode::Plan) && config.workspace.watch {
-            let snapshot = snapshot_workspace(cwd, config.workspace.max_scan_entries)
-                .await
-                .map_err(to_rpc)?;
-            *runtime.workspace.lock().await = Some(snapshot);
-        }
-        mode::emit_mode_change(&ctx, &params.session_id, info.mode, switched.clone()).await?;
+        mode::emit_mode_change(&ctx, &params.session_id, info.mode, None).await?;
         let state = record.state.lock().await.clone();
         emit_session_config_changed(
             &self.inner,
@@ -1659,10 +1631,15 @@ impl AgentService for Core {
                 .unwrap_or_default(),
         )
         .await;
-        if let Some(model) = &switched {
-            emit_session_config_changed(&self.inner, &state, "model", &model_before, model).await;
-        }
         Ok(info)
+    }
+
+    async fn session_plan_mode(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::methods::SessionPlanModeParams,
+    ) -> Result<SessionInfo, RpcError> {
+        mode::plan_mode(&self.inner, ctx, params).await
     }
 
     async fn session_set_model(
@@ -1740,6 +1717,7 @@ impl AgentService for Core {
                 &result.session_id,
                 &state.session.cwd,
                 state.mode,
+                crate::service::mode::ModeContract::effective(state.plan_active, None),
                 state.permission,
                 &state.model,
                 state.session.is_subagent(),
@@ -2074,6 +2052,7 @@ mod compression_tests {
                         plan_id: "plan_test".into(),
                         action: PlanAction::ExecuteNewSession,
                         execution_model: None,
+                        execution_mode: None,
                     })
                     .await
                     .unwrap();

@@ -13,6 +13,7 @@ use moc_protocol::SessionMode;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOrigin, ToolOutcome};
+use crate::service::mode::ModeContract;
 
 pub struct PluginTool {
     plugin: String,
@@ -47,7 +48,7 @@ impl Tool for PluginTool {
     }
 
     /// 插件工具的能力边界由 QuickJS 运行时与 `tools.call` 白名单决定；这里的等级只
-    /// 用于满足 [`Tool`] 契约，模式可见性由 [`PluginTool::visible_in`] 覆盖。
+    /// 用于满足 [`Tool`] 契约，执行许可由 [`PluginTool::permitted_in`] 覆盖。
     fn tier(&self) -> Tier {
         Tier::Read
     }
@@ -56,16 +57,15 @@ impl Tool for PluginTool {
         ToolOrigin::Plugin
     }
 
-    /// 按插件声明的 `modes` 判定。`normal` 同时覆盖 `clm_experimental`（两者工具面
-    /// 相同，CLM 只是多一个内置的 `clm_context`）；PTC 不开放插件工具。
-    fn visible_in(&self, mode: SessionMode) -> bool {
-        let flag = match mode {
-            SessionMode::Normal | SessionMode::ClmExperimental => ModeMask::NORMAL,
-            SessionMode::Ask => ModeMask::ASK,
-            SessionMode::Plan => ModeMask::PLAN,
-            SessionMode::Ptc => return false,
-        };
-        self.modes.contains(flag)
+    /// 方言工具面：插件工具只在 Normal/CLM 方言的面里（PTC 不开放），契约掩码不在
+    /// 这一层判定——契约切换不能重写 schema。
+    fn declared_in(&self, mode: SessionMode) -> bool {
+        matches!(mode, SessionMode::Normal | SessionMode::ClmExperimental)
+    }
+
+    /// 执行许可：方言可达 + 插件声明的 `modes`（契约词表）覆盖当前契约。
+    fn permitted_in(&self, mode: SessionMode, contract: ModeContract) -> bool {
+        self.declared_in(mode) && self.modes.contains(contract_mask(contract))
     }
 
     /// 插件线程按插件串行；默认整批当作屏障，声明 `parallel: true` 才允许并发。
@@ -112,6 +112,15 @@ impl Tool for PluginTool {
             }
             Ok(outcome)
         })
+    }
+}
+
+/// 契约对应的插件 `modes` 掩码位：插件声明的是「哪些执行契约可以调用我」。
+fn contract_mask(contract: ModeContract) -> ModeMask {
+    match contract {
+        ModeContract::None => ModeMask::NORMAL,
+        ModeContract::Ask => ModeMask::ASK,
+        ModeContract::Plan => ModeMask::PLAN,
     }
 }
 
@@ -191,6 +200,7 @@ impl moc_plugin::HostBridge for ReadOnlyBridge {
 #[cfg(test)]
 mod tests {
     use super::{PluginTool, host_tool_allowed};
+    use crate::service::mode::ModeContract;
     use crate::tools::Tool;
     use moc_plugin::ModeMask;
     use moc_protocol::SessionMode;
@@ -210,30 +220,33 @@ mod tests {
     }
 
     #[test]
-    fn visibility_follows_declared_modes() {
+    fn permission_follows_declared_contracts() {
+        use ModeContract::*;
         let all = tool(ModeMask::ALL);
-        for mode in [
-            SessionMode::Normal,
-            SessionMode::Ask,
-            SessionMode::Plan,
-            SessionMode::ClmExperimental,
-        ] {
-            assert!(all.visible_in(mode), "{mode:?}");
+        for mode in [SessionMode::Normal, SessionMode::ClmExperimental] {
+            assert!(all.declared_in(mode), "{mode:?}");
+            for contract in [None, Ask, Plan] {
+                assert!(all.permitted_in(mode, contract), "{mode:?} {contract:?}");
+            }
         }
-        assert!(!all.visible_in(SessionMode::Ptc));
+        assert!(!all.declared_in(SessionMode::Ptc));
+        assert!(!all.permitted_in(SessionMode::Ptc, None));
 
         let normal_only = tool(ModeMask::NORMAL);
-        assert!(normal_only.visible_in(SessionMode::Normal));
+        assert!(normal_only.declared_in(SessionMode::Normal));
         assert!(
-            normal_only.visible_in(SessionMode::ClmExperimental),
-            "normal 覆盖 CLM 实验模式"
+            normal_only.declared_in(SessionMode::ClmExperimental),
+            "normal 覆盖 CLM 实验方言"
         );
-        assert!(!normal_only.visible_in(SessionMode::Ask));
-        assert!(!normal_only.visible_in(SessionMode::Plan));
+        assert!(normal_only.permitted_in(SessionMode::Normal, None));
+        assert!(!normal_only.permitted_in(SessionMode::Normal, Ask));
+        assert!(!normal_only.permitted_in(SessionMode::Normal, Plan));
 
+        // 契约掩码不影响 schema：plan-only 插件仍在方言面里，只在 plan 契约下可执行。
         let plan_only = tool(ModeMask::PLAN);
-        assert!(plan_only.visible_in(SessionMode::Plan));
-        assert!(!plan_only.visible_in(SessionMode::Normal));
+        assert!(plan_only.declared_in(SessionMode::Normal));
+        assert!(plan_only.permitted_in(SessionMode::Normal, Plan));
+        assert!(!plan_only.permitted_in(SessionMode::Normal, None));
     }
 
     #[test]

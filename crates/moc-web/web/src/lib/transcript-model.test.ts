@@ -14,6 +14,8 @@ const INFO: SessionInfo = {
   model: "m1",
   permission: "workspace",
   mode: "normal",
+  plan_active: false,
+  mode_locked: false,
   cwd: "/tmp/work",
   created_at_ms: 0,
   updated_at_ms: 0,

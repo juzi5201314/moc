@@ -56,7 +56,8 @@ impl PlanHarness {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Plan,
+                mode: SessionMode::Normal,
+                plan_active: true,
             })
             .await
             .expect("计划会话");
@@ -87,7 +88,7 @@ impl PlanHarness {
                 input: vec![InputPart::Text {
                     text: "设计方案".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -280,10 +281,7 @@ async fn plan_review_approval_loads_new_session() {
     assert!(
         matches!(&h.app.modal, Some(Modal::Plan { state }) if !state.submitting && state.error.is_some() && state.execution_model == "test/missing:off")
     );
-    assert_eq!(
-        h.app.session.as_ref().expect("会话").mode,
-        SessionMode::Plan
-    );
+    assert!(h.app.session.as_ref().expect("会话").plan_active);
     if let Some(Modal::Plan { state }) = h.app.modal.as_mut() {
         state.execution_model = "test/executor:off".into();
         state.selected = 2;
@@ -353,7 +351,7 @@ async fn plan_review_approval_loads_new_session() {
         })
         .await
         .expect("父会话");
-    assert_eq!(parent_loaded.session.mode, SessionMode::Plan);
+    assert!(parent_loaded.session.plan_active);
     assert!(
         !parent_loaded
             .entries
@@ -424,22 +422,19 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
     h.key(KeyCode::Esc);
     h.connection
         .client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<moc_protocol::SessionPlanMode>(moc_protocol::SessionPlanModeParams {
             session_id: session.id,
-            mode: SessionMode::Normal,
+            active: false,
         })
         .await
-        .expect("离开计划模式");
+        .expect("离开计划状态");
     h.updates();
     execute_command(&mut h.app, &h.connection, "/confirm-plan".into());
     assert!(h.app.modal.is_none());
+    assert!(!h.app.session.as_ref().expect("标准会话").plan_active);
     assert_eq!(
-        h.app.session.as_ref().expect("标准会话").mode,
-        SessionMode::Normal
-    );
-    assert_eq!(
-        h.app.notice.as_deref().expect("模式门控提示"),
-        "只有计划模式可以重新审阅计划"
+        h.app.notice.as_deref().expect("状态门控提示"),
+        "只有计划状态可以重新审阅计划"
     );
     let empty = h
         .connection
@@ -448,7 +443,8 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             cwd: None,
             model: None,
             title: None,
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
         })
         .await
         .expect("尚无计划文件的会话");
@@ -565,7 +561,8 @@ async fn plan_revised_closes_review_and_sends_prompt() {
         &h.connection,
         Ok(moc_protocol::methods::SessionPlanReviseResult {
             session_id: session.clone(),
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
             prompt: "已根据批注修订".into(),
         }),
     );

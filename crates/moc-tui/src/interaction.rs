@@ -22,6 +22,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 let events = app.events.clone();
                 let cwd = app.startup_cwd.clone();
                 let mode = app.startup_mode;
+                let plan_active = app.startup_plan;
                 tokio::spawn(async move {
                     match client
                         .call::<moc_protocol::SessionNew>(moc_protocol::SessionNewParams {
@@ -29,6 +30,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             model: None,
                             title: None,
                             mode,
+                            plan_active,
                         })
                         .await
                     {
@@ -144,7 +146,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     let prompt = crate::queue::QueuedPrompt {
                         id: pending.id,
                         draft: pending.draft,
-                        mode: None,
+                        contract: None,
                     };
                     if let Some(action) = pending.withdrawal {
                         if action == crate::queue::WithdrawAction::Edit {
@@ -169,7 +171,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     let prompt = crate::queue::QueuedPrompt {
                         id: pending.id,
                         draft: pending.draft,
-                        mode: None,
+                        contract: None,
                     };
                     if let Some(action) = pending.withdrawal {
                         if action == crate::queue::WithdrawAction::Edit {
@@ -207,7 +209,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         let prompt = crate::queue::QueuedPrompt {
                             id: pending.id,
                             draft: pending.draft,
-                            mode: None,
+                            contract: None,
                         };
                         if current {
                             crate::queue::restore_or_requeue(app, &session, prompt);

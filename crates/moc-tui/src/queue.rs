@@ -11,17 +11,17 @@ use crate::{
     widgets::prompt::PromptState,
 };
 use moc_protocol::{
-    BashCommand, BashParams, ClientHandle, InputPart, PromptParams, SessionBash, SessionMode,
-    SessionPrompt, SessionRetry, SessionRetryParams, SessionSteer, SessionUnsteer, SteerParams,
-    UnsteerParams,
+    BashCommand, BashParams, ClientHandle, InputPart, PromptParams, SessionBash, SessionPrompt,
+    SessionRetry, SessionRetryParams, SessionSteer, SessionUnsteer, SteerParams, UnsteerParams,
+    methods::PromptContract,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 pub struct QueuedPrompt {
     pub id: u64,
     pub draft: PromptState,
-    /// 仅本条消息生效的模式覆盖（`/ask` 注入）；`None` 沿用会话模式。
-    pub mode: Option<SessionMode>,
+    /// 仅本条消息生效的执行契约（`/ask` 注入）；`None` 沿用会话契约。
+    pub contract: Option<PromptContract>,
 }
 
 /// 待发送补充消息的撤回动作：恢复到输入框编辑，或直接丢弃。
@@ -72,20 +72,20 @@ pub fn submit(app: &mut App, connection: &EmbeddedConnection, queued: bool) {
     }
 }
 
-/// 直接投递一条现成草稿并指定本次提示模式（`/ask <提示词>` 用），不经输入框。
+/// 直接投递一条现成草稿并指定本次提示契约（`/ask <提示词>` 用），不经输入框。
 ///
-/// 一律按「忙则排队」处理：本次提示的临时模式无法通过 steering 注入正在飞行的提示，
+/// 一律按「忙则排队」处理：本次提示的临时契约无法通过 steering 注入正在飞行的提示，
 /// 因此它必须成为独立的一次提示。
-pub fn submit_with_mode(
+pub fn submit_with_contract(
     app: &mut App,
     connection: &EmbeddedConnection,
     draft: PromptState,
-    mode: SessionMode,
+    contract: PromptContract,
 ) {
     let Some(session) = app.require_session() else {
         return;
     };
-    enqueue(app, connection, session, draft, true, Some(mode));
+    enqueue(app, connection, session, draft, true, Some(contract));
 }
 
 /// 把草稿投递到 `session` 的待发送区（补充、排队或直接派发）。
@@ -95,16 +95,16 @@ fn enqueue(
     session: String,
     draft: PromptState,
     queued: bool,
-    mode: Option<SessionMode>,
+    contract: Option<PromptContract>,
 ) {
     app.next_queue_id += 1;
     let prompt = QueuedPrompt {
         id: app.next_queue_id,
         draft,
-        mode,
+        contract,
     };
     // 手动命令始终独立执行，绝不经 steering 注入正在运行的 agent。
-    let manual = mode.is_none() && prompt.draft.is_bash_command();
+    let manual = contract.is_none() && prompt.draft.is_bash_command();
     let busy = app.prompt_running || app.inflight_prompts.contains(&session);
     if queued || !busy || manual {
         app.queues.entry(session).or_default().push_back(prompt);
@@ -115,7 +115,7 @@ fn enqueue(
         app.cancel_requested = true;
         crate::event::cancel_prompt(&connection.client, app);
     } else {
-        debug_assert!(prompt.mode.is_none(), "临时模式必须走独立队列");
+        debug_assert!(prompt.contract.is_none(), "临时契约必须走独立队列");
         let parts = prompt.draft.preview_parts();
         let display_text = crate::event::display_text_of(&parts);
         let prompt_id = prompt.id;
@@ -217,7 +217,7 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
         return;
     };
     let parts = prompt.draft.build_input_parts();
-    let command = if prompt.mode.is_none()
+    let command = if prompt.contract.is_none()
         && let [InputPart::Text { text }] = parts.as_slice()
     {
         BashCommand::parse(text)
@@ -229,8 +229,8 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
     }
     app.inflight_prompts.insert(session.clone());
     app.prompt_running = true;
-    // 本次提示实际生效的模式：覆盖值只在提示内展示，不改写会话状态。
-    app.transient_mode = prompt.mode;
+    // 本次提示实际生效的契约：覆盖值只在提示内展示，不改写会话状态。
+    app.transient_contract = prompt.contract;
     if let Some(command) = command {
         send_bash(&connection.client, session, command, app.events.clone());
     } else {
@@ -238,7 +238,7 @@ pub fn dispatch(app: &mut App, connection: &EmbeddedConnection) {
             &connection.client,
             session,
             parts,
-            prompt.mode,
+            prompt.contract,
             app.events.clone(),
         );
     }
@@ -248,7 +248,7 @@ pub fn send_prompt(
     client: &ClientHandle,
     session_id: String,
     parts: Vec<InputPart>,
-    mode: Option<SessionMode>,
+    contract: Option<PromptContract>,
     events: UnboundedSender<AppEvent>,
 ) {
     let client = client.clone();
@@ -257,7 +257,7 @@ pub fn send_prompt(
             .call::<SessionPrompt>(PromptParams {
                 session_id: session_id.clone(),
                 input: parts,
-                mode,
+                contract,
                 agent_message: None,
             })
             .await
@@ -615,6 +615,8 @@ mod tests {
             model: "test/model".into(),
             permission: SessionPermission::Full,
             mode: SessionMode::Normal,
+            plan_active: false,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: None,
             cwd: "/tmp".into(),
@@ -702,7 +704,7 @@ mod tests {
             .push_back(QueuedPrompt {
                 id: 2,
                 draft: PromptState::from_text("排队内容".into()),
-                mode: None,
+                contract: None,
             });
         let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -731,7 +733,7 @@ mod tests {
             .push_back(QueuedPrompt {
                 id: 1,
                 draft: PromptState::from_text("测试排队".into()),
-                mode: None,
+                contract: None,
             });
         let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();

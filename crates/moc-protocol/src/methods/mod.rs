@@ -92,7 +92,8 @@ pub use permission::{
 pub use plan::{
     PlanAction, PlanAnnotation, PlanInfo, PlanStatus, SessionPlanApprove, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionPlanDiff, SessionPlanDiffParams, SessionPlanDiffResult,
-    SessionPlanRevise, SessionPlanReviseParams, SessionPlanReviseResult,
+    SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams,
+    SessionPlanReviseResult,
 };
 pub use plugin::{
     PluginCommandInfo, PluginInfo, PluginList, PluginListParams, PluginListResult, PluginReload,
@@ -100,8 +101,8 @@ pub use plugin::{
     PluginRunCommandResult, PluginToolInfo,
 };
 pub use prompt::{
-    InputPart, PromptParams, PromptResult, SessionCancel, SessionCancelParams, SessionCancelResult,
-    SessionPrompt, SessionRetry, SessionRetryParams,
+    InputPart, PromptContract, PromptParams, PromptResult, SessionCancel, SessionCancelParams,
+    SessionCancelResult, SessionPrompt, SessionRetry, SessionRetryParams,
 };
 pub use resources::{
     ResourceCandidate, ResourceComplete, ResourceCompleteParams, ResourceCompleteResult,
@@ -166,6 +167,7 @@ mod tests {
                 "session/set_permission",
             ),
             (<SessionSetModel as Method>::NAME, "session/set_model"),
+            (<SessionPlanMode as Method>::NAME, "session/plan_mode"),
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionPlanRevise as Method>::NAME, "session/plan_revise"),
             (<SessionPlanDiff as Method>::NAME, "session/plan_diff"),
@@ -235,6 +237,7 @@ mod tests {
         client::<SessionSetPermission>();
         client::<SessionSetMode>();
         client::<SessionSetModel>();
+        client::<SessionPlanMode>();
         client::<SessionPlanApprove>();
         client::<AgentSpawn>();
         client::<AgentList>();

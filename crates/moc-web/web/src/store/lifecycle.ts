@@ -226,13 +226,19 @@ export async function releaseSession(sessionId: string): Promise<void> {
   });
 }
 
-export type NewSessionOptions = { cwd?: string; model?: string; mode?: SessionMode };
+export type NewSessionOptions = {
+  cwd?: string;
+  model?: string;
+  mode?: SessionMode;
+  plan?: boolean;
+};
 
 export async function newSession(options: NewSessionOptions = {}): Promise<SessionInfo> {
   const info = await rpc.call<SessionInfo>("session/new", {
     cwd: options.cwd,
     model: options.model,
     mode: options.mode ?? "normal",
+    plan_active: options.plan ?? false,
   });
   // session/new 已取写租约；第一条消息落盘前 session/list 看不到它。
   useSessions.getState().upsert(info);
@@ -277,6 +283,8 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
     cwd,
     model: defaultModel ?? "",
     mode: "normal",
+    plan_active: false,
+    mode_locked: false,
     permission: "full",
     created_at_ms: Date.now(),
     updated_at_ms: Date.now(),
@@ -289,12 +297,33 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
     isDraft: true,
     model: defaultModel,
     mode: "normal",
+    plan: false,
   });
 
   useTranscript.getState().ensureView(draftInfo);
   useTabs.getState().add(draftId);
   requestComposerFocus();
   return draftInfo;
+}
+
+/** 切换 plan 叠加态：草稿会话只改本地标记，真实会话走 `session/plan_mode`。 */
+export async function togglePlanMode(sessionId: string, active: boolean): Promise<void> {
+  if (sessionId === "draft-session") {
+    useTranscript.getState().mutate(sessionId, (view) => {
+      view.info.plan_active = active;
+    });
+    const draft = useSessions.getState().draftSession;
+    if (draft) useSessions.getState().setDraftSession({ ...draft, plan: active });
+    return;
+  }
+  const info = await rpc.call<SessionInfo>("session/plan_mode", {
+    session_id: sessionId,
+    active,
+  });
+  useSessions.getState().upsert(info);
+  useTranscript.getState().mutate(sessionId, (view) => {
+    view.info = info;
+  });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -329,6 +358,7 @@ export async function forkSession(sessionId: string): Promise<SessionInfo | unde
       cwd: current.cwd,
       model: current.model,
       mode: current.mode,
+      plan: current.plan_active,
     });
     const forkTitle = `${current.title || "会话"} (分支)`;
     await renameSession(info.id, forkTitle).catch(() => undefined);

@@ -687,9 +687,29 @@ fn read_session_info_sync(
         at_ms: u64,
         title: Option<String>,
         model: Option<String>,
-        mode: Option<moc_protocol::methods::SessionMode>,
+        mode: Option<super::entries::PersistedMode>,
+        /// `plan_mode` 条目投影的 plan 叠加态。
+        #[serde(default)]
+        active: Option<bool>,
+        /// `mode_change` 条目投影的 plan 叠加态；旧记录没有该字段。
+        #[serde(default)]
+        plan_active: Option<bool>,
         #[serde(default)]
         permission: Option<moc_protocol::methods::SessionPermission>,
+        /// 只取消息角色，供「已有用户提示 → 方言锁定」的判定。
+        #[serde(default)]
+        message: Option<MessageMeta>,
+        #[serde(default)]
+        bash: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        agent: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        reminder: Option<serde::de::IgnoredAny>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MessageMeta {
+        role: moc_llm::Role,
     }
     let mut info: Option<moc_protocol::methods::SessionInfo> = None;
     let mut has_entries = false;
@@ -735,12 +755,33 @@ fn read_session_info_sync(
             }
             "mode_change" => {
                 if let Some(mode) = metadata.mode {
-                    info.mode = mode;
+                    info.mode = mode.dialect();
+                    // 旧模式值没有 plan 投影字段：`plan` → 进入叠加态，其余 → 退出。
+                    info.plan_active = metadata
+                        .plan_active
+                        .unwrap_or_else(|| mode.legacy_enters_plan());
+                }
+            }
+            "plan_mode" => {
+                if let Some(active) = metadata.active {
+                    info.plan_active = active;
                 }
             }
             "permission_change" => {
                 if let Some(permission) = metadata.permission {
                     info.permission = permission;
+                }
+            }
+            "message" => {
+                // 与 SessionState::apply_entry 同口径：普通用户消息才算提示，
+                // bash / 代理消息 / 提醒不计入方言锁定。
+                if let Some(message) = metadata.message
+                    && message.role == moc_llm::Role::User
+                    && metadata.bash.is_none()
+                    && metadata.agent.is_none()
+                    && metadata.reminder.is_none()
+                {
+                    info.mode_locked = true;
                 }
             }
             _ => {}
@@ -883,7 +924,8 @@ mod tests {
                 model: "p/new".into(),
             },
             EntryPayload::ModeChange {
-                mode: SessionMode::Plan,
+                mode: SessionMode::Normal,
+                plan_active: true,
             },
         ]
         .into_iter()
@@ -898,7 +940,8 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "新标题");
         assert_eq!(listed[0].model, "p/new");
-        assert_eq!(listed[0].mode, SessionMode::Plan);
+        assert_eq!(listed[0].mode, SessionMode::Normal);
+        assert!(listed[0].plan_active);
         assert_eq!(listed[0].updated_at_ms, 1_728_000_000_127);
 
         let entries = store.read_entries(&paths).await.expect("读取 JSONL");

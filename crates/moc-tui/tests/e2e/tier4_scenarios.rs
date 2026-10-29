@@ -2,7 +2,7 @@
 //! End-to-end multi-step user workflows simulating realistic interaction sequences.
 
 use super::common::*;
-use moc_protocol::methods::AgentStatus;
+use moc_protocol::methods::{AgentStatus, PromptContract};
 use moc_protocol::{SessionMode, Usage};
 use moc_tui::modal::{Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
@@ -107,9 +107,9 @@ fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
         "/tmp",
     ));
 
-    // Step 1: User queues Prompt 2 with tagged Plan mode
-    let mut queued = sample_queued_prompt(2, "阶段 2：计划任务推进");
-    queued.mode = Some(SessionMode::Plan);
+    // Step 1: User queues Prompt 2 with tagged Ask contract
+    let mut queued = sample_queued_prompt(2, "阶段 2：只读问答推进");
+    queued.contract = Some(PromptContract::Ask);
     app.queues
         .entry("ses-queue-btw".into())
         .or_default()
@@ -154,15 +154,11 @@ fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
         .pop_front()
         .unwrap();
     assert_eq!(popped.id, 2);
-    assert_eq!(popped.mode, Some(SessionMode::Plan));
-    if let Some(session) = app.session.as_mut() {
-        if let Some(new_mode) = popped.mode {
-            session.mode = new_mode;
-        }
-    }
+    assert_eq!(popped.contract, Some(PromptContract::Ask));
+    // contract 只作用于该条提示，不改写会话方言。
     assert_eq!(
         app.session.as_ref().map(|s| s.mode),
-        Some(SessionMode::Plan)
+        Some(SessionMode::Normal)
     );
     assert!(app.queues.get("ses-queue-btw").unwrap().is_empty());
 }

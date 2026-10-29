@@ -3,7 +3,7 @@
 
 use super::common::*;
 use moc_protocol::SessionMode;
-use moc_protocol::methods::AgentStatus;
+use moc_protocol::methods::{AgentStatus, PromptContract};
 use moc_tui::app::ModeMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
@@ -261,11 +261,11 @@ fn test_combo_15_multiline_prompt_undo_with_completion() {
 
 #[test]
 fn test_combo_16_queued_prompt_with_tagged_plan_mode() {
-    let mut queued = sample_queued_prompt(1, "执行计划任务");
-    queued.mode = Some(SessionMode::Plan);
-    assert_eq!(queued.mode, Some(SessionMode::Plan));
+    let mut queued = sample_queued_prompt(1, "只读问答任务");
+    queued.contract = Some(PromptContract::Ask);
+    assert_eq!(queued.contract, Some(PromptContract::Ask));
     let prompt = queued.draft;
-    assert_eq!(prompt.text, "执行计划任务");
+    assert_eq!(prompt.text, "只读问答任务");
 }
 
 #[test]
@@ -315,15 +315,12 @@ fn test_combo_20_mode_menu_selection_updates_session_mode() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-test", "Session Test", "/tmp"));
     app.mode_menu = Some(ModeMenu {
-        selected: 1, // Plan
+        selected: 1, // Ptc
         area: Rect::new(30, 10, 40, 8),
     });
     terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
     if let Some(session) = app.session.as_mut() {
-        session.mode = SessionMode::Plan;
+        session.mode = SessionMode::Ptc;
     }
-    assert_eq!(
-        app.session.as_ref().map(|s| s.mode),
-        Some(SessionMode::Plan)
-    );
+    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Ptc));
 }

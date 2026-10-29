@@ -12,6 +12,8 @@ fn session(id: &str) -> SessionInfo {
         model: "test/model".into(),
         permission: SessionPermission::Full,
         mode: SessionMode::Normal,
+        plan_active: false,
+        mode_locked: false,
         parent_session_id: None,
         forked_from: None,
         cwd: "/tmp".into(),
@@ -289,7 +291,7 @@ fn dock_render_is_nonmodal_and_responsive() {
             .push_back(crate::queue::QueuedPrompt {
                 id: 1,
                 draft: PromptState::from_text("待发送主提示".into()),
-                mode: None,
+                contract: None,
             });
         let params = app.btw.begin("a".into(), "旁路问题".into());
         app.btw.finish(

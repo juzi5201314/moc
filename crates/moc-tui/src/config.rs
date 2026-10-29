@@ -71,7 +71,7 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
         ("paste_image", "粘贴图片或文本", &["ctrl+v"]),
         ("model", "选择模型", &["ctrl+p"]),
         ("resume", "恢复会话", &["ctrl+r"]),
-        ("mode", "切换会话模式", &["alt+m", "ctrl+m"]),
+        ("mode", "切换会话方言", &["alt+m", "ctrl+m"]),
         ("thinking_level", "切换思考等级", &["shift+tab"]),
         ("focus", "切换输入焦点", &["tab"]),
         ("clear", "清空输入", &["ctrl+u"]),

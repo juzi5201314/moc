@@ -39,13 +39,13 @@ use moc_core::{Core, CoreConfig};
 use moc_llm::Client;
 use moc_protocol::methods::{
     ClientCapabilities, ClientInfo, ConfigAction, ConfigManage, ConfigReply, ConfigScope,
-    DiffLineKind, InputPart, PlanAction, PlanAnnotation, PlanStatus, PromptParams, SessionCompact,
-    SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode, SessionModelOverflowAction,
-    SessionNew, SessionNewParams, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
-    SessionPlanDiffParams, SessionPlanRevise, SessionPlanReviseParams, SessionPrompt,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionUnload,
-    SessionUnloadParams, SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams,
-    UpstreamField,
+    DiffLineKind, InputPart, PlanAction, PlanAnnotation, PlanStatus, PromptContract, PromptParams,
+    SessionCompact, SessionCompactParams, SessionLoad, SessionLoadParams, SessionMode,
+    SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPlanApprove,
+    SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams, SessionPlanMode,
+    SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams, SessionPrompt,
+    SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate,
+    SessionUpdateMethod, SessionUsage, SessionUsageParams, UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -126,6 +126,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create session");
@@ -136,7 +137,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             input: vec![InputPart::Text {
                 text: "first".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -157,7 +158,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             input: vec![InputPart::Text {
                 text: "second".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -191,7 +192,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             input: vec![InputPart::Text {
                 text: "third".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -632,6 +633,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create session");
@@ -641,7 +643,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             input: vec![InputPart::Text {
                 text: "Say hello".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -810,7 +812,8 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             cwd: None,
             model: None,
             title: None,
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
         })
         .await
         .expect("create plan session");
@@ -820,7 +823,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             input: vec![InputPart::Text {
                 text: "Design the change".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -883,7 +886,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             .expect("实体计划文件"),
         plan.markdown
     );
-    assert_eq!(parent.session.mode, SessionMode::Plan);
+    assert!(parent.session.plan_active);
     assert!(!plan.path.contains("/sessions/"));
     let approved = client
         .call::<SessionPlanApprove>(SessionPlanApproveParams {
@@ -891,6 +894,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
             execution_model: None,
+            execution_mode: None,
         })
         .await
         .expect("approve into new session");
@@ -921,7 +925,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             input: vec![InputPart::Text {
                 text: approved.auto_prompt.unwrap(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -941,13 +945,14 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             .iter()
             .any(|tool| tool["function"]["name"] == "write_plan")
     );
+    // 契约不裁剪声明面：写工具 schema 仍在表中，执行时才被 plan 契约拒绝。
     assert!(
-        !plan_tools
+        plan_tools
             .iter()
             .any(|tool| tool["function"]["name"] == "edit")
     );
     assert!(
-        !plan_tools
+        plan_tools
             .iter()
             .any(|tool| tool["function"]["name"] == "write")
     );
@@ -1093,6 +1098,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create session");
@@ -1102,7 +1108,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             input: vec![InputPart::Text {
                 text: "Read and update target.txt".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -1264,7 +1270,8 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
             cwd: None,
             model: None,
             title: None,
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
         })
         .await
         .expect("create plan session");
@@ -1274,7 +1281,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
             input: vec![InputPart::Text {
                 text: "Inspect without changing files".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -1449,6 +1456,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create session");
@@ -1458,7 +1466,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
             input: vec![InputPart::Text {
                 text: "运行 name-first".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -1612,6 +1620,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create normal session");
@@ -1621,7 +1630,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
             input: vec![InputPart::Text {
                 text: "看一下有没有遗留文件".into(),
             }],
-            mode: Some(SessionMode::Ask),
+            contract: Some(PromptContract::Ask),
             agent_message: None,
         })
         .await
@@ -1647,9 +1656,9 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
         .expect("request messages");
     assert!(
         messages.iter().any(|message| {
-            content::content_text(&message["content"]).contains("Ask mode is active")
+            content::content_text(&message["content"]).contains("Ask contract applies")
         }),
-        "mode contract missing from request messages"
+        "contract reminder missing from request messages"
     );
 
     // 覆盖不落地：既没有 ModeChanged 通知，重载后会话模式仍是 Normal。
@@ -1751,6 +1760,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create session");
@@ -1760,7 +1770,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
             input: vec![InputPart::Text {
                 text: "Say hello".into(),
             }],
-            mode: None,
+            contract: None,
             agent_message: None,
         })
         .await
@@ -1835,6 +1845,7 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
             model: None,
             title: None,
             mode: SessionMode::Normal,
+            plan_active: false,
         })
         .await
         .expect("create session");
@@ -1843,17 +1854,17 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
 
     let planned = harness
         .client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: session.id.clone(),
-            mode: SessionMode::Plan,
+            active: true,
         })
         .await
         .expect("enter plan mode");
-    assert_eq!(planned.mode, SessionMode::Plan);
+    assert!(planned.plan_active);
     assert_eq!(planned.model, "test/ds:off", "进入计划模式要切到计划模型");
     harness.prompt(&session.id, "plan").await;
 
-    // 卸载再恢复：计划模式与计划模型都从 transcript 复原。
+    // 卸载再恢复：plan 叠加态与计划模型都从 transcript 复原。
     harness
         .client
         .call::<SessionUnload>(SessionUnloadParams {
@@ -1862,14 +1873,14 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
         .await
         .expect("unload session");
     let resumed = harness.load(&session.id).await;
-    assert_eq!(resumed.session.mode, SessionMode::Plan);
+    assert!(resumed.session.plan_active);
     assert_eq!(resumed.session.model, "test/ds:off");
 
     let normal = harness
         .client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: session.id.clone(),
-            mode: SessionMode::Normal,
+            active: false,
         })
         .await
         .expect("leave plan mode");
@@ -1879,23 +1890,24 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
     );
     harness.prompt(&session.id, "implement").await;
 
-    // 以计划模式直接创建：立即使用计划模型，退出后回到创建时指定的模型。
+    // 以 plan 叠加态直接创建：立即使用计划模型，退出后回到创建时指定的模型。
     let created = harness
         .client
         .call::<SessionNew>(SessionNewParams {
             cwd: None,
             model: None,
             title: None,
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
         })
         .await
         .expect("create plan session");
     assert_eq!(created.model, "test/ds:off");
     let exited = harness
         .client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: created.id.clone(),
-            mode: SessionMode::Normal,
+            active: false,
         })
         .await
         .expect("leave plan mode");
@@ -1951,9 +1963,9 @@ async fn plan_role_none_keeps_the_session_model_across_mode_changes() {
     harness.prompt(&session, "first").await;
     let planned = harness
         .client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: session.clone(),
-            mode: SessionMode::Plan,
+            active: true,
         })
         .await
         .expect("enter plan mode");
@@ -1961,9 +1973,9 @@ async fn plan_role_none_keeps_the_session_model_across_mode_changes() {
     harness.prompt(&session, "plan").await;
     let normal = harness
         .client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: session,
-            mode: SessionMode::Normal,
+            active: false,
         })
         .await
         .expect("leave plan mode");
@@ -2038,7 +2050,8 @@ async fn plan_approval_defaults_to_current_session_model() {
             cwd: None,
             model: None,
             title: None,
-            mode: SessionMode::Plan,
+            mode: SessionMode::Normal,
+            plan_active: true,
         })
         .await
         .expect("create plan session");
@@ -2058,6 +2071,7 @@ async fn plan_approval_defaults_to_current_session_model() {
             plan_id: plan.plan_id.clone(),
             action: PlanAction::Execute,
             execution_model: None,
+            execution_mode: None,
         })
         .await
         .expect("approve plan in place");
@@ -2132,7 +2146,7 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
     )
     .await;
     for action in [PlanAction::Execute, PlanAction::ExecuteCompacted] {
-        let id = h.session(SessionMode::Plan).await;
+        let id = h.session_plan(SessionMode::Normal).await;
         h.prompt(&id, "设计方案").await;
         let plan = h.load(&id).await.plans.pop().expect("已写计划");
         let invalid = h
@@ -2142,12 +2156,13 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
                 plan_id: plan.plan_id.clone(),
                 action,
                 execution_model: Some("test/missing:off".into()),
+                execution_mode: None,
             })
             .await;
         assert!(invalid.is_err());
         let unchanged = h.load(&id).await;
         assert_eq!(unchanged.plans[0].status, PlanStatus::Submitted);
-        assert_eq!(unchanged.session.mode, SessionMode::Plan);
+        assert!(unchanged.session.plan_active);
         assert_eq!(unchanged.session.model, "test/planner:off");
         h.updates.lock().clear();
         let approved = h
@@ -2157,6 +2172,7 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
                 plan_id: plan.plan_id,
                 action,
                 execution_model: Some("test/executor:off".into()),
+                execution_mode: None,
             })
             .await
             .expect("指定执行模型审批");
@@ -2169,12 +2185,12 @@ async fn plan_approval_uses_selected_execution_model_for_compaction_and_executio
             .lock()
             .iter()
             .filter_map(|update| match update {
-                SessionUpdate::ModeChanged { mode } => Some(format!("mode:{mode:?}")),
+                SessionUpdate::PlanModeChanged { active } => Some(format!("plan:{active}")),
                 SessionUpdate::ModelChanged { model } => Some(format!("model:{model}")),
                 _ => None,
             })
             .collect();
-        assert_eq!(changes, ["mode:Normal", "model:test/executor:off"]);
+        assert_eq!(changes, ["plan:false", "model:test/executor:off"]);
         h.client
             .call::<SessionUnload>(SessionUnloadParams {
                 session_id: id.clone(),
@@ -2235,7 +2251,7 @@ async fn plan_new_session_uses_selected_execution_model() {
          [providers.test.models.executor]\ncontext_window=200000\nmax_output_tokens=4096\n",
     )
     .await;
-    let id = h.session(SessionMode::Plan).await;
+    let id = h.session_plan(SessionMode::Normal).await;
     h.prompt(&id, "设计子会话方案").await;
     let plan = h.load(&id).await.plans.pop().expect("待审计划");
     let approved = h
@@ -2245,6 +2261,7 @@ async fn plan_new_session_uses_selected_execution_model() {
             plan_id: plan.plan_id.clone(),
             action: PlanAction::ExecuteNewSession,
             execution_model: Some("test/executor:off".into()),
+            execution_mode: None,
         })
         .await
         .expect("新会话审批");
@@ -2256,7 +2273,7 @@ async fn plan_new_session_uses_selected_execution_model() {
     assert_eq!(child.plans[0].path, format!("local://{}.md", plan.plan_id));
     assert!(child.entries[0].message.text().contains("<active-plan"));
     let parent = h.load(&id).await;
-    assert_eq!(parent.session.mode, SessionMode::Plan);
+    assert!(parent.session.plan_active);
     assert_eq!(parent.session.model, "test/planner:off");
     assert_eq!(
         h.prompt(
@@ -2304,10 +2321,10 @@ async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
         .mount(&upstream)
         .await;
     let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
-    let id = h.session(SessionMode::Plan).await;
+    let id = h.session_plan(SessionMode::Normal).await;
     h.prompt(&id, "保存和审阅计划").await;
     let loaded = h.load(&id).await;
-    assert_eq!(loaded.session.mode, SessionMode::Plan);
+    assert!(loaded.session.plan_active);
     assert_eq!(loaded.plans.len(), 1);
     assert_eq!(loaded.plans[0].status, PlanStatus::Submitted);
     let errors: Vec<_> = loaded
@@ -2361,7 +2378,7 @@ async fn unload_is_refused_while_a_prompt_is_in_flight() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -2530,7 +2547,7 @@ async fn anthropic_requests_put_cache_breakpoints_on_static_prefix_and_stable_ta
         .await;
     let h = Harness::new(&upstream.uri(), "anthropic_messages", "").await;
     // 计划模式：本轮带模式契约（尾部提醒），断点必须避开它。
-    let id = h.session(SessionMode::Plan).await;
+    let id = h.session_plan(SessionMode::Normal).await;
     h.prompt(&id, "缓存冒烟").await;
 
     let requests = upstream.received_requests().await.expect("请求记录");
@@ -2794,7 +2811,7 @@ async fn plan_revision_supersedes_previous_version_and_emits_diff() {
         .mount(&upstream)
         .await;
     let h = Harness::new(&upstream.uri(), "openai_chat", "").await;
-    let session = h.session(SessionMode::Plan).await;
+    let session = h.session_plan(SessionMode::Normal).await;
     h.prompt(&session, "先出方案").await;
 
     let first = h.load(&session).await;
@@ -2835,7 +2852,7 @@ async fn plan_revision_supersedes_previous_version_and_emits_diff() {
         })
         .await
         .expect("提交批注");
-    assert_eq!(revised.mode, SessionMode::Plan);
+    assert!(revised.plan_active);
     assert!(
         revised.prompt.contains("### 1. Lines 3-3"),
         "{}",
@@ -3026,9 +3043,9 @@ async fn runtime_reminders_are_injected_once_per_change_not_per_request() {
     h.close().await;
 }
 
-/// 条目只有变化时才注入：切模式后只多出一条模式条目，沙盒条目不再重发。
+/// 条目只有变化时才注入：进出 plan 叠加态只改写契约条目，方言与沙盒条目不重发。
 #[tokio::test]
-async fn changing_the_mode_injects_only_the_mode_entry() {
+async fn changing_the_contract_injects_only_the_contract_entry() {
     let upstream = MockServer::builder().start().await;
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
@@ -3041,20 +3058,20 @@ async fn changing_the_mode_injects_only_the_mode_entry() {
     let id = h.session(SessionMode::Normal).await;
     h.prompt(&id, "第一问").await;
     h.client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: id.clone(),
-            mode: SessionMode::Ask,
+            active: true,
         })
         .await
-        .expect("切换到 Ask 模式");
+        .expect("进入 plan 叠加态");
     h.prompt(&id, "第二问").await;
     h.client
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionPlanMode>(SessionPlanModeParams {
             session_id: id.clone(),
-            mode: SessionMode::Normal,
+            active: false,
         })
         .await
-        .expect("切回 Normal 模式");
+        .expect("退出 plan 叠加态");
     h.prompt(&id, "第三问").await;
 
     let requests = upstream.received_requests().await.expect("请求记录");
@@ -3098,13 +3115,13 @@ async fn changing_the_mode_injects_only_the_mode_entry() {
     };
     assert_eq!(
         entry_keys(1),
-        vec!["mode"],
-        "只有模式变了，沙盒与时间不该重发"
+        vec!["contract"],
+        "只有契约变了，方言、沙盒与时间不该重发"
     );
     assert_eq!(
         entry_keys(2),
-        vec!["mode"],
-        "切回普通模式同样只更新模式条目"
+        vec!["contract"],
+        "退出 plan 同样只更新契约条目"
     );
     let third_body: serde_json::Value =
         serde_json::from_slice(&requests[2].body).expect("第三个请求 JSON");
@@ -3120,8 +3137,8 @@ async fn changing_the_mode_injects_only_the_mode_entry() {
         .find(|text| text.starts_with("<system-reminder>"))
         .expect("第三个请求里要能看到最新提醒");
     assert!(
-        last_reminder.contains("Normal mode is active"),
-        "回到普通模式后必须更正旧的只读契约：{last_reminder}"
+        last_reminder.contains("execution contract no longer applies"),
+        "退出 plan 后必须更正旧的只读契约：{last_reminder}"
     );
     h.close().await;
 }

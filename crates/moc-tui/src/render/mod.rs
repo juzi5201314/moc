@@ -536,7 +536,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let y = area.y + area.height - 1;
 
     let model = app.model_display();
-    let mode = app.display_mode().map_or("idle", crate::app::mode_label);
+    let mode = app.display_mode();
     let permission = app
         .session
         .as_ref()
@@ -544,7 +544,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let right = [
         (model, theme.gray),
         (" | ", theme.border),
-        (mode, theme.accent_model),
+        (mode.as_str(), theme.accent_model),
         (" | ", theme.border),
         (permission, theme.accent_model),
     ];
@@ -600,7 +600,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let right_start = area.x + area.width - 2 - right_cells;
     let model_cells = cell_width(model);
     let mode_start = right_start + model_cells + cell_width(" | ");
-    let mode_cells = cell_width(mode);
+    let mode_cells = cell_width(mode.as_str());
     let perm_start = mode_start + mode_cells + cell_width(" | ");
     let perm_cells = cell_width(permission);
     let mut x = right_start;
@@ -853,10 +853,7 @@ struct StatuslineData {
 }
 
 fn statusline_data(app: &App) -> StatuslineData {
-    let mode = app.display_mode().map_or_else(
-        || "idle".into(),
-        |mode| crate::app::mode_label(mode).to_owned(),
-    );
+    let mode = app.display_mode();
     let context_window = app.context_window().filter(|window| *window > 0);
     let context_used = app.context_used();
     let context_percent = context_window.map(|window| context_used as f64 * 100.0 / window as f64);
@@ -1226,7 +1223,9 @@ mod tests {
             title: "测试会话".into(),
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
-            mode: moc_protocol::SessionMode::Plan,
+            mode: moc_protocol::SessionMode::Normal,
+            plan_active: true,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: None,
             cwd: "/tmp".into(),
@@ -1248,13 +1247,17 @@ mod tests {
         };
         let legend = app.mode_area;
         assert_eq!(legend.height, 1);
-        assert_eq!(row_text(&terminal, legend), "plan", "命中区正好是模式名");
+        assert_eq!(
+            row_text(&terminal, legend),
+            "normal+plan",
+            "命中区正好是模式名"
+        );
 
         app.open_mode_menu();
         assert_eq!(
             app.mode_menu.as_ref().map(|menu| menu.selected),
-            Some(1),
-            "默认高亮当前模式"
+            Some(0),
+            "默认高亮当前方言"
         );
         terminal
             .draw(|frame| draw(frame, &mut app, &mut view))
@@ -1263,26 +1266,26 @@ mod tests {
         assert_eq!(menu.area.right(), legend.right(), "右缘对齐模式图例");
         assert_eq!(menu.area.bottom(), legend.y, "整体贴在图例上方");
         assert_eq!(menu.entry_at(menu.area.x + 4, menu.area.y + 1), Some(0));
-        // 当前模式行位于图例上方第 4 行；CLM 作为第四个可持久模式加入菜单。
-        let plan_y = legend.y - 4;
+        // 当前方言 normal 是菜单第一项，位于图例上方第 4 行（边框 + 3 条目）。
+        let current_y = legend.y - 4;
         assert!(
             row_text(
                 &terminal,
                 Rect {
                     x: menu.area.x + 1,
-                    y: plan_y,
+                    y: current_y,
                     width: 12,
                     height: 1,
                 },
             )
-            .starts_with("❯ plan"),
-            "当前模式行同时是菜单高亮行"
+            .starts_with("❯ normal"),
+            "当前方言行同时是菜单高亮行"
         );
         assert_eq!(
             terminal
                 .backend()
                 .buffer()
-                .cell((menu.area.x + 3, plan_y))
+                .cell((menu.area.x + 3, current_y))
                 .expect("表头格存在")
                 .fg,
             Theme::global().accent_model
@@ -1291,29 +1294,31 @@ mod tests {
             terminal
                 .backend()
                 .buffer()
-                .cell((menu.area.x + 3, menu.area.y + 1))
-                .expect("首行格存在")
+                .cell((menu.area.x + 3, menu.area.y + 2))
+                .expect("次行格存在")
                 .fg,
             Theme::global().text_primary
         );
 
-        // 本次提示临时问答：图例改显 `ask`，会话持久模式不变；关闭菜单后即恢复 plan。
+        // 本次提示临时问答：图例追加 `+ask`，会话方言与 plan 叠加态不变；清除后即恢复。
         app.mode_menu = None;
-        app.transient_mode = Some(moc_protocol::SessionMode::Ask);
+        app.transient_contract = Some(moc_protocol::methods::PromptContract::Ask);
         terminal
             .draw(|frame| draw(frame, &mut app, &mut view))
             .expect("绘制成功");
-        assert_eq!(row_text(&terminal, app.mode_area), "ask");
+        assert_eq!(row_text(&terminal, app.mode_area), "normal+plan+ask");
         assert_eq!(
-            app.session.as_ref().map(|session| session.mode),
-            Some(moc_protocol::SessionMode::Plan),
-            "临时覆盖不得改写会话模式"
+            app.session
+                .as_ref()
+                .map(|session| { (session.mode, session.plan_active) }),
+            Some((moc_protocol::SessionMode::Normal, true)),
+            "临时契约不得改写会话方言与 plan 态"
         );
-        app.transient_mode = None;
+        app.transient_contract = None;
         terminal
             .draw(|frame| draw(frame, &mut app, &mut view))
             .expect("绘制成功");
-        assert_eq!(row_text(&terminal, app.mode_area), "plan");
+        assert_eq!(row_text(&terminal, app.mode_area), "normal+plan");
     }
 
     /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。

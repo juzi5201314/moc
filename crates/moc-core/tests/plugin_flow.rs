@@ -135,7 +135,8 @@ async fn plugin_tool_runs_and_its_prompt_reaches_the_model() {
     harness.close().await;
 }
 
-/// 插件工具声明的 `modes` 同时约束模型工具表和实际调用。
+/// 插件工具声明的 `modes` 约束执行许可但不影响声明面：工具表随方言恒定，
+/// plan 契约下 `normal_only` 仍被声明、调用时被 E_MODE 拒绝。
 #[tokio::test]
 async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
     let upstream = MockServer::builder().start().await;
@@ -181,7 +182,7 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Plan).await;
+    let session = harness.session_plan(SessionMode::Normal).await;
     harness.prompt(&session, "先给计划").await;
 
     let requests = upstream.received_requests().await.expect("请求记录");
@@ -193,8 +194,8 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
         .filter_map(|tool| tool["function"]["name"].as_str())
         .collect();
     assert!(
-        !names.contains(&"normal_only"),
-        "计划模式不应暴露 normal_only：{names:?}"
+        names.contains(&"normal_only"),
+        "契约不裁剪工具表，normal_only 仍在声明面：{names:?}"
     );
     assert!(
         names.contains(&"everywhere"),

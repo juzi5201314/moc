@@ -17,7 +17,7 @@ export function dispatchNext(sessionId: string): void {
   );
   if (!next) return;
   useComposer.getState().removePending(sessionId, next.key);
-  void sendPrompt(sessionId, toInput(next.text, next.images));
+  void sendPrompt(sessionId, toInput(next.text, next.images), { contract: next.contract });
 }
 
 rpc.on("session/update", ({ session_id: sessionId, update }) => {

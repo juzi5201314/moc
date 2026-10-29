@@ -11,10 +11,11 @@ use moc_protocol::methods::{
     SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams, SessionInfo,
     SessionList, SessionListParams, SessionLoad, SessionLoadParams, SessionMode,
     SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
-    SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRequestAsk,
-    SessionRequestPermission, SessionRetry, SessionRetryParams, SessionSetMode,
-    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
-    SessionSetPermissionParams, SessionUpdateMethod, SessionUsage, SessionUsageParams,
+    SessionPlanApprove, SessionPlanApproveParams, SessionPlanMode, SessionPlanModeParams,
+    SessionPrompt, SessionRequestAsk, SessionRequestPermission, SessionRetry, SessionRetryParams,
+    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
+    SessionSetPermission, SessionSetPermissionParams, SessionUpdateMethod, SessionUsage,
+    SessionUsageParams, prompt::PromptContract,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -145,6 +146,7 @@ fn tui_options(args: &CliArgs) -> moc_tui::TuiOptions {
             .map(|path| path.to_string_lossy().into_owned()),
         model: args.model.clone(),
         mode: args.mode.into(),
+        plan: args.plan,
         resume,
         initial_prompt: args.prompt.clone(),
         detail: args.detail.map(Into::into),
@@ -306,6 +308,7 @@ async fn run_repl(
                 model: args.model.clone(),
                 title: None,
                 mode: args.mode.into(),
+                plan_active: args.plan,
             })
             .await?
     };
@@ -327,8 +330,6 @@ async fn run_repl(
             );
         }
     }
-    let mut mode = session.mode;
-
     if let Some(prompt) = initial_prompt {
         match send_prompt(client, &session.id, prompt, None).await {
             Ok(result) if args.print => {
@@ -348,10 +349,10 @@ async fn run_repl(
     }
 
     println!(
-        "会话 {} · {} · {:?} · {} · permission={}",
+        "会话 {} · {} · {} · {} · permission={}",
         session.id,
         session.model,
-        mode,
+        state_label(&session),
         session.cwd,
         session.permission.as_str()
     );
@@ -376,7 +377,7 @@ async fn run_repl(
             continue;
         }
         if let Some(command) = line.strip_prefix('/') {
-            match run_command(client, command, &mut session, &mut mode, input).await {
+            match run_command(client, command, &mut session, input).await {
                 Ok(CommandResult::Continue) => continue,
                 Ok(CommandResult::Quit) => break,
                 Err(error) => eprintln!("命令失败：{error:#}"),
@@ -394,7 +395,6 @@ async fn run_command(
     client: &ClientHandle,
     command: &str,
     session: &mut SessionInfo,
-    mode: &mut SessionMode,
     input: &Input,
 ) -> anyhow::Result<CommandResult> {
     let (name, argument) = command.split_once(' ').unwrap_or((command, ""));
@@ -438,7 +438,8 @@ async fn run_command(
                     cwd: Some(session.cwd.clone()),
                     model: Some(session.model.clone()),
                     title: None,
-                    mode: *mode,
+                    mode: session.mode,
+                    plan_active: false,
                 })
                 .await?;
             println!("新会话：{}", session.id);
@@ -449,26 +450,30 @@ async fn run_command(
         }
         "mode" => {
             let next = parse_mode(argument)?;
+            if session.mode_locked {
+                bail!("会话方言已锁定；换方言请新建会话");
+            }
             *session = client
                 .call::<SessionSetMode>(SessionSetModeParams {
                     session_id: session.id.clone(),
                     mode: next,
                 })
                 .await?;
-            *mode = next;
             if next == SessionMode::ClmExperimental {
-                println!("CLM 实验模式已启用；本会话首次请求后不可退出 CLM");
+                println!("CLM 实验方言已启用；本会话首次请求后方言锁定");
             }
         }
         "clm-experimental" => {
+            if session.mode_locked {
+                bail!("会话方言已锁定；换方言请新建会话");
+            }
             *session = client
                 .call::<SessionSetMode>(SessionSetModeParams {
                     session_id: session.id.clone(),
                     mode: SessionMode::ClmExperimental,
                 })
                 .await?;
-            *mode = SessionMode::ClmExperimental;
-            println!("CLM 实验模式已启用；本会话首次请求后不可退出 CLM");
+            println!("CLM 实验方言已启用；本会话首次请求后方言锁定");
         }
         "permission" => {
             let clear = argument == "clear";
@@ -493,17 +498,21 @@ async fn run_command(
             }
         }
         "plan" => {
-            if argument.is_empty() {
-                bail!("用法：/plan <提示词>");
-            }
+            let active = if argument.is_empty() {
+                !session.plan_active
+            } else {
+                true
+            };
             *session = client
-                .call::<SessionSetMode>(SessionSetModeParams {
+                .call::<SessionPlanMode>(SessionPlanModeParams {
                     session_id: session.id.clone(),
-                    mode: SessionMode::Plan,
+                    active,
                 })
                 .await?;
-            *mode = SessionMode::Plan;
-            send_prompt(client, &session.id, argument.to_owned(), None).await?;
+            println!("计划状态：{}", if active { "开启" } else { "关闭" });
+            if !argument.is_empty() {
+                send_prompt(client, &session.id, argument.to_owned(), None).await?;
+            }
         }
         "ask" => {
             if argument.is_empty() {
@@ -513,11 +522,11 @@ async fn run_command(
                 client,
                 &session.id,
                 argument.to_owned(),
-                Some(SessionMode::Ask),
+                Some(PromptContract::Ask),
             )
             .await?;
         }
-        "approve" => approve_plan(client, argument, session, mode).await?,
+        "approve" => approve_plan(client, argument, session).await?,
         "compact" => {
             let result = client
                 .call::<SessionCompact>(SessionCompactParams {
@@ -639,13 +648,13 @@ const HELP_TEXT: &str = "\
 /quit                     退出
 /exit                     退出（同 /quit）
 /cancel                   取消当前提示（运行中按 Ctrl+C）
-/mode <normal|plan|ptc|clm-experimental>  切换工作模式
-/clm-experimental         启用 CLM 实验模式；首次请求后本会话固定为 CLM
+/mode <normal|ptc|clm-experimental>  切换会话方言（跑过首条提示后方言锁定）
+/clm-experimental         启用 CLM 实验方言；首次请求后方言锁定
 /permission <full|workspace|workspace-only|clear> 切换命令权限或清空本会话沙盒授权
-/plan <提示词>            切换计划模式并发送提示词
-/ask <问题>               仅本条消息按问答模式（只读）处理
+/plan [提示词]            进入/退出计划叠加态；带提示词时进入并发送
+/ask <问题>               仅本条消息按问答契约（只读）处理
 /retry                    接着现有上下文继续跑（不追加用户消息，仅空闲时可用）
-/approve <execute|compact|new|reject>  处理已提交的计划
+/approve <execute|compact|new [方言]|reject>  处理已提交的计划
 /agents                   列出当前会话的直接子代理（创建、交流、停止都在 TUI）
 /compact                  压缩当前上下文
 /usage                    查看当前会话模型用量
@@ -757,7 +766,6 @@ async fn approve_plan(
     client: &ClientHandle,
     command: &str,
     session: &mut SessionInfo,
-    mode: &mut SessionMode,
 ) -> anyhow::Result<()> {
     let load = client
         .call::<SessionLoad>(SessionLoadParams {
@@ -772,12 +780,23 @@ async fn approve_plan(
         .rev()
         .find(|plan| plan.status == PlanStatus::Submitted)
         .ok_or_else(|| anyhow::anyhow!("当前会话没有等待批准的计划"))?;
-    let action = match command {
-        "execute" => PlanAction::Execute,
-        "compact" => PlanAction::ExecuteCompacted,
-        "new" => PlanAction::ExecuteNewSession,
-        "reject" => PlanAction::Reject,
-        _ => bail!("用法：/approve <execute|compact|new|reject>"),
+    // `new` 可带目标方言：`/approve new ptc`；缺省沿用当前会话方言。
+    let (verb, dialect_arg) = command
+        .split_once(' ')
+        .map_or((command, ""), |(v, rest)| (v, rest.trim()));
+    let (action, execution_mode) = match verb {
+        "execute" if dialect_arg.is_empty() => (PlanAction::Execute, None),
+        "compact" if dialect_arg.is_empty() => (PlanAction::ExecuteCompacted, None),
+        "new" => (
+            PlanAction::ExecuteNewSession,
+            if dialect_arg.is_empty() {
+                None
+            } else {
+                Some(parse_mode(dialect_arg)?)
+            },
+        ),
+        "reject" if dialect_arg.is_empty() => (PlanAction::Reject, None),
+        _ => bail!("用法：/approve <execute|compact|new [方言]|reject>"),
     };
     let approved = client
         .call::<SessionPlanApprove>(SessionPlanApproveParams {
@@ -785,6 +804,7 @@ async fn approve_plan(
             plan_id: plan.plan_id.clone(),
             action,
             execution_model: None,
+            execution_mode,
         })
         .await?;
     let next = client
@@ -795,7 +815,6 @@ async fn approve_plan(
         })
         .await?;
     *session = next.session;
-    *mode = approved.mode;
     if let Some(markdown) = approved.plan_markdown {
         println!("\n{markdown}\n");
     }
@@ -809,12 +828,12 @@ async fn send_prompt(
     client: &ClientHandle,
     session_id: &str,
     prompt: String,
-    mode: Option<SessionMode>,
+    contract: Option<PromptContract>,
 ) -> anyhow::Result<moc_protocol::methods::PromptResult> {
     let pending = client.call::<SessionPrompt>(moc_protocol::methods::PromptParams {
         session_id: session_id.to_owned(),
         input: vec![InputPart::Text { text: prompt }],
-        mode,
+        contract,
         agent_message: None,
     });
     tokio::pin!(pending);
@@ -997,13 +1016,21 @@ fn rpc_io_error(error: std::io::Error) -> RpcError {
 fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
     match mode {
         "normal" => Ok(SessionMode::Normal),
-        "plan" => Ok(SessionMode::Plan),
         "ptc" => Ok(SessionMode::Ptc),
         "clm" | "clm-experimental" => Ok(SessionMode::ClmExperimental),
         _ => bail!(
-            "模式必须是 normal、plan、ptc 或 clm-experimental；单条消息的问答请用 /ask <问题>"
+            "方言必须是 normal、ptc 或 clm-experimental；计划状态用 /plan，单条只读问答用 /ask <问题>"
         ),
     }
+}
+
+/// 状态栏标签：方言 + 叠加态（plan）。
+fn state_label(session: &SessionInfo) -> String {
+    let mut label = format!("{:?}", session.mode);
+    if session.plan_active {
+        label.push_str("+plan");
+    }
+    label
 }
 
 /// 容量缺口的中文描述；token 按原值输出，与 REPL 其它统计一致。
@@ -1024,9 +1051,9 @@ fn capacity_notice(overflow: &ModelSwitchOverflow, selector: &str) -> String {
 fn print_sessions(sessions: &[SessionInfo]) {
     for session in sessions {
         println!(
-            "{}\t{:?}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             session.id,
-            session.mode,
+            state_label(session),
             session.model,
             session.permission.as_str(),
             session.title,

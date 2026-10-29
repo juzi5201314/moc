@@ -128,6 +128,7 @@ pub(super) async fn run(
             session_id,
             &state.session.cwd,
             state.mode,
+            crate::service::mode::ModeContract::effective(state.plan_active, None),
             state.permission,
             &state.model,
             state.session.is_subagent(),

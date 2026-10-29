@@ -39,10 +39,10 @@ use crate::methods::{
     PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams, ResourceComplete,
     SessionBash, SessionBtw, SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact,
     SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
-    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanRevise,
-    SessionPrompt, SessionRename, SessionRetry, SessionRewind, SessionSetMode, SessionSetModel,
-    SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage,
-    WorkspaceGitBranch,
+    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanMode,
+    SessionPlanRevise, SessionPrompt, SessionRename, SessionRetry, SessionRewind, SessionSetMode,
+    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
+    SessionUnsteer, SessionUsage, WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -784,6 +784,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_set_model(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionPlanMode as Method>::NAME => {
+                let params = params_from_value::<SessionPlanMode>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_plan_mode(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

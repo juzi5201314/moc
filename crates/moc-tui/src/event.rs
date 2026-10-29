@@ -18,10 +18,10 @@ use moc_protocol::{
     SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
     SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
-    SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanRevise, SessionPlanReviseParams,
-    SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
-    SessionUsage, SessionUsageParams, UpstreamField,
+    SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams,
+    SessionPlanRevise, SessionPlanReviseParams, SessionRewind, SessionRewindParams, SessionSetMode,
+    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
+    SessionSetPermissionParams, SessionUpdate, SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -45,8 +45,10 @@ pub struct TuiOptions {
     pub cwd: Option<String>,
     /// 模型 selector；`None` 用 core 默认。
     pub model: Option<String>,
-    /// 会话工作模式。
+    /// 新会话的方言。
     pub mode: SessionMode,
+    /// 新会话直接进入 plan 叠加态。
+    pub plan: bool,
     /// `None` = 新会话；`Some(None)` = 恢复当前目录最近会话；`Some(Some(id))` = 指定会话。
     pub resume: Option<Option<String>>,
     /// 启动即发送的提示词（`moc "提示词"`）。
@@ -83,6 +85,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.load_input_history(&core.config_home());
     app.tui_store = Some(tui_store);
     app.startup_mode = opts.mode;
+    app.startup_plan = opts.plan;
     app.startup_pending = opts.initial_prompt.clone();
     bootstrap(&connection.client, &mut app, &opts).await;
     // 启动时把会话累计用量拉回来，第一帧的右下角就是整个会话的 total。
@@ -176,6 +179,7 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                         model: opts.model.clone(),
                         title: None,
                         mode: opts.mode,
+                        plan_active: opts.plan,
                     })
                     .await?;
                 (info, Vec::new(), false, None)
@@ -2497,10 +2501,11 @@ fn plan_read_key(
     code: KeyCode,
 ) {
     let session_id = app.session.as_ref().map(|session| session.id.clone());
-    let (plan_id, execution_model, selected, status) = match app.modal.as_ref() {
+    let (plan_id, execution_model, execution_mode, selected, status) = match app.modal.as_ref() {
         Some(Modal::Plan { state }) => (
             state.plan_id.clone(),
             state.execution_model.clone(),
+            state.execution_mode,
             state.selected,
             state.status,
         ),
@@ -2515,6 +2520,16 @@ fn plan_read_key(
             {
                 state.show_diff = !state.show_diff;
                 state.scroll_offset = 0;
+            }
+        }
+        // 「在新会话执行」的目标方言循环；其他动作忽略该字段。
+        (KeyCode::Char('m'), KeyModifiers::NONE) => {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                let index = MODES
+                    .iter()
+                    .position(|mode| *mode == state.execution_mode)
+                    .unwrap_or(0);
+                state.execution_mode = MODES[(index + 1) % MODES.len()];
             }
         }
         (KeyCode::Char('s'), KeyModifiers::NONE) => submit_plan_review(app, connection),
@@ -2567,6 +2582,7 @@ fn plan_read_key(
                         plan_id,
                         action,
                         execution_model: Some(execution_model),
+                        execution_mode: Some(execution_mode),
                     })
                     .await
                     .map_err(anyhow::Error::from);
@@ -3583,8 +3599,8 @@ fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
         app.set_notice("当前没有活动会话");
         return;
     };
-    if session.mode != SessionMode::Plan {
-        app.set_notice("只有计划模式可以重新审阅计划");
+    if !session.plan_active {
+        app.set_notice("只有计划状态可以重新审阅计划");
         return;
     }
     let session_id = session.id.clone();
@@ -3599,10 +3615,7 @@ fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
                     read_only: false,
                 })
                 .await?;
-            anyhow::ensure!(
-                loaded.session.mode == SessionMode::Plan,
-                "会话已离开计划模式"
-            );
+            anyhow::ensure!(loaded.session.plan_active, "会话已离开计划状态");
             let plan = loaded
                 .plans
                 .into_iter()
@@ -3626,7 +3639,7 @@ fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanInfo) {
         return;
     };
     app.modal = Some(Modal::Plan {
-        state: crate::modal::PlanReviewState::new(plan, session.model.clone()),
+        state: crate::modal::PlanReviewState::new(plan, session.model.clone(), session.mode),
     });
 }
 
@@ -3678,8 +3691,7 @@ fn apply_plan_review(
     match result {
         Ok(plan)
             if app.session.as_ref().is_some_and(|session| {
-                session.mode == SessionMode::Plan
-                    && plan.path == format!("local://{}.md", plan.plan_id)
+                session.plan_active && plan.path == format!("local://{}.md", plan.plan_id)
             }) =>
         {
             let needs_diff = plan.previous_plan_id.is_some();
@@ -3922,6 +3934,7 @@ fn apply_update_and_refresh(
         &update,
         SessionUpdate::PromptFinished { .. }
             | SessionUpdate::ModeChanged { .. }
+            | SessionUpdate::PlanModeChanged { .. }
             | SessionUpdate::ModelChanged { .. }
             | SessionUpdate::PermissionChanged { .. }
             | SessionUpdate::ContextCompacted { .. }
@@ -4112,8 +4125,13 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             }
             if mode == SessionMode::ClmExperimental {
                 app.set_notice(
-                    "CLM 实验模式已启用：模型将维护实时上下文；本会话使用后不可退出 CLM",
+                    "CLM 实验模式已启用：模型将维护实时上下文；本会话首次请求后锁定方言",
                 );
+            }
+        }
+        SessionUpdate::PlanModeChanged { active } => {
+            if let Some(session) = app.session.as_mut() {
+                session.plan_active = active;
             }
         }
         SessionUpdate::ModelChanged { model } => {
@@ -4522,6 +4540,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                         model,
                         title: None,
                         mode,
+                        plan_active: false,
                     })
                     .await
                 {
@@ -4590,6 +4609,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/mode" => cycle_mode(app, connection),
         "/clm-experimental" => set_mode(app, connection, SessionMode::ClmExperimental),
         "/permission" => set_permission(app, connection, rest),
+        "/plan" => toggle_plan(app, connection),
         "/ask" => ask_once(app, connection, rest),
         "/retry" => retry(app, connection),
         "/model" => app.open_model_picker(),
@@ -4641,12 +4661,16 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     }
 }
 
-/// 循环切换模式：Normal → Plan → PTC。
+/// 循环切换方言：Normal → PTC → CLM。会话跑过第一条提示后方言锁定。
 fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
     };
+    if session.mode_locked {
+        app.set_notice("会话方言已锁定；换方言请新建会话");
+        return;
+    }
     let index = MODES
         .iter()
         .position(|mode| *mode == session.mode)
@@ -4654,9 +4678,32 @@ fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
     set_mode(app, connection, MODES[(index + 1) % MODES.len()]);
 }
 
-/// `/ask <问题>`：仅本条消息进入问答模式（只读），不改变会话模式。
+/// `/plan`：切换 plan 叠加态；方言不受影响，可在任意方言上叠加。
+fn toggle_plan(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let client = connection.client.clone();
+    let session_id = session.id.clone();
+    let active = !session.plan_active;
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<SessionPlanMode>(SessionPlanModeParams { session_id, active })
+            .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("切换计划状态失败：{error}")));
+            }
+        }
+    });
+}
+
+/// `/ask <问题>`：仅本条消息进入问答契约（只读），不改变会话方言与 plan 状态。
 ///
-/// 该次提示无论当前是否空闲都排进队列：模式覆盖是提示级属性，无法注入正在飞行的提示。
+/// 该次提示无论当前是否空闲都排进队列：契约覆盖是提示级属性，无法注入正在飞行的提示。
 fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     let text = rest.trim();
     if text.is_empty() {
@@ -4667,11 +4714,11 @@ fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
         app.set_notice("当前没有活动会话");
         return;
     }
-    crate::queue::submit_with_mode(
+    crate::queue::submit_with_contract(
         app,
         connection,
         crate::widgets::prompt::PromptState::from_text(text.to_owned()),
-        SessionMode::Ask,
+        moc_protocol::methods::PromptContract::Ask,
     );
 }
 
@@ -4698,12 +4745,16 @@ fn retry(app: &mut App, connection: &EmbeddedConnection) {
     crate::queue::send_retry(&connection.client, session_id, app.events.clone());
 }
 
-/// 请求 core 切换会话模式（模式循环与就地菜单共用）。
+/// 请求 core 切换会话方言（方言循环与就地菜单共用）。
 fn set_mode(app: &mut App, connection: &EmbeddedConnection, mode: SessionMode) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
     };
+    if session.mode_locked {
+        app.set_notice("会话方言已锁定；换方言请新建会话");
+        return;
+    }
     let client = connection.client.clone();
     let session_id = session.id.clone();
     let events = app.events.clone();
@@ -5204,6 +5255,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -5475,6 +5527,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -5631,6 +5684,8 @@ mod tests {
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
             mode: SessionMode::Normal,
+            plan_active: false,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: None,
             cwd: "/tmp".into(),
@@ -5685,6 +5740,8 @@ mod tests {
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
             mode: SessionMode::Normal,
+            plan_active: false,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: None,
             cwd: "/tmp".into(),
@@ -5742,6 +5799,8 @@ mod tests {
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
             mode: SessionMode::Normal,
+            plan_active: false,
+            mode_locked: false,
             parent_session_id: None,
             forked_from: None,
             cwd: "/tmp".into(),
@@ -5809,6 +5868,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -5920,6 +5980,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -5939,7 +6000,7 @@ mod tests {
                 input: vec![InputPart::Text {
                     text: "你好".into(),
                 }],
-                mode: None,
+                contract: None,
                 agent_message: None,
             })
             .await
@@ -6096,6 +6157,7 @@ mod tests {
                     model: None,
                     title: None,
                     mode: SessionMode::Normal,
+                    plan_active: false,
                 })
                 .await
                 .unwrap();
@@ -6115,7 +6177,7 @@ mod tests {
                     input: vec![InputPart::Text {
                         text: "你好".into(),
                     }],
-                    mode: None,
+                    contract: None,
                     agent_message: None,
                 })
                 .await
@@ -6553,6 +6615,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -6905,6 +6968,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -6925,14 +6989,14 @@ mod tests {
                     .await
                     .unwrap()
                     .session;
-                if session.mode == SessionMode::Plan {
+                if session.mode == SessionMode::Ptc {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("Alt+M 应切换到 Plan 模式");
+        .expect("Alt+M 应切换到 PTC 方言");
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -6970,23 +7034,27 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
         let session_id = session.id.clone();
         app.session = Some(session);
 
-        // 进行中的提示期间只排队：模式覆盖是提示级属性，无法注入正在飞行的提示。
+        // 进行中的提示期间只排队：契约覆盖是提示级属性，无法注入正在飞行的提示。
         app.prompt_running = true;
         execute_command(&mut app, &connection, "/ask 有没有遗留的临时文件".into());
         let queued = app.queues.get(&session_id).expect("命令排进待发送队列");
         assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].mode, Some(SessionMode::Ask));
+        assert_eq!(
+            queued[0].contract,
+            Some(moc_protocol::methods::PromptContract::Ask)
+        );
         assert_eq!(queued[0].draft.text, "有没有遗留的临时文件");
         assert_eq!(
             app.session.as_ref().map(|session| session.mode),
             Some(SessionMode::Normal),
-            "临时问答不得改写会话模式"
+            "临时问答不得改写会话方言"
         );
 
         execute_command(&mut app, &connection, "/ask".into());
@@ -7060,6 +7128,7 @@ mod tests {
                 model: None,
                 title: None,
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .unwrap();
@@ -7092,16 +7161,16 @@ mod tests {
         handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 10, 5));
         assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
 
-        // 点第二条（plan）直达该模式。
+        // 点第二条（ptc）直达该方言。
         handle_mouse_with_connection(
             &mut app,
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 45, 16),
         );
         assert!(app.mode_menu.is_none(), "选中条目后菜单关闭");
-        wait_for_mode(&connection, &session_id, SessionMode::Plan).await;
-        // core 通过 `ModeChanged` 推送新模式，事件循环据此更新本地会话；此处手动对齐。
-        app.session.as_mut().unwrap().mode = SessionMode::Plan;
+        wait_for_mode(&connection, &session_id, SessionMode::Ptc).await;
+        // core 通过 `ModeChanged` 推送新方言，事件循环据此更新本地会话；此处手动对齐。
+        app.session.as_mut().unwrap().mode = SessionMode::Ptc;
 
         // 再点图例开菜单，再点一次图例应关闭而不是重开。
         handle_mouse_with_connection(
@@ -7118,7 +7187,7 @@ mod tests {
         );
         assert!(app.mode_menu.is_none(), "再次点图例关闭菜单");
 
-        // 键盘路径：开菜单后 ↓ 选到 ptc，Enter 应用。
+        // 键盘路径：开菜单后 ↓ 选到 clm，Enter 应用。
         handle_mouse_with_connection(
             &mut app,
             &connection,
@@ -7128,10 +7197,10 @@ mod tests {
         assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         assert!(app.mode_menu.is_none());
-        wait_for_mode(&connection, &session_id, SessionMode::Ptc).await;
+        wait_for_mode(&connection, &session_id, SessionMode::ClmExperimental).await;
 
         // 普通输入先关掉菜单再照常处理：菜单不会吞键。
-        app.session.as_mut().unwrap().mode = SessionMode::Plan;
+        app.session.as_mut().unwrap().mode = SessionMode::Ptc;
         handle_mouse_with_connection(
             &mut app,
             &connection,
@@ -7915,7 +7984,7 @@ mod tests {
             .push_back(crate::queue::QueuedPrompt {
                 id: 2,
                 draft: crate::widgets::prompt::PromptState::from_text("排队内容".into()),
-                mode: None,
+                contract: None,
             });
         crate::queue::dispatch(&mut app, &connection);
         assert_eq!(
@@ -8807,6 +8876,7 @@ mod tests {
                 model: None,
                 title: Some(title.to_owned()),
                 mode: SessionMode::Normal,
+                plan_active: false,
             })
             .await
             .expect("创建子会话")

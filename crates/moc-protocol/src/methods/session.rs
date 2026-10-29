@@ -67,15 +67,21 @@ pub struct SessionDelete;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUnlock;
 
-/// 会话工作模式。
+/// 会话模式方言：模型与工具的交互形态。
+///
+/// 方言是会话级属性：`session/new` 或空白期（没有任何用户提示）的
+/// `session/set_mode` 决定一次会话的方言；会话跑过第一条用户提示后
+/// [`SessionInfo::mode_locked`] 为真，方言不能再改。
+///
+/// plan 与 ask 不是方言：plan 是叠加在任意方言上的持久协作态
+/// （[`SessionInfo::plan_active`]，`session/plan_mode` 进出），ask 是
+/// [`super::prompt::PromptParams::contract`] 声明的单次提示只读契约。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
     #[default]
     Normal,
-    /// 只读问答模式。
-    Ask,
-    Plan,
+    /// 模型只调用 `run_code`，全部工具经代码沙盒触达。
     Ptc,
     /// 模型自主维护实时上下文的实验模式。
     ClmExperimental,
@@ -117,11 +123,11 @@ impl SessionPermission {
     }
 }
 
-/// `session/set_mode`：切换会话工作模式。
+/// `session/set_mode`：切换会话模式方言。
 ///
-/// 进入计划模式会把会话模型切到 `models.roles.plan` 指定的模型（该角色配置为
-/// `none` 时沿用当前模型），退出计划模式恢复进入前的模型；模型切换通过
-/// [`crate::methods::SessionUpdate::ModelChanged`] 推送。
+/// 方言只能在空白会话（还没跑过任何用户提示）期间修改；会话已有提示历史后
+/// 请求会被拒绝——此时要换方言只能新建会话。plan 叠加态的进出走
+/// [`super::plan::SessionPlanMode`]，与本方法无关。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionSetMode;
 
@@ -286,9 +292,12 @@ pub struct SessionNewParams {
     /// 标题；`None` 由 core 生成（如取首条用户输入）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 新会话初始模式。
+    /// 新会话初始方言；创建后即为会话方言，跑过首条提示后锁定。
     #[serde(default)]
     pub mode: SessionMode,
+    /// 新会话直接进入 plan 叠加态。
+    #[serde(default)]
+    pub plan_active: bool,
 }
 
 /// 一条会话的元信息。
@@ -304,9 +313,15 @@ pub struct SessionInfo {
     /// 当前命令执行权限。
     #[serde(default)]
     pub permission: SessionPermission,
-    /// 当前工作模式。
+    /// 当前模式方言。
     #[serde(default)]
     pub mode: SessionMode,
+    /// plan 叠加态是否激活；激活时本次各次提示按计划契约运行。
+    #[serde(default)]
+    pub plan_active: bool,
+    /// 方言是否已锁定：会话跑过第一条用户提示后为真，此后 `session/set_mode` 会被拒绝。
+    #[serde(default)]
+    pub mode_locked: bool,
     /// 父会话 ID：只有 `spawn_agent` 出来的子代理会话有，其余会话为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
@@ -884,7 +899,9 @@ mod tests {
             forked_from: None,
             cwd: "/tmp".into(),
             created_at_ms: 1,
-            mode: SessionMode::Plan,
+            mode: SessionMode::Ptc,
+            plan_active: true,
+            mode_locked: true,
             updated_at_ms: 2,
             lock: None,
         };
@@ -892,7 +909,8 @@ mod tests {
             serde_json::to_value(&info).expect("可序列化"),
             serde_json::json!({
                 "id": "ses_1", "title": "t", "model": "m", "permission": "full",
-                "mode": "plan", "cwd": "/tmp", "created_at_ms": 1, "updated_at_ms": 2
+                "mode": "ptc", "plan_active": true, "mode_locked": true,
+                "cwd": "/tmp", "created_at_ms": 1, "updated_at_ms": 2
             })
         );
         let old: SessionInfo = serde_json::from_value(serde_json::json!({

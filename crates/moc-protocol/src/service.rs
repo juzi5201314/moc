@@ -40,7 +40,7 @@ use crate::methods::{
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult,
+    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
     SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams, SessionRetryParams,
     SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
@@ -263,11 +263,19 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionUnlockParams,
     ) -> impl Future<Output = Result<Empty, RpcError>> + Send;
 
-    /// 切换会话模式；被他人持锁时回 `SessionLocked`。
+    /// 切换会话模式方言；只在空白会话期允许，已有提示历史时回 `InvalidParams`；
+    /// 被他人持锁时回 `SessionLocked`。
     fn session_set_mode(
         &self,
         ctx: RequestContext,
         params: SessionSetModeParams,
+    ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
+
+    /// 进入 / 退出 plan 叠加态；被他人持锁时回 `SessionLocked`。
+    fn session_plan_mode(
+        &self,
+        ctx: RequestContext,
+        params: SessionPlanModeParams,
     ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
 
     /// 切换会话命令执行权限；被他人持锁时回 `SessionLocked`。

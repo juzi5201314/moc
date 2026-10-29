@@ -42,7 +42,7 @@ async fn manual_bash_context_survives_resume_and_compaction_without_private_outp
         "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=1\n",
     )
     .await;
-    let id = harness.session(SessionMode::Plan).await;
+    let id = harness.session_plan(SessionMode::Normal).await;
     let before = harness
         .client
         .call::<SessionContext>(SessionContextParams {
@@ -162,7 +162,7 @@ async fn manual_bash_context_survives_resume_and_compaction_without_private_outp
 #[tokio::test]
 async fn empty_manual_commands_release_the_session_for_next_execution() {
     let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
-    let id = harness.session(SessionMode::Ask).await;
+    let id = harness.session_plan(SessionMode::Normal).await;
     for input in ["!", "!!", "!  \n  "] {
         let error = harness
             .client

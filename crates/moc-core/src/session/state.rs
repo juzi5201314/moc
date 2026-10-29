@@ -62,10 +62,12 @@ pub struct SessionState {
     /// 与 transcript 一一对应的 token 估算，免得上下文面板反复扫描正文。
     pub transcript_token_counts: Vec<u64>,
     pub mode: SessionMode,
+    /// plan 叠加态：与方言正交的持久协作态，回放自 `PlanMode` / `ModeChange` entry。
+    pub plan_active: bool,
     pub permission: SessionPermission,
     pub model: String,
-    /// 计划模式临时覆盖前的会话模型，退出计划模式时恢复。它随 transcript 重放，
-    /// 会话恢复后依然有效；只有处于计划模式时才有意义。
+    /// plan 叠加态临时覆盖前的会话模型，退出 plan 时恢复。它随 transcript 重放，
+    /// 会话恢复后依然有效；只有处于 plan 时才有意义。
     plan_base_model: Option<String>,
     pub todos: Vec<TodoPhase>,
     /// 自上次 todo 变更以来的工具调用数，供停滞提醒计数。
@@ -136,11 +138,12 @@ impl SessionState {
             entries: Vec::with_capacity(entries.len()),
             transcript: Vec::new(),
             transcript_token_counts: Vec::new(),
-            mode: *mode,
+            mode: mode.dialect(),
+            plan_active: mode.legacy_enters_plan(),
             permission: *permission,
             model: model.clone(),
-            // 以计划模式创建（含直接创建与会话恢复）时，header 记录的就是会话自身模型。
-            plan_base_model: (*mode == SessionMode::Plan).then(|| model.clone()),
+            // 以 plan 创建（旧持久模式或会话恢复）时，header 记录的就是会话自身模型。
+            plan_base_model: mode.legacy_enters_plan().then(|| model.clone()),
             todos: Vec::new(),
             tool_calls_since_todo: 0,
             todo_reminders_sent: 0,
@@ -198,6 +201,8 @@ impl SessionState {
                     && reminder.is_none()
                 {
                     self.prompt_sequence = self.prompt_sequence.saturating_add(1);
+                    // 有了第一条用户提示，方言随即锁定。
+                    self.session.mode_locked = true;
                 }
                 if let Some(stamp) = reminder {
                     for item in &stamp.items {
@@ -278,17 +283,32 @@ impl SessionState {
             Entry::ClmContext { content, .. } => {
                 self.clm_context = Some(content.clone());
             }
-            Entry::ModeChange { mode, .. } => {
-                let mode_changed = self.mode != *mode;
-                if mode_changed && *mode == SessionMode::Plan {
-                    // 计划模式只临时覆盖模型：记住进入前的会话模型，退出时恢复。
+            Entry::ModeChange {
+                mode, plan_active, ..
+            } => {
+                // 新条目带权威 plan 投影；旧条目按持久模式值映射：`plan` 模式 =
+                // Normal 方言 + plan 叠加态，其余值 = 对应方言且退出 plan。
+                let dialect = mode.dialect();
+                let plan = plan_active.unwrap_or_else(|| mode.legacy_enters_plan());
+                let mode_changed = self.mode != dialect;
+                if plan && !self.plan_active {
+                    // plan 叠加态只临时覆盖模型：记住进入前的会话模型，退出时恢复。
                     self.plan_base_model = Some(self.model.clone());
                 }
-                self.mode = *mode;
-                self.session.mode = *mode;
-                if mode_changed || *mode != SessionMode::ClmExperimental {
+                self.mode = dialect;
+                self.session.mode = dialect;
+                self.plan_active = plan;
+                self.session.plan_active = plan;
+                if mode_changed || dialect != SessionMode::ClmExperimental {
                     self.clm_context = None;
                 }
+            }
+            Entry::PlanMode { active, .. } => {
+                if *active && !self.plan_active {
+                    self.plan_base_model = Some(self.model.clone());
+                }
+                self.plan_active = *active;
+                self.session.plan_active = *active;
             }
             Entry::PermissionChange { permission, .. } => {
                 self.permission = *permission;
@@ -467,10 +487,9 @@ impl SessionState {
         self.session.clone()
     }
 
-    /// 退出计划模式时要恢复的会话模型。
+    /// 退出 plan 叠加态时要恢复的会话模型。
     ///
-    /// 计划模式期间该值来自进入时的记录（或计划模式下的 header）；不在计划模式时返回
-    /// 当前模型，供统一的恢复路径使用。
+    /// plan 期间该值来自进入时的记录；不在 plan 时返回当前模型，供统一的恢复路径使用。
     pub fn exit_plan_model(&self) -> &str {
         self.plan_base_model
             .as_deref()
@@ -600,7 +619,8 @@ mod tests {
         );
         let mode = Entry::from_payload(
             EntryPayload::ModeChange {
-                mode: SessionMode::Plan,
+                mode: SessionMode::Normal,
+                plan_active: true,
             },
             plan.id().to_owned(),
             14,
@@ -610,7 +630,8 @@ mod tests {
             .expect("记录链完整");
 
         assert_eq!(state.session.title, "标题");
-        assert_eq!(state.session.mode, SessionMode::Plan);
+        assert_eq!(state.session.mode, SessionMode::Normal);
+        assert!(state.plan_active);
         assert_eq!(state.transcript.len(), 1);
         assert!(matches!(
             &state.transcript[0].message.content[0],
@@ -629,7 +650,7 @@ mod tests {
                 "ses_123456789abc".into(),
                 "/tmp/project".into(),
                 "p/model".into(),
-                SessionMode::Plan,
+                SessionMode::Normal,
                 SessionPermission::Full,
                 SessionOrigin::root(),
                 "标题".into(),

@@ -144,19 +144,24 @@ mod tests {
                 tool.parallel_safe(),
                 "并发判定与服务端声明无关：同 server 串行由 McpManager 保证：{declared}"
             );
-            for mode in [SessionMode::Ask, SessionMode::Plan] {
+            for contract in [
+                crate::service::mode::ModeContract::Ask,
+                crate::service::mode::ModeContract::Plan,
+            ] {
                 assert!(
                     !crate::service::mode::mode_allows(
-                        mode,
+                        SessionMode::Normal,
+                        contract,
                         tool.name(),
                         tool.tier(),
                         tool.origin()
                     ),
-                    "只读模式不得放行声明只读的 MCP 工具"
+                    "只读契约不得放行声明只读的 MCP 工具"
                 );
             }
             assert!(crate::service::mode::mode_allows(
                 SessionMode::Normal,
+                crate::service::mode::ModeContract::None,
                 tool.name(),
                 tool.tier(),
                 tool.origin()

@@ -1,9 +1,10 @@
-//! 会话模式切换、计划批准与只读工作区约束。
+//! 模式方言与执行契约的判定、plan 叠加态切换、计划批准与只读工作区约束。
 
 use moc_protocol::methods::{
-    PlanAction, PlanAnnotation, PlanInfo, PlanStatus, SessionMode, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult,
-    SessionPlanReviseParams, SessionPlanReviseResult, SessionUpdate, ToolDiff, ToolFileDiff,
+    PlanAction, PlanAnnotation, PlanInfo, PlanStatus, PromptContract, SessionMode,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
+    SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
+    SessionUpdate, ToolDiff, ToolFileDiff,
 };
 use moc_protocol::{RequestContext, RpcError, RpcErrorCode, build_hunks};
 
@@ -12,30 +13,151 @@ use crate::compact;
 use crate::error::CoreError;
 use crate::session::entries::{EntryPayload, SessionOrigin};
 
-/// 切换计划模式时同步会话模型：进入计划模式时切到 `plan` 角色模型，退出时恢复进入前的模型。
+/// 提示级执行契约：与方言正交，只收紧工具许可。
 ///
-/// `plan_model` 是进入计划模式前解析好的目标模型选择器；`plan = "none"` 表示不切换，
-/// 此时传 `None`。返回切换后的选择器，模型没变时返回 `None`，调用方据此决定是否推送
-/// [`SessionUpdate::ModelChanged`]。
+/// 契约不改变原生工具表——表只随方言与配置变化（保障请求前缀缓存稳定）；契约
+/// 作用在 [`mode_allows`] 的执行许可上：被拒的工具调用以 `E_MODE` 结果回给模型，
+/// 配合契约提醒引导它改用只读手段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeContract {
+    /// 无额外约束：许可 = 方言面。
+    None,
+    /// `/ask` 声明的单次提示只读契约，提示结束即失效。
+    Ask,
+    /// plan 叠加态：目标收敛到产出计划，写工具被拒，`write_plan`/`exit_plan` 放行。
+    Plan,
+}
+
+impl ModeContract {
+    /// 插件上下文 `session.mode` 与契约提醒使用的稳定名字，与插件 `modes` 声明同词表。
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "normal",
+            Self::Ask => "ask",
+            Self::Plan => "plan",
+        }
+    }
+
+    /// 只读契约：工作区改动一律按违规上报。
+    pub fn read_only(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// 本次提示的有效契约：plan 叠加态持久生效，优先于提示级 ask——ask 不能削弱
+    /// 会话级的计划目标。
+    pub fn effective(plan_active: bool, prompt_contract: Option<PromptContract>) -> Self {
+        if plan_active {
+            Self::Plan
+        } else {
+            prompt_contract.map(Self::from).unwrap_or(Self::None)
+        }
+    }
+}
+
+impl From<PromptContract> for ModeContract {
+    fn from(contract: PromptContract) -> Self {
+        match contract {
+            PromptContract::Ask => Self::Ask,
+        }
+    }
+}
+
+/// `session/plan_mode`：进入或退出 plan 叠加态。
+///
+/// 进入时按 `models.roles.plan` 覆盖会话模型并建立工作区基线，退出时恢复进入前
+/// 的模型；原生工具表不受影响，plan 工具由契约放行。
+pub async fn plan_mode(
+    inner: &CoreInner,
+    ctx: RequestContext,
+    params: SessionPlanModeParams,
+) -> Result<moc_protocol::methods::SessionInfo, RpcError> {
+    let record = inner
+        .sessions
+        .get(&params.session_id)
+        .await
+        .map_err(to_rpc)?;
+    let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+    inner
+        .sessions
+        .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+        .await
+        .map_err(to_rpc)?;
+    let (cwd, was_active, model_before) = {
+        let state = record.state.lock().await;
+        (
+            std::path::PathBuf::from(state.session.cwd.clone()),
+            state.plan_active,
+            state.model.clone(),
+        )
+    };
+    let config = inner.project_config(&cwd).map_err(to_rpc)?;
+    // 进入前先解析计划模型，避免解析失败时叠加态已切换而模型没切换。
+    let plan_model = if params.active && !was_active {
+        config
+            .resolve_plan_mode_model()
+            .map_err(to_rpc)?
+            .map(|model| model.selector)
+    } else {
+        None
+    };
+    let mut info = inner
+        .sessions
+        .set_plan_active(&params.session_id, params.active)
+        .await
+        .map_err(to_rpc)?;
+    let switched = sync_plan_model(inner, &params.session_id, params.active, plan_model)
+        .await
+        .map_err(to_rpc)?;
+    if switched.is_some() {
+        info = record.state.lock().await.session_info();
+    }
+    info.lock = None;
+    info.permission = inner.effective_permission(info.permission);
+    if params.active && !was_active && config.workspace.watch {
+        let snapshot = super::snapshot_workspace(cwd, config.workspace.max_scan_entries)
+            .await
+            .map_err(to_rpc)?;
+        *inner
+            .runtime(&params.session_id)
+            .await
+            .workspace
+            .lock()
+            .await = Some(snapshot);
+    }
+    emit_plan_change(&ctx, &params.session_id, params.active, switched.clone()).await?;
+    let state = record.state.lock().await.clone();
+    super::emit_session_config_changed(
+        inner,
+        &state,
+        "plan_mode",
+        if was_active { "on" } else { "off" },
+        if params.active { "on" } else { "off" },
+    )
+    .await;
+    if let Some(model) = &switched {
+        super::emit_session_config_changed(inner, &state, "model", &model_before, model).await;
+    }
+    Ok(info)
+}
+
+/// plan 叠加态变化时同步会话模型：进入时切到 `plan` 角色模型，退出时恢复进入前的模型。
+///
+/// `plan_model` 是进入前解析好的目标模型选择器；`plan = "none"` 表示不切换，此时传
+/// `None`。`active` 是切换后的叠加态。返回切换后的选择器，模型没变时返回 `None`，
+/// 调用方据此决定是否推送 [`SessionUpdate::ModelChanged`]。
 pub async fn sync_plan_model(
     inner: &CoreInner,
     session_id: &str,
-    from: SessionMode,
-    to: SessionMode,
+    active: bool,
     plan_model: Option<String>,
 ) -> Result<Option<String>, CoreError> {
-    if from == to {
-        return Ok(None);
-    }
     let record = inner.sessions.get(session_id).await?;
     let target = {
         let state = record.state.lock().await;
-        let target = if to == SessionMode::Plan {
+        let target = if active {
             plan_model
-        } else if from == SessionMode::Plan {
-            Some(state.exit_plan_model().to_owned())
         } else {
-            None
+            Some(state.exit_plan_model().to_owned())
         };
         target.filter(|target| *target != state.model)
     };
@@ -46,7 +168,7 @@ pub async fn sync_plan_model(
     Ok(Some(target))
 }
 
-/// 推送模式变化；模型随模式一起变化时，先推模式再推模型。
+/// 推送方言变化；模型随之变化时，先推方言再推模型。
 pub async fn emit_mode_change(
     ctx: &RequestContext,
     session_id: &str,
@@ -55,6 +177,29 @@ pub async fn emit_mode_change(
 ) -> Result<(), RpcError> {
     ctx.updates()
         .emit(session_id.to_owned(), SessionUpdate::ModeChanged { mode })
+        .await
+        .map_err(protocol_to_rpc)?;
+    if let Some(model) = model {
+        ctx.updates()
+            .emit(session_id.to_owned(), SessionUpdate::ModelChanged { model })
+            .await
+            .map_err(protocol_to_rpc)?;
+    }
+    Ok(())
+}
+
+/// 推送 plan 叠加态变化；模型随之变化时，先推状态再推模型。
+pub async fn emit_plan_change(
+    ctx: &RequestContext,
+    session_id: &str,
+    active: bool,
+    model: Option<String>,
+) -> Result<(), RpcError> {
+    ctx.updates()
+        .emit(
+            session_id.to_owned(),
+            SessionUpdate::PlanModeChanged { active },
+        )
         .await
         .map_err(protocol_to_rpc)?;
     if let Some(model) = model {
@@ -143,27 +288,25 @@ pub async fn approve_plan(
 
     if params.action == PlanAction::Reject {
         set_plan_status(inner, &ctx, &params.session_id, &plan, PlanStatus::Rejected).await?;
-        inner
-            .sessions
-            .set_mode(&params.session_id, SessionMode::Plan)
-            .await
-            .map_err(to_rpc)?;
-        emit_mode_change(&ctx, &params.session_id, SessionMode::Plan, None).await?;
+        let info = record.state.lock().await.session_info();
         return Ok(SessionPlanApproveResult {
             session_id: params.session_id,
-            mode: SessionMode::Plan,
+            mode: info.mode,
+            plan_active: info.plan_active,
             auto_prompt: None,
             plan_markdown: None,
         });
     }
 
     if params.action == PlanAction::ExecuteNewSession {
+        // 新会话方言由评审界面选择，缺省沿用源会话方言；新会话不继承 plan 叠加态。
+        let fork_mode = params.execution_mode.unwrap_or(state.mode);
         let fork = inner
             .sessions
             .create(
                 &state.session.cwd,
                 &execution_model.selector,
-                SessionMode::Normal,
+                fork_mode,
                 state.permission,
                 Some(&plan.title),
                 SessionOrigin::forked(params.session_id.clone()),
@@ -238,7 +381,8 @@ pub async fn approve_plan(
         set_plan_status(inner, &ctx, &params.session_id, &plan, PlanStatus::Approved).await?;
         return Ok(SessionPlanApproveResult {
             session_id: fork.id,
-            mode: SessionMode::Normal,
+            mode: fork_mode,
+            plan_active: false,
             auto_prompt: Some("Execute the approved plan.".into()),
             plan_markdown: Some(plan.markdown),
         });
@@ -258,9 +402,10 @@ pub async fn approve_plan(
         )
         .await
         .map_err(to_rpc)?;
+    // 批准 = 退出 plan 叠加态并在当前方言上继续执行；方言本身不变。
     inner
         .sessions
-        .set_mode(&params.session_id, SessionMode::Normal)
+        .set_plan_active(&params.session_id, false)
         .await
         .map_err(to_rpc)?;
     let current_model = record.state.lock().await.model.clone();
@@ -273,10 +418,11 @@ pub async fn approve_plan(
             .await
             .map_err(to_rpc)?;
     }
-    emit_mode_change(&ctx, &params.session_id, SessionMode::Normal, model).await?;
+    emit_plan_change(&ctx, &params.session_id, false, model).await?;
     Ok(SessionPlanApproveResult {
         session_id: params.session_id,
-        mode: SessionMode::Normal,
+        mode: state.mode,
+        plan_active: false,
         auto_prompt: Some("Execute the approved plan.".into()),
         plan_markdown: None,
     })
@@ -367,7 +513,8 @@ pub async fn revise_plan(
     }
     Ok(SessionPlanReviseResult {
         session_id: params.session_id,
-        mode: SessionMode::Plan,
+        mode: state.mode,
+        plan_active: state.plan_active,
         prompt,
     })
 }
@@ -529,12 +676,62 @@ fn excerpt_lines<'a>(lines: &[&'a str], start: u32, end: u32) -> (Vec<&'a str>, 
     (excerpt, false)
 }
 
-/// 只在 CLM 模式开放的内置工具；白名单里的其余工具在 Normal 和 CLM 下都可用。
+/// 只在 CLM 方言开放的内置工具；白名单里的其余工具在 Normal 和 CLM 下都可用。
 const CLM_ONLY_TOOLS: &[&str] = &["clm_context"];
 
+/// ask 契约的只读白名单：方言工具面内再收紧一层。
+///
+/// `bash` 保留是因为只读问答也需要跑只读命令（沙盒与授权层拦写操作）；
+/// `clm_context` 保留是因为 CLM 会话必须持续维护实时上下文，只读提示也不例外。
+const ASK_CONTRACT_TOOLS: &[&str] = &[
+    "read",
+    "grep",
+    "find",
+    "todo",
+    "job",
+    "bash",
+    "ask",
+    "skill",
+    "clm_context",
+    "run_code",
+    "web_search",
+    "web_fetch",
+];
+
+/// plan 契约的白名单：ask 的全部只读能力外加 `write_plan`/`exit_plan`。
+const PLAN_CONTRACT_TOOLS: &[&str] = &[
+    "read",
+    "grep",
+    "find",
+    "todo",
+    "job",
+    "bash",
+    "ask",
+    "skill",
+    "clm_context",
+    "write_plan",
+    "exit_plan",
+    "run_code",
+    "web_search",
+    "web_fetch",
+];
+
+/// 契约对应的内置工具白名单；`None` 表示不收紧（许可 = 方言面）。
+fn contract_tools(contract: ModeContract) -> Option<&'static [&'static str]> {
+    match contract {
+        ModeContract::None => None,
+        ModeContract::Ask => Some(ASK_CONTRACT_TOOLS),
+        ModeContract::Plan => Some(PLAN_CONTRACT_TOOLS),
+    }
+}
+
+/// 方言的原生工具表：只随方言变化，契约切换不重写表（前缀缓存因此稳定）。
+///
+/// `write_plan`/`exit_plan` 常驻方言面（dsh 式）：进出 plan 不动 schema，工具自己
+/// 在非 plan 契约下拒绝执行；`clm_context` 是 CLM 专属工具，其它方言下由
+/// [`mode_allows`] 拒绝。
 pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     match mode {
-        // `clm_context` 是 CLM 专属工具，Normal 下由 `mode_allows` 拒绝。
         SessionMode::Normal | SessionMode::ClmExperimental => &[
             "read",
             "grep",
@@ -553,32 +750,6 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
             "yield",
             "skill",
             "clm_context",
-            "run_code",
-            "web_search",
-            "web_fetch",
-        ],
-        SessionMode::Ask => &[
-            "read",
-            "grep",
-            "find",
-            "todo",
-            "job",
-            "bash",
-            "ask",
-            "skill",
-            "run_code",
-            "web_search",
-            "web_fetch",
-        ],
-        SessionMode::Plan => &[
-            "read",
-            "grep",
-            "find",
-            "todo",
-            "job",
-            "bash",
-            "ask",
-            "skill",
             "write_plan",
             "exit_plan",
             "run_code",
@@ -589,16 +760,21 @@ pub fn allowed_tools(mode: SessionMode) -> &'static [&'static str] {
     }
 }
 
-/// 当前模式是否允许调用该工具。
+/// 当前方言 + 契约是否允许执行该工具。
 ///
-/// 内置工具按名字白名单判断。`clm_context` 只在 CLM 模式可用：如果 Normal 下也能调用，
-/// 一次工具调用就能伪造实时上下文视图并锁死会话模式。
+/// 两层判定：可达面归方言（内置工具必须在方言白名单里；MCP/插件等非内置工具在
+/// Normal/CLM 方言下可达，PTC 下不可达），许可再按契约收紧（只读契约里内置工具
+/// 须在契约白名单内，非内置工具按 `Tier::Read` 放行）。
+///
+/// `clm_context` 只在 CLM 方言可用：如果 Normal 下也能调用，一次工具调用就能伪造
+/// 实时上下文视图。
 ///
 /// 这是 [`crate::tools::Tool::visible_in`] 的默认实现：内置工具与 MCP 工具走这里
-/// （MCP 一律按 `Tier::Exec` 处理，只读模式不放行）；插件工具用自己声明的 `modes`
+/// （MCP 一律按 `Tier::Exec` 处理，只读契约不放行）；插件工具用自己声明的 `modes`
 /// 覆盖，不经过风险等级推断。
 pub fn mode_allows(
     mode: SessionMode,
+    contract: ModeContract,
     name: &str,
     tier: crate::tools::Tier,
     origin: crate::tools::ToolOrigin,
@@ -606,18 +782,18 @@ pub fn mode_allows(
     if CLM_ONLY_TOOLS.contains(&name) && mode != SessionMode::ClmExperimental {
         return false;
     }
-    if allowed_tools(mode).contains(&name) {
-        return true;
-    }
-    // MCP 工具不在内置白名单里，按风险等级判定。
-    if matches!(origin, crate::tools::ToolOrigin::Builtin) {
+    let reachable = allowed_tools(mode).contains(&name)
+        || (!matches!(origin, crate::tools::ToolOrigin::Builtin)
+            && matches!(mode, SessionMode::Normal | SessionMode::ClmExperimental));
+    if !reachable {
         return false;
     }
-    match mode {
-        SessionMode::Normal | SessionMode::ClmExperimental => true,
-        SessionMode::Ask | SessionMode::Plan => tier == crate::tools::Tier::Read,
-        SessionMode::Ptc => false,
-    }
+    let Some(whitelist) = contract_tools(contract) else {
+        return true;
+    };
+    whitelist.contains(&name)
+        || (!matches!(origin, crate::tools::ToolOrigin::Builtin)
+            && tier == crate::tools::Tier::Read)
 }
 
 pub fn tool_enabled(
@@ -642,30 +818,27 @@ pub fn tool_enabled(
 
 #[cfg(test)]
 mod agent_mode_tests {
-    use super::{allowed_tools, mode_allows};
-    use crate::tools::Tier;
+    use super::{ModeContract, allowed_tools, mode_allows};
+    use crate::tools::{Tier, ToolOrigin};
     use moc_protocol::SessionMode;
 
     #[test]
-    fn clm_context_is_limited_to_clm_mode() {
+    fn clm_context_is_limited_to_clm_dialect() {
         assert!(mode_allows(
             SessionMode::ClmExperimental,
+            ModeContract::None,
             "clm_context",
             Tier::Write,
-            crate::tools::ToolOrigin::Builtin,
+            ToolOrigin::Builtin,
         ));
-        for mode in [
-            SessionMode::Normal,
-            SessionMode::Ask,
-            SessionMode::Plan,
-            SessionMode::Ptc,
-        ] {
+        for mode in [SessionMode::Normal, SessionMode::Ptc] {
             assert!(
                 !mode_allows(
                     mode,
+                    ModeContract::None,
                     "clm_context",
                     Tier::Write,
-                    crate::tools::ToolOrigin::Builtin
+                    ToolOrigin::Builtin
                 ),
                 "{mode:?} 不能开放实时上下文写入"
             );
@@ -673,7 +846,7 @@ mod agent_mode_tests {
     }
 
     #[test]
-    fn child_agent_controls_only_exist_in_normal_modes() {
+    fn child_agent_controls_only_exist_in_full_dialects() {
         let agents = [
             "spawn_agent",
             "list_agents",
@@ -686,10 +859,80 @@ mod agent_mode_tests {
             let allowed = allowed_tools(mode);
             assert!(agents.iter().all(|tool| allowed.contains(tool)));
         }
-        for mode in [SessionMode::Ask, SessionMode::Plan, SessionMode::Ptc] {
-            let allowed = allowed_tools(mode);
-            assert!(agents.iter().all(|tool| !allowed.contains(tool)));
+        assert!(
+            agents
+                .iter()
+                .all(|tool| !allowed_tools(SessionMode::Ptc).contains(tool))
+        );
+        // 只读契约在方言面之上收紧：spawn/stop 等控制工具被剔除。
+        for contract in [ModeContract::Ask, ModeContract::Plan] {
+            assert!(
+                agents.iter().all(|tool| !mode_allows(
+                    SessionMode::Normal,
+                    contract,
+                    tool,
+                    Tier::Exec,
+                    ToolOrigin::Builtin
+                )),
+                "{contract:?} 契约不能放行代理控制"
+            );
         }
+    }
+
+    #[test]
+    fn contract_tightens_permission_not_dialect_table() {
+        // 方言表常驻写工具与 plan 工具：进出契约不重写表。
+        for mode in [SessionMode::Normal, SessionMode::ClmExperimental] {
+            let allowed = allowed_tools(mode);
+            for tool in ["edit", "write", "write_plan", "exit_plan"] {
+                assert!(allowed.contains(&tool), "{mode:?} 方言面缺 {tool}");
+            }
+        }
+        // 契约只拦执行：内置写工具被拒，plan 工具按契约放行。
+        assert!(!mode_allows(
+            SessionMode::Normal,
+            ModeContract::Plan,
+            "edit",
+            Tier::Write,
+            ToolOrigin::Builtin,
+        ));
+        assert!(mode_allows(
+            SessionMode::Normal,
+            ModeContract::Plan,
+            "write_plan",
+            Tier::Write,
+            ToolOrigin::Builtin,
+        ));
+        assert!(!mode_allows(
+            SessionMode::Normal,
+            ModeContract::Ask,
+            "write_plan",
+            Tier::Write,
+            ToolOrigin::Builtin,
+        ));
+        // 只读契约里非内置工具按 Tier::Read 放行，MCP（Exec）一律被拒。
+        assert!(!mode_allows(
+            SessionMode::Normal,
+            ModeContract::Ask,
+            "mcp__s__t",
+            Tier::Exec,
+            ToolOrigin::Mcp,
+        ));
+        assert!(mode_allows(
+            SessionMode::Normal,
+            ModeContract::Ask,
+            "mcp__s__t",
+            Tier::Read,
+            ToolOrigin::Mcp,
+        ));
+        // PTC 方言下契约不放宽可达面：MCP 依旧只能走 run_code。
+        assert!(!mode_allows(
+            SessionMode::Ptc,
+            ModeContract::None,
+            "mcp__s__t",
+            Tier::Exec,
+            ToolOrigin::Mcp,
+        ));
     }
 }
 

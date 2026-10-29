@@ -7,7 +7,7 @@ use crate::{
     service::{CoreInner, flush_plugin_notices, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
     system_prompt::{
-        build, mode_contract,
+        build, contract_reminder, mode_contract,
         reminder::{self, Reminder},
         sandbox_contract,
     },
@@ -57,7 +57,7 @@ pub async fn run_retry(
     let params = moc_protocol::methods::PromptParams {
         session_id: params.session_id,
         input: Vec::new(),
-        mode: None,
+        contract: None,
         agent_message: None,
     };
     run_prompt_entry(inner, ctx, params, true).await
@@ -240,6 +240,7 @@ pub(crate) async fn run_prompt_with_lock(
             &session_id,
             &plugin_state.session.cwd,
             plugin_state.mode,
+            crate::service::mode::ModeContract::effective(plugin_state.plan_active, None),
             plugin_state.permission,
             &plugin_state.model,
             plugin_state.session.is_subagent(),
@@ -395,17 +396,16 @@ async fn run_prompt_locked(
         .project_plugins(std::path::Path::new(&state_snapshot.session.cwd))
         .await
         .map_err(to_rpc)?;
-    // CLM 是会话级模式，临时的 `/ask` 不能覆盖已启用的 CLM。
-    let mode = if state_snapshot.mode == moc_protocol::methods::SessionMode::ClmExperimental {
-        moc_protocol::methods::SessionMode::ClmExperimental
-    } else {
-        params.mode.unwrap_or(state_snapshot.mode)
-    };
+    // 方言是会话级不可变量；有效契约 = plan 叠加态 ∪ 本次提示的 `/ask` 声明。
+    let mode = state_snapshot.mode;
+    let contract =
+        crate::service::mode::ModeContract::effective(state_snapshot.plan_active, params.contract);
     let permission = inner.effective_permission(state_snapshot.permission);
     let plugin_context = crate::service::plugin_events::context(
         &params.session_id,
         &state_snapshot.session.cwd,
         mode,
+        contract,
         permission,
         &model.selector,
         state_snapshot.session.is_subagent(),
@@ -572,7 +572,7 @@ async fn run_prompt_locked(
             &prompt_id,
             first_prompt,
             &model.selector,
-            mode,
+            &plugin_context.mode,
             permission,
             source,
             &prompt_text,
@@ -708,7 +708,7 @@ async fn run_prompt_locked(
                 // 每个提示最多 `reminders_max` 次；前端把它显示成一行工具样式的占位，没有参数和结果。
                 if project_config.tools.todo.enabled
                     && project_config.tools.todo.reminders
-                    && mode != moc_protocol::methods::SessionMode::Plan
+                    && contract != crate::service::mode::ModeContract::Plan
                     && tools_available.iter().any(|def| def.name == "todo")
                 {
                     let mut state = record.state.lock().await;
@@ -748,6 +748,16 @@ async fn run_prompt_locked(
                     }
                 }
                 candidates.push(Reminder::durable(reminder::key::MODE, mode_contract(mode)));
+                // 契约提醒独立成条目：plan 进出与 ask 到期都会改写或撤掉它。
+                match contract_reminder(contract) {
+                    Some(text) => {
+                        candidates.push(Reminder::durable(reminder::key::CONTRACT, text));
+                    }
+                    None => candidates.push(Reminder::retract(
+                        reminder::key::CONTRACT,
+                        "The earlier execution contract no longer applies: the workspace is writable under the current dialect.",
+                    )),
+                }
                 candidates.push(Reminder::durable(
                     reminder::key::SANDBOX,
                     sandbox_contract(permission, &project_config.sandbox),
@@ -1437,6 +1447,7 @@ async fn run_prompt_locked(
             core: Arc::clone(&inner),
             catalog: Arc::clone(&catalog),
             mode,
+            contract,
             permission,
             allow_agents: !subagent,
             subagent,
@@ -1453,7 +1464,7 @@ async fn run_prompt_locked(
             call_grants: crate::sandbox::SandboxGrants::default(),
             sandbox_scratch: runtime.sandbox_scratch.clone(),
         };
-        let batch = execute_tool_batch(&inner, &tool_ctx, &runtime, &record, mode, &calls).await?;
+        let batch = execute_tool_batch(&inner, &tool_ctx, &runtime, &record, &calls).await?;
         let control_end = batch.control_end;
         if !control_end && !cancel.is_cancelled() && project_config.limits.loop_detection {
             match tool_cycles.record(&batch.observations) {
@@ -1502,7 +1513,7 @@ async fn run_prompt_locked(
             session_id: &params.session_id,
             cwd: &cwd,
             config: &project_config,
-            mode,
+            contract,
             before_tools: None,
         },
         &plugins,

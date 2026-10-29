@@ -1,7 +1,7 @@
 // 每个会话一份输入草稿与待发区（插队 steer / 排队 queue）。
 
 import { create } from "zustand";
-import type { ImageSource, InputPart } from "@/protocol/types";
+import type { ImageSource, InputPart, PromptContract } from "@/protocol/types";
 
 export type Attachment = { id: string; name: string; source: ImageSource };
 
@@ -13,6 +13,8 @@ export type PendingItem = {
   steerId?: number;
   text: string;
   images: Attachment[];
+  /** 仅本条提示生效的执行契约（`/ask` 入队时携带）。 */
+  contract?: PromptContract;
 };
 
 export type Draft = { text: string; images: Attachment[] };
@@ -20,8 +22,8 @@ export type Draft = { text: string; images: Attachment[] };
 export type ComposerState = {
   drafts: Record<string, Draft>;
   pending: Record<string, PendingItem[]>;
-  /** 每会话最后一次提交的输入，供「重试」。 */
-  lastInput: Record<string, InputPart[]>;
+  /** 每会话最后一次提交的输入（含契约），供「重试」。 */
+  lastInput: Record<string, { input: InputPart[]; contract?: PromptContract }>;
   setText: (sessionId: string, text: string) => void;
   addImage: (sessionId: string, image: Attachment) => void;
   removeImage: (sessionId: string, id: string) => void;
@@ -30,7 +32,7 @@ export type ComposerState = {
   pushPending: (sessionId: string, item: PendingItem, front?: boolean) => void;
   updatePending: (sessionId: string, key: string, patch: Partial<PendingItem>) => void;
   removePending: (sessionId: string, key: string) => void;
-  setLastInput: (sessionId: string, input: InputPart[]) => void;
+  setLastInput: (sessionId: string, input: InputPart[], contract?: PromptContract) => void;
 };
 
 const EMPTY: Draft = { text: "", images: [] };
@@ -86,8 +88,8 @@ export const useComposer = create<ComposerState>()((set) => ({
         [sessionId]: (state.pending[sessionId] ?? []).filter((item) => item.key !== key),
       },
     })),
-  setLastInput: (sessionId, input) =>
-    set((state) => ({ lastInput: { ...state.lastInput, [sessionId]: input } })),
+  setLastInput: (sessionId, input, contract) =>
+    set((state) => ({ lastInput: { ...state.lastInput, [sessionId]: { input, contract } } })),
 }));
 
 export const EMPTY_DRAFT = EMPTY;

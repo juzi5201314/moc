@@ -312,6 +312,7 @@ pub(crate) async fn compact(
         session_id,
         &state.session.cwd,
         state.mode,
+        crate::service::mode::ModeContract::effective(state.plan_active, None),
         state.permission,
         &model.selector,
         state.session.is_subagent(),

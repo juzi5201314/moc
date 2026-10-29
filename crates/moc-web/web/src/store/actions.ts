@@ -2,14 +2,14 @@
 
 import { rpc } from "@/protocol/client";
 import { RpcError } from "@/protocol/errors";
-import type { InputPart, PromptResult, SessionMode } from "@/protocol/types";
+import type { InputPart, PromptContract, PromptResult } from "@/protocol/types";
 import { useComposer } from "./composer";
 import { newSession, syncEntryIds } from "./lifecycle";
 import { useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
 
-export type SendOptions = { mode?: SessionMode; echo?: boolean };
+export type SendOptions = { contract?: PromptContract; echo?: boolean };
 
 /**
  * 发送一条提示。本地先插入用户块（`echo` 默认 true），流式内容走 session/update；
@@ -29,7 +29,8 @@ export async function sendPrompt(
     const realInfo = await newSession({
       cwd: draft?.cwd,
       model: draft?.model,
-      mode: options.mode ?? draft?.mode ?? "normal",
+      mode: draft?.mode ?? "normal",
+      plan: draft?.plan ?? false,
     });
     useSessions.getState().setDraftSession(null);
     useTabs.getState().replace("draft-session", realInfo.id);
@@ -44,12 +45,12 @@ export async function sendPrompt(
     const images = input.flatMap((part) => (part.type === "image" ? [part.source] : []));
     store.localUser(sessionId, text, images);
   }
-  useComposer.getState().setLastInput(sessionId, input);
+  useComposer.getState().setLastInput(sessionId, input, options.contract);
   try {
     await rpc.call<PromptResult>("session/prompt", {
       session_id: sessionId,
       input,
-      ...(options.mode ? { mode: options.mode } : {}),
+      ...(options.contract ? { contract: options.contract } : {}),
     });
   } catch (error) {
     const message = error instanceof RpcError ? error.message : String(error);
@@ -63,8 +64,8 @@ export async function sendPrompt(
     .catch(() => undefined);
 }
 
-/** 用最后一次提交的输入重试。 */
+/** 用最后一次提交的输入重试（保留原执行契约）。 */
 export function retryLast(sessionId: string): void {
-  const input = useComposer.getState().lastInput[sessionId];
-  if (input) void sendPrompt(sessionId, input);
+  const last = useComposer.getState().lastInput[sessionId];
+  if (last) void sendPrompt(sessionId, last.input, { contract: last.contract });
 }

@@ -8,13 +8,13 @@ use moc_protocol::{RpcError, methods::SessionUpdate};
 
 /// 一次工作区检查中随提示变化的输入。
 ///
-/// `mode` 是**本次提示实际生效**的模式：`/ask` 这类只对单次提示生效的覆盖不会写入
-/// 会话状态，所以判断只读违规必须用这里的值，不能读 `record.state`。
+/// `contract` 是**本次提示实际生效**的执行契约：`/ask` 这类只对单次提示生效的覆盖
+/// 不会写入会话状态，所以判断只读违规必须用这里的值，不能读 `record.state`。
 pub(super) struct WorkspaceScope<'a> {
     pub session_id: &'a str,
     pub cwd: &'a std::path::Path,
     pub config: &'a crate::ResolvedConfig,
-    pub mode: moc_protocol::methods::SessionMode,
+    pub contract: crate::service::mode::ModeContract,
     /// 工具批次执行前的工作区快照；`None` 表示不排除工具自己造成的改动。
     pub before_tools: Option<&'a WorkspaceSnapshot>,
 }
@@ -31,7 +31,7 @@ pub(super) async fn check_workspace(
         session_id,
         cwd,
         config,
-        mode,
+        contract,
         before_tools,
     } = scope;
     if !config.workspace.watch {
@@ -56,10 +56,7 @@ pub(super) async fn check_workspace(
         .map(|before| crate::workspace::watch::diff(before, &after))
         .unwrap_or_default();
     let mut progressed = !changes.is_empty();
-    let violation = matches!(
-        mode,
-        moc_protocol::methods::SessionMode::Ask | moc_protocol::methods::SessionMode::Plan
-    );
+    let violation = contract.read_only();
     if !violation && let Some(before_tools) = before_tools {
         let tool_changes = crate::workspace::watch::diff(before_tools, &after);
         progressed |= !tool_changes.is_empty();

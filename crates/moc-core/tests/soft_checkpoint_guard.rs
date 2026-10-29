@@ -486,7 +486,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session(SessionMode::Plan).await;
+    let session = harness.session_plan(SessionMode::Normal).await;
     harness.prompt(&session, "提交计划").await;
     let plan = harness
         .load(&session)
@@ -501,6 +501,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
             plan_id: plan.plan_id,
             action: PlanAction::ExecuteCompacted,
             execution_model: None,
+            execution_mode: None,
         })
         .await
         .expect("批准并压缩");
