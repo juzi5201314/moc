@@ -1,6 +1,7 @@
 //! 子代理运行时注册表、持久化子会话、代理间消息和生命周期收尾。
 
 pub mod preset;
+pub(crate) mod sidekick;
 
 pub use preset::{AgentPreset, PresetRegistry, ToolPolicy};
 
@@ -42,6 +43,9 @@ pub(crate) struct AgentRuntime {
     pub yielded: Option<Yielded>,
     /// `yield` 交付的结构化结果；完成后由 `wait_agent` 查询。
     pub structured: Option<serde_json::Value>,
+    /// `sidekick` 工具的阻塞等待中：报告随工具结果直达 lead，
+    /// 结束通知不再重复投递。
+    pub awaited: bool,
 }
 
 /// 待投递的代理消息。
@@ -160,7 +164,9 @@ fn resolve_model(
     let selector = match requested.unwrap_or("inherit") {
         "inherit" => parent_model,
         role @ ("default" | "explore" | "plan") => {
-            return Ok(config.resolve_role(role)?.selector);
+            // 子代理永远拿到真实模型：Fusion 会话继承 lead 的 selector，
+            // 不会把组合形式传下去。
+            return Ok(config.resolve_role(role)?.actual_selector().to_owned());
         }
         other => {
             return Err(CoreError::Config(format!(
@@ -168,7 +174,7 @@ fn resolve_model(
             )));
         }
     };
-    Ok(config.resolve_model(selector)?.selector)
+    Ok(config.resolve_model(selector)?.actual_selector().to_owned())
 }
 
 fn info_from_session(session: &SessionInfo, status: AgentStatus) -> AgentInfo {
@@ -209,6 +215,7 @@ async fn prepare_agent(inner: &CoreInner, info: &AgentInfo, cancel: Cancellation
             finish_reason: None,
             yielded: None,
             structured: None,
+            awaited: false,
         },
     );
 }
@@ -227,12 +234,22 @@ async fn child_cancel(inner: &CoreInner, parent_id: &str) -> CancellationToken {
     }
 }
 
+/// spawn 的模型指定方式。
+#[derive(Debug)]
+pub(crate) enum SpawnModel {
+    /// 常规委托面：inherit/default/explore/plan，`None` 等同 inherit。
+    Role(Option<String>),
+    /// 已规范化的 selector，仅限内部路径（`sidekick` 工具）使用；
+    /// 解析后取 `actual_selector`，Fusion 组合不会落到子代理头上。
+    Exact(String),
+}
+
 /// 一次 spawn 的完整描述；批量 spawn 时逐项构造。
 #[derive(Debug)]
 pub(crate) struct SpawnSpec {
     pub task: String,
     pub title: Option<String>,
-    pub model: Option<String>,
+    pub model: SpawnModel,
     /// 选用的 preset 名；`None` 为普通子代理。
     pub preset: Option<String>,
     /// 共享上下文：排在任务原文之前注入首条消息（批量 spawn 的公共前缀）。
@@ -337,7 +354,17 @@ pub(crate) async fn spawn(
             config.agents.max_depth
         )));
     }
-    let model = resolve_model(&config, &parent.model, spec.model.as_deref())?;
+    // sidekick preset 是 `sidekick` 工具的专用通道：必须走 Exact selector，
+    // 普通委托面（含 RPC）不能冒名创建。
+    if spec.preset.as_deref() == Some(preset::SIDEKICK_PRESET)
+        && !matches!(spec.model, SpawnModel::Exact(_))
+    {
+        return Err(invalid("sidekick preset 只能由 sidekick 工具创建"));
+    }
+    let model = match &spec.model {
+        SpawnModel::Role(requested) => resolve_model(&config, &parent.model, requested.as_deref())?,
+        SpawnModel::Exact(selector) => config.resolve_model(selector)?.actual_selector().to_owned(),
+    };
     let agent_meta = resolve_agent_meta(
         &inner,
         &parent.session.cwd,
@@ -569,7 +596,7 @@ async fn finish(
         }
     };
     let finish_for_event = finish_reason.clone();
-    let (message, last_message, title, notify) = {
+    let (message, last_message, title, notify, awaited) = {
         let mut registry = inner.agents.lock().await;
         let Some(runtime) = registry.items.get_mut(&agent_id) else {
             return;
@@ -598,8 +625,9 @@ async fn finish(
         runtime.finish_reason = finish_reason;
         let title = runtime.info.title.clone();
         let notify = Arc::clone(&runtime.notify);
+        let awaited = runtime.awaited;
         prune_terminal_agents(&mut registry);
-        (message, last_message, title, notify)
+        (message, last_message, title, notify, awaited)
     };
     notify.notify_waiters();
     let _ = request
@@ -636,15 +664,18 @@ async fn finish(
             .await;
         }
     }
-    deliver_result_notice(
-        &inner,
-        &parent_id,
-        &agent_id,
-        &title,
-        status,
-        message.as_ref(),
-    )
-    .await;
+    // 阻塞中的 `sidekick` 调用已把报告放在工具结果里，完成通知不再重复投递。
+    if !awaited {
+        deliver_result_notice(
+            &inner,
+            &parent_id,
+            &agent_id,
+            &title,
+            status,
+            message.as_ref(),
+        )
+        .await;
+    }
 }
 
 /// 子代理结束时把结果作为 notice 投进父会话，父模型下一轮就能看到。
@@ -1522,7 +1553,11 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             );
         }
     }
-    if let Some(task) = assignment(inner, session_id).await {
+    // sidekick 的首次 handoff 不具权威地位：它的上下文跨 handoff 延续，后续
+    // 中断消息才是最新指令；transcript 里本来就有任务原文。
+    let sidekick =
+        meta.as_ref().and_then(|meta| meta.preset.as_deref()) == Some(preset::SIDEKICK_PRESET);
+    if !sidekick && let Some(task) = assignment(inner, session_id).await {
         block.push_str(
             "\nTask (authoritative; outranks general repository conventions on conflict):\n",
         );
@@ -1609,6 +1644,7 @@ mod tests {
             finish_reason: None,
             yielded: None,
             structured: None,
+            awaited: false,
         }
     }
 

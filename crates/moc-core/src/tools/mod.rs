@@ -310,6 +310,8 @@ pub struct ToolScope {
     pub control_agents: bool,
     /// 是否在子代理里（`yield` 只对子代理开放）。
     pub subagent: bool,
+    /// 是否为 Fusion lead 会话（`sidekick` 只对非子代理的 Fusion 会话开放）。
+    pub fusion: bool,
     /// preset 快照的工具面策略；`None` 表示不限（普通会话与旧子代理）。
     pub policy: Option<crate::agents::ToolPolicy>,
 }
@@ -320,6 +322,7 @@ impl ToolScope {
         Self {
             control_agents: true,
             subagent: false,
+            fusion: false,
             policy: None,
         }
     }
@@ -329,6 +332,8 @@ impl ToolScope {
         Self {
             control_agents: state.session.delegation_depth < max_depth,
             subagent: state.session.is_subagent(),
+            fusion: !state.session.is_subagent()
+                && crate::config::model::is_fusion_selector(&state.model),
             policy: state
                 .agent
                 .as_ref()
@@ -361,6 +366,7 @@ impl ToolRegistry {
                 Arc::new(agent::StopAgentTool),
                 Arc::new(agent::WaitAgentTool),
                 Arc::new(agent::YieldTool),
+                Arc::new(agent::SidekickTool),
                 Arc::new(plan::PlanTool),
                 Arc::new(plan::ExitPlanTool),
                 Arc::new(clm::ClmContextTool),
@@ -395,6 +401,8 @@ impl ToolRegistry {
             .iter()
             .chain(extra.iter())
             .filter(|tool| match tool.name() {
+                // sidekick 只对可委托的 Fusion lead 会话开放。
+                "sidekick" => scope.fusion && scope.control_agents,
                 // 创建、停止和等待子代理只在委托深度未满时可用；叶级子代理只能通信。
                 name if Self::is_parent_only_tool(name) => scope.control_agents,
                 // 交付最终结果只对子代理有意义：顶层会话没有父代理可交付。

@@ -784,7 +784,7 @@ impl AgentService for Core {
             crate::agents::SpawnSpec {
                 task: params.task,
                 title: params.title,
-                model: params.model,
+                model: crate::agents::SpawnModel::Role(params.model),
                 preset: params.preset,
                 context: None,
                 output_schema: params.output_schema,
@@ -887,6 +887,20 @@ impl AgentService for Core {
                 remote_compaction: model.remote_compaction,
             })
             .collect::<Vec<_>>();
+        let fusion = if config.fusion.lead.is_empty() || config.fusion.sidekick.is_empty() {
+            None
+        } else {
+            Some(moc_protocol::methods::FusionPair {
+                lead: config
+                    .resolve_model(&config.fusion.lead)
+                    .map_err(to_rpc)?
+                    .selector,
+                sidekick: config
+                    .resolve_model(&config.fusion.sidekick)
+                    .map_err(to_rpc)?
+                    .selector,
+            })
+        };
         Ok(ConfigGetResult {
             models,
             default_model: if config.roles.default.is_empty() {
@@ -901,6 +915,7 @@ impl AgentService for Core {
             }],
             default_agent: Some("moc".into()),
             cwd: config.cwd.to_string_lossy().into_owned(),
+            fusion,
         })
     }
     async fn plugin_list(
@@ -2195,5 +2210,5 @@ mod btw;
 mod context;
 mod management;
 pub(crate) mod mode;
-mod model;
+pub(crate) mod model;
 pub(crate) mod prompt;

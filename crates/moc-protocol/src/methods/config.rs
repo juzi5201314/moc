@@ -41,6 +41,19 @@ pub struct ConfigGetResult {
     pub default_agent: Option<String>,
     /// core 的当前工作目录（`session/new` 不带 `cwd` 时用它）。
     pub cwd: String,
+    /// `[models.fusion]` 配置的组合；两侧都配置时才有值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion: Option<FusionPair>,
+}
+
+/// Fusion 组合的两侧模型，均为规范 `供应商/模型:等级` selector。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FusionPair {
+    /// 主导模型：规划、调查、评审与对话。
+    pub lead: String,
+    /// 执行模型：实现、构建与测试。
+    pub sidekick: String,
 }
 
 /// 模型接受的输入模态。
@@ -146,6 +159,10 @@ mod tests {
             }],
             default_agent: Some("build".into()),
             cwd: "/home/soeur/project/moc".into(),
+            fusion: Some(FusionPair {
+                lead: "deepseek-flash:max".into(),
+                sidekick: "deepseek-flash:off".into(),
+            }),
         };
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
@@ -154,7 +171,8 @@ mod tests {
                 "default_model": "deepseek-flash",
                 "agents": [{ "id": "build", "display_name": "Build" }],
                 "default_agent": "build",
-                "cwd": "/home/soeur/project/moc"
+                "cwd": "/home/soeur/project/moc",
+                "fusion": {"lead": "deepseek-flash:max", "sidekick": "deepseek-flash:off"}
             })
         );
         let round_trip: ConfigGetResult =

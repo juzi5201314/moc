@@ -766,6 +766,7 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "stop_agent",
             "wait_agent",
             "yield",
+            "sidekick",
             "skill",
             "clm_context",
             "plan",
@@ -875,6 +876,7 @@ mod agent_mode_tests {
             "stop_agent",
             "wait_agent",
             "yield",
+            "sidekick",
         ];
         for engine in [SessionEngine::Standard, SessionEngine::ClmExperimental] {
             let allowed = allowed_tools(engine);

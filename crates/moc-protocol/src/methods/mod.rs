@@ -66,7 +66,8 @@ pub use btw::{
 };
 pub use chart::{ChartAnalyze, ChartAnalyzeParams, ChartAnalyzeResult};
 pub use config::{
-    AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, ModelInfo, ModelInput, ModelPricing,
+    AgentProfile, ConfigGet, ConfigGetParams, ConfigGetResult, FusionPair, ModelInfo, ModelInput,
+    ModelPricing,
 };
 pub use diff::{
     DiffHunk, DiffLine, DiffLineKind, LineChange, ToolDiff, ToolFileDiff, build_hunks,

@@ -118,6 +118,9 @@ fn rank(key: &str) -> usize {
         "default" => 0,
         "explore" => 1,
         "plan" => 2,
+        // Fusion 组合：主导 → 执行
+        "lead" => 0,
+        "sidekick" => 1,
         "user" => 1,
         "project" => 2,
         "max_tokens" => 3,
@@ -381,7 +384,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
     match path {
         "models.roles.default" => (
             "主模型",
-            "日常对话使用的模型，格式为 供应商/模型[:等级]；省略等级时用模型的最高等级。",
+            "日常对话使用的模型，格式为 供应商/模型[:等级]，或 fusion（取 models.fusion 组合）；省略等级时用模型的最高等级。",
         ),
         "models.roles.explore" => (
             "探索子代理模型",
@@ -389,7 +392,15 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
         ),
         "models.roles.plan" => (
             "计划模型",
-            "制定计划时使用的模型；none 表示沿用当前会话模型，inherit 表示沿用主模型，省略等级时用模型的最高等级。",
+            "制定计划时使用的模型；none 表示沿用当前会话模型，inherit 表示沿用主模型，fusion 取 models.fusion 组合，省略等级时用模型的最高等级。",
+        ),
+        "models.fusion.lead" => (
+            "Fusion 主导模型",
+            "负责规划、调查、评审与对话的前沿模型，格式 供应商/模型[:等级]；配好后模型选择器 `fusion` 即可用。",
+        ),
+        "models.fusion.sidekick" => (
+            "Fusion 执行模型",
+            "执行实现、构建与测试的高性价比模型，格式 供应商/模型[:等级]；与主导模型同时配置才生效。",
         ),
         "context_files.user" => ("用户指令", "加载用户目录下的 AGENTS.md。"),
         "context_files.project" => ("项目指令", "加载工作区中的 AGENTS.md 及其引用的文件。"),

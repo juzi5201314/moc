@@ -5,14 +5,20 @@ default = ""
 explore = "inherit"
 plan = "inherit"
 
+# Fusion 组合：lead 负责规划与对话，sidekick 负责执行；两侧都为空表示未配置，
+# 此时选择器 `fusion` 会报错。格式同为 供应商/模型[:等级]。
+[models.fusion]
+lead = ""
+sidekick = ""
+
 [providers]
 # 供应商与模型字段在 /config 的供应商页维护；逐模型 compat 字段以 src/config/catalog.rs
 # 的模型模板为准。/config 字段说明会列出下列片段名，此处同步一份：
 # instruction_role 指定指令消息（工具政策、仓库规则等）的角色，默认 system；
 # instruction_system 列出指令角色为 user 时仍留在 system 消息里的片段，默认
 # ["intro", "tool declarations", "mcp servers", "environment"]，留空表示整条指令都用 user。
-# 可用片段名：intro、tool policy、ptc runtime、tool declarations、mcp servers、repo rules、
-# skills、subagent、environment、append。
+# 可用片段名：intro、tool policy、ptc runtime、fusion、tool declarations、mcp servers、
+# repo rules、skills、subagent、environment、append。
 
 [sandbox]
 # 新会话默认模式：full（不隔离）、workspace（工作区可写、外部只读）、workspace_only（外部不可读写）

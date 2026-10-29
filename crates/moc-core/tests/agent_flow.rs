@@ -3,6 +3,7 @@
 mod support;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use moc_protocol::methods::{
@@ -1437,6 +1438,172 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
         "停杀不随前滚复活"
     );
     assert!(!marks_file.exists(), "redo 必须清空孤儿标记文件");
+    harness.close().await;
+}
+
+/// Fusion 会话的 harness：lead=`gpt-test`、sidekick=`gpt-cheap`，上游按
+/// `body["model"]` 路由出两套应答。
+async fn fusion_harness(upstream: &MockServer) -> Harness {
+    Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "fusion",
+        "fusion",
+        "[providers.test.models.gpt-cheap]\ncontext_window=1000000\nmax_output_tokens=4096\n\
+         [models.fusion]\nlead='test/gpt-test'\nsidekick='test/gpt-cheap'\n",
+    )
+    .await
+}
+
+/// Fusion lead：系统提示带 `<fusion>` 契约与 `sidekick` 工具；两次 handoff 走
+/// spawned/woken 且复用同一个执行侧会话（上下文延续）；阻塞报告直达工具结果、
+/// 不再回投完成通知；普通子代理继承的是 lead 模型而非组合 selector。
+#[tokio::test]
+async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
+    let upstream = MockServer::builder().start().await;
+    let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&bodies);
+    let handoffs = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&handoffs);
+    mount_router(&upstream, move |body| {
+        recorded.lock().push(body.clone());
+        if body["model"] == "gpt-cheap" {
+            // sidekick：唤醒后上下文里已带着首次 handoff。
+            let report = if body.to_string().contains("HANDOFF_TWO") {
+                "SIDEKICK_REPORT_2"
+            } else {
+                "SIDEKICK_REPORT"
+            };
+            return delayed(yield_call("call_yield", report), 50);
+        }
+        if is_subagent_request(body) {
+            return yield_call("call_yield", "CHILD_DONE");
+        }
+        // lead：末条是工具结果就收尾，否则发起第 n 次 handoff。
+        let last = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last());
+        if last.is_some_and(|message| message["role"] == "tool") {
+            return text_response("LEAD_DONE");
+        }
+        let index = counter.fetch_add(1, Ordering::SeqCst);
+        let call = format!("call_sk{index}");
+        let message = if index == 0 {
+            "HANDOFF_ONE"
+        } else {
+            "HANDOFF_TWO"
+        };
+        ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![(
+                call.as_str(),
+                "sidekick",
+                json!({"message": message}),
+            )]),
+            "text/event-stream",
+        )
+    })
+    .await;
+    let harness = fusion_harness(&upstream).await;
+    let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    assert_eq!(
+        harness.prompt(&lead_id, "开工").await.message.text(),
+        "LEAD_DONE"
+    );
+    assert_eq!(
+        harness.prompt(&lead_id, "继续").await.message.text(),
+        "LEAD_DONE"
+    );
+
+    let bodies = bodies.lock().clone();
+    let lead_reqs: Vec<&Value> = bodies
+        .iter()
+        .filter(|body| body["model"] == "gpt-test" && !is_subagent_request(body))
+        .collect();
+    assert!(lead_reqs.len() >= 4, "两轮提示各两条 lead 请求");
+    let system = lead_reqs[0]["messages"][0]["content"]
+        .as_str()
+        .expect("系统提示");
+    assert!(system.contains("<fusion>"), "{system}");
+    assert!(
+        tool_names(lead_reqs[0]).contains(&"sidekick"),
+        "lead 工具表必须含 sidekick"
+    );
+    // 阻塞 handoff 的报告走工具结果直达；后续请求不得再出现完成通知。
+    for body in &lead_reqs[1..] {
+        assert!(
+            !body.to_string().contains("Subagent \"Sidekick\""),
+            "完成通知不得重复投递：{body}"
+        );
+    }
+
+    let sidekick_reqs: Vec<&Value> = bodies
+        .iter()
+        .filter(|body| body["model"] == "gpt-cheap")
+        .collect();
+    assert_eq!(sidekick_reqs.len(), 2, "两次 handoff 各一轮 sidekick 请求");
+    let sidekick_tools = tool_names(sidekick_reqs[0]);
+    for denied in ["ask", "sidekick", "spawn_agent", "stop_agent", "wait_agent"] {
+        assert!(
+            !sidekick_tools.contains(&denied),
+            "sidekick 不得拿到 {denied}：{sidekick_tools:?}"
+        );
+    }
+    for kept in ["yield", "message_agent", "bash", "edit"] {
+        assert!(
+            sidekick_tools.contains(&kept),
+            "sidekick 必须保留 {kept}：{sidekick_tools:?}"
+        );
+    }
+    let sidekick_system = sidekick_reqs[0]["messages"][0]["content"]
+        .as_str()
+        .expect("sidekick 系统提示");
+    assert!(sidekick_system.contains("<subagent>"), "{sidekick_system}");
+    assert!(
+        sidekick_system.contains("Preset: sidekick"),
+        "{sidekick_system}"
+    );
+    assert!(
+        !sidekick_system.contains("<fusion>"),
+        "sidekick 不得拿到 lead 契约：{sidekick_system}"
+    );
+    let woken = sidekick_reqs[1].to_string();
+    assert!(woken.contains("HANDOFF_ONE"), "上下文必须跨 handoff 延续");
+    assert!(woken.contains("HANDOFF_TWO"), "唤醒消息必须进入上下文");
+
+    let loaded = harness.load(&lead_id).await;
+    let handoff_results: Vec<Value> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .filter_map(|result| serde_json::from_str::<Value>(&result.content).ok())
+        .filter(|value| value["delivery"].is_string())
+        .collect();
+    assert_eq!(handoff_results.len(), 2, "两次 handoff 的结果");
+    assert_eq!(handoff_results[0]["delivery"], "spawned");
+    assert_eq!(handoff_results[0]["status"], "completed");
+    assert_eq!(handoff_results[0]["report"], "SIDEKICK_REPORT");
+    assert_eq!(handoff_results[1]["delivery"], "woken");
+    assert_eq!(handoff_results[1]["report"], "SIDEKICK_REPORT_2");
+    assert_eq!(
+        handoff_results[0]["agent_id"], handoff_results[1]["agent_id"],
+        "同一边 kick 会话必须复用"
+    );
+
+    // 普通子代理 inherit 的是 lead 的真实 selector，不是组合写法。
+    let spawned = harness
+        .client
+        .call::<AgentSpawn>(AgentSpawnParams {
+            session_id: lead_id.clone(),
+            task: "CHILD_TASK".into(),
+            title: None,
+            model: Some("inherit".into()),
+            preset: None,
+            output_schema: None,
+        })
+        .await
+        .expect("spawn 成功");
+    assert_eq!(spawned.agent.model, "test/gpt-test:off");
+    wait_children(&harness, &lead_id, Some(vec![spawned.agent.id]), Some(10)).await;
     harness.close().await;
 }
 

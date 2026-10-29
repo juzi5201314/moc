@@ -955,7 +955,7 @@ async fn run_prompt_locked(
                         crate::service::record_model_usage(
                             &inner,
                             &params.session_id,
-                            &model.selector,
+                            model.actual_selector(),
                             Usage::default(),
                             request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
                             None,
@@ -1265,7 +1265,7 @@ async fn run_prompt_locked(
                 crate::service::record_model_usage(
                     &inner,
                     &params.session_id,
-                    &model.selector,
+                    model.actual_selector(),
                     response.usage,
                     active_ms,
                     first_token_ms,

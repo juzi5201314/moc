@@ -128,7 +128,7 @@ pub(crate) async fn compact(
     crate::service::record_model_usage(
         inner,
         &state.session.id,
-        &model.selector,
+        model.actual_selector(),
         response.usage,
         request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
         // 压缩接口一次性返回整个响应，没有可观测的首 token。

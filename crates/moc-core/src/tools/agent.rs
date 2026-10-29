@@ -72,12 +72,20 @@ struct YieldArgs {
     result: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SidekickArgs {
+    message: String,
+    block: Option<bool>,
+}
+
 pub struct SpawnAgentTool;
 pub struct ListAgentsTool;
 pub struct MessageAgentTool;
 pub struct StopAgentTool;
 pub struct WaitAgentTool;
 pub struct YieldTool;
+pub struct SidekickTool;
 
 impl Tool for SpawnAgentTool {
     fn name(&self) -> &'static str {
@@ -183,7 +191,7 @@ impl Tool for SpawnAgentTool {
                 let spec = crate::agents::SpawnSpec {
                     task: item.task,
                     title: item.title,
-                    model: item.model,
+                    model: crate::agents::SpawnModel::Role(item.model),
                     preset: item.preset,
                     context: args.context.clone(),
                     output_schema: item.output_schema,
@@ -429,6 +437,96 @@ impl Tool for WaitAgentTool {
             let mut outcome = ToolOutcome::success(json.to_string());
             outcome.structured_content = Some(json);
             Ok(outcome)
+        })
+    }
+}
+
+impl Tool for SidekickTool {
+    fn name(&self) -> &'static str {
+        "sidekick"
+    }
+    fn description(&self) -> &'static str {
+        "Hand off work to your persistent sidekick (Fusion sessions only). Its context persists across handoffs. block=true (default) waits and returns its report; block=false returns at once, then collect the report with wait_agent. Calling it while the sidekick is running delivers the message as an interrupt."
+    }
+    fn tier(&self) -> Tier {
+        Tier::Write
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    fn def(&self) -> ToolDef {
+        ToolDef::new(
+            "sidekick",
+            schema(
+                serde_json::json!({
+                    "message": {"type": "string", "minLength": 1},
+                    "block": {"type": "boolean"}
+                }),
+                &["message"],
+            ),
+        )
+    }
+    fn run<'a>(
+        &'a self,
+        ctx: &'a ToolCtx,
+        args: Value,
+    ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
+        Box::pin(async move {
+            let args: SidekickArgs = serde_json::from_value(args)
+                .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
+            let message = text(&args.message, "message")?;
+            let block = args.block.unwrap_or(true);
+            let (subagent, model) = {
+                let state = ctx.state.lock().await;
+                (state.session.is_subagent(), state.model.clone())
+            };
+            // 执行门槛独立于可见性过滤：非 Fusion 顶层会话拿到调用也直接拒。
+            let fusion = (!subagent && crate::config::model::is_fusion_selector(&model))
+                .then(|| ctx.config.resolve_model(&model))
+                .transpose()
+                .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?
+                .and_then(|resolved| resolved.fusion);
+            let Some(fusion) = fusion else {
+                return Ok(ToolOutcome::failure(
+                    "E_MODE",
+                    "sidekick is available only in Fusion sessions",
+                ));
+            };
+            let sidekick = ctx
+                .config
+                .resolve_model(&fusion.sidekick)
+                .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
+            let progress = crate::agents::WaitProgress {
+                updates: ctx.request.updates(),
+                session_id: ctx.session_id.clone(),
+                prompt_id: ctx.prompt_id.clone(),
+                tool_call_id: ctx.tool_call_id.clone(),
+            };
+            match crate::agents::sidekick::handoff(
+                &ctx.core,
+                &ctx.request,
+                &ctx.session_id,
+                &sidekick,
+                &message,
+                block,
+                &progress,
+                &ctx.cancel,
+            )
+            .await
+            {
+                Ok(crate::agents::sidekick::Handoff::Json(json)) => {
+                    Ok(ToolOutcome::success(json.to_string()))
+                }
+                Ok(crate::agents::sidekick::Handoff::Cancelled) => {
+                    let mut outcome = ToolOutcome::failure(
+                        "E_CANCELLED",
+                        "Prompt cancelled; this call was not executed or was terminated.",
+                    );
+                    outcome.status = Some(moc_protocol::methods::ToolStatus::Cancelled);
+                    Ok(outcome)
+                }
+                Err(error) => Err(ToolError::new("E_AGENT", error.to_string())),
+            }
         })
     }
 }

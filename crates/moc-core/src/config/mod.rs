@@ -11,7 +11,10 @@ use toml::Value;
 
 use crate::CoreConfig;
 use crate::error::CoreError;
-use model::{ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_one, validate_roles};
+use model::{
+    FusionDefaults, ModelRoles, ResolvedModel, all_models, resolve_catalog, resolve_selector,
+    validate_models,
+};
 use schema::{
     ConfigDocument, SandboxConfig, validate_compaction, validate_plugins, validate_skills,
 };
@@ -91,6 +94,8 @@ pub struct ResolvedConfig {
     pub home: PathBuf,
     pub cwd: PathBuf,
     pub roles: ModelRoles,
+    /// `[models.fusion]` 的默认组合；两侧都为空表示未配置。
+    pub fusion: FusionDefaults,
     pub tools: ToolsConfig,
     pub sandbox: ResolvedSandboxConfig,
     pub compaction: CompactionConfig,
@@ -173,7 +178,7 @@ impl ResolvedConfig {
                 "尚未配置主模型，请打开 /config 添加供应商并选择至少一个模型".into(),
             ));
         }
-        resolve_one(&self.providers, selector, None)
+        resolve_selector(&self.providers, &self.fusion, selector)
     }
 
     /// 进入计划模式时应用的模型；`plan = "none"` 表示沿用会话当前模型。
@@ -215,7 +220,7 @@ impl ResolvedConfig {
             .try_into()
             .map_err(|error| CoreError::Config(format!("配置字段无效: {error}")))?;
         let providers = resolve_catalog(&document.providers)?;
-        validate_roles(&document.models.roles, &providers)?;
+        validate_models(&document.models, &providers)?;
         validate_compaction(&document.compaction)?;
         schema::validate_tools(&document.tools)?;
         validate_skills(&document.skills)?;
@@ -237,6 +242,7 @@ impl ResolvedConfig {
             home,
             cwd,
             roles: document.models.roles,
+            fusion: document.models.fusion,
             tools: document.tools,
             sandbox,
             compaction: document.compaction,
@@ -836,6 +842,129 @@ mod tests {
         assert!(ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err());
         fs::write(home.join("config.toml"), "[providers.p\ninvalid").expect("写非法 TOML");
         assert!(ResolvedConfig::load(&core_config(&home, dir.path(), Vec::new())).is_err());
+    }
+
+    /// Fusion 双模型配置：lead 是带推理的 model，sidekick 是普通 model2。
+    fn fusion_provider_config(roles: &str, fusion: &str) -> String {
+        format!(
+            "[models.roles]\n{roles}\nexplore='inherit'\nplan='inherit'\n{fusion}\
+             [providers.p]\napi='openai_chat'\nbase_url='https://example.invalid/v1'\napi_key='k'\n\
+             [providers.p.models.model]\nreasoning=true\ninput=['text','image']\n\
+             [providers.p.models.model2]\n"
+        )
+    }
+
+    fn load_fusion_config(home: &Path, cwd: &Path, source: &str) -> ResolvedConfig {
+        fs::create_dir_all(home).expect("创建 home");
+        fs::write(home.join("config.toml"), source).expect("写配置");
+        ResolvedConfig::load(&core_config(home, cwd, vec![])).expect("配置可解析")
+    }
+
+    #[test]
+    fn fusion_selector_canonicalizes_both_sides_and_exposes_the_pair() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        let config = load_fusion_config(
+            &home,
+            &cwd,
+            &fusion_provider_config(
+                "default='p/model:high'",
+                "[models.fusion]\nlead='p/model'\nsidekick='p/model2'\n",
+            ),
+        );
+        // 显式写法两侧各自规范化，等级补全。
+        let model = config
+            .resolve_model("fusion:p/model:high+p/model2")
+            .expect("显式 Fusion 可解析");
+        assert_eq!(model.selector, "fusion:p/model:high+p/model2:off");
+        assert_eq!(model.display_name, "Fusion");
+        let fusion = model.fusion.as_ref().expect("Fusion 组合");
+        assert_eq!(fusion.lead, "p/model:high");
+        assert_eq!(fusion.sidekick, "p/model2:off");
+        assert_eq!(model.actual_selector(), "p/model:high");
+        // 普通模型 actual_selector 即自身。
+        let plain = config.resolve_role("default").expect("普通模型");
+        assert!(plain.fusion.is_none());
+        assert_eq!(plain.actual_selector(), "p/model:high");
+        // 别名展开 [models.fusion]，等级按模型默认补全。
+        let alias = config.resolve_model("fusion").expect("别名可解析");
+        assert_eq!(alias.selector, "fusion:p/model:low+p/model2:off");
+        assert_eq!(alias.actual_selector(), "p/model:low");
+        assert!(crate::config::model::is_fusion_selector(&alias.selector));
+        // 角色映射后同样走 Fusion 语法。
+        let dir = tempfile::tempdir().expect("临时目录");
+        let config = load_fusion_config(
+            &dir.path().join("home"),
+            &dir.path().join("work"),
+            &fusion_provider_config(
+                "default='fusion'",
+                "[models.fusion]\nlead='p/model'\nsidekick='p/model2'\n",
+            ),
+        );
+        assert!(
+            config
+                .resolve_role("default")
+                .expect("default=fusion 可解析")
+                .fusion
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn fusion_alias_and_nested_or_half_configured_pairs_are_rejected() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let home = dir.path().join("home");
+        let cwd = dir.path().join("work");
+        // 未配置 [models.fusion] 时别名明确报错。
+        let config = load_fusion_config(&home, &cwd, &provider_config("literal"));
+        let Err(error) = config.resolve_model("fusion") else {
+            panic!("别名未配置必须报错");
+        };
+        assert!(
+            error.to_string().contains("尚未配置 Fusion 组合"),
+            "{error}"
+        );
+        // 任一侧仍是 Fusion 选择器：拒绝嵌套。
+        for selector in ["fusion:fusion+p/model", "fusion:p/model+fusion:a/b"] {
+            let Err(error) = config.resolve_model(selector) else {
+                panic!("嵌套 Fusion 必须报错");
+            };
+            assert!(error.to_string().contains("不能嵌套 Fusion"), "{error}");
+        }
+        // [models.fusion] 只配一侧：合法且视为未配置，但非空侧必须可解析。
+        fs::write(
+            home.join("config.toml"),
+            fusion_provider_config(
+                "default='p/model'",
+                "[models.fusion]\nlead='p/model'\n",
+            ),
+        )
+        .expect("写半配置");
+        let config =
+            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("半配置可加载");
+        let Err(error) = config.resolve_model("fusion") else {
+            panic!("半配置下别名仍按未配置报错");
+        };
+        assert!(
+            error.to_string().contains("尚未配置 Fusion 组合"),
+            "{error}"
+        );
+        fs::write(
+            home.join("config.toml"),
+            fusion_provider_config(
+                "default='p/model'",
+                "[models.fusion]\nsidekick='p/nope'\n",
+            ),
+        )
+        .expect("写坏配置");
+        let Err(error) = ResolvedConfig::load(&core_config(&home, &cwd, vec![])) else {
+            panic!("非空侧不可解析必须报错");
+        };
+        assert!(
+            error.to_string().contains("models.fusion.sidekick"),
+            "{error}"
+        );
     }
 
     #[test]

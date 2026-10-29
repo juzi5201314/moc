@@ -134,7 +134,7 @@ impl<'a> Sampler<'a> {
         crate::service::record_model_usage(
             self.inner,
             self.session_id,
-            &self.model.selector,
+            self.model.actual_selector(),
             response.usage,
             active_ms,
             // 摘要用非流式 complete，没有可观测的首 token。

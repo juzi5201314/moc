@@ -555,6 +555,7 @@ impl AgentService for ScriptedService {
             agents: state.agents.clone(),
             default_agent: state.default_agent.clone(),
             cwd: state.cwd.clone(),
+            fusion: None,
         })
     }
     async fn plugin_list(

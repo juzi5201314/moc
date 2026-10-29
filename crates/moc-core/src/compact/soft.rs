@@ -153,7 +153,7 @@ impl SummaryRequest<'_> {
         crate::service::record_model_usage(
             self.inner,
             &self.state.session.id,
-            &self.model.selector,
+            self.model.actual_selector(),
             response.usage,
             request_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             // 摘要用非流式 complete，没有可观测的首 token。

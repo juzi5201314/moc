@@ -54,6 +54,9 @@ pub struct AgentPreset {
 /// preset 系统提示的长度上限；与插件提示词预算同量级。
 pub const MAX_PRESET_PROMPT_CHARS: usize = 4000;
 
+/// Fusion 会话执行侧的 preset 名；只能经 `sidekick` 工具的内部 spawn 路径创建。
+pub const SIDEKICK_PRESET: &str = "sidekick";
+
 /// preset 名：小写字母/数字/连字符，小写字母开头（与插件名同一形状）。
 pub fn valid_preset_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
@@ -76,6 +79,9 @@ impl PresetRegistry {
         let mut registry = Self::default();
         registry
             .register(builtin_explore())
+            .expect("内置 preset 名不冲突");
+        registry
+            .register(builtin_sidekick())
             .expect("内置 preset 名不冲突");
         registry
     }
@@ -156,6 +162,41 @@ Preset: explore — read-only reconnaissance agent.
     }
 }
 
+/// 内置 `sidekick`：Fusion 会话的执行侧。lead 是负责规划与对话的前沿模型，
+/// sidekick 在其指挥下做实现、环境、构建与验证；跨 handoff 复用同一会话。
+///
+/// 禁项对应它的协作契约：不直接问用户（`ask`）、不做计划交接（`plan`/`exit_plan`）、
+/// 不再派发或控制代理（`spawn_agent`/`stop_agent`/`wait_agent`），也不能冒用
+/// `sidekick` 通道再套一层。
+fn builtin_sidekick() -> AgentPreset {
+    let denied: BTreeSet<String> = [
+        "ask",
+        "plan",
+        "exit_plan",
+        "spawn_agent",
+        "stop_agent",
+        "wait_agent",
+        "sidekick",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    AgentPreset {
+        name: SIDEKICK_PRESET.to_owned(),
+        system_prompt: "\
+Preset: sidekick — the execution partner of a Fusion lead.
+- The lead is a frontier model that owns the task: it plans, makes the design decisions, talks to the user, and reviews your work. You execute its handoffs: implement changes, set up or repair the environment, run builds, linters, type-checks and tests, and verify results.
+- Follow the handoff as written. Do not redesign, widen the scope, or choose among alternatives it left open. If the brief is ambiguous, contradicts the code, or would cause harm, stop and say so in your report; use `message_agent` to the parent only when you cannot proceed without an answer.
+- You persist across handoffs: later handoffs arrive as <agent-message> and build on what you already did. Reuse what you learned and the processes you started; leave long-running processes running unless told otherwise.
+- A new message from the lead while you work is an interrupt: fold it in at once; where it conflicts with the earlier brief, it wins.
+- Run every verification command the lead names; that list is mandatory. If something fails for reasons outside the task, report it instead of working around it. Never weaken tests, checks, or security settings to make them pass.
+- Never commit, push, or take other actions with external side effects unless the handoff explicitly asks for them.
+- End every handoff with `yield`. The report must let the lead review without redoing your work: what you changed (files and why), the exact commands you ran and their outcomes, paths to logs, screenshots or other artifacts (keep them; do not clean up), anything left unfinished, and every deviation from the brief. State plainly what is unverified."
+            .to_owned(),
+        tools: ToolPolicy::Deny(denied),
+    }
+}
+
 /// 校验并规整一个 preset 定义（插件声明与代码注册共用）。
 ///
 /// `yield` 会被补进 Allow 白名单：交付通道是基础设施，不是能力授权。
@@ -201,7 +242,7 @@ mod tests {
         );
         assert_eq!(
             registry.names().collect::<Vec<_>>(),
-            vec!["explore", "scout"]
+            vec!["explore", "scout", "sidekick"]
         );
     }
 

@@ -270,6 +270,7 @@ mod tests {
             "edit",
             "run_code",
             "spawn_agent",
+            "sidekick",
             "mcp__demo__search",
         ] {
             assert!(!host_tool_allowed(name), "{name} 不得出现在白名单里");

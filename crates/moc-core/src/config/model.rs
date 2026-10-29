@@ -64,12 +64,45 @@ impl ProviderApi {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct ModelCatalog {
     pub roles: ModelRoles,
+    pub fusion: FusionDefaults,
 }
 
 /// 角色选择器：沿用主模型。
 pub const ROLE_INHERIT: &str = "inherit";
 /// 计划模型选择器：进入计划模式时不切换模型，沿用会话当前模型。
 pub const ROLE_NONE: &str = "none";
+
+/// Fusion 选择器别名：展开为 `[models.fusion]` 里配置的 lead/sidekick 组合。
+pub const FUSION_ALIAS: &str = "fusion";
+/// 显式 Fusion 选择器前缀：`fusion:<lead>+<sidekick>`。
+///
+/// `+` 两侧各是一个普通的 供应商/模型[:等级] selector，用 `split_once('+')` 切开；
+/// 因此模型 id 本身带 `+` 的写法不能在 Fusion 中使用。
+pub const FUSION_PREFIX: &str = "fusion:";
+
+/// selector 是否是 Fusion 选择器（别名或显式组合）。
+///
+/// 持久化的 `session.model` 恒为规范形 `fusion:lead+sidekick`，前缀判定即可。
+pub fn is_fusion_selector(selector: &str) -> bool {
+    selector == FUSION_ALIAS || selector.starts_with(FUSION_PREFIX)
+}
+
+/// `[models.fusion]`：别名 `fusion` 展开用的默认组合；两侧都为空表示未配置。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FusionDefaults {
+    pub lead: String,
+    pub sidekick: String,
+}
+
+/// 一次 Fusion 会话的模型组合（规范 selector）。
+///
+/// lead 是本会话实际发请求的模型；sidekick 供 `sidekick` 工具创建持久子会话。
+#[derive(Debug, Clone)]
+pub struct FusionModels {
+    pub lead: String,
+    pub sidekick: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -357,12 +390,26 @@ pub struct ResolvedModel {
     pub requires_reasoning_content_for_all_assistant_turns: bool,
     /// 工具调用回传 assistant content 的上游约束。
     pub requires_assistant_content_for_tool_calls: bool,
+    /// Fusion 组合；普通模型为 `None`。此时 `selector` 是规范 Fusion selector，
+    /// 其余字段（llm、provider、能力等）都是 lead 模型的。
+    pub fusion: Option<FusionModels>,
 }
 
 impl ResolvedModel {
     /// 该指令片段在此模型下是否留在 system 消息里。
     pub fn piece_keeps_system(&self, name: &str) -> bool {
         self.instruction_role == InstructionRole::System || self.instruction_system.contains(&name)
+    }
+
+    /// 实际发请求的模型 selector：Fusion 取 lead，普通模型取自身。
+    ///
+    /// 子代理继承、用量记账与定价查询都用它；会话头与系统提示仍用规范
+    /// `selector`（Fusion 时是组合形式）。
+    pub fn actual_selector(&self) -> &str {
+        match &self.fusion {
+            Some(fusion) => &fusion.lead,
+            None => &self.selector,
+        }
     }
 }
 
@@ -554,6 +601,7 @@ impl ResolvedProvider {
             requires_assistant_content_for_tool_calls: model
                 .compat
                 .requires_assistant_content_for_tool_calls,
+            fusion: None,
         }
     }
 }
@@ -652,6 +700,59 @@ pub(super) fn resolve_one(
     Ok(provider.resolve_model(parsed.provider_id, parsed.model_id, model, level))
 }
 
+/// 解析一个可能带 Fusion 语法的 selector：普通写法直接走 [`resolve_one`]；
+/// `fusion` 别名展开 `[models.fusion]`，`fusion:<lead>+<sidekick>` 显式组合两侧
+/// 各自按普通 selector 解析（嵌套 Fusion 会被明确拒绝）。
+pub(super) fn resolve_selector(
+    providers: &BTreeMap<String, ResolvedProvider>,
+    fusion: &FusionDefaults,
+    selector: &str,
+) -> Result<ResolvedModel, CoreError> {
+    if selector == FUSION_ALIAS {
+        if fusion.lead.is_empty() || fusion.sidekick.is_empty() {
+            return Err(CoreError::Config(
+                "尚未配置 Fusion 组合：请在 models.fusion 中同时选择 lead 与 sidekick 模型".into(),
+            ));
+        }
+        return resolve_fusion(providers, &fusion.lead, &fusion.sidekick);
+    }
+    if let Some(rest) = selector.strip_prefix(FUSION_PREFIX) {
+        let Some((lead, sidekick)) = rest.split_once('+') else {
+            return Err(CoreError::Config(format!(
+                "Fusion 写法“{selector}”不正确，应为 fusion:主导模型+执行模型"
+            )));
+        };
+        return resolve_fusion(providers, lead, sidekick);
+    }
+    resolve_one(providers, selector, None)
+}
+
+/// 组装 Fusion 组合：返回 lead 的 `ResolvedModel`，`selector` 改写为规范
+/// `fusion:lead+sidekick` 形式，`fusion` 字段携带两侧规范 selector。
+fn resolve_fusion(
+    providers: &BTreeMap<String, ResolvedProvider>,
+    lead_selector: &str,
+    sidekick_selector: &str,
+) -> Result<ResolvedModel, CoreError> {
+    for side in [lead_selector, sidekick_selector] {
+        if is_fusion_selector(side) {
+            return Err(CoreError::Config(format!(
+                "Fusion 组合的两侧必须是普通模型选择器，不能嵌套 Fusion：{side}"
+            )));
+        }
+    }
+    let mut lead = resolve_one(providers, lead_selector, None)?;
+    let sidekick = resolve_one(providers, sidekick_selector, None)?;
+    let fusion = FusionModels {
+        lead: lead.selector.clone(),
+        sidekick: sidekick.selector.clone(),
+    };
+    lead.selector = format!("{FUSION_PREFIX}{}+{}", fusion.lead, fusion.sidekick);
+    lead.display_name = "Fusion".into();
+    lead.fusion = Some(fusion);
+    Ok(lead)
+}
+
 pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<ResolvedModel> {
     let mut result = Vec::new();
     for (provider_id, provider) in providers {
@@ -710,10 +811,23 @@ fn resolve_api_key(provider: &str, spec: &str) -> Result<Option<String>, CoreErr
     resolve_secret(&format!("providers.{provider}.api_key"), spec)
 }
 
-pub(super) fn validate_roles(
-    roles: &ModelRoles,
+pub(super) fn validate_models(
+    catalog: &ModelCatalog,
     providers: &BTreeMap<String, ResolvedProvider>,
 ) -> Result<(), CoreError> {
+    // `[models.fusion]` 逐字段编辑：/config 先配一侧再配另一侧，所以只配一侧
+    // 算「未配置」而不是错误；每个非空侧本身必须可解析。
+    for (label, selector) in [
+        ("models.fusion.lead", catalog.fusion.lead.as_str()),
+        ("models.fusion.sidekick", catalog.fusion.sidekick.as_str()),
+    ] {
+        if !selector.is_empty() {
+            resolve_one(providers, selector, None).map_err(|error| {
+                CoreError::Config(format!("{label} 无法解析：{}", error.detail()))
+            })?;
+        }
+    }
+    let roles = &catalog.roles;
     // 首次启动允许空目录进入设置页；真正创建会话时必须解析出主模型。
     if roles.default.is_empty()
         && providers
@@ -738,7 +852,7 @@ pub(super) fn validate_roles(
         } else {
             selector
         };
-        resolve_one(providers, selector, None)
+        resolve_selector(providers, &catalog.fusion, selector)
             .map_err(|error| CoreError::Config(format!("{role}无法解析：{}", error.detail())))?;
     }
     Ok(())
