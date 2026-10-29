@@ -45,6 +45,7 @@ zstd.workspace = true
 aho-corasick = "1"
 xxhash-rust.workspace = true
 brush-parser.workspace = true
+jsonschema = { version = "0.60.2", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

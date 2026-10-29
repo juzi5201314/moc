@@ -30,6 +30,9 @@ pub struct AgentInfo {
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message: Option<String>,
+    /// spawn 时选定的 agent preset；普通子代理为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 /// 一次代理间消息投递的结果。
@@ -101,7 +104,7 @@ pub struct ToolProgressRow {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentSpawn;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpawnParams {
     /// 调用方会话 ID。
@@ -112,6 +115,12 @@ pub struct AgentSpawnParams {
     /// 仅允许 `inherit`、`default`、`explore`、`plan`；省略等同于 `inherit`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// 已注册的 agent preset 名；省略为默认子代理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// 子代理 `yield` 交付物必须满足的 JSON Schema；省略则交付物为自由文本。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +195,9 @@ pub struct AgentWaitEntry {
     pub message: Option<Message>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<FinishReason>,
+    /// 带 `output_schema` spawn 的子代理交付的结构化结果；自由文本交付为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structured_result: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,6 +256,8 @@ mod tests {
             task: "返回 CHILD_OK".into(),
             title: None,
             model: Some("explore".into()),
+            preset: None,
+            output_schema: None,
         };
         assert_eq!(serde_json::to_value(params).unwrap()["model"], "explore");
         assert!(
@@ -350,6 +364,7 @@ mod tests {
                 status: AgentStatus::Running,
                 message: None,
                 finish_reason: None,
+                structured_result: None,
             }],
             settled: false,
             messages_pending: false,

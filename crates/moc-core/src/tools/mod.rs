@@ -180,6 +180,8 @@ pub struct ToolCtx {
     pub allow_agents: bool,
     /// 当前是否在子代理里；决定 `yield` 是否可用。
     pub subagent: bool,
+    /// preset 快照的工具面策略；嵌套（PTC）调用经 ToolCtx 克隆原样继承。
+    pub tool_policy: Option<crate::agents::ToolPolicy>,
     pub nested: bool,
     pub cancel: CancellationToken,
     pub(crate) guard: Arc<crate::service::prompt::guard::PromptGuard>,
@@ -306,12 +308,14 @@ pub trait Tool: Send + Sync {
 }
 
 /// 工具可见范围：同一个注册表在顶层会话和子代理里暴露的工具不同。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ToolScope {
-    /// 是否允许创建、停止和等待子代理。
+    /// 是否允许创建、停止和等待子代理（委托深度未满时才可用）。
     pub control_agents: bool,
     /// 是否在子代理里（`yield` 只对子代理开放）。
     pub subagent: bool,
+    /// preset 快照的工具面策略；`None` 表示不限（普通会话与旧子代理）。
+    pub policy: Option<crate::agents::ToolPolicy>,
 }
 
 impl ToolScope {
@@ -320,6 +324,19 @@ impl ToolScope {
         Self {
             control_agents: true,
             subagent: false,
+            policy: None,
+        }
+    }
+
+    /// 按会话状态构造：`delegation_depth` 决定代理控制面，preset 快照提供策略。
+    pub fn for_session(state: &crate::session::state::SessionState, max_depth: u32) -> Self {
+        Self {
+            control_agents: state.session.delegation_depth < max_depth,
+            subagent: state.session.is_subagent(),
+            policy: state
+                .agent
+                .as_ref()
+                .and_then(|meta| meta.tool_policy.clone()),
         }
     }
 }
@@ -382,11 +399,18 @@ impl ToolRegistry {
             .iter()
             .chain(extra.iter())
             .filter(|tool| match tool.name() {
-                // 创建、停止和等待子代理只在顶层会话可用；子代理只能通信。
+                // 创建、停止和等待子代理只在委托深度未满时可用；叶级子代理只能通信。
                 name if Self::is_parent_only_tool(name) => scope.control_agents,
                 // 交付最终结果只对子代理有意义：顶层会话没有父代理可交付。
                 "yield" => scope.subagent,
                 _ => true,
+            })
+            // preset 快照的策略对内置、MCP 与插件工具统一生效。
+            .filter(|tool| {
+                scope
+                    .policy
+                    .as_ref()
+                    .map_or(true, |policy| policy.permits(tool.name()))
             })
             .filter(|tool| {
                 tool.declared_in(mode)

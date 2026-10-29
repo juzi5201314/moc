@@ -41,6 +41,31 @@ export const config: {
   set(key: string, value: JsonValue): void;
 };
 
+/** `agents.registerPreset` 的 preset 定义。 */
+export interface AgentPresetDefinition {
+  /** 稳定标识：小写字母开头的小写字母/数字/连字符，1–64 字节。spawn 时按名选用。 */
+  name: string;
+  /** 注入子代理系统块的提示片段（非空，≤4000 字符）；模型可见文本请用英文。 */
+  systemPrompt: string;
+  /**
+   * 工具面策略。`allow` 是白名单（`yield` 由宿主保留，无需列入）、`deny` 是
+   * 拒绝列表，两者互斥；省略则不限制工具面。preset 只能收缩不能放大：
+   * 方言、模式契约与权限检查原样生效。
+   */
+  tools?: { allow?: string[]; deny?: string[] };
+}
+
+/**
+ * 子代理 preset 注册：一套固定的系统提示片段 + 工具面策略。
+ *
+ * 只能在模块顶层调用；activate 与回调中注册会报错。spawn 时按名选用并把
+ * 定义快照进子代理会话——之后卸载插件不影响已存在的会话。与内置 preset
+ * 同名时内置优先。
+ */
+export const agents: {
+  registerPreset(definition: AgentPresetDefinition): void;
+};
+
 /** 写 moc 日志；`RUST_LOG=moc_plugin=debug` 时能看到 debug。 */
 export const log: {
   debug(...parts: unknown[]): void;

@@ -144,6 +144,20 @@ export const config = Object.freeze({
 });
 
 /**
+ * 子代理 preset 注册。只能在模块顶层调用；spawn 时按名选用，
+ * preset 定义快照进子代理会话，模型侧看不到注册接口本身。
+ *
+ * `registerPreset({name, systemPrompt, tools?})`：name 为小写字母开头的
+ * 小写字母/数字/连字符；tools 取 `{allow: string[]}` 或 `{deny: string[]}`
+ * 之一（互斥），省略则不限制工具面。
+ */
+export const agents = Object.freeze({
+  registerPreset(definition) {
+    host.agentPresetRegister(stringify(jsonValue(definition)));
+  },
+});
+
+/**
  * 调用宿主工具。只在工具的 `run` 里可用，且只允许只读工具；
  * 命令、钩子与 `prompt` 里调用会抛 `E_PLUGIN_TOOLS_UNAVAILABLE`。
  */

@@ -21,7 +21,7 @@ use rquickjs::{
 use serde_json::Value;
 
 use crate::descriptor::{
-    CommandDecl, ConfigDecl, ConfigKind, Descriptor, HookKind, ModeMask, ToolDecl,
+    AgentPresetDecl, CommandDecl, ConfigDecl, ConfigKind, Descriptor, HookKind, ModeMask, ToolDecl,
 };
 use crate::error::{PluginError, Result};
 use crate::host::PersistenceOp;
@@ -189,6 +189,7 @@ struct CallHost {
 
 struct Registrations {
     fields: Option<Vec<ConfigDecl>>,
+    agent_presets: Option<Vec<AgentPresetDecl>>,
     error: Option<PluginError>,
 }
 
@@ -397,6 +398,7 @@ fn init<'js>(
 ) -> Result<(Descriptor, Functions)> {
     let registrations = Rc::new(RefCell::new(Registrations {
         fields: Some(Vec::new()),
+        agent_presets: Some(Vec::new()),
         error: None,
     }));
     install_globals(ctx, host, &registrations)?;
@@ -437,13 +439,16 @@ fn init<'js>(
     if let Some(error) = registrations.borrow_mut().error.take() {
         return Err(error);
     }
-    let configs = registrations
-        .borrow_mut()
-        .fields
-        .take()
-        .expect("注册表只冻结一次");
+    let (configs, agent_presets) = {
+        let mut registry = registrations.borrow_mut();
+        (
+            registry.fields.take().expect("注册表只冻结一次"),
+            registry.agent_presets.take().expect("注册表只冻结一次"),
+        )
+    };
     let (mut descriptor, functions) = parse_descriptor(ctx, &object)?;
     descriptor.configs = configs;
+    descriptor.agent_presets = agent_presets;
     let _ = ctx.eval::<(), _>("delete globalThis.__moc");
     Ok((descriptor, functions))
 }
@@ -880,6 +885,40 @@ fn install_globals<'js>(
         .set("configRegister", register)
         .map_err(|error| js_error(ctx, error))?;
 
+    let registry = Rc::clone(registrations);
+    let current = Rc::clone(host);
+    let register_preset = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>, definition: String| -> rquickjs::Result<()> {
+            let result = (|| -> Result<()> {
+                let mut registry = registry.borrow_mut();
+                let presets = registry.agent_presets.as_mut().ok_or_else(|| {
+                    PluginError::new("E_PLUGIN_AGENT", "preset 只能在模块顶层注册")
+                })?;
+                let declaration = agent_preset_declaration(&definition)?;
+                if presets.iter().any(|preset| preset.name == declaration.name) {
+                    return Err(PluginError::new(
+                        "E_PLUGIN_AGENT",
+                        format!("agent preset `{}` 不能重复注册", declaration.name),
+                    ));
+                }
+                presets.push(declaration);
+                Ok(())
+            })();
+            result.map_err(|error| {
+                registry.borrow_mut().error.get_or_insert(error.clone());
+                if let Some(call) = current.borrow_mut().as_mut() {
+                    call.fault = Some(error.clone());
+                }
+                throw(&ctx, &error)
+            })
+        },
+    )
+    .map_err(|error| js_error(ctx, error))?;
+    bridge
+        .set("agentPresetRegister", register_preset)
+        .map_err(|error| js_error(ctx, error))?;
+
     let current = Rc::clone(host);
     let registry = Rc::clone(registrations);
     let invalid = Function::new(
@@ -1103,6 +1142,93 @@ fn config_declaration(key: String, definition: &str) -> Result<ConfigDecl> {
             .map_err(|error| invalid(&error))?;
     }
     Ok(declaration)
+}
+
+/// preset 系统提示的长度上限；与插件提示词贡献预算同量级。
+const MAX_PRESET_PROMPT_CHARS: usize = 4000;
+
+/// 解析 `agents.registerPreset` 的声明对象。
+fn agent_preset_declaration(definition: &str) -> Result<AgentPresetDecl> {
+    let invalid = |message: &str| PluginError::new("E_PLUGIN_AGENT", message);
+    let value: Value =
+        serde_json::from_str(definition).map_err(|error| invalid(&error.to_string()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("preset 声明必须是对象"))?;
+    if object
+        .keys()
+        .any(|key| !["name", "systemPrompt", "tools"].contains(&key.as_str()))
+    {
+        return Err(invalid("preset 声明包含未知字段"));
+    }
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // 与 moc-core 的 preset 名同形：小写字母开头的小写字母/数字/连字符。
+    if !(1..=64).contains(&name.len())
+        || !name.as_bytes()[0].is_ascii_lowercase()
+        || !name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+    {
+        return Err(invalid(
+            "preset name 须为小写字母开头的小写字母/数字/连字符，1–64 字节",
+        ));
+    }
+    let system_prompt = object
+        .get("systemPrompt")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("preset 必须提供 systemPrompt 字符串"))?;
+    if system_prompt.trim().is_empty() {
+        return Err(invalid("systemPrompt 不能为空"));
+    }
+    if system_prompt.chars().count() > MAX_PRESET_PROMPT_CHARS {
+        return Err(invalid("systemPrompt 超过 4000 字符上限"));
+    }
+    let mut allow = None;
+    let mut deny = None;
+    if let Some(tools) = object.get("tools") {
+        let tools = tools
+            .as_object()
+            .ok_or_else(|| invalid("tools 必须是对象"))?;
+        if tools
+            .keys()
+            .any(|key| !["allow", "deny"].contains(&key.as_str()))
+        {
+            return Err(invalid("tools 只允许 allow / deny 字段"));
+        }
+        let names = |key: &str| -> Result<Option<Vec<String>>> {
+            match tools.get(key) {
+                None => Ok(None),
+                Some(items) => {
+                    let items = items
+                        .as_array()
+                        .ok_or_else(|| invalid("tools.allow/deny 必须是字符串数组"))?;
+                    items
+                        .iter()
+                        .map(|item| {
+                            item.as_str()
+                                .map(str::to_owned)
+                                .ok_or_else(|| invalid("tools.allow/deny 必须是字符串数组"))
+                        })
+                        .collect::<Result<Vec<_>>>()
+                        .map(Some)
+                }
+            }
+        };
+        allow = names("allow")?;
+        deny = names("deny")?;
+        if allow.is_some() && deny.is_some() {
+            return Err(invalid("tools.allow 与 tools.deny 互斥"));
+        }
+    }
+    Ok(AgentPresetDecl {
+        name: name.to_owned(),
+        system_prompt: system_prompt.to_owned(),
+        allow,
+        deny,
+    })
 }
 
 /// 一次待执行的插件调用：宿主在调用期间登记它与会话的关联。

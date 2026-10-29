@@ -1,5 +1,9 @@
 //! 子代理运行时注册表、持久化子会话、代理间消息和生命周期收尾。
 
+pub mod preset;
+
+pub use preset::{AgentPreset, PresetRegistry, ToolPolicy};
+
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -21,6 +25,13 @@ use crate::service::CoreInner;
 use crate::session::entries::SessionOrigin;
 use crate::session::store::now_ms;
 
+/// `yield` 交付物：报告文本 + 可选的结构化结果（按 `output_schema` 校验过）。
+#[derive(Debug, Clone)]
+pub(crate) struct Yielded {
+    pub report: String,
+    pub result: Option<serde_json::Value>,
+}
+
 pub(crate) struct AgentRuntime {
     pub info: AgentInfo,
     pub cancel: CancellationToken,
@@ -28,7 +39,9 @@ pub(crate) struct AgentRuntime {
     pub message: Option<Message>,
     pub finish_reason: Option<FinishReason>,
     /// `yield` 交付的最终报告；父代理查询结果时优先用它。
-    pub yielded: Option<String>,
+    pub yielded: Option<Yielded>,
+    /// `yield` 交付的结构化结果；完成后由 `wait_agent` 查询。
+    pub structured: Option<serde_json::Value>,
 }
 
 /// 待投递的代理消息。
@@ -165,6 +178,7 @@ fn info_from_session(session: &SessionInfo, status: AgentStatus) -> AgentInfo {
         title: session.title.clone(),
         model: session.model.clone(),
         cwd: session.cwd.clone(),
+        preset: session.agent_preset.clone(),
         status,
         created_at_ms: session.created_at_ms,
         updated_at_ms: session.updated_at_ms,
@@ -194,30 +208,146 @@ async fn prepare_agent(inner: &CoreInner, info: &AgentInfo, cancel: Cancellation
             message: None,
             finish_reason: None,
             yielded: None,
+            structured: None,
         },
     );
 }
 
-/// 子代理的取消令牌挂在直接父会话的 guard 下，父会话整体取消时一起终止。
+/// 子代理的取消令牌挂在「父代理的运行令牌」下：父是注册过的子代理时挂它的
+/// `runtime.cancel`，`stop_agent` 停父代理后代级联终止；父是顶层会话（不在
+/// 注册表）时挂进程 shutdown。
+///
+/// 不能挂父的 prompt guard：`guard.cancel` 是请求级 token，父的那次 prompt 一
+/// 返回即取消，会把还活着的子代理误杀（经 `spawn_agent` 工具 spawn 必踩）。
 async fn child_cancel(inner: &CoreInner, parent_id: &str) -> CancellationToken {
-    match inner.runtime(parent_id).await.guard.lock().clone() {
-        Some(guard) => guard.cancel.child_token(),
+    let registry = inner.agents.lock().await;
+    match registry.items.get(parent_id) {
+        Some(runtime) => runtime.cancel.child_token(),
         None => inner.shutdown.child_token(),
     }
+}
+
+/// 一次 spawn 的完整描述；批量 spawn 时逐项构造。
+#[derive(Debug)]
+pub(crate) struct SpawnSpec {
+    pub task: String,
+    pub title: Option<String>,
+    pub model: Option<String>,
+    /// 选用的 preset 名；`None` 为普通子代理。
+    pub preset: Option<String>,
+    /// 共享上下文：排在任务原文之前注入首条消息（批量 spawn 的公共前缀）。
+    pub context: Option<String>,
+    /// `yield` 交付物必须满足的 JSON Schema；省略为自由文本交付。
+    pub output_schema: Option<serde_json::Value>,
+}
+
+/// 解析 preset 名 → 快照契约：先查内置注册表，再查该工作区插件声明。
+///
+/// 插件 preset 与内置同名时内置优先；未知名报错并列出可选项。
+async fn resolve_agent_meta(
+    inner: &CoreInner,
+    cwd: &str,
+    name: Option<&str>,
+    output_schema: Option<serde_json::Value>,
+) -> Result<Option<crate::session::entries::AgentSessionMeta>, CoreError> {
+    let mut meta = crate::session::entries::AgentSessionMeta::default();
+    if let Some(name) = name {
+        let host = crate::service::plugin_events::host_for(inner, Path::new(cwd)).await;
+        let declared = plugin_presets(host.as_ref())?;
+        let preset = inner
+            .agent_presets
+            .get(name)
+            .cloned()
+            .or_else(|| declared.get(name).cloned());
+        let Some(preset) = preset else {
+            let mut names: Vec<String> = inner
+                .agent_presets
+                .names()
+                .map(str::to_owned)
+                .chain(declared.keys().cloned())
+                .collect();
+            names.sort();
+            names.dedup();
+            return Err(invalid(format!(
+                "未知 agent preset `{name}`；可选：{}",
+                names.join(", ")
+            )));
+        };
+        meta.preset = Some(preset.name);
+        meta.prompt = Some(preset.system_prompt);
+        meta.tool_policy = Some(preset.tools);
+    }
+    if let Some(schema) = output_schema {
+        // schema 在 spawn 时就编译校验，把坏契约挡在子代理创建之前。
+        validate_output_schema(&schema)?;
+        meta.output_schema = Some(schema);
+    }
+    Ok((!meta.is_empty()).then_some(meta))
+}
+
+/// 插件宿主声明的 preset → `AgentPreset`：allow/deny 互斥，省略则不限。
+fn plugin_presets(
+    host: Option<&Arc<moc_plugin::PluginHost>>,
+) -> Result<BTreeMap<String, AgentPreset>, CoreError> {
+    let mut presets = BTreeMap::new();
+    let Some(host) = host else {
+        return Ok(presets);
+    };
+    for decl in host.agent_preset_declarations().into_values() {
+        let tools = match (decl.allow, decl.deny) {
+            (Some(allow), None) => ToolPolicy::Allow(allow.into_iter().collect()),
+            (None, deny) => ToolPolicy::Deny(deny.unwrap_or_default().into_iter().collect()),
+            (Some(_), Some(_)) => {
+                return Err(invalid(format!(
+                    "agent preset `{}` 的 allow 与 deny 互斥",
+                    decl.name
+                )));
+            }
+        };
+        let preset = preset::sanitize_preset(AgentPreset {
+            name: decl.name,
+            system_prompt: decl.system_prompt,
+            tools,
+        });
+        presets.insert(preset.name.clone(), preset);
+    }
+    Ok(presets)
+}
+
+/// spawn 参数里的 `output_schema` 必须是合法的 JSON Schema 对象。
+fn validate_output_schema(schema: &serde_json::Value) -> Result<(), CoreError> {
+    jsonschema::validator_for(schema).map_err(|error| {
+        invalid(format!("output_schema 不是合法的 JSON Schema：{error}"))
+    })?;
+    Ok(())
 }
 
 pub(crate) async fn spawn(
     inner: Arc<CoreInner>,
     request: RequestContext,
     session_id: String,
-    task: String,
-    title: Option<String>,
-    model: Option<String>,
+    spec: SpawnSpec,
 ) -> Result<AgentSpawnResult, CoreError> {
-    let task = validate_text(&task, "task")?;
+    let task = validate_text(&spec.task, "task")?;
     let parent = parent_snapshot(&inner, &session_id).await?;
     let config = inner.project_config(Path::new(&parent.session.cwd))?;
-    let model = resolve_model(&config, &parent.model, model.as_deref())?;
+    let depth = parent.session.delegation_depth + 1;
+    if depth > config.agents.max_depth {
+        return Err(invalid(format!(
+            "已达到最大委托深度 {}：该会话不能再 spawn 子代理",
+            config.agents.max_depth
+        )));
+    }
+    let model = resolve_model(&config, &parent.model, spec.model.as_deref())?;
+    let agent_meta =
+        resolve_agent_meta(&inner, &parent.session.cwd, spec.preset.as_deref(), spec.output_schema)
+            .await?;
+    let task = match spec.context {
+        Some(context) if !context.trim().is_empty() => {
+            format!("{}\n\n{}", context.trim(), task)
+        }
+        _ => task,
+    };
     let session = inner
         .sessions
         .create(
@@ -225,8 +355,8 @@ pub(crate) async fn spawn(
             &model,
             parent.mode,
             parent.permission,
-            title.as_deref(),
-            SessionOrigin::spawned(session_id.clone()),
+            spec.title.as_deref(),
+            SessionOrigin::spawned(session_id.clone(), depth, agent_meta),
             config.session.compress,
         )
         .await?;
@@ -441,11 +571,14 @@ async fn finish(
         let Some(runtime) = registry.items.get_mut(&agent_id) else {
             return;
         };
-        // `yield` 报告是子代理自己交付的最终结果，会覆盖模型最后一条正文。
-        let message = runtime
-            .yielded
-            .take()
-            .map(Message::assistant_text)
+        // `yield` 报告是子代理自己交付的最终结果，会覆盖模型最后一条正文；
+        // 结构化结果留在 runtime 里给 wait 查询。
+        let yielded = runtime.yielded.take();
+        if let Some(yielded) = &yielded {
+            runtime.structured = yielded.result.clone();
+        }
+        let message = yielded
+            .map(|yielded| Message::assistant_text(yielded.report))
             .or(message);
         let last_message = message.as_ref().map(|message| {
             let text = message.text();
@@ -907,12 +1040,39 @@ pub(crate) async fn drain_inbox(
     Ok(count)
 }
 
-/// `yield`：记录子代理交付的最终报告。
+/// `yield`：记录子代理交付的最终报告；声明了 `output_schema` 的子代理
+/// 必须同时交付通过校验的结构化结果。
 pub(crate) async fn record_yield(
     inner: &CoreInner,
     session_id: &str,
     report: String,
+    result: Option<serde_json::Value>,
 ) -> Result<(), CoreError> {
+    let record = inner.sessions.get(session_id).await?;
+    let schema = record
+        .state
+        .lock()
+        .await
+        .agent
+        .as_ref()
+        .and_then(|meta| meta.output_schema.clone());
+    let result = match (&schema, result) {
+        (Some(schema), Some(result)) => {
+            let validator = jsonschema::validator_for(schema)
+                .map_err(|error| invalid(format!("output_schema 非法：{error}")))?;
+            if let Err(error) = validator.validate(&result) {
+                return Err(invalid(format!("yield 的 result 不满足 output_schema：{error}")));
+            }
+            Some(result)
+        }
+        (Some(_), None) => {
+            return Err(invalid("该子代理声明了 output_schema，yield 必须提供 result"));
+        }
+        (None, Some(_)) => {
+            return Err(invalid("该子代理未声明 output_schema，不能交付结构化结果"));
+        }
+        (None, None) => None,
+    };
     let report = validate_text(&report, "report")?;
     let mut registry = inner.agents.lock().await;
     let Some(runtime) = registry.items.get_mut(session_id) else {
@@ -921,7 +1081,7 @@ pub(crate) async fn record_yield(
     if !live(runtime.info.status) {
         return Err(invalid("yield 仅能在子代理运行中调用"));
     }
-    runtime.yielded = Some(report);
+    runtime.yielded = Some(Yielded { report, result });
     Ok(())
 }
 
@@ -941,10 +1101,11 @@ pub(crate) async fn list(
     session_id: String,
 ) -> Result<AgentListResult, CoreError> {
     let peers = peers(inner, &session_id).await?;
-    let related = if peers.is_subagent() {
-        &peers.siblings
+    // 子代理的可通信面是兄弟；能再委托的子代理还要能看到自己的直接子代理。
+    let related: Vec<&AgentEntry> = if peers.is_subagent() {
+        peers.siblings.iter().chain(peers.children.iter()).collect()
     } else {
-        &peers.children
+        peers.children.iter().collect()
     };
     let mut agents = Vec::with_capacity(related.len());
     for entry in related {
@@ -1032,6 +1193,7 @@ fn wait_snapshot(registry: &AgentRegistry, targets: &[SessionInfo]) -> WaitSnaps
                     status: AgentStatus::Idle,
                     message: None,
                     finish_reason: None,
+                    structured_result: None,
                 },
                 elapsed_ms: 0,
             });
@@ -1050,6 +1212,7 @@ fn wait_snapshot(registry: &AgentRegistry, targets: &[SessionInfo]) -> WaitSnaps
                 status: info.status,
                 message: runtime.message.clone(),
                 finish_reason: runtime.finish_reason.clone(),
+                structured_result: runtime.structured.clone(),
             },
             elapsed_ms: if live(info.status) {
                 now.saturating_sub(info.updated_at_ms)
@@ -1246,10 +1409,20 @@ pub(crate) struct SubagentPrompt {
     pub roster: String,
 }
 
-/// 子代理提示：系统块（交付契约 + 任务）与尾部提醒（可通信代理清单）。
+/// 子代理提示：系统块（交付契约 + preset 片段 + 任务）与尾部提醒（可通信代理清单）。
 pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Option<SubagentPrompt> {
     let peers = peers(inner, session_id).await.ok()?;
     let parent = peers.parent.as_ref()?;
+    let meta = inner
+        .sessions
+        .get(session_id)
+        .await
+        .ok()?
+        .state
+        .lock()
+        .await
+        .agent
+        .clone();
     let mut siblings: Vec<&AgentEntry> = peers.siblings.iter().collect();
     siblings.sort_by(|left, right| {
         live(right.status)
@@ -1260,6 +1433,18 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
     let mut block = String::from(
         "<subagent>\nYou are a subagent. When the task is done, call `yield` with your complete report; the parent receives exactly that text. Never end with a plain message instead, unless the task is impossible.\nCoordinate via `message_agent`: target \"parent\", a sibling id, or \"all\" (running siblings). Incoming messages arrive as <agent-message from=\"...\" id=\"...\">. Message the parent only for questions, blockers, or decisions; progress and completion reports go through `yield`.\n",
     );
+    if let Some(meta) = &meta {
+        if let Some(prompt) = &meta.prompt {
+            block.push('\n');
+            block.push_str(prompt);
+            block.push('\n');
+        }
+        if meta.output_schema.is_some() {
+            block.push_str(
+                "\nOutput contract: this run declares an `output_schema`. `yield` must include a `result` value conforming to it, alongside the readable `report`.\n",
+            );
+        }
+    }
     if let Some(task) = assignment(inner, session_id).await {
         block.push_str(
             "\nTask (authoritative; outranks general repository conventions on conflict):\n",
@@ -1335,6 +1520,7 @@ mod tests {
                 title: "子代理".into(),
                 model: "p/m".into(),
                 cwd: "/tmp/project".into(),
+                preset: None,
                 status: AgentStatus::Running,
                 created_at_ms: 1,
                 updated_at_ms: 1,
@@ -1345,6 +1531,7 @@ mod tests {
             message: None,
             finish_reason: None,
             yielded: None,
+            structured: None,
         }
     }
 
@@ -1353,6 +1540,8 @@ mod tests {
             id: id.into(),
             parent_session_id: Some("ses_parent0001".into()),
             forked_from: None,
+            agent_preset: None,
+            delegation_depth: 1,
             title: "子代理".into(),
             model: "p/m".into(),
             cwd: "/tmp/project".into(),

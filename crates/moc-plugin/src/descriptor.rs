@@ -71,6 +71,18 @@ pub enum ConfigKind {
     Choice,
 }
 
+/// 插件在模块顶层注册的 agent preset 声明。
+///
+/// `allow` 与 `deny` 互斥：allow 是白名单（`yield` 由宿主保留），deny 是拒绝
+/// 列表；都省略时 preset 只提供人格提示，工具面与父代理相同。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentPresetDecl {
+    pub name: String,
+    pub system_prompt: String,
+    pub allow: Option<Vec<String>>,
+    pub deny: Option<Vec<String>>,
+}
+
 /// 一个插件配置字段的静态声明。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigDecl {
@@ -247,6 +259,7 @@ pub struct Descriptor {
     pub commands: Vec<CommandDecl>,
     pub hooks: Vec<HookKind>,
     pub configs: Vec<ConfigDecl>,
+    pub agent_presets: Vec<AgentPresetDecl>,
     /// 是否导出 `prompt`；没有就不占提示词预算。
     pub has_prompt: bool,
 }

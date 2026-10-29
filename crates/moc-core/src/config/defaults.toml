@@ -222,6 +222,11 @@ call_timeout_ms = 5000
 # 全部插件提示词贡献的总字符上限。
 max_prompt_chars = 4000
 
+[agents]
+# 允许的最大子代理委托深度：1 = 顶层可 spawn，子代理不能再 spawn；
+# 每加 1 多允许一层嵌套委托。
+max_depth = 1
+
 [web_search]
 enabled = true
 provider = "tavily"

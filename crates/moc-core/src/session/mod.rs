@@ -1285,7 +1285,7 @@ mod tests {
                 SessionMode::Normal,
                 SessionPermission::Full,
                 Some("子任务"),
-                SessionOrigin::spawned(parent.id.clone()),
+                SessionOrigin::spawned(parent.id.clone(), 1, None),
                 true,
             )
             .await

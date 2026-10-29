@@ -26,6 +26,21 @@ pub(super) struct ConfigDocument {
     pub plugins: PluginsConfig,
     pub web_search: WebSearchConfig,
     pub web_fetch: WebFetchConfig,
+    pub agents: AgentsConfig,
+}
+
+/// `[agents]` 段：子代理委托约束。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// 允许的最大委托深度：`1` 表示子代理不能再 spawn（旧行为）。
+    pub max_depth: u32,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self { max_depth: 1 }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -891,6 +906,13 @@ pub(super) fn validate_limits(config: &LimitsConfig) -> Result<(), CoreError> {
         return Err(CoreError::Config(
             "limits：连接与重试时限不得超过 7 天".into(),
         ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_agents(config: &AgentsConfig) -> Result<(), CoreError> {
+    if config.max_depth == 0 {
+        return Err(CoreError::Config("agents：max_depth 必须大于 0".into()));
     }
     Ok(())
 }

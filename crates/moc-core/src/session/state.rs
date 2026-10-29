@@ -101,6 +101,8 @@ pub struct SessionState {
     pub server_compaction_disabled: bool,
     /// CLM 实验模式当前的工作上下文；原始 transcript 始终保留。
     pub clm_context: Option<String>,
+    /// spawn 时快照的 agent preset 契约；普通会话与普通子代理为 `None`。
+    pub agent: Option<super::entries::AgentSessionMeta>,
     pub last_entry_id: String,
 }
 
@@ -120,6 +122,7 @@ impl SessionState {
             mode,
             permission,
             model,
+            agent,
             ..
         } = first
         else {
@@ -164,6 +167,7 @@ impl SessionState {
             first_kept_id: None,
             native_input: None,
             clm_context: None,
+            agent: agent.clone(),
             notices: Vec::new(),
             reminder_digests: BTreeMap::new(),
             last_entry_id: first.id().to_owned(),

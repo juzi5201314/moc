@@ -256,6 +256,7 @@ mod tests {
             title: format!("任务 {id}"),
             model: "test/model".into(),
             cwd: "/tmp".into(),
+            preset: None,
             status: AgentStatus::Running,
             created_at_ms: 0,
             updated_at_ms: 0,

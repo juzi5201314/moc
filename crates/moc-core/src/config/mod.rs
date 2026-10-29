@@ -104,6 +104,7 @@ pub struct ResolvedConfig {
     pub plugins: PluginsConfig,
     pub web_search: ResolvedWebSearch,
     pub web_fetch: ResolvedWebFetch,
+    pub agents: schema::AgentsConfig,
     providers: BTreeMap<String, model::ResolvedProvider>,
     base_raw: Value,
     overlays: Vec<PathBuf>,
@@ -224,6 +225,7 @@ impl ResolvedConfig {
             model::resolve_secret("web_search.api_key", &document.web_search.api_key)?;
         schema::validate_web_fetch(&document.web_fetch)?;
         schema::validate_ptc(&document.tools.ptc)?;
+        schema::validate_agents(&document.agents)?;
         schema::validate_limits(&document.limits)?;
         if document.tools.job.max_running == 0 {
             return Err(CoreError::Config("后台进程上限必须大于 0".into()));
@@ -263,6 +265,7 @@ impl ResolvedConfig {
                 max_bytes: document.web_fetch.max_bytes,
                 max_chars: document.web_fetch.max_chars,
             },
+            agents: document.agents,
             providers,
             base_raw,
             overlays,

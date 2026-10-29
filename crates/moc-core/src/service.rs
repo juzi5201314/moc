@@ -110,6 +110,8 @@ pub(crate) struct CoreInner {
     pub remote_unavailable: RwLock<std::collections::HashSet<String>>,
     /// 本进程内子代理的运行状态。历史以持久化的 transcript 为准。
     pub agents: Mutex<crate::agents::AgentRegistry>,
+    /// 内置 agent preset 注册表；插件 preset 按工作区在 spawn 时并入。
+    pub agent_presets: crate::agents::PresetRegistry,
     pub agent_tasks: Mutex<tokio::task::JoinSet<()>>,
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
@@ -578,6 +580,7 @@ impl Core {
                 ptc_host: Mutex::new(None),
                 remote_unavailable: RwLock::new(std::collections::HashSet::new()),
                 agents: Mutex::new(crate::agents::AgentRegistry::default()),
+                agent_presets: crate::agents::PresetRegistry::with_builtins(),
                 agent_tasks: Mutex::new(tokio::task::JoinSet::new()),
                 prompts: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
@@ -771,9 +774,14 @@ impl AgentService for Core {
             Arc::clone(&self.inner),
             ctx,
             params.session_id,
-            params.task,
-            params.title,
-            params.model,
+            crate::agents::SpawnSpec {
+                task: params.task,
+                title: params.title,
+                model: params.model,
+                preset: params.preset,
+                context: None,
+                output_schema: params.output_schema,
+            },
         )
         .await
         .map_err(to_rpc)

@@ -329,6 +329,13 @@ pub struct SessionInfo {
     /// 完全一致，模型永远不会看到它。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<String>,
+    /// spawn 时选定的 agent preset 名；普通子代理与普通会话为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preset: Option<String>,
+    /// 有效委托深度：顶层会话为 0，直接子代理为 1。旧 header 未记录深度的
+    /// 子代理按 1 处理。
+    #[serde(default)]
+    pub delegation_depth: u32,
     /// 工作目录。
     pub cwd: String,
     /// 创建时间的 UNIX 毫秒时间戳。
@@ -897,6 +904,8 @@ mod tests {
             permission: SessionPermission::Full,
             parent_session_id: None,
             forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
             cwd: "/tmp".into(),
             created_at_ms: 1,
             mode: SessionMode::Ptc,
@@ -910,6 +919,7 @@ mod tests {
             serde_json::json!({
                 "id": "ses_1", "title": "t", "model": "m", "permission": "full",
                 "mode": "ptc", "plan_active": true, "mode_locked": true,
+                "delegation_depth": 0,
                 "cwd": "/tmp", "created_at_ms": 1, "updated_at_ms": 2
             })
         );

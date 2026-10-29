@@ -88,10 +88,7 @@ pub(crate) async fn compact(
             state.mode,
             inner.client_supports_ask(ctx.connection_id()),
             config,
-            crate::tools::ToolScope {
-                control_agents: !state.session.is_subagent(),
-                subagent: state.session.is_subagent(),
-            },
+            crate::tools::ToolScope::for_session(state, config.agents.max_depth),
             &plugins,
         ),
         native_input: None,

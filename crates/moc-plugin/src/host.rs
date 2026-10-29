@@ -523,6 +523,20 @@ impl PluginHost {
         host
     }
 
+    /// 全部启用插件声明的 agent preset，按名索引；跨插件重名先到者胜
+    /// （与 `Descriptor` 收集顺序一致，加载顺序即目录顺序）。
+    pub fn agent_preset_declarations(
+        &self,
+    ) -> std::collections::BTreeMap<String, crate::descriptor::AgentPresetDecl> {
+        let mut presets = std::collections::BTreeMap::new();
+        for plugin in &self.plugins {
+            for decl in &plugin.descriptor.agent_presets {
+                presets.entry(decl.name.clone()).or_insert_with(|| decl.clone());
+            }
+        }
+        presets
+    }
+
     /// 返回全部配置声明，运行失败的插件也保留声明供 UI 修复配置。
     pub fn config_declarations(&self) -> Vec<(String, PathBuf, Vec<ConfigDecl>)> {
         self.plugins
@@ -2595,5 +2609,70 @@ mod tests {
             fingerprint(temp.path(), temp.path(), &settings),
             "文件改动后指纹必须变化"
         );
+    }
+
+    /// `agents.registerPreset` 顶层调用按声明收集；allow/deny 互斥，坏声明
+    /// 以插件错误呈现而非静默跳过。
+    #[tokio::test]
+    async fn agent_preset_declarations_collect_top_level_registrations() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "presets",
+            r#"
+            import { agents } from 'moc';
+            agents.registerPreset({
+                name: 'scout',
+                systemPrompt: '只读侦查，返回 path:line 证据。',
+                tools: { deny: ['edit', 'write', 'spawn_agent'] },
+            });
+            agents.registerPreset({
+                name: 'narrow',
+                systemPrompt: '窄面预设。',
+                tools: { allow: ['read', 'grep'] },
+            });
+            agents.registerPreset({ name: 'plain', systemPrompt: '无工具限制。' });
+            export default {};
+            "#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        assert_eq!(host.info()[0].error, None);
+        let presets = host.agent_preset_declarations();
+        assert_eq!(presets.len(), 3);
+        assert_eq!(
+            presets["scout"].deny,
+            Some(vec!["edit".into(), "write".into(), "spawn_agent".into()])
+        );
+        assert_eq!(
+            presets["narrow"].allow,
+            Some(vec!["read".into(), "grep".into()])
+        );
+        assert!(presets["plain"].allow.is_none() && presets["plain"].deny.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_preset_declaration_rejects_allow_and_deny_together() {
+        let temp = tempfile::tempdir().unwrap();
+        install(
+            temp.path(),
+            "bad",
+            r#"
+            import { agents } from 'moc';
+            agents.registerPreset({
+                name: 'both',
+                systemPrompt: 'x',
+                tools: { allow: ['read'], deny: ['write'] },
+            });
+            export default {};
+            "#,
+        );
+        let host = PluginHost::start(temp.path(), temp.path(), &settings(), &[]).await;
+        let info = host.info();
+        let error = info[0].error.as_ref().expect("互斥声明必须报错");
+        assert!(
+            error.contains("allow") && error.contains("deny"),
+            "错误必须点名互斥字段：{error}"
+        );
+        assert!(host.agent_preset_declarations().is_empty());
     }
 }

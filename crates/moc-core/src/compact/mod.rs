@@ -163,10 +163,7 @@ pub(crate) async fn model_context(
         state.mode,
         inner.client_supports_ask(ctx.connection_id()),
         config,
-        crate::tools::ToolScope {
-            control_agents: !state.session.is_subagent(),
-            subagent: state.session.is_subagent(),
-        },
+        crate::tools::ToolScope::for_session(state, config.agents.max_depth),
         &plugins,
     );
     let messages = replay::model_messages(state, None, Some(model));

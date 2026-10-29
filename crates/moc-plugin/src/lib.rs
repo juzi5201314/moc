@@ -14,7 +14,7 @@ pub mod runtime;
 pub mod schema;
 
 pub use descriptor::{
-    CommandDecl, ConfigDecl, ConfigKind, Descriptor, HookKind, ModeMask, ToolDecl,
+    AgentPresetDecl, CommandDecl, ConfigDecl, ConfigKind, Descriptor, HookKind, ModeMask, ToolDecl,
 };
 pub use error::{PluginError, Result};
 pub use host::{

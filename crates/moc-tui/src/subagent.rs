@@ -57,6 +57,7 @@ mod tests {
             title: "child".into(),
             model: "test/model".into(),
             cwd: "/tmp".into(),
+            preset: None,
             status: AgentStatus::Running,
             created_at_ms: 1,
             updated_at_ms: 1,

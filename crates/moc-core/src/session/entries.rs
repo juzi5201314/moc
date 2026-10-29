@@ -86,6 +86,12 @@ pub enum Entry {
         /// 消息回退分叉的来源会话；只给用户看，模型侧完全不可见。旧记录没有这个字段。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forked_from: Option<String>,
+        /// spawn 时的委托深度；旧子代理 header 没有它，读取按 1 处理。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delegation_depth: Option<u32>,
+        /// spawn 时解析的 agent preset 快照；普通子代理为 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentSessionMeta>,
         title: String,
         created_at_ms: u64,
     },
@@ -358,10 +364,46 @@ impl EntryPayload {
 ///   `yield` 和代理通信能力，所以只有真正的 spawn 才能写入。
 /// - `forked_from`：消息回退分叉出来的独立会话。分叉在模型侧和普通会话完全一致，
 ///   这个字段只给用户标出来源，永远不参与提示词、工具或代理列表的判断。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// spawn 时解析并快照进 header 的委托契约。
+///
+/// 四个字段彼此独立：普通子代理可以只带 `output_schema`（结构化 yield），
+/// preset 子代理则同时携带提示片段和工具面策略。快照在创建时冻结，插件
+/// 卸载或 preset 更新不影响已存在的子代理会话。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSessionMeta {
+    /// 选用的 preset 名；普通子代理为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// preset 注入 `<subagent>` 块的系统提示片段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// preset 的工具面策略（白名单或拒绝列表）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_policy: Option<crate::agents::ToolPolicy>,
+    /// `yield` 交付物必须满足的 JSON Schema；省略为自由文本交付。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+}
+
+impl AgentSessionMeta {
+    /// 契约是否为空：四个字段全空时 `SessionOrigin.agent` 不写入 header。
+    pub fn is_empty(&self) -> bool {
+        self.preset.is_none()
+            && self.prompt.is_none()
+            && self.tool_policy.is_none()
+            && self.output_schema.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionOrigin {
     pub parent_session_id: Option<String>,
     pub forked_from: Option<String>,
+    /// spawn 时的委托深度；非子代理为 `None`。
+    pub delegation_depth: Option<u32>,
+    /// spawn 的 preset 快照；普通子代理与普通会话为 `None`。
+    pub agent: Option<AgentSessionMeta>,
 }
 
 impl SessionOrigin {
@@ -370,11 +412,17 @@ impl SessionOrigin {
         Self::default()
     }
 
-    /// 子代理：由 `parent_session_id` 指定的会话 spawn。
-    pub fn spawned(parent_session_id: impl Into<String>) -> Self {
+    /// 子代理：由 `parent_session_id` 指定的会话在第 `delegation_depth` 层 spawn。
+    pub fn spawned(
+        parent_session_id: impl Into<String>,
+        delegation_depth: u32,
+        agent: Option<AgentSessionMeta>,
+    ) -> Self {
         Self {
             parent_session_id: Some(parent_session_id.into()),
             forked_from: None,
+            delegation_depth: Some(delegation_depth),
+            agent,
         }
     }
 
@@ -383,6 +431,8 @@ impl SessionOrigin {
         Self {
             parent_session_id: None,
             forked_from: Some(source.into()),
+            delegation_depth: None,
+            agent: None,
         }
     }
 }
@@ -419,6 +469,8 @@ impl Entry {
             permission,
             parent_session_id: origin.parent_session_id,
             forked_from: origin.forked_from,
+            delegation_depth: origin.delegation_depth,
+            agent: origin.agent,
             title,
             created_at_ms,
         }
@@ -791,6 +843,8 @@ impl Entry {
             permission,
             parent_session_id,
             forked_from,
+            delegation_depth,
+            agent,
             title,
             created_at_ms,
             at_ms,
@@ -811,6 +865,10 @@ impl Entry {
             mode_locked: false,
             parent_session_id: parent_session_id.clone(),
             forked_from: forked_from.clone(),
+            agent_preset: agent.as_ref().and_then(|meta| meta.preset.clone()),
+            // 旧 header 未记录深度的子代理按 1 处理（旧行为：子代理不能再 spawn）。
+            delegation_depth: delegation_depth
+                .unwrap_or_else(|| u32::from(parent_session_id.is_some())),
             cwd: cwd.clone(),
             created_at_ms: *created_at_ms,
             updated_at_ms: *at_ms,

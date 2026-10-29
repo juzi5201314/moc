@@ -21,11 +21,28 @@ fn text(value: &str, label: &str) -> Result<String, ToolError> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SpawnArgs {
+struct SpawnTask {
     task: String,
     title: Option<String>,
     model: Option<String>,
+    preset: Option<String>,
+    output_schema: Option<Value>,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpawnArgs {
+    task: Option<String>,
+    tasks: Option<Vec<SpawnTask>>,
+    title: Option<String>,
+    model: Option<String>,
+    preset: Option<String>,
+    context: Option<String>,
+    output_schema: Option<Value>,
+}
+
+/// `tasks[]` 批量 spawn 的条数上限。
+const MAX_SPAWN_TASKS: usize = 16;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +69,7 @@ struct WaitArgs {
 #[serde(deny_unknown_fields)]
 struct YieldArgs {
     report: String,
+    result: Option<Value>,
 }
 
 pub struct SpawnAgentTool;
@@ -66,7 +84,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &'static str {
-        "Create a direct child agent."
+        "Create child agents. Single spawn: pass task (+ optional title/model/preset/context/output_schema). Batch: pass tasks[] (same fields per item, up to 16) with optional shared context. preset selects a registered agent preset (e.g. \"explore\"); output_schema makes the child's `yield` deliver a validated structured result."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -75,15 +93,31 @@ impl Tool for SpawnAgentTool {
         false
     }
     fn def(&self) -> ToolDef {
+        // `task`/`tasks` 互斥走 `oneOf`；批量上界与空任务在 schema 层直接可见，
+        // run() 里的同款检查是执行契约（直接调用不经 schema）。
         ToolDef::new(
             "spawn_agent",
-            schema(
-                serde_json::json!({
-                    "task": {"type":"string"}, "title":{"type":"string"},
-                    "model":{"type":"string","enum":["inherit","default","explore","plan"]}
-                }),
-                &["task"],
-            ),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": {"type":"string","minLength":1},
+                    "tasks": {"type":"array","minItems":1,"maxItems":MAX_SPAWN_TASKS,"items":{
+                        "type":"object","properties":{
+                            "task":{"type":"string","minLength":1},
+                            "title":{"type":"string"},
+                            "model":{"type":"string","enum":["inherit","default","explore","plan"]},
+                            "preset":{"type":"string"},
+                            "output_schema":{"type":"object"}
+                        },"required":["task"],"additionalProperties":false}},
+                    "title": {"type":"string"},
+                    "model":{"type":"string","enum":["inherit","default","explore","plan"]},
+                    "preset":{"type":"string"},
+                    "context":{"type":"string"},
+                    "output_schema":{"type":"object"}
+                },
+                "additionalProperties": false,
+                "oneOf": [{"required":["task"]},{"required":["tasks"]}]
+            }),
         )
     }
     fn run<'a>(
@@ -94,33 +128,96 @@ impl Tool for SpawnAgentTool {
         Box::pin(async move {
             let args: SpawnArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let task = text(&args.task, "task")?;
-            if let Some(model) = args.model.as_deref()
-                && !matches!(model, "inherit" | "default" | "explore" | "plan")
-            {
-                return Err(ToolError::new(
-                    "E_BAD_PAYLOAD",
-                    "model must be inherit, default, explore, or plan",
-                ));
+            let items = match (args.task, args.tasks) {
+                (Some(task), None) => vec![SpawnTask {
+                    task,
+                    title: args.title,
+                    model: args.model,
+                    preset: args.preset,
+                    output_schema: args.output_schema,
+                }],
+                (None, Some(tasks)) => {
+                    if tasks.is_empty() || tasks.len() > MAX_SPAWN_TASKS {
+                        return Err(ToolError::new(
+                            "E_BAD_PAYLOAD",
+                            format!("tasks must contain 1..={MAX_SPAWN_TASKS} items"),
+                        ));
+                    }
+                    if args.title.is_some()
+                        || args.model.is_some()
+                        || args.preset.is_some()
+                        || args.output_schema.is_some()
+                    {
+                        return Err(ToolError::new(
+                            "E_BAD_PAYLOAD",
+                            "title/model/preset/output_schema belong inside each tasks[] item",
+                        ));
+                    }
+                    tasks
+                }
+                (Some(_), Some(_)) => {
+                    return Err(ToolError::new(
+                        "E_BAD_PAYLOAD",
+                        "task and tasks[] are mutually exclusive",
+                    ));
+                }
+                (None, None) => {
+                    return Err(ToolError::new(
+                        "E_BAD_PAYLOAD",
+                        "spawn_agent requires task or tasks[]",
+                    ));
+                }
+            };
+            let mut agents = Vec::with_capacity(items.len());
+            let mut errors = Vec::new();
+            for (index, item) in items.into_iter().enumerate() {
+                if let Some(model) = item.model.as_deref()
+                    && !matches!(model, "inherit" | "default" | "explore" | "plan")
+                {
+                    errors.push(serde_json::json!({
+                        "index": index,
+                        "error": "model must be inherit, default, explore, or plan",
+                    }));
+                    continue;
+                }
+                let spec = crate::agents::SpawnSpec {
+                    task: item.task,
+                    title: item.title,
+                    model: item.model,
+                    preset: item.preset,
+                    context: args.context.clone(),
+                    output_schema: item.output_schema,
+                };
+                match crate::agents::spawn(
+                    std::sync::Arc::clone(&ctx.core),
+                    ctx.request.clone(),
+                    ctx.session_id.clone(),
+                    spec,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        let mut agent = serde_json::json!({
+                            "agent_id": result.agent.id,
+                            "status": crate::agents::status_word(result.agent.status),
+                            "model": result.agent.model,
+                        });
+                        if let Some(preset) = result.agent.preset {
+                            agent["preset"] = serde_json::Value::String(preset);
+                        }
+                        agents.push(agent);
+                    }
+                    Err(error) => errors.push(serde_json::json!({
+                        "index": index,
+                        "error": error.to_string(),
+                    })),
+                }
             }
-            let result = crate::agents::spawn(
-                std::sync::Arc::clone(&ctx.core),
-                ctx.request.clone(),
-                ctx.session_id.clone(),
-                task,
-                args.title,
-                args.model,
-            )
-            .await
-            .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
-            Ok(ToolOutcome::success(
-                serde_json::json!({
-                    "agent_id": result.agent.id,
-                    "status": crate::agents::status_word(result.agent.status),
-                    "model": result.agent.model,
-                })
-                .to_string(),
-            ))
+            let body = serde_json::json!({"agents": agents, "errors": errors});
+            let mut outcome = ToolOutcome::success(body.to_string());
+            // 批量全部失败时按错误返回，单项失败保留在 errors 数组里给模型看。
+            outcome.is_error = body["agents"].as_array().is_some_and(Vec::is_empty);
+            Ok(outcome)
         })
     }
 }
@@ -352,7 +449,10 @@ impl Tool for YieldTool {
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "yield",
-            schema(serde_json::json!({"report":{"type":"string"}}), &["report"]),
+            schema(
+                serde_json::json!({"report":{"type":"string"}, "result":{}}),
+                &["report"],
+            ),
         )
     }
     fn run<'a>(
@@ -364,7 +464,7 @@ impl Tool for YieldTool {
             let args: YieldArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
             let report = text(&args.report, "report")?;
-            crate::agents::record_yield(&ctx.core, &ctx.session_id, report)
+            crate::agents::record_yield(&ctx.core, &ctx.session_id, report, args.result)
                 .await
                 .map_err(|error| ToolError::new("E_AGENT", error.to_string()))?;
             Ok(ToolOutcome::end_prompt(

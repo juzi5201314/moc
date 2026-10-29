@@ -444,6 +444,7 @@ mod tests {
             title: "child".into(),
             model: "p/model".into(),
             cwd: "/tmp".into(),
+            preset: None,
             status: crate::methods::AgentStatus::Queued,
             created_at_ms: 1,
             updated_at_ms: 1,

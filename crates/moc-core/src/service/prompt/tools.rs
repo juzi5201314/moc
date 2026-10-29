@@ -479,6 +479,17 @@ async fn execute_tool(
             "Subagents cannot create or control other subagents",
         ));
     }
+    // preset 快照策略：普通、嵌套（PTC）与批量路径共用这一道门，藏 schema 只是附带效果。
+    if ctx
+        .tool_policy
+        .as_ref()
+        .is_some_and(|policy| !policy.permits(name))
+    {
+        return Ok(ToolOutcome::failure(
+            "E_TOOL_DISABLED",
+            "This tool is not available under the active agent preset",
+        ));
+    }
     if name == "yield" && !ctx.subagent {
         return Ok(ToolOutcome::failure(
             "E_MODE",

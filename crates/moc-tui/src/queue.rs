@@ -619,6 +619,8 @@ mod tests {
             mode_locked: false,
             parent_session_id: None,
             forked_from: None,
+            agent_preset: None,
+            delegation_depth: 0,
             cwd: "/tmp".into(),
             created_at_ms: 0,
             updated_at_ms: 0,

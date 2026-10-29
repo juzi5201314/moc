@@ -628,10 +628,7 @@ async fn run_prompt_locked(
         mode,
         ask_supported,
         &project_config,
-        crate::tools::ToolScope {
-            control_agents: !subagent,
-            subagent,
-        },
+        crate::tools::ToolScope::for_session(&state_snapshot, project_config.agents.max_depth),
         &plugin_tools,
     );
     let mut last_message = Message::default();
@@ -1449,8 +1446,13 @@ async fn run_prompt_locked(
             mode,
             contract,
             permission,
-            allow_agents: !subagent,
+            allow_agents: state_snapshot.session.delegation_depth
+                < project_config.agents.max_depth,
             subagent,
+            tool_policy: state_snapshot
+                .agent
+                .as_ref()
+                .and_then(|meta| meta.tool_policy.clone()),
             nested: false,
             jobs: Arc::clone(&runtime.jobs),
             mcp: Arc::clone(&mcp),

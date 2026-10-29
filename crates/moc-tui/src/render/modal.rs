@@ -2755,6 +2755,8 @@ mod tests {
             mode_locked: false,
             parent_session_id: None,
             forked_from: forked_from.map(str::to_owned),
+            agent_preset: None,
+            delegation_depth: 0,
             cwd: cwd.into(),
             created_at_ms: 1,
             updated_at_ms: 2,
