@@ -371,8 +371,8 @@ export async function forkSession(sessionId: string): Promise<SessionInfo | unde
 }
 
 /**
- * 从某条消息回退。core 返回分叉会话（id 不同）或原地回退（id 相同）；
- * 目标是用户消息时把原文还给输入框。
+ * 从某条消息回退：core 在当前会话内原地截断（被截掉的尾部可用 `session/redo` 接回）。
+ * 目标是用户消息时，原文回到输入框供修改后重发。
  */
 export async function rewind(
   sessionId: string,

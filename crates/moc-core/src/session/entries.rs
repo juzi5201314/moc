@@ -362,8 +362,8 @@ impl EntryPayload {
 ///
 /// - `parent_session_id`：`spawn_agent` 创建的子代理。模型侧据此获得 `<subagent>` 约定、
 ///   `yield` 和代理通信能力，所以只有真正的 spawn 才能写入。
-/// - `forked_from`：消息回退分叉出来的独立会话。分叉在模型侧和普通会话完全一致，
-///   这个字段只给用户标出来源，永远不参与提示词、工具或代理列表的判断。
+/// - `forked_from`：从已有会话派生出的独立会话（如计划执行新会话）。派生会话在模型侧
+///   和普通会话完全一致，这个字段只给用户标出来源，永远不参与提示词、工具或代理列表的判断。
 /// spawn 时解析并快照进 header 的委托契约。
 ///
 /// 四个字段彼此独立：普通子代理可以只带 `output_schema`（结构化 yield），
@@ -426,7 +426,7 @@ impl SessionOrigin {
         }
     }
 
-    /// 回退分叉：从 `source` 会话分叉出的独立会话。
+    /// 派生会话：从 `source` 会话派生出的独立会话（如计划执行新会话）。
     pub fn forked(source: impl Into<String>) -> Self {
         Self {
             parent_session_id: None,
@@ -700,58 +700,6 @@ impl Entry {
             | Self::ResetBoundary { parent_id, .. } => parent_id.as_deref(),
         }
     }
-    /// 把非 header entry 挂到新的 transcript 父节点上。
-    pub fn set_parent_id(&mut self, parent_id: String) {
-        match self {
-            Self::Header { .. } => {}
-            Self::Message {
-                parent_id: value, ..
-            }
-            | Self::Compaction {
-                parent_id: value, ..
-            }
-            | Self::ModeChange {
-                parent_id: value, ..
-            }
-            | Self::PlanMode {
-                parent_id: value, ..
-            }
-            | Self::PermissionChange {
-                parent_id: value, ..
-            }
-            | Self::ModelChange {
-                parent_id: value, ..
-            }
-            | Self::TitleChange {
-                parent_id: value, ..
-            }
-            | Self::Todos {
-                parent_id: value, ..
-            }
-            | Self::Plan {
-                parent_id: value, ..
-            }
-            | Self::PlanFeedback {
-                parent_id: value, ..
-            }
-            | Self::ChildTool {
-                parent_id: value, ..
-            }
-            | Self::PtcState {
-                parent_id: value, ..
-            }
-            | Self::Usage {
-                parent_id: value, ..
-            }
-            | Self::ClmContext {
-                parent_id: value, ..
-            }
-            | Self::ResetBoundary {
-                parent_id: value, ..
-            } => *value = Some(parent_id),
-        }
-    }
-
     pub fn at_ms(&self) -> u64 {
         match self {
             Self::Header { at_ms, .. }
@@ -874,5 +822,51 @@ impl Entry {
             updated_at_ms: *at_ms,
             lock,
         })
+    }
+}
+
+/// 收集 transcript 条目里引用到的子代理会话 id 集合。
+///
+/// `spawn_agent` 的结果正文是 `{"agents":[{"agent_id": ...}], "errors": [...]}`，
+/// 批量与嵌套形状都可能变化，所以对工具结果 JSON 递归找 `agent_id` 键；
+/// 代理投递消息另用 `agent.from_id` 记入。回退后仍被历史引用的子会话才在
+/// 代理名册中可见，引用全部截掉的子会话即孤儿。
+pub fn referenced_agent_ids(entries: &[Entry]) -> std::collections::BTreeSet<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for entry in entries {
+        let Entry::Message { message, agent, .. } = entry else {
+            continue;
+        };
+        if let Some(meta) = agent {
+            ids.insert(meta.from_id.clone());
+        }
+        for result in message.tool_results() {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.content) {
+                collect_agent_id_keys(&value, &mut ids);
+            }
+        }
+    }
+    ids
+}
+
+fn collect_agent_id_keys(value: &serde_json::Value, ids: &mut std::collections::BTreeSet<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                if key == "agent_id" {
+                    if let Some(id) = item.as_str() {
+                        ids.insert(id.to_owned());
+                    }
+                } else {
+                    collect_agent_id_keys(item, ids);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_agent_id_keys(item, ids);
+            }
+        }
+        _ => {}
     }
 }

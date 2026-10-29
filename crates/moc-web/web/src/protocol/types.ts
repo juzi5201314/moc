@@ -357,6 +357,8 @@ export type SessionLoadPageResult = {
   plans?: PlanInfo[];
   child_calls?: TranscriptChildCall[];
   content_truncated?: boolean;
+  // 最近一次回退截掉、仍可前滚接回的条目（core 进程内存态，重启即失效）。
+  redo_entries?: TranscriptEntry[];
 };
 
 export type SessionModelOverflowAction = "switch" | "compact" | "ask";

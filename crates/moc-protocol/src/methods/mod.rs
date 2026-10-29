@@ -115,11 +115,12 @@ pub use session::{
     SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadPage,
     SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
     SessionLockInfo, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
-    SessionPermission, SessionRename, SessionRenameParams, SessionRewind, SessionRewindParams,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
-    SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams, SessionUnload,
-    SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams,
-    SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry,
+    SessionPermission, SessionRedo, SessionRedoParams, SessionRename, SessionRenameParams,
+    SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams,
+    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
+    SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
+    TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -157,6 +158,7 @@ mod tests {
             (<SessionLoadPage as Method>::NAME, "session/load_page"),
             (<SessionLoad as Method>::NAME, "session/load"),
             (<SessionRewind as Method>::NAME, "session/rewind"),
+            (<SessionRedo as Method>::NAME, "session/redo"),
             (<SessionUnload as Method>::NAME, "session/unload"),
             (<SessionRename as Method>::NAME, "session/rename"),
             (<SessionDelete as Method>::NAME, "session/delete"),
@@ -233,6 +235,7 @@ mod tests {
         client::<SessionBtw>();
         client::<SessionBtwCancel>();
         client::<SessionRewind>();
+        client::<SessionRedo>();
         server_request::<SessionRequestPermission>();
         client::<SessionSetPermission>();
         client::<SessionSetMode>();

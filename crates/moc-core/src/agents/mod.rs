@@ -71,7 +71,7 @@ fn terminal(status: AgentStatus) -> bool {
     )
 }
 
-fn live(status: AgentStatus) -> bool {
+pub(crate) fn live(status: AgentStatus) -> bool {
     matches!(status, AgentStatus::Queued | AgentStatus::Running)
 }
 
@@ -316,9 +316,8 @@ fn plugin_presets(
 
 /// spawn 参数里的 `output_schema` 必须是合法的 JSON Schema 对象。
 fn validate_output_schema(schema: &serde_json::Value) -> Result<(), CoreError> {
-    jsonschema::validator_for(schema).map_err(|error| {
-        invalid(format!("output_schema 不是合法的 JSON Schema：{error}"))
-    })?;
+    jsonschema::validator_for(schema)
+        .map_err(|error| invalid(format!("output_schema 不是合法的 JSON Schema：{error}")))?;
     Ok(())
 }
 
@@ -339,9 +338,13 @@ pub(crate) async fn spawn(
         )));
     }
     let model = resolve_model(&config, &parent.model, spec.model.as_deref())?;
-    let agent_meta =
-        resolve_agent_meta(&inner, &parent.session.cwd, spec.preset.as_deref(), spec.output_schema)
-            .await?;
+    let agent_meta = resolve_agent_meta(
+        &inner,
+        &parent.session.cwd,
+        spec.preset.as_deref(),
+        spec.output_schema,
+    )
+    .await?;
     let task = match spec.context {
         Some(context) if !context.trim().is_empty() => {
             format!("{}\n\n{}", context.trim(), task)
@@ -659,6 +662,16 @@ async fn deliver_result_notice(
         AgentStatus::Failed => "failed",
         _ => return,
     };
+    // 回退孤儿的收尾通知不进父会话 notice 队列：它在 transcript 里的痕迹已被
+    // 截断，"已停止"通知只会成为指向死时间线的噪音。
+    if inner
+        .sessions
+        .orphan_marks(parent_id)
+        .await
+        .contains(agent_id)
+    {
+        return;
+    }
     let Ok(parent) = inner.sessions.get(parent_id).await else {
         return;
     };
@@ -741,11 +754,26 @@ async fn peers(inner: &CoreInner, session_id: &str) -> Result<Peers, CoreError> 
     let mut children = Vec::new();
     let mut siblings = Vec::new();
     let mut parent = None;
+    // children/siblings 的可见性以「未被父会话标记为孤儿」为准：回退把 spawn
+    // 记录截掉的子代理被标记，不再进名册也不能被寻址；redo 接回引用时标记摘除，
+    // 名册随之恢复。标记集合按首个命中的方向惰性取一次。
+    let mut own_orphans: Option<std::collections::BTreeSet<String>> = None;
+    let mut parent_orphans: Option<std::collections::BTreeSet<String>> = None;
     for session in sessions {
         if session.id == session_id {
             continue;
         }
         if session.parent_session_id.as_deref() == Some(session_id) {
+            if own_orphans.is_none() {
+                own_orphans = Some(inner.sessions.orphan_marks(session_id).await);
+            }
+            if own_orphans
+                .as_ref()
+                .expect("上一行刚填充")
+                .contains(&session.id)
+            {
+                continue;
+            }
             let status = status_of(&session.id);
             children.push(AgentEntry { session, status });
             continue;
@@ -759,6 +787,16 @@ async fn peers(inner: &CoreInner, session_id: &str) -> Result<Peers, CoreError> 
             continue;
         }
         if session.parent_session_id.as_deref() == Some(parent_id) {
+            if parent_orphans.is_none() {
+                parent_orphans = Some(inner.sessions.orphan_marks(parent_id).await);
+            }
+            if parent_orphans
+                .as_ref()
+                .expect("上一行刚填充")
+                .contains(&session.id)
+            {
+                continue;
+            }
             let status = status_of(&session.id);
             siblings.push(AgentEntry { session, status });
         }
@@ -830,6 +868,19 @@ pub(crate) async fn message(
     let text = validate_text(&text, "message")?;
     let target = validate_text(&target, "target")?;
     let peers = peers(&inner, &session_id).await?;
+    // 调用方自己已被父会话回退孤立：它发出的一切消息都属于死时间线。
+    if let Some(parent_id) = peers.me.parent_session_id.as_deref()
+        && inner
+            .sessions
+            .orphan_marks(parent_id)
+            .await
+            .contains(&peers.me.id)
+    {
+        return Err(CoreError::Session(format!(
+            "AGENT_ORPHANED: {} 已被父会话回退孤立，不能投递消息",
+            peers.me.id
+        )));
+    }
     let from = AgentMessageMeta {
         from_id: peers.me.id.clone(),
         from_title: peers.me.title.clone(),
@@ -974,6 +1025,13 @@ pub(crate) async fn drain_inbox(
         }
         std::mem::take(&mut inbox.messages)
     };
+    // 回退孤儿在标记生效前塞进收件箱的滞留消息属于死时间线：落盘就是新历史，
+    // 会污染回退后的 transcript 并作废前滚尾部，直接丢弃。
+    let orphans = inner.sessions.orphan_marks(session).await;
+    let pending: Vec<PendingAgentMessage> = pending
+        .into_iter()
+        .filter(|queued| !orphans.contains(&queued.meta.from_id))
+        .collect();
     let count = pending.len();
     if count == 0 {
         return Ok(0);
@@ -1061,12 +1119,16 @@ pub(crate) async fn record_yield(
             let validator = jsonschema::validator_for(schema)
                 .map_err(|error| invalid(format!("output_schema 非法：{error}")))?;
             if let Err(error) = validator.validate(&result) {
-                return Err(invalid(format!("yield 的 result 不满足 output_schema：{error}")));
+                return Err(invalid(format!(
+                    "yield 的 result 不满足 output_schema：{error}"
+                )));
             }
             Some(result)
         }
         (Some(_), None) => {
-            return Err(invalid("该子代理声明了 output_schema，yield 必须提供 result"));
+            return Err(invalid(
+                "该子代理声明了 output_schema，yield 必须提供 result",
+            ));
         }
         (None, Some(_)) => {
             return Err(invalid("该子代理未声明 output_schema，不能交付结构化结果"));

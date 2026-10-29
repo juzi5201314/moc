@@ -117,7 +117,7 @@ pub enum AppEvent {
         result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
     },
     /// 会话回退选择器的数据加载结果。
-    RewindLoaded(anyhow::Result<moc_protocol::SessionLoadResult>),
+    RewindLoaded(anyhow::Result<moc_protocol::methods::SessionLoadPageResult>),
     Loaded(
         moc_protocol::SessionInfo,
         Vec<crate::transcript::Entry>,
@@ -127,9 +127,10 @@ pub enum AppEvent {
         /// 只读打开：另一个 core 进程持有写租约。
         bool,
     ),
-    /// 会话回退完成；保留选中的消息以便用户消息恢复到输入框。
+    /// 会话回退/前滚完成；`is_redo` 区分向前滚（选中的是已回退节点，不还原到输入框）。
     Rewound {
         selected: moc_protocol::methods::TranscriptEntry,
+        is_redo: bool,
         result: anyhow::Result<moc_protocol::SessionLoadResult>,
     },
     /// 会占住会话提示锁的前端操作收尾（模型切换、思考等级切换、手动压缩）。

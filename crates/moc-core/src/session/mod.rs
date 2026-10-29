@@ -7,7 +7,7 @@ pub mod maintenance;
 pub mod state;
 pub mod store;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +57,20 @@ pub struct SessionRecord {
     lease: parking_lot::Mutex<Option<lock::SessionLockGuard>>,
     /// 串行化「检查 → 取租约 → 对齐磁盘」的整个流程，避免两个并发请求同时去抢内核锁。
     lease_gate: Mutex<()>,
+    /// 回退截掉的尾部，栈式存放供 `redo` 前滚；每次回退压一层，栈顶是当前可接回的
+    /// 那段。栈顶首条的 `parent_id` 接不上当前 tip 时整条废弃时间线作废（清空）。
+    ///
+    /// 用同步锁包装：只在取/放栈的短临界区里访问，不跨 `await`。
+    rewind_stash: parking_lot::Mutex<Vec<Vec<Entry>>>,
+    /// 被回退孤立的子代理 id：截掉的尾部引用过、但保留前缀不引用的那些。
+    /// redo 把引用接回时摘除对应标记；新历史落盘作废 stash 后标记仍保留——
+    /// 那条分支已永久死去，名册继续对它们不可见。
+    ///
+    /// 与 transcript 截断同为永久事实，所以写进父会话 sidecar 的
+    /// `orphaned_agents` 文件（每行一个 id）持久化：进程重启后孤儿标记仍有效，
+    /// 这点和仅限进程内的 `rewind_stash` 不同。用同步锁包装：只在取/放集合的
+    /// 短临界区里访问，不跨 `await`。
+    pub(crate) orphaned_agents: parking_lot::Mutex<BTreeSet<String>>,
 }
 
 impl SessionRecord {
@@ -145,6 +159,8 @@ impl SessionTable {
                 paths,
                 lease: parking_lot::Mutex::new(None),
                 lease_gate: Mutex::new(()),
+                rewind_stash: parking_lot::Mutex::new(Vec::new()),
+                orphaned_agents: parking_lot::Mutex::new(BTreeSet::new()),
             }),
         );
         Ok(info)
@@ -175,6 +191,7 @@ impl SessionTable {
             .first()
             .cloned()
             .ok_or_else(|| CoreError::Session("transcript 缺少会话头部".into()))?;
+        let orphaned_agents = load_orphans(&paths).await;
         let record = Arc::new(SessionRecord {
             state: Arc::new(Mutex::new(state)),
             prompt_lock: Arc::new(Mutex::new(())),
@@ -185,11 +202,27 @@ impl SessionTable {
             paths,
             lease: parking_lot::Mutex::new(None),
             lease_gate: Mutex::new(()),
+            rewind_stash: parking_lot::Mutex::new(Vec::new()),
+            orphaned_agents: parking_lot::Mutex::new(orphaned_agents),
         });
         let mut records = self.records.write();
         Ok(Arc::clone(
             records.entry(session_id.to_owned()).or_insert(record),
         ))
+    }
+
+    /// 该会话当前标记为孤儿的子代理 id。
+    ///
+    /// 已加载会话读内存集合；未加载时只读 sidecar 里的标记文件，不加载整个
+    /// transcript——名册构建是热路径，不能为这点数据付全量解析的代价。
+    pub(crate) async fn orphan_marks(&self, session_id: &str) -> BTreeSet<String> {
+        if let Some(record) = self.records.read().get(session_id) {
+            return record.orphaned_agents.lock().clone();
+        }
+        match self.store.find(session_id).await {
+            Ok(Some(paths)) => load_orphans(&paths).await,
+            _ => BTreeSet::new(),
+        }
     }
 
     /// 磁盘上的日志是跨进程的唯一依据，不能用缓存状态覆盖外部更新。
@@ -445,6 +478,25 @@ impl SessionTable {
             })
             .collect();
         let has_more = start > 0 || entries.len() < end.saturating_sub(start);
+        // 前滚列表只暴露 transcript 条目；非消息 entry 会随目标一并接回，但不在选择器里占位。
+        let tip = state.entries.last().map(Entry::id);
+        let redo_entries = {
+            let stash = record.rewind_stash.lock();
+            if stash
+                .last()
+                .and_then(|tail| tail.first())
+                .is_some_and(|first| first.parent_id() == tip)
+            {
+                stash
+                    .last()
+                    .expect("栈顶已校验非空")
+                    .iter()
+                    .filter_map(|entry| entry.transcript_entry())
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         let mut session = state.session_info();
         session.lock = lock::read(record.paths.lock_file(session_id));
         Ok(SessionLoadPageResult {
@@ -455,24 +507,21 @@ impl SessionTable {
             plans: state.plans.clone(),
             child_calls,
             content_truncated,
+            redo_entries,
         })
     }
-    /// 创建回退分叉，并从目标消息重建分叉的上下文。
+    /// 原地回退：把会话历史截回目标消息，不产生新会话。
     ///
-    /// 用户消息作为待重新编辑的内容，不写入分叉；助手的工具调用会连同紧随其后的工具
-    /// 结果一起保留，不留下不完整的工具历史。原会话保持不变。
-    ///
-    /// 分叉是**独立会话**：不建立父子链接，模型侧看不出它和普通会话的区别，因此没有
-    /// 子代理约定、代理列表和 `yield`。来源只记在 [`SessionOrigin::forked`] 的
-    /// `forked_from` 里，供界面显示。
+    /// 用户消息作为待重新编辑的内容不保留（回到输入框）；助手的工具调用连同紧随其后的
+    /// 工具结果一起保留，不留下不完整的工具历史。截掉的尾部压入
+    /// [`SessionRecord::rewind_stash`]，供 [`Self::redo`] 前滚。
     pub async fn rewind(
         &self,
         session_id: &str,
         entry_id: &TranscriptEntryId,
-        compress: bool,
     ) -> Result<SessionLoadResult, CoreError> {
         let record = self.get(session_id).await?;
-        let entries = {
+        let (kept, tail) = {
             let state = record.state.lock().await;
             let Some(target) = state
                 .entries
@@ -519,41 +568,96 @@ impl SessionTable {
                     end += 1;
                 }
             }
-            state.entries[..end].to_vec()
+            (state.entries[..end].to_vec(), state.entries[end..].to_vec())
         };
-        let source = self.get(session_id).await?;
-        let source_info = source.state.lock().await.session_info();
-        let child_title = format!("回退：{}", source_info.title);
-        let child_info = self
-            .create(
-                &source_info.cwd,
-                &source_info.model,
-                source_info.mode,
-                source_info.permission,
-                Some(&child_title),
-                SessionOrigin::forked(source_info.id.clone()),
-                compress,
-            )
-            .await?;
-        let child = self.get(&child_info.id).await?;
-        let child_header = child
-            .state
-            .lock()
-            .await
-            .entries
-            .first()
-            .cloned()
-            .ok_or_else(|| CoreError::Session("回退分叉缺少会话头部".into()))?;
-        let mut child_entries = Vec::with_capacity(entries.len());
-        child_entries.push(child_header);
-        child_entries.extend(entries.into_iter().skip(1));
-        let mut parent_id = child_entries[0].id().to_owned();
-        for entry in &mut child_entries[1..] {
-            entry.set_parent_id(parent_id.clone());
-            parent_id = entry.id().to_owned();
+        // 尾部引用过、前缀不引用的子代理被孤立：标记后不再进名册，运行中的由
+        // service 层停杀；redo 接回引用时摘除标记。RPC spawn 的子代理从不进
+        // transcript，两侧都没有引用，天然不受标记影响。标记在截断落盘之后
+        // 写入，保证「先截断、后标记」的事实顺序。
+        let new_orphans: BTreeSet<String> = if tail.is_empty() {
+            BTreeSet::new()
+        } else {
+            let kept_refs = entries::referenced_agent_ids(&kept);
+            entries::referenced_agent_ids(&tail)
+                .difference(&kept_refs)
+                .cloned()
+                .collect()
+        };
+        self.rewrite(session_id, kept).await?;
+        if !tail.is_empty() {
+            record.rewind_stash.lock().push(tail);
         }
-        self.rewrite(&child_info.id, child_entries).await?;
-        self.load(&child_info.id, None).await
+        if !new_orphans.is_empty() {
+            let ids = {
+                let mut marks = record.orphaned_agents.lock();
+                marks.extend(new_orphans);
+                marks.clone()
+            };
+            persist_orphans(&record.paths, &ids).await?;
+        }
+        self.load(session_id, None).await
+    }
+
+    /// 向前滚：把最近一次回退截掉的尾部接回，到 `entry_id` 为止（含）。
+    ///
+    /// 只校验栈顶能否接上当前 tip：接不上说明回退后写入了新历史，整条废弃时间线作废。
+    /// 目标之后的剩余尾部重新压栈，可以分次前滚。
+    pub async fn redo(
+        &self,
+        session_id: &str,
+        entry_id: &TranscriptEntryId,
+    ) -> Result<SessionLoadResult, CoreError> {
+        let record = self.get(session_id).await?;
+        let entries = {
+            let state = record.state.lock().await;
+            let tip = state.entries.last().map(Entry::id);
+            let mut stash = record.rewind_stash.lock();
+            let chained = stash
+                .last()
+                .and_then(|tail| tail.first())
+                .is_some_and(|first| first.parent_id() == tip);
+            if !chained {
+                stash.clear();
+                return Err(CoreError::Session(
+                    "INVALID_PARAMS: 没有可向前滚的回退历史".into(),
+                ));
+            }
+            let tail = stash.last().expect("栈顶已校验非空");
+            let Some(pos) = tail
+                .iter()
+                .position(|entry| entry.id() == entry_id.as_str())
+            else {
+                return Err(CoreError::Session(format!(
+                    "INVALID_PARAMS: 前滚目标不在已回退尾部：{}",
+                    entry_id.as_str()
+                )));
+            };
+            let mut restored = state.entries.clone();
+            restored.extend_from_slice(&tail[..=pos]);
+            let remainder = tail[pos + 1..].to_vec();
+            if remainder.is_empty() {
+                stash.pop();
+            } else {
+                *stash.last_mut().expect("栈顶已校验非空") = remainder;
+            }
+            restored
+        };
+        self.rewrite(session_id, entries.clone()).await?;
+        // 接回来的条目重新引用了子代理，摘掉对应孤儿标记；剩余仍被截断的继续标记。
+        let ids = {
+            let refs = entries::referenced_agent_ids(&entries);
+            let mut marks = record.orphaned_agents.lock();
+            if marks.iter().any(|id| refs.contains(id)) {
+                marks.retain(|id| !refs.contains(id));
+                Some(marks.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(ids) = ids {
+            persist_orphans(&record.paths, &ids).await?;
+        }
+        self.load(session_id, None).await
     }
 
     /// 追加新 entry；持有状态锁时不跨文件 I/O 的 await。
@@ -591,6 +695,17 @@ impl SessionTable {
                 .append(&entry, None)
                 .await?;
             record.state.lock().await.apply_entry(entry.clone());
+            // 回退后写入新历史会斩断可前滚的尾部：栈顶接不上新 tip 就整栈作废。
+            {
+                let mut stash = record.rewind_stash.lock();
+                let chained = stash
+                    .last()
+                    .and_then(|tail| tail.first())
+                    .is_some_and(|first| first.parent_id() == Some(entry.id()));
+                if !chained {
+                    stash.clear();
+                }
+            }
             Ok(entry)
         })
         .await
@@ -1042,12 +1157,106 @@ fn sanitize_title(title: &str) -> String {
         .to_owned()
 }
 
+/// 孤儿标记文件路径：父会话 sidecar 下每行一个被孤立子代理的 id。
+fn orphans_path(paths: &SessionPaths) -> PathBuf {
+    paths.sidecar.join("orphaned_agents")
+}
+
+/// 读取持久化的孤儿标记；文件不存在或读不出都按空集合处理——最坏情况是
+/// 孤儿重新出现在名册里，与未打标记的行为一致，不会误伤正常子代理。
+async fn load_orphans(paths: &SessionPaths) -> BTreeSet<String> {
+    match tokio::fs::read_to_string(orphans_path(paths)).await {
+        Ok(text) => text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        Err(_) => BTreeSet::new(),
+    }
+}
+
+/// 把孤儿标记写回磁盘：空集合删除文件；非空按临时文件 + rename 原子发布，
+/// 和 transcript rewrite 同一套崩溃语义。
+async fn persist_orphans(paths: &SessionPaths, ids: &BTreeSet<String>) -> Result<(), CoreError> {
+    let file = orphans_path(paths);
+    if ids.is_empty() {
+        match tokio::fs::remove_file(&file).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(CoreError::Io(error)),
+        }
+    }
+    tokio::fs::create_dir_all(&paths.sidecar).await?;
+    let temp = file.with_extension(format!("tmp-{}", crate::ids::entry_id()));
+    let mut text = ids.iter().cloned().collect::<Vec<_>>().join("\n");
+    text.push('\n');
+    tokio::fs::write(&temp, text).await?;
+    tokio::fs::rename(&temp, &file).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use moc_llm::{ContentPart, Role, ToolCall};
-    use moc_protocol::methods::{SessionMode, SessionRenameParams, ToolStatus};
+    use moc_protocol::methods::{
+        AgentMessageMeta, AgentMessageOutcome, SessionMode, SessionRenameParams, ToolStatus,
+    };
 
     use super::*;
+
+    /// 引用收集：工具结果 JSON 任意深度的字符串 `agent_id` 与代理消息 `from_id`
+    /// 都算引用；非法 JSON、非字符串值被忽略。
+    #[test]
+    fn referenced_agent_ids_collects_nested_results_and_agent_meta() {
+        let tool_entry = |content: &str| {
+            Entry::from_payload(
+                EntryPayload::Message {
+                    message: Message {
+                        role: Role::Tool,
+                        content: vec![ContentPart::ToolResult(ToolResult {
+                            tool_call_id: "call_1".into(),
+                            content: content.into(),
+                            is_error: false,
+                            images: Vec::new(),
+                        })],
+                    },
+                    tool: None,
+                    finish_reason: None,
+                    agent: None,
+                },
+                "e0".into(),
+                0,
+            )
+        };
+        let agent_entry = Entry::from_payload(
+            EntryPayload::Message {
+                message: Message::user_text("ping"),
+                tool: None,
+                finish_reason: None,
+                agent: Some(AgentMessageMeta {
+                    from_id: "ses_sender".into(),
+                    from_title: "sender".into(),
+                    delivery: AgentMessageOutcome::Injected,
+                }),
+            },
+            "e1".into(),
+            0,
+        );
+        let entries = vec![
+            tool_entry(r#"{"agents":[{"agent_id":"ses_a"}],"errors":[]}"#),
+            tool_entry(r#"{"nested":{"items":[{"agent_id":"ses_b"}]}}"#),
+            tool_entry("not json"),
+            tool_entry(r#"{"agent_id":123}"#),
+            agent_entry,
+        ];
+        let ids = entries::referenced_agent_ids(&entries);
+        assert_eq!(
+            ids.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["ses_a", "ses_b", "ses_sender"],
+            "只收集字符串 agent_id 与 agent.from_id：{ids:?}"
+        );
+    }
 
     async fn create_plugin_state_session(table: &SessionTable) -> SessionInfo {
         table
@@ -1211,7 +1420,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plugin_state_is_not_inherited_by_rewind_or_cleared_by_reset() {
+    async fn plugin_state_survives_in_place_rewind_and_reset() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
         let session = create_plugin_state_session(&table).await;
@@ -1223,37 +1432,33 @@ mod tests {
             .append_message(&session.id, Message::user_text("回退目标"), None, None)
             .await
             .expect("追加用户消息");
-        let fork = table
-            .rewind(&session.id, &TranscriptEntryId::new(message.id()), false)
+        let rewound = table
+            .rewind(&session.id, &TranscriptEntryId::new(message.id()))
             .await
-            .expect("创建回退会话");
-        assert_ne!(fork.session.id, session.id);
-        assert!(
-            table
-                .plugin_state_keys(&fork.session.id, "demo")
-                .await
-                .expect("新 ID 状态为空")
-                .is_empty()
-        );
-        table
-            .append(&session.id, EntryPayload::ResetBoundary)
-            .await
-            .expect("清空原会话上下文");
+            .expect("原地回退");
+        assert_eq!(rewound.session.id, session.id, "回退不产生新会话");
         assert_eq!(
             table
                 .plugin_state_get(&session.id, "demo", "count")
                 .await
-                .expect("原 ID 状态保留"),
+                .expect("状态随会话保留"),
+            Some(serde_json::json!(1))
+        );
+        table
+            .append(&session.id, EntryPayload::ResetBoundary)
+            .await
+            .expect("清空会话上下文");
+        assert_eq!(
+            table
+                .plugin_state_get(&session.id, "demo", "count")
+                .await
+                .expect("ResetBoundary 不动插件状态"),
             Some(serde_json::json!(1))
         );
         let record = table.get(&session.id).await.expect("会话记录");
         let path = record.paths.plugin_state("demo");
-        table.delete(&session.id).await.expect("删除原会话");
+        table.delete(&session.id).await.expect("删除会话");
         assert!(!path.exists(), "删除会话会清理插件状态");
-        table
-            .load(&fork.session.id, None)
-            .await
-            .expect("独立分叉不受删除影响");
     }
 
     /// 子代理会话整个放在父会话目录里：transcript 和父会话的 sidecar 同目录，自己的
@@ -1920,7 +2125,7 @@ mod tests {
         let assistant_id = TranscriptEntryId::new(assistant.id());
 
         let rewound = table
-            .rewind(&info.id, &second_user_id, false)
+            .rewind(&info.id, &second_user_id)
             .await
             .expect("回退到用户消息");
         assert_eq!(rewound.entries.len(), 3);
@@ -1928,33 +2133,196 @@ mod tests {
             rewound.entries.last().expect("工具结果").message.role,
             Role::Tool
         );
-        assert_ne!(rewound.session.id, info.id);
-        // 分叉是独立会话：不建立父链接，来源只记在 forked_from 上。
+        // 原地回退不产生新会话：id、header、出身全部保持原样。
+        assert_eq!(rewound.session.id, info.id);
         assert!(rewound.session.parent_session_id.is_none());
-        assert!(!rewound.session.is_subagent());
-        assert_eq!(
-            rewound.session.forked_from.as_deref(),
-            Some(info.id.as_str())
-        );
+        assert!(rewound.session.forked_from.is_none());
+        // 截断已落盘：换一张表从磁盘重读，尾部确实不在了。
         let reloaded = SessionTable::new(directory.path().join("sessions"), true)
-            .load(&rewound.session.id, None)
+            .load(&info.id, None)
             .await
-            .expect("从磁盘重新读取分叉");
-        assert!(reloaded.session.parent_session_id.is_none());
-        assert_eq!(
-            reloaded.session.forked_from.as_deref(),
-            Some(info.id.as_str())
-        );
-        let original = table.load(&info.id, None).await.expect("读取原会话");
-        assert_eq!(original.entries.len(), 4);
+            .expect("从磁盘重新读取截断后的会话");
+        assert_eq!(reloaded.entries.len(), 3);
+        let original = table.load(&info.id, None).await.expect("读取会话");
+        assert_eq!(original.entries.len(), 3);
 
         let rewound_again = table
-            .rewind(&info.id, &assistant_id, false)
+            .rewind(&info.id, &assistant_id)
             .await
             .expect("回退到助手工具调用");
         assert_eq!(rewound_again.entries.len(), 3);
         assert_eq!(rewound_again.entries[0].id, first_user.id());
     }
+
+    #[tokio::test]
+    async fn redo_reattaches_rewound_tail_until_new_history_lands() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建会话");
+        let u1 = table
+            .append_message(&info.id, Message::user_text("一"), None, None)
+            .await
+            .expect("一");
+        table
+            .append_message(&info.id, Message::assistant_text("答一"), None, None)
+            .await
+            .expect("答一");
+        let u2 = table
+            .append_message(&info.id, Message::user_text("二"), None, None)
+            .await
+            .expect("二");
+        let a2 = table
+            .append_message(&info.id, Message::assistant_text("答二"), None, None)
+            .await
+            .expect("答二");
+        let u3 = table
+            .append_message(&info.id, Message::user_text("三"), None, None)
+            .await
+            .expect("三");
+        let a3 = table
+            .append_message(&info.id, Message::assistant_text("答三"), None, None)
+            .await
+            .expect("答三");
+
+        // 回退到 u2：尾部 [u2, a2, u3, a3] 压栈。
+        table
+            .rewind(&info.id, &TranscriptEntryId::new(u2.id()))
+            .await
+            .expect("回退到 u2");
+        // 分次前滚：先到 a2，剩余 [u3, a3] 留在栈上并可被分页读取。
+        let partial = table
+            .redo(&info.id, &TranscriptEntryId::new(a2.id()))
+            .await
+            .expect("前滚到 a2");
+        assert_eq!(partial.session.id, info.id);
+        assert_eq!(partial.entries.len(), 4);
+        assert_eq!(partial.entries[0].id, u1.id());
+        let page = table
+            .load_page(&info.id, None, 32, None)
+            .await
+            .expect("分页");
+        assert_eq!(page.redo_entries.len(), 2);
+        // 剩余尾部整体接回，条目保持原 id 与顺序。
+        let full = table
+            .redo(&info.id, &TranscriptEntryId::new(a3.id()))
+            .await
+            .expect("前滚到 a3");
+        assert_eq!(full.entries.len(), 6);
+        assert_eq!(full.entries[4].id, u3.id());
+        assert_eq!(full.entries[5].id, a3.id());
+        assert!(
+            table
+                .load_page(&info.id, None, 32, None)
+                .await
+                .expect("分页")
+                .redo_entries
+                .is_empty()
+        );
+        // 接回的内容已落盘：换一张表重读仍在。
+        let reloaded = SessionTable::new(directory.path().join("sessions"), true)
+            .load(&info.id, None)
+            .await
+            .expect("磁盘重读");
+        assert_eq!(reloaded.entries.len(), 6);
+        // 栈空后再前滚报错。
+        assert!(
+            table
+                .redo(&info.id, &TranscriptEntryId::new(a3.id()))
+                .await
+                .is_err(),
+            "栈空后前滚必须报错"
+        );
+        // 再次回退后写入新历史：废弃时间线断链，前滚被拒。
+        table
+            .rewind(&info.id, &TranscriptEntryId::new(u3.id()))
+            .await
+            .expect("再回退");
+        table
+            .append_message(&info.id, Message::user_text("新提问"), None, None)
+            .await
+            .expect("新历史");
+        assert!(
+            table
+                .redo(&info.id, &TranscriptEntryId::new(u3.id()))
+                .await
+                .is_err(),
+            "新历史落地后前滚必须报错"
+        );
+    }
+
+    #[tokio::test]
+    async fn redo_stack_survives_nested_rewinds() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let table = SessionTable::new(directory.path().join("sessions"), true);
+        let info = table
+            .create(
+                "/tmp/project",
+                "p/model",
+                SessionMode::Normal,
+                SessionPermission::Full,
+                None,
+                SessionOrigin::root(),
+                false,
+            )
+            .await
+            .expect("创建会话");
+        let u1 = table
+            .append_message(&info.id, Message::user_text("一"), None, None)
+            .await
+            .expect("一");
+        let a1 = table
+            .append_message(&info.id, Message::assistant_text("答一"), None, None)
+            .await
+            .expect("答一");
+        let u2 = table
+            .append_message(&info.id, Message::user_text("二"), None, None)
+            .await
+            .expect("二");
+        let a2 = table
+            .append_message(&info.id, Message::assistant_text("答二"), None, None)
+            .await
+            .expect("答二");
+
+        // 连续两次回退压两层：[[u2,a2], [u1,a1]]。
+        table
+            .rewind(&info.id, &TranscriptEntryId::new(u2.id()))
+            .await
+            .expect("回退到 u2");
+        table
+            .rewind(&info.id, &TranscriptEntryId::new(u1.id()))
+            .await
+            .expect("回退到 u1");
+        let page = table
+            .load_page(&info.id, None, 32, None)
+            .await
+            .expect("分页");
+        assert_eq!(page.redo_entries.len(), 2, "只有栈顶一层可前滚：{page:?}");
+        // 先接回 [u1,a1]：栈顶换成 [u2,a2]，它仍接在新 tip 上。
+        let mid = table
+            .redo(&info.id, &TranscriptEntryId::new(a1.id()))
+            .await
+            .expect("前滚一层");
+        assert_eq!(mid.entries.len(), 2);
+        let full = table
+            .redo(&info.id, &TranscriptEntryId::new(a2.id()))
+            .await
+            .expect("再前滚一层");
+        assert_eq!(full.entries.len(), 4);
+        assert_eq!(full.entries[0].id, u1.id());
+        assert_eq!(full.entries[3].id, a2.id());
+    }
+
     #[tokio::test]
     async fn load_page_projects_large_messages_and_keeps_cursor_order() {
         let directory = tempfile::tempdir().expect("临时目录");

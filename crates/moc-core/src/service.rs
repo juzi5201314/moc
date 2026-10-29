@@ -22,11 +22,11 @@ use moc_protocol::methods::{
     SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
     SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
     SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
-    SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams,
-    SessionRetryParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-    SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
-    SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
-    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams,
+    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSetModeParams,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams,
+    UnsteerResult, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -1330,57 +1330,80 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
-        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
-        let config = self.inner.project_config(&cwd).map_err(to_rpc)?;
         let mut loaded = self
             .inner
             .sessions
-            .rewind(&params.session_id, &entry_id, config.session.compress)
+            .rewind(&params.session_id, &entry_id)
             .await
             .map_err(to_rpc)?;
-        let child_id = loaded.session.id.clone();
-        let child = self.inner.sessions.get(&child_id).await.map_err(to_rpc)?;
-        self.inner
-            .sessions
-            .ensure_write_lease(&child_id, &child, &ctx.client().frontend)
-            .await
-            .map_err(|error| write_lease_error(self, &child_id, &child, error))?;
         loaded.session.lock = None;
         loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
-        if let Some(host) =
-            plugin_events::host_for(&self.inner, std::path::Path::new(&loaded.session.cwd)).await
-        {
-            let context = plugin_events::context_from_info(&loaded.session);
-            let parent = loaded.session.forked_from.clone();
-            for message in plugin_events::session_start(
-                &host,
-                &context,
-                &loaded.session,
-                "rewind",
-                parent.as_deref(),
-            )
-            .await
-            {
-                let role = if message.role == "system" {
-                    moc_llm::Role::System
-                } else {
-                    moc_llm::Role::User
-                };
-                self.inner
-                    .sessions
-                    .append_message(
-                        &loaded.session.id,
-                        moc_llm::Message {
-                            role,
-                            content: vec![moc_llm::ContentPart::Text(message.text)],
+        // 原地回退不是新会话开始，不再注入插件 session_start 消息——
+        // 那会向截断后的历史追加新条目，使刚压栈的前滚尾部立刻失效。
+        // rewind 已把「尾部引用过、前缀不引用」的子代理标成孤儿：还在跑的要停掉，
+        // 否则它们的收尾投递会污染回退后的历史，也会作废前滚尾部。redo 接回
+        // 引用后标记摘除，但已停的代理不会复活——接回的只是历史记录。
+        let orphaned = record.orphaned_agents.lock().clone();
+        if !orphaned.is_empty() {
+            let stopped = {
+                let mut registry = self.inner.agents.lock().await;
+                let mut stopped = Vec::new();
+                for runtime in registry.items.values_mut() {
+                    if runtime.info.parent_id == params.session_id
+                        && crate::agents::live(runtime.info.status)
+                        && orphaned.contains(&runtime.info.id)
+                    {
+                        runtime.cancel.cancel();
+                        runtime.info.status = moc_protocol::methods::AgentStatus::Stopped;
+                        stopped.push(runtime.info.clone());
+                    }
+                }
+                stopped
+            };
+            // 与 finish 的正常收尾同样推送状态变化，前端能立刻看到停杀结果。
+            for info in stopped {
+                let _ = ctx
+                    .updates()
+                    .emit(
+                        params.session_id.clone(),
+                        SessionUpdate::AgentStatusChanged {
+                            agent_id: info.id,
+                            status: info.status,
+                            last_message: info.last_message,
                         },
-                        None,
-                        None,
                     )
-                    .await
-                    .map_err(to_rpc)?;
+                    .await;
             }
         }
+        Ok(loaded)
+    }
+
+    async fn session_redo(
+        &self,
+        ctx: RequestContext,
+        params: SessionRedoParams,
+    ) -> Result<SessionLoadResult, RpcError> {
+        let entry_id = TranscriptEntryId::new(params.entry_id);
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let _prompt = record.try_prompt_lock().map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let mut loaded = self
+            .inner
+            .sessions
+            .redo(&params.session_id, &entry_id)
+            .await
+            .map_err(to_rpc)?;
+        loaded.session.lock = None;
+        loaded.session.permission = self.inner.effective_permission(loaded.session.permission);
         Ok(loaded)
     }
 
@@ -2027,6 +2050,8 @@ mod compression_tests {
                     })
                     .await
                     .unwrap();
+                // 原地回退留在同一个 transcript 上，格式标记自然不变。
+                assert_eq!(rewind.session.id, info.id);
                 assert_eq!(
                     core.inner
                         .sessions

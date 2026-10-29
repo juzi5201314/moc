@@ -41,11 +41,11 @@ use crate::methods::{
     SessionListParams, SessionListResult, SessionLoadPageParams, SessionLoadPageResult,
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
-    SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams, SessionRetryParams,
-    SessionRewindParams, SessionSetModeParams, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
-    SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
-    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams, SessionRenameParams,
+    SessionRetryParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
+    SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
+    SessionUpdateMethod, SessionUpdateParams, SessionUsageParams, SessionUsageResult,
+    UnsteerParams, UnsteerResult, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -231,6 +231,15 @@ pub trait AgentService: Send + Sync + 'static {
         &self,
         _ctx: RequestContext,
         _params: SessionRewindParams,
+    ) -> impl Future<Output = Result<SessionLoadResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 向前滚：把最近一次回退截掉的尾部接回到指定条目。
+    fn session_redo(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionRedoParams,
     ) -> impl Future<Output = Result<SessionLoadResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }

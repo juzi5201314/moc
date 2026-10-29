@@ -357,13 +357,29 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
         let is_dropped = match_idx > state.selected;
 
         let (marker, status_tag, tag_style) = if is_selected {
-            (
-                "❯ ⏪ ",
-                "[回退目标]",
-                Style::new()
-                    .fg(theme.accent_user)
-                    .add_modifier(Modifier::BOLD),
-            )
+            if item.future {
+                (
+                    "❯ ⏩ ",
+                    "[前滚目标]",
+                    Style::new()
+                        .fg(theme.accent_model)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                (
+                    "❯ ⏪ ",
+                    "[回退目标]",
+                    Style::new()
+                        .fg(theme.accent_user)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
+        } else if item.future {
+            if is_kept {
+                ("  ↪  ", "[将接回]", Style::new().fg(theme.accent_success))
+            } else {
+                ("  ⏩  ", "[已回退]", Style::new().fg(theme.gray_dim))
+            }
         } else if is_kept {
             ("  ✓  ", "[保留]", Style::new().fg(theme.accent_success))
         } else {
@@ -532,7 +548,41 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
     frame.render_widget(banner_block, banner_rect);
 
     let mut banner_lines = Vec::new();
-    if current_item.is_user {
+    if current_item.future {
+        // 前滚：把已回退的尾部原样接回，选中的节点及其之前的历史条目全部保留。
+        let restored_count = total
+            .saturating_sub(state.future_start)
+            .saturating_sub(total.saturating_sub(state.selected + 1));
+        banner_lines.push(Line::from(vec![
+            Span::styled(
+                "⏩ ",
+                Style::new()
+                    .fg(theme.accent_model)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "前滚到此处 (Redo to here)",
+                Style::new()
+                    .fg(theme.accent_model)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        banner_lines.push(Line::from(Span::styled(
+            format!("• 将把已回退的历史向前接回，恢复该节点及之前共 {restored_count} 条"),
+            Style::new().fg(theme.text_primary),
+        )));
+        if dropped_count > 0 {
+            banner_lines.push(Line::from(Span::styled(
+                format!("• 该节点之后仍有 {dropped_count} 条保持回退状态，可继续前滚"),
+                Style::new().fg(theme.accent_warning),
+            )));
+        } else {
+            banner_lines.push(Line::from(Span::styled(
+                "• 已回退的内容将全部接回，恢复到回退前的最新状态",
+                Style::new().fg(theme.accent_success),
+            )));
+        }
+    } else if current_item.is_user {
         banner_lines.push(Line::from(vec![
             Span::styled(
                 "⏪ ",
@@ -726,12 +776,7 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
             Style::new().fg(theme.gray_dim),
         ));
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(
-            "Enter 回退到此处",
-            Style::new()
-                .fg(theme.accent_user)
-                .add_modifier(Modifier::BOLD),
-        ));
+        spans.push(enter_hint_span(state, theme));
     } else {
         if !state.items.is_empty() {
             spans.push(Span::styled(
@@ -759,15 +804,29 @@ fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) 
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
         spans.push(Span::styled("Esc 取消", Style::new().fg(theme.gray_dim)));
         spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(
-            "Enter 回退到此处",
-            Style::new()
-                .fg(theme.accent_user)
-                .add_modifier(Modifier::BOLD),
-        ));
+        spans.push(enter_hint_span(state, theme));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// 底部 Dock 的确认键提示：选中已回退条目时是前滚，否则是回退。
+fn enter_hint_span<'a>(state: &RewindState, theme: &Theme) -> Span<'a> {
+    let is_redo = state.selected_item_ref().is_some_and(|item| item.future);
+    Span::styled(
+        if is_redo {
+            "Enter 前滚到此处"
+        } else {
+            "Enter 回退到此处"
+        },
+        Style::new()
+            .fg(if is_redo {
+                theme.accent_model
+            } else {
+                theme.accent_user
+            })
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 #[cfg(test)]
@@ -781,26 +840,29 @@ mod tests {
         let (events, _) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(Theme::global(), events);
         let mut rewind_state = RewindState::default();
-        rewind_state.set_entries(vec![
-            TranscriptEntry {
-                id: "entry-1".into(),
-                at_ms: 1700000000000,
-                message: Message::user_text("提问一：详细提问内容"),
-                tool: None,
-                bash: None,
-                agent: None,
-                reminder: None,
-            },
-            TranscriptEntry {
-                id: "entry-2".into(),
-                at_ms: 1700000001000,
-                message: Message::assistant_text("回复一：详细回复内容"),
-                tool: None,
-                bash: None,
-                agent: None,
-                reminder: None,
-            },
-        ]);
+        rewind_state.set_entries(
+            vec![
+                TranscriptEntry {
+                    id: "entry-1".into(),
+                    at_ms: 1700000000000,
+                    message: Message::user_text("提问一：详细提问内容"),
+                    tool: None,
+                    bash: None,
+                    agent: None,
+                    reminder: None,
+                },
+                TranscriptEntry {
+                    id: "entry-2".into(),
+                    at_ms: 1700000001000,
+                    message: Message::assistant_text("回复一：详细回复内容"),
+                    tool: None,
+                    bash: None,
+                    agent: None,
+                    reminder: None,
+                },
+            ],
+            vec![],
+        );
         rewind_state.selected = 0;
         app.modal = Some(Modal::Rewind {
             state: rewind_state,

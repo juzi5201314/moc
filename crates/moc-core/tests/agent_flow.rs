@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use moc_protocol::methods::{
     AgentList, AgentListParams, AgentMessage, AgentMessageOutcome, AgentMessageParams, AgentSpawn,
     AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, SessionCompact,
-    SessionCompactParams, SessionLoad, SessionLoadParams, SessionRewind, SessionRewindParams,
+    SessionCompactParams, SessionLoad, SessionLoadParams, SessionRedo, SessionRedoParams,
+    SessionRewind, SessionRewindParams,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -685,12 +686,12 @@ fn tool_names(body: &Value) -> Vec<&str> {
     })
 }
 
-/// 回退分叉是完全独立的会话：既没有父链接，也没有任何子代理效果。
+/// 回退是原地截断：不产生新会话、不建立父链接，会话身份与普通顶层会话完全一致。
 ///
-/// 身份、系统提示与工具表都必须与普通顶层会话逐字一致；出身只落在会话头的
-/// `forked_from` 上，供用户端展示，模型侧永远看不到。
+/// 回退后继续提问，系统提示与工具表仍是顶层会话那一套——没有子代理契约、没有
+/// `yield`、没有代理名册。
 #[tokio::test]
-async fn rewind_fork_matches_a_plain_session_and_keeps_no_parent_link() {
+async fn rewind_stays_in_place_and_keeps_plain_session_shape() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_body| text_response("收到")).await;
     let harness = harness(&upstream).await;
@@ -702,7 +703,7 @@ async fn rewind_fork_matches_a_plain_session_and_keeps_no_parent_link() {
         .iter()
         .find(|entry| entry.message.role == moc_protocol::Role::User && entry.agent.is_none())
         .expect("回退目标为首条用户消息");
-    let fork = harness
+    let rewound = harness
         .client
         .call::<SessionRewind>(SessionRewindParams {
             session_id: source.clone(),
@@ -711,36 +712,37 @@ async fn rewind_fork_matches_a_plain_session_and_keeps_no_parent_link() {
         .await
         .expect("回退成功")
         .session;
-    assert_eq!(fork.forked_from.as_deref(), Some(source.as_str()));
+    assert_eq!(rewound.id, source, "回退必须留在原会话");
+    assert!(rewound.forked_from.is_none());
     assert!(
-        !fork.is_subagent(),
-        "分叉不得建立父链接：{:?}",
-        fork.parent_session_id
+        !rewound.is_subagent(),
+        "回退不得建立父链接：{:?}",
+        rewound.parent_session_id
     );
 
-    harness.prompt(&fork.id, "分叉后的第一轮").await;
+    harness.prompt(&source, "回退后的第一轮").await;
     let requests = upstream.received_requests().await.expect("上游请求");
     assert_eq!(requests.len(), 2, "两轮提示各一条请求");
     let plain: Value = serde_json::from_slice(&requests[0].body).expect("普通会话请求");
-    let forked: Value = serde_json::from_slice(&requests[1].body).expect("分叉请求");
-    let fork_tools = tool_names(&forked);
+    let rewound_req: Value = serde_json::from_slice(&requests[1].body).expect("回退后请求");
+    let tools = tool_names(&rewound_req);
     assert_eq!(
-        forked["messages"][0], plain["messages"][0],
-        "分叉的系统提示必须与普通会话一致"
+        rewound_req["messages"][0], plain["messages"][0],
+        "回退后的系统提示必须与普通会话一致"
     );
     assert_eq!(
-        fork_tools,
+        tools,
         tool_names(&plain),
-        "分叉的工具表必须与普通会话一致"
+        "回退后的工具表必须与普通会话一致"
     );
     assert!(
-        !fork_tools.contains(&"yield"),
-        "分叉不得拿到 yield：{fork_tools:?}"
+        !tools.contains(&"yield"),
+        "回退会话不得拿到 yield：{tools:?}"
     );
-    let rendered = forked.to_string();
+    let rendered = rewound_req.to_string();
     assert!(
         !rendered.contains("<subagent>") && !rendered.contains("<agent-roster>"),
-        "分叉不得携带子代理契约或名册：{forked}"
+        "回退会话不得携带子代理契约或名册：{rewound_req}"
     );
     harness.close().await;
 }
@@ -1198,8 +1200,7 @@ async fn batch_spawn_creates_agents_and_reports_per_item_errors() {
         .flat_map(|entry| entry.message.tool_results())
         .find(|result| result.content.contains("agents"))
         .expect("批量 spawn 结果已落盘");
-    let result_json: Value =
-        serde_json::from_str(&spawn_result.content).expect("批量结果为 JSON");
+    let result_json: Value = serde_json::from_str(&spawn_result.content).expect("批量结果为 JSON");
     assert_eq!(
         result_json["agents"].as_array().map(Vec::len),
         Some(2),
@@ -1240,7 +1241,9 @@ async fn batch_spawn_creates_agents_and_reports_per_item_errors() {
             "REQ subagent={} shared={} sys={:.80}",
             is_subagent_request(&body),
             body.to_string().contains("SHARED_CONTEXT"),
-            body["messages"][0]["content"].as_str().unwrap_or("<nonstring>")
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap_or("<nonstring>")
         );
     }
     let shared_count = requests
@@ -1287,4 +1290,152 @@ fn spawn_schema_rejects_task_task_conflict_and_batch_bounds() {
             validator.iter_errors(&args).collect::<Vec<_>>()
         );
     }
+}
+
+/// 回退截断 spawn 记录后子代理成孤儿：运行中被停杀、从名册与 wait 目标消失、
+/// 标记落盘持久化；redo 接回 spawn 引用后重新可见，但已停的代理不复活。
+#[tokio::test]
+async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        // 子代理判定必须在任务名匹配之前：父会话第二轮请求的工具结果里也回显
+        // 任务文本，先匹配任务名会把父请求错路由到延迟分支。
+        if is_subagent_request(body) && body.to_string().contains("SLOW_CHILD_TASK") {
+            // 子代理迟迟不交付：回退发生时它仍在运行。
+            return delayed(yield_call("call_yield", "CHILD_DONE"), 30_000);
+        }
+        if is_subagent_request(body) {
+            return yield_call("call_yield", "CHILD_DONE");
+        }
+        let has_tool_result = body["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|m| m["role"] == "tool"));
+        if has_tool_result {
+            return text_response("PARENT_DONE");
+        }
+        ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![(
+                "call_spawn",
+                "spawn_agent",
+                json!({"tasks": [{"task": "SLOW_CHILD_TASK"}]}),
+            )]),
+            "text/event-stream",
+        )
+    })
+    .await;
+    let harness = harness(&upstream).await;
+    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    harness.prompt(&parent_id, "开一个子代理").await;
+
+    let loaded = harness.load(&parent_id).await;
+    let spawn_result = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .find(|result| result.content.contains("agent_id"))
+        .expect("spawn 结果已落盘");
+    let result_json: Value =
+        serde_json::from_str(&spawn_result.content).expect("spawn 结果为 JSON");
+    let child_id = result_json["agents"][0]["agent_id"]
+        .as_str()
+        .expect("结果带 agent_id")
+        .to_owned();
+    let user_entry_id = loaded
+        .entries
+        .iter()
+        .find(|entry| entry.message.role == moc_protocol::Role::User && entry.agent.is_none())
+        .expect("发起 spawn 的用户提示")
+        .id
+        .clone();
+    let tip_entry_id = loaded.entries.last().expect("转录非空").id.clone();
+
+    let listed = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: parent_id.clone(),
+        })
+        .await
+        .expect("list 成功");
+    assert_eq!(listed.agents.len(), 1, "回退前子代理在册");
+    assert_eq!(listed.agents[0].id, child_id);
+
+    // 回退到发起 spawn 的那条用户消息：消息本身回到输入框，其后整段被截走。
+    harness
+        .client
+        .call::<SessionRewind>(SessionRewindParams {
+            session_id: parent_id.clone(),
+            entry_id: user_entry_id,
+        })
+        .await
+        .expect("回退成功");
+
+    // 名册与 wait 都不再认这个子代理；停杀状态即时推送。
+    let listed = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: parent_id.clone(),
+        })
+        .await
+        .expect("list 成功");
+    assert!(listed.agents.is_empty(), "孤儿子代理必须退出名册");
+    let waited = harness
+        .client
+        .call::<AgentWait>(AgentWaitParams {
+            session_id: parent_id.clone(),
+            agent_ids: Some(vec![child_id.clone()]),
+            timeout_secs: None,
+        })
+        .await;
+    assert!(waited.is_err(), "孤儿必须不是可等待目标：{waited:?}");
+    let stopped_update = harness.updates.lock().iter().any(|update| {
+        matches!(
+            update,
+            moc_protocol::methods::SessionUpdate::AgentStatusChanged {
+                agent_id,
+                status,
+                ..
+            } if *agent_id == child_id && *status == AgentStatus::Stopped
+        )
+    });
+    assert!(stopped_update, "孤儿停杀必须推送状态变化");
+
+    // 孤儿标记随截断落盘到父会话 sidecar。
+    let store = moc_core::session::store::SessionStore::new(harness.root.path().join("sessions"));
+    let paths = store
+        .find(&parent_id)
+        .await
+        .expect("查父会话")
+        .expect("父会话已落盘");
+    let marks_file = paths.sidecar.join("orphaned_agents");
+    let marks = std::fs::read_to_string(&marks_file).expect("孤儿标记文件已写盘");
+    assert!(
+        marks.lines().any(|line| line == child_id),
+        "标记文件必须含孤儿 id：{marks}"
+    );
+
+    // redo 把 spawn 引用接回：名册恢复可见、标记清空；已停的代理不复活。
+    harness
+        .client
+        .call::<SessionRedo>(SessionRedoParams {
+            session_id: parent_id.clone(),
+            entry_id: tip_entry_id,
+        })
+        .await
+        .expect("前滚成功");
+    let listed = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: parent_id.clone(),
+        })
+        .await
+        .expect("list 成功");
+    assert_eq!(listed.agents.len(), 1, "redo 后子代理回到名册");
+    assert_eq!(listed.agents[0].id, child_id);
+    assert_eq!(
+        listed.agents[0].status,
+        AgentStatus::Stopped,
+        "停杀不随前滚复活"
+    );
+    assert!(!marks_file.exists(), "redo 必须清空孤儿标记文件");
+    harness.close().await;
 }

@@ -19,9 +19,10 @@ use moc_protocol::{
     SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams,
-    SessionPlanRevise, SessionPlanReviseParams, SessionRewind, SessionRewindParams, SessionSetMode,
-    SessionSetModeParams, SessionSetModel, SessionSetModelParams, SessionSetPermission,
-    SessionSetPermissionParams, SessionUpdate, SessionUsage, SessionUsageParams, UpstreamField,
+    SessionPlanRevise, SessionPlanReviseParams, SessionRedo, SessionRedoParams, SessionRewind,
+    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
+    SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -641,12 +642,15 @@ fn apply_context_content(
     }
 }
 
-fn apply_rewind_loaded(app: &mut App, result: anyhow::Result<moc_protocol::SessionLoadResult>) {
+fn apply_rewind_loaded(
+    app: &mut App,
+    result: anyhow::Result<moc_protocol::methods::SessionLoadPageResult>,
+) {
     let Some(Modal::Rewind { state }) = app.modal.as_mut() else {
         return;
     };
     match result {
-        Ok(loaded) => state.set_entries(loaded.entries),
+        Ok(loaded) => state.set_entries(loaded.entries, loaded.redo_entries),
         Err(error) => {
             state.loading = false;
             state.error = Some(format!("加载消息历史失败：{error}"));
@@ -658,6 +662,7 @@ fn apply_rewound(
     app: &mut App,
     connection: &EmbeddedConnection,
     selected: moc_protocol::methods::TranscriptEntry,
+    is_redo: bool,
     result: anyhow::Result<moc_protocol::SessionLoadResult>,
 ) {
     let loaded = match result {
@@ -665,22 +670,20 @@ fn apply_rewound(
         Err(error) => {
             if let Some(Modal::Rewind { state }) = app.modal.as_mut() {
                 state.loading = false;
-                state.error = Some(format!("消息回退失败：{error}"));
+                state.error = Some(format!(
+                    "消息{}失败：{error}",
+                    if is_redo { "前滚" } else { "回退" }
+                ));
             }
             return;
         }
     };
-    // 代理消息与运行时提醒都不是用户输入，不能回填到输入框。
-    let restore_user = selected.message.role == Role::User
+    // 代理消息与运行时提醒都不是用户输入，不能回填到输入框；前滚选中的条目本来就在历史里。
+    let restore_user = !is_redo
+        && selected.message.role == Role::User
         && selected.agent.is_none()
         && selected.reminder.is_none();
     let selected_message = selected.message;
-    // 分叉的出身只给用户看：新会话是独立会话，来源只出现在这条提示与 /resume 列表里。
-    let source_title = if loaded.session.forked_from.is_some() {
-        app.session.as_ref().map(|session| session.title.clone())
-    } else {
-        None
-    };
     app.modal = None;
     app.switch_session(
         loaded.session,
@@ -697,9 +700,10 @@ fn apply_rewound(
     app.prompt_changed();
     app.focus = Focus::Prompt;
     app.usage = Default::default();
-    app.set_notice(match source_title {
-        Some(title) => format!("已从「{title}」分叉出新会话"),
-        None => "会话已回退".to_owned(),
+    app.set_notice(if is_redo {
+        "已向前滚到该节点".to_owned()
+    } else {
+        "会话已回退".to_owned()
     });
     refresh_context(app, connection, false);
     // 回退会截断历史，重放出来的累计用量随之缩水，必须重新取一次。
@@ -860,8 +864,12 @@ async fn event_loop(
                         apply_plan_review(app, connection, result)
                     }
                     Some(AppEvent::RewindLoaded(result)) => apply_rewind_loaded(app, result),
-                    Some(AppEvent::Rewound { selected, result }) => {
-                        apply_rewound(app, connection, selected, result);
+                    Some(AppEvent::Rewound {
+                        selected,
+                        is_redo,
+                        result,
+                    }) => {
+                        apply_rewound(app, connection, selected, is_redo, result);
                     }
                     Some(AppEvent::HistoryPageLoaded { prepend, result }) => {
                         apply_history_page(app, prepend, result);
@@ -2431,14 +2439,6 @@ fn open_rewind(app: &mut App, connection: &EmbeddedConnection) {
                 max_message_bytes: Some(64 * 1024),
             })
             .await
-            .map(|loaded| SessionLoadResult {
-                session: loaded.session,
-                entries: loaded.entries,
-                truncated: loaded.has_more,
-                todos: loaded.todos,
-                plans: loaded.plans,
-                child_calls: loaded.child_calls,
-            })
             .map_err(anyhow::Error::from);
         let _ = events.send(AppEvent::RewindLoaded(result));
     });
@@ -3199,6 +3199,7 @@ fn handle_modal_key(
                     (KeyCode::PageUp, _) => state.scroll_detail(-6),
                     (KeyCode::PageDown, _) => state.scroll_detail(6),
                     (KeyCode::Enter, KeyModifiers::NONE) if !state.loading => {
+                        let is_redo = state.selected_item_ref().is_some_and(|item| item.future);
                         let Some(selected) = state.selected().cloned() else {
                             state.error = Some("当前会话没有可回退的消息".into());
                             return;
@@ -3212,14 +3213,27 @@ fn handle_modal_key(
                         let client = connection.client.clone();
                         let events = events.clone();
                         tokio::spawn(async move {
-                            let result = client
-                                .call::<SessionRewind>(SessionRewindParams {
-                                    session_id,
-                                    entry_id: selected.id.clone(),
-                                })
-                                .await
-                                .map_err(anyhow::Error::from);
-                            let _ = events.send(AppEvent::Rewound { selected, result });
+                            let result = if is_redo {
+                                client
+                                    .call::<SessionRedo>(SessionRedoParams {
+                                        session_id,
+                                        entry_id: selected.id.clone(),
+                                    })
+                                    .await
+                            } else {
+                                client
+                                    .call::<SessionRewind>(SessionRewindParams {
+                                        session_id,
+                                        entry_id: selected.id.clone(),
+                                    })
+                                    .await
+                            }
+                            .map_err(anyhow::Error::from);
+                            let _ = events.send(AppEvent::Rewound {
+                                selected,
+                                is_redo,
+                                result,
+                            });
                         });
                     }
                     _ => {}
@@ -3245,6 +3259,7 @@ fn handle_modal_key(
                     (KeyCode::PageDown, _) => state.scroll_detail(6),
                     (KeyCode::Enter, KeyModifiers::NONE) => {
                         if !state.loading {
+                            let is_redo = state.selected_item_ref().is_some_and(|item| item.future);
                             let Some(selected) = state.selected().cloned() else {
                                 state.error = Some("当前会话没有可回退的消息".into());
                                 return;
@@ -3258,14 +3273,27 @@ fn handle_modal_key(
                             let client = connection.client.clone();
                             let events = events.clone();
                             tokio::spawn(async move {
-                                let result = client
-                                    .call::<SessionRewind>(SessionRewindParams {
-                                        session_id,
-                                        entry_id: selected.id.clone(),
-                                    })
-                                    .await
-                                    .map_err(anyhow::Error::from);
-                                let _ = events.send(AppEvent::Rewound { selected, result });
+                                let result = if is_redo {
+                                    client
+                                        .call::<SessionRedo>(SessionRedoParams {
+                                            session_id,
+                                            entry_id: selected.id.clone(),
+                                        })
+                                        .await
+                                } else {
+                                    client
+                                        .call::<SessionRewind>(SessionRewindParams {
+                                            session_id,
+                                            entry_id: selected.id.clone(),
+                                        })
+                                        .await
+                                }
+                                .map_err(anyhow::Error::from);
+                                let _ = events.send(AppEvent::Rewound {
+                                    selected,
+                                    is_redo,
+                                    result,
+                                });
                             });
                         }
                     }

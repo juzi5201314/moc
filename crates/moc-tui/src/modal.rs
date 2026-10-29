@@ -443,6 +443,8 @@ pub struct RewindItem {
     pub entry_id: String,
     pub role: Role,
     pub is_user: bool,
+    /// 已回退掉的条目：选中它执行的是前滚（redo），不是回退。
+    pub future: bool,
     pub at_ms: u64,
     pub preview: String,
     pub full_text: String,
@@ -475,6 +477,8 @@ pub struct RewindState {
 
     /// 扁平化的时间线目标序列
     pub items: Vec<RewindItem>,
+    /// `items` 中第一条已回退（可前滚）条目的下标；没有已回退条目时等于 `items.len()`。
+    pub future_start: usize,
     /// 当前在 items 中的选中项下标
     pub selected: usize,
     /// 是否处于搜索过滤态
@@ -496,6 +500,7 @@ impl Default for RewindState {
             loading: true,
             error: None,
             items: Vec::new(),
+            future_start: 0,
             selected: 0,
             filtering: false,
             query: String::new(),
@@ -506,102 +511,120 @@ impl Default for RewindState {
 }
 
 impl RewindState {
-    pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>) {
+    pub fn set_entries(&mut self, entries: Vec<TranscriptEntry>, future: Vec<TranscriptEntry>) {
         self.prompts.clear();
         self.items.clear();
-        for entry in entries {
+        // 已回退条目沿用同一分组规则接在历史尾部：非用户条目挂进既有提问组，
+        // 用户条目新开组——时间线上看就是接在被截断的那一轮之后。
+        let mut future_start = usize::MAX;
+        for (entry, future) in entries
+            .into_iter()
+            .map(|entry| (entry, false))
+            .chain(future.into_iter().map(|entry| (entry, true)))
+        {
             // `!!` 命令、代理消息与运行时提醒都不是人类提问，不作为回退边界。
             if entry.bash.is_some() || entry.agent.is_some() || entry.reminder.is_some() {
                 continue;
             }
+            let p_idx;
+            let i_idx;
             if entry.message.role == Role::User {
-                self.prompts.push(vec![entry]);
-            } else if let Some(prompt) = self.prompts.last_mut() {
-                prompt.push(entry);
+                p_idx = self.prompts.len();
+                i_idx = 0;
+                self.prompts.push(vec![entry.clone()]);
+            } else if self.prompts.is_empty() {
+                continue;
+            } else {
+                p_idx = self.prompts.len() - 1;
+                let prompt = self.prompts.last_mut().expect("非空必有尾组");
+                i_idx = prompt.len();
+                prompt.push(entry.clone());
             }
-        }
+            if future {
+                future_start = future_start.min(self.items.len());
+            }
+            let is_user = entry.message.role == Role::User;
+            let text = entry.message.text();
+            let tool_calls: Vec<String> = entry
+                .message
+                .tool_calls()
+                .map(|call| call.name.clone())
+                .collect();
 
-        for (p_idx, prompt) in self.prompts.iter().enumerate() {
-            for (i_idx, entry) in prompt.iter().enumerate() {
-                let is_user = entry.message.role == Role::User;
-                let text = entry.message.text();
-                let tool_calls: Vec<String> = entry
+            let preview = if is_user {
+                let first_line = text
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .trim();
+                if first_line.is_empty() {
+                    "（用户提问）".to_string()
+                } else {
+                    first_line.to_string()
+                }
+            } else if !tool_calls.is_empty() {
+                format!("调用工具：{}", tool_calls.join("、"))
+            } else {
+                let first_line = text
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .trim();
+                if first_line.is_empty() {
+                    if entry.message.role == Role::Tool {
+                        "工具结果返回".to_string()
+                    } else {
+                        "（模型回复）".to_string()
+                    }
+                } else {
+                    first_line.to_string()
+                }
+            };
+
+            let full_text = if !text.trim().is_empty() {
+                text
+            } else if !tool_calls.is_empty() {
+                let mut s = format!("调用工具：{}\n", tool_calls.join("、"));
+                for call in entry.message.tool_calls() {
+                    s.push_str(&format!(
+                        "\n• 工具 [{}] 参数：\n{}\n",
+                        call.name, call.arguments
+                    ));
+                }
+                s
+            } else {
+                entry
                     .message
-                    .tool_calls()
-                    .map(|call| call.name.clone())
-                    .collect();
+                    .tool_results()
+                    .map(|res| res.content.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
 
-                let preview = if is_user {
-                    let first_line = text
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .trim();
-                    if first_line.is_empty() {
-                        "（用户提问）".to_string()
-                    } else {
-                        first_line.to_string()
-                    }
-                } else if !tool_calls.is_empty() {
-                    format!("调用工具：{}", tool_calls.join("、"))
-                } else {
-                    let first_line = text
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .trim();
-                    if first_line.is_empty() {
-                        if entry.message.role == Role::Tool {
-                            "工具结果返回".to_string()
-                        } else {
-                            "（模型回复）".to_string()
-                        }
-                    } else {
-                        first_line.to_string()
-                    }
-                };
-
-                let full_text = if !text.trim().is_empty() {
-                    text
-                } else if !tool_calls.is_empty() {
-                    let mut s = format!("调用工具：{}\n", tool_calls.join("、"));
-                    for call in entry.message.tool_calls() {
-                        s.push_str(&format!(
-                            "\n• 工具 [{}] 参数：\n{}\n",
-                            call.name, call.arguments
-                        ));
-                    }
-                    s
-                } else {
-                    entry
-                        .message
-                        .tool_results()
-                        .map(|res| res.content.clone())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-
-                self.items.push(RewindItem {
-                    entry_id: entry.id.clone(),
-                    role: entry.message.role,
-                    is_user,
-                    at_ms: entry.at_ms,
-                    preview,
-                    full_text,
-                    tool_calls,
-                    prompt_index: p_idx,
-                    item_index: i_idx,
-                    entry: entry.clone(),
-                });
-            }
+            self.items.push(RewindItem {
+                entry_id: entry.id.clone(),
+                role: entry.message.role,
+                is_user,
+                future,
+                at_ms: entry.at_ms,
+                preview,
+                full_text,
+                tool_calls,
+                prompt_index: p_idx,
+                item_index: i_idx,
+                entry,
+            });
         }
+        self.future_start = if future_start == usize::MAX {
+            self.items.len()
+        } else {
+            future_start
+        };
 
-        self.selected_prompt = self.prompts.len().saturating_sub(1);
-        self.selected_item = self
-            .prompts
-            .last()
-            .map_or(0, |prompt| prompt.len().saturating_sub(1));
-        self.sync_selected_from_prompt_item();
+        // 默认光标停在最后一条历史条目上：已回退的尾部是可选的前滚目标，
+        // 不该成为打开模态时的默认确认对象。
+        self.selected = self.future_start.min(self.items.len()).saturating_sub(1);
+        self.sync_prompt_item_from_selected();
         self.loading = false;
         self.error = None;
         self.filtering = false;
@@ -1526,12 +1549,15 @@ mod tests {
             reminder: None,
         };
         let mut state = RewindState::default();
-        state.set_entries(vec![
-            entry("u1", Message::user_text("第一条")),
-            entry("a1", Message::assistant_text("回复")),
-            entry("t1", Message::tool_result("call", "结果", false)),
-            entry("u2", Message::user_text("第二条")),
-        ]);
+        state.set_entries(
+            vec![
+                entry("u1", Message::user_text("第一条")),
+                entry("a1", Message::assistant_text("回复")),
+                entry("t1", Message::tool_result("call", "结果", false)),
+                entry("u2", Message::user_text("第二条")),
+            ],
+            vec![],
+        );
         assert_eq!(state.prompts.len(), 2);
         assert_eq!(state.prompts[0].len(), 3);
         assert_eq!(state.selected_prompt, 1);
@@ -1557,21 +1583,41 @@ mod tests {
             reminder: None,
         };
         let mut state = RewindState::default();
-        state.set_entries(vec![
-            entry("u1", Message::user_text("帮我实现一个快排")),
-            entry(
-                "a1",
-                Message::assistant_text("好的，这是快速排序（快排）实现"),
-            ),
-            entry("u2", Message::user_text("加几个单元测试")),
-            entry("a2", Message::assistant_text("测试已增加并全部通过")),
-            entry("u3", Message::user_text("改成双轴快排")),
-        ]);
+        state.set_entries(
+            vec![
+                entry("u1", Message::user_text("帮我实现一个快排")),
+                entry(
+                    "a1",
+                    Message::assistant_text("好的，这是快速排序（快排）实现"),
+                ),
+                entry("u2", Message::user_text("加几个单元测试")),
+                entry("a2", Message::assistant_text("测试已增加并全部通过")),
+                entry("u3", Message::user_text("改成双轴快排")),
+            ],
+            vec![
+                entry("u4", Message::user_text("这条已经被回退")),
+                entry("a4", Message::assistant_text("被回退的回复")),
+            ],
+        );
 
-        // Total 5 items in timeline
-        assert_eq!(state.items.len(), 5);
-        assert_eq!(state.selected, 4); // Default to last item
+        // 时间线共 7 项：5 条历史 + 2 条已回退；默认光标停在最后一条历史上。
+        assert_eq!(state.items.len(), 7);
+        assert_eq!(state.future_start, 5);
+        assert_eq!(state.selected, 4);
         assert_eq!(state.selected_item_ref().unwrap().preview, "改成双轴快排");
+        assert!(!state.selected_item_ref().unwrap().future);
+        assert!(state.items[5].future);
+        assert!(state.items[6].future);
+        // 已回退的用户消息自成一组；其回复挂在同一组。
+        assert_eq!(state.items[5].prompt_index, 3);
+        assert_eq!(state.items[6].prompt_index, 3);
+
+        // 0. 向下走进已回退区：选中即代表前滚目标；再走回来继续原有导航断言
+        state.step(1);
+        assert_eq!(state.selected, 5);
+        assert!(state.selected_item_ref().unwrap().future);
+        state.step(-1);
+        assert_eq!(state.selected, 4);
 
         // 1. Up / Down linear stepping (↑↓ / jk)
         state.step(-1);
@@ -1614,7 +1660,7 @@ mod tests {
         state.clear_filter();
         assert!(!state.filtering);
         assert!(state.query.is_empty());
-        assert_eq!(state.filtered_indices().len(), 5);
+        assert_eq!(state.filtered_indices().len(), 7);
 
         // 4. Detail scroll
         assert_eq!(state.detail_scroll, 0);

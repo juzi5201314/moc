@@ -40,9 +40,9 @@ use crate::methods::{
     SessionBash, SessionBtw, SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact,
     SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanMode,
-    SessionPlanRevise, SessionPrompt, SessionRename, SessionRetry, SessionRewind, SessionSetMode,
-    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
-    SessionUnsteer, SessionUsage, WorkspaceGitBranch,
+    SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename, SessionRetry, SessionRewind,
+    SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
+    SessionUnlock, SessionUnsteer, SessionUsage, WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -721,6 +721,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_rewind(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionRedo as Method>::NAME => {
+                let params = params_from_value::<SessionRedo>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_redo(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

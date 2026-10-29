@@ -3989,26 +3989,29 @@ mod tests {
         let mut app = App::new(Theme::global(), events);
 
         let mut rewind_state = crate::modal::RewindState::default();
-        rewind_state.set_entries(vec![
-            TranscriptEntry {
-                id: "u1".into(),
-                at_ms: 1700000000000,
-                message: Message::user_text("第一句提问：实现快速排序"),
-                tool: None,
-                bash: None,
-                agent: None,
-                reminder: None,
-            },
-            TranscriptEntry {
-                id: "a1".into(),
-                at_ms: 1700000001000,
-                message: Message::assistant_text("好的，已为你实现快排"),
-                tool: None,
-                bash: None,
-                agent: None,
-                reminder: None,
-            },
-        ]);
+        rewind_state.set_entries(
+            vec![
+                TranscriptEntry {
+                    id: "u1".into(),
+                    at_ms: 1700000000000,
+                    message: Message::user_text("第一句提问：实现快速排序"),
+                    tool: None,
+                    bash: None,
+                    agent: None,
+                    reminder: None,
+                },
+                TranscriptEntry {
+                    id: "a1".into(),
+                    at_ms: 1700000001000,
+                    message: Message::assistant_text("好的，已为你实现快排"),
+                    tool: None,
+                    bash: None,
+                    agent: None,
+                    reminder: None,
+                },
+            ],
+            vec![],
+        );
         app.modal = Some(Modal::Rewind {
             state: rewind_state,
         });

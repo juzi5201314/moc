@@ -51,6 +51,20 @@ pub struct SessionRewindParams {
     pub entry_id: String,
 }
 
+/// `session/redo`：把最近一次回退截掉的历史原样接回。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionRedo;
+
+/// `session/redo` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRedoParams {
+    /// 目标会话。
+    pub session_id: String,
+    /// 前滚目标条目 ID（含该条目）；只接受最近一次回退截掉的尾部里的条目。
+    pub entry_id: String,
+}
+
 /// `session/unload`：释放会话的常驻资源（不删除会话、不影响列表）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUnload;
@@ -441,6 +455,9 @@ pub struct SessionLoadPageResult {
     pub child_calls: Vec<TranscriptChildCall>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub content_truncated: bool,
+    /// 最近一次回退截掉、仍可前滚接回的 transcript 条目；栈顶以外的更早回退不提供。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redo_entries: Vec<TranscriptEntry>,
 }
 
 /// `session/load` 的结果。
@@ -746,6 +763,14 @@ impl Method for SessionRewind {
 }
 
 impl ClientRequest for SessionRewind {}
+
+impl Method for SessionRedo {
+    const NAME: &'static str = "session/redo";
+    type Params = SessionRedoParams;
+    type Result = SessionLoadResult;
+}
+
+impl ClientRequest for SessionRedo {}
 
 impl Method for SessionUnload {
     const NAME: &'static str = "session/unload";
