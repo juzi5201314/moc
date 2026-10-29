@@ -412,6 +412,8 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
         app.ask_option_hits.clear();
         app.ask_nav_hits.clear();
         app.ask_card_area = Rect::default();
+        app.ask_question_area = Rect::default();
+        app.ask_detail_area = Rect::default();
         draw_ask_strip(frame, app);
         return;
     }
@@ -483,6 +485,22 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
             ))
         })
         .collect();
+    // 可滚文本区换算到屏幕：被卡片底边裁掉的行不在命中范围内。
+    let map_area = |area: Rect| -> Rect {
+        let top = usize::from(area.y);
+        let bottom = top + usize::from(area.height);
+        if top >= visible_rows {
+            return Rect::default();
+        }
+        Rect::new(
+            text_x + area.x,
+            modal_area.y + 1 + area.y,
+            area.width.min(modal_area.width.saturating_sub(2 + area.x)),
+            u16::try_from(bottom.min(visible_rows) - top).unwrap_or(u16::MAX),
+        )
+    };
+    app.ask_question_area = layout.question_area.map(map_area).unwrap_or_default();
+    app.ask_detail_area = layout.detail_area.map(map_area).unwrap_or_default();
 }
 
 /// 折叠的提问细条：占据输入框位（输入框本轮不绘制），左边是进度与当前问，
@@ -1564,12 +1582,20 @@ struct AskLayout {
     option_hits: Vec<(usize, usize)>,
     /// (问题下标, 行号, 起始列, 结束列)：顶部问题导航条的点击范围。
     nav_hits: Vec<(usize, usize, usize, usize)>,
+    /// 可滚动的问题正文窗口（文本坐标）；`None` = 未溢出，滚轮落在此区仍动光标。
+    question_area: Option<Rect>,
+    /// 可滚动的详情区（单栏底区或双栏右栏，文本坐标）；同上仅在溢出时给出。
+    detail_area: Option<Rect>,
 }
 
 /// 问题导航条里单项的最大宽度（格）：`n. header` 超长截断。
 const ASK_NAV_ITEM_MAX: usize = 24;
 /// 确认页 key 列宽上限（格）：对齐回答正文，超长 header/id 截断。
 const ASK_CONFIRM_KEY_MAX: usize = 20;
+/// 问题正文窗口的最大行数：长问题滚动展示而不是铺满整卡、把选项挤出视野。
+const ASK_QUESTION_ROWS: usize = 5;
+/// 聚焦项详情区（单栏底区）内容窗口的最大行数。
+const ASK_DETAIL_ROWS: usize = 4;
 
 /// 在最终行列表里的行号，`draw_ask_modal` 据此换算鼠标点选的屏幕矩形。
 /// 选项与自定义行一律截断到单行：`Wrap` 折行会让后续行号整体漂移。
@@ -1581,6 +1607,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         selected,
         custom,
         preview_scroll,
+        question_scroll,
         ..
     } = modal
     else {
@@ -1588,6 +1615,8 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             lines: Vec::new(),
             option_hits: Vec::new(),
             nav_hits: Vec::new(),
+            question_area: None,
+            detail_area: None,
         };
     };
     let mut lines = Vec::new();
@@ -1659,32 +1688,74 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     };
     lines.push(Line::from(String::new()));
 
-    // 问题正文进正文区折行展示：挤在标题栏里会被截断，多行问题更会整段丢失。
-    for row in crate::render::wrap::wrap_text(&current.question, width) {
-        lines.push(Line::from(Span::styled(
-            row,
-            Style::new()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
+    // 问题正文窗口：常规字重、限高滚动——长问题铺满整卡会把选项挤出视野；
+    // 溢出时末行给出滚动状态（滚轮/PgUp·PgDn 读全文），窗口区记为可滚命中。
+    let question_rows = crate::render::wrap::wrap_text(&current.question, width);
+    let question_overflow = question_rows.len() > ASK_QUESTION_ROWS;
+    let question_start = lines.len();
+    lines.extend(scroll_window(
+        question_rows
+            .into_iter()
+            .map(|row| Line::from(Span::styled(row, Style::new().fg(theme.text_primary))))
+            .collect(),
+        ASK_QUESTION_ROWS,
+        *question_scroll,
+        theme,
+    ));
+    let question_area = question_overflow.then(|| {
+        Rect::new(
+            0,
+            u16::try_from(question_start).unwrap_or(u16::MAX),
+            u16::try_from(width).unwrap_or(u16::MAX),
+            u16::try_from(lines.len() - question_start).unwrap_or(u16::MAX),
+        )
+    });
     lines.push(Line::from(String::new()));
 
-    // 选项 + 自定义输入行；带预览时整体作为并排布局的左栏。
-    // 行数不够时先让掉 description：问题正文与选项行是底线。
-    let plain_rows = lines.len() + current.options.len() + 1 + 1;
-    let show_descriptions = plain_rows + current.options.len() <= max_lines;
-    let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() * 2 + 1);
-    // 命中行先记 body 内相对行号，布局合入后再补上顶部固定行的偏移。
-    let mut option_hits: Vec<(usize, usize)> = Vec::with_capacity(current.options.len() + 1);
+    // 当前问任一选项带预览就走双栏（问题级判定，焦点移动不跳版）：
+    // 左栏恒为单行选项列表，右栏是聚焦项的详情（描述 + 预览）。
+    let two_col = current.options.iter().any(|option| {
+        option
+            .preview
+            .as_deref()
+            .is_some_and(|text| !text.trim().is_empty())
+    }) && width >= ASK_PREVIEW_MIN_WIDTH;
+    let focused_option = current.options.get(highlight[*question]);
+    // 单栏时聚焦项描述进底部固定区：分隔线 + 限高窗口。它是次信息——
+    // 预算不足保住两个可见选项 + 自定义行 + 页脚时，先压详情区再整个让掉。
+    let detail_content: Vec<Line<'static>> = if two_col {
+        Vec::new()
+    } else {
+        focused_option
+            .map(|option| focused_detail_lines(option, width, theme))
+            .unwrap_or_default()
+    };
+    // 固定行：自定义行 1 + 页脚 1。
+    let fixed_tail = lines.len() + 2;
+    let mut detail_zone_rows = if detail_content.is_empty() {
+        0
+    } else {
+        1 + detail_content.len().min(ASK_DETAIL_ROWS)
+    };
+    if detail_zone_rows > 0 && max_lines.saturating_sub(fixed_tail + detail_zone_rows) < 2 {
+        detail_zone_rows = max_lines.saturating_sub(fixed_tail + 2);
+        // 分隔线 + 至少一行内容才有意义，否则整区让掉。
+        if detail_zone_rows < 2 {
+            detail_zone_rows = 0;
+        }
+    }
+    // 剩余行预算给选项列表窗口 + 自定义行 + 页脚。
+    let opt_budget = max_lines
+        .saturating_sub(lines.len() + 1 + detail_zone_rows + 1)
+        .max(1);
+
+    // 选项每项恒单行（描述已挪进详情区）；超出预算时窗口跟随光标，
+    // 两端以「▲/▼ 还有 N 项」提示被藏起的项数。
+    let mut option_rows: Vec<Line<'static>> = Vec::with_capacity(current.options.len());
     for (index, option) in current.options.iter().enumerate() {
-        option_hits.push((index, body.len()));
         let chosen = selected[*question].contains(&option.label);
-        let marker = if index == highlight[*question] {
-            "❯"
-        } else {
-            " "
-        };
+        let focused = index == highlight[*question];
+        let marker = if focused { "❯" } else { " " };
         // 单选用 radio、多选用 checkbox：勾选框在单选上暗示可多选，是误导。
         let check = match (current.multi, chosen) {
             (true, true) => "☑",
@@ -1692,7 +1763,6 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             (false, true) => "●",
             (false, false) => "○",
         };
-        let focused = index == highlight[*question];
         let style = if focused {
             Style::new()
                 .fg(theme.accent_user)
@@ -1713,19 +1783,34 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         if recommended {
             spans.push(Span::styled("（推荐）", Style::new().fg(theme.gray)));
         }
-        body.push(Line::from(spans));
-        if show_descriptions
-            && let Some(description) = option.description.as_deref()
-            && !description.trim().is_empty()
-        {
-            // 折行预算与 7 列缩进相加恰好等于卡片宽：超出会被 Wrap 二次折行，行号随之漂移。
-            for row in crate::render::wrap::wrap_text(description, width.saturating_sub(7)) {
-                body.push(Line::from(Span::styled(
-                    format!("       {row}"),
-                    Style::new().fg(theme.gray),
-                )));
-            }
+        option_rows.push(Line::from(spans));
+    }
+    let total_opts = current.options.len();
+    let (mut start, mut take) = (0usize, total_opts.min(opt_budget));
+    if total_opts > opt_budget {
+        // 先按两端都有省略指示来估算窗口；落到边缘的指示行让位给选项。
+        let take_max = opt_budget.saturating_sub(2).max(1);
+        start = highlight[*question].min(total_opts.saturating_sub(take_max));
+        take = take_max.min(total_opts - start);
+        if start == 0 {
+            take = (opt_budget - 1).min(total_opts);
         }
+        if start + take >= total_opts {
+            take = (opt_budget - usize::from(start > 0)).min(total_opts - start);
+        }
+    }
+    let base = lines.len();
+    let mut list: Vec<Line<'static>> = Vec::with_capacity(take + 3);
+    let mut option_hits: Vec<(usize, usize)> = Vec::with_capacity(take + 1);
+    if start > 0 {
+        list.push(scroll_edge_hint('▲', start, theme));
+    }
+    for (index, row) in option_rows.iter().enumerate().skip(start).take(take) {
+        option_hits.push((index, base + list.len()));
+        list.push(row.clone());
+    }
+    if start + take < total_opts {
+        list.push(scroll_edge_hint('▼', total_opts - start - take, theme));
     }
     let editing_here = highlight[*question] == current.options.len();
     let answer = custom.get(*question);
@@ -1752,8 +1837,8 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         Some(answer) => answer.text.clone(),
         None => String::new(),
     };
-    option_hits.push((current.options.len(), body.len()));
-    body.push(Line::from(Span::styled(
+    option_hits.push((current.options.len(), base + list.len()));
+    list.push(Line::from(Span::styled(
         ellipsize(
             &format!(
                 " {} ✎ 自定义：{custom_display}",
@@ -1764,45 +1849,56 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         custom_style,
     )));
 
-    // 预览只跟随聚焦项：自定义行/无预览项不进入预览布局。
-    let preview = current
-        .options
-        .get(highlight[*question])
-        .and_then(|option| option.preview.as_deref())
-        .filter(|text| !text.trim().is_empty());
-    // 顶部固定行 + 底部提示行之外的余量都留给预览。
-    let rows = max_lines.saturating_sub(lines.len() + 1).max(1);
-    // 三种布局里 body 的每一行都恰好映射到输出的一行，偏移即合入前的固定行数。
-    let base = lines.len();
-    match preview {
-        Some(source) if width >= ASK_PREVIEW_MIN_WIDTH => {
-            // 并排布局：左栏选项列表、右栏聚焦项预览（同 Claude Code 的提问卡片）。
-            let left_width = body
-                .iter()
-                .map(line_width)
-                .max()
-                .unwrap_or(0)
-                .clamp(ASK_PREVIEW_LEFT_MIN, width / 2);
-            let preview_width = width.saturating_sub(left_width + str_width(ASK_PREVIEW_SEPARATOR));
-            let pane = ask_preview_lines(source, preview_width, rows, *preview_scroll, theme);
-            lines.extend(join_columns(body, pane, left_width, theme));
+    let mut detail_area = None;
+    if two_col {
+        // 双栏：左栏选项列表 + 右栏聚焦项详情（描述在前、预览在后，同一滚动窗）。
+        let left_width = list
+            .iter()
+            .map(line_width)
+            .max()
+            .unwrap_or(0)
+            .clamp(ASK_PREVIEW_LEFT_MIN, width / 2);
+        let pane_width = width.saturating_sub(left_width + str_width(ASK_PREVIEW_SEPARATOR));
+        let pane_budget = opt_budget + 1;
+        let pane_content = focused_option
+            .map(|option| focused_detail_lines(option, pane_width, theme))
+            .unwrap_or_default();
+        let pane_overflow = pane_content.len() > pane_budget;
+        let pane = scroll_window(pane_content, pane_budget, *preview_scroll, theme);
+        let pane_rows = pane.len();
+        let pane_start = lines.len();
+        lines.extend(join_columns(list, pane, left_width, theme));
+        if pane_overflow {
+            detail_area = Some(Rect::new(
+                u16::try_from(left_width + str_width(ASK_PREVIEW_SEPARATOR)).unwrap_or(u16::MAX),
+                u16::try_from(pane_start).unwrap_or(u16::MAX),
+                u16::try_from(pane_width).unwrap_or(u16::MAX),
+                u16::try_from(pane_rows).unwrap_or(u16::MAX),
+            ));
         }
-        Some(source) => {
-            // 窄终端：预览整宽落到选项下方，同样围绕聚焦项。
-            let preview_rows = rows.saturating_sub(body.len() + 2).max(1);
-            lines.extend(body);
-            lines.push(Line::from(String::new()));
+    } else {
+        lines.extend(list);
+        if detail_zone_rows > 0 {
+            // 底部固定详情区：分隔线与选项列表隔开，内容限高可滚；
+            // 容量取预算核定的 detail_zone_rows - 1（可能与 ASK_DETAIL_ROWS 不同）。
+            let capacity = detail_zone_rows - 1;
+            let detail_start = lines.len();
             lines.push(Line::from(Span::styled(
-                "预览",
-                Style::new().fg(theme.gray_dim),
+                "─".repeat(width),
+                Style::new().fg(theme.border),
             )));
-            let pane = ask_preview_lines(source, width, preview_rows, *preview_scroll, theme);
-            lines.extend(pane);
+            let overflow = detail_content.len() > capacity;
+            let windowed = scroll_window(detail_content, capacity, *preview_scroll, theme);
+            lines.extend(windowed);
+            if overflow {
+                detail_area = Some(Rect::new(
+                    0,
+                    u16::try_from(detail_start).unwrap_or(u16::MAX),
+                    u16::try_from(width).unwrap_or(u16::MAX),
+                    u16::try_from(lines.len() - detail_start).unwrap_or(u16::MAX),
+                ));
+            }
         }
-        None => lines.extend(body),
-    }
-    for (_, row) in &mut option_hits {
-        *row += base;
     }
     // 页脚一行：方向键、数字键属常规交互不教，只留反直觉的键；
     // 多选最后一问 enter 从切勾变成进确认页，提示如实切换。
@@ -1834,7 +1930,89 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         lines,
         option_hits,
         nav_hits,
+        question_area,
+        detail_area,
     }
+}
+
+/// 把内容截取为最多 `capacity` 行的滚动窗口；放不下时末行换成
+/// 「… a-b/total 行 · 滚轮/PgUp·PgDn」状态行（各滚动区同一约定）。
+fn scroll_window(
+    rows: Vec<Line<'static>>,
+    capacity: usize,
+    scroll: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let total = rows.len();
+    let capacity = capacity.max(1);
+    if total <= capacity {
+        return rows;
+    }
+    let visible = capacity - 1;
+    let offset = scroll.min(total.saturating_sub(visible));
+    let mut out: Vec<Line<'static>> = rows.into_iter().skip(offset).take(visible).collect();
+    out.push(Line::from(Span::styled(
+        format!(
+            "… {}-{}/{total} 行 · 滚轮/PgUp·PgDn",
+            offset + 1,
+            offset + visible
+        ),
+        Style::new().fg(theme.gray_dim),
+    )));
+    out
+}
+
+/// 选项列表窗口的边缘指示：上沿 `▲ 还有 N 项`、下沿 `▼ 还有 N 项`。
+fn scroll_edge_hint(arrow: char, hidden: usize, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("   {arrow} 还有 {hidden} 项"),
+        Style::new().fg(theme.gray_dim),
+    ))
+}
+
+/// 聚焦项的详情内容：描述在前（灰字折行）、预览在后（markdown 渲染）。
+/// 单栏时进底部固定区，双栏时进右栏；聚焦项两者皆无则返回空。
+fn focused_detail_lines(
+    option: &moc_protocol::methods::AskOption,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    if let Some(description) = option
+        .description
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        rows.extend(
+            crate::render::wrap::wrap_text(description, width)
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, Style::new().fg(theme.gray)))),
+        );
+    }
+    if let Some(preview) = option
+        .preview
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        let mut rendered: Vec<Line<'static>> =
+            crate::render::markdown::render_markdown(preview, width, theme)
+                .into_iter()
+                .map(|line| clip_line(line, width))
+                .collect();
+        while rendered
+            .last()
+            .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
+        {
+            rendered.pop();
+        }
+        if !rendered.is_empty() {
+            if !rows.is_empty() {
+                rows.push(Line::from(String::new()));
+            }
+            rows.extend(rendered);
+        }
+    }
+    rows
 }
 
 /// 确认页布局：越过最后一问强制经过，逐问一行列出全部回答，未回答的用警告色标出。
@@ -1859,6 +2037,8 @@ fn ask_confirm_layout(
             lines,
             option_hits: Vec::new(),
             nav_hits,
+            question_area: None,
+            detail_area: None,
         };
     };
     lines.push(Line::from(String::new()));
@@ -1919,6 +2099,8 @@ fn ask_confirm_layout(
         lines,
         option_hits: Vec::new(),
         nav_hits,
+        question_area: None,
+        detail_area: None,
     }
 }
 
@@ -2269,49 +2451,6 @@ fn join_columns(
         );
         out.push(line);
     }
-    out
-}
-
-/// 预览窗内容：按窗宽渲染 markdown 并裁剪到窗口内，截取滚动窗口；
-/// 内容高于窗口时末行显示滚动位置与按键提示。
-fn ask_preview_lines(
-    source: &str,
-    width: usize,
-    rows: usize,
-    scroll: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let width = width.max(8);
-    let mut rendered: Vec<Line<'static>> =
-        crate::render::markdown::render_markdown(source, width, theme)
-            .into_iter()
-            .map(|line| clip_line(line, width))
-            .collect();
-    while rendered
-        .last()
-        .is_some_and(|line| line.spans.iter().all(|span| span.content.trim().is_empty()))
-    {
-        rendered.pop();
-    }
-    let rows = rows.max(1);
-    let total = rendered.len();
-    if total <= rows {
-        return rendered;
-    }
-    let visible = rows - 1;
-    let offset = scroll.min(total.saturating_sub(visible));
-    let mut out: Vec<Line<'static>> = rendered.into_iter().skip(offset).take(visible).collect();
-    out.push(Line::from(Span::styled(
-        ellipsize(
-            &format!(
-                "… {}-{}/{total} 行 · PgUp/PgDn 滚动",
-                offset + 1,
-                offset + visible
-            ),
-            width,
-        ),
-        Style::new().fg(theme.gray_dim),
-    )));
     out
 }
 
@@ -2725,7 +2864,7 @@ fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) 
 
 #[cfg(test)]
 mod tests {
-    use super::modal_lines;
+    use super::{ask_layout, modal_lines};
     use crate::{
         app::App,
         modal::{Modal, PickerState, SessionScope},
@@ -3338,8 +3477,8 @@ mod tests {
         );
     }
 
-    /// 问题正文与选项 description 进正文区；标题栏只放 header；
-    /// 矮终端先让掉 description，问题正文与选项行保留。
+    /// 问题正文进限高窗口；聚焦项 description 进底部详情区（非聚焦项不铺满）；
+    /// 标题栏只放 header；矮终端详情区先让位，问题正文与选项行保留。
     #[test]
     fn ask_body_renders_question_and_descriptions() {
         let (events, _receiver) = unbounded_channel();
@@ -3371,12 +3510,13 @@ mod tests {
             texts
                 .iter()
                 .any(|text| text.contains("第一个选项的含义说明")),
-            "description 应渲染：{texts:?}"
+            "聚焦项 description 应渲染进详情区：{texts:?}"
         );
         assert!(
-            texts
+            !texts
                 .iter()
-                .any(|text| text.contains("第二个选项的含义说明"))
+                .any(|text| text.contains("第二个选项的含义说明")),
+            "非聚焦项 description 不铺满列表（渐进披露）：{texts:?}"
         );
 
         let tight: Vec<String> = modal_lines(&app, &modal, 40, 8)
@@ -3393,7 +3533,7 @@ mod tests {
         );
         assert!(
             !tight.iter().any(|text| text.contains("含义说明")),
-            "矮终端省略 description：{tight:?}"
+            "矮终端详情区先让位给选项列表：{tight:?}"
         );
     }
 
@@ -3434,8 +3574,8 @@ mod tests {
         );
     }
 
-    /// 提问预览：宽内容宽度并排（左选项、右预览），窄内容宽度落到选项下方；
-    /// 预览内容跟随聚焦项。
+    /// 提问预览：宽内容宽度并排（左选项、右聚焦项详情），窄内容宽度详情进底部署名区；
+    /// 预览/描述内容都跟随聚焦项。
     #[test]
     fn ask_preview_joins_columns_when_wide_and_stacks_when_narrow() {
         let (events, _receiver) = unbounded_channel();
@@ -3468,28 +3608,27 @@ mod tests {
             "并排行不得超出内容宽度：{wide:?}"
         );
 
-        // 窄内容宽度：预览整宽落到选项下方，带标题行。
+        // 窄内容宽度：预览随聚焦项进底部详情区（与描述同一去处），不分栏。
         let narrow: Vec<String> = modal_lines(&app, &modal, 60, 24)
             .iter()
             .map(line_text)
             .collect();
         assert!(!narrow.iter().any(|text| text.contains(" │ ")));
-        let label = narrow
+        let divider = narrow
             .iter()
-            .position(|text| text == "预览")
-            .expect("窄布局的预览标题");
+            .position(|text| text.starts_with("───"))
+            .expect("窄布局的详情区分隔线");
         assert!(
-            narrow[label..].iter().any(|text| text.contains("+--+")),
-            "预览应渲染在标题行之后：{narrow:?}"
+            narrow[divider..].iter().any(|text| text.contains("+--+")),
+            "预览应渲染进分隔线下的详情区：{narrow:?}"
         );
 
-        // 聚焦到无预览的选项：不进入预览布局。
+        // 聚焦到无预览的选项：右栏空出但双栏布局保持（预览判定是问题级的）。
         let plain: Vec<String> = modal_lines(&app, &ask_modal(1, 0), 100, 24)
             .iter()
             .map(line_text)
             .collect();
         assert!(!plain.iter().any(|text| text.contains("+--+")));
-        assert!(!plain.iter().any(|text| text == "预览"));
     }
 
     /// 提问预览：内容高于窗口时按滚动偏移开窗，末行给出位置与按键，
@@ -3518,9 +3657,9 @@ mod tests {
         assert!(head.iter().any(|text| text.contains("L01")), "{head:?}");
         let status = head
             .iter()
-            .position(|text| text.contains("PgUp/PgDn 滚动"))
-            .unwrap_or_else(|| panic!("超窗预览应给滚动提示：{head:?}"));
-        assert_eq!(status, head.len() - 2, "滚动提示应是预览窗末行：{head:?}");
+            .position(|text| text.contains("滚轮/PgUp·PgDn"))
+            .unwrap_or_else(|| panic!("超窗详情区应给滚动提示：{head:?}"));
+        assert_eq!(status, head.len() - 2, "滚动提示应是详情区末行：{head:?}");
 
         if let Modal::Ask { preview_scroll, .. } = &mut modal {
             *preview_scroll = 8;
@@ -3544,6 +3683,74 @@ mod tests {
             tail.iter()
                 .all(|text| !text.contains("L00") && !text.contains("L31")),
             "{tail:?}"
+        );
+    }
+
+    /// 长问题进限高窗口（滚动状态行 + question_area 命中区）；选项超预算时
+    /// 窗口跟随光标、两端给出 ▲/▼ 隐藏项数提示；命中矩形只记可见选项。
+    #[test]
+    fn ask_windows_overflowing_question_and_options() {
+        let (events, _receiver) = unbounded_channel();
+        let _app = App::new(Theme::global(), events);
+        let theme = Theme::global();
+        let mut modal = ask_modal(0, 0);
+        if let Modal::Ask { params, .. } = &mut modal {
+            params.questions[0].question = "很长的问".repeat(30);
+            params.questions[0].options = (1..=12)
+                .map(|index| AskOption {
+                    label: format!("选项{index}"),
+                    description: None,
+                    preview: None,
+                })
+                .collect();
+        }
+
+        // 首屏：问题窗限高 + 状态行；选项窗口从头开始，尾部 ▼ 提示。
+        let layout = ask_layout(theme, &modal, 40, 16);
+        let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("行 · 滚轮/PgUp·PgDn")),
+            "超窗问题应给滚动状态行：{texts:?}"
+        );
+        assert!(layout.question_area.is_some(), "溢出时问题区登记命中");
+        assert!(
+            texts.iter().any(|text| text.contains("▼ 还有 6 项")),
+            "选项窗口尾部应提示隐藏项数：{texts:?}"
+        );
+        assert_eq!(
+            layout.option_hits.len(),
+            7,
+            "命中矩形只覆盖可见选项 + 自定义行"
+        );
+
+        // 光标到底：窗口跟随，头部 ▲ 提示上方隐藏项数。
+        if let Modal::Ask { highlight, .. } = &mut modal {
+            highlight[0] = 11;
+        }
+        let layout = ask_layout(theme, &modal, 40, 16);
+        let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
+        assert!(
+            texts.iter().any(|text| text.contains("▲ 还有 7 项")),
+            "滚到底后头部应提示隐藏项数：{texts:?}"
+        );
+
+        // 问题正文窗口按偏移推进（与光标移动互不相干）；偏移越界时钳到末窗。
+        if let Modal::Ask {
+            highlight,
+            question_scroll,
+            ..
+        } = &mut modal
+        {
+            highlight[0] = 0;
+            *question_scroll = 3;
+        }
+        let layout = ask_layout(theme, &modal, 40, 16);
+        let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
+        assert!(
+            texts.iter().any(|text| text.contains("… 3-6/6 行")),
+            "问题窗应显示钳取后的行区间：{texts:?}"
         );
     }
 
@@ -3669,6 +3876,7 @@ mod tests {
             selected: vec![vec!["甲".to_owned()], Vec::new(), Vec::new()],
             custom: vec![crate::modal::CustomAnswer::default(); 3],
             preview_scroll: 0,
+            question_scroll: 0,
             parked: false,
             reply: None,
         });
@@ -3741,6 +3949,7 @@ mod tests {
             ],
             custom: vec![crate::modal::CustomAnswer::default(); 3],
             preview_scroll: 0,
+            question_scroll: 0,
             parked: false,
             reply: None,
         };
@@ -3853,6 +4062,7 @@ mod tests {
             selected: vec![Vec::new()],
             custom: vec![crate::modal::CustomAnswer::default()],
             preview_scroll,
+            question_scroll: 0,
             parked: false,
             reply: None,
         }

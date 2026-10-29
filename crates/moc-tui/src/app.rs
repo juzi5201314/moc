@@ -208,6 +208,11 @@ pub struct App {
     pub ask_nav_hits: Vec<(usize, Rect)>,
     /// 提问卡片整体区域：点击卡片外的转写区折叠。
     pub ask_card_area: Rect,
+    /// 问题正文窗口区域：滚轮悬停其上 = 滚动问题正文而非动选项光标。
+    pub ask_question_area: Rect,
+    /// 详情区区域（单栏时的底部聚焦项描述区，或双栏时的右栏预览窗）：
+    /// 滚轮悬停其上 = 滚动详情区。
+    pub ask_detail_area: Rect,
     /// 折叠细条区域（占据输入框位；点击展开回作答态）。
     pub ask_strip_area: Rect,
     /// 就地模式菜单；`None` = 关闭。
@@ -497,6 +502,8 @@ impl App {
             ask_option_hits: Vec::new(),
             ask_nav_hits: Vec::new(),
             ask_card_area: Rect::default(),
+            ask_question_area: Rect::default(),
+            ask_detail_area: Rect::default(),
             ask_strip_area: Rect::default(),
             mode_menu: None,
             transient_contract: None,

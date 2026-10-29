@@ -904,6 +904,7 @@ async fn event_loop(
                             custom: vec![crate::modal::CustomAnswer::default(); per_question],
                             question: 0,
                             preview_scroll: 0,
+                            question_scroll: 0,
                             parked: false,
                             reply: Some(reply),
                         });
@@ -1539,10 +1540,11 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
 
 /// 提问卡片的鼠标处理。
 /// 作答态：点选项即选择（单选直接推进、多选切换勾选），点自定义行进入编辑，
-/// 点导航条跳问，点转写区或按滚动条折叠；滚轮与 ↑↓ 同语义（动选项光标）。
+/// 点导航条跳问，点转写区或按滚动条折叠；滚轮按悬停区分流——落在可滚文本区
+/// （溢出的问题正文窗/详情区）滚该区，其余位置与 ↑↓ 同语义移动选项光标。
 /// 折叠态：点细条展开回作答，其余鼠标行为与转写区一致（滚动/拖选/滚动条）。
 /// 命中矩形由渲染层每帧写入 `ask_option_hits`/`ask_nav_hits`/`ask_card_area`/
-/// `ask_strip_area`；未命中区域不响应。
+/// `ask_question_area`/`ask_detail_area`/`ask_strip_area`；未命中区域不响应。
 fn handle_ask_mouse(
     app: &mut App,
     _connection: &EmbeddedConnection,
@@ -1558,6 +1560,7 @@ fn handle_ask_mouse(
                 question,
                 highlight,
                 preview_scroll,
+                question_scroll,
                 parked,
                 ..
             }) = app.modal.as_mut()
@@ -1569,7 +1572,6 @@ fn handle_ask_mouse(
                 scroll(app, if up { 3 } else { -3 });
                 return;
             }
-            // 作答态滚轮 = ↑↓：移动选项光标（含自定义行），不折叠、不滚预览。
             let Some(current) = params.questions.get(*question) else {
                 // 确认页：滚轮滚动答案列表（复用 preview_scroll 当滚动偏移）。
                 *preview_scroll = if up {
@@ -1579,6 +1581,25 @@ fn handle_ask_mouse(
                 };
                 return;
             };
+            // 悬停分流：滚轮落在可滚文本区（问题正文/详情区）就滚该区内容；
+            // 其余位置与 ↑↓ 同语义，移动选项光标——命中区域只在溢出时才登记，
+            // 所以落到这里的悬停要么在选项上、要么悬停区并不需要滚。
+            if app.ask_detail_area.contains(position) {
+                *preview_scroll = if up {
+                    preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP)
+                } else {
+                    preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP)
+                };
+                return;
+            }
+            if app.ask_question_area.contains(position) {
+                *question_scroll = if up {
+                    question_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP)
+                } else {
+                    question_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP)
+                };
+                return;
+            }
             let option_count = current.options.len();
             let next = if up {
                 highlight[*question].saturating_sub(1)
@@ -1615,6 +1636,7 @@ fn handle_ask_mouse(
                     question,
                     custom,
                     preview_scroll,
+                    question_scroll,
                     ..
                 }) = app.modal.as_mut()
                     && target < params.questions.len()
@@ -1625,6 +1647,7 @@ fn handle_ask_mouse(
                     }
                     *question = target;
                     *preview_scroll = 0;
+                    *question_scroll = 0;
                 }
                 return;
             }
@@ -1662,6 +1685,7 @@ fn handle_ask_mouse(
                 selected,
                 custom,
                 preview_scroll,
+                question_scroll,
                 ..
             }) = app.modal.as_mut()
             else {
@@ -1689,7 +1713,7 @@ fn handle_ask_mouse(
             if let Some(current) = params.questions.get(*question)
                 && pick_ask_option(current, *question, option, selected)
             {
-                advance_ask(question, preview_scroll);
+                advance_ask(question, preview_scroll, question_scroll);
             }
         }
         // 折叠态其余鼠标事件（拖动/抬起/移动/右键）与转写区通用路径一致。
@@ -2833,6 +2857,7 @@ fn handle_modal_key(
             selected,
             custom,
             preview_scroll,
+            question_scroll,
             parked,
             reply,
         } => {
@@ -2887,12 +2912,14 @@ fn handle_modal_key(
                         if *question > 0 {
                             *question -= 1;
                             *preview_scroll = 0;
+                            *question_scroll = 0;
                         }
                     }
                     (KeyCode::Right, _) => {
                         if *question < params.questions.len() {
                             *question += 1;
                             *preview_scroll = 0;
+                            *question_scroll = 0;
                         }
                     }
                     (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
@@ -2922,6 +2949,7 @@ fn handle_modal_key(
                     | (KeyCode::Left, _) => {
                         *question = params.questions.len().saturating_sub(1);
                         *preview_scroll = 0;
+                        *question_scroll = 0;
                     }
                     (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
                         *preview_scroll = preview_scroll.saturating_sub(1);
@@ -2992,7 +3020,7 @@ fn handle_modal_key(
                         }
                     }
                     if submit {
-                        advance_ask(question, preview_scroll);
+                        advance_ask(question, preview_scroll, question_scroll);
                     }
                 } else {
                     match (code, modifiers) {
@@ -3010,14 +3038,18 @@ fn handle_modal_key(
                                 *preview_scroll = 0;
                             }
                         }
-                        // 聚焦项预览滚动：只改偏移，越界由渲染层夹到实际行数。
+                        // 长文区滚动（问题正文窗 + 详情区）：只改偏移，越界由渲染层夹。
                         (KeyCode::PageUp, _) => {
                             *preview_scroll =
                                 preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP);
+                            *question_scroll =
+                                question_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP);
                         }
                         (KeyCode::PageDown, _) => {
                             *preview_scroll =
                                 preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP);
+                            *question_scroll =
+                                question_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP);
                         }
                         (KeyCode::Char('z'), KeyModifiers::NONE) => {
                             highlight[*question] = option_count;
@@ -3037,7 +3069,7 @@ fn handle_modal_key(
                         {
                             let index = digit.to_digit(10).expect("ascii digit") as usize - 1;
                             if pick_ask_option(current, *question, index, selected) {
-                                advance_ask(question, preview_scroll);
+                                advance_ask(question, preview_scroll, question_scroll);
                             }
                         }
                         // 复制聚焦项：选项给 label，自定义行给已输入的正文。
@@ -3081,11 +3113,11 @@ fn handle_modal_key(
                                     );
                                 } else {
                                     // 最后一问没有下一题：enter 在此是通往确认页的手势。
-                                    advance_ask(question, preview_scroll);
+                                    advance_ask(question, preview_scroll, question_scroll);
                                 }
                             } else if let Some(option) = current.options.get(highlight[*question]) {
                                 selected[*question] = vec![option.label.clone()];
-                                advance_ask(question, preview_scroll);
+                                advance_ask(question, preview_scroll, question_scroll);
                             }
                         }
                         (KeyCode::Tab, KeyModifiers::NONE) => {
@@ -3093,6 +3125,7 @@ fn handle_modal_key(
                             // 通往确认页的手势是最后一问的 enter。
                             *question = (*question + 1) % params.questions.len();
                             *preview_scroll = 0;
+                            *question_scroll = 0;
                         }
                         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
                             // shift+tab 反向循环：第一问绕回最后一问。
@@ -3100,6 +3133,7 @@ fn handle_modal_key(
                                 .checked_sub(1)
                                 .unwrap_or_else(|| params.questions.len() - 1);
                             *preview_scroll = 0;
+                            *question_scroll = 0;
                         }
                         // ←→ 只翻看问题指针：不写入选择也不提交，回看时误触不会推进；
                         // 最后一问再 → 进入确认页，确认提交始终是确认页上 enter 的事。
@@ -3107,12 +3141,14 @@ fn handle_modal_key(
                             if *question > 0 {
                                 *question -= 1;
                                 *preview_scroll = 0;
+                                *question_scroll = 0;
                             }
                         }
                         (KeyCode::Right, _) => {
                             if *question < params.questions.len() {
                                 *question += 1;
                                 *preview_scroll = 0;
+                                *question_scroll = 0;
                             }
                         }
                         // 跳过整单：所有问题按未回答提交，模型收到明确语义而非错误。
@@ -3687,9 +3723,10 @@ fn dismiss_ask(
 
 /// ask 推进到下一页：越过最后一问即落在确认页（`question == questions.len()`），
 /// 真正的提交只发生在确认页上。
-fn advance_ask(question: &mut usize, preview_scroll: &mut usize) {
+fn advance_ask(question: &mut usize, preview_scroll: &mut usize, question_scroll: &mut usize) {
     *question += 1;
     *preview_scroll = 0;
+    *question_scroll = 0;
 }
 
 /// 确认页提交：按各问勾选与自定义文本组装 AskResult 回给 core；返回是否应关闭模态。
@@ -6544,6 +6581,7 @@ mod tests {
             selected: vec![Vec::new(), Vec::new()],
             custom: vec![crate::modal::CustomAnswer::default(); 2],
             preview_scroll: 0,
+            question_scroll: 0,
             parked: false,
             reply: None,
         });
@@ -8956,6 +8994,63 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 作答态滚轮悬停分流：落在可滚文本区（溢出的问题窗/详情区）滚该区偏移，
+    /// 其余位置照旧移动选项光标；命中区域只在溢出时登记。
+    #[tokio::test]
+    async fn ask_mouse_wheel_routes_by_hover_region() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal_with(vec![multi_ask_question()], None));
+        app.ask_question_area = ratatui::layout::Rect::new(10, 3, 60, 5);
+        app.ask_detail_area = ratatui::layout::Rect::new(10, 20, 60, 5);
+
+        // 悬停问题正文窗口：滚动问题偏移，光标不动。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::ScrollDown, 20, 4),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                highlight,
+                question_scroll,
+                preview_scroll,
+                ..
+            }) => {
+                assert_eq!(*question_scroll, ASK_PREVIEW_SCROLL_STEP);
+                assert_eq!(*preview_scroll, 0);
+                assert_eq!(highlight[0], 0, "悬停文本区不动光标");
+            }
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 悬停详情区：滚动详情偏移。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::ScrollDown, 20, 21),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask { preview_scroll, .. }) => {
+                assert_eq!(*preview_scroll, ASK_PREVIEW_SCROLL_STEP)
+            }
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 两区之外（选项/空白）：恢复移动光标语义。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::ScrollDown, 20, 12),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask { highlight, .. }) => assert_eq!(highlight[0], 1),
+            _ => unreachable!("模态应保留"),
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 滚动条轨道在转写区外：作答态按下 = 折叠并开始拖拽；折叠态拖动/抬起走通用路径。
     #[tokio::test]
     async fn ask_scrollbar_drag_works_while_parked() {
@@ -9150,6 +9245,7 @@ mod tests {
             selected: vec![Vec::new(); count],
             custom: vec![crate::modal::CustomAnswer::default(); count],
             preview_scroll: 0,
+            question_scroll: 0,
             parked: false,
             reply,
         }

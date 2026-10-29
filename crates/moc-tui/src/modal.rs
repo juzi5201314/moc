@@ -1037,8 +1037,11 @@ pub enum Modal {
         selected: Vec<Vec<String>>,
         /// 每问的自定义答案输入，与 `selected` 一一对应（切问不串答案）。
         custom: Vec<CustomAnswer>,
-        /// 当前聚焦项预览的滚动行数（切换选项/问题时归零）。
+        /// 详情区的滚动行数：聚焦项预览（双栏右栏）或聚焦项描述区（单栏底区），
+        /// 确认页上复用为答案列表偏移（切换选项/问题时归零）。
         preview_scroll: usize,
+        /// 问题正文窗口的滚动行数（问题限高展示时启用；换题归零，动选项光标不归零）。
+        question_scroll: usize,
         /// 折叠态：卡片收成输入框位的细条，按键/滚轮交给转写区滚动，
         /// 供用户查阅提问的上下文后再回来作答。
         parked: bool,
@@ -1484,6 +1487,7 @@ mod tests {
             selected: vec![Vec::new(); 2],
             custom: vec![CustomAnswer::default(); 2],
             preview_scroll: 0,
+            question_scroll: 0,
             parked: false,
             reply: None,
         };

@@ -25,6 +25,7 @@ fn test_f1_01_ask_modal_background_opaque_and_no_leak_through() {
         selected: vec![vec!["是".into()]],
         custom: vec![Default::default()],
         preview_scroll: 0,
+        question_scroll: 0,
         parked: false,
         reply: None,
     });

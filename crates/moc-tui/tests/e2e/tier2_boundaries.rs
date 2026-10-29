@@ -28,6 +28,7 @@ fn test_f1_b1_ask_modal_zero_options_opacity() {
         selected: vec![vec!["确定".into()]],
         custom: vec![Default::default()],
         preview_scroll: 0,
+        question_scroll: 0,
         parked: false,
         reply: None,
     });
@@ -54,6 +55,7 @@ fn test_f1_b2_tiny_terminal_modal_opacity() {
         selected: vec![vec!["Y".into()]],
         custom: vec![Default::default()],
         preview_scroll: 0,
+        question_scroll: 0,
         parked: false,
         reply: None,
     });

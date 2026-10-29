@@ -87,6 +87,7 @@ fn test_combo_05_markdown_table_inside_ask_modal() {
         selected: vec![vec!["确认".into()]],
         custom: vec![Default::default()],
         preview_scroll: 0,
+        question_scroll: 0,
         parked: false,
         reply: None,
     });
@@ -289,6 +290,7 @@ fn test_combo_18_ask_modal_multiple_questions_narrow_screen() {
         selected: vec![vec!["是，立即执行并记录日志".into()]],
         custom: vec![Default::default()],
         preview_scroll: 0,
+        question_scroll: 0,
         parked: false,
         reply: None,
     });
