@@ -191,7 +191,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     }
 
     draw_header(frame, app, inset(header_area, MARGIN_X));
-    draw_prompt(frame, app, prompt_area);
+    // 折叠的提问卡占住输入框位：输入框本体（含光标）不画，
+    // 细条由 draw_ask_modal 以 prompt_area 为锚补画在最后。
+    if !matches!(app.modal, Some(Modal::Ask { parked: true, .. })) {
+        draw_prompt(frame, app, prompt_area);
+    }
     if status_rows > 0 {
         draw_statusline(frame, app, inset(status_area, MARGIN_X));
     }
@@ -559,11 +563,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         .get("help")
         .and_then(|keys| keys.first())
         .map_or("—", String::as_str);
-    let (left_key, left_tip, left_color) = if let Some(Modal::Ask { parked: true, .. }) = &app.modal
-    {
-        // 提问卡片停泊中：图例固定给出回去的路，窄栏也不裁掉。
-        ("Tab", "提问", theme.accent_user)
-    } else if app.prompt_running {
+    let (left_key, left_tip, left_color) = if app.prompt_running {
         (
             "Esc",
             if app.cancel_requested {

@@ -204,6 +204,12 @@ pub struct App {
     /// 提问卡片各选项（含自定义行）的命中矩形；`options.len()` 下标代表自定义行。
     /// 每帧渲染时重建，下标越界（问题切换后）自然落空。
     pub ask_option_hits: Vec<(usize, Rect)>,
+    /// 提问卡片顶部问题导航条各问的命中矩形（点击跳问）。
+    pub ask_nav_hits: Vec<(usize, Rect)>,
+    /// 提问卡片整体区域：点击卡片外的转写区折叠。
+    pub ask_card_area: Rect,
+    /// 折叠细条区域（占据输入框位；点击展开回作答态）。
+    pub ask_strip_area: Rect,
     /// 就地模式菜单；`None` = 关闭。
     pub mode_menu: Option<ModeMenu>,
     /// 当前这条用户消息的临时契约覆盖（`/ask` 注入）；整条消息回复完毕才清空。
@@ -489,6 +495,9 @@ impl App {
             rewind_timeline_area: Rect::default(),
             rewind_detail_area: Rect::default(),
             ask_option_hits: Vec::new(),
+            ask_nav_hits: Vec::new(),
+            ask_card_area: Rect::default(),
+            ask_strip_area: Rect::default(),
             mode_menu: None,
             transient_contract: None,
             context_usage: None,

@@ -731,16 +731,6 @@ fn restore_user_message(
     }
 }
 
-/// 取出问题的默认推荐答案。
-fn recommended_labels(question: &moc_protocol::AskQuestion) -> Vec<String> {
-    question
-        .recommended
-        .iter()
-        .filter_map(|&index| question.options.get(index as usize))
-        .map(|option| option.label.clone())
-        .collect()
-}
-
 /// 取出问题默认高亮的选项下标：推荐项优先，没有推荐停在第一项——
 /// 用户直接回车选中的就是模型建议的答案。
 fn recommended_highlight(question: &moc_protocol::AskQuestion) -> usize {
@@ -899,13 +889,14 @@ async fn event_loop(
                     Some(AppEvent::Ask { params, reply }) => {
                         if !app.terminal_focused && app.preferences.notify_waiting { crate::config::notify("有问题等待你的回答"); }
                         let per_question = params.questions.len();
-                        // 高亮默认落在推荐项上；勾选集与高亮分离（多选可多个推荐）。
+                        // 高亮默认落在推荐项上；勾选集永远从空开始——
+                        // 推荐只是徽章提示，答案必须由用户亲自勾选。
                         let highlight = params
                             .questions
                             .iter()
                             .map(recommended_highlight)
                             .collect();
-                        let selected = params.questions.iter().map(recommended_labels).collect();
+                        let selected = vec![Vec::new(); per_question];
                         app.modal = Some(Modal::Ask {
                             params,
                             highlight,
@@ -1546,68 +1537,166 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     }
 }
 
-/// 提问卡片的鼠标处理：点击选项即选择（单选直接推进、多选切换勾选），
-/// 点击自定义行进入编辑；停泊态下点击等于回到作答并选择。
-/// 命中矩形由渲染层每帧写入 `ask_option_hits`，未命中（正文/页脚/卡片外）不响应。
+/// 提问卡片的鼠标处理。
+/// 作答态：点选项即选择（单选直接推进、多选切换勾选），点自定义行进入编辑，
+/// 点导航条跳问，点转写区或按滚动条折叠；滚轮与 ↑↓ 同语义（动选项光标）。
+/// 折叠态：点细条展开回作答，其余鼠标行为与转写区一致（滚动/拖选/滚动条）。
+/// 命中矩形由渲染层每帧写入 `ask_option_hits`/`ask_nav_hits`/`ask_card_area`/
+/// `ask_strip_area`；未命中区域不响应。
 fn handle_ask_mouse(
     app: &mut App,
-    connection: &EmbeddedConnection,
+    _connection: &EmbeddedConnection,
     mouse: crossterm::event::MouseEvent,
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
-    if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        return;
-    }
     let position = (mouse.column, mouse.row).into();
-    let Some((option, _)) = app
-        .ask_option_hits
-        .iter()
-        .find(|(_, area)| area.contains(position))
-        .cloned()
-    else {
-        return;
-    };
-    let Some(Modal::Ask {
-        params,
-        question,
-        highlight,
-        selected,
-        custom,
-        preview_scroll,
-        parked,
-        reply,
-    }) = app.modal.as_mut()
-    else {
-        return;
-    };
-    let count = params
-        .questions
-        .get(*question)
-        .map(|current| current.options.len())
-        .unwrap_or(0);
-    *parked = false;
-    *preview_scroll = 0;
-    // 编辑中的文本留在原处，焦点交给点击的行。
-    if let Some(answer) = custom.get_mut(*question) {
-        answer.editing = false;
-    }
-    highlight[*question] = option;
-    if option >= count {
-        if let Some(answer) = custom.get_mut(*question) {
-            answer.editing = true;
-            answer.cursor = answer.text.len();
+    match mouse.kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+            let Some(Modal::Ask {
+                params,
+                question,
+                highlight,
+                preview_scroll,
+                parked,
+                ..
+            }) = app.modal.as_mut()
+            else {
+                return;
+            };
+            if *parked {
+                // 折叠态滚轮与 ↑↓ 同语义：滚转写区。
+                scroll(app, if up { 3 } else { -3 });
+                return;
+            }
+            // 作答态滚轮 = ↑↓：移动选项光标（含自定义行），不折叠、不滚预览。
+            let Some(current) = params.questions.get(*question) else {
+                // 确认页：滚轮滚动答案列表（复用 preview_scroll 当滚动偏移）。
+                *preview_scroll = if up {
+                    preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP)
+                } else {
+                    preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP)
+                };
+                return;
+            };
+            let option_count = current.options.len();
+            let next = if up {
+                highlight[*question].saturating_sub(1)
+            } else {
+                (highlight[*question] + 1).min(option_count)
+            };
+            if next != highlight[*question] {
+                highlight[*question] = next;
+                *preview_scroll = 0;
+            }
         }
-        return;
-    }
-    let mut close = false;
-    if let Some(current) = params.questions.get(*question)
-        && pick_ask_option(current, *question, option, selected)
-    {
-        close = advance_ask(params, question, selected, custom, reply);
-    }
-    if close {
-        app.modal = None;
-        crate::queue::dispatch(app, connection);
+        MouseEventKind::Down(MouseButton::Left) => {
+            if matches!(app.modal, Some(Modal::Ask { parked: true, .. })) {
+                // 折叠态细条点中即展开；其余位置与转写区一致：
+                // 滚动条拖拽、拖选复制、块折叠/图表切换照常可用。
+                if app.ask_strip_area.contains(position) {
+                    if let Some(Modal::Ask { parked, .. }) = app.modal.as_mut() {
+                        *parked = false;
+                    }
+                } else {
+                    handle_mouse(app, mouse);
+                }
+                return;
+            }
+            // 导航条跳问：只动指针不提交，与 ←→ 同语义。
+            if let Some((target, _)) = app
+                .ask_nav_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .cloned()
+            {
+                if let Some(Modal::Ask {
+                    params,
+                    question,
+                    custom,
+                    preview_scroll,
+                    ..
+                }) = app.modal.as_mut()
+                    && target < params.questions.len()
+                {
+                    // 编辑中的文本留在原问，跳问即结束编辑态。
+                    if let Some(answer) = custom.get_mut(*question) {
+                        answer.editing = false;
+                    }
+                    *question = target;
+                    *preview_scroll = 0;
+                }
+                return;
+            }
+            // 滚动条轨道在转写区外（终端右缘），按下同样算「翻上下文」：
+            // 折叠并把按下交给拖拽逻辑，后续 Drag/Up 走折叠态的通用路径。
+            if handle_scrollbar_mouse(app, &mouse) {
+                if let Some(Modal::Ask { parked, .. }) = app.modal.as_mut() {
+                    *parked = true;
+                }
+                return;
+            }
+            // 转写区点击 = 折叠（与 Esc 同语义，可再展开）：点上下文才是想查阅；
+            // 输入框/状态栏等死区不误判，几何未建立（首帧渲染前）同样不误判。
+            if !app.ask_card_area.is_empty()
+                && !app.ask_card_area.contains(position)
+                && app.scrollback_area.contains(position)
+            {
+                if let Some(Modal::Ask { parked, .. }) = app.modal.as_mut() {
+                    *parked = true;
+                }
+                return;
+            }
+            let Some((option, _)) = app
+                .ask_option_hits
+                .iter()
+                .find(|(_, area)| area.contains(position))
+                .cloned()
+            else {
+                return;
+            };
+            let Some(Modal::Ask {
+                params,
+                question,
+                highlight,
+                selected,
+                custom,
+                preview_scroll,
+                ..
+            }) = app.modal.as_mut()
+            else {
+                return;
+            };
+            let count = params
+                .questions
+                .get(*question)
+                .map(|current| current.options.len())
+                .unwrap_or(0);
+            *preview_scroll = 0;
+            // 编辑中的文本留在原处，焦点交给点击的行。
+            if let Some(answer) = custom.get_mut(*question) {
+                answer.editing = false;
+            }
+            highlight[*question] = option;
+            if option >= count {
+                if let Some(answer) = custom.get_mut(*question) {
+                    answer.editing = true;
+                    answer.cursor = answer.text.len();
+                }
+                return;
+            }
+            // 单选点中即推进；越过最后一问落到确认页，由确认页统一提交。
+            if let Some(current) = params.questions.get(*question)
+                && pick_ask_option(current, *question, option, selected)
+            {
+                advance_ask(question, preview_scroll);
+            }
+        }
+        // 折叠态其余鼠标事件（拖动/抬起/移动/右键）与转写区通用路径一致。
+        _ if matches!(app.modal, Some(Modal::Ask { parked: true, .. })) => {
+            handle_mouse(app, mouse);
+        }
+        _ => {}
     }
 }
 
@@ -2747,11 +2836,7 @@ fn handle_modal_key(
             parked,
             reply,
         } => {
-            let Some(current) = params.questions.get(*question) else {
-                return;
-            };
-            let option_count = current.options.len();
-            // Ctrl+C 与权限弹窗同语义：任何状态（聚焦/停泊/编辑）下直接取消整单，
+            // Ctrl+C 与权限弹窗同语义：任何状态（聚焦/折叠/编辑/确认页）下直接取消整单，
             // 不让肌肉记忆落在被吞掉的键上。
             if matches!(
                 (code, modifiers),
@@ -2764,8 +2849,8 @@ fn handle_modal_key(
                 }
                 close = true;
             } else if *parked {
-                // 停泊：键盘交给转写区（与 Focus::Scrollback 同一套滚动键），
-                // 卡片留在屏幕上，Tab 随时回来继续作答。
+                // 折叠态：键盘交给转写区（与 Focus::Scrollback 同一套滚动键），
+                // 卡片收成输入框位的细条，Tab 随时回来继续作答。
                 match (code, modifiers) {
                     (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => scroll(app, 3),
                     (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
@@ -2788,14 +2873,16 @@ fn handle_modal_key(
                     | (KeyCode::Char(' '), KeyModifiers::NONE) => *parked = false,
                     (KeyCode::Char('z'), KeyModifiers::NONE) => {
                         *parked = false;
-                        highlight[*question] = option_count;
-                        if let Some(answer) = custom.get_mut(*question) {
-                            answer.editing = true;
-                            answer.cursor = answer.text.len();
+                        if let Some(current) = params.questions.get(*question) {
+                            highlight[*question] = current.options.len();
+                            if let Some(answer) = custom.get_mut(*question) {
+                                answer.editing = true;
+                                answer.cursor = answer.text.len();
+                            }
                         }
                         *preview_scroll = 0;
                     }
-                    // ←→ 翻看问题与作答态同一语义：只动指针，不提交。
+                    // ←→ 翻看问题与作答态同一语义：只动指针，不提交；确认页也算一页。
                     (KeyCode::Left, _) => {
                         if *question > 0 {
                             *question -= 1;
@@ -2803,7 +2890,7 @@ fn handle_modal_key(
                         }
                     }
                     (KeyCode::Right, _) => {
-                        if *question + 1 < params.questions.len() {
+                        if *question < params.questions.len() {
                             *question += 1;
                             *preview_scroll = 0;
                         }
@@ -2812,7 +2899,7 @@ fn handle_modal_key(
                         close |= dismiss_ask(reply);
                     }
                     (KeyCode::Esc, _) => {
-                        // 停泊后再退一次才取消整单（core 侧按「用户没有回答」收场）。
+                        // 折叠后再退一次才取消整单（core 侧按「用户没有回答」收场）。
                         if let Some(reply) = reply.take() {
                             let _ = reply.send(Err(moc_protocol::RpcError::of(
                                 moc_protocol::RpcErrorCode::RequestCancelled,
@@ -2822,7 +2909,42 @@ fn handle_modal_key(
                     }
                     _ => {}
                 }
+            } else if *question >= params.questions.len() {
+                // 确认页：越过最后一问强制经过，提交前最后一次通览全部回答。
+                // enter/tab 确认提交；←/shift+tab 回上一问；↑↓ 滚动答案列表（复用
+                // preview_scroll 当滚动偏移）；esc 折叠；shift+X 整单跳过。
+                match (code, modifiers) {
+                    (KeyCode::Enter, KeyModifiers::NONE) | (KeyCode::Tab, KeyModifiers::NONE) => {
+                        close |= submit_ask(params, selected, custom, reply);
+                    }
+                    (KeyCode::Tab, KeyModifiers::SHIFT)
+                    | (KeyCode::BackTab, _)
+                    | (KeyCode::Left, _) => {
+                        *question = params.questions.len().saturating_sub(1);
+                        *preview_scroll = 0;
+                    }
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                        *preview_scroll = preview_scroll.saturating_sub(1);
+                    }
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                        *preview_scroll = preview_scroll.saturating_add(1);
+                    }
+                    (KeyCode::PageUp, _) => {
+                        *preview_scroll = preview_scroll.saturating_sub(ASK_PREVIEW_SCROLL_STEP);
+                    }
+                    (KeyCode::PageDown, _) => {
+                        *preview_scroll = preview_scroll.saturating_add(ASK_PREVIEW_SCROLL_STEP);
+                    }
+                    // 跳过整单：所有问题按未回答提交，模型收到明确语义而非错误。
+                    (KeyCode::Char('X'), KeyModifiers::SHIFT) => {
+                        close |= dismiss_ask(reply);
+                    }
+                    (KeyCode::Esc, _) => *parked = true,
+                    _ => {}
+                }
             } else if let Some(answer) = custom.get_mut(*question) {
+                let current = &params.questions[*question];
+                let option_count = current.options.len();
                 if answer.editing {
                     let mut submit = false;
                     {
@@ -2870,7 +2992,7 @@ fn handle_modal_key(
                         }
                     }
                     if submit {
-                        close |= advance_ask(params, question, selected, custom, reply);
+                        advance_ask(question, preview_scroll);
                     }
                 } else {
                     match (code, modifiers) {
@@ -2915,7 +3037,7 @@ fn handle_modal_key(
                         {
                             let index = digit.to_digit(10).expect("ascii digit") as usize - 1;
                             if pick_ask_option(current, *question, index, selected) {
-                                close |= advance_ask(params, question, selected, custom, reply);
+                                advance_ask(question, preview_scroll);
                             }
                         }
                         // 复制聚焦项：选项给 label，自定义行给已输入的正文。
@@ -2947,32 +3069,40 @@ fn handle_modal_key(
                                     answer.editing = true;
                                     answer.cursor = answer.text.len();
                                 }
-                            } else if let Some(option) = current.options.get(highlight[*question]) {
-                                let label = option.label.clone();
-                                if current.multi {
-                                    let chosen = &mut selected[*question];
-                                    if !chosen.contains(&label) {
-                                        chosen.push(label);
-                                    }
-                                    close |= advance_ask(params, question, selected, custom, reply);
+                            } else if current.multi {
+                                if *question + 1 < params.questions.len() {
+                                    // 多选 enter = 空格：只切换聚焦项，
+                                    // 跳问走 tab/方向键，不在 enter 上兼差。
+                                    pick_ask_option(
+                                        current,
+                                        *question,
+                                        highlight[*question],
+                                        selected,
+                                    );
                                 } else {
-                                    selected[*question] = vec![label];
-                                    close |= advance_ask(params, question, selected, custom, reply);
+                                    // 最后一问没有下一题：enter 在此是通往确认页的手势。
+                                    advance_ask(question, preview_scroll);
                                 }
+                            } else if let Some(option) = current.options.get(highlight[*question]) {
+                                selected[*question] = vec![option.label.clone()];
+                                advance_ask(question, preview_scroll);
                             }
                         }
                         (KeyCode::Tab, KeyModifiers::NONE) => {
+                            // tab 只在问题间循环：最后一问绕回第一问，
+                            // 通往确认页的手势是最后一问的 enter。
+                            *question = (*question + 1) % params.questions.len();
                             *preview_scroll = 0;
-                            close |= advance_ask(params, question, selected, custom, reply);
                         }
                         (KeyCode::Tab, KeyModifiers::SHIFT) | (KeyCode::BackTab, _) => {
-                            if *question > 0 {
-                                *question -= 1;
-                                *preview_scroll = 0;
-                            }
+                            // shift+tab 反向循环：第一问绕回最后一问。
+                            *question = question
+                                .checked_sub(1)
+                                .unwrap_or_else(|| params.questions.len() - 1);
+                            *preview_scroll = 0;
                         }
                         // ←→ 只翻看问题指针：不写入选择也不提交，回看时误触不会推进；
-                        // 确认推进始终是 tab/enter 的事。
+                        // 最后一问再 → 进入确认页，确认提交始终是确认页上 enter 的事。
                         (KeyCode::Left, _) => {
                             if *question > 0 {
                                 *question -= 1;
@@ -2980,7 +3110,7 @@ fn handle_modal_key(
                             }
                         }
                         (KeyCode::Right, _) => {
-                            if *question + 1 < params.questions.len() {
+                            if *question < params.questions.len() {
                                 *question += 1;
                                 *preview_scroll = 0;
                             }
@@ -2990,7 +3120,7 @@ fn handle_modal_key(
                             close |= dismiss_ask(reply);
                         }
                         (KeyCode::Esc, _) => {
-                            // 先停泊去翻提问背后的上下文；停泊态再 Esc 才取消整单。
+                            // 先折叠去翻提问背后的上下文；折叠态再 Esc 才取消整单。
                             *parked = true;
                         }
                         _ => {}
@@ -3555,10 +3685,16 @@ fn dismiss_ask(
     true
 }
 
-/// ask 推进到下一问或在最后一问提交；返回是否已提交（应关闭模态）。
-fn advance_ask(
+/// ask 推进到下一页：越过最后一问即落在确认页（`question == questions.len()`），
+/// 真正的提交只发生在确认页上。
+fn advance_ask(question: &mut usize, preview_scroll: &mut usize) {
+    *question += 1;
+    *preview_scroll = 0;
+}
+
+/// 确认页提交：按各问勾选与自定义文本组装 AskResult 回给 core；返回是否应关闭模态。
+fn submit_ask(
     params: &moc_protocol::methods::AskParams,
-    question: &mut usize,
     selected: &[Vec<String>],
     custom: &[crate::modal::CustomAnswer],
     reply: &mut Option<
@@ -3583,15 +3719,10 @@ fn advance_ask(
             },
         )
         .collect();
-    if *question + 1 >= params.questions.len() {
-        if let Some(reply) = reply.take() {
-            let _ = reply.send(Ok(moc_protocol::methods::AskResult { answers }));
-        }
-        true
-    } else {
-        *question += 1;
-        false
+    if let Some(reply) = reply.take() {
+        let _ = reply.send(Ok(moc_protocol::methods::AskResult { answers }));
     }
+    true
 }
 
 fn confirm_plan(app: &mut App, connection: &EmbeddedConnection) {
@@ -8109,17 +8240,24 @@ mod tests {
             _ => unreachable!("ask 模态"),
         }
 
-        // 第 2 问不做自定义，直接 tab 提交：答案必须各归各问
+        // 第 2 问不做自定义，末问 enter 进入确认页，确认页 enter 提交：答案必须各归各问
         handle_key(
             &mut app,
             &connection,
             KeyModifiers::NONE,
             KeyCode::Char(' '),
         );
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        match app.modal.as_ref() {
+            Some(Modal::Ask { question, .. }) => {
+                assert_eq!(*question, 2, "越过最后一问应落在确认页")
+            }
+            _ => unreachable!("确认页上模态应保留"),
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         let result = reply_rx
             .try_recv()
-            .expect("最后一问提交后应回报")
+            .expect("确认页提交后应回报")
             .expect("提问结果");
         assert_eq!(result.answers.len(), 2);
         assert_eq!(result.answers[0].custom.as_deref(), Some("甲"));
@@ -8252,19 +8390,6 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 推荐下标按顺序映射成默认选中标签，越界下标被跳过。
-    #[test]
-    fn ask_recommended_labels_map_indexes_to_labels() {
-        let mut question = multi_ask_question();
-        assert_eq!(
-            recommended_labels(&question),
-            vec!["缓存".to_owned(), "监控".to_owned()]
-        );
-
-        question.recommended = vec![99];
-        assert!(recommended_labels(&question).is_empty());
-    }
-
     /// 多选按空格切换多个选项，取消后保留顺序并提交所选标签。
     #[tokio::test]
     async fn ask_multi_select_toggles_multiple_options() {
@@ -8292,13 +8417,95 @@ mod tests {
             _ => unreachable!("ask 模态应保持打开"),
         }
 
-        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        // 末问 enter 进入确认页，确认页 enter 才提交。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert!(reply_rx.try_recv().is_err(), "进确认页本身不提交");
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         let result = reply_rx
             .try_recv()
-            .expect("提交后应收到 ask 回执")
+            .expect("确认后应收到 ask 回执")
             .expect("提问结果");
         assert_eq!(result.answers[0].selected, ["缓存", "日志"]);
         assert!(app.modal.is_none(), "提交后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 多选 Enter = 空格：非末问只切换聚焦项不跳问；末问 Enter 是通往
+    /// 确认页的手势（不切勾），空集合按未回答提交。
+    #[tokio::test]
+    async fn ask_multi_enter_toggles_and_confirms_only_on_last() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        let mut second = multi_ask_question();
+        second.id = "features2".into();
+        app.modal = Some(ask_modal_with(
+            vec![multi_ask_question(), second],
+            Some(reply_tx),
+        ));
+
+        // 第 1 问非末问：Enter 切勾聚焦项「缓存」，不跳问。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                selected, question, ..
+            }) => {
+                assert_eq!(selected[0], ["缓存"], "Enter 与空格同为切换手势");
+                assert_eq!(*question, 0, "非末问 Enter 不跳问");
+            }
+            _ => unreachable!("ask 模态应保持打开"),
+        }
+
+        // tab 换到第 2 问；末问 Enter 进确认页，不切勾第 2 问的聚焦项。
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        assert!(
+            matches!(app.modal.as_ref(), Some(Modal::Ask { question, .. }) if *question == 2),
+            "末问 Enter 应落在确认页"
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask { selected, .. }) => {
+                assert!(selected[1].is_empty(), "末问 Enter 不做切换")
+            }
+            _ => unreachable!("确认页上模态应保留"),
+        }
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
+        let result = reply_rx
+            .try_recv()
+            .expect("确认页 Enter 应提交")
+            .expect("提问结果");
+        assert_eq!(result.answers[0].selected, ["缓存"]);
+        assert!(
+            result.answers[1].selected.is_empty() && result.answers[1].custom.is_none(),
+            "末问未勾选按未回答提交"
+        );
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// tab 只在问题间循环：末问 tab 回第一问，永不落确认页；
+    /// shift+tab 反向循环：第一问回末问。
+    #[tokio::test]
+    async fn ask_tab_cycles_questions_and_never_reaches_confirm() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal_with(
+            vec![ask_question("q1"), ask_question("q2")],
+            None,
+        ));
+        let question_of = |app: &App| match app.modal.as_ref() {
+            Some(Modal::Ask { question, .. }) => *question,
+            _ => unreachable!("ask 模态"),
+        };
+
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        assert_eq!(question_of(&app), 1, "tab 到下一问");
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
+        assert_eq!(question_of(&app), 0, "末问 tab 绕回第一问，不进确认页");
+        handle_key(&mut app, &connection, KeyModifiers::SHIFT, KeyCode::BackTab);
+        assert_eq!(question_of(&app), 1, "第一问 shift+tab 反向绕回末问");
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -8402,8 +8609,8 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// Esc 分层：第一次停泊（模态保留、键盘交给转写区），Tab 回卡片；
-    /// 停泊态再 Esc 才取消整单。
+    /// Esc 分层：第一次折叠（模态保留、键盘交给转写区），Tab 回卡片；
+    /// 折叠态再 Esc 才取消整单。
     #[tokio::test]
     async fn ask_esc_parks_before_cancelling() {
         let (core, connection, mut app) = setup_test_app().await;
@@ -8413,15 +8620,15 @@ mod tests {
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
         match app.modal.as_ref() {
             Some(Modal::Ask { parked, .. }) => {
-                assert!(*parked, "第一次 Esc 应停泊而不是取消")
+                assert!(*parked, "第一次 Esc 应折叠而不是取消")
             }
-            _ => unreachable!("停泊时卡片应保留"),
+            _ => unreachable!("折叠时卡片应保留"),
         }
-        assert!(reply_rx.try_recv().is_err(), "停泊不提交也不取消");
+        assert!(reply_rx.try_recv().is_err(), "折叠不提交也不取消");
 
         app.scroll_max_offset = 100;
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Up);
-        assert_eq!(app.scroll_offset, 3, "停泊态 ↑ 应滚动转写");
+        assert_eq!(app.scroll_offset, 3, "折叠态 ↑ 应滚动转写");
 
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Tab);
         if let Some(Modal::Ask { parked, .. }) = app.modal.as_ref() {
@@ -8431,7 +8638,7 @@ mod tests {
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
         assert!(
-            reply_rx.try_recv().expect("停泊后 Esc 应取消").is_err(),
+            reply_rx.try_recv().expect("折叠后 Esc 应取消").is_err(),
             "取消按错误回报"
         );
         assert!(app.modal.is_none(), "取消后模态关闭");
@@ -8517,7 +8724,15 @@ mod tests {
         }
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
         if let Some(Modal::Ask { question, .. }) = app.modal.as_ref() {
-            assert_eq!(*question, 1, "最后一问上 → 不再前进");
+            assert_eq!(*question, 2, "最后一问上 → 进入确认页");
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Right);
+        if let Some(Modal::Ask { question, .. }) = app.modal.as_ref() {
+            assert_eq!(*question, 2, "确认页上 → 不再前进");
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
+        if let Some(Modal::Ask { question, .. }) = app.modal.as_ref() {
+            assert_eq!(*question, 1, "确认页 ← 回最后一问");
         }
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
         match app.modal.as_ref() {
@@ -8535,7 +8750,7 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 停泊态 ←→ 同样翻看问题，且不解除停泊。
+    /// 折叠态 ←→ 同样翻看问题，且不解除折叠。
     #[tokio::test]
     async fn ask_parked_arrow_keys_browse_questions() {
         let (core, connection, mut app) = setup_test_app().await;
@@ -8550,14 +8765,14 @@ mod tests {
             Some(Modal::Ask {
                 question, parked, ..
             }) => {
-                assert!(*parked, "翻看问题不解除停泊");
+                assert!(*parked, "翻看问题不解除折叠");
                 assert_eq!(*question, 1);
             }
             _ => unreachable!("卡片应保留"),
         }
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Left);
         if let Some(Modal::Ask { question, .. }) = app.modal.as_ref() {
-            assert_eq!(*question, 0, "停泊态 ← 应翻回上一问");
+            assert_eq!(*question, 0, "折叠态 ← 应翻回上一问");
         }
 
         connection.shutdown().await;
@@ -8576,9 +8791,16 @@ mod tests {
         ];
 
         handle_mouse_with_connection(&mut app, &connection, left_click(10, 5));
+        match app.modal.as_ref() {
+            Some(Modal::Ask { question, .. }) => {
+                assert_eq!(*question, 1, "单选点击选中并推进到确认页")
+            }
+            _ => unreachable!("确认页上模态应保留"),
+        }
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         let result = reply_rx
             .try_recv()
-            .expect("单选点击即选择并提交")
+            .expect("确认页 Enter 应提交")
             .expect("提问结果");
         assert_eq!(result.answers[0].selected, ["选项一"]);
         assert!(app.modal.is_none(), "提交后模态关闭");
@@ -8631,19 +8853,35 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 停泊态点击选项：解除停泊并直接选择（单选提交整单）。
+    /// 折叠态点击细条：只展开回作答（不选择）；展开后点选项才提交。
     #[tokio::test]
-    async fn ask_mouse_click_unparks_and_selects() {
+    async fn ask_mouse_click_strip_unparks_without_selecting() {
         let (core, connection, mut app) = setup_test_app().await;
         let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
         app.modal = Some(ask_modal_with(vec![ask_question("q1")], Some(reply_tx)));
         app.ask_option_hits = vec![(0, ratatui::layout::Rect::new(10, 5, 40, 1))];
+        app.ask_strip_area = ratatui::layout::Rect::new(3, 20, 114, 3);
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Esc);
 
+        // 折叠态选项命中区已清空：点在旧选项位置不动作，点细条才展开。
         handle_mouse_with_connection(&mut app, &connection, left_click(10, 5));
+        match app.modal.as_ref() {
+            Some(Modal::Ask { parked, .. }) => assert!(*parked, "折叠态点卡片外不动作"),
+            _ => unreachable!("折叠时模态应保留"),
+        }
+        handle_mouse_with_connection(&mut app, &connection, left_click(30, 21));
+        match app.modal.as_ref() {
+            Some(Modal::Ask { parked, .. }) => assert!(!*parked, "点细条应展开回作答"),
+            _ => unreachable!("模态应保留"),
+        }
+        assert!(reply_rx.try_recv().is_err(), "展开本身不提交");
+
+        app.ask_option_hits = vec![(0, ratatui::layout::Rect::new(10, 5, 40, 1))];
+        handle_mouse_with_connection(&mut app, &connection, left_click(10, 5));
+        handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
         let result = reply_rx
             .try_recv()
-            .expect("停泊态点击即选择并提交")
+            .expect("展开后点选项选中，确认页 Enter 提交")
             .expect("提问结果");
         assert_eq!(result.answers[0].selected, ["选项一"]);
         assert!(app.modal.is_none(), "提交后模态关闭");
@@ -8652,10 +8890,182 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 作答态滚轮 = ↑↓：移动选项光标（含自定义行），不折叠；折叠态滚轮转写区。
+    #[tokio::test]
+    async fn ask_mouse_wheel_moves_highlight() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal_with(vec![multi_ask_question()], None));
+        app.scroll_max_offset = 100;
+
+        // 作答态滚轮下：高亮逐项下移，不折叠。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::ScrollDown, 10, 3),
+        );
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                highlight, parked, ..
+            }) => {
+                assert_eq!(highlight[0], 1);
+                assert!(!*parked, "滚轮不再折叠");
+            }
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 滚轮上回到顶后再上：停在 0 不越界。
+        for _ in 0..3 {
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(MouseEventKind::ScrollUp, 10, 3),
+            );
+        }
+        match app.modal.as_ref() {
+            Some(Modal::Ask { highlight, .. }) => assert_eq!(highlight[0], 0),
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 滚轮到底：3 个选项之后停在自定义行（下标 = options.len()）。
+        for _ in 0..5 {
+            handle_mouse_with_connection(
+                &mut app,
+                &connection,
+                mouse_event(MouseEventKind::ScrollDown, 10, 3),
+            );
+        }
+        match app.modal.as_ref() {
+            Some(Modal::Ask { highlight, .. }) => {
+                assert_eq!(highlight[0], 3, "越底停在自定义行")
+            }
+            _ => unreachable!("模态应保留"),
+        }
+
+        // 折叠态滚轮与 ↑↓ 同语义：滚转写区。
+        if let Some(Modal::Ask { parked, .. }) = app.modal.as_mut() {
+            *parked = true;
+        }
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::ScrollUp, 10, 3),
+        );
+        assert_eq!(app.scroll_offset, 3, "折叠态滚轮滚转写区");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 滚动条轨道在转写区外：作答态按下 = 折叠并开始拖拽；折叠态拖动/抬起走通用路径。
+    #[tokio::test]
+    async fn ask_scrollbar_drag_works_while_parked() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(ask_modal());
+        app.ask_card_area = ratatui::layout::Rect::new(10, 5, 80, 10);
+        app.ask_strip_area = ratatui::layout::Rect::new(3, 20, 114, 2);
+        app.scrollback_area = ratatui::layout::Rect::new(3, 2, 114, 18);
+        app.scrollbar = crate::app::ScrollbackScrollbar {
+            track: ratatui::layout::Rect::new(119, 2, 1, 18),
+            thumb: 6,
+            max_offset: 36,
+        };
+        app.scroll_max_offset = 36;
+
+        // 作答态按下轨道空白：折叠 + 拖拽开始（滑块中线跟到光标行）。
+        handle_mouse_with_connection(&mut app, &connection, left_click(119, 10));
+        match app.modal.as_ref() {
+            Some(Modal::Ask { parked, .. }) => assert!(*parked, "按滚动条应折叠"),
+            _ => unreachable!("模态应保留"),
+        }
+        assert!(app.scrollbar_drag.is_some(), "按下即进入拖拽");
+        assert!(app.scroll_offset > 0, "按轨道空白滑块应跟到光标");
+
+        // 折叠态拖到轨道顶：走满历史（通用拖拽路径）。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::Drag(MouseButton::Left), 119, 2),
+        );
+        assert_eq!(app.scroll_offset, 36, "拖到轨道顶应滚到历史顶端");
+
+        // 抬起结束拖拽，卡片保持折叠。
+        handle_mouse_with_connection(
+            &mut app,
+            &connection,
+            mouse_event(MouseEventKind::Up(MouseButton::Left), 119, 2),
+        );
+        assert!(app.scrollbar_drag.is_none(), "抬起后结束拖拽");
+        assert!(
+            matches!(app.modal, Some(Modal::Ask { parked: true, .. })),
+            "拖拽全程卡片保持折叠"
+        );
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 点击导航条跳问（只动指针不提交）；点击卡片外折叠。
+    #[tokio::test]
+    async fn ask_mouse_nav_click_jumps_and_outside_click_parks() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(
+            vec![ask_question("q1"), ask_question("q2")],
+            Some(reply_tx),
+        ));
+        app.ask_card_area = ratatui::layout::Rect::new(10, 5, 80, 10);
+        app.scrollback_area = ratatui::layout::Rect::new(3, 18, 114, 5);
+        app.ask_nav_hits = vec![
+            (0, ratatui::layout::Rect::new(12, 6, 10, 1)),
+            (1, ratatui::layout::Rect::new(24, 6, 10, 1)),
+        ];
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(26, 6));
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                question, parked, ..
+            }) => {
+                assert_eq!(*question, 1, "点导航条应跳到第二问");
+                assert!(!*parked, "跳问不折叠");
+            }
+            _ => unreachable!("跳问不应提交"),
+        }
+        assert!(reply_rx.try_recv().is_err(), "跳问不提交");
+
+        // 卡片外但非转写区（输入框/状态栏死区）：不折叠。
+        handle_mouse_with_connection(&mut app, &connection, left_click(5, 26));
+        match app.modal.as_ref() {
+            Some(Modal::Ask { parked, .. }) => assert!(!*parked, "死区点击不折叠"),
+            _ => unreachable!("模态应保留"),
+        }
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(5, 20));
+        match app.modal.as_ref() {
+            Some(Modal::Ask { parked, .. }) => assert!(*parked, "点转写区应折叠"),
+            _ => unreachable!("模态应保留"),
+        }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 左键单击事件。
     fn left_click(column: u16, row: u16) -> crossterm::event::MouseEvent {
+        mouse_event(
+            crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row,
+        )
+    }
+
+    /// 指定类型与坐标的鼠标事件。
+    fn mouse_event(
+        kind: crossterm::event::MouseEventKind,
+        column: u16,
+        row: u16,
+    ) -> crossterm::event::MouseEvent {
         crossterm::event::MouseEvent {
-            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            kind,
             column,
             row,
             modifiers: KeyModifiers::NONE,

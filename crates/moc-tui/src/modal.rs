@@ -1039,7 +1039,8 @@ pub enum Modal {
         custom: Vec<CustomAnswer>,
         /// 当前聚焦项预览的滚动行数（切换选项/问题时归零）。
         preview_scroll: usize,
-        /// 键盘停泊：卡片保留，按键交给转写区滚动，供用户查阅提问的上下文。
+        /// 折叠态：卡片收成输入框位的细条，按键/滚轮交给转写区滚动，
+        /// 供用户查阅提问的上下文后再回来作答。
         parked: bool,
         reply: Option<tokio::sync::oneshot::Sender<Result<AskResult, RpcErrorOf>>>,
     },
@@ -1106,20 +1107,17 @@ impl Modal {
         match self {
             Modal::Permission { params, .. } => params.title.clone(),
             Modal::Ask {
-                params,
-                question,
-                parked,
-                ..
+                params, question, ..
             } => {
-                let title = params
-                    .questions
-                    .get(*question)
-                    .and_then(|question| question.header.clone())
-                    .unwrap_or_else(|| "提问".into());
-                if *parked {
-                    format!("{title} · 稍后回答")
+                if *question >= params.questions.len() {
+                    // 越过最后一问是确认页，不再是任何一问的标题。
+                    "确认回答".into()
                 } else {
-                    title
+                    params
+                        .questions
+                        .get(*question)
+                        .and_then(|question| question.header.clone())
+                        .unwrap_or_else(|| "提问".into())
                 }
             }
             Modal::Model { .. } => "选择模型".into(),

@@ -255,7 +255,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         return;
     }
     let theme = app.theme;
-    // 停泊的提问卡片不压暗正文：用户正在滚动的就是提问背后的上下文，
+    // 折叠的提问卡片不压暗正文：用户正在滚动的就是提问背后的上下文，
     // 调暗会伤可读性；卡片本身有 Clear 底，照样醒目。
     let dim_background = !matches!(app.modal, Some(Modal::Ask { parked: true, .. }));
     if dim_background {
@@ -405,8 +405,16 @@ fn render_modal_card(
 
 /// 提问卡片：渲染的同时把每个选项（含自定义行）的命中矩形记到 `ask_option_hits`，
 /// 鼠标点选据此换算。宽度、居中与通用模态一致，带选项预览时放宽到 120 列。
+/// 折叠态（parked）不画卡片：收成细条占住输入框位，整屏留给转写区。
 fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
+    if matches!(app.modal, Some(Modal::Ask { parked: true, .. })) {
+        app.ask_option_hits.clear();
+        app.ask_nav_hits.clear();
+        app.ask_card_area = Rect::default();
+        draw_ask_strip(frame, app);
+        return;
+    }
     let Some(modal) = app.modal.as_ref() else {
         return;
     };
@@ -419,8 +427,8 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
         area.width.min(96)
     };
     let content_width = usize::from(width.saturating_sub(4)).max(8);
-    let (lines, hits) = ask_layout(theme, modal, content_width, max_content);
-    let content_height = u16::try_from(lines.len().max(1)).unwrap_or(u16::MAX);
+    let layout = ask_layout(theme, modal, content_width, max_content);
+    let content_height = u16::try_from(layout.lines.len().max(1)).unwrap_or(u16::MAX);
     let height = content_height
         .saturating_add(3)
         .min(area.height.saturating_sub(2));
@@ -431,23 +439,153 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
         height,
     };
     // 卡片被终端高度截断时，画不出来的行点不到：只记录可见行。
-    let visible_rows = lines
+    let visible_rows = layout
+        .lines
         .len()
         .min(usize::from(modal_area.height.saturating_sub(2)));
-    render_modal_card(frame, lines, modal.title(), theme, modal_area);
-    app.ask_option_hits = hits
+    render_modal_card(frame, layout.lines, modal.title(), theme, modal_area);
+    app.ask_card_area = modal_area;
+    // 内容文本列 = 卡片 x + 边框 1 + 内边距 1。
+    let text_x = modal_area.x + 2;
+    let row_y = |row: usize| -> Option<u16> {
+        if row >= visible_rows {
+            return None;
+        }
+        Some(modal_area.y + 1 + u16::try_from(row).ok()?)
+    };
+    app.ask_option_hits = layout
+        .option_hits
         .into_iter()
         .filter_map(|(option, row)| {
-            if row >= visible_rows {
-                return None;
-            }
-            let y = modal_area.y + 1 + u16::try_from(row).ok()?;
             Some((
                 option,
-                Rect::new(modal_area.x + 1, y, modal_area.width.saturating_sub(2), 1),
+                Rect::new(
+                    modal_area.x + 1,
+                    row_y(row)?,
+                    modal_area.width.saturating_sub(2),
+                    1,
+                ),
             ))
         })
         .collect();
+    app.ask_nav_hits = layout
+        .nav_hits
+        .into_iter()
+        .filter_map(|(question, row, start, end)| {
+            Some((
+                question,
+                Rect::new(
+                    text_x + u16::try_from(start).ok()?,
+                    row_y(row)?,
+                    u16::try_from(end - start).ok()?,
+                    1,
+                ),
+            ))
+        })
+        .collect();
+}
+
+/// 折叠的提问细条：占据输入框位（输入框本轮不绘制），左边是进度与当前问，
+/// 右边是返回/取消键；边框用运行色标示「有待答的提问」，正文垂直居中。
+fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
+    let theme = app.theme;
+    let Some(Modal::Ask {
+        params,
+        question,
+        selected,
+        custom,
+        ..
+    }) = app.modal.as_ref()
+    else {
+        return;
+    };
+    let mut area = app.prompt_area;
+    if area.height < 3 {
+        // 输入框区域不可用时兜底：贴画面底部三行，卡片语义不变。
+        let frame_area = frame.area();
+        area = Rect::new(
+            frame_area.x,
+            frame_area.y + frame_area.height.saturating_sub(3),
+            frame_area.width,
+            3.min(frame_area.height),
+        );
+    }
+    let confirming = *question >= params.questions.len();
+    let header = if confirming {
+        "确认回答".to_string()
+    } else {
+        params
+            .questions
+            .get(*question)
+            .and_then(|entry| entry.header.clone())
+            .unwrap_or_else(|| "提问".into())
+    };
+    // 内宽 = 边框 2 + 左右内边距 2。
+    let inner = usize::from(area.width.saturating_sub(4));
+    let right = "tab 展开作答 · esc 取消";
+    let right_width = str_width(right);
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(
+        "▸ ",
+        Style::new()
+            .fg(theme.accent_running)
+            .add_modifier(Modifier::BOLD),
+    )];
+    let mut used = 2usize;
+    if params.questions.len() > 1 {
+        let counter = if confirming {
+            // 确认页折叠时给已答进度：这正是提交前最该看到的信息。
+            let answered = (0..params.questions.len())
+                .filter(|&index| {
+                    selected.get(index).is_some_and(|picked| !picked.is_empty())
+                        || custom
+                            .get(index)
+                            .is_some_and(|answer| !answer.text.is_empty())
+                })
+                .count();
+            format!("已答 {answered}/{} · ", params.questions.len())
+        } else {
+            format!("问题 {}/{} · ", question + 1, params.questions.len())
+        };
+        used += str_width(&counter);
+        spans.push(Span::styled(counter, Style::new().fg(theme.gray)));
+    }
+    let header = ellipsize(
+        &header,
+        inner
+            .saturating_sub(used + right_width + 2)
+            .max(4)
+            .min(inner.saturating_sub(used)),
+    );
+    used += str_width(&header);
+    spans.push(Span::styled(
+        header,
+        Style::new()
+            .fg(theme.text_primary)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if used + right_width < inner {
+        spans.push(Span::from(" ".repeat(inner - used - right_width)));
+        spans.push(Span::styled(right, Style::new().fg(theme.gray_dim)));
+    }
+    let inner_rows = usize::from(area.height.saturating_sub(2));
+    let top_pad = inner_rows.saturating_sub(1) / 2;
+    let mut lines = vec![Line::from(String::new()); top_pad];
+    lines.push(Line::from(spans));
+    frame.render_widget(Clear, area);
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().bg(theme.bg_panel).fg(theme.text_primary));
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .border_set(ratatui::symbols::border::ROUNDED)
+                .border_style(Style::new().fg(theme.accent_running))
+                .style(Style::new().bg(theme.bg_panel).fg(theme.text_primary))
+                .padding(Padding::horizontal(1)),
+        ),
+        area,
+    );
+    app.ask_strip_area = area;
 }
 
 /// 快捷键帮助：键位列与描述列之间的间距（格）。
@@ -944,7 +1082,7 @@ fn modal_lines_with_hits(
             )));
             lines
         }
-        Modal::Ask { .. } => ask_layout(theme, modal, width, max_lines).0,
+        Modal::Ask { .. } => ask_layout(theme, modal, width, max_lines).lines,
         Modal::Model {
             entries,
             current,
@@ -1419,15 +1557,23 @@ fn modal_lines_with_hits(
     (lines, hits)
 }
 
-/// 提问卡片正文与命中行：`hits` 是每个选项（含自定义行，下标 `options.len()`）
+/// 提问卡片的布局产物：正文行 + 文本坐标的可点击几何，`draw_ask_modal` 换算到屏幕。
+struct AskLayout {
+    lines: Vec<Line<'static>>,
+    /// (选项下标, 行号)；`options.len()` 下标代表自定义行。
+    option_hits: Vec<(usize, usize)>,
+    /// (问题下标, 行号, 起始列, 结束列)：顶部问题导航条的点击范围。
+    nav_hits: Vec<(usize, usize, usize, usize)>,
+}
+
+/// 问题导航条里单项的最大宽度（格）：`n. header` 超长截断。
+const ASK_NAV_ITEM_MAX: usize = 24;
+/// 确认页 key 列宽上限（格）：对齐回答正文，超长 header/id 截断。
+const ASK_CONFIRM_KEY_MAX: usize = 20;
+
 /// 在最终行列表里的行号，`draw_ask_modal` 据此换算鼠标点选的屏幕矩形。
 /// 选项与自定义行一律截断到单行：`Wrap` 折行会让后续行号整体漂移。
-fn ask_layout(
-    theme: &Theme,
-    modal: &Modal,
-    width: usize,
-    max_lines: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> AskLayout {
     let Modal::Ask {
         params,
         question,
@@ -1435,21 +1581,81 @@ fn ask_layout(
         selected,
         custom,
         preview_scroll,
-        parked,
         ..
     } = modal
     else {
-        return (Vec::new(), Vec::new());
+        return AskLayout {
+            lines: Vec::new(),
+            option_hits: Vec::new(),
+            nav_hits: Vec::new(),
+        };
     };
     let mut lines = Vec::new();
+    let mut nav_hits = Vec::new();
+    // 多问时顶部是导航条而不是计数器：`n. header` 逐项排开，当前问反白、
+    // 已答带 ✓；每一项记下列范围供鼠标跳问。
     if params.questions.len() > 1 {
-        lines.push(Line::from(Span::styled(
-            format!("问题 {}/{}", question + 1, params.questions.len()),
-            Style::new().fg(theme.gray),
-        )));
+        let nav_row = lines.len();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut col = 0usize;
+        for (index, entry) in params.questions.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
+                col += 3;
+            }
+            let answered = selected.get(index).is_some_and(|picked| !picked.is_empty())
+                || custom
+                    .get(index)
+                    .is_some_and(|answer| !answer.text.is_empty());
+            let header = entry.header.clone().unwrap_or_else(|| "提问".into());
+            let label = ellipsize(&format!("{}. {header}", index + 1), ASK_NAV_ITEM_MAX);
+            let item_width = str_width(&label) + usize::from(answered) * 2;
+            if col + item_width > width {
+                spans.push(Span::styled("…", Style::new().fg(theme.gray_dim)));
+                break;
+            }
+            nav_hits.push((index, nav_row, col, col + item_width));
+            if answered {
+                spans.push(Span::styled("✓ ", Style::new().fg(theme.accent_success)));
+            }
+            let style = if index == *question {
+                Style::new()
+                    .fg(theme.accent_user)
+                    .bg(theme.bg_visual)
+                    .add_modifier(Modifier::BOLD)
+            } else if answered {
+                Style::new().fg(theme.text_secondary)
+            } else {
+                Style::new().fg(theme.gray)
+            };
+            spans.push(Span::styled(label, style));
+            col += item_width;
+        }
+        // 导航条末尾是确认页：越过最后一问强制经过，点击或 → 直达。
+        let confirm_label = "确认";
+        let confirm_width = str_width(confirm_label);
+        if col + 3 + confirm_width <= width {
+            spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
+            nav_hits.push((
+                params.questions.len(),
+                nav_row,
+                col + 3,
+                col + 3 + confirm_width,
+            ));
+            let style = if *question == params.questions.len() {
+                Style::new()
+                    .fg(theme.accent_user)
+                    .bg(theme.bg_visual)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text_secondary)
+            };
+            spans.push(Span::styled(confirm_label, style));
+        }
+        lines.push(Line::from(spans));
     }
     let Some(current) = params.questions.get(*question) else {
-        return (lines, Vec::new());
+        return ask_confirm_layout(theme, modal, lines, nav_hits, width, max_lines);
     };
     lines.push(Line::from(String::new()));
 
@@ -1466,14 +1672,13 @@ fn ask_layout(
 
     // 选项 + 自定义输入行；带预览时整体作为并排布局的左栏。
     // 行数不够时先让掉 description：问题正文与选项行是底线。
-    let footer_rows = if *parked { 1 } else { 2 };
-    let plain_rows = lines.len() + current.options.len() + 1 + footer_rows;
+    let plain_rows = lines.len() + current.options.len() + 1 + 1;
     let show_descriptions = plain_rows + current.options.len() <= max_lines;
     let mut body: Vec<Line<'static>> = Vec::with_capacity(current.options.len() * 2 + 1);
     // 命中行先记 body 内相对行号，布局合入后再补上顶部固定行的偏移。
-    let mut hits: Vec<(usize, usize)> = Vec::with_capacity(current.options.len() + 1);
+    let mut option_hits: Vec<(usize, usize)> = Vec::with_capacity(current.options.len() + 1);
     for (index, option) in current.options.iter().enumerate() {
-        hits.push((index, body.len()));
+        option_hits.push((index, body.len()));
         let chosen = selected[*question].contains(&option.label);
         let marker = if index == highlight[*question] {
             "❯"
@@ -1547,7 +1752,7 @@ fn ask_layout(
         Some(answer) => answer.text.clone(),
         None => String::new(),
     };
-    hits.push((current.options.len(), body.len()));
+    option_hits.push((current.options.len(), body.len()));
     body.push(Line::from(Span::styled(
         ellipsize(
             &format!(
@@ -1591,42 +1796,130 @@ fn ask_layout(
                 "预览",
                 Style::new().fg(theme.gray_dim),
             )));
-            lines.extend(ask_preview_lines(
-                source,
-                width,
-                preview_rows,
-                *preview_scroll,
-                theme,
-            ));
+            let pane = ask_preview_lines(source, width, preview_rows, *preview_scroll, theme);
+            lines.extend(pane);
         }
         None => lines.extend(body),
     }
-    for (_, row) in &mut hits {
+    for (_, row) in &mut option_hits {
         *row += base;
     }
-    if *parked {
-        lines.push(Line::from(Span::styled(
-            "tab 返回提问 · ←→ 翻看问题 · ↑↓ 滚动上下文 · shift+X 跳过 · esc 取消提问",
-            Style::new().fg(theme.gray_dim),
-        )));
+    // 页脚一行：方向键、数字键属常规交互不教，只留反直觉的键；
+    // 多选最后一问 enter 从切勾变成进确认页，提示如实切换。
+    let pick_hint = if current.multi {
+        if *question + 1 >= params.questions.len() {
+            "space 勾选 · enter 确认"
+        } else {
+            "space/enter 勾选"
+        }
     } else {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "1-9 直选 · space 切换 · enter 选择{} · z 自定义 · y 复制",
-                if current.multi { "（多选）" } else { "" }
-            ),
-            Style::new().fg(theme.gray_dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            if params.questions.len() > 1 {
-                "←→ 翻看问题 · tab 下一问/Shift+Tab 上一问 · shift+X 跳过 · esc 稍后回答"
-            } else {
-                "shift+X 跳过 · esc 稍后回答"
-            },
-            Style::new().fg(theme.gray_dim),
-        )));
+        "enter 选择"
+    };
+    let nav_hint = (params.questions.len() > 1).then_some("tab 换题");
+    let footer = [
+        Some(pick_hint),
+        nav_hint,
+        Some("esc 折叠问题卡"),
+        Some("shift+X 跳过"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    lines.push(Line::from(Span::styled(
+        ellipsize(&footer, width),
+        Style::new().fg(theme.gray_dim),
+    )));
+    AskLayout {
+        lines,
+        option_hits,
+        nav_hits,
     }
-    (lines, hits)
+}
+
+/// 确认页布局：越过最后一问强制经过，逐问一行列出全部回答，未回答的用警告色标出。
+/// `preview_scroll` 复用为答案列表的滚动偏移；返回值交给 `draw_ask_modal` 照常绘制。
+fn ask_confirm_layout(
+    theme: &Theme,
+    modal: &Modal,
+    mut lines: Vec<Line<'static>>,
+    nav_hits: Vec<(usize, usize, usize, usize)>,
+    width: usize,
+    max_lines: usize,
+) -> AskLayout {
+    let Modal::Ask {
+        params,
+        selected,
+        custom,
+        preview_scroll,
+        ..
+    } = modal
+    else {
+        return AskLayout {
+            lines,
+            option_hits: Vec::new(),
+            nav_hits,
+        };
+    };
+    lines.push(Line::from(String::new()));
+    lines.push(Line::from(Span::styled(
+        "确认回答",
+        Style::new()
+            .fg(theme.gray_bright)
+            .add_modifier(Modifier::BOLD),
+    )));
+    let rows = max_lines.saturating_sub(lines.len() + 1).max(1);
+    // key 列对齐：取 header 兜底 id，统一截断到同一列宽。
+    let key_width = params
+        .questions
+        .iter()
+        .map(|entry| str_width(entry.header.as_deref().unwrap_or(&entry.id)))
+        .max()
+        .unwrap_or(0)
+        .min(ASK_CONFIRM_KEY_MAX);
+    let mut answers = Vec::with_capacity(params.questions.len());
+    for (index, entry) in params.questions.iter().enumerate() {
+        let key = ellipsize(entry.header.as_deref().unwrap_or(&entry.id), key_width);
+        let pad = " ".repeat(key_width.saturating_sub(str_width(&key)));
+        let mut spans = vec![Span::styled(
+            format!("{key}{pad}: "),
+            Style::new().fg(theme.text_secondary),
+        )];
+        // 勾选集合 + 自定义文本都算回答；都没有就是未回答。
+        let mut parts = selected.get(index).cloned().unwrap_or_default();
+        if let Some(text) = custom
+            .get(index)
+            .map(|answer| answer.text.trim())
+            .filter(|text| !text.is_empty())
+        {
+            parts.push(text.to_string());
+        }
+        if parts.is_empty() {
+            spans.push(Span::styled(
+                "未回答",
+                Style::new()
+                    .fg(theme.accent_warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                ellipsize(&parts.join(", "), width.saturating_sub(key_width + 2)),
+                Style::new().fg(theme.text_primary),
+            ));
+        }
+        answers.push(Line::from(spans));
+    }
+    let scroll = (*preview_scroll).min(answers.len().saturating_sub(rows));
+    lines.extend(answers.into_iter().skip(scroll).take(rows));
+    lines.push(Line::from(Span::styled(
+        ellipsize("enter 确认提交 · esc 折叠问题卡 · shift+X 跳过", width),
+        Style::new().fg(theme.gray_dim),
+    )));
+    AskLayout {
+        lines,
+        option_hits: Vec::new(),
+        nav_hits,
+    }
 }
 
 /// 思考等级条：`╭`／`╰` 两个圆角把标签与等级挂在同一条左轨上，等级用方括号裹成一段分段控件，
@@ -3104,30 +3397,40 @@ mod tests {
         );
     }
 
-    /// 停泊态：提示行换成返回/跳过/取消，标题带「稍后回答」。
+    /// 折叠态：卡片收成占据输入框位的细条，左侧进度与当前问、右侧返回/取消键，
+    /// 不再绘制选项行，命中几何只剩细条自身。
     #[test]
-    fn ask_parked_footer_and_title() {
+    fn ask_parked_collapses_to_strip_over_prompt() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
         let (events, _receiver) = unbounded_channel();
-        let app = App::new(Theme::global(), events);
+        let mut app = App::new(Theme::global(), events);
         let mut modal = ask_modal(0, 0);
         if let Modal::Ask { params, parked, .. } = &mut modal {
-            for option in &mut params.questions[0].options {
-                option.preview = None;
-            }
+            params.questions[0].header = Some("布局偏好".into());
             *parked = true;
         }
-        assert!(modal.title().contains("稍后回答"));
-        let texts: Vec<String> = modal_lines(&app, &modal, 60, 24)
-            .iter()
-            .map(line_text)
+        app.modal = Some(modal);
+        app.prompt_area = ratatui::layout::Rect::new(3, 20, 114, 3);
+        app.ask_option_hits = vec![(0, ratatui::layout::Rect::new(10, 5, 40, 1))];
+        let (width, height) = (120u16, 30u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+
+        assert_eq!(app.ask_strip_area, app.prompt_area, "细条应占住输入框位");
+        assert!(app.ask_option_hits.is_empty(), "折叠态没有可点选项");
+        let text: String = (0..width)
+            .filter_map(|x| terminal.backend().buffer().cell((x, 21)))
+            .map(|cell| cell.symbol())
             .collect();
+        let compact = text.replace(' ', "");
+        assert!(compact.contains("布局偏好"), "细条应显示当前问：{text:?}");
         assert!(
-            texts.iter().any(|text| text.contains("tab 返回提问")),
-            "停泊提示行应给出回去的路：{texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|text| text.contains("esc 稍后回答")),
-            "停泊态不再显示作答提示：{texts:?}"
+            compact.contains("tab展开作答") && compact.contains("esc取消"),
+            "细条应给出返回与取消的路：{text:?}"
         );
     }
 
@@ -3283,7 +3586,7 @@ mod tests {
             "聚焦项预览应与选项同行：{option_row:?}"
         );
         assert!(
-            compact.iter().any(|text| text.contains("esc稍后回答")),
+            compact.iter().any(|text| text.contains("esc折叠问题卡")),
             "底部按键行应留在卡片内：{compact:?}"
         );
     }
@@ -3327,6 +3630,130 @@ mod tests {
             row.replace(' ', "").contains("上中下"),
             "命中行渲染选项文本：{row:?}"
         );
+    }
+
+    /// 多问导航条：各问 `n. header` 逐项排开，已答带 ✓；
+    /// 每项记下列范围命中矩形，供鼠标跳问。
+    #[test]
+    fn ask_nav_strip_marks_answered_and_records_hits() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (events, _receiver) = unbounded_channel();
+        let mut app = App::new(Theme::global(), events);
+        let question = |id: &str, header: &str| AskQuestion {
+            id: id.into(),
+            question: "选哪个？".into(),
+            header: Some(header.into()),
+            multi: false,
+            recommended: Vec::new(),
+            options: vec![AskOption {
+                label: "甲".into(),
+                description: None,
+                preview: None,
+            }],
+        };
+        app.modal = Some(Modal::Ask {
+            params: AskParams {
+                session_id: "ses_1".into(),
+                prompt_id: "prompt_1".into(),
+                request_id: "ask_1".into(),
+                questions: vec![
+                    question("q1", "布局"),
+                    question("q2", "配色"),
+                    question("q3", "交互"),
+                ],
+            },
+            question: 1,
+            highlight: vec![0; 3],
+            selected: vec![vec!["甲".to_owned()], Vec::new(), Vec::new()],
+            custom: vec![crate::modal::CustomAnswer::default(); 3],
+            preview_scroll: 0,
+            parked: false,
+            reply: None,
+        });
+        let (width, height) = (120u16, 30u16);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+        terminal
+            .draw(|frame| super::draw_modal(frame, &mut app))
+            .expect("绘制成功");
+
+        assert_eq!(app.ask_nav_hits.len(), 4, "三问各一个命中矩形 + 确认项");
+        let row = app.ask_nav_hits[0].1.y;
+        assert!(app.ask_nav_hits.iter().all(|(_, area)| area.y == row));
+        let texts: Vec<String> = app
+            .ask_nav_hits
+            .iter()
+            .map(|(_, area)| {
+                (area.x..area.right())
+                    .filter_map(|x| terminal.backend().buffer().cell((x, area.y)))
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .replace(' ', "")
+            })
+            .collect();
+        assert!(texts[0].contains("✓1.布局"), "已答带 ✓：{texts:?}");
+        assert!(texts[1].contains("2.配色"), "第二问 header：{texts:?}");
+        assert!(texts[2].contains("3.交互"), "第三问 header：{texts:?}");
+        assert_eq!(texts[3], "确认", "导航条末尾是确认页：{texts:?}");
+        assert_eq!(app.ask_nav_hits[3].0, 3, "确认项的下标是 questions.len()");
+        assert!(
+            app.ask_nav_hits[0].1.x < app.ask_nav_hits[1].1.x
+                && app.ask_nav_hits[1].1.x < app.ask_nav_hits[2].1.x,
+            "命中矩形按列递增"
+        );
+    }
+
+    /// 确认页：越过最后一问强制经过，逐问一行列出全部回答，未回答的醒目标出。
+    #[test]
+    fn ask_confirm_page_lists_answers_and_flags_unanswered() {
+        let (events, _receiver) = unbounded_channel();
+        let app = App::new(Theme::global(), events);
+        let question = |id: &str, header: &str| AskQuestion {
+            id: id.into(),
+            question: "选哪个？".into(),
+            header: Some(header.into()),
+            multi: false,
+            recommended: Vec::new(),
+            options: vec![AskOption {
+                label: "甲".into(),
+                description: None,
+                preview: None,
+            }],
+        };
+        let modal = Modal::Ask {
+            params: AskParams {
+                session_id: "ses_1".into(),
+                prompt_id: "prompt_1".into(),
+                request_id: "ask_1".into(),
+                questions: vec![
+                    question("theme", "主题"),
+                    question("features", "features"),
+                    question("lang", "lang"),
+                ],
+            },
+            question: 3, // 确认页 = questions.len()
+            highlight: vec![0; 3],
+            selected: vec![
+                vec!["纸张白".to_owned()],
+                Vec::new(),
+                vec!["Rust".to_owned()],
+            ],
+            custom: vec![crate::modal::CustomAnswer::default(); 3],
+            preview_scroll: 0,
+            parked: false,
+            reply: None,
+        };
+        let body: String = modal_lines(&app, &modal, 100, 24)
+            .iter()
+            .map(line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains("确认回答"), "确认页标题：{body}");
+        assert!(body.contains("主题    : 纸张白"), "key 列补齐对齐：{body}");
+        assert!(body.contains("features: 未回答"), "未回答醒目标记：{body}");
+        assert!(body.contains("lang    : Rust"), "第三问回答：{body}");
+        assert!(body.contains("enter 确认提交"), "确认页页脚：{body}");
     }
 
     /// 回退模态：在终端缓冲里正确绘制时间线分界、回退横幅与底部 dock 操作栏。

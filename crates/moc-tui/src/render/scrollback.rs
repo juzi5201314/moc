@@ -1453,6 +1453,43 @@ fn tool_body(
         let (rows, omitted) = wait_agent_tool_rows(tool, theme, limit);
         dropped += omitted;
         lines.extend(rows);
+    } else if tool.name == "ask" && !is_error {
+        // 每问恒占一行：key（header 兜底 id）降档对齐、答案单行截断，
+        // 「未回答」用确认页同款警告标记；行数上限走 content_limit，超出的计 dropped。
+        let pairs = ask_answer_pairs(tool, args);
+        let key_width = pairs
+            .iter()
+            .map(|(key, ..)| str_width(key))
+            .max()
+            .unwrap_or(0)
+            .min(ASK_TRANSCRIPT_KEY_MAX);
+        let answer_width = inner_width.saturating_sub(key_width + 4);
+        for (index, (key, text, unanswered)) in pairs.iter().enumerate() {
+            if index >= limit {
+                dropped += 1;
+                continue;
+            }
+            let mut spans = vec![Span::styled("  ".to_owned(), Style::new())];
+            if !key.is_empty() {
+                let key = truncate_to_width(key.clone(), key_width);
+                let pad = " ".repeat(key_width.saturating_sub(str_width(&key)));
+                spans.push(Span::styled(
+                    format!("{key}{pad}: "),
+                    Style::new().fg(theme.text_secondary),
+                ));
+            }
+            spans.push(Span::styled(
+                truncate_to_width(text.clone(), answer_width),
+                if *unanswered {
+                    Style::new()
+                        .fg(theme.accent_warning)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(theme.text_primary)
+                },
+            ));
+            lines.push(Line::from(spans));
+        }
     } else if let Some(result) = &tool.result {
         let rows = clamp_rows(result, inner_width, limit, BodyEdge::Head);
         dropped += rows.dropped;
@@ -1740,6 +1777,11 @@ fn tool_body_rows(
         let (count, omitted) = wait_agent_rows_count(tool, limit);
         rows += count;
         dropped += omitted;
+    } else if tool.name == "ask" && !is_error {
+        // 每问恒占一行（与 [`tool_body`] 同规则）：行数上限 = 答案条数。
+        let count = ask_answer_pairs(tool, args).len();
+        rows += count.min(limit);
+        dropped += count.saturating_sub(limit);
     } else if let Some(result) = &tool.result {
         let clamped = clamp_rows(result, inner_width, limit, BodyEdge::Head);
         rows += clamped.shown;
@@ -1887,6 +1929,95 @@ fn wait_agent_rows_count(tool: &ToolCallBlock, limit: usize) -> (usize, usize) {
         None => wait_result(tool).map_or(0, |result| result.agents.len()),
     };
     (total.min(limit), total.saturating_sub(limit))
+}
+
+/// ask 转写卡 key 列宽上限（格）：对齐答案正文，超长 header/id 截断。
+const ASK_TRANSCRIPT_KEY_MAX: usize = 16;
+
+/// ask 结果解析成 `(key, 答案, 未回答)` 三元组，渲染与估高共用。
+///
+/// core 输出是给模型看的纯文本——多问是 `User answers:` 头加 `id: 答案`
+/// 逐行，单问只有裸答案；取消与超时是整段哨兵文本。这里按已知 id 前缀
+/// 逐行认领新条，认领不到的行并进上一条答案（自定义答案含换行时不丢
+/// 内容），key 取 header 兜底 id。
+fn ask_answer_pairs(tool: &ToolCallBlock, args: &Value) -> Vec<(String, String, bool)> {
+    const UNANSWERED: &str = "The user did not answer.";
+    const TIMEOUT: &str =
+        "The user did not answer within the time limit; continue without an answer.";
+    let Some(result) = tool.result.as_deref() else {
+        return Vec::new();
+    };
+    let result = result.trim_end();
+    if result == TIMEOUT {
+        return vec![(String::new(), "超时未回答".to_owned(), true)];
+    }
+    if result == UNANSWERED {
+        return vec![(String::new(), "未回答".to_owned(), true)];
+    }
+    let questions: Vec<(String, String)> = args
+        .get("questions")
+        .and_then(Value::as_array)
+        .map(|questions| {
+            questions
+                .iter()
+                .map(|question| {
+                    let id = question
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let key = question
+                        .get("header")
+                        .and_then(Value::as_str)
+                        .filter(|header| !header.trim().is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| id.clone());
+                    (id, key)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for line in result
+        .lines()
+        .skip(usize::from(result.starts_with("User answers:")))
+    {
+        if let Some((id, _)) = questions
+            .iter()
+            .find(|(id, _)| line.starts_with(&format!("{id}: ")))
+        {
+            pairs.push((id.clone(), line[id.len() + 2..].to_owned()));
+        } else if let Some((_, answer)) = pairs.last_mut() {
+            answer.push(' ');
+            answer.push_str(line.trim());
+        } else if questions.len() == 1 {
+            // 单问输出是裸答案，没有 `id: ` 前缀，整段收下。
+            pairs.push((questions[0].0.clone(), line.to_owned()));
+        }
+        // 既非已知 id 也无上一条可并的行直接丢。
+    }
+    pairs
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, answer))| {
+            let key = questions
+                .iter()
+                .find(|(qid, _)| *qid == id)
+                .map(|(_, key)| key.clone())
+                .or_else(|| questions.get(index).map(|(_, key)| key.clone()))
+                .unwrap_or_else(|| "回答".to_owned());
+            let unanswered = answer == UNANSWERED;
+            (
+                key,
+                if unanswered {
+                    "未回答".to_owned()
+                } else {
+                    answer
+                },
+                unanswered,
+            )
+        })
+        .collect()
 }
 
 /// 模型给的 UI 描述：只取首个非空行，空串视为未提供。
@@ -3642,6 +3773,189 @@ mod tests {
             lines.len(),
             "结果态估算与渲染同源"
         );
+    }
+
+    /// ask 结果解析：header 优先 id 兜底、逐问「未回答」标记、整单取消与超时哨兵、
+    /// 单问裸答案、自定义答案换行并入上一条。
+    #[test]
+    fn ask_answer_pairs_parses_headers_answers_and_sentinels() {
+        use moc_protocol::methods::ToolStatus;
+
+        let args: Value = serde_json::json!({
+            "questions": [
+                {"id": "theme", "question": "主题?", "header": "主题", "options": []},
+                {"id": "features", "question": "特性?", "options": []},
+                {"id": "lang", "question": "语言?", "header": "  ", "options": []}
+            ]
+        });
+        let block = |result: &str| ToolCallBlock {
+            id: "call_ask".into(),
+            batch_id: None,
+            parent_id: None,
+            name: "ask".into(),
+            arguments: "{}".into(),
+            status: Some(ToolStatus::Completed),
+            result: Some(result.to_owned()),
+            diff: None,
+            duration_ms: None,
+            running: false,
+            progress: None,
+            images: Vec::new(),
+        };
+
+        let pairs = ask_answer_pairs(
+            &block(
+                "User answers:\ntheme: 墨黑\nfeatures: The user did not answer.\nlang: Rust, 日语",
+            ),
+            &args,
+        );
+        assert_eq!(
+            pairs,
+            vec![
+                ("主题".to_owned(), "墨黑".to_owned(), false),
+                ("features".to_owned(), "未回答".to_owned(), true),
+                ("lang".to_owned(), "Rust, 日语".to_owned(), false),
+            ],
+            "header 优先、空 header 与缺 header 都回落到 id"
+        );
+
+        // 自定义答案里的换行并进上一条，不顶出新问。
+        let pairs = ask_answer_pairs(
+            &block("User answers:\ntheme: 墨黑\n底色加暗\nfeatures: x\nlang: Rust"),
+            &args,
+        );
+        assert_eq!(pairs[0].1, "墨黑 底色加暗", "换行内容并入上一条答案");
+        assert_eq!(pairs.len(), 3);
+
+        // 单问：core 只写裸答案，没有 `id: ` 前缀。
+        let single_args: Value = serde_json::json!({
+            "questions": [{"id": "theme", "question": "主题?", "header": "主题", "options": []}]
+        });
+        let pairs = ask_answer_pairs(&block("墨黑配米色"), &single_args);
+        assert_eq!(
+            pairs,
+            vec![("主题".to_owned(), "墨黑配米色".to_owned(), false)]
+        );
+
+        // 整单哨兵。
+        assert_eq!(
+            ask_answer_pairs(&block("The user did not answer."), &args),
+            vec![(String::new(), "未回答".to_owned(), true)],
+            "取消/跳过整单"
+        );
+        assert_eq!(
+            ask_answer_pairs(
+                &block(
+                    "The user did not answer within the time limit; continue without an answer."
+                ),
+                &args
+            ),
+            vec![(String::new(), "超时未回答".to_owned(), true)],
+            "超时哨兵"
+        );
+    }
+
+    /// ask 转写卡渲染：每问一行、key 对齐、未回答翻译、长答案单行截断、
+    /// 简略档行数上限 + 省略提示、估算与渲染同源。
+    #[test]
+    fn ask_tool_card_styles_answers_and_clamps_rows() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 80u16;
+        // 8 问超过简略档 6 行上限；q6 是巨长答案，验证单行截断不撑行。
+        let long_answer = "很".repeat(200);
+        let questions = (0..8)
+            .map(|index| {
+                format!(
+                    r#"{{"id":"q{index}","question":"问题{index}?","header":"标题{index}","options":[]}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let arguments = format!(r#"{{"questions":[{questions}]}}"#);
+        let result = [
+            "User answers:".to_owned(),
+            "q0: 墨黑".to_owned(),
+            "q1: The user did not answer.".to_owned(),
+            "q2: A, B (自定义)".to_owned(),
+            "q3: 三".to_owned(),
+            "q4: 四".to_owned(),
+            "q5: 五".to_owned(),
+            format!("q6: {long_answer}"),
+            "q7: 七".to_owned(),
+        ]
+        .join("\n");
+        app.start_tool_block(ToolCallStart {
+            id: "call_ask".into(),
+            name: "ask".into(),
+            parent_id: None,
+            arguments: arguments.clone().into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_ask".into(),
+            name: "ask".into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_ask".into(),
+                content: result,
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(5),
+            diff: None,
+        });
+        let text_of = |lines: &[Line<'static>]| {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        };
+
+        app.tool_detail = DetailLevel::Full;
+        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full_text = text_of(&full);
+        assert!(!full_text.contains("User answers:"), "协议头不进转写");
+        assert!(!full_text.contains("The user did not answer"));
+        assert!(full_text.contains("标题0"), "key 用 header 不用 id");
+        assert!(!full_text.contains("q0"), "裸 id 不出现在卡片里");
+        assert!(
+            full_text.contains("标题1: 未回答"),
+            "未回答标记:{full_text}"
+        );
+        assert!(full_text.contains("标题2: A, B (自定义)"));
+        for line in &full {
+            assert!(
+                line.width() <= usize::from(width),
+                "巨长答案也不撑行:{}",
+                line.width()
+            );
+        }
+        let answer_row = full
+            .iter()
+            .find(|line| text_of(std::slice::from_ref(line)).contains("标题6"))
+            .expect("巨长答案行");
+        assert!(
+            text_of(std::slice::from_ref(answer_row)).contains('…'),
+            "巨长答案截断加省略号"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
+
+        app.tool_detail = DetailLevel::Brief;
+        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let brief_text = text_of(&brief);
+        assert!(brief_text.contains("标题5"), "简略档保留前 6 行答案");
+        assert!(
+            !brief_text.contains("标题6") && !brief_text.contains("标题7"),
+            "超出简略档的答案行被省略"
+        );
+        assert!(brief_text.contains("⋯ 还有 2 行"), "省略提示:{brief_text}");
+        assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
     }
 
     /// 工具结果里的图片：正文多出的行数估算与渲染必须一致。
