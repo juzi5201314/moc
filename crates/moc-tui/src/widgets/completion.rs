@@ -58,16 +58,20 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "恢复历史会话",
     },
     SlashCommand {
-        name: "/mode",
-        description: "切换会话方言：标准／PTC／CLM实验（仅空白会话可切）",
+        name: "/engine",
+        description: "切换会话引擎：standard／ptc／clm（仅空白会话可切）",
+    },
+    SlashCommand {
+        name: "/autonomy",
+        description: "切换自主程度：default／dont_ask／unattended",
     },
     SlashCommand {
         name: "/plan",
-        description: "进入／退出计划模式（与方言正交的叠加态）",
+        description: "进入／退出计划模式（与引擎正交的叠加态）",
     },
     SlashCommand {
         name: "/clm-experimental",
-        description: "切换 CLM 实验模式；启用后本会话固定使用 CLM",
+        description: "切换 CLM 实验引擎；启用后本会话固定使用 CLM",
     },
     SlashCommand {
         name: "/permission",
@@ -294,10 +298,10 @@ mod tests {
 
     #[test]
     fn derive_table_filters_closes_and_keeps_order() {
-        let state = CompletionState::derive("/mo", &[]).expect("有候选");
+        let state = CompletionState::derive("/r", &[]).expect("有候选");
         assert_eq!(state.candidates.len(), 2);
-        assert_eq!(state.candidates[0].value, "/model");
-        assert_eq!(state.candidates[1].value, "/mode");
+        assert_eq!(state.candidates[0].value, "/resume");
+        assert_eq!(state.candidates[1].value, "/retry");
 
         // 参数一旦开始、非命令文本或无匹配前缀都不提供候选。
         assert!(CompletionState::derive("/model ", &[]).is_none());
@@ -323,7 +327,7 @@ mod tests {
 
     #[test]
     fn entry_at_detects_candidate_rows_and_ignores_borders() {
-        let mut state = CompletionState::derive("/mo", &[]).expect("有候选");
+        let mut state = CompletionState::derive("/r", &[]).expect("有候选");
         state.area = Rect::new(10, 5, 30, 5);
         state.visible_count = 2;
 

@@ -89,6 +89,12 @@ impl Tool for AskTool {
     ) -> BoxFuture<'a, Result<ToolOutcome, ToolError>> {
         Box::pin(async move {
             let questions = normalize_questions(args)?;
+            // Don't Ask 及以上：不打扰用户——有推荐项选推荐项，没有就把决定
+            // 交回模型；答复都标明用户没有参与。
+            let autonomy = ctx.state.lock().await.session.autonomy;
+            if autonomy >= moc_protocol::SessionAutonomy::DontAsk {
+                return Ok(ToolOutcome::success(auto_answers(&questions)));
+            }
             let request_id = crate::ids::entry_id();
             let params = AskParams {
                 session_id: ctx.session_id.clone(),
@@ -143,6 +149,34 @@ impl Tool for AskTool {
             };
             Ok(ToolOutcome::success(output))
         })
+    }
+}
+
+/// Don't Ask 自主程度下的自动代答：有推荐项选推荐项并注明自动代答，没有推荐项
+/// 就让模型按最佳判断自行决定并在结果里说明。返回给模型的文本一律英文。
+fn auto_answers(questions: &[AskQuestion]) -> String {
+    let render = |question: &AskQuestion| -> String {
+        if question.recommended.is_empty() {
+            "The user is unavailable; decide yourself using best judgment and state the choice you made.".into()
+        } else {
+            let labels = question
+                .recommended
+                .iter()
+                .filter_map(|index| question.options.get(*index as usize))
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{labels} (auto-selected recommended option; the user was not involved)")
+        }
+    };
+    if questions.len() == 1 {
+        render(&questions[0])
+    } else {
+        let mut output = String::from("Auto-answers (the user was not involved):\n");
+        for question in questions {
+            output.push_str(&format!("{}: {}\n", question.id, render(question)));
+        }
+        output
     }
 }
 
@@ -423,6 +457,58 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// Don't Ask 代答：有推荐项选推荐项并注明用户未参与；无推荐项给英文兜底指令。
+    #[test]
+    fn auto_answers_pick_recommended_or_delegate_to_model() {
+        let questions = vec![
+            AskQuestion {
+                id: "choice".into(),
+                question: "选哪个？".into(),
+                header: None,
+                multi: false,
+                recommended: vec![1],
+                options: vec![
+                    AskOption {
+                        label: "甲".into(),
+                        description: None,
+                        preview: None,
+                    },
+                    AskOption {
+                        label: "乙".into(),
+                        description: None,
+                        preview: None,
+                    },
+                ],
+            },
+            AskQuestion {
+                id: "open".into(),
+                question: "怎么做？".into(),
+                header: None,
+                multi: false,
+                recommended: Vec::new(),
+                options: vec![
+                    AskOption {
+                        label: "A".into(),
+                        description: None,
+                        preview: None,
+                    },
+                    AskOption {
+                        label: "B".into(),
+                        description: None,
+                        preview: None,
+                    },
+                ],
+            },
+        ];
+        let single = auto_answers(&questions[..1]);
+        assert!(single.contains("乙"), "{single}");
+        assert!(single.contains("auto-selected"), "{single}");
+        let both = auto_answers(&questions);
+        assert!(both.contains("choice: 乙"), "{both}");
+        assert!(both.contains("open: The user is unavailable"), "{both}");
+        assert!(both.contains("decide yourself"), "{both}");
     }
 
     /// 工具 schema 暴露推荐下标数组、预览字段及其格式说明。

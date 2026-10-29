@@ -49,7 +49,7 @@ export interface Session {
   sessionId: string;
   /** 工作目录绝对路径。 */
   cwd: string;
-  /** `normal` | `ask` | `plan` | `ptc` | `clm_experimental`。 */
+  /** 混合词表：执行模式非默认时报 `ask`/`plan`，否则报引擎名 `standard`/`ptc`/`clm_experimental`。 */
   mode: string;
   /** `full` | `workspace` | `workspace-only`。 */
   permission: string;
@@ -59,8 +59,8 @@ export interface Session {
   isSubagent: boolean;
 }
 
-/** 工具可见的会话模式；`normal` 同时覆盖 CLM 实验模式，PTC 不开放插件工具。 */
-export type ToolMode = "normal" | "ask" | "plan";
+/** 工具可见的执行模式；`default` 同时覆盖 CLM 实验引擎，PTC 不开放插件工具。 */
+export type ToolMode = "default" | "ask" | "plan";
 
 export interface ToolDefinition {
   /**
@@ -76,7 +76,7 @@ export interface ToolDefinition {
     [key: string]: unknown;
   };
   /**
-   * 该工具在哪些会话模式可见；默认 `["normal", "ask", "plan"]`。
+   * 该工具在哪些执行模式可见；默认 `["default", "ask", "plan"]`。
    *
    * 只影响模型工具表与调用放行，不授予任何额外能力：插件能做什么仍由
    * `tools.call` 的只读白名单决定。显式值必须是非空模式数组，否则加载失败。

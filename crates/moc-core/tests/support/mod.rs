@@ -111,13 +111,13 @@ impl Harness {
         }
     }
 
-    pub async fn session(&self, mode: SessionMode) -> String {
+    pub async fn session(&self, engine: SessionEngine) -> String {
         self.client
             .call::<SessionNew>(SessionNewParams {
                 cwd: None,
                 model: None,
                 title: None,
-                mode,
+                engine,
                 plan_active: false,
             })
             .await
@@ -125,14 +125,14 @@ impl Harness {
             .id
     }
 
-    /// 会话直接带 plan 叠加态创建（对应旧的 `SessionMode::Plan`）。
-    pub async fn session_plan(&self, mode: SessionMode) -> String {
+    /// 会话直接带 plan 模式创建。
+    pub async fn session_plan(&self, engine: SessionEngine) -> String {
         self.client
             .call::<SessionNew>(SessionNewParams {
                 cwd: None,
                 model: None,
                 title: None,
-                mode,
+                engine,
                 plan_active: true,
             })
             .await
@@ -145,7 +145,7 @@ impl Harness {
             .call::<SessionPrompt>(PromptParams {
                 session_id: id.into(),
                 input: vec![InputPart::Text { text: text.into() }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await

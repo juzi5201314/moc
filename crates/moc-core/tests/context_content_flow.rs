@@ -2,7 +2,7 @@
 
 mod support;
 
-use moc_protocol::SessionMode;
+use moc_protocol::SessionEngine;
 use moc_protocol::methods::{
     ContextContentResult, ContextContentSection, SessionContext, SessionContextContent,
     SessionContextContentParams, SessionContextParams,
@@ -47,7 +47,7 @@ fn section<'a>(result: &'a ContextContentResult, name: &str) -> &'a ContextConte
 async fn fresh_session_shows_assembled_context_only() {
     let upstream = MockServer::builder().start().await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     let result = content(&harness, &id, None).await;
     assert_eq!(
         &names(&result)[..3],
@@ -104,7 +104,7 @@ async fn prompted_session_appends_message_blocks_after_context() {
         .mount(&upstream)
         .await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, "把这句话写进上下文").await;
 
     let result = content(&harness, &id, None).await;
@@ -139,7 +139,7 @@ async fn long_blocks_are_cut_on_character_boundaries() {
         .mount(&upstream)
         .await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     let long = "中文".repeat(600);
     harness.prompt(&id, &long).await;
 

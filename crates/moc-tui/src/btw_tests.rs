@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::widgets::prompt::PromptState;
-use moc_protocol::{SessionInfo, SessionMode, SessionPermission};
+use moc_protocol::{SessionAutonomy, SessionEngine, SessionInfo, SessionPermission};
 use ratatui::{Terminal, backend::TestBackend, buffer::CellWidth, layout::Rect, style::Style};
 
 fn session(id: &str) -> SessionInfo {
@@ -11,9 +11,10 @@ fn session(id: &str) -> SessionInfo {
         title: "测试".into(),
         model: "test/model".into(),
         permission: SessionPermission::Full,
-        mode: SessionMode::Normal,
+        engine: SessionEngine::Standard,
+        autonomy: SessionAutonomy::Default,
         plan_active: false,
-        mode_locked: false,
+        engine_locked: false,
         parent_session_id: None,
         forked_from: None,
         agent_preset: None,
@@ -293,7 +294,7 @@ fn dock_render_is_nonmodal_and_responsive() {
             .push_back(crate::queue::QueuedPrompt {
                 id: 1,
                 draft: PromptState::from_text("待发送主提示".into()),
-                contract: None,
+                mode: None,
             });
         let params = app.btw.begin("a".into(), "旁路问题".into());
         app.btw.finish(

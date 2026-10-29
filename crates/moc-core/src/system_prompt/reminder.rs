@@ -16,8 +16,8 @@ use moc_protocol::ReminderItem;
 /// 条目的稳定键。跨会话重启、跨版本都不能改，否则历史里的旧条目会失去对应。
 pub mod key {
     pub const SANDBOX: &str = "sandbox";
+    pub const ENGINE: &str = "engine";
     pub const MODE: &str = "mode";
-    pub const CONTRACT: &str = "contract";
     pub const MCP_INDEX: &str = "mcp-index";
     pub const ROSTER: &str = "roster";
     pub const TODO_STALL: &str = "todo-stall";

@@ -1,6 +1,6 @@
 //! agent preset：一套固定的系统提示片段 + 工具面策略，spawn 时按名选用。
 //!
-//! preset 只能**收缩**子代理的工具面，不能放大：方言、契约、配置与权限检查
+//! preset 只能**收缩**子代理的工具面，不能放大：引擎、模式、配置与权限检查
 //! 原样生效。内置 preset 与插件注册的 preset 走同一张表，但模型只能按名
 //! 选用，永远看不到注册接口本身。
 
@@ -101,8 +101,7 @@ impl PresetRegistry {
         if prompt.chars().count() > MAX_PRESET_PROMPT_CHARS {
             return Err(invalid(format!(
                 "agent preset `{}` 的 system_prompt 超过 {} 字符上限",
-                preset.name,
-                MAX_PRESET_PROMPT_CHARS
+                preset.name, MAX_PRESET_PROMPT_CHARS
             )));
         }
         if self.presets.contains_key(&preset.name) {

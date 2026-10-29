@@ -114,7 +114,7 @@ pub fn model_messages(
     if let Some(system) = system {
         messages.extend_from_slice(system);
     }
-    if state.mode == moc_protocol::methods::SessionMode::ClmExperimental
+    if state.engine == moc_protocol::methods::SessionEngine::ClmExperimental
         && let Some(context) = &state.clm_context
     {
         messages.push(crate::clm::message(context));
@@ -198,7 +198,7 @@ pub(crate) fn repair_tool_history(
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     use super::*;
     use crate::session::entries::{EntryPayload, SessionOrigin};
@@ -210,7 +210,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "title".into(),
@@ -266,7 +266,7 @@ mod tests {
             "ses_todo123456".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "title".into(),
@@ -304,7 +304,7 @@ mod tests {
                 "ses_123456789abc".into(),
                 "/tmp".into(),
                 "p/old".into(),
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 SessionOrigin::root(),
                 "title".into(),
@@ -374,7 +374,7 @@ mod tests {
                 "ses_123456789abc".into(),
                 "/tmp".into(),
                 "p/old".into(),
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 SessionOrigin::root(),
                 "title".into(),
@@ -434,7 +434,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/old".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "title".into(),
@@ -480,7 +480,7 @@ mod tests {
             "ses_grok1234567".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "grok".into(),
@@ -562,7 +562,7 @@ mod tests {
             "ses_clm12345678".into(),
             "/tmp".into(),
             "p/model".into(),
-            SessionMode::ClmExperimental,
+            SessionEngine::ClmExperimental,
             SessionPermission::Full,
             SessionOrigin::root(),
             "clm".into(),

@@ -50,7 +50,7 @@ async fn ptc_run_code_executes_worker_in_normal_mode() {
     )
     .await;
     let session = harness
-        .session(moc_protocol::methods::SessionMode::Normal)
+        .session(moc_protocol::methods::SessionEngine::Standard)
         .await;
     let result = harness.prompt(&session, "计算 1+2+3").await;
 

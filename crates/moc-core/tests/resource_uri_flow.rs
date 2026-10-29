@@ -9,7 +9,7 @@ use moc_protocol::{ResourceComplete, ResourceCompleteParams};
 #[tokio::test]
 async fn resource_complete_is_session_scoped_and_exposes_canonical_schemes() {
     let harness = support::Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
-    let session_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let session_id = harness.session(moc_protocol::SessionEngine::Standard).await;
 
     // harness 的 cwd 固定为 root/work；sessions 目录按 encode_cwd 规则组织。
     let workspace_dir =
@@ -94,7 +94,7 @@ async fn artifact_uri_round_trips_through_read_and_grep_tool_calls() {
 
     let upstream = MockServer::builder().start().await;
     let harness = support::Harness::new(&upstream.uri(), "openai_chat", "").await;
-    let session_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let session_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let workspace_dir =
         harness
             .root

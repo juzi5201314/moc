@@ -169,7 +169,7 @@ mod tests {
         entries::{Entry, EntryPayload, SessionOrigin},
         store::{SessionFile, SessionStore},
     };
-    use moc_protocol::{SessionMode, SessionPermission};
+    use moc_protocol::{SessionEngine, SessionPermission};
 
     #[tokio::test]
     async fn preview_preserves_referenced_files_and_cleanup_applies() {
@@ -180,7 +180,7 @@ mod tests {
             id.into(),
             root.path().to_string_lossy().into_owned(),
             "p/model:off".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "维护测试".into(),

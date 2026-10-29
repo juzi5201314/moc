@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use moc_protocol::methods::{
-    PlanAction, PlanStatus, SessionCompact, SessionCompactParams, SessionMode, SessionPlanApprove,
-    SessionPlanApproveParams,
+    PlanAction, PlanStatus, SessionCompact, SessionCompactParams, SessionEngine,
+    SessionPlanApprove, SessionPlanApproveParams,
 };
 use serde_json::Value;
 use support::Harness;
@@ -141,7 +141,7 @@ async fn anchor_gaps_are_fed_back_and_repaired() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness
         .prompt(
             &session,
@@ -198,7 +198,7 @@ async fn unusable_summaries_fall_back_to_a_deterministic_checkpoint() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness
         .prompt(
             &session,
@@ -263,7 +263,7 @@ async fn fallback_preserves_the_previous_checkpoint_across_generations() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness
         .prompt(
             &session,
@@ -334,7 +334,7 @@ async fn rejected_options_and_plan_steps_are_repaired_not_dropped() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness
         .prompt(
             &session,
@@ -409,7 +409,7 @@ async fn the_previous_checkpoint_reaches_the_summarizer_as_injected_context() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness
         .prompt(
             &session,
@@ -486,7 +486,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let session = harness.session_plan(SessionMode::Normal).await;
+    let session = harness.session_plan(SessionEngine::Standard).await;
     harness.prompt(&session, "提交计划").await;
     let plan = harness
         .load(&session)
@@ -501,7 +501,7 @@ async fn execute_compacted_requires_the_pending_plan_steps() {
             plan_id: plan.plan_id,
             action: PlanAction::ExecuteCompacted,
             execution_model: None,
-            execution_mode: None,
+            execution_engine: None,
         })
         .await
         .expect("批准并压缩");

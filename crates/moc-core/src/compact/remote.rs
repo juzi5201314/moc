@@ -48,9 +48,9 @@ pub(crate) async fn compact(
     let summary = inner.mcp_summary(config).await?;
     let tool_declarations = inner
         .tool_declarations(
-            state.mode,
+            state.engine,
             config,
-            inner.client_supports_ask(ctx.connection_id()),
+            inner.ask_available(ctx.connection_id(), state.session.autonomy),
         )
         .await?;
     let context_files = inner
@@ -85,8 +85,8 @@ pub(crate) async fn compact(
     let request = ChatRequest {
         messages: full_messages,
         tools: inner.tools.definitions(
-            state.mode,
-            inner.client_supports_ask(ctx.connection_id()),
+            state.engine,
+            inner.ask_available(ctx.connection_id(), state.session.autonomy),
             config,
             crate::tools::ToolScope::for_session(state, config.agents.max_depth),
             &plugins,
@@ -284,7 +284,7 @@ fn item_matches(actual: &Value, expected: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
@@ -296,7 +296,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "gpt-x".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "t".into(),

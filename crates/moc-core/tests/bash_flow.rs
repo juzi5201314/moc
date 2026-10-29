@@ -42,7 +42,7 @@ async fn manual_bash_context_survives_resume_and_compaction_without_private_outp
         "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=1\n",
     )
     .await;
-    let id = harness.session_plan(SessionMode::Normal).await;
+    let id = harness.session_plan(SessionEngine::Standard).await;
     let before = harness
         .client
         .call::<SessionContext>(SessionContextParams {
@@ -162,7 +162,7 @@ async fn manual_bash_context_survives_resume_and_compaction_without_private_outp
 #[tokio::test]
 async fn empty_manual_commands_release_the_session_for_next_execution() {
     let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
-    let id = harness.session_plan(SessionMode::Normal).await;
+    let id = harness.session_plan(SessionEngine::Standard).await;
     for input in ["!", "!!", "!  \n  "] {
         let error = harness
             .client
@@ -217,7 +217,7 @@ async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
         "[tools.bash]\nforeground_after_secs=0\n[tools.job]\nenabled=false\n",
     )
     .await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, "运行命令").await;
     let follow_up = {
         let streams = streams.lock();
@@ -238,7 +238,7 @@ async fn disabled_jobs_keep_slow_commands_in_the_foreground() {
 #[tokio::test]
 async fn cancel_manual_bash_reaps_process_and_unlocks_session() {
     let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     let client = harness.client.clone();
     let session_id = id.clone();
     let mut events = harness.events.subscribe();

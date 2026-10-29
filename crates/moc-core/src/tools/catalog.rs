@@ -3,11 +3,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use moc_mcp::{McpManager, McpSnapshot, ServerStatus};
-use moc_protocol::SessionMode;
+use moc_protocol::SessionEngine;
 use serde_json::{Value, json};
 
 use super::{Tier, Tool, ToolError, ToolOrigin, ToolRegistry};
-use crate::{config::ResolvedConfig, service::mode, service::mode::ModeContract};
+use crate::{config::ResolvedConfig, service::mode, service::mode::Mode};
 
 /// MCP 服务器文本的信任声明，随服务器列表一起放进系统提示。
 ///
@@ -57,37 +57,37 @@ impl ToolCatalog {
             .map(|index| Arc::clone(&self.tools[index]))
     }
 
-    /// 目录里当前可调的工具：PTC 方言下嵌套调用沿用 Normal 方言面（除 `run_code`
-    /// 自身与插件工具），契约再按执行许可收紧。
+    /// 目录里当前可调的工具：PTC 引擎下嵌套调用沿用 Standard 引擎面（除 `run_code`
+    /// 自身与插件工具），模式再按执行许可收紧。
     pub fn visible<'a>(
         &'a self,
-        mode: SessionMode,
-        contract: ModeContract,
+        engine: SessionEngine,
+        mode: Mode,
         ask_supported: bool,
         config: &'a ResolvedConfig,
     ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
-        let mode = if mode == SessionMode::Ptc {
-            SessionMode::Normal
+        let engine = if engine == SessionEngine::Ptc {
+            SessionEngine::Standard
         } else {
-            mode
+            engine
         };
         self.tools.iter().filter(move |tool| {
             tool.name() != "run_code"
                 && tool.origin() != ToolOrigin::Plugin
-                && tool.permitted_in(mode, contract)
+                && tool.permitted_in(engine, mode)
                 && mode::tool_enabled(tool.name(), tool.origin(), ask_supported, config)
         })
     }
 
     pub fn servers(
         &self,
-        mode: SessionMode,
-        contract: ModeContract,
+        engine: SessionEngine,
+        mode: Mode,
         ask_supported: bool,
         config: &ResolvedConfig,
     ) -> Value {
         let mut counts = BTreeMap::<&str, usize>::new();
-        for tool in self.visible(mode, contract, ask_supported, config) {
+        for tool in self.visible(engine, mode, ask_supported, config) {
             if let Some(server) = server_of(tool.name()) {
                 *counts.entry(server).or_default() += 1;
             }
@@ -118,8 +118,8 @@ impl ToolCatalog {
 
     pub fn search(
         &self,
-        mode: SessionMode,
-        contract: ModeContract,
+        engine: SessionEngine,
+        mode: Mode,
         ask_supported: bool,
         config: &ResolvedConfig,
         query: &str,
@@ -138,7 +138,7 @@ impl ToolCatalog {
         let query = query.trim().to_lowercase();
         let terms: Vec<_> = query.split_whitespace().collect();
         let mut found = Vec::new();
-        for tool in self.visible(mode, contract, ask_supported, config) {
+        for tool in self.visible(engine, mode, ask_supported, config) {
             let name = tool.name();
             let origin = server_of(name);
             if server.is_some() && server != origin {
@@ -168,14 +168,14 @@ impl ToolCatalog {
 
     pub fn describe(
         &self,
-        mode: SessionMode,
-        contract: ModeContract,
+        engine: SessionEngine,
+        mode: Mode,
         ask_supported: bool,
         config: &ResolvedConfig,
         name: &str,
     ) -> Result<Value, ToolError> {
         let tool = self
-            .visible(mode, contract, ask_supported, config)
+            .visible(engine, mode, ask_supported, config)
             .find(|tool| tool.name() == name)
             .ok_or_else(|| {
                 ToolError::new(
@@ -219,7 +219,7 @@ mod tests {
             ..Default::default()
         })
         .expect("默认配置");
-        let plugins = [ModeMask::ALL, ModeMask::NORMAL, ModeMask::PLAN]
+        let plugins = [ModeMask::ALL, ModeMask::DEFAULT, ModeMask::PLAN]
             .into_iter()
             .enumerate()
             .map(|(index, modes)| {
@@ -242,33 +242,33 @@ mod tests {
             plugins,
         )
         .expect("工具目录");
-        use crate::service::mode::ModeContract;
-        for mode in [
-            SessionMode::Normal,
-            SessionMode::ClmExperimental,
-            SessionMode::Ptc,
+        use crate::service::mode::Mode;
+        for engine in [
+            SessionEngine::Standard,
+            SessionEngine::ClmExperimental,
+            SessionEngine::Ptc,
         ] {
-            for contract in [ModeContract::None, ModeContract::Ask, ModeContract::Plan] {
+            for mode in [Mode::Default, Mode::Ask, Mode::Plan] {
                 let found = catalog
-                    .search(mode, contract, false, &config, "plugin_", None, 0, 20)
+                    .search(engine, mode, false, &config, "plugin_", None, 0, 20)
                     .expect("目录检索");
-                assert_eq!(found["total"], 0, "{mode:?} {contract:?}: {found}");
+                assert_eq!(found["total"], 0, "{engine:?} {mode:?}: {found}");
                 for index in 0..3 {
                     let name = format!("plugin_{index}");
                     assert!(catalog.get(&name).is_some(), "原生调用仍需持有插件工具");
                     let error = catalog
-                        .describe(mode, contract, false, &config, &name)
+                        .describe(engine, mode, false, &config, &name)
                         .expect_err("run_code 不能发现插件工具");
-                    assert_eq!(error.code, "E_TOOL_NOT_FOUND", "{mode:?}");
+                    assert_eq!(error.code, "E_TOOL_NOT_FOUND", "{engine:?}");
                 }
                 assert!(
                     catalog
-                        .describe(mode, contract, false, &config, "read")
+                        .describe(engine, mode, false, &config, "read")
                         .is_ok()
                 );
                 assert!(
                     catalog
-                        .describe(mode, contract, false, &config, "run_code")
+                        .describe(engine, mode, false, &config, "run_code")
                         .is_err()
                 );
             }

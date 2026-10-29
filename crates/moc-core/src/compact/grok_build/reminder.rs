@@ -153,7 +153,7 @@ fn active_plan(state: &SessionState) -> Option<String> {
 mod tests {
     use moc_llm::{ContentPart, Message, ToolCall};
     use moc_protocol::methods::{
-        PlanInfo, SessionMode, SessionPermission, TodoItem, TodoPhase, TodoStatus,
+        PlanInfo, SessionEngine, SessionPermission, TodoItem, TodoPhase, TodoStatus,
     };
 
     use super::*;
@@ -164,7 +164,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "标题".into(),

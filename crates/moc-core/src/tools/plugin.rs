@@ -9,11 +9,11 @@ use std::sync::Arc;
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
 use moc_plugin::ModeMask;
-use moc_protocol::SessionMode;
+use moc_protocol::SessionEngine;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOrigin, ToolOutcome};
-use crate::service::mode::ModeContract;
+use crate::service::mode::Mode;
 
 pub struct PluginTool {
     plugin: String,
@@ -57,15 +57,18 @@ impl Tool for PluginTool {
         ToolOrigin::Plugin
     }
 
-    /// 方言工具面：插件工具只在 Normal/CLM 方言的面里（PTC 不开放），契约掩码不在
-    /// 这一层判定——契约切换不能重写 schema。
-    fn declared_in(&self, mode: SessionMode) -> bool {
-        matches!(mode, SessionMode::Normal | SessionMode::ClmExperimental)
+    /// 引擎工具面：插件工具只在 Standard/CLM 引擎的面里（PTC 不开放），模式掩码不在
+    /// 这一层判定——模式切换不能重写 schema。
+    fn declared_in(&self, engine: SessionEngine) -> bool {
+        matches!(
+            engine,
+            SessionEngine::Standard | SessionEngine::ClmExperimental
+        )
     }
 
-    /// 执行许可：方言可达 + 插件声明的 `modes`（契约词表）覆盖当前契约。
-    fn permitted_in(&self, mode: SessionMode, contract: ModeContract) -> bool {
-        self.declared_in(mode) && self.modes.contains(contract_mask(contract))
+    /// 执行许可：引擎可达 + 插件声明的 `modes`（模式词表）覆盖当前模式。
+    fn permitted_in(&self, engine: SessionEngine, mode: Mode) -> bool {
+        self.declared_in(engine) && self.modes.contains(mode_mask(mode))
     }
 
     /// 插件线程按插件串行；默认整批当作屏障，声明 `parallel: true` 才允许并发。
@@ -115,12 +118,12 @@ impl Tool for PluginTool {
     }
 }
 
-/// 契约对应的插件 `modes` 掩码位：插件声明的是「哪些执行契约可以调用我」。
-fn contract_mask(contract: ModeContract) -> ModeMask {
-    match contract {
-        ModeContract::None => ModeMask::NORMAL,
-        ModeContract::Ask => ModeMask::ASK,
-        ModeContract::Plan => ModeMask::PLAN,
+/// 执行模式对应的插件 `modes` 掩码位：插件声明的是「哪些执行模式可以调用我」。
+fn mode_mask(mode: Mode) -> ModeMask {
+    match mode {
+        Mode::Default => ModeMask::DEFAULT,
+        Mode::Ask => ModeMask::ASK,
+        Mode::Plan => ModeMask::PLAN,
     }
 }
 
@@ -200,10 +203,10 @@ impl moc_plugin::HostBridge for ReadOnlyBridge {
 #[cfg(test)]
 mod tests {
     use super::{PluginTool, host_tool_allowed};
-    use crate::service::mode::ModeContract;
+    use crate::service::mode::Mode;
     use crate::tools::Tool;
     use moc_plugin::ModeMask;
-    use moc_protocol::SessionMode;
+    use moc_protocol::SessionEngine;
     use serde_json::json;
 
     fn tool(modes: ModeMask) -> PluginTool {
@@ -220,33 +223,33 @@ mod tests {
     }
 
     #[test]
-    fn permission_follows_declared_contracts() {
-        use ModeContract::*;
+    fn permission_follows_declared_modes() {
+        use Mode::*;
         let all = tool(ModeMask::ALL);
-        for mode in [SessionMode::Normal, SessionMode::ClmExperimental] {
-            assert!(all.declared_in(mode), "{mode:?}");
-            for contract in [None, Ask, Plan] {
-                assert!(all.permitted_in(mode, contract), "{mode:?} {contract:?}");
+        for engine in [SessionEngine::Standard, SessionEngine::ClmExperimental] {
+            assert!(all.declared_in(engine), "{engine:?}");
+            for mode in [Default, Ask, Plan] {
+                assert!(all.permitted_in(engine, mode), "{engine:?} {mode:?}");
             }
         }
-        assert!(!all.declared_in(SessionMode::Ptc));
-        assert!(!all.permitted_in(SessionMode::Ptc, None));
+        assert!(!all.declared_in(SessionEngine::Ptc));
+        assert!(!all.permitted_in(SessionEngine::Ptc, Default));
 
-        let normal_only = tool(ModeMask::NORMAL);
-        assert!(normal_only.declared_in(SessionMode::Normal));
+        let default_only = tool(ModeMask::DEFAULT);
+        assert!(default_only.declared_in(SessionEngine::Standard));
         assert!(
-            normal_only.declared_in(SessionMode::ClmExperimental),
-            "normal 覆盖 CLM 实验方言"
+            default_only.declared_in(SessionEngine::ClmExperimental),
+            "default 覆盖 CLM 实验引擎"
         );
-        assert!(normal_only.permitted_in(SessionMode::Normal, None));
-        assert!(!normal_only.permitted_in(SessionMode::Normal, Ask));
-        assert!(!normal_only.permitted_in(SessionMode::Normal, Plan));
+        assert!(default_only.permitted_in(SessionEngine::Standard, Default));
+        assert!(!default_only.permitted_in(SessionEngine::Standard, Ask));
+        assert!(!default_only.permitted_in(SessionEngine::Standard, Plan));
 
-        // 契约掩码不影响 schema：plan-only 插件仍在方言面里，只在 plan 契约下可执行。
+        // 模式掩码不影响 schema：plan-only 插件仍在引擎面里，只在 plan 模式下可执行。
         let plan_only = tool(ModeMask::PLAN);
-        assert!(plan_only.declared_in(SessionMode::Normal));
-        assert!(plan_only.permitted_in(SessionMode::Normal, Plan));
-        assert!(!plan_only.permitted_in(SessionMode::Normal, None));
+        assert!(plan_only.declared_in(SessionEngine::Standard));
+        assert!(plan_only.permitted_in(SessionEngine::Standard, Plan));
+        assert!(!plan_only.permitted_in(SessionEngine::Standard, Default));
     }
 
     #[test]

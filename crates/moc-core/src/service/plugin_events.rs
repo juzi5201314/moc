@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use moc_plugin::{CallContext, HookKind, PluginHost};
 use moc_protocol::methods::{
-    AgentInfo, AgentMessageMeta, PathChange, PermissionOption, SessionInfo, SessionMode,
+    AgentInfo, AgentMessageMeta, PathChange, PermissionOption, SessionEngine, SessionInfo,
     SessionPermission,
 };
 use serde_json::{Value, json};
@@ -28,15 +28,15 @@ pub(crate) async fn host_for(inner: &CoreInner, cwd: &Path) -> Option<Arc<Plugin
     }
 }
 
-/// 会话状态对应的插件上下文；方言、契约与权限用本次实际生效的值。
+/// 会话状态对应的插件上下文；引擎、模式与权限用本次实际生效的值。
 ///
-/// `mode` 沿用旧词表：契约激活时报契约名（`ask`/`plan`），否则报方言名——插件的
-/// `modes` 声明与契约同词表；`writable` 反映契约是否只读。
+/// `mode` 沿用混合词表：执行模式非默认时报模式名（`ask`/`plan`），否则报引擎名——
+/// 插件的 `modes` 声明与执行模式同词表；`writable` 反映模式是否只读。
 pub(crate) fn context(
     session_id: &str,
     cwd: &str,
-    mode: SessionMode,
-    contract: crate::service::mode::ModeContract,
+    engine: SessionEngine,
+    mode: crate::service::mode::Mode,
     permission: SessionPermission,
     model: &str,
     is_subagent: bool,
@@ -44,32 +44,32 @@ pub(crate) fn context(
     CallContext {
         session_id: session_id.to_owned(),
         cwd: cwd.to_owned(),
-        mode: match contract {
-            crate::service::mode::ModeContract::None => mode_name(mode),
-            contract => contract.name().to_owned(),
+        mode: match mode {
+            crate::service::mode::Mode::Default => engine_name(engine),
+            mode => mode.name().to_owned(),
         },
         permission: permission.as_str().to_owned(),
         model: model.to_owned(),
         is_subagent,
-        writable: !contract.read_only(),
+        writable: !mode.read_only(),
     }
 }
 
-/// 会话信息对应的插件上下文；plan 叠加态折算成契约。
+/// 会话信息对应的插件上下文；plan 激活折算成模式。
 pub(crate) fn context_from_info(info: &SessionInfo) -> CallContext {
     context(
         &info.id,
         &info.cwd,
-        info.mode,
-        crate::service::mode::ModeContract::effective(info.plan_active, None),
+        info.engine,
+        crate::service::mode::Mode::effective(info.plan_active, None),
         info.permission,
         &info.model,
         info.is_subagent(),
     )
 }
 
-fn mode_name(mode: SessionMode) -> String {
-    serde_json::to_value(mode)
+fn engine_name(engine: SessionEngine) -> String {
+    serde_json::to_value(engine)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_default()
@@ -127,7 +127,7 @@ pub(crate) async fn session_start(
             "sessionId": info.id,
             "cwd": info.cwd,
             "model": info.model,
-            "mode": info.mode,
+            "engine": info.engine,
             "permission": info.permission,
             "title": info.title,
             "origin": origin,

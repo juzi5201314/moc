@@ -687,16 +687,21 @@ fn read_session_info_sync(
         at_ms: u64,
         title: Option<String>,
         model: Option<String>,
-        mode: Option<super::entries::PersistedMode>,
-        /// `plan_mode` 条目投影的 plan 叠加态。
+        /// 引擎变化条目的引擎值；旧记录字段名是 `mode`。
+        #[serde(default, alias = "mode")]
+        engine: Option<super::entries::PersistedEngine>,
+        /// 自主程度变化条目的取值；旧记录没有该字段。
+        #[serde(default)]
+        autonomy: Option<moc_protocol::methods::SessionAutonomy>,
+        /// `plan_mode` 条目投影的 plan 模式。
         #[serde(default)]
         active: Option<bool>,
-        /// `mode_change` 条目投影的 plan 叠加态；旧记录没有该字段。
+        /// `engine_change` 条目投影的 plan 模式；旧记录没有该字段。
         #[serde(default)]
         plan_active: Option<bool>,
         #[serde(default)]
         permission: Option<moc_protocol::methods::SessionPermission>,
-        /// 只取消息角色，供「已有用户提示 → 方言锁定」的判定。
+        /// 只取消息角色，供「已有用户提示 → 引擎锁定」的判定。
         #[serde(default)]
         message: Option<MessageMeta>,
         #[serde(default)]
@@ -753,13 +758,18 @@ fn read_session_info_sync(
                     info.model = model;
                 }
             }
-            "mode_change" => {
-                if let Some(mode) = metadata.mode {
-                    info.mode = mode.dialect();
-                    // 旧模式值没有 plan 投影字段：`plan` → 进入叠加态，其余 → 退出。
+            "mode_change" | "engine_change" => {
+                if let Some(engine) = metadata.engine {
+                    info.engine = engine.engine();
+                    // 旧值没有 plan 投影字段：`plan` → 进入 plan 模式，其余 → 退出。
                     info.plan_active = metadata
                         .plan_active
-                        .unwrap_or_else(|| mode.legacy_enters_plan());
+                        .unwrap_or_else(|| engine.legacy_enters_plan());
+                }
+            }
+            "autonomy_change" => {
+                if let Some(autonomy) = metadata.autonomy {
+                    info.autonomy = autonomy;
                 }
             }
             "plan_mode" => {
@@ -774,14 +784,14 @@ fn read_session_info_sync(
             }
             "message" => {
                 // 与 SessionState::apply_entry 同口径：普通用户消息才算提示，
-                // bash / 代理消息 / 提醒不计入方言锁定。
+                // bash / 代理消息 / 提醒不计入引擎锁定。
                 if let Some(message) = metadata.message
                     && message.role == moc_llm::Role::User
                     && metadata.bash.is_none()
                     && metadata.agent.is_none()
                     && metadata.reminder.is_none()
                 {
-                    info.mode_locked = true;
+                    info.engine_locked = true;
                 }
             }
             _ => {}
@@ -863,7 +873,7 @@ pub fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     use super::*;
     use crate::session::entries::SessionOrigin;
@@ -890,7 +900,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp/project".into(),
             "p/old".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "旧标题".into(),
@@ -923,8 +933,8 @@ mod tests {
             EntryPayload::ModelChange {
                 model: "p/new".into(),
             },
-            EntryPayload::ModeChange {
-                mode: SessionMode::Normal,
+            EntryPayload::EngineChange {
+                engine: SessionEngine::Standard,
                 plan_active: true,
             },
         ]
@@ -940,7 +950,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].title, "新标题");
         assert_eq!(listed[0].model, "p/new");
-        assert_eq!(listed[0].mode, SessionMode::Normal);
+        assert_eq!(listed[0].engine, SessionEngine::Standard);
         assert!(listed[0].plan_active);
         assert_eq!(listed[0].updated_at_ms, 1_728_000_000_127);
 
@@ -973,7 +983,7 @@ mod tests {
             "ses_healthy0001".into(),
             "/tmp/project".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "健康".into(),
@@ -1000,7 +1010,7 @@ mod tests {
             "ses_broken00001".into(),
             "/tmp/project".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "原始标题".into(),
@@ -1076,7 +1086,7 @@ mod tests {
             "ses_partial00001".into(),
             "/tmp/project".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "续写".into(),
@@ -1106,7 +1116,7 @@ mod tests {
             id.into(),
             "/tmp/project".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             id.into(),

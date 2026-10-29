@@ -5,19 +5,19 @@
 
 use serde_json::Value;
 
-/// 插件工具可见的会话模式集合。
+/// 插件工具可见的执行模式集合。
 ///
-/// 固定三个标志，用 `u8` 位图即可，不为每个工具分配 `Vec`。`PTC` 不在集合里：
-/// 该模式下模型只能看到 `run_code`，插件工具也会被宿主以 `E_PLUGIN_RECURSION` 拒绝。
+/// 固定三个标志，用 `u8` 位图即可，不为每个工具分配 `Vec`。这里没有引擎维度：
+/// PTC 引擎下模型只能看到 `run_code`，插件工具也会被宿主以 `E_PLUGIN_RECURSION` 拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModeMask(u8);
 
 impl ModeMask {
-    pub const NORMAL: Self = Self(1 << 0);
+    pub const DEFAULT: Self = Self(1 << 0);
     pub const ASK: Self = Self(1 << 1);
     pub const PLAN: Self = Self(1 << 2);
     /// 省略 `modes` 时的默认值：三种模式都可见。
-    pub const ALL: Self = Self(Self::NORMAL.0 | Self::ASK.0 | Self::PLAN.0);
+    pub const ALL: Self = Self(Self::DEFAULT.0 | Self::ASK.0 | Self::PLAN.0);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -37,7 +37,7 @@ impl ModeMask {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "normal" => Some(Self::NORMAL),
+            "default" => Some(Self::DEFAULT),
             "ask" => Some(Self::ASK),
             "plan" => Some(Self::PLAN),
             _ => None,
@@ -47,7 +47,7 @@ impl ModeMask {
     /// 按固定顺序给出模式名，供 `plugin/list` 与前端展示。
     pub fn names(self) -> impl Iterator<Item = &'static str> {
         [
-            (Self::NORMAL, "normal"),
+            (Self::DEFAULT, "default"),
             (Self::ASK, "ask"),
             (Self::PLAN, "plan"),
         ]
@@ -139,7 +139,7 @@ pub struct ToolDecl {
     pub description: String,
     /// JSON Schema（`type: "object"`）。
     pub parameters: Value,
-    /// 工具可见的会话模式；默认 [`ModeMask::ALL`]。
+    /// 工具可见的执行模式；默认 [`ModeMask::ALL`]。
     pub modes: ModeMask,
     /// 是否可与其它只读工具并行；默认 `false`，作为批次屏障。
     pub parallel: bool,
@@ -303,24 +303,24 @@ mod tests {
 
     #[test]
     fn mode_masks_parse_and_render_in_order() {
-        assert_eq!(ModeMask::parse("normal"), Some(ModeMask::NORMAL));
+        assert_eq!(ModeMask::parse("default"), Some(ModeMask::DEFAULT));
         assert_eq!(ModeMask::parse("ask"), Some(ModeMask::ASK));
         assert_eq!(ModeMask::parse("plan"), Some(ModeMask::PLAN));
         assert_eq!(ModeMask::parse("ptc"), None);
-        assert_eq!(ModeMask::parse("admin"), None);
+        assert_eq!(ModeMask::parse("normal"), None);
         assert_eq!(
-            ModeMask::NORMAL
+            ModeMask::DEFAULT
                 .union(ModeMask::PLAN)
                 .names()
                 .collect::<Vec<_>>(),
-            vec!["normal", "plan"]
+            vec!["default", "plan"]
         );
         assert_eq!(
             ModeMask::ALL.names().collect::<Vec<_>>(),
-            vec!["normal", "ask", "plan"]
+            vec!["default", "ask", "plan"]
         );
         assert!(ModeMask::ALL.contains(ModeMask::ASK));
-        assert!(!ModeMask::NORMAL.contains(ModeMask::ASK));
+        assert!(!ModeMask::DEFAULT.contains(ModeMask::ASK));
         assert!(ModeMask::empty().is_empty());
     }
 }

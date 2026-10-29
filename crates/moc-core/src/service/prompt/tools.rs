@@ -193,11 +193,12 @@ pub(super) async fn execute_tool_batch(
             .await
             .map_err(protocol_to_rpc)?;
     }
-    // 只读契约不跟踪工作区写入；CLM 方言走自己的实时上下文视图。
-    let tool_batch_before = if tool_ctx.contract == crate::service::mode::ModeContract::None
+    // 只读模式不跟踪工作区写入；CLM 引擎走自己的实时上下文视图。
+    let tool_batch_before = if tool_ctx.mode == crate::service::mode::Mode::Default
         && matches!(
-            tool_ctx.mode,
-            moc_protocol::methods::SessionMode::Normal | moc_protocol::methods::SessionMode::Ptc
+            tool_ctx.engine,
+            moc_protocol::methods::SessionEngine::Standard
+                | moc_protocol::methods::SessionEngine::Ptc
         )
         && config.workspace.watch
     {
@@ -353,7 +354,7 @@ pub(super) async fn execute_tool_batch(
             result: tool_result,
             ..
         } = committed;
-        if tool_ctx.mode == moc_protocol::methods::SessionMode::ClmExperimental {
+        if tool_ctx.engine == moc_protocol::methods::SessionEngine::ClmExperimental {
             let message = Message {
                 role: Role::Tool,
                 content: vec![ContentPart::ToolResult(tool_result.clone())],
@@ -402,7 +403,7 @@ pub(super) async fn execute_tool_batch(
             session_id,
             cwd,
             config,
-            contract: tool_ctx.contract,
+            mode: tool_ctx.mode,
             before_tools: tool_batch_before.as_ref(),
         },
         &tool_ctx.plugins,
@@ -496,7 +497,7 @@ async fn execute_tool(
             "yield is available only to subagents",
         ));
     }
-    if !tool.permitted_in(ctx.mode, ctx.contract) {
+    if !tool.permitted_in(ctx.engine, ctx.mode) {
         return Ok(ToolOutcome::failure(
             "E_MODE",
             "This tool is not allowed in the current mode",
@@ -505,7 +506,10 @@ async fn execute_tool(
     if !crate::service::mode::tool_enabled(
         name,
         tool.origin(),
-        inner.client_supports_ask(request.connection_id()),
+        inner.ask_available(
+            request.connection_id(),
+            ctx.state.lock().await.session.autonomy,
+        ),
         config,
     ) {
         return Ok(ToolOutcome::failure(
@@ -689,9 +693,9 @@ pub(crate) async fn execute_nested_tool(
     nested.call_grants = crate::sandbox::SandboxGrants::default();
     // 一次性的 bash 升级只属于那次调用，不能泄漏给 PTC 嵌套工具。
     nested.permission = ctx.state.lock().await.permission;
-    // PTC 的嵌套调用按 Normal 方言判定可达面，契约照常生效（如 PTC+plan 只读）。
-    if nested.mode == moc_protocol::SessionMode::Ptc {
-        nested.mode = moc_protocol::SessionMode::Normal;
+    // PTC 的嵌套调用按 Standard 引擎判定可达面，模式照常生效（如 PTC+plan 只读）。
+    if nested.engine == moc_protocol::SessionEngine::Ptc {
+        nested.engine = moc_protocol::SessionEngine::Standard;
     }
     execute_tool(inner, &nested, call).await
 }

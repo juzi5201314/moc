@@ -20,15 +20,16 @@ use moc_protocol::methods::{
     ConfigGetParams, ConfigGetResult, ContextContentResult, Empty, InitializeParams,
     InitializeResult, InputPart, ModelInfo, ModelInput, PermissionRequestParams, PermissionResult,
     PluginListParams, PluginListResult, PluginRunCommandParams, PluginRunCommandResult,
-    PromptParams, PromptResult, ServerCapabilities, ServerInfo, SessionCompactParams,
-    SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
-    SessionListParams, SessionListResult, SessionLoadParams, SessionLoadResult, SessionLockInfo,
-    SessionMode, SessionNewParams, SessionPermission, SessionPlanApproveParams,
-    SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
-    SessionPlanReviseParams, SessionPlanReviseResult, SessionRenameParams, SessionRequestAsk,
-    SessionRetryParams, SessionSetModeParams, SessionSetModelParams, SessionSetPermissionParams,
-    SessionUnloadParams, SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution,
-    ToolStatus, TranscriptEntry, default_options,
+    PromptParams, PromptResult, ServerCapabilities, ServerInfo, SessionAutonomy,
+    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
+    SessionEngine, SessionInfo, SessionListParams, SessionListResult, SessionLoadParams,
+    SessionLoadResult, SessionLockInfo, SessionNewParams, SessionPermission,
+    SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
+    SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
+    SessionRenameParams, SessionRequestAsk, SessionRetryParams, SessionSetAutonomyParams,
+    SessionSetEngineParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
+    TranscriptEntry, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,
@@ -151,9 +152,10 @@ impl ScriptedService {
                         title: format!("会话 {index}"),
                         model: "deepseek-flash".to_owned(),
                         permission: SessionPermission::Full,
-                        mode: SessionMode::Normal,
+                        engine: SessionEngine::Standard,
+                        autonomy: SessionAutonomy::Default,
                         plan_active: false,
-                        mode_locked: false,
+                        engine_locked: false,
                         parent_session_id: None,
                         forked_from: None,
                         agent_preset: None,
@@ -601,9 +603,10 @@ impl AgentService for ScriptedService {
             created_at_ms: 1_000,
             updated_at_ms: 1_000,
             lock: None,
-            mode: params.mode,
+            engine: params.engine,
+            autonomy: SessionAutonomy::Default,
             plan_active: params.plan_active,
-            mode_locked: false,
+            engine_locked: false,
         };
         state.sessions.insert(
             id,
@@ -768,10 +771,18 @@ impl AgentService for ScriptedService {
         Ok(Empty {})
     }
 
-    async fn session_set_mode(
+    async fn session_set_engine(
         &self,
         _ctx: RequestContext,
-        _params: SessionSetModeParams,
+        _params: SessionSetEngineParams,
+    ) -> Result<SessionInfo, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
+    async fn session_set_autonomy(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionSetAutonomyParams,
     ) -> Result<SessionInfo, RpcError> {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
@@ -934,7 +945,7 @@ impl AgentService for ScriptedService {
             PromptParams {
                 session_id: params.session_id,
                 input: Vec::new(),
-                contract: None,
+                mode: None,
                 agent_message: None,
             },
         )
@@ -1015,7 +1026,8 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::PromptFinished { .. } => "prompt_finished",
         SessionUpdate::TitleChanged { .. } => "title_changed",
         SessionUpdate::LockChanged { .. } => "lock_changed",
-        SessionUpdate::ModeChanged { .. } => "mode_changed",
+        SessionUpdate::EngineChanged { .. } => "engine_changed",
+        SessionUpdate::AutonomyChanged { .. } => "autonomy_changed",
         SessionUpdate::PlanModeChanged { .. } => "plan_mode_changed",
         SessionUpdate::PermissionChanged { .. } => "permission_changed",
         SessionUpdate::ModelChanged { .. } => "model_changed",
@@ -1107,7 +1119,7 @@ pub fn prompt_params(session_id: &str, text: &str) -> PromptParams {
         input: vec![InputPart::Text {
             text: text.to_owned(),
         }],
-        contract: None,
+        mode: None,
         agent_message: None,
     }
 }

@@ -249,8 +249,11 @@ impl Renderer {
             SessionUpdate::Error { message, .. } => {
                 let _ = writeln!(out, "\n[错误：{message}]");
             }
-            SessionUpdate::ModeChanged { mode } => {
-                let _ = writeln!(out, "\n[方言：{mode:?}]");
+            SessionUpdate::EngineChanged { engine } => {
+                let _ = writeln!(out, "\n[引擎：{engine:?}]");
+            }
+            SessionUpdate::AutonomyChanged { autonomy } => {
+                let _ = writeln!(out, "\n[自主程度：{autonomy:?}]");
             }
             SessionUpdate::PlanModeChanged { active } => {
                 let _ = writeln!(

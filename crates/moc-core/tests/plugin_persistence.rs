@@ -4,7 +4,7 @@ mod support;
 
 use moc_protocol::methods::{
     ConfigAction, ConfigManage, ConfigReply, ConfigScope, PluginList, PluginListParams,
-    PluginRunCommand, PluginRunCommandParams, SessionMode, SessionUnload, SessionUnloadParams,
+    PluginRunCommand, PluginRunCommandParams, SessionEngine, SessionUnload, SessionUnloadParams,
 };
 use serde_json::json;
 use support::Harness;
@@ -68,8 +68,8 @@ async fn state_survives_unload_and_is_scoped_to_session_and_plugin() {
       export default {commands:{other:{description:'独立命名空间',run(){return String(session().state.count)}}}};
     "#,
     );
-    let first = h.session(SessionMode::Normal).await;
-    let second = h.session(SessionMode::Normal).await;
+    let first = h.session(SessionEngine::Standard).await;
+    let second = h.session(SessionEngine::Standard).await;
     assert_eq!(command(&h, &first, "counter", "").await, "count:1:count");
     assert_eq!(command(&h, &first, "counter", "").await, "count:2:count");
     assert_eq!(command(&h, &second, "counter", "read").await, "count:0");
@@ -91,7 +91,7 @@ async fn state_survives_unload_and_is_scoped_to_session_and_plugin() {
 async fn config_registration_appears_in_settings_and_writes_installation_scope() {
     let h = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     install(&h, "counter", false, COUNTER);
-    let session = h.session(SessionMode::Normal).await;
+    let session = h.session(SessionEngine::Standard).await;
     let cwd = h.root.path().join("work").to_string_lossy().into_owned();
     let ConfigReply::Settings(view) = h
         .client
@@ -142,7 +142,7 @@ async fn config_registration_appears_in_settings_and_writes_installation_scope()
 async fn settings_reject_invalid_value_without_disabling_plugin() {
     let h = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     install(&h, "counter", false, COUNTER);
-    let session = h.session(SessionMode::Normal).await;
+    let session = h.session(SessionEngine::Standard).await;
     let cwd = h.root.path().join("work").to_string_lossy().into_owned();
     let ConfigReply::Settings(view) = h
         .client
@@ -186,7 +186,7 @@ async fn settings_reject_invalid_value_without_disabling_plugin() {
 async fn global_plugin_writes_global_config() {
     let h = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     install(&h, "counter", true, COUNTER);
-    let session = h.session(SessionMode::Normal).await;
+    let session = h.session(SessionEngine::Standard).await;
     assert_eq!(
         command(&h, &session, "counter", "prefix shared").await,
         "shared"
@@ -221,7 +221,7 @@ async fn invalid_plugin_write_disables_only_the_writer_and_preserves_old_value()
         false,
         "export default {commands:{good:{description:'正常插件',run(){return 'ok'}}}};",
     );
-    let session = h.session(SessionMode::Normal).await;
+    let session = h.session(SessionEngine::Standard).await;
     assert!(
         h.client
             .call::<PluginRunCommand>(PluginRunCommandParams {
@@ -259,7 +259,7 @@ async fn invalid_plugin_write_disables_only_the_writer_and_preserves_old_value()
         !h.root.path().join("work/.moc/config.toml").exists(),
         "错误值不能发布"
     );
-    h.session(SessionMode::Normal).await;
+    h.session(SessionEngine::Standard).await;
     h.close().await;
 }
 
@@ -278,7 +278,7 @@ async fn caught_invalid_state_write_still_disables_the_plugin() {
       }}}};
     "#,
     );
-    let session = h.session(SessionMode::Normal).await;
+    let session = h.session(SessionEngine::Standard).await;
     let _ = h
         .client
         .call::<PluginRunCommand>(PluginRunCommandParams {
@@ -299,7 +299,7 @@ async fn caught_invalid_state_write_still_disables_the_plugin() {
         plugins[0].error.is_some(),
         "插件不能catch后绕过非法持久化写入的禁用"
     );
-    h.session(SessionMode::Normal).await;
+    h.session(SessionEngine::Standard).await;
     h.close().await;
 }
 
@@ -312,7 +312,7 @@ async fn invalid_persisted_plugin_value_does_not_break_core_and_remains_repairab
         "[plugins.counter.config]\nprefix=42\n",
     )
     .unwrap();
-    let session = h.session(SessionMode::Normal).await;
+    let session = h.session(SessionEngine::Standard).await;
     let list = h
         .client
         .call::<PluginList>(PluginListParams {

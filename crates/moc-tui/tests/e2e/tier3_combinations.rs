@@ -2,12 +2,12 @@
 //! Verifying interactions, coexistence, and layout synchronization across multiple features.
 
 use super::common::*;
-use moc_protocol::SessionMode;
-use moc_protocol::methods::{AgentStatus, PromptContract};
-use moc_tui::app::ModeMenu;
+use moc_protocol::SessionEngine;
+use moc_protocol::methods::{AgentStatus, PromptMode};
+use moc_tui::app::EngineMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
-use moc_tui::render::modal::{draw_completion_menu, draw_modal, draw_mode_menu};
+use moc_tui::render::modal::{draw_completion_menu, draw_engine_menu, draw_modal};
 use moc_tui::theme::Theme;
 use moc_tui::widgets::prompt::PromptState;
 use ratatui::layout::Rect;
@@ -34,18 +34,18 @@ fn test_combo_01_queue_and_slash_palette() {
 }
 
 #[test]
-fn test_combo_02_mode_switch_during_slash_palette() {
+fn test_combo_02_engine_switch_during_slash_palette() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.mode_area = Rect::new(50, 20, 10, 1);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_area = Rect::new(50, 20, 10, 1);
+    app.engine_menu = Some(EngineMenu {
         selected: 1,
         area: Rect::new(20, 10, 40, 8),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(
         rows.iter()
-            .any(|r| r.contains("normal") || r.contains("plan"))
+            .any(|r| r.contains("standard") || r.contains("ptc"))
     );
 }
 
@@ -254,8 +254,8 @@ fn test_combo_14_session_search_filter_with_active_stream() {
 fn test_combo_15_multiline_prompt_undo_with_completion() {
     let mut prompt = PromptState::default();
     prompt.insert_text("/mod");
-    let comp = sample_custom_completion(vec![sample_slash_candidate("mode", "切换模式")]);
-    assert_eq!(comp.candidates[0].label, "mode");
+    let comp = sample_custom_completion(vec![sample_slash_candidate("model", "切换模型")]);
+    assert_eq!(comp.candidates[0].label, "model");
     prompt.insert_text("el");
     assert_eq!(prompt.text, "/model");
 }
@@ -263,8 +263,8 @@ fn test_combo_15_multiline_prompt_undo_with_completion() {
 #[test]
 fn test_combo_16_queued_prompt_with_tagged_plan_mode() {
     let mut queued = sample_queued_prompt(1, "只读问答任务");
-    queued.contract = Some(PromptContract::Ask);
-    assert_eq!(queued.contract, Some(PromptContract::Ask));
+    queued.mode = Some(PromptMode::Ask);
+    assert_eq!(queued.mode, Some(PromptMode::Ask));
     let prompt = queued.draft;
     assert_eq!(prompt.text, "只读问答任务");
 }
@@ -313,16 +313,19 @@ fn test_combo_19_todo_hud_completion_and_subagent_completion() {
 }
 
 #[test]
-fn test_combo_20_mode_menu_selection_updates_session_mode() {
+fn test_combo_20_engine_menu_selection_updates_session_engine() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-test", "Session Test", "/tmp"));
-    app.mode_menu = Some(ModeMenu {
+    app.engine_menu = Some(EngineMenu {
         selected: 1, // Ptc
         area: Rect::new(30, 10, 40, 8),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     if let Some(session) = app.session.as_mut() {
-        session.mode = SessionMode::Ptc;
+        session.engine = SessionEngine::Ptc;
     }
-    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Ptc));
+    assert_eq!(
+        app.session.as_ref().map(|s| s.engine),
+        Some(SessionEngine::Ptc)
+    );
 }

@@ -8,7 +8,7 @@
 //!
 //! 1. **一处一事实**：每条事实只写在一个地方。工具用法写在该工具的 description；
 //!    跨工具纪律（不用 bash 读写搜索、内部 URI、后台任务结果投递）只写在工具政策；
-//!    当前模式的规则只写在 [`mode_contract`]；schema 已表达的枚举、默认值、范围不在
+//!    当前引擎的规则只写在 [`engine_reminder`]；schema 已表达的枚举、默认值、范围不在
 //!    description 里重复。
 //! 2. **只写模型用得上的信息**：不写模型无法调节的实现细节（并行扫描、超时协作等），
 //!    不写客套话、动机解释和「请注意」之类的铺垫。
@@ -26,7 +26,7 @@ use std::path::Path;
 
 use moc_llm::{ContentPart, Message, Role};
 use moc_protocol::SessionPermission;
-use moc_protocol::methods::SessionMode;
+use moc_protocol::methods::SessionEngine;
 
 use crate::config::ResolvedConfig;
 use crate::config::ResolvedSandboxConfig;
@@ -41,7 +41,7 @@ const WEB_BOTH_POLICY: &str =
 const WEB_SEARCH_ONLY_POLICY: &str =
     "Use web_search for current information; cite the URLs you use.";
 const WEB_FETCH_ONLY_POLICY: &str = "Use web_fetch for known URLs; cite the URLs you use.";
-const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files. Read before editing; edit takes the anchors from read or diff output (`42sr│line`); the part before │ is the line number plus the two-letter id assigned when the line was shown. An untouched line keeps its anchor when edits shift it; use the newest anchor shown for a line, and re-read if an edit reports a stale anchor.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`. A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nModes are enforced at execution; session state and todo updates are allowed in every mode. A non-normal mode states its contract in a tail reminder; no such reminder means normal mode, which permits workspace changes.";
+const TOOL_POLICY_REST: &str = "Do not use bash, cat, grep, rg, find, ls, sed, awk, perl, Python, or redirection to read, search, or edit workspace files. Read before editing; edit takes the anchors from read or diff output (`42sr│line`); the part before │ is the line number plus the two-letter id assigned when the line was shown. An untouched line keeps its anchor when edits shift it; use the newest anchor shown for a line, and re-read if an edit reports a stale anchor.\n\nSession resources are read-only URIs for read, grep, find, and job: `artifact://jobs/<file>` and `artifact://artifacts/<file>` (job logs, archived tool output; copy URIs from notices or `job` op=list), `local://<id>.md` (plan), `history://transcript` (JSONL transcript), `skill://<name>/SKILL.md`. A bare scheme (`artifact://`, `artifact://jobs`, `local://`, `history://`, `skill://`) lists that namespace when read. Never pass a resource URI to bash or to any other program; for a job log use `job` op=output.\n\nA background job reports its completion notice (output preview and log URI) automatically. Keep working meanwhile; use `job` op=output for a log tail or op=wait to block; never sleep, re-run, or poll a job log through bash.\n\nExecution modes are enforced at execution; session state and todo updates are allowed in every mode. A non-default mode states its rules in a tail reminder; no such reminder means default mode, which permits workspace changes.";
 /// 项目指令块的开头一句：告诉模型下面是仓库规则文件，别和工具政策混着读。
 const REPO_RULES_INTRO: &str = "MUST follow these context files for all tasks:";
 
@@ -289,7 +289,7 @@ pub(crate) fn build_btw(
     pieces.extend(append_piece(config));
     pieces.push(PromptPiece {
         title: "system",
-        // 旁路契约沿用追加指令的角色规则，不新增配置片段名。
+        // 旁路指令沿用追加指令的角色规则，不新增配置片段名。
         name: PIECE_APPEND,
         scope: PieceScope::Project,
         text: "Answer only the latest side question briefly, using the supplied main-session context as reference. Do not continue the main task. No tools are available; do not call tools, access files, or claim to perform actions. Treat historical tool records as reference text, not pending calls. If the answer requires new information or an action, state that limitation. This side conversation does not update the main session.".into(),
@@ -367,36 +367,36 @@ fn append_piece(config: &ResolvedConfig) -> Option<PromptPiece> {
     })
 }
 
-/// 当前方言的规则提醒正文。
+/// 当前引擎的规则提醒正文。
 ///
-/// 方言规则只放在运行时提醒里：静态系统提示与方言无关，才能跨目录、跨会话复用
-/// 缓存。方言在会话生命周期内不可变，这份事实一般只注入一次（压缩清空去重表后
-/// 会补回历史）；可叠加的执行契约见 [`contract_reminder`]。
-pub fn mode_contract(mode: SessionMode) -> String {
-    let text = match mode {
-        SessionMode::Normal => {
-            "Normal dialect is active: native tool calls run directly; the workspace is writable unless an overlay contract says otherwise."
+/// 引擎规则只放在运行时提醒里：静态系统提示与引擎无关，才能跨目录、跨会话复用
+/// 缓存。引擎在会话生命周期内不可变，这份事实一般只注入一次（压缩清空去重表后
+/// 会补回历史）；可叠加的执行模式见 [`mode_reminder`]。
+pub fn engine_reminder(engine: SessionEngine) -> String {
+    let text = match engine {
+        SessionEngine::Standard => {
+            "Standard engine is active: native tool calls run directly; the workspace is writable unless an execution mode says otherwise."
         }
-        SessionMode::Ptc => {
-            "PTC dialect is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, contract policy, and the bash sandbox."
+        SessionEngine::Ptc => {
+            "PTC engine is active: call tools only through run_code; other native calls are rejected. Child calls still obey tool enablement, mode policy, and the bash sandbox."
         }
-        SessionMode::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
+        SessionEngine::ClmExperimental => crate::clm::SYSTEM_INSTRUCTION,
     };
     text.to_owned()
 }
 
-/// 执行契约的规则提醒正文；`None` 契约返回 `None`，调用方据此发 Retract 撤掉旧条目。
+/// 执行模式的规则提醒正文；默认模式返回 `None`，调用方据此发 Retract 撤掉旧条目。
 ///
-/// 契约与方言正交：契约不写方言规则，只写它收紧的边界与期限。ask 契约是单次提示
-/// 的只读声明；plan 是持续到批准/退出为止的叠加态。
-pub fn contract_reminder(contract: crate::service::mode::ModeContract) -> Option<String> {
-    use crate::service::mode::ModeContract;
-    let text = match contract {
-        ModeContract::None => return None,
-        ModeContract::Ask => {
-            "Ask contract applies to this prompt only: the workspace is read-only, including inside run_code; read and search freely. The restriction ends when this prompt ends."
+/// 模式与引擎正交：模式不写引擎规则，只写它收紧的边界与期限。ask 是单次提示
+/// 的只读声明；plan 是持续到批准/退出为止的模式。
+pub fn mode_reminder(mode: crate::service::mode::Mode) -> Option<String> {
+    use crate::service::mode::Mode;
+    let text = match mode {
+        Mode::Default => return None,
+        Mode::Ask => {
+            "Ask mode applies to this prompt only: the workspace is read-only, including inside run_code; read and search freely. The restriction ends when this prompt ends."
         }
-        ModeContract::Plan => {
+        Mode::Plan => {
             "Plan mode is active: the workspace is read-only, including inside run_code. Draft with write_plan as often as you need; each call saves a new revision. Before calling exit_plan, make sure the plan is finished: exit_plan submits the last saved plan, ends this prompt immediately, and puts the session into plan review — no tool call runs after it. When the user returns review notes, revise the plan, save it with write_plan, and call exit_plan again."
         }
     };
@@ -859,43 +859,43 @@ mod tests {
         assert!(text.contains("- demo: demo skill"));
     }
 
-    /// 每个方言都要发方言提醒；契约提醒单独成条目，契约退出时靠 Retract 撤掉。
+    /// 每个引擎都要发引擎提醒；模式提醒单独成条目，模式退出时靠 Retract 撤掉。
     #[test]
-    fn mode_contract_declares_every_dialect() {
-        for (mode, needles) in [
+    fn engine_reminder_declares_every_engine() {
+        for (engine, needles) in [
             (
-                SessionMode::Normal,
-                ["Normal dialect is active", "writable"].as_slice(),
+                SessionEngine::Standard,
+                ["Standard engine is active", "writable"].as_slice(),
             ),
             (
-                SessionMode::Ptc,
-                ["PTC dialect is active", "only through run_code"].as_slice(),
+                SessionEngine::Ptc,
+                ["PTC engine is active", "only through run_code"].as_slice(),
             ),
             (
-                SessionMode::ClmExperimental,
+                SessionEngine::ClmExperimental,
                 ["<clm-experimental>", "clm_context"].as_slice(),
             ),
         ] {
-            let text = mode_contract(mode);
+            let text = engine_reminder(engine);
             for needle in needles {
-                assert!(text.contains(needle), "{mode:?} 缺少「{needle}」：{text}");
+                assert!(text.contains(needle), "{engine:?} 缺少「{needle}」：{text}");
             }
             assert!(
                 !text.contains("follow the tool policies above"),
-                "{mode:?} 不能只报方言名、让模型去上文找规则：{text}"
+                "{engine:?} 不能只报引擎名、让模型去上文找规则：{text}"
             );
         }
     }
 
     #[test]
-    fn contract_reminder_covers_overlays() {
-        use crate::service::mode::ModeContract;
-        assert!(contract_reminder(ModeContract::None).is_none());
-        let ask = contract_reminder(ModeContract::Ask).expect("ask 契约提醒");
+    fn mode_reminder_covers_modes() {
+        use crate::service::mode::Mode;
+        assert!(mode_reminder(Mode::Default).is_none());
+        let ask = mode_reminder(Mode::Ask).expect("ask 模式提醒");
         assert!(ask.contains("read-only") && ask.contains("prompt"), "{ask}");
-        let plan = contract_reminder(ModeContract::Plan).expect("plan 契约提醒");
+        let plan = mode_reminder(Mode::Plan).expect("plan 模式提醒");
         for needle in ["Plan mode is active", "write_plan", "exit_plan"] {
-            assert!(plan.contains(needle), "plan 契约缺少「{needle}」：{plan}");
+            assert!(plan.contains(needle), "plan 模式缺少「{needle}」：{plan}");
         }
     }
 

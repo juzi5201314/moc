@@ -983,7 +983,7 @@ max_output_tokens = 128000
         let visible = |config: &ResolvedConfig, name: &str| {
             registry
                 .definitions(
-                    moc_protocol::methods::SessionMode::Normal,
+                    moc_protocol::methods::SessionEngine::Standard,
                     false,
                     config,
                     crate::tools::ToolScope::top(),

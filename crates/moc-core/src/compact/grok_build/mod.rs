@@ -421,7 +421,7 @@ fn is_context_length(error: &CoreError) -> bool {
 #[cfg(test)]
 mod tests {
     use moc_llm::Message;
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     use super::*;
     use crate::session::entries::{EntryPayload, SessionOrigin};
@@ -431,7 +431,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "标题".into(),

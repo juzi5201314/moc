@@ -33,7 +33,7 @@ async fn strict_chat_provider_omits_unsupported_prompt_cache_key() {
         .await;
     let h = Harness::new(&upstream.uri(), "openai_chat",
         "[compaction]\nenabled=false\n[providers.test.models.gpt-test.compat]\nsupports_prompt_cache_key=false").await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     assert_eq!(h.prompt(&id, "执行").await.message.text(), "请求已接受");
     h.close().await;
 }
@@ -50,7 +50,7 @@ async fn all_assistant_reasoning_constraint_repairs_text_only_history() {
         .await;
     let h = Harness::new(&upstream.uri(), "openai_chat",
         "[compaction]\nenabled=false\n[providers.test.models.gpt-test.compat]\necho_reasoning='never'\nrequires_reasoning_content_for_all_assistant_turns=true").await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "第一轮").await;
     h.prompt(&id, "继续").await;
     let requests = upstream.received_requests().await.unwrap();
@@ -106,7 +106,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
         let _ = gate.await;
     });
     let h = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let mut events = h.events.subscribe();
     let client = h.client.clone();
     let sid = id.clone();
@@ -117,7 +117,7 @@ async fn cancel_persists_partial_output_and_repairs_unexecuted_calls() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -186,7 +186,7 @@ async fn overflow_summarizes_the_old_prefix_and_retries_with_smaller_input() {
         "[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, &"重要的历史文件和用户纠正。".repeat(2000))
         .await;
     assert_eq!(h.prompt(&id, "继续实现").await.message.text(), "恢复成功");
@@ -234,7 +234,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let result = h
         .client
         .call::<SessionPrompt>(PromptParams {
@@ -242,7 +242,7 @@ async fn fatal_upstream_error_emits_error_and_releases_session_lock() {
             input: vec![InputPart::Text {
                 text: "失败请求".into(),
             }],
-            contract: None,
+            mode: None,
             agent_message: None,
         })
         .await;
@@ -295,7 +295,7 @@ async fn tool_batch_preserves_order_and_disabled_tools_are_not_executed() {
     .await;
     std::fs::write(h.root.path().join("work/one.txt"), "第一文件").unwrap();
     std::fs::write(h.root.path().join("work/two.txt"), "第二文件").unwrap();
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "并发读两个文件").await;
     let batch = h
         .updates
@@ -382,7 +382,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         PlanAction::ExecuteCompacted,
         PlanAction::Reject,
     ] {
-        let id = h.session_plan(SessionMode::Normal).await;
+        let id = h.session_plan(SessionEngine::Standard).await;
         h.prompt(&id, "提交计划").await;
         let plan = h.load(&id).await.plans.pop().unwrap();
         let result = h
@@ -392,7 +392,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
                 plan_id: plan.plan_id,
                 action,
                 execution_model: None,
-                execution_mode: None,
+                execution_engine: None,
             })
             .await
             .unwrap();
@@ -403,7 +403,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
             assert!(result.auto_prompt.is_none());
         } else {
             assert_eq!(loaded.plans[0].status, PlanStatus::Approved);
-            assert_eq!(loaded.session.mode, SessionMode::Normal);
+            assert_eq!(loaded.session.engine, SessionEngine::Standard);
             assert_eq!(
                 result.auto_prompt.as_deref(),
                 Some("Execute the approved plan.")
@@ -433,7 +433,7 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
         })
         .mount(&upstream)
         .await;
-    let id = h.session_plan(SessionMode::Normal).await;
+    let id = h.session_plan(SessionEngine::Standard).await;
     h.prompt(&id, "保存计划").await;
     let before = h.load(&id).await;
     let error = h
@@ -443,13 +443,13 @@ async fn execute_compacted_and_reject_keep_plan_state_consistent() {
             plan_id: before.plans[0].plan_id.clone(),
             action: PlanAction::ExecuteCompacted,
             execution_model: None,
-            execution_mode: None,
+            execution_engine: None,
         })
         .await;
     assert!(error.is_err(), "空摘要不能批准计划");
     let after = h.load(&id).await;
     assert_eq!(after.plans[0].status, PlanStatus::Submitted);
-    assert_eq!(after.session.mode, before.session.mode);
+    assert_eq!(after.session.engine, before.session.engine);
     assert_eq!(after.session.model, before.session.model);
     h.close().await;
 }
@@ -482,7 +482,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
         let _ = gate.await;
     });
     let h = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let mut events = h.events.subscribe();
     let client = h.client.clone();
     let sid = id.clone();
@@ -493,7 +493,7 @@ async fn disconnected_frontend_persists_partial_text_before_connection_finishes(
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -581,7 +581,7 @@ async fn shell_jobs_stdin_and_pty_run_real_processes_and_reap_them() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "执行任务").await;
     let loaded = h.load(&id).await;
     let results: Vec<_> = loaded
@@ -651,7 +651,7 @@ async fn todo_rejects_duplicates_atomically_and_blocks_without_a_reason() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "管理任务").await;
     let loaded = h.load(&id).await;
     assert_eq!(loaded.todos[0].items.len(), 2);
@@ -713,7 +713,7 @@ async fn remote_compaction_replays_native_items_and_retained_messages_once() {
         "[compaction]\nmethod_order=['remote']\nthreshold={mode='tokens',value=900000}",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "历史消息只出现一次").await;
     let compacted = h
         .client
@@ -761,7 +761,7 @@ async fn unsupported_server_compaction_is_disabled_for_the_session() {
         "[compaction]\nthreshold={mode='tokens',value=900000}",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     assert_eq!(h.prompt(&id, "第一次").await.message.text(), "兼容成功");
     h.prompt(&id, "第二次").await;
     let bodies: Vec<Value> = upstream
@@ -813,7 +813,7 @@ async fn disabled_auto_threshold_skips_automatic_and_server_side_compaction() {
         "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}\nauto=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let result = h.prompt(&id, "auto 关闭后不自动压缩").await;
     assert_eq!(result.finish_reason, FinishReason::Stop);
     assert!(
@@ -861,7 +861,7 @@ async fn shake_shrinks_repeated_reads_and_keeps_tool_history_replayable() {
         format!("{}\n", "内容".repeat(250)).repeat(10),
     )
     .unwrap();
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "第一次读取").await;
     h.prompt(&id, "再次读取").await;
     let compacted = h
@@ -928,7 +928,7 @@ async fn background_pipes_and_pty_enforce_deadlines_and_reap_killed_jobs() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         h.prompt(&id, "执行后台生命周期验收"),
@@ -1036,7 +1036,7 @@ async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() 
     let prefix = "x".repeat(60_000);
     std::fs::write(&target, format!("{prefix}\nshort\nlast\n")).unwrap();
     std::os::unix::fs::symlink(&target, &link).unwrap();
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "读取并编辑符号链接").await;
     assert!(link.is_symlink());
     assert_eq!(
@@ -1073,7 +1073,7 @@ async fn disabled_auto_continue_finishes_after_compaction_without_a_stream_reque
         "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}\nauto_continue=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let result = h.prompt(&id, "保留用户任务，压缩后等待下一次输入").await;
     assert_eq!(
         result.finish_reason,
@@ -1130,7 +1130,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
         "[compaction]\nmethod_order=['soft']\nthreshold={mode='tokens',value=1}",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let client = h.client.clone();
     let sid = id.clone();
     let prompt = tokio::spawn(async move {
@@ -1140,7 +1140,7 @@ async fn cancellation_during_compaction_finishes_without_waiting_for_the_upstrea
                 input: vec![InputPart::Text {
                     text: "压缩时取消".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -1202,7 +1202,7 @@ async fn failed_manual_compaction_preserves_upstream_error_and_history() {
         "[compaction]\nmethod_order=['soft']",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "保留这个用户请求").await;
     let before = h.load(&id).await;
     let error = h
@@ -1252,7 +1252,7 @@ async fn prunable_session(extra: &str, summary: &str) -> (Harness, String) {
     let upstream = MockServer::builder().start().await;
     support::mount_read_round(&upstream, &long_file, summary).await;
     let h = Harness::new(&upstream.uri(), "openai_chat", extra).await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let loaded = h.prompt(&id, "读取长文件").await;
     assert_eq!(loaded.message.text(), "已读取");
     let texts = support::tool_result_texts(&h.load(&id).await);
@@ -1340,7 +1340,7 @@ async fn shake_without_headroom_rolls_into_soft_and_reports_one_terminal_event()
          [compaction.shake]\nkeep_last_prompts=0\nsoft_trim_chars=100\nhead_chars=10\ntail_chars=10",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let loaded = h.prompt(&id, "读取长文件").await;
     assert_eq!(loaded.message.text(), "已读取");
 
@@ -1452,7 +1452,7 @@ async fn shake_keeps_the_reused_remote_checkpoint_provenance() {
          tail_chars=10\nkeep_last_prompts=0\n",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "读取长文件").await;
     let remote = h
         .client

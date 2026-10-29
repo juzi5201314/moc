@@ -8,14 +8,14 @@ use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ClientInfo, InputPart, ModelSwitchOverflow,
     PermissionRequestParams, PermissionResult, PlanAction, PlanStatus, PluginInfo, PluginList,
     PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams,
-    SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams, SessionInfo,
-    SessionList, SessionListParams, SessionLoad, SessionLoadParams, SessionMode,
+    SessionAutonomy, SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams,
+    SessionEngine, SessionInfo, SessionList, SessionListParams, SessionLoad, SessionLoadParams,
     SessionModelOverflowAction, SessionNew, SessionNewParams, SessionPermission,
     SessionPlanApprove, SessionPlanApproveParams, SessionPlanMode, SessionPlanModeParams,
     SessionPrompt, SessionRequestAsk, SessionRequestPermission, SessionRetry, SessionRetryParams,
-    SessionSetMode, SessionSetModeParams, SessionSetModel, SessionSetModelParams,
-    SessionSetPermission, SessionSetPermissionParams, SessionUpdateMethod, SessionUsage,
-    SessionUsageParams, prompt::PromptContract,
+    SessionSetAutonomy, SessionSetAutonomyParams, SessionSetEngine, SessionSetEngineParams,
+    SessionSetModel, SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams,
+    SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams, prompt::PromptMode,
 };
 use moc_protocol::{
     ClientBuilder, ClientHandle, RpcError, RpcErrorCode, Server, ServerOptions, transport,
@@ -145,7 +145,7 @@ fn tui_options(args: &CliArgs) -> moc_tui::TuiOptions {
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
         model: args.model.clone(),
-        mode: args.mode.into(),
+        engine: args.engine.into(),
         plan: args.plan,
         resume,
         initial_prompt: args.prompt.clone(),
@@ -217,6 +217,9 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     let update_renderer = renderer.clone();
     let permission_input = Arc::clone(&input);
     let ask_input = Arc::clone(&input);
+    // 通知回调在 client 建立前注册；槽位在握手完成后填充。
+    let notification_client = Arc::new(std::sync::Mutex::new(Option::<ClientHandle>::None));
+    let update_client = Arc::clone(&notification_client);
     let builder = ClientBuilder::new(ClientInfo {
         name: "moc-cli".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -227,6 +230,35 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
         ask_requests: !args.print,
     })
     .on_notification::<SessionUpdateMethod, _, _>(move |params, _ctx| {
+        // unattended：计划提交后直接自动批准「压缩并执行」，不等 /approve。
+        if let SessionUpdate::PlanSubmitted { plan } = &params.update
+            && let Some(client) = update_client.lock().expect("通知 client 槽位").clone()
+        {
+            let session_id = params.session_id.clone();
+            let plan_id = plan.plan_id.clone();
+            tokio::spawn(async move {
+                let unattended = client
+                    .call::<SessionLoad>(SessionLoadParams {
+                        session_id: session_id.clone(),
+                        max_entries: Some(0),
+                        read_only: true,
+                    })
+                    .await
+                    .map(|loaded| loaded.session.autonomy == SessionAutonomy::Unattended)
+                    .unwrap_or(false);
+                if unattended {
+                    let _ = client
+                        .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                            session_id,
+                            plan_id,
+                            action: PlanAction::ExecuteCompacted,
+                            execution_model: None,
+                            execution_engine: None,
+                        })
+                        .await;
+                }
+            });
+        }
         update_renderer.handle(params);
         std::future::ready(())
     })
@@ -262,6 +294,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
     if handshake.server.name != "moc-core" {
         bail!("连接到非 moc-core 服务：{}", handshake.server.name);
     }
+    *notification_client.lock().expect("通知 client 槽位") = Some(client.clone());
     let result = run_repl(&client, &input, &args, initial_prompt).await;
     client.close().await;
     server.shutdown();
@@ -307,7 +340,7 @@ async fn run_repl(
                 cwd: Some(cwd.to_string_lossy().into_owned()),
                 model: args.model.clone(),
                 title: None,
-                mode: args.mode.into(),
+                engine: args.engine.into(),
                 plan_active: args.plan,
             })
             .await?
@@ -438,7 +471,7 @@ async fn run_command(
                     cwd: Some(session.cwd.clone()),
                     model: Some(session.model.clone()),
                     title: None,
-                    mode: session.mode,
+                    engine: session.engine,
                     plan_active: false,
                 })
                 .await?;
@@ -448,32 +481,51 @@ async fn run_command(
             let result = client.call::<SessionList>(SessionListParams {}).await?;
             print_sessions(&result.sessions);
         }
-        "mode" => {
-            let next = parse_mode(argument)?;
-            if session.mode_locked {
-                bail!("会话方言已锁定；换方言请新建会话");
+        "engine" => {
+            let next = parse_engine(argument)?;
+            if session.engine_locked {
+                bail!("会话引擎已锁定；换引擎请新建会话");
             }
             *session = client
-                .call::<SessionSetMode>(SessionSetModeParams {
+                .call::<SessionSetEngine>(SessionSetEngineParams {
                     session_id: session.id.clone(),
-                    mode: next,
+                    engine: next,
                 })
                 .await?;
-            if next == SessionMode::ClmExperimental {
-                println!("CLM 实验方言已启用；本会话首次请求后方言锁定");
+            if next == SessionEngine::ClmExperimental {
+                println!("CLM 实验引擎已启用；本会话首次请求后引擎锁定");
             }
         }
         "clm-experimental" => {
-            if session.mode_locked {
-                bail!("会话方言已锁定；换方言请新建会话");
+            if session.engine_locked {
+                bail!("会话引擎已锁定；换引擎请新建会话");
             }
             *session = client
-                .call::<SessionSetMode>(SessionSetModeParams {
+                .call::<SessionSetEngine>(SessionSetEngineParams {
                     session_id: session.id.clone(),
-                    mode: SessionMode::ClmExperimental,
+                    engine: SessionEngine::ClmExperimental,
                 })
                 .await?;
-            println!("CLM 实验方言已启用；本会话首次请求后方言锁定");
+            println!("CLM 实验引擎已启用；本会话首次请求后引擎锁定");
+        }
+        "autonomy" => {
+            let autonomy = match argument {
+                "" => match session.autonomy {
+                    SessionAutonomy::Default => SessionAutonomy::DontAsk,
+                    SessionAutonomy::DontAsk => SessionAutonomy::Unattended,
+                    SessionAutonomy::Unattended => SessionAutonomy::Default,
+                },
+                "default" => SessionAutonomy::Default,
+                "dont_ask" => SessionAutonomy::DontAsk,
+                "unattended" => SessionAutonomy::Unattended,
+                _ => bail!("用法：/autonomy [default|dont_ask|unattended]"),
+            };
+            *session = client
+                .call::<SessionSetAutonomy>(SessionSetAutonomyParams {
+                    session_id: session.id.clone(),
+                    autonomy,
+                })
+                .await?;
         }
         "permission" => {
             let clear = argument == "clear";
@@ -522,7 +574,7 @@ async fn run_command(
                 client,
                 &session.id,
                 argument.to_owned(),
-                Some(PromptContract::Ask),
+                Some(PromptMode::Ask),
             )
             .await?;
         }
@@ -628,8 +680,9 @@ const COMMANDS: &[&str] = &[
     "cancel",
     "new",
     "sessions",
-    "mode",
+    "engine",
     "clm-experimental",
+    "autonomy",
     "permission",
     "plan",
     "ask",
@@ -648,13 +701,14 @@ const HELP_TEXT: &str = "\
 /quit                     退出
 /exit                     退出（同 /quit）
 /cancel                   取消当前提示（运行中按 Ctrl+C）
-/mode <normal|ptc|clm-experimental>  切换会话方言（跑过首条提示后方言锁定）
-/clm-experimental         启用 CLM 实验方言；首次请求后方言锁定
+/engine <standard|ptc|clm>  切换会话引擎（跑过首条提示后引擎锁定）
+/clm-experimental         启用 CLM 实验引擎；首次请求后引擎锁定
+/autonomy [default|dont_ask|unattended]  切换自主程度；无参数时循环
 /permission <full|workspace|workspace-only|clear> 切换命令权限或清空本会话沙盒授权
-/plan [提示词]            进入/退出计划叠加态；带提示词时进入并发送
-/ask <问题>               仅本条消息按问答契约（只读）处理
+/plan [提示词]            进入/退出计划模式；带提示词时进入并发送
+/ask <问题>               仅本条消息按问答模式（只读）处理
 /retry                    接着现有上下文继续跑（不追加用户消息，仅空闲时可用）
-/approve <execute|compact|new [方言]|reject>  处理已提交的计划
+/approve <execute|compact|new [引擎]|reject>  处理已提交的计划
 /agents                   列出当前会话的直接子代理（创建、交流、停止都在 TUI）
 /compact                  压缩当前上下文
 /usage                    查看当前会话模型用量
@@ -780,23 +834,23 @@ async fn approve_plan(
         .rev()
         .find(|plan| plan.status == PlanStatus::Submitted)
         .ok_or_else(|| anyhow::anyhow!("当前会话没有等待批准的计划"))?;
-    // `new` 可带目标方言：`/approve new ptc`；缺省沿用当前会话方言。
-    let (verb, dialect_arg) = command
+    // `new` 可带目标引擎：`/approve new ptc`；缺省沿用当前会话引擎。
+    let (verb, engine_arg) = command
         .split_once(' ')
         .map_or((command, ""), |(v, rest)| (v, rest.trim()));
-    let (action, execution_mode) = match verb {
-        "execute" if dialect_arg.is_empty() => (PlanAction::Execute, None),
-        "compact" if dialect_arg.is_empty() => (PlanAction::ExecuteCompacted, None),
+    let (action, execution_engine) = match verb {
+        "execute" if engine_arg.is_empty() => (PlanAction::Execute, None),
+        "compact" if engine_arg.is_empty() => (PlanAction::ExecuteCompacted, None),
         "new" => (
             PlanAction::ExecuteNewSession,
-            if dialect_arg.is_empty() {
+            if engine_arg.is_empty() {
                 None
             } else {
-                Some(parse_mode(dialect_arg)?)
+                Some(parse_engine(engine_arg)?)
             },
         ),
-        "reject" if dialect_arg.is_empty() => (PlanAction::Reject, None),
-        _ => bail!("用法：/approve <execute|compact|new [方言]|reject>"),
+        "reject" if engine_arg.is_empty() => (PlanAction::Reject, None),
+        _ => bail!("用法：/approve <execute|compact|new [引擎]|reject>"),
     };
     let approved = client
         .call::<SessionPlanApprove>(SessionPlanApproveParams {
@@ -804,7 +858,7 @@ async fn approve_plan(
             plan_id: plan.plan_id.clone(),
             action,
             execution_model: None,
-            execution_mode,
+            execution_engine,
         })
         .await?;
     let next = client
@@ -828,12 +882,12 @@ async fn send_prompt(
     client: &ClientHandle,
     session_id: &str,
     prompt: String,
-    contract: Option<PromptContract>,
+    mode: Option<PromptMode>,
 ) -> anyhow::Result<moc_protocol::methods::PromptResult> {
     let pending = client.call::<SessionPrompt>(moc_protocol::methods::PromptParams {
         session_id: session_id.to_owned(),
         input: vec![InputPart::Text { text: prompt }],
-        contract,
+        mode,
         agent_message: None,
     });
     tokio::pin!(pending);
@@ -1013,22 +1067,30 @@ fn rpc_io_error(error: std::io::Error) -> RpcError {
     RpcError::new(RpcErrorCode::InternalError.code(), error.to_string())
 }
 
-fn parse_mode(mode: &str) -> anyhow::Result<SessionMode> {
-    match mode {
-        "normal" => Ok(SessionMode::Normal),
-        "ptc" => Ok(SessionMode::Ptc),
-        "clm" | "clm-experimental" => Ok(SessionMode::ClmExperimental),
-        _ => bail!(
-            "方言必须是 normal、ptc 或 clm-experimental；计划状态用 /plan，单条只读问答用 /ask <问题>"
-        ),
+fn parse_engine(engine: &str) -> anyhow::Result<SessionEngine> {
+    match engine {
+        "standard" => Ok(SessionEngine::Standard),
+        "ptc" => Ok(SessionEngine::Ptc),
+        "clm" | "clm-experimental" => Ok(SessionEngine::ClmExperimental),
+        _ => bail!("引擎必须是 standard、ptc 或 clm；计划状态用 /plan，单条只读问答用 /ask <问题>"),
     }
 }
 
-/// 状态栏标签：方言 + 叠加态（plan）。
+/// 状态栏标签：引擎 + plan 模式 + 非默认自主程度。
 fn state_label(session: &SessionInfo) -> String {
-    let mut label = format!("{:?}", session.mode);
+    let engine = match session.engine {
+        SessionEngine::Standard => "standard",
+        SessionEngine::Ptc => "ptc",
+        SessionEngine::ClmExperimental => "(clm)",
+    };
+    let mut label = engine.to_owned();
     if session.plan_active {
         label.push_str("+plan");
+    }
+    match session.autonomy {
+        SessionAutonomy::Default => {}
+        SessionAutonomy::DontAsk => label.push_str("+dont_ask"),
+        SessionAutonomy::Unattended => label.push_str("+unattended"),
     }
     label
 }

@@ -1,4 +1,4 @@
-//! 会话生命周期方法：`session/new` / `list` / `load` / `unload` / `rename` / `delete` / `unlock` / `set_mode` / `compact`。
+//! 会话生命周期方法：`session/new` / `list` / `load` / `unload` / `rename` / `delete` / `unlock` / `set_engine` / `set_autonomy` / `compact`。
 //!
 //! 会话状态、持久化与锁的实际持有全在 core；协议层只搬运 [`SessionInfo::lock`] 这类
 //! 投影。锁语义只有一条：**某进程正在该会话里跑一次提示 agent 工作时上锁；其它 core
@@ -7,7 +7,7 @@
 //! | 操作 | 被他人持锁时 |
 //! |---|---|
 //! | `session/list`、`session/load`、`config/get` | 始终允许 |
-//! | `session/prompt`、`session/rename`、`session/delete`、`session/set_mode` | [`crate::RpcErrorCode::SessionLocked`] |
+//! | `session/prompt`、`session/rename`、`session/delete`、`session/set_engine`、`session/set_autonomy` | [`crate::RpcErrorCode::SessionLocked`] |
 //! | `session/unlock{force:true}` | 无条件清除锁记录（强夺） |
 //!
 //! `force=false` 的 `session/unlock` 只释放**本进程**持有的锁；对他人持有的锁，
@@ -81,24 +81,41 @@ pub struct SessionDelete;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionUnlock;
 
-/// 会话模式方言：模型与工具的交互形态。
+/// 会话引擎：模型与工具的交互形态。
 ///
-/// 方言是会话级属性：`session/new` 或空白期（没有任何用户提示）的
-/// `session/set_mode` 决定一次会话的方言；会话跑过第一条用户提示后
-/// [`SessionInfo::mode_locked`] 为真，方言不能再改。
+/// 引擎是会话级属性：`session/new` 或空白期（没有任何用户提示）的
+/// `session/set_engine` 决定一次会话的引擎；会话跑过第一条用户提示后
+/// [`SessionInfo::engine_locked`] 为真，引擎不能再改。
 ///
-/// plan 与 ask 不是方言：plan 是叠加在任意方言上的持久协作态
+/// plan 与 ask 不是引擎：plan 是叠加在任意引擎上的持久模式
 /// （[`SessionInfo::plan_active`]，`session/plan_mode` 进出），ask 是
-/// [`super::prompt::PromptParams::contract`] 声明的单次提示只读契约。
+/// [`super::prompt::PromptParams::mode`] 声明的单次提示只读模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionMode {
+pub enum SessionEngine {
+    /// 旧 transcript 写作 `normal`；读取时按别名映射，写入一律用 `standard`。
     #[default]
-    Normal,
+    #[serde(alias = "normal")]
+    Standard,
     /// 模型只调用 `run_code`，全部工具经代码沙盒触达。
     Ptc,
-    /// 模型自主维护实时上下文的实验模式。
+    /// 模型自主维护实时上下文的实验引擎。
     ClmExperimental,
+}
+
+/// 会话自主程度：哪些确认由系统代答而不打扰用户。
+///
+/// 档位从低到高单向收紧人工介入；`session/set_autonomy` 随时可改，随会话持久化。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAutonomy {
+    /// 默认：所有确认都等用户本人。
+    #[default]
+    Default,
+    /// `ask` 工具的问题由 core 代答：有推荐项选推荐项，没有推荐项交回模型自行决定。
+    DontAsk,
+    /// 在 [`Self::DontAsk`] 之上，计划提交（`exit_plan`）由前端自动批准「压缩并执行」。
+    Unattended,
 }
 
 /// 会话命令执行权限。
@@ -137,13 +154,20 @@ impl SessionPermission {
     }
 }
 
-/// `session/set_mode`：切换会话模式方言。
+/// `session/set_engine`：切换会话引擎。
 ///
-/// 方言只能在空白会话（还没跑过任何用户提示）期间修改；会话已有提示历史后
-/// 请求会被拒绝——此时要换方言只能新建会话。plan 叠加态的进出走
+/// 引擎只能在空白会话（还没跑过任何用户提示）期间修改；会话已有提示历史后
+/// 请求会被拒绝——此时要换引擎只能新建会话。plan 模式的进出走
 /// [`super::plan::SessionPlanMode`]，与本方法无关。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SessionSetMode;
+pub struct SessionSetEngine;
+
+/// `session/set_autonomy`：切换会话自主程度。
+///
+/// 与引擎不同，自主程度随时可改、立即生效：它只决定之后的确认由谁应答，
+/// 不改工具表、不影响前缀缓存。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSetAutonomy;
 
 /// `session/set_permission`：切换会话命令执行权限。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -306,10 +330,10 @@ pub struct SessionNewParams {
     /// 标题；`None` 由 core 生成（如取首条用户输入）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 新会话初始方言；创建后即为会话方言，跑过首条提示后锁定。
+    /// 新会话初始引擎；创建后即为会话引擎，跑过首条提示后锁定。
     #[serde(default)]
-    pub mode: SessionMode,
-    /// 新会话直接进入 plan 叠加态。
+    pub engine: SessionEngine,
+    /// 新会话直接进入 plan 模式。
     #[serde(default)]
     pub plan_active: bool,
 }
@@ -327,15 +351,18 @@ pub struct SessionInfo {
     /// 当前命令执行权限。
     #[serde(default)]
     pub permission: SessionPermission,
-    /// 当前模式方言。
+    /// 当前会话引擎。
     #[serde(default)]
-    pub mode: SessionMode,
-    /// plan 叠加态是否激活；激活时本次各次提示按计划契约运行。
+    pub engine: SessionEngine,
+    /// 当前自主程度。
+    #[serde(default)]
+    pub autonomy: SessionAutonomy,
+    /// plan 模式是否激活；激活时本次各次提示按计划模式运行。
     #[serde(default)]
     pub plan_active: bool,
-    /// 方言是否已锁定：会话跑过第一条用户提示后为真，此后 `session/set_mode` 会被拒绝。
+    /// 引擎是否已锁定：会话跑过第一条用户提示后为真，此后 `session/set_engine` 会被拒绝。
     #[serde(default)]
-    pub mode_locked: bool,
+    pub engine_locked: bool,
     /// 父会话 ID：只有 `spawn_agent` 出来的子代理会话有，其余会话为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
@@ -632,12 +659,20 @@ pub struct SessionUnlockParams {
     pub force: bool,
 }
 
-/// `session/set_mode` 的参数。
+/// `session/set_engine` 的参数。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SessionSetModeParams {
+pub struct SessionSetEngineParams {
     pub session_id: String,
-    pub mode: SessionMode,
+    pub engine: SessionEngine,
+}
+
+/// `session/set_autonomy` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetAutonomyParams {
+    pub session_id: String,
+    pub autonomy: SessionAutonomy,
 }
 
 /// `session/set_permission` 的参数。
@@ -811,13 +846,21 @@ impl Method for SessionUsage {
 
 impl ClientRequest for SessionUsage {}
 
-impl Method for SessionSetMode {
-    const NAME: &'static str = "session/set_mode";
-    type Params = SessionSetModeParams;
+impl Method for SessionSetEngine {
+    const NAME: &'static str = "session/set_engine";
+    type Params = SessionSetEngineParams;
     type Result = SessionInfo;
 }
 
-impl ClientRequest for SessionSetMode {}
+impl ClientRequest for SessionSetEngine {}
+
+impl Method for SessionSetAutonomy {
+    const NAME: &'static str = "session/set_autonomy";
+    type Params = SessionSetAutonomyParams;
+    type Result = SessionInfo;
+}
+
+impl ClientRequest for SessionSetAutonomy {}
 
 impl Method for SessionSetPermission {
     const NAME: &'static str = "session/set_permission";
@@ -933,9 +976,10 @@ mod tests {
             delegation_depth: 0,
             cwd: "/tmp".into(),
             created_at_ms: 1,
-            mode: SessionMode::Ptc,
+            engine: SessionEngine::Ptc,
+            autonomy: SessionAutonomy::Unattended,
             plan_active: true,
-            mode_locked: true,
+            engine_locked: true,
             updated_at_ms: 2,
             lock: None,
         };
@@ -943,16 +987,20 @@ mod tests {
             serde_json::to_value(&info).expect("可序列化"),
             serde_json::json!({
                 "id": "ses_1", "title": "t", "model": "m", "permission": "full",
-                "mode": "ptc", "plan_active": true, "mode_locked": true,
+                "engine": "ptc", "autonomy": "unattended",
+                "plan_active": true, "engine_locked": true,
                 "delegation_depth": 0,
                 "cwd": "/tmp", "created_at_ms": 1, "updated_at_ms": 2
             })
         );
+        // 旧报文的 `mode: "normal"` 读作 `engine: "standard"`；`autonomy` 缺省为 `default`。
         let old: SessionInfo = serde_json::from_value(serde_json::json!({
-            "id": "ses_1", "title": "t", "model": "m", "mode": "normal", "cwd": "/tmp",
+            "id": "ses_1", "title": "t", "model": "m", "engine": "normal", "cwd": "/tmp",
             "created_at_ms": 1, "updated_at_ms": 2
         }))
-        .expect("旧字段可回读");
+        .expect("旧取值可回读");
+        assert_eq!(old.engine, SessionEngine::Standard);
+        assert_eq!(old.autonomy, SessionAutonomy::Default);
         assert_eq!(old.permission, SessionPermission::Full);
         assert_eq!(
             serde_json::to_value(SessionPermission::Workspace).unwrap(),

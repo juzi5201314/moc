@@ -14,19 +14,19 @@ use moc_protocol::{
     ClientHandle, ConfigGet, ConfigGetParams, ContentPart, ImageSource, InputPart, PluginList,
     PluginListParams, PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams,
     ResourceComplete, ResourceCompleteParams, Role, SessionCompact, SessionCompactParams,
-    SessionContext, SessionContextContent, SessionContextContentParams, SessionInfo, SessionList,
-    SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams, SessionLoadParams,
-    SessionLoadResult, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionContext, SessionContextContent, SessionContextContentParams, SessionEngine, SessionInfo,
+    SessionList, SessionListParams, SessionLoad, SessionLoadPage, SessionLoadPageParams,
+    SessionLoadParams, SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff,
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanMode, SessionPlanModeParams,
     SessionPlanRevise, SessionPlanReviseParams, SessionRedo, SessionRedoParams, SessionRewind,
-    SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
+    SessionRewindParams, SessionSetEngine, SessionSetEngineParams, SessionSetModel,
     SessionSetModelParams, SessionSetPermission, SessionSetPermissionParams, SessionUpdate,
     SessionUsage, SessionUsageParams, UpstreamField,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::app::{App, ChartHit, CtrlCPending, Focus, MODES, ScrollbackDrag};
+use crate::app::{App, ChartHit, CtrlCPending, ENGINES, Focus, ScrollbackDrag};
 use crate::input::{InputEvent, InputThread};
 use crate::modal::{
     CONTEXT_SECTION_BYTES, ContextContentState, ContextDrag, Modal, PlanPane, SessionScope,
@@ -46,8 +46,8 @@ pub struct TuiOptions {
     pub cwd: Option<String>,
     /// 模型 selector；`None` 用 core 默认。
     pub model: Option<String>,
-    /// 新会话的方言。
-    pub mode: SessionMode,
+    /// 新会话的引擎。
+    pub engine: SessionEngine,
     /// 新会话直接进入 plan 叠加态。
     pub plan: bool,
     /// `None` = 新会话；`Some(None)` = 恢复当前目录最近会话；`Some(Some(id))` = 指定会话。
@@ -85,7 +85,7 @@ pub async fn run(core: Arc<Core>, opts: TuiOptions) -> anyhow::Result<()> {
     app.preferences = preferences;
     app.load_input_history(&core.config_home());
     app.tui_store = Some(tui_store);
-    app.startup_mode = opts.mode;
+    app.startup_engine = opts.engine;
     app.startup_plan = opts.plan;
     app.startup_pending = opts.initial_prompt.clone();
     bootstrap(&connection.client, &mut app, &opts).await;
@@ -179,7 +179,7 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                         cwd: opts.cwd.clone(),
                         model: opts.model.clone(),
                         title: None,
-                        mode: opts.mode,
+                        engine: opts.engine,
                         plan_active: opts.plan,
                     })
                     .await?;
@@ -1245,7 +1245,7 @@ fn handle_mouse_with_connection(
     if crate::btw::handle_mouse(app, mouse) {
         return;
     }
-    if handle_mode_menu_mouse(app, connection, &mouse) {
+    if handle_engine_menu_mouse(app, connection, &mouse) {
         return;
     }
     if handle_completion_mouse(app, &mouse) {
@@ -1309,8 +1309,8 @@ fn handle_mouse_with_connection(
             focus_agent(app, connection, agent_id);
             return;
         }
-        if app.modal.is_none() && app.mode_area.contains(position.into()) {
-            app.open_mode_menu();
+        if app.modal.is_none() && app.engine_area.contains(position.into()) {
+            app.open_engine_menu();
             return;
         }
         if app.modal.is_none() && app.model_tag_area.contains(position.into()) {
@@ -1746,29 +1746,29 @@ fn handle_ask_mouse(
 
 /// 就地模式菜单的鼠标处理：命中条目即切换模式，点到菜单外（含再点一次图例）关闭。
 /// 返回 `true` 表示事件已被菜单消费，不再落到队列、滚动区或输入框。
-fn handle_mode_menu_mouse(
+fn handle_engine_menu_mouse(
     app: &mut App,
     connection: &EmbeddedConnection,
     mouse: &crossterm::event::MouseEvent,
 ) -> bool {
     use crossterm::event::{MouseButton, MouseEventKind};
-    if app.mode_menu.is_none() || app.modal.is_some() {
+    if app.engine_menu.is_none() || app.modal.is_some() {
         return false;
     }
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             let entry = app
-                .mode_menu
+                .engine_menu
                 .as_ref()
                 .and_then(|menu| menu.entry_at(mouse.column, mouse.row));
-            app.mode_menu = None;
+            app.engine_menu = None;
             if let Some(index) = entry {
-                set_mode(app, connection, MODES[index]);
+                set_engine(app, connection, ENGINES[index]);
             }
             true
         }
         MouseEventKind::Moved => {
-            if let Some(menu) = app.mode_menu.as_mut()
+            if let Some(menu) = app.engine_menu.as_mut()
                 && let Some(index) = menu.entry_at(mouse.column, mouse.row)
             {
                 menu.selected = index;
@@ -2084,7 +2084,7 @@ fn handle_key(
     if crate::btw::handle_key(app, modifiers, code) {
         return;
     }
-    if handle_mode_menu_key(app, connection, modifiers, code) {
+    if handle_engine_menu_key(app, connection, modifiers, code) {
         return;
     }
     if matches!(code, KeyCode::Esc) && app.completion.is_some() {
@@ -2104,8 +2104,8 @@ fn handle_key(
             open_subagents(app, connection);
             return;
         }
-        Some("mode") => {
-            cycle_mode(app, connection);
+        Some("engine") => {
+            cycle_engine(app, connection);
             return;
         }
         Some("queue") => {
@@ -2626,11 +2626,11 @@ fn plan_read_key(
     code: KeyCode,
 ) {
     let session_id = app.session.as_ref().map(|session| session.id.clone());
-    let (plan_id, execution_model, execution_mode, selected, status) = match app.modal.as_ref() {
+    let (plan_id, execution_model, execution_engine, selected, status) = match app.modal.as_ref() {
         Some(Modal::Plan { state }) => (
             state.plan_id.clone(),
             state.execution_model.clone(),
-            state.execution_mode,
+            state.execution_engine,
             state.selected,
             state.status,
         ),
@@ -2647,14 +2647,14 @@ fn plan_read_key(
                 state.scroll_offset = 0;
             }
         }
-        // 「在新会话执行」的目标方言循环；其他动作忽略该字段。
+        // 「在新会话执行」的目标引擎循环；其他动作忽略该字段。
         (KeyCode::Char('m'), KeyModifiers::NONE) => {
             if let Some(Modal::Plan { state }) = app.modal.as_mut() {
-                let index = MODES
+                let index = ENGINES
                     .iter()
-                    .position(|mode| *mode == state.execution_mode)
+                    .position(|engine| *engine == state.execution_engine)
                     .unwrap_or(0);
-                state.execution_mode = MODES[(index + 1) % MODES.len()];
+                state.execution_engine = ENGINES[(index + 1) % ENGINES.len()];
             }
         }
         (KeyCode::Char('s'), KeyModifiers::NONE) => submit_plan_review(app, connection),
@@ -2707,7 +2707,7 @@ fn plan_read_key(
                         plan_id,
                         action,
                         execution_model: Some(execution_model),
-                        execution_mode: Some(execution_mode),
+                        execution_engine: Some(execution_engine),
                     })
                     .await
                     .map_err(anyhow::Error::from);
@@ -3847,7 +3847,7 @@ fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanInfo) {
         return;
     };
     app.modal = Some(Modal::Plan {
-        state: crate::modal::PlanReviewState::new(plan, session.model.clone(), session.mode),
+        state: crate::modal::PlanReviewState::new(plan, session.model.clone(), session.engine),
     });
 }
 
@@ -4141,7 +4141,8 @@ fn apply_update_and_refresh(
     let refresh = matches!(
         &update,
         SessionUpdate::PromptFinished { .. }
-            | SessionUpdate::ModeChanged { .. }
+            | SessionUpdate::EngineChanged { .. }
+            | SessionUpdate::AutonomyChanged { .. }
             | SessionUpdate::PlanModeChanged { .. }
             | SessionUpdate::ModelChanged { .. }
             | SessionUpdate::PermissionChanged { .. }
@@ -4152,14 +4153,49 @@ fn apply_update_and_refresh(
         &update,
         SessionUpdate::PromptFinished { .. } | SessionUpdate::ContextCompacted { .. }
     );
+    // unattended 自主程度下计划提交不弹审阅：直接自动批准「压缩并执行」。
+    let unattended_plan = match &update {
+        SessionUpdate::PlanSubmitted { plan }
+            if app.session.as_ref().is_some_and(|session| {
+                session.autonomy == moc_protocol::SessionAutonomy::Unattended
+            }) =>
+        {
+            Some(plan.plan_id.clone())
+        }
+        _ => None,
+    };
     // 有上一版时，提交后立刻把「本版改动」拉下来；审阅窗口默认展示它。
     let revised_plan = match &update {
-        SessionUpdate::PlanSubmitted { plan } if plan.previous_plan_id.is_some() => {
+        SessionUpdate::PlanSubmitted { plan }
+            if unattended_plan.is_none() && plan.previous_plan_id.is_some() =>
+        {
             Some(plan.plan_id.clone())
         }
         _ => None,
     };
     apply_update(app, update);
+    if let Some(plan_id) = unattended_plan
+        && let Some(session) = app.session.as_ref()
+    {
+        let client = connection.client.clone();
+        let events = app.events.clone();
+        let (session_id, model, engine) =
+            (session.id.clone(), session.model.clone(), session.engine);
+        app.set_notice("unattended：已自动批准计划（压缩并执行）");
+        tokio::spawn(async move {
+            let result = client
+                .call::<SessionPlanApprove>(SessionPlanApproveParams {
+                    session_id,
+                    plan_id,
+                    action: moc_protocol::methods::PlanAction::ExecuteCompacted,
+                    execution_model: Some(model),
+                    execution_engine: Some(engine),
+                })
+                .await
+                .map_err(anyhow::Error::from);
+            let _ = events.send(AppEvent::PlanApproval(result));
+        });
+    }
     if let Some(plan_id) = revised_plan {
         request_plan_diff(app, connection, plan_id);
     }
@@ -4327,14 +4363,19 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 session.title = title;
             }
         }
-        SessionUpdate::ModeChanged { mode } => {
+        SessionUpdate::EngineChanged { engine } => {
             if let Some(session) = app.session.as_mut() {
-                session.mode = mode;
+                session.engine = engine;
             }
-            if mode == SessionMode::ClmExperimental {
+            if engine == SessionEngine::ClmExperimental {
                 app.set_notice(
-                    "CLM 实验模式已启用：模型将维护实时上下文；本会话首次请求后锁定方言",
+                    "CLM 实验引擎已启用：模型将维护实时上下文；本会话首次请求后锁定引擎",
                 );
+            }
+        }
+        SessionUpdate::AutonomyChanged { autonomy } => {
+            if let Some(session) = app.session.as_mut() {
+                session.autonomy = autonomy;
             }
         }
         SessionUpdate::PlanModeChanged { active } => {
@@ -4354,7 +4395,14 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::TodoChanged { phases } => app.update_todos(phases),
         SessionUpdate::TodoReminder { .. } => app.push_todo_reminder(),
-        SessionUpdate::PlanSubmitted { plan } => open_plan_review(app, plan),
+        // unattended 时不弹审阅；自动批准由 apply_update_and_refresh 发起。
+        SessionUpdate::PlanSubmitted { plan } => {
+            if !app.session.as_ref().is_some_and(|session| {
+                session.autonomy == moc_protocol::SessionAutonomy::Unattended
+            }) {
+                open_plan_review(app, plan);
+            }
+        }
         SessionUpdate::PlanUpdated { plan } => {
             // 同一次审阅里计划被改写（收到批注、被取代、批准）：只更新投影，保留草稿。
             if let Some(Modal::Plan { state }) = app.modal.as_mut()
@@ -4730,24 +4778,24 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/new" => {
             let client = connection.client.clone();
             let events = app.events.clone();
-            let (cwd, model, mode) = app
+            let (cwd, model, engine) = app
                 .session
                 .as_ref()
                 .map(|session| {
                     (
                         Some(session.cwd.clone()),
                         Some(session.model.clone()),
-                        session.mode,
+                        session.engine,
                     )
                 })
-                .unwrap_or((None, None, SessionMode::Normal));
+                .unwrap_or((None, None, SessionEngine::Standard));
             tokio::spawn(async move {
                 match client
                     .call::<SessionNew>(SessionNewParams {
                         cwd,
                         model,
                         title: None,
-                        mode,
+                        engine,
                         plan_active: false,
                     })
                     .await
@@ -4814,8 +4862,9 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                 app.set_notice("当前没有活动会话");
             }
         }
-        "/mode" => cycle_mode(app, connection),
-        "/clm-experimental" => set_mode(app, connection, SessionMode::ClmExperimental),
+        "/engine" => cycle_engine(app, connection),
+        "/clm-experimental" => set_engine(app, connection, SessionEngine::ClmExperimental),
+        "/autonomy" => set_autonomy(app, connection, rest),
         "/permission" => set_permission(app, connection, rest),
         "/plan" => toggle_plan(app, connection),
         "/ask" => ask_once(app, connection, rest),
@@ -4869,24 +4918,24 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
     }
 }
 
-/// 循环切换方言：Normal → PTC → CLM。会话跑过第一条提示后方言锁定。
-fn cycle_mode(app: &mut App, connection: &EmbeddedConnection) {
+/// 循环切换引擎：standard → ptc → clm。会话跑过第一条提示后引擎锁定。
+fn cycle_engine(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
     };
-    if session.mode_locked {
-        app.set_notice("会话方言已锁定；换方言请新建会话");
+    if session.engine_locked {
+        app.set_notice("会话引擎已锁定；换引擎请新建会话");
         return;
     }
-    let index = MODES
+    let index = ENGINES
         .iter()
-        .position(|mode| *mode == session.mode)
+        .position(|engine| *engine == session.engine)
         .unwrap_or(0);
-    set_mode(app, connection, MODES[(index + 1) % MODES.len()]);
+    set_engine(app, connection, ENGINES[(index + 1) % ENGINES.len()]);
 }
 
-/// `/plan`：切换 plan 叠加态；方言不受影响，可在任意方言上叠加。
+/// `/plan`：切换 plan 模式；引擎不受影响，可在任意引擎上叠加。
 fn toggle_plan(app: &mut App, connection: &EmbeddedConnection) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
@@ -4909,9 +4958,9 @@ fn toggle_plan(app: &mut App, connection: &EmbeddedConnection) {
     });
 }
 
-/// `/ask <问题>`：仅本条消息进入问答契约（只读），不改变会话方言与 plan 状态。
+/// `/ask <问题>`：仅本条消息进入问答模式（只读），不改变会话引擎与 plan 状态。
 ///
-/// 该次提示无论当前是否空闲都排进队列：契约覆盖是提示级属性，无法注入正在飞行的提示。
+/// 该次提示无论当前是否空闲都排进队列：模式覆盖是提示级属性，无法注入正在飞行的提示。
 fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
     let text = rest.trim();
     if text.is_empty() {
@@ -4922,11 +4971,11 @@ fn ask_once(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
         app.set_notice("当前没有活动会话");
         return;
     }
-    crate::queue::submit_with_contract(
+    crate::queue::submit_with_mode(
         app,
         connection,
         crate::widgets::prompt::PromptState::from_text(text.to_owned()),
-        moc_protocol::methods::PromptContract::Ask,
+        moc_protocol::methods::PromptMode::Ask,
     );
 }
 
@@ -4953,14 +5002,14 @@ fn retry(app: &mut App, connection: &EmbeddedConnection) {
     crate::queue::send_retry(&connection.client, session_id, app.events.clone());
 }
 
-/// 请求 core 切换会话方言（方言循环与就地菜单共用）。
-fn set_mode(app: &mut App, connection: &EmbeddedConnection, mode: SessionMode) {
+/// 请求 core 切换会话引擎（引擎循环与就地菜单共用）。
+fn set_engine(app: &mut App, connection: &EmbeddedConnection, engine: SessionEngine) {
     let Some(session) = app.session.as_ref() else {
         app.set_notice("当前没有活动会话");
         return;
     };
-    if session.mode_locked {
-        app.set_notice("会话方言已锁定；换方言请新建会话");
+    if session.engine_locked {
+        app.set_notice("会话引擎已锁定；换引擎请新建会话");
         return;
     }
     let client = connection.client.clone();
@@ -4968,13 +5017,50 @@ fn set_mode(app: &mut App, connection: &EmbeddedConnection, mode: SessionMode) {
     let events = app.events.clone();
     tokio::spawn(async move {
         match client
-            .call::<SessionSetMode>(SessionSetModeParams { session_id, mode })
+            .call::<SessionSetEngine>(SessionSetEngineParams { session_id, engine })
             .await
         {
             Ok(_) => {}
             Err(error) => {
-                let _ = events.send(AppEvent::Notice(format!("切换模式失败：{error}")));
+                let _ = events.send(AppEvent::Notice(format!("切换引擎失败：{error}")));
             }
+        }
+    });
+}
+
+/// `/autonomy [default|dont_ask|unattended]`：无参数时循环切换自主程度，带参数直接设置。
+fn set_autonomy(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
+    use moc_protocol::SessionAutonomy;
+    let Some(session) = app.session.as_ref() else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let autonomy = match rest.trim() {
+        "" => match session.autonomy {
+            SessionAutonomy::Default => SessionAutonomy::DontAsk,
+            SessionAutonomy::DontAsk => SessionAutonomy::Unattended,
+            SessionAutonomy::Unattended => SessionAutonomy::Default,
+        },
+        "default" => SessionAutonomy::Default,
+        "dont_ask" => SessionAutonomy::DontAsk,
+        "unattended" => SessionAutonomy::Unattended,
+        _ => {
+            app.set_notice("用法：/autonomy [default|dont_ask|unattended]");
+            return;
+        }
+    };
+    let client = connection.client.clone();
+    let session_id = session.id.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        if let Err(error) = client
+            .call::<moc_protocol::SessionSetAutonomy>(moc_protocol::SessionSetAutonomyParams {
+                session_id,
+                autonomy,
+            })
+            .await
+        {
+            let _ = events.send(AppEvent::Notice(format!("切换自主程度失败：{error}")));
         }
     });
 }
@@ -5055,41 +5141,41 @@ fn set_permission(app: &mut App, connection: &EmbeddedConnection, rest: &str) {
 ///
 /// 与斜杠补全菜单同一套约定：只认方向键与确认键，其他按键先关掉菜单再照常处理，
 /// 菜单不会吞掉正常输入与快捷键。
-fn handle_mode_menu_key(
+fn handle_engine_menu_key(
     app: &mut App,
     connection: &EmbeddedConnection,
     modifiers: KeyModifiers,
     code: KeyCode,
 ) -> bool {
-    let Some(menu) = app.mode_menu.as_ref() else {
+    let Some(menu) = app.engine_menu.as_ref() else {
         return false;
     };
-    let count = MODES.len();
+    let count = ENGINES.len();
     let selected = menu.selected.min(count - 1);
     match (code, modifiers) {
         (KeyCode::Esc, _) => {
-            app.mode_menu = None;
+            app.engine_menu = None;
             true
         }
         (KeyCode::Up, _) => {
-            if let Some(menu) = app.mode_menu.as_mut() {
+            if let Some(menu) = app.engine_menu.as_mut() {
                 menu.selected = (selected + count - 1) % count;
             }
             true
         }
         (KeyCode::Down, _) => {
-            if let Some(menu) = app.mode_menu.as_mut() {
+            if let Some(menu) = app.engine_menu.as_mut() {
                 menu.selected = (selected + 1) % count;
             }
             true
         }
         (KeyCode::Enter, KeyModifiers::NONE) => {
-            app.mode_menu = None;
-            set_mode(app, connection, MODES[selected]);
+            app.engine_menu = None;
+            set_engine(app, connection, ENGINES[selected]);
             true
         }
         _ => {
-            app.mode_menu = None;
+            app.engine_menu = None;
             false
         }
     }
@@ -5462,7 +5548,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -5734,7 +5820,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -5883,7 +5969,7 @@ mod tests {
     #[test]
     fn compaction_note_ticks_then_replaces_in_place() {
         use crate::transcript::Block;
-        use moc_protocol::{SessionInfo, SessionMode};
+        use moc_protocol::{SessionEngine, SessionInfo};
 
         let mut app = app();
         app.session = Some(SessionInfo {
@@ -5891,9 +5977,10 @@ mod tests {
             title: "压缩".into(),
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
-            mode_locked: false,
+            engine_locked: false,
             parent_session_id: None,
             forked_from: None,
             agent_preset: None,
@@ -5941,7 +6028,7 @@ mod tests {
     #[test]
     fn pruning_compaction_is_labelled_as_trim() {
         use crate::transcript::Block;
-        use moc_protocol::{SessionInfo, SessionMode};
+        use moc_protocol::{SessionEngine, SessionInfo};
 
         let mut app = app();
         app.session = Some(SessionInfo {
@@ -5949,9 +6036,10 @@ mod tests {
             title: "裁剪".into(),
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
-            mode_locked: false,
+            engine_locked: false,
             parent_session_id: None,
             forked_from: None,
             agent_preset: None,
@@ -6002,7 +6090,7 @@ mod tests {
     #[test]
     fn failed_compaction_ends_the_running_note() {
         use crate::transcript::Block;
-        use moc_protocol::{SessionInfo, SessionMode};
+        use moc_protocol::{SessionEngine, SessionInfo};
 
         let mut app = app();
         app.session = Some(SessionInfo {
@@ -6010,9 +6098,10 @@ mod tests {
             title: "失败".into(),
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
-            mode_locked: false,
+            engine_locked: false,
             parent_session_id: None,
             forked_from: None,
             agent_preset: None,
@@ -6081,7 +6170,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -6193,7 +6282,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -6214,7 +6303,7 @@ mod tests {
                 input: vec![InputPart::Text {
                     text: "你好".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -6370,7 +6459,7 @@ mod tests {
                     cwd: None,
                     model: None,
                     title: None,
-                    mode: SessionMode::Normal,
+                    engine: SessionEngine::Standard,
                     plan_active: false,
                 })
                 .await
@@ -6391,7 +6480,7 @@ mod tests {
                     input: vec![InputPart::Text {
                         text: "你好".into(),
                     }],
-                    contract: None,
+                    mode: None,
                     agent_message: None,
                 })
                 .await
@@ -6664,7 +6753,7 @@ mod tests {
 
     fn app_with_completion() -> App {
         let mut app = app();
-        app.prompt.insert_str_raw("/m");
+        app.prompt.insert_str_raw("/r");
         app.completion = crate::widgets::completion::CompletionState::derive(
             app.prompt_text(),
             &app.plugin_commands,
@@ -6760,7 +6849,7 @@ mod tests {
             KeyModifiers::NONE,
             KeyCode::Enter
         ));
-        assert_eq!(app.prompt.text, "/model ");
+        assert_eq!(app.prompt.text, "/resume ");
         assert!(app.completion.is_none());
 
         // Tab 与 Enter 共用确认分支：切换选中项后同样接受当前项。
@@ -6774,14 +6863,14 @@ mod tests {
             app.completion
                 .as_ref()
                 .map(|completion| completion.chosen().value.as_str()),
-            Some("/mode")
+            Some("/retry")
         );
         assert!(handle_completion_key(
             &mut app,
             KeyModifiers::NONE,
             KeyCode::Tab
         ));
-        assert_eq!(app.prompt.text, "/mode ");
+        assert_eq!(app.prompt.text, "/retry ");
         assert!(app.completion.is_none());
         assert_eq!(app.focus, Focus::Prompt);
     }
@@ -6829,7 +6918,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -7153,7 +7242,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn alt_m_cycles_the_session_mode() {
+    async fn alt_m_cycles_the_session_engine() {
         use moc_core::{Core, CoreConfig};
 
         let root = tempfile::tempdir().unwrap();
@@ -7182,7 +7271,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -7204,14 +7293,14 @@ mod tests {
                     .await
                     .unwrap()
                     .session;
-                if session.mode == SessionMode::Ptc {
+                if session.engine == SessionEngine::Ptc {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("Alt+M 应切换到 PTC 方言");
+        .expect("Alt+M 应切换到 PTC 引擎");
 
         connection.shutdown().await;
         core.shutdown().await;
@@ -7248,7 +7337,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -7256,20 +7345,17 @@ mod tests {
         let session_id = session.id.clone();
         app.session = Some(session);
 
-        // 进行中的提示期间只排队：契约覆盖是提示级属性，无法注入正在飞行的提示。
+        // 进行中的提示期间只排队：模式覆盖是提示级属性，无法注入正在飞行的提示。
         app.prompt_running = true;
         execute_command(&mut app, &connection, "/ask 有没有遗留的临时文件".into());
         let queued = app.queues.get(&session_id).expect("命令排进待发送队列");
         assert_eq!(queued.len(), 1);
-        assert_eq!(
-            queued[0].contract,
-            Some(moc_protocol::methods::PromptContract::Ask)
-        );
+        assert_eq!(queued[0].mode, Some(moc_protocol::methods::PromptMode::Ask));
         assert_eq!(queued[0].draft.text, "有没有遗留的临时文件");
         assert_eq!(
-            app.session.as_ref().map(|session| session.mode),
-            Some(SessionMode::Normal),
-            "临时问答不得改写会话方言"
+            app.session.as_ref().map(|session| session.engine),
+            Some(SessionEngine::Standard),
+            "临时问答不得改写会话引擎"
         );
 
         execute_command(&mut app, &connection, "/ask".into());
@@ -7284,15 +7370,15 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// 点图例弹出就地菜单：悬停高亮、点条目切换模式、再点图例关闭，键位同样可用。
+    /// 点图例弹出就地菜单：悬停高亮、点条目切换引擎、再点图例关闭，键位同样可用。
     #[tokio::test]
-    async fn mode_menu_switches_the_session_mode() {
+    async fn engine_menu_switches_the_session_engine() {
         use moc_core::{Core, CoreConfig};
 
-        async fn wait_for_mode(
+        async fn wait_for_engine(
             connection: &EmbeddedConnection,
             session_id: &str,
-            expected: SessionMode,
+            expected: SessionEngine,
         ) {
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 loop {
@@ -7306,14 +7392,14 @@ mod tests {
                         .await
                         .unwrap()
                         .session;
-                    if session.mode == expected {
+                    if session.engine == expected {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                 }
             })
             .await
-            .expect("模式应切换为期望值");
+            .expect("引擎应切换为期望值");
         }
 
         let root = tempfile::tempdir().unwrap();
@@ -7342,7 +7428,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await
@@ -7351,7 +7437,7 @@ mod tests {
         app.session = Some(session);
 
         // 图例命中区与菜单区域由绘制回填；这里摆出与渲染一致的坐标。
-        app.mode_area = ratatui::layout::Rect::new(60, 20, 4, 1);
+        app.engine_area = ratatui::layout::Rect::new(60, 20, 4, 1);
         let menu_area = ratatui::layout::Rect::new(44, 14, 24, 5);
         let mouse = |kind: MouseEventKind, column: u16, row: u16| MouseEvent {
             kind,
@@ -7366,26 +7452,26 @@ mod tests {
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
         );
-        assert!(app.mode_menu.is_some(), "点模式图例应弹出菜单");
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(0));
+        assert!(app.engine_menu.is_some(), "点模式图例应弹出菜单");
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(0));
 
         // 悬停在条目上即高亮该条，移出菜单不改选择。
-        app.mode_menu.as_mut().unwrap().area = menu_area;
+        app.engine_menu.as_mut().unwrap().area = menu_area;
         handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 45, 17));
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
         handle_mouse_with_connection(&mut app, &connection, mouse(MouseEventKind::Moved, 10, 5));
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
 
-        // 点第二条（ptc）直达该方言。
+        // 点第二条（ptc）直达该引擎。
         handle_mouse_with_connection(
             &mut app,
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 45, 16),
         );
-        assert!(app.mode_menu.is_none(), "选中条目后菜单关闭");
-        wait_for_mode(&connection, &session_id, SessionMode::Ptc).await;
-        // core 通过 `ModeChanged` 推送新方言，事件循环据此更新本地会话；此处手动对齐。
-        app.session.as_mut().unwrap().mode = SessionMode::Ptc;
+        assert!(app.engine_menu.is_none(), "选中条目后菜单关闭");
+        wait_for_engine(&connection, &session_id, SessionEngine::Ptc).await;
+        // core 通过 `EngineChanged` 推送新引擎，事件循环据此更新本地会话；此处手动对齐。
+        app.session.as_mut().unwrap().engine = SessionEngine::Ptc;
 
         // 再点图例开菜单，再点一次图例应关闭而不是重开。
         handle_mouse_with_connection(
@@ -7393,14 +7479,14 @@ mod tests {
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
         );
-        assert!(app.mode_menu.is_some());
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(1));
+        assert!(app.engine_menu.is_some());
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(1));
         handle_mouse_with_connection(
             &mut app,
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
         );
-        assert!(app.mode_menu.is_none(), "再次点图例关闭菜单");
+        assert!(app.engine_menu.is_none(), "再次点图例关闭菜单");
 
         // 键盘路径：开菜单后 ↓ 选到 clm，Enter 应用。
         handle_mouse_with_connection(
@@ -7409,19 +7495,19 @@ mod tests {
             mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
         );
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Down);
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(2));
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(2));
         handle_key(&mut app, &connection, KeyModifiers::NONE, KeyCode::Enter);
-        assert!(app.mode_menu.is_none());
-        wait_for_mode(&connection, &session_id, SessionMode::ClmExperimental).await;
+        assert!(app.engine_menu.is_none());
+        wait_for_engine(&connection, &session_id, SessionEngine::ClmExperimental).await;
 
         // 普通输入先关掉菜单再照常处理：菜单不会吞键。
-        app.session.as_mut().unwrap().mode = SessionMode::Ptc;
+        app.session.as_mut().unwrap().engine = SessionEngine::Ptc;
         handle_mouse_with_connection(
             &mut app,
             &connection,
             mouse(MouseEventKind::Down(MouseButton::Left), 61, 20),
         );
-        assert_eq!(app.mode_menu.as_ref().map(|menu| menu.selected), Some(1));
+        assert_eq!(app.engine_menu.as_ref().map(|menu| menu.selected), Some(1));
         let revision = app.prompt_revision;
         handle_key(
             &mut app,
@@ -7429,7 +7515,7 @@ mod tests {
             KeyModifiers::NONE,
             KeyCode::Char('h'),
         );
-        assert!(app.mode_menu.is_none(), "输入字符只关菜单");
+        assert!(app.engine_menu.is_none(), "输入字符只关菜单");
         assert_eq!(app.prompt.text, "h", "字符照常进入输入框");
         assert_ne!(app.prompt_revision, revision);
 
@@ -8199,7 +8285,7 @@ mod tests {
             .push_back(crate::queue::QueuedPrompt {
                 id: 2,
                 draft: crate::widgets::prompt::PromptState::from_text("排队内容".into()),
-                contract: None,
+                mode: None,
             });
         crate::queue::dispatch(&mut app, &connection);
         assert_eq!(
@@ -9478,7 +9564,7 @@ mod tests {
                 cwd: None,
                 model: None,
                 title: Some(title.to_owned()),
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: false,
             })
             .await

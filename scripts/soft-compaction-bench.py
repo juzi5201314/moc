@@ -1301,7 +1301,7 @@ def import_omp_session(path: Path, root: Path, selector: str, max_tokens: int) -
             "session_id": session_id,
             "cwd": str(work),
             "model": selector,
-            "mode": "normal",
+            "engine": "standard",
             # 导入真实会话只做问答：workspace 权限下写入被拒、bash 走 bwrap 沙箱。
             "permission": "workspace",
             "parent_session_id": None,

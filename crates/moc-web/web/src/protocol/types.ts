@@ -175,10 +175,12 @@ export type ConfigReply =
 
 // ---------- 会话 ----------
 
-/** 会话方言：模型与工具的交互形态。跑过首条提示后锁定（`mode_locked`）。 */
-export type SessionMode = "normal" | "ptc" | "clm_experimental";
-/** 单次提示的执行契约；只约束这一次 prompt，结束即失效。 */
-export type PromptContract = "ask";
+/** 会话引擎：模型与工具的交互形态。跑过首条提示后锁定（`engine_locked`）。 */
+export type SessionEngine = "standard" | "ptc" | "clm_experimental";
+/** 会话自主程度：哪些确认由系统代答而不打扰用户。 */
+export type SessionAutonomy = "default" | "dont_ask" | "unattended";
+/** 单次提示的执行模式；只约束这一次 prompt，结束即失效。 */
+export type PromptMode = "ask";
 export type SessionPermission = "full" | "workspace" | "workspace_only";
 
 export type SessionLockInfo = {
@@ -193,11 +195,13 @@ export type SessionInfo = {
   title: string;
   model: string;
   permission: SessionPermission;
-  mode: SessionMode;
-  /** plan 叠加态是否激活；与方言正交，可随时进出。 */
+  engine: SessionEngine;
+  /** 会话自主程度。 */
+  autonomy: SessionAutonomy;
+  /** plan 模式是否激活；与引擎正交，可随时进出。 */
   plan_active: boolean;
-  /** 方言是否已锁定：会话跑过第一条用户提示后为真。 */
-  mode_locked: boolean;
+  /** 引擎是否已锁定：会话跑过第一条用户提示后为真。 */
+  engine_locked: boolean;
   parent_session_id?: string;
   forked_from?: string;
   cwd: string;
@@ -315,7 +319,7 @@ export type PlanInfo = {
 
 export type SessionPlanReviseResult = {
   session_id: string;
-  mode: SessionMode;
+  engine: SessionEngine;
   plan_active: boolean;
   /** 由 core 生成的修订提示；前端按普通用户消息发送。 */
   prompt: string;
@@ -330,7 +334,7 @@ export type SessionPlanDiffResult = {
 
 export type SessionPlanApproveResult = {
   session_id: string;
-  mode: SessionMode;
+  engine: SessionEngine;
   plan_active: boolean;
   auto_prompt?: string;
   plan_markdown?: string;
@@ -618,7 +622,8 @@ export type SessionUpdate =
   | { type: "title_changed"; title: string }
   | { type: "lock_changed"; lock: SessionLockInfo | null }
   | { type: "permission_changed"; permission: SessionPermission }
-  | { type: "mode_changed"; mode: SessionMode }
+  | { type: "engine_changed"; engine: SessionEngine }
+  | { type: "autonomy_changed"; autonomy: SessionAutonomy }
   | { type: "plan_mode_changed"; active: boolean }
   | { type: "model_changed"; model: string }
   | { type: "todo_changed"; phases: TodoPhase[] }
@@ -670,7 +675,8 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   title_changed: true,
   lock_changed: true,
   permission_changed: true,
-  mode_changed: true,
+  engine_changed: true,
+  autonomy_changed: true,
   plan_mode_changed: true,
   model_changed: true,
   todo_changed: true,
@@ -748,6 +754,11 @@ export type PluginInfo = {
 
 export type PluginListResult = {
   plugins: PluginInfo[];
+};
+
+export type PluginRunCommandResult = {
+  /** 插件返回的文本；前端按普通输出展示。 */
+  text: string;
 };
 
 export type ResourceCandidate = {

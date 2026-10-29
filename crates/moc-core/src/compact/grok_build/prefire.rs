@@ -182,7 +182,7 @@ pub(crate) async fn maybe_prefire(
     };
     let (messages, cwd) = {
         let state = record.state.lock().await;
-        if state.mode == moc_protocol::methods::SessionMode::ClmExperimental {
+        if state.engine == moc_protocol::methods::SessionEngine::ClmExperimental {
             return;
         }
         (
@@ -336,7 +336,7 @@ fn breaks_pairing(messages: &[Message], split: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use moc_llm::{ContentPart, ToolCall};
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
@@ -439,7 +439,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "标题".into(),

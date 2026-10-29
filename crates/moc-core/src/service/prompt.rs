@@ -7,7 +7,7 @@ use crate::{
     service::{CoreInner, flush_plugin_notices, protocol_to_rpc, snapshot_workspace, to_rpc},
     session::store::now_ms,
     system_prompt::{
-        build, contract_reminder, mode_contract,
+        build, engine_reminder, mode_reminder,
         reminder::{self, Reminder},
         sandbox_contract,
     },
@@ -57,7 +57,7 @@ pub async fn run_retry(
     let params = moc_protocol::methods::PromptParams {
         session_id: params.session_id,
         input: Vec::new(),
-        contract: None,
+        mode: None,
         agent_message: None,
     };
     run_prompt_entry(inner, ctx, params, true).await
@@ -239,8 +239,8 @@ pub(crate) async fn run_prompt_with_lock(
         let context = crate::service::plugin_events::context(
             &session_id,
             &plugin_state.session.cwd,
-            plugin_state.mode,
-            crate::service::mode::ModeContract::effective(plugin_state.plan_active, None),
+            plugin_state.engine,
+            crate::service::mode::Mode::effective(plugin_state.plan_active, None),
             plugin_state.permission,
             &plugin_state.model,
             plugin_state.session.is_subagent(),
@@ -396,16 +396,15 @@ async fn run_prompt_locked(
         .project_plugins(std::path::Path::new(&state_snapshot.session.cwd))
         .await
         .map_err(to_rpc)?;
-    // 方言是会话级不可变量；有效契约 = plan 叠加态 ∪ 本次提示的 `/ask` 声明。
-    let mode = state_snapshot.mode;
-    let contract =
-        crate::service::mode::ModeContract::effective(state_snapshot.plan_active, params.contract);
+    // 引擎是会话级不可变量；有效模式 = plan 模式 ∪ 本次提示的 `/ask` 声明。
+    let engine = state_snapshot.engine;
+    let mode = crate::service::mode::Mode::effective(state_snapshot.plan_active, params.mode);
     let permission = inner.effective_permission(state_snapshot.permission);
     let plugin_context = crate::service::plugin_events::context(
         &params.session_id,
         &state_snapshot.session.cwd,
+        engine,
         mode,
-        contract,
         permission,
         &model.selector,
         state_snapshot.session.is_subagent(),
@@ -530,7 +529,7 @@ async fn run_prompt_locked(
         state.prompt_sequence = state.prompt_sequence.saturating_add(1);
     }
     let prompt_id = crate::ids::prompt_id(state.prompt_sequence);
-    let clm_active = mode == moc_protocol::methods::SessionMode::ClmExperimental;
+    let clm_active = engine == moc_protocol::methods::SessionEngine::ClmExperimental;
     let cwd = std::path::PathBuf::from(&state.session.cwd);
     drop(state);
     if clm_active {
@@ -623,9 +622,9 @@ async fn run_prompt_locked(
     // 会话身份只看会话头。系统提示、工具可见性和代理列表都必须以它为准，
     // 否则会出现「系统提示说我是子代理，工具表里却没有 yield」这类矛盾。
     let subagent = state_snapshot.session.is_subagent();
-    let ask_supported = inner.client_supports_ask(ctx.connection_id());
+    let ask_supported = inner.ask_available(ctx.connection_id(), state_snapshot.session.autonomy);
     let tools_available = inner.tools.definitions(
-        mode,
+        engine,
         ask_supported,
         &project_config,
         crate::tools::ToolScope::for_session(&state_snapshot, project_config.agents.max_depth),
@@ -647,7 +646,7 @@ async fn run_prompt_locked(
     // 只有内置签名进系统提示；MCP 索引随服务器刷新，走下面的尾部提醒。
     let tool_declarations = crate::tools::declarations::render_signatures(
         &catalog,
-        mode,
+        engine,
         ask_supported,
         &project_config,
     )
@@ -705,7 +704,7 @@ async fn run_prompt_locked(
                 // 每个提示最多 `reminders_max` 次；前端把它显示成一行工具样式的占位，没有参数和结果。
                 if project_config.tools.todo.enabled
                     && project_config.tools.todo.reminders
-                    && contract != crate::service::mode::ModeContract::Plan
+                    && mode != crate::service::mode::Mode::Plan
                     && tools_available.iter().any(|def| def.name == "todo")
                 {
                     let mut state = record.state.lock().await;
@@ -744,15 +743,18 @@ async fn run_prompt_locked(
                             .map_err(protocol_to_rpc)?;
                     }
                 }
-                candidates.push(Reminder::durable(reminder::key::MODE, mode_contract(mode)));
-                // 契约提醒独立成条目：plan 进出与 ask 到期都会改写或撤掉它。
-                match contract_reminder(contract) {
+                candidates.push(Reminder::durable(
+                    reminder::key::ENGINE,
+                    engine_reminder(engine),
+                ));
+                // 模式提醒独立成条目：plan 进出与 ask 到期都会改写或撤掉它。
+                match mode_reminder(mode) {
                     Some(text) => {
-                        candidates.push(Reminder::durable(reminder::key::CONTRACT, text));
+                        candidates.push(Reminder::durable(reminder::key::MODE, text));
                     }
                     None => candidates.push(Reminder::retract(
-                        reminder::key::CONTRACT,
-                        "The earlier execution contract no longer applies: the workspace is writable under the current dialect.",
+                        reminder::key::MODE,
+                        "The earlier execution mode no longer applies: the workspace is writable under the current engine.",
                     )),
                 }
                 candidates.push(Reminder::durable(
@@ -773,7 +775,7 @@ async fn run_prompt_locked(
                 // 因此不会因为一次工具增删而失效。
                 if let Some(index) = crate::tools::declarations::render_mcp_index(
                     &catalog,
-                    mode,
+                    engine,
                     ask_supported,
                     &project_config,
                     model.context_window,
@@ -838,7 +840,7 @@ async fn run_prompt_locked(
                     &ctx.cancel(),
                 )
                 .await;
-                if mode != moc_protocol::methods::SessionMode::ClmExperimental
+                if engine != moc_protocol::methods::SessionEngine::ClmExperimental
                     && project_config.compaction.enabled
                     && project_config.compaction.auto
                     && (first_turn || project_config.compaction.mid_prompt)
@@ -1290,7 +1292,7 @@ async fn run_prompt_locked(
                     .output_tokens
                     .saturating_add(response.usage.output_tokens);
                 usage.total_tokens = Some(usage.input_tokens.saturating_add(usage.output_tokens));
-                if mode == moc_protocol::methods::SessionMode::ClmExperimental {
+                if engine == moc_protocol::methods::SessionEngine::ClmExperimental {
                     crate::tools::clm::append_message(
                         &inner.sessions,
                         &record.state,
@@ -1443,11 +1445,10 @@ async fn run_prompt_locked(
             sessions: Arc::clone(&inner.sessions),
             core: Arc::clone(&inner),
             catalog: Arc::clone(&catalog),
+            engine,
             mode,
-            contract,
             permission,
-            allow_agents: state_snapshot.session.delegation_depth
-                < project_config.agents.max_depth,
+            allow_agents: state_snapshot.session.delegation_depth < project_config.agents.max_depth,
             subagent,
             tool_policy: state_snapshot
                 .agent
@@ -1515,7 +1516,7 @@ async fn run_prompt_locked(
             session_id: &params.session_id,
             cwd: &cwd,
             config: &project_config,
-            contract,
+            mode,
             before_tools: None,
         },
         &plugins,

@@ -9,11 +9,12 @@ use std::time::Duration;
 use moc_protocol::methods::{
     AskAnswer, AskResult, ClientCapabilities, ConfigGet, ConfigGetParams, PlanAction,
     ServerCapabilities, SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams,
-    SessionDelete, SessionDeleteParams, SessionList, SessionListParams, SessionLoad,
-    SessionLoadParams, SessionMode, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt,
-    SessionRename, SessionRenameParams, SessionRequestAsk, SessionRequestPermission, SessionRetry,
-    SessionRetryParams, SessionSetMode, SessionSetModeParams, SessionUnload, SessionUnloadParams,
-    SessionUnlock, SessionUnlockParams, SessionUpdate, SessionUpdateMethod, ToolStatus,
+    SessionDelete, SessionDeleteParams, SessionEngine, SessionList, SessionListParams, SessionLoad,
+    SessionLoadParams, SessionPlanApprove, SessionPlanApproveParams, SessionPrompt, SessionRename,
+    SessionRenameParams, SessionRequestAsk, SessionRequestPermission, SessionRetry,
+    SessionRetryParams, SessionSetEngine, SessionSetEngineParams, SessionUnload,
+    SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUpdate, SessionUpdateMethod,
+    ToolStatus,
 };
 use moc_protocol::{
     ClientBuilder, FinishReason, PROTOCOL_VERSION, ProtocolError, RpcCallError, RpcErrorCode,
@@ -91,12 +92,12 @@ async fn new_session_methods_are_dispatched_to_core() {
         local_client(service, builder(UpdateLog::default(), "allow_once")).await;
 
     let error = handle
-        .call::<SessionSetMode>(SessionSetModeParams {
+        .call::<SessionSetEngine>(SessionSetEngineParams {
             session_id: "ses_1".to_owned(),
-            mode: SessionMode::Ptc,
+            engine: SessionEngine::Ptc,
         })
         .await
-        .expect_err("脚本 core 不实现模式切换");
+        .expect_err("脚本 core 不实现引擎切换");
     assert_eq!(error.code(), Some(RpcErrorCode::NotSupported.code()));
 
     let error = handle
@@ -105,7 +106,7 @@ async fn new_session_methods_are_dispatched_to_core() {
             plan_id: "plan_12345678".to_owned(),
             action: PlanAction::Execute,
             execution_model: None,
-            execution_mode: None,
+            execution_engine: None,
         })
         .await
         .expect_err("脚本 core 不实现计划批准");

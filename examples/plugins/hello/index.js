@@ -29,7 +29,7 @@ export default {
         required: [],
         additionalProperties: false,
       },
-      // 省略 modes 时在 normal/ask/plan 都可见；需要收窄就写 modes: ["normal"]。
+      // 省略 modes 时在 default/ask/plan 都可见；需要收窄就写 modes: ["default"]。
       run(input, ctx) {
         const who = (input.name || "world").trim();
         return `你好，${who}！模式 ${ctx.mode}，目录 ${ctx.cwd}`;

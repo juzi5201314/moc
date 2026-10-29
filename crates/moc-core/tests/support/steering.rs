@@ -1,7 +1,7 @@
 use super::support;
 
 use moc_protocol::{
-    InputPart, PromptParams, SessionLoad, SessionLoadParams, SessionMode, SessionPrompt,
+    InputPart, PromptParams, SessionEngine, SessionLoad, SessionLoadParams, SessionPrompt,
     SessionSteer, SessionUnsteer, SessionUpdate, SteerParams, UnsteerParams,
 };
 use serde_json::{Value, json};
@@ -132,7 +132,7 @@ async fn wait_for_steering_applied(harness: &Harness, id: u64) -> SessionUpdate 
 async fn steering_is_delivered_after_the_current_response_and_before_next_request() {
     let (url, ready, release, server) = gated_upstream().await;
     let harness = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     let client = harness.client.clone();
     let request_id = id.clone();
     let running = tokio::spawn(async move {
@@ -142,7 +142,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
                 input: vec![InputPart::Text {
                     text: "开始任务".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -214,7 +214,7 @@ async fn steering_is_delivered_after_the_current_response_and_before_next_reques
 async fn unsteer_removes_pending_steering_before_boundary() {
     let (url, ready, release, server) = gated_upstream().await;
     let harness = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     let client = harness.client.clone();
     let request_id = id.clone();
     let running = tokio::spawn(async move {
@@ -224,7 +224,7 @@ async fn unsteer_removes_pending_steering_before_boundary() {
                 input: vec![InputPart::Text {
                     text: "开始任务".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -307,7 +307,7 @@ async fn context_overflow_inside_sse_compacts_and_continues() {
         ResponseTemplate::new(200).set_body_raw(response,"text/event-stream")
     }).mount(&upstream).await;
     let harness=Harness::new(&upstream.uri(),"openai_chat","[compaction]\nmethod_order=['soft']\nkeep_recent_tokens=100\nthreshold={mode='tokens',value=900000}").await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, &"保留历史任务要求。".repeat(300)).await;
     assert_eq!(
         harness.prompt(&id, "继续实现").await.message.text(),

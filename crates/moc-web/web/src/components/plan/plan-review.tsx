@@ -27,7 +27,7 @@ import type {
   PlanAction,
   PlanAnnotation,
   PlanInfo,
-  SessionMode,
+  SessionEngine,
   SessionPlanDiffResult,
   SessionPlanReviseResult,
   ToolDiff,
@@ -49,11 +49,11 @@ type Props = {
   plan: PlanInfo;
   busy: boolean;
   actionError: string | null;
-  onAction: (plan: PlanInfo, action: PlanAction, executionMode?: SessionMode) => void;
+  onAction: (plan: PlanInfo, action: PlanAction, executionEngine?: SessionEngine) => void;
 };
 
-const EXECUTION_MODES: { id: SessionMode; label: string }[] = [
-  { id: "normal", label: "标准" },
+const EXECUTION_ENGINES: { id: SessionEngine; label: string }[] = [
+  { id: "standard", label: "标准" },
   { id: "ptc", label: "PTC" },
   { id: "clm_experimental", label: "CLM 实验" },
 ];
@@ -92,8 +92,10 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [showSubmitted, setShowSubmitted] = useState(false);
-  const sourceMode = useTranscript((state) => state.bySession[sessionId]?.info.mode ?? "normal");
-  const [executionMode, setExecutionMode] = useState<SessionMode>(sourceMode);
+  const sourceEngine = useTranscript(
+    (state) => state.bySession[sessionId]?.info.engine ?? "standard",
+  );
+  const [executionEngine, setExecutionEngine] = useState<SessionEngine>(sourceEngine);
 
   const lines = useMemo(() => sourceLines(plan.markdown), [plan.markdown]);
 
@@ -449,21 +451,21 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
           </button>
           <span className="inline-flex h-7 items-center overflow-hidden rounded-md border border-border text-[11px]">
             <select
-              value={executionMode}
-              onChange={(event) => setExecutionMode(event.target.value as SessionMode)}
+              value={executionEngine}
+              onChange={(event) => setExecutionEngine(event.target.value as SessionEngine)}
               disabled={busy || submitting}
-              title="新会话执行的方言"
+              title="新会话执行的引擎"
               className="h-full bg-background px-1.5 text-[11px] outline-none disabled:opacity-50"
             >
-              {EXECUTION_MODES.map((mode) => (
-                <option key={mode.id} value={mode.id}>
-                  {mode.label}
+              {EXECUTION_ENGINES.map((engine) => (
+                <option key={engine.id} value={engine.id}>
+                  {engine.label}
                 </option>
               ))}
             </select>
             <button
               type="button"
-              onClick={() => onAction(plan, "execute_new_session", executionMode)}
+              onClick={() => onAction(plan, "execute_new_session", executionEngine)}
               disabled={busy || submitting}
               className="h-full border-l border-border px-2 hover:bg-muted disabled:opacity-50"
             >

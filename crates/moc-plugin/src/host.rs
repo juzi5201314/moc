@@ -531,7 +531,9 @@ impl PluginHost {
         let mut presets = std::collections::BTreeMap::new();
         for plugin in &self.plugins {
             for decl in &plugin.descriptor.agent_presets {
-                presets.entry(decl.name.clone()).or_insert_with(|| decl.clone());
+                presets
+                    .entry(decl.name.clone())
+                    .or_insert_with(|| decl.clone());
             }
         }
         presets
@@ -1518,7 +1520,7 @@ mod tests {
         CallContext {
             session_id: "s1".into(),
             cwd: "/tmp".into(),
-            mode: "normal".into(),
+            mode: "standard".into(),
             permission: "full".into(),
             model: "m".into(),
             is_subagent: false,

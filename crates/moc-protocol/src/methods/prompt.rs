@@ -35,13 +35,13 @@ use serde::{Deserialize, Serialize};
 use crate::method::{ClientRequest, Method};
 use crate::{FinishReason, ImageDetail, ImageSource, Message, Usage};
 
-/// 单次提示的执行契约：只约束这一次 `session/prompt`，提示结束即失效。
+/// 单次提示的执行模式：只约束这一次 `session/prompt`，提示结束即失效。
 ///
-/// 契约与 [`super::session::SessionMode`] 方言是两个正交轴：方言决定交互
-/// 形态且会话级锁定，契约只收紧本次提示的执行许可，不落库、不推送变更事件。
+/// 模式与 [`super::session::SessionEngine`] 引擎是两个正交轴：引擎决定交互
+/// 形态且会话级锁定，模式只收紧本次提示的执行许可，不落库、不推送变更事件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PromptContract {
+pub enum PromptMode {
     /// 只读问答：写工具与执行工具在本次提示内全部拒绝。
     Ask,
 }
@@ -70,12 +70,12 @@ pub struct PromptParams {
     pub session_id: String,
     /// 本条用户消息的输入；多模态按顺序排列。
     pub input: Vec<InputPart>,
-    /// 仅本次提示生效的执行契约；`None` 沿用会话当前契约（plan 叠加态照常生效）。
+    /// 仅本次提示生效的执行模式；`None` 沿用会话当前模式（plan 模式照常生效）。
     ///
     /// 供 `/ask` 这类「只让这一条消息只读」的临时意图使用：core 以它收紧本次
     /// `session/prompt`（含其全部轮）的工具许可，结束后不持久化、不推送事件。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract: Option<PromptContract>,
+    pub mode: Option<PromptMode>,
     /// 本条输入是代理间消息：携带来源元信息，落库为 `Entry::Message.agent`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_message: Option<super::agent::AgentMessageMeta>,
@@ -177,7 +177,7 @@ mod tests {
             input: vec![InputPart::Text {
                 text: "看一下 README".into(),
             }],
-            contract: None,
+            mode: None,
             agent_message: None,
         };
         assert_eq!(
@@ -187,13 +187,13 @@ mod tests {
                 "input": [{ "type": "text", "text": "看一下 README" }]
             })
         );
-        // 本次提示的契约覆盖只在显式给出时上线；缺省时保持旧报文形状。
+        // 本次提示的模式覆盖只在显式给出时上线；缺省时保持旧报文形状。
         let ask = PromptParams {
-            contract: Some(PromptContract::Ask),
+            mode: Some(PromptMode::Ask),
             ..params
         };
         assert_eq!(
-            serde_json::to_value(&ask).expect("可序列化")["contract"],
+            serde_json::to_value(&ask).expect("可序列化")["mode"],
             json!("ask")
         );
         assert_eq!(
@@ -202,7 +202,7 @@ mod tests {
                 "input": [{ "type": "text", "text": "看一下 README" }]
             }))
             .expect("可反序列化")
-            .contract,
+            .mode,
             None
         );
         let image = InputPart::Image {

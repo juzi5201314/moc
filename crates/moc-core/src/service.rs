@@ -18,15 +18,16 @@ use moc_protocol::methods::{
     PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
-    SessionCompactParams, SessionContextContentParams, SessionContextParams, SessionDeleteParams,
-    SessionInfo, SessionListParams, SessionListResult, SessionLoadPageParams,
-    SessionLoadPageResult, SessionLoadParams, SessionLoadResult, SessionMode, SessionNewParams,
-    SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
-    SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams,
-    SessionRenameParams, SessionRetryParams, SessionRewindParams, SessionSetModeParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams,
-    UnsteerResult, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionAutonomy, SessionCompactParams, SessionContextContentParams, SessionContextParams,
+    SessionDeleteParams, SessionEngine, SessionInfo, SessionListParams, SessionListResult,
+    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
+    SessionNewParams, SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult,
+    SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult,
+    SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
+    SessionSetAutonomyParams, SessionSetEngineParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WorkspaceGitBranchParams,
+    WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -126,15 +127,15 @@ pub(crate) fn plugin_context(
     plugin_events::context(
         &state.session.id,
         &state.session.cwd,
-        state.mode,
-        crate::service::mode::ModeContract::effective(state.plan_active, None),
+        state.engine,
+        crate::service::mode::Mode::effective(state.plan_active, None),
         state.permission,
         model,
         state.session.is_subagent(),
     )
 }
 
-/// 会话配置变更事件：模式 / 模型 / 权限切换成功后广播给插件。
+/// 会话配置变更事件：引擎 / 自主程度 / 模型 / 权限切换成功后广播给插件。
 pub(crate) async fn emit_session_config_changed(
     inner: &CoreInner,
     state: &crate::session::state::SessionState,
@@ -151,8 +152,8 @@ pub(crate) async fn emit_session_config_changed(
         let context = plugin_events::context(
             &state.session.id,
             &state.session.cwd,
-            state.mode,
-            crate::service::mode::ModeContract::effective(state.plan_active, None),
+            state.engine,
+            crate::service::mode::Mode::effective(state.plan_active, None),
             state.permission,
             &state.model,
             state.session.is_subagent(),
@@ -353,6 +354,12 @@ impl CoreInner {
             .is_some_and(|caps| caps.ask_requests)
     }
 
+    /// ask 工具可用：前端能转达问题（`ask_requests` 能力），或自主程度让 core
+    /// 自己代答（Don't Ask 及以上——提问根本不会送到前端）。
+    pub(crate) fn ask_available(&self, connection_id: u64, autonomy: SessionAutonomy) -> bool {
+        self.client_supports_ask(connection_id) || autonomy >= SessionAutonomy::DontAsk
+    }
+
     /// 获取该项目的 MCP 管理器，没有就创建。这里不建立连接，连接在执行提示时才启动。
     pub(crate) async fn project_mcp(
         &self,
@@ -389,12 +396,12 @@ impl CoreInner {
         Ok(catalog.summary())
     }
 
-    /// 渲染 PTC 模式系统提示里的工具声明；非 Ptc 模式返回空串。提示主路径直接用
+    /// 渲染 PTC 引擎系统提示里的工具声明；非 Ptc 引擎返回空串。提示主路径直接用
     /// 当轮 catalog 快照调用 `declarations::render_signatures`，本方法供压缩与
     /// /context 预览复用。MCP 索引走每轮的尾部提醒，不属于系统提示。
     pub(crate) async fn tool_declarations(
         &self,
-        mode: SessionMode,
+        engine: SessionEngine,
         config: &ResolvedConfig,
         ask_supported: bool,
     ) -> Result<String, CoreError> {
@@ -406,7 +413,7 @@ impl CoreInner {
             .catalog(&snapshot, manager, plugins)
             .map_err(|err| CoreError::Tool(err.to_string()))?;
         Ok(
-            crate::tools::declarations::render_signatures(&catalog, mode, ask_supported, config)
+            crate::tools::declarations::render_signatures(&catalog, engine, ask_supported, config)
                 .unwrap_or_default(),
         )
     }
@@ -1180,7 +1187,7 @@ impl AgentService for Core {
             .create(
                 &cwd,
                 &model.selector,
-                params.mode,
+                params.engine,
                 permission,
                 params.title.as_deref(),
                 SessionOrigin::root(),
@@ -1428,8 +1435,8 @@ impl AgentService for Core {
             let context = plugin_events::context(
                 &params.session_id,
                 &state.session.cwd,
-                state.mode,
-                crate::service::mode::ModeContract::effective(state.plan_active, None),
+                state.engine,
+                crate::service::mode::Mode::effective(state.plan_active, None),
                 state.permission,
                 &state.model,
                 state.session.is_subagent(),
@@ -1502,8 +1509,8 @@ impl AgentService for Core {
             let context = plugin_events::context(
                 &params.session_id,
                 &state.session.cwd,
-                state.mode,
-                crate::service::mode::ModeContract::effective(state.plan_active, None),
+                state.engine,
+                crate::service::mode::Mode::effective(state.plan_active, None),
                 state.permission,
                 &state.model,
                 state.session.is_subagent(),
@@ -1619,10 +1626,10 @@ impl AgentService for Core {
         Ok(info)
     }
 
-    async fn session_set_mode(
+    async fn session_set_engine(
         &self,
         ctx: RequestContext,
-        params: SessionSetModeParams,
+        params: SessionSetEngineParams,
     ) -> Result<SessionInfo, RpcError> {
         let record = self
             .inner
@@ -1636,27 +1643,71 @@ impl AgentService for Core {
             .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
             .await
             .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
-        let from = record.state.lock().await.mode;
-        // 方言锁在 `Sessions::set_mode` 里判定：有提示历史即拒绝。
+        let from = record.state.lock().await.engine;
+        // 引擎锁在 `Sessions::set_engine` 里判定：有提示历史即拒绝。
         let mut info = self
             .inner
             .sessions
-            .set_mode(&params.session_id, params.mode)
+            .set_engine(&params.session_id, params.engine)
             .await
             .map_err(to_rpc)?;
         info.lock = None;
         info.permission = self.inner.effective_permission(info.permission);
-        mode::emit_mode_change(&ctx, &params.session_id, info.mode, None).await?;
+        mode::emit_engine_change(&ctx, &params.session_id, info.engine, None).await?;
         let state = record.state.lock().await.clone();
         emit_session_config_changed(
             &self.inner,
             &state,
-            "mode",
+            "engine",
             &serde_json::to_value(from)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_default(),
-            &serde_json::to_value(info.mode)
+            &serde_json::to_value(info.engine)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+        )
+        .await;
+        Ok(info)
+    }
+
+    async fn session_set_autonomy(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetAutonomyParams,
+    ) -> Result<SessionInfo, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let from = record.state.lock().await.session.autonomy;
+        let mut info = self
+            .inner
+            .sessions
+            .set_autonomy(&params.session_id, params.autonomy)
+            .await
+            .map_err(to_rpc)?;
+        info.lock = None;
+        info.permission = self.inner.effective_permission(info.permission);
+        mode::emit_autonomy_change(&ctx, &params.session_id, info.autonomy).await?;
+        let state = record.state.lock().await.clone();
+        emit_session_config_changed(
+            &self.inner,
+            &state,
+            "autonomy",
+            &serde_json::to_value(from)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            &serde_json::to_value(info.autonomy)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_default(),
@@ -1747,8 +1798,8 @@ impl AgentService for Core {
             let context = plugin_events::context(
                 &result.session_id,
                 &state.session.cwd,
-                state.mode,
-                crate::service::mode::ModeContract::effective(state.plan_active, None),
+                state.engine,
+                crate::service::mode::Mode::effective(state.plan_active, None),
                 state.permission,
                 &state.model,
                 state.session.is_subagent(),
@@ -2085,7 +2136,7 @@ mod compression_tests {
                         plan_id: "plan_test".into(),
                         action: PlanAction::ExecuteNewSession,
                         execution_model: None,
-                        execution_mode: None,
+                        execution_engine: None,
                     })
                     .await
                     .unwrap();

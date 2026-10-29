@@ -2,7 +2,7 @@
 
 use moc_protocol::methods::{
     AgentInfo, AgentStatus, AskOption, AskParams, AskQuestion, ContextUsageResult,
-    ContextUsageSection, SessionInfo, SessionMode, SessionPermission,
+    ContextUsageSection, SessionAutonomy, SessionEngine, SessionInfo, SessionPermission,
 };
 use moc_tui::app::App;
 use moc_tui::modal::ModelEntry;
@@ -209,9 +209,10 @@ pub fn sample_session_info(id: &str, title: &str, cwd: &str) -> SessionInfo {
         title: title.into(),
         model: "provider/model".into(),
         permission: SessionPermission::Full,
-        mode: SessionMode::Normal,
+        engine: SessionEngine::Standard,
+        autonomy: SessionAutonomy::Default,
         plan_active: false,
-        mode_locked: false,
+        engine_locked: false,
         parent_session_id: None,
         forked_from: None,
         agent_preset: None,
@@ -319,7 +320,7 @@ pub fn sample_queued_prompt(id: u64, text: &str) -> moc_tui::queue::QueuedPrompt
     moc_tui::queue::QueuedPrompt {
         id,
         draft,
-        contract: None,
+        mode: None,
     }
 }
 

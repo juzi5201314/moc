@@ -17,6 +17,30 @@ impl PlanHarness {
         let upstream = MockServer::builder().start().await;
         Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = serde_json::from_slice(&request.body).expect("请求 JSON");
+            if body["stream"] != true {
+                // 压缩摘要走非流式 complete：回一个带固定段落的 checkpoint。
+                let mut checkpoint = String::from("计划和关键决策：保留接口。\n");
+                for section in [
+                    "Primary Request and Intent",
+                    "Key Technical Concepts",
+                    "Decisions and Rejected Options",
+                    "Files and Code",
+                    "Errors and Fixes",
+                    "Pending Jobs",
+                    "Plan Status",
+                    "Current Work",
+                    "Next Step",
+                    "Critical Context",
+                ] {
+                    checkpoint.push_str("## ");
+                    checkpoint.push_str(section);
+                    checkpoint.push('\n');
+                }
+                return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id":"summary","model":body["model"],
+                    "choices":[{"index":0,"message":{"role":"assistant","content":checkpoint},"finish_reason":"stop"}]
+                }));
+            }
             let delta = if body.to_string().contains("<active-plan") {
                 assert_eq!(body["model"], "executor");
                 serde_json::json!({"role":"assistant", "content":"执行完成"})
@@ -56,7 +80,7 @@ impl PlanHarness {
                 cwd: None,
                 model: None,
                 title: None,
-                mode: SessionMode::Normal,
+                engine: SessionEngine::Standard,
                 plan_active: true,
             })
             .await
@@ -88,7 +112,7 @@ impl PlanHarness {
                 input: vec![InputPart::Text {
                     text: "设计方案".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -310,8 +334,8 @@ async fn plan_review_approval_loads_new_session() {
         "test/executor:off"
     );
     assert_eq!(
-        h.app.session.as_ref().expect("执行会话").mode,
-        SessionMode::Normal
+        h.app.session.as_ref().expect("执行会话").engine,
+        SessionEngine::Standard
     );
     assert!(h.app.blocks.iter().any(|entry| matches!(&entry.block, crate::transcript::Block::User { text } if text.contains("<active-plan"))));
     assert!(h.app.inflight_prompts.contains(&child));
@@ -443,7 +467,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             cwd: None,
             model: None,
             title: None,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
             plan_active: true,
         })
         .await
@@ -561,7 +585,7 @@ async fn plan_revised_closes_review_and_sends_prompt() {
         &h.connection,
         Ok(moc_protocol::methods::SessionPlanReviseResult {
             session_id: session.clone(),
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
             plan_active: true,
             prompt: "已根据批注修订".into(),
         }),
@@ -599,5 +623,98 @@ async fn plan_annotate_pane_draws_body_and_editor() {
         h.app.modal,
         Some(Modal::Plan { ref state }) if state.editor.is_some()
     ));
+    h.close().await;
+}
+
+/// unattended：计划提交不弹审阅，前端直接代用户批准「压缩并执行」。
+#[tokio::test]
+async fn unattended_autonomy_auto_approves_submitted_plan() {
+    let mut h = PlanHarness::new().await;
+    let session_id = h.app.session.as_ref().expect("会话").id.clone();
+    h.connection
+        .client
+        .call::<moc_protocol::SessionSetAutonomy>(moc_protocol::SessionSetAutonomyParams {
+            session_id: session_id.clone(),
+            autonomy: moc_protocol::SessionAutonomy::Unattended,
+        })
+        .await
+        .expect("切到 unattended");
+    h.updates();
+    assert_eq!(
+        h.app.session.as_ref().expect("会话").autonomy,
+        moc_protocol::SessionAutonomy::Unattended
+    );
+    // 自动批准用当前会话模型作执行模型：先切到 executor，对齐 mock 的执行断言。
+    h.connection
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: session_id.clone(),
+            selector: "test/executor:off".into(),
+            overflow: SessionModelOverflowAction::Switch,
+        })
+        .await
+        .expect("切执行模型");
+    h.updates();
+
+    let plan = h.write_and_review().await;
+    assert!(
+        !matches!(h.app.modal, Some(Modal::Plan { .. })),
+        "unattended 不得弹审阅窗"
+    );
+    h.approval().await;
+
+    let loaded = h
+        .connection
+        .client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id,
+            max_entries: None,
+            read_only: false,
+        })
+        .await
+        .expect("批准后加载");
+    assert_eq!(loaded.plans[0].plan_id, plan.plan_id);
+    assert_eq!(
+        loaded.plans[0].status,
+        PlanStatus::Approved,
+        "notice: {:?}",
+        h.app.notice
+    );
+    assert!(!loaded.session.plan_active);
+    h.close().await;
+}
+
+/// don't ask：代答范围只到 ask 工具——计划提交仍弹审阅，不自动批准。
+#[tokio::test]
+async fn dont_ask_autonomy_still_opens_plan_review() {
+    let mut h = PlanHarness::new().await;
+    let session_id = h.app.session.as_ref().expect("会话").id.clone();
+    h.connection
+        .client
+        .call::<moc_protocol::SessionSetAutonomy>(moc_protocol::SessionSetAutonomyParams {
+            session_id: session_id.clone(),
+            autonomy: moc_protocol::SessionAutonomy::DontAsk,
+        })
+        .await
+        .expect("切到 don't ask");
+    h.updates();
+
+    let plan = h.write_and_review().await;
+    assert!(
+        matches!(h.app.modal, Some(Modal::Plan { .. })),
+        "don't ask 不得自动批准计划"
+    );
+    let loaded = h
+        .connection
+        .client
+        .call::<SessionLoad>(SessionLoadParams {
+            session_id,
+            max_entries: None,
+            read_only: false,
+        })
+        .await
+        .expect("提交后加载");
+    assert_eq!(loaded.plans[0].plan_id, plan.plan_id);
+    assert_eq!(loaded.plans[0].status, PlanStatus::Submitted);
     h.close().await;
 }

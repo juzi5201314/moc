@@ -129,7 +129,7 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 插件是本地目录里的 JavaScript（ES 模块），在 core 进程内用 QuickJS 执行（每个插件一个专用线程与 Runtime，与 PTC 的独立 worker 不同）。发现来源按优先级为项目 `.moc/plugins`（cwd 向上到 git root）、`[plugins] dirs`、`$MOC_HOME/plugins`；**发现即启用**，因此项目级来源等于信任该仓库，`[plugins] project=false` 或 `disable` 是退出口。完整契约见 [docs/plugins.md](../../docs/plugins.md)，类型声明在 `crates/moc-plugin/js/moc.d.ts`。
 
-插件可注册四类能力：工具（`modes` 取 `normal`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定原生可见性（`normal` 覆盖 CLM 实验模式，PTC 不放行）；`run_code` 的工具目录不列出插件工具，`run_code` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
+插件可注册四类能力：工具（`modes` 取 `default`/`ask`/`plan`，默认三种全开；`parallel` 默认 `false` 作为批次屏障）、斜杠命令、工具钩子与提示词贡献。插件工具按声明的 `modes` 决定原生可见性（`default` 覆盖 CLM 实验引擎，PTC 不放行）；`run_code` 的工具目录不列出插件工具，`run_code` 与插件内部都不能调用插件工具（`E_PLUGIN_RECURSION`）。
 
 `beforeToolCall` 只对模型发起的调用生效，返回值可 `deny`（模型收到 `E_PLUGIN_DENIED`）或改写 `arguments`；改写发生在沙盒判定、bash 规则与授权之前，多个插件按加载顺序串联。`afterToolCall` 是观察型，失败只记日志。钩子自身抛错或超时按 fail-open 处理，不会阻断工具执行。
 
@@ -145,9 +145,9 @@ PTC Host 入口已编译进 `moc`，首次 `run_code` 时将当前 `moc` 作为�
 
 `session/set_model` 在切换前按目标模型窗口与它在当前压缩配置下的触发线检查上下文：装得下就直接切换，装不下则按参数 `overflow` 处理——`switch` 直接切换并把缺口回报给前端，`compact` 先切换再由新模型压缩上下文，`ask` 不切换、只回报缺口让前端询问用户。压缩必须发生在切换之后：`ModelChange` 会作废旧模型的原生载荷与远程摘要，checkpoint 只能由新模型产出。压缩失败不回退切换，失败原因随结果返回。
 
-### CLM 实验模式
+### CLM 实验引擎
 
-使用 `--mode clm-experimental` 或 `/clm-experimental` 启用。模型可通过 `clm_context` 工具读取、替换或追加实时工作上下文；不可变 JSONL transcript 作为完整审计源保留。TUI 状态栏显示 `(clm)`，会话第一次请求后模式锁定，不能切换回其它模式。
+使用 `--engine clm` 或 `/clm-experimental` 启用。模型可通过 `clm_context` 工具读取、替换或追加实时工作上下文；不可变 JSONL transcript 作为完整审计源保留。TUI 状态栏显示 `(clm)`，会话第一次请求后引擎锁定，不能切换回其它引擎。
 
 ### 会话保留
 
@@ -162,7 +162,7 @@ cargo run -p moc-cli -- --print "解释当前项目的入口"
 cargo run -p moc-cli -- --resume SESSION_ID
 ```
 
-交互命令包括 `/help`、`/quit`（`/exit` 同义）、`/cancel`、`/mode`、`/clm-experimental`、`/permission full|workspace|workspace-only|clear`、`/plan`、`/ask`、`/approve execute|compact|new|reject`、`/agents`、`/compact`、`/usage`、`/new`、`/sessions` 和 `/model`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` / `workspace-only` 要求 core 启动时探测到可用的 OS sandbox runner（Linux `bwrap`、macOS `sandbox-exec`）；原生 Windows 只提供 `full`，WSL2 走 Linux 实现。包管理器写 `$HOME` 缓存由 Linux HOME overlay 或 workspace-only 合成 HOME 兜住，不需要枚举缓存目录；细则见「行为与安全边界」。
+交互命令包括 `/help`、`/quit`（`/exit` 同义）、`/cancel`、`/engine`、`/autonomy`、`/clm-experimental`、`/permission full|workspace|workspace-only|clear`、`/plan`、`/ask`、`/approve execute|compact|new|reject`、`/agents`、`/compact`、`/usage`、`/new`、`/sessions` 和 `/model`。`/usage` 展示当前会话各模型的调用次数、输入／输出 token、缓存命中率、思考 token、TPS 与激活时间，并附全部模型总和。输入框以 `!` 开头的内容直接执行 Bash 并把命令及结果写入 agent 上下文，以 `!!` 开头则执行后只在界面显示，不写入 agent 上下文；两者都不触发模型请求。`workspace` / `workspace-only` 要求 core 启动时探测到可用的 OS sandbox runner（Linux `bwrap`、macOS `sandbox-exec`）；原生 Windows 只提供 `full`，WSL2 走 Linux 实现。包管理器写 `$HOME` 缓存由 Linux HOME overlay 或 workspace-only 合成 HOME 兜住，不需要枚举缓存目录；细则见「行为与安全边界」。
 
 ## 嵌入接口
 

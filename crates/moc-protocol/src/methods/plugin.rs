@@ -48,7 +48,7 @@ pub struct PluginInfo {
 pub struct PluginToolInfo {
     pub name: String,
     pub description: String,
-    /// 该工具可见的会话模式（`normal`/`ask`/`plan`）。
+    /// 该工具可见的执行模式（`default`/`ask`/`plan`）。
     pub modes: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,7 +120,7 @@ mod tests {
         let expected = json!({
             "name": "demo",
             "description": "演示",
-            "modes": ["normal", "plan"],
+            "modes": ["default", "plan"],
         });
         let tool: PluginToolInfo = serde_json::from_value(expected.clone()).expect("工具声明");
         assert_eq!(serde_json::to_value(tool).expect("序列化"), expected);

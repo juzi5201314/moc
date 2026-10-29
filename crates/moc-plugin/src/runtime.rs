@@ -704,8 +704,8 @@ fn optional_bool<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
         .ok_or_else(|| PluginError::new("E_PLUGIN_DESCRIPTOR", format!("`{key}` 必须是布尔值")))
 }
 
-/// 可选 `modes`：缺失时三种模式全开；存在时必须是 `normal`/`ask`/`plan`
-/// 的非空字符串数组。`ptc` 不开放：PTC 只暴露 `run_code`，插件工具在那里不可达。
+/// 可选 `modes`：缺失时三种模式全开；存在时必须是 `default`/`ask`/`plan`
+/// 的非空字符串数组。没有引擎维度：PTC 只暴露 `run_code`，插件工具在那里不可达。
 fn optional_modes<'js>(ctx: &Ctx<'js>, object: &Object<'js>, owner: &str) -> Result<ModeMask> {
     let value: JsValue = object.get("modes").map_err(|error| js_error(ctx, error))?;
     if value.is_undefined() {
@@ -730,7 +730,7 @@ fn optional_modes<'js>(ctx: &Ctx<'js>, object: &Object<'js>, owner: &str) -> Res
         modes = modes.union(ModeMask::parse(&name).ok_or_else(|| {
             PluginError::new(
                 "E_PLUGIN_DESCRIPTOR",
-                format!("工具 `{owner}` 的 modes 含未知模式 `{name}`（normal/ask/plan）"),
+                format!("工具 `{owner}` 的 modes 含未知模式 `{name}`（default/ask/plan）"),
             )
         })?);
     }
@@ -1584,7 +1584,7 @@ mod tests {
         ready.await.expect("调用方存活")
     }
 
-    const SESSION: &str = r#"{"sessionId":"s1","cwd":"/tmp","mode":"normal","permission":"full","model":"m","isSubagent":false}"#;
+    const SESSION: &str = r#"{"sessionId":"s1","cwd":"/tmp","mode":"standard","permission":"full","model":"m","isSubagent":false}"#;
 
     #[tokio::test]
     async fn evaluates_tools_commands() {
@@ -1647,7 +1647,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(value, json!("plugin prompt for normal"));
+        assert_eq!(value, json!("plugin prompt for standard"));
     }
 
     #[tokio::test]
@@ -1688,7 +1688,7 @@ mod tests {
                 &dir,
                 "index.js",
                 &format!(
-                    "export default {{ tools: {{ x: {{ description: \"x\", parameters: {{ type: \"object\" }}, {field}: [\"normal\"], run: () => \"ok\" }} }} }};"
+                    "export default {{ tools: {{ x: {{ description: \"x\", parameters: {{ type: \"object\" }}, {field}: [\"default\"], run: () => \"ok\" }} }} }};"
                 ),
             );
             let (_worker, ready) = spawn(

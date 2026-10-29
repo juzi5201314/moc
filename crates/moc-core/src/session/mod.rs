@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use moc_llm::{ContentPart, FinishReason, Message, ReasoningBlock, Role, ToolCall, ToolResult};
 use moc_protocol::methods::{
-    SessionInfo, SessionLoadPageResult, SessionLoadResult, SessionLockInfo, SessionMode,
-    SessionPermission, SessionRenameParams, ToolExecution, TranscriptChildCall, TranscriptEntry,
+    SessionAutonomy, SessionEngine, SessionInfo, SessionLoadPageResult, SessionLoadResult,
+    SessionLockInfo, SessionPermission, SessionRenameParams, ToolExecution, TranscriptChildCall,
+    TranscriptEntry,
 };
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -109,7 +110,7 @@ impl SessionTable {
         &self,
         cwd: impl AsRef<Path>,
         model: &str,
-        mode: SessionMode,
+        engine: SessionEngine,
         permission: SessionPermission,
         title: Option<&str>,
         origin: SessionOrigin,
@@ -127,7 +128,7 @@ impl SessionTable {
             session_id.clone(),
             cwd.to_string_lossy().into_owned(),
             model.to_owned(),
-            mode,
+            engine,
             permission,
             origin,
             title,
@@ -827,34 +828,57 @@ impl SessionTable {
         Ok(session)
     }
 
-    /// 记录会话模式方言的变更。
+    /// 记录会话引擎的变更。
     ///
-    /// 方言是会话级属性：transcript 里每一种方言的工具调用形态不同，混排会让
+    /// 引擎是会话级属性：transcript 里每一种引擎的工具调用形态不同，混排会让
     /// 模型模仿已失效的调用格式，所以一旦会话跑过用户提示（`prompt_sequence > 0`
-    /// 即 [`SessionInfo::mode_locked`]）就拒绝一切方言切换；回退到空白后自然解锁。
-    pub async fn set_mode(
+    /// 即 [`SessionInfo::engine_locked`]）就拒绝一切引擎切换；回退到空白后自然解锁。
+    pub async fn set_engine(
         &self,
         session_id: &str,
-        mode: SessionMode,
+        engine: SessionEngine,
     ) -> Result<SessionInfo, CoreError> {
         let record = self.get(session_id).await?;
         let plan_active = {
             let state = record.state.lock().await;
-            if state.prompt_sequence > 0 && mode != state.mode {
+            if state.prompt_sequence > 0 && engine != state.engine {
                 return Err(CoreError::Session(
-                    "INVALID_PARAMS: 会话已有提示历史，模式方言已锁定；请新建会话选择方言".into(),
+                    "INVALID_PARAMS: 会话已有提示历史，引擎已锁定；请新建会话选择引擎".into(),
                 ));
             }
             state.plan_active
         };
-        self.append(session_id, EntryPayload::ModeChange { mode, plan_active })
+        self.append(
+            session_id,
+            EntryPayload::EngineChange {
+                engine,
+                plan_active,
+            },
+        )
+        .await?;
+        let mut session = record.state.lock().await.session_info();
+        session.lock = lock::read(record.paths.lock_file(session_id));
+        Ok(session)
+    }
+
+    /// 记录会话自主程度的变更。
+    ///
+    /// 自主程度随时可改：它只影响之后确认由谁应答，不改动工具表与历史，
+    /// 所以不受引擎锁定限制。
+    pub async fn set_autonomy(
+        &self,
+        session_id: &str,
+        autonomy: SessionAutonomy,
+    ) -> Result<SessionInfo, CoreError> {
+        let record = self.get(session_id).await?;
+        self.append(session_id, EntryPayload::AutonomyChange { autonomy })
             .await?;
         let mut session = record.state.lock().await.session_info();
         session.lock = lock::read(record.paths.lock_file(session_id));
         Ok(session)
     }
 
-    /// 记录 plan 叠加态的进入或退出。
+    /// 记录 plan 模式的进入或退出。
     pub async fn set_plan_active(
         &self,
         session_id: &str,
@@ -1200,7 +1224,7 @@ async fn persist_orphans(paths: &SessionPaths, ids: &BTreeSet<String>) -> Result
 mod tests {
     use moc_llm::{ContentPart, Role, ToolCall};
     use moc_protocol::methods::{
-        AgentMessageMeta, AgentMessageOutcome, SessionMode, SessionRenameParams, ToolStatus,
+        AgentMessageMeta, AgentMessageOutcome, SessionEngine, SessionRenameParams, ToolStatus,
     };
 
     use super::*;
@@ -1263,7 +1287,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1471,7 +1495,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1487,7 +1511,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 Some("子任务"),
                 SessionOrigin::spawned(parent.id.clone(), 1, None),
@@ -1535,7 +1559,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1574,7 +1598,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1645,7 +1669,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1681,7 +1705,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1732,7 +1756,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model:high",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 Some("  标题  "),
                 SessionOrigin::root(),
@@ -1758,7 +1782,7 @@ mod tests {
         let loaded = table.load(&info.id, None).await.expect("从磁盘重载");
         assert!(!loaded.truncated);
         assert_eq!(loaded.entries.len(), 3);
-        assert_eq!(loaded.session.mode, SessionMode::Normal);
+        assert_eq!(loaded.session.engine, SessionEngine::Standard);
         let renamed = table
             .rename(
                 &info.id,
@@ -1792,7 +1816,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1847,7 +1871,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1887,7 +1911,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -1944,7 +1968,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -2006,17 +2030,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dialect_locks_after_first_prompt_not_before() {
+    async fn engine_locks_after_first_prompt_not_before() {
         let directory = tempfile::tempdir().expect("临时目录");
         let table = SessionTable::new(directory.path().join("sessions"), true);
-        let create = |mode| {
+        let create = |engine| {
             let table = &table;
             async move {
                 table
                     .create(
                         "/tmp/project",
                         "p/model",
-                        mode,
+                        engine,
                         SessionPermission::Full,
                         None,
                         SessionOrigin::root(),
@@ -2026,14 +2050,14 @@ mod tests {
                     .expect("创建会话")
             }
         };
-        // 尚未跑过提示的会话不锁定方言（CLM 也一样）。
-        let untouched = create(SessionMode::ClmExperimental).await;
+        // 尚未跑过提示的会话不锁定引擎（CLM 也一样）。
+        let untouched = create(SessionEngine::ClmExperimental).await;
         table
-            .set_mode(&untouched.id, SessionMode::Normal)
+            .set_engine(&untouched.id, SessionEngine::Standard)
             .await
-            .expect("首次提示前允许切换方言");
+            .expect("首次提示前允许切换引擎");
         // 无提示历史时混入的实时上下文不构成锁定理由。
-        let forged = create(SessionMode::Normal).await;
+        let forged = create(SessionEngine::Standard).await;
         table
             .append(
                 &forged.id,
@@ -2044,11 +2068,11 @@ mod tests {
             .await
             .expect("写入实时上下文");
         table
-            .set_mode(&forged.id, SessionMode::Ptc)
+            .set_engine(&forged.id, SessionEngine::Ptc)
             .await
-            .expect("无提示历史的会话不因异常数据锁方言");
-        // 跑过用户提示的会话方言锁定；同方言重设不报错。
-        let clm = create(SessionMode::ClmExperimental).await;
+            .expect("无提示历史的会话不因异常数据锁引擎");
+        // 跑过用户提示的会话引擎锁定；同引擎重设不报错。
+        let clm = create(SessionEngine::ClmExperimental).await;
         table
             .append(
                 &clm.id,
@@ -2063,14 +2087,26 @@ mod tests {
             .await
             .expect("写入用户提示");
         let error = table
-            .set_mode(&clm.id, SessionMode::Normal)
+            .set_engine(&clm.id, SessionEngine::Standard)
             .await
-            .expect_err("首次提示后方言必须锁定");
-        assert!(error.to_string().contains("方言"), "{error}");
+            .expect_err("首次提示后引擎必须锁定");
+        assert!(error.to_string().contains("引擎"), "{error}");
         table
-            .set_mode(&clm.id, SessionMode::ClmExperimental)
+            .set_engine(&clm.id, SessionEngine::ClmExperimental)
             .await
-            .expect("同方言重设不报错");
+            .expect("同引擎重设不报错");
+        // 自主程度不受引擎锁定限制：有提示历史后仍随时可改，且随会话持久化。
+        let autonomy = table
+            .set_autonomy(&clm.id, SessionAutonomy::Unattended)
+            .await
+            .expect("提示历史后可改自主程度");
+        assert_eq!(autonomy.autonomy, SessionAutonomy::Unattended);
+        let reloaded = table.load(&clm.id, None).await.expect("重载会话");
+        assert_eq!(
+            reloaded.session.autonomy,
+            SessionAutonomy::Unattended,
+            "自主程度必须随 transcript 持久化"
+        );
     }
     #[tokio::test]
     async fn rewind_truncates_user_message_and_keeps_tool_history_complete() {
@@ -2080,7 +2116,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -2162,7 +2198,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -2269,7 +2305,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -2331,7 +2367,7 @@ mod tests {
             .create(
                 "/tmp/project",
                 "p/model",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),

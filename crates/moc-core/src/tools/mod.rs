@@ -36,7 +36,7 @@ use crate::session::state::SessionState;
 use crate::session::store::SessionPaths;
 use futures_util::future::BoxFuture;
 use moc_llm::ToolDef;
-use moc_protocol::{RequestContext, SessionMode, SessionPermission};
+use moc_protocol::{RequestContext, SessionEngine, SessionPermission};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -172,10 +172,10 @@ pub struct ToolCtx {
     pub sessions: Arc<SessionTable>,
     pub(crate) core: Arc<crate::service::CoreInner>,
     pub catalog: Arc<catalog::ToolCatalog>,
-    /// 会话方言：决定工具可达面（schema 与可调集合）。
-    pub mode: SessionMode,
-    /// 本次提示的执行契约（plan 叠加态 / ask 单次契约）：只收紧执行许可。
-    pub contract: crate::service::mode::ModeContract,
+    /// 会话引擎：决定工具可达面（schema 与可调集合）。
+    pub engine: SessionEngine,
+    /// 本次提示的执行模式（plan 模式 / ask 单次模式）：只收紧执行许可。
+    pub mode: crate::service::mode::Mode,
     pub permission: SessionPermission,
     pub allow_agents: bool,
     /// 当前是否在子代理里；决定 `yield` 是否可用。
@@ -244,15 +244,15 @@ impl ToolCtx {
 
     /// 交给插件的会话快照；字段与 `moc.d.ts` 的 `Session` 一一对应。
     ///
-    /// `mode` 沿用旧词表：契约激活时报契约名（`ask`/`plan`），否则报方言名——
-    /// 插件的 `modes` 声明与契约同词表，`writable` 反映契约是否只读。
+    /// `mode` 沿用混合词表：执行模式非默认时报模式名（`ask`/`plan`），否则报
+    /// 引擎名——插件的 `modes` 声明与模式同词表，`writable` 反映模式是否只读。
     pub fn plugin_call_context(&self) -> moc_plugin::CallContext {
-        let mode = match self.contract {
-            crate::service::mode::ModeContract::None => serde_json::to_value(self.mode)
+        let mode = match self.mode {
+            crate::service::mode::Mode::Default => serde_json::to_value(self.engine)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_default(),
-            contract => contract.name().to_owned(),
+            mode => mode.name().to_owned(),
         };
         moc_plugin::CallContext {
             session_id: self.session_id.clone(),
@@ -261,7 +261,7 @@ impl ToolCtx {
             permission: self.permission.as_str().to_owned(),
             model: self.model.clone(),
             is_subagent: self.subagent,
-            writable: !self.contract.read_only(),
+            writable: !self.mode.read_only(),
         }
     }
 }
@@ -281,19 +281,15 @@ pub trait Tool: Send + Sync {
     fn origin(&self) -> ToolOrigin {
         ToolOrigin::Builtin
     }
-    /// 是否出现在方言工具面（schema/声明）里：只归方言，契约切换不重写工具表。
-    /// 默认等价于无契约的执行面；插件工具只按方言判定，契约掩码在执行许可检查。
-    fn declared_in(&self, mode: SessionMode) -> bool {
-        self.permitted_in(mode, crate::service::mode::ModeContract::None)
+    /// 是否出现在引擎工具面（schema/声明）里：只归引擎，模式切换不重写工具表。
+    /// 默认等价于默认模式的执行面；插件工具只按引擎判定，模式掩码在执行许可检查。
+    fn declared_in(&self, engine: SessionEngine) -> bool {
+        self.permitted_in(engine, crate::service::mode::Mode::Default)
     }
-    /// 方言 + 契约下是否允许执行。默认按内置白名单与风险等级判定；插件工具用
-    /// 自己声明的 `modes`（契约词表）覆盖契约层。
-    fn permitted_in(
-        &self,
-        mode: SessionMode,
-        contract: crate::service::mode::ModeContract,
-    ) -> bool {
-        crate::service::mode::mode_allows(mode, contract, self.name(), self.tier(), self.origin())
+    /// 引擎 + 模式下是否允许执行。默认按内置白名单与风险等级判定；插件工具用
+    /// 自己声明的 `modes`（模式词表）覆盖模式层。
+    fn permitted_in(&self, engine: SessionEngine, mode: crate::service::mode::Mode) -> bool {
+        crate::service::mode::mode_allows(engine, mode, self.name(), self.tier(), self.origin())
     }
     fn parallel_safe(&self) -> bool;
     fn def(&self) -> ToolDef;
@@ -385,11 +381,11 @@ impl ToolRegistry {
 
     /// 模型可见的工具定义：内置工具 + 调用方传入的插件工具。
     ///
-    /// 工具面只随方言变化（契约不动 schema，保障请求前缀缓存稳定）；方言判定走
+    /// 工具面只随引擎变化（模式不动 schema，保障请求前缀缓存稳定）；引擎判定走
     /// [`Tool::declared_in`]，配置开关与代理范围另外过滤。
     pub fn definitions(
         &self,
-        mode: SessionMode,
+        engine: SessionEngine,
         ask_supported: bool,
         config: &ResolvedConfig,
         scope: ToolScope,
@@ -413,7 +409,7 @@ impl ToolRegistry {
                     .map_or(true, |policy| policy.permits(tool.name()))
             })
             .filter(|tool| {
-                tool.declared_in(mode)
+                tool.declared_in(engine)
                     && crate::service::mode::tool_enabled(
                         tool.name(),
                         tool.origin(),

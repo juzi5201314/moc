@@ -28,7 +28,7 @@
 //! | `config/get` | 前端→core | core | 已初始化 | `-32014` |
 //! | `session/new` / `list` / `load` / `unload` | 前端→core | core | 已初始化 | `-32602` / `-32010` / `-32014` |
 //! | `session/rename` / `delete` / `unlock` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
-//! | `session/set_mode` / `session/set_permission` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
+//! | `session/set_engine` / `session/set_permission` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
@@ -156,7 +156,8 @@
 //!     SessionLoadResult, SessionNewParams, SessionPlanApproveParams, SessionPlanApproveResult,
 //!     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams,
 //!     SessionPlanReviseResult,
-//!     SessionRenameParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
+//!     SessionRenameParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
+//!     SessionSetModelParams,
 //!     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
 //!     SessionUpdate, PromptResult,
 //! };
@@ -276,7 +277,10 @@
 //!     async fn session_unlock(&self, _ctx: RequestContext, _params: SessionUnlockParams) -> Result<Empty, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
-//!     async fn session_set_mode(&self, _ctx: RequestContext, _params: SessionSetModeParams) -> Result<SessionInfo, RpcError> {
+//!     async fn session_set_engine(&self, _ctx: RequestContext, _params: SessionSetEngineParams) -> Result<SessionInfo, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_set_autonomy(&self, _ctx: RequestContext, _params: SessionSetAutonomyParams) -> Result<SessionInfo, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_plan_mode(&self, _ctx: RequestContext, _params: SessionPlanModeParams) -> Result<SessionInfo, RpcError> {

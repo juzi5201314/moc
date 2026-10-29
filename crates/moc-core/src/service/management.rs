@@ -65,8 +65,8 @@ pub(super) async fn steer(
         let context = crate::service::plugin_events::context(
             &params.session_id,
             &snapshot.session.cwd,
-            snapshot.mode,
-            crate::service::mode::ModeContract::effective(snapshot.plan_active, None),
+            snapshot.engine,
+            crate::service::mode::Mode::effective(snapshot.plan_active, None),
             snapshot.permission,
             &snapshot.model,
             snapshot.session.is_subagent(),

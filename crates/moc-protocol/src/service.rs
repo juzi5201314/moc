@@ -42,10 +42,11 @@ use crate::methods::{
     SessionLoadParams, SessionLoadResult, SessionNewParams, SessionPlanApproveParams,
     SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
     SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams, SessionRenameParams,
-    SessionRetryParams, SessionRewindParams, SessionSetModeParams, SessionSetModelParams,
-    SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
-    SessionUpdateMethod, SessionUpdateParams, SessionUsageParams, SessionUsageResult,
-    UnsteerParams, UnsteerResult, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
+    SessionUsageResult, UnsteerParams, UnsteerResult, WorkspaceGitBranchParams,
+    WorkspaceGitBranchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -272,15 +273,22 @@ pub trait AgentService: Send + Sync + 'static {
         params: SessionUnlockParams,
     ) -> impl Future<Output = Result<Empty, RpcError>> + Send;
 
-    /// 切换会话模式方言；只在空白会话期允许，已有提示历史时回 `InvalidParams`；
+    /// 切换会话引擎；只在空白会话期允许，已有提示历史时回 `InvalidParams`；
     /// 被他人持锁时回 `SessionLocked`。
-    fn session_set_mode(
+    fn session_set_engine(
         &self,
         ctx: RequestContext,
-        params: SessionSetModeParams,
+        params: SessionSetEngineParams,
     ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
 
-    /// 进入 / 退出 plan 叠加态；被他人持锁时回 `SessionLocked`。
+    /// 切换会话自主程度；随时可改，被他人持锁时回 `SessionLocked`。
+    fn session_set_autonomy(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetAutonomyParams,
+    ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
+
+    /// 进入 / 退出 plan 模式；被他人持锁时回 `SessionLocked`。
     fn session_plan_mode(
         &self,
         ctx: RequestContext,

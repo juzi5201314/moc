@@ -2,12 +2,12 @@
 //! Derived directly from ORIGINAL_REQUEST.md and PROJECT.md specifications.
 
 use super::common::*;
-use moc_protocol::methods::{AgentStatus, PromptContract};
-use moc_protocol::{SessionMode, Usage};
-use moc_tui::app::ModeMenu;
+use moc_protocol::methods::{AgentStatus, PromptMode};
+use moc_protocol::{SessionEngine, Usage};
+use moc_tui::app::EngineMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
-use moc_tui::render::modal::{draw_completion_menu, draw_modal, draw_mode_menu};
+use moc_tui::render::modal::{draw_completion_menu, draw_engine_menu, draw_modal};
 use moc_tui::theme::Theme;
 use moc_tui::widgets::prompt::PromptState;
 use ratatui::layout::Rect;
@@ -91,21 +91,24 @@ fn test_f1_b3_massive_terminal_modal_opacity() {
 }
 
 #[test]
-fn test_f1_b4_mode_menu_popup_opacity_clears_noise() {
+fn test_f1_b4_engine_menu_popup_opacity_clears_noise() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     prefill_noise(&mut terminal, "@", Color::Yellow);
-    app.mode_area = Rect::new(50, 20, 10, 1);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_area = Rect::new(50, 20, 10, 1);
+    app.engine_menu = Some(EngineMenu {
         selected: 0,
         area: Rect::new(30, 10, 40, 10),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
-    let mode_row = rows
+    let engine_row = rows
         .iter()
-        .find(|r| r.contains("normal") || r.contains("plan"))
-        .expect("mode menu row");
-    assert!(!mode_row.contains("@@@@"), "noise leaked through mode menu");
+        .find(|r| r.contains("standard") || r.contains("ptc"))
+        .expect("engine menu row");
+    assert!(
+        !engine_row.contains("@@@@"),
+        "noise leaked through engine menu"
+    );
 }
 
 #[test]
@@ -152,11 +155,11 @@ fn test_f2_b1_border_sharp_corner_consistency_across_modals() {
 #[test]
 fn test_f2_b2_narrow_modal_border_width_3() {
     let (mut app, _rx, mut terminal) = create_test_terminal(3, 10);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_menu = Some(EngineMenu {
         selected: 0,
         area: Rect::new(0, 0, 3, 5),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     assert_eq!(rows[0].chars().count(), 3, "3-col border width respected");
 }
@@ -164,11 +167,11 @@ fn test_f2_b2_narrow_modal_border_width_3() {
 #[test]
 fn test_f2_b3_minimal_height_modal_border() {
     let (mut app, _rx, mut terminal) = create_test_terminal(30, 2);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_menu = Some(EngineMenu {
         selected: 0,
         area: Rect::new(0, 0, 30, 2),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     assert_eq!(rows.len(), 2, "2-row minimal modal rendered without crash");
 }
@@ -192,13 +195,13 @@ fn test_f2_b4_nested_border_contrast() {
 }
 
 #[test]
-fn test_f2_b5_mode_menu_four_corners_intact() {
+fn test_f2_b5_engine_menu_four_corners_intact() {
     let (mut app, _rx, mut terminal) = create_test_terminal(60, 20);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_menu = Some(EngineMenu {
         selected: 0,
         area: Rect::new(5, 5, 40, 8),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let top_border = &rows[5];
     assert!(
@@ -497,52 +500,56 @@ fn test_f7_b5_prompt_unicode_cjk_backspace() {
 // ============================================================================
 
 #[test]
-fn test_f8_b1_mode_tag_plan_styling() {
+fn test_f8_b1_status_tag_plan_styling() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-1", "Session", "/tmp"));
     assert_eq!(
-        app.session.as_ref().map(|s| s.mode),
-        Some(SessionMode::Normal)
+        app.session.as_ref().map(|s| s.engine),
+        Some(SessionEngine::Standard)
     );
     app.session.as_mut().unwrap().plan_active = true;
-    assert_eq!(app.display_mode(), "normal+plan", "plan 是叠加态，不改方言");
+    assert_eq!(
+        app.status_label(),
+        "standard+plan",
+        "plan 是叠加态，不改引擎"
+    );
 }
 
 #[test]
-fn test_f8_b2_mode_tag_ask_styling() {
+fn test_f8_b2_status_tag_ask_styling() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-1", "Session", "/tmp"));
-    app.transient_contract = Some(PromptContract::Ask);
-    assert_eq!(app.display_mode(), "normal+ask");
+    app.transient_mode = Some(PromptMode::Ask);
+    assert_eq!(app.status_label(), "standard+ask");
 }
 
 #[test]
-fn test_f8_b3_mode_tag_exec_default() {
-    let norm = SessionMode::Normal;
-    assert_eq!(norm, SessionMode::Normal);
+fn test_f8_b3_engine_tag_exec_default() {
+    let norm = SessionEngine::Standard;
+    assert_eq!(norm, SessionEngine::Standard);
 }
 
 #[test]
 fn test_f8_b4_mode_preserved_across_queue() {
     let mut queued = sample_queued_prompt(1, "只读问答提示");
-    queued.contract = Some(PromptContract::Ask);
+    queued.mode = Some(PromptMode::Ask);
     assert_eq!(
-        queued.contract,
-        Some(PromptContract::Ask),
-        "queued prompt preserves contract tag"
+        queued.mode,
+        Some(PromptMode::Ask),
+        "queued prompt preserves mode tag"
     );
 }
 
 #[test]
-fn test_f8_b5_mode_toggle_cycle() {
-    let modes = [
-        SessionMode::Normal,
-        SessionMode::Ptc,
-        SessionMode::ClmExperimental,
+fn test_f8_b5_engine_toggle_cycle() {
+    let engines = [
+        SessionEngine::Standard,
+        SessionEngine::Ptc,
+        SessionEngine::ClmExperimental,
     ];
-    for (i, mode) in modes.iter().enumerate() {
-        let next = modes[(i + 1) % modes.len()];
-        assert_ne!(*mode, next);
+    for (i, engine) in engines.iter().enumerate() {
+        let next = engines[(i + 1) % engines.len()];
+        assert_ne!(*engine, next);
     }
 }
 
@@ -1056,8 +1063,8 @@ fn test_f19_b5_context_breakdown_tooltip_or_stats() {
 // ============================================================================
 
 #[test]
-fn test_f20_b1_mode_menu_selection_wrap() {
-    let menu = ModeMenu {
+fn test_f20_b1_engine_menu_selection_wrap() {
+    let menu = EngineMenu {
         selected: 2,
         area: Rect::new(0, 0, 40, 10),
     };
@@ -1065,8 +1072,8 @@ fn test_f20_b1_mode_menu_selection_wrap() {
 }
 
 #[test]
-fn test_f20_b2_mode_menu_up_arrow_wrap() {
-    let menu = ModeMenu {
+fn test_f20_b2_engine_menu_up_arrow_wrap() {
+    let menu = EngineMenu {
         selected: 0,
         area: Rect::new(0, 0, 40, 10),
     };
@@ -1074,39 +1081,42 @@ fn test_f20_b2_mode_menu_up_arrow_wrap() {
 }
 
 #[test]
-fn test_f20_b3_mode_switch_updates_theme_accents() {
+fn test_f20_b3_engine_switch_updates_theme_accents() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
     app.session = Some(sample_session_info("ses-1", "Session", "/tmp"));
     if let Some(session) = app.session.as_mut() {
-        session.mode = SessionMode::Ptc;
+        session.engine = SessionEngine::Ptc;
     }
-    assert_eq!(app.session.as_ref().map(|s| s.mode), Some(SessionMode::Ptc));
+    assert_eq!(
+        app.session.as_ref().map(|s| s.engine),
+        Some(SessionEngine::Ptc)
+    );
 }
 
 #[test]
-fn test_f20_b4_mode_menu_esc_dismiss() {
+fn test_f20_b4_engine_menu_esc_dismiss() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_menu = Some(EngineMenu {
         selected: 1,
         area: Rect::default(),
     });
-    assert!(app.mode_menu.is_some());
-    app.mode_menu = None;
-    assert!(app.mode_menu.is_none());
+    assert!(app.engine_menu.is_some());
+    app.engine_menu = None;
+    assert!(app.engine_menu.is_none());
 }
 
 #[test]
-fn test_f20_b5_mode_menu_options_count() {
+fn test_f20_b5_engine_menu_options_count() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.mode_area = Rect::new(50, 20, 10, 1);
-    app.mode_menu = Some(ModeMenu {
+    app.engine_area = Rect::new(50, 20, 10, 1);
+    app.engine_menu = Some(EngineMenu {
         selected: 0,
         area: Rect::new(20, 5, 40, 10),
     });
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(
         rows.iter()
-            .any(|r| r.contains("normal") || r.contains("plan"))
+            .any(|r| r.contains("standard") || r.contains("ptc"))
     );
 }

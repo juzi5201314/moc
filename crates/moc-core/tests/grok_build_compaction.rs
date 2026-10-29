@@ -4,7 +4,8 @@ mod support;
 
 use moc_core::session::entries::Entry;
 use moc_protocol::methods::{
-    SessionCompact, SessionCompactParams, SessionMode, SessionNew, SessionNewParams, SessionUpdate,
+    SessionCompact, SessionCompactParams, SessionEngine, SessionNew, SessionNewParams,
+    SessionUpdate,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -114,7 +115,7 @@ async fn grok_build_full_replace_and_replay() {
         "[compaction]\nsoft_method='grok_build'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=100\n",
     )
     .await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, "第一轮：实现可切换 soft 压缩").await;
 
     let compacted = harness
@@ -229,7 +230,7 @@ async fn grok_build_retries_degenerate_summary() {
         "[compaction]\nsoft_method='grok_build'\nmethod_order=['soft']\nauto=false\n",
     )
     .await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, "写点东西").await;
     let compacted = harness
         .client
@@ -289,7 +290,7 @@ async fn grok_build_ladder_shrinks_after_context_length() {
             cwd: None,
             model: Some("test/small".into()),
             title: None,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
             plan_active: false,
         })
         .await
@@ -360,7 +361,7 @@ async fn grok_build_prefire_feeds_note1_into_second_pass() {
          threshold={mode='tokens',value=60000}\n",
     )
     .await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     for round in 0..3 {
         harness
             .prompt(&id, &format!("第 {round} 轮：继续推进"))
@@ -436,7 +437,7 @@ async fn moc_soft_default_unchanged() {
         "[compaction]\nmethod_order=['soft']\nauto=false\n",
     )
     .await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     harness.prompt(&id, "第一轮").await;
     let compacted = harness
         .client

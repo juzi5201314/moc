@@ -205,15 +205,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
 
     crate::queue::draw(frame, app);
     btw::draw(frame, app);
-    // 浮层最后画：补全菜单贴输入框上沿，就地模式菜单贴模式图例，居中模态覆盖全部。
+    // 浮层最后画：补全菜单贴输入框上沿，就地引擎菜单贴模式图例，居中模态覆盖全部。
     if let Some(completion) = &mut app.completion {
         modal::draw_completion_menu(frame, completion, prompt_area);
     }
     if app.modal.is_none() {
-        modal::draw_mode_menu(frame, app);
+        modal::draw_engine_menu(frame, app);
     } else {
         // 模态是阻塞层：不再保留就地菜单，避免两层浮层叠加。
-        app.mode_menu = None;
+        app.engine_menu = None;
     }
     if app.modal.is_some() {
         modal::draw_modal(frame, app);
@@ -531,7 +531,7 @@ pub(crate) fn prompt_cursor_from_point(
 /// 图例直接写在边框行上，因此不额外占用终端行；空间不足时先让掉左侧提示，
 /// 右侧的当前模型与模式仍然保留。
 fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.mode_area = Rect::default();
+    app.engine_area = Rect::default();
     if area.height < 3 || area.width < 24 {
         return;
     }
@@ -540,7 +540,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let y = area.y + area.height - 1;
 
     let model = app.model_display();
-    let mode = app.display_mode();
+    let status = app.status_label();
     let permission = app
         .session
         .as_ref()
@@ -548,7 +548,7 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let right = [
         (model, theme.gray),
         (" | ", theme.border),
-        (mode.as_str(), theme.accent_model),
+        (status.as_str(), theme.accent_model),
         (" | ", theme.border),
         (permission, theme.accent_model),
     ];
@@ -599,9 +599,9 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
     let model_cells = cell_width(model);
-    let mode_start = right_start + model_cells + cell_width(" | ");
-    let mode_cells = cell_width(mode.as_str());
-    let perm_start = mode_start + mode_cells + cell_width(" | ");
+    let status_start = right_start + model_cells + cell_width(" | ");
+    let status_cells = cell_width(status.as_str());
+    let perm_start = status_start + status_cells + cell_width(" | ");
     let perm_cells = cell_width(permission);
     let mut x = right_start;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
@@ -616,11 +616,11 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         width: model_cells,
         height: 1,
     };
-    // 模式名单独留命中区：鼠标点击它就地图例弹出模式菜单，图例本身不变。
-    app.mode_area = Rect {
-        x: mode_start,
+    // 状态图例单独留命中区：鼠标点击它就地图例弹出引擎菜单，图例本身不变。
+    app.engine_area = Rect {
+        x: status_start,
         y,
-        width: mode_cells,
+        width: status_cells,
         height: 1,
     };
     app.permission_tag_area = Rect {
@@ -832,7 +832,7 @@ fn draw_statusline(frame: &mut Frame, app: &App, area: Rect) {
 /// statusline 数据快照（内置渲染、信息条与模板共用）。
 struct StatuslineData {
     model: String,
-    mode: String,
+    status: String,
     /// 当前上下文占窗口的百分比（0-100，含小数）。
     context_percent: Option<f64>,
     /// 上下文已用 token（`input_tokens`）。
@@ -853,7 +853,7 @@ struct StatuslineData {
 }
 
 fn statusline_data(app: &App) -> StatuslineData {
-    let mode = app.display_mode();
+    let status = app.status_label();
     let context_window = app.context_window().filter(|window| *window > 0);
     let context_used = app.context_used();
     let context_percent = context_window.map(|window| context_used as f64 * 100.0 / window as f64);
@@ -872,7 +872,7 @@ fn statusline_data(app: &App) -> StatuslineData {
     let (tokens_in, tokens_out) = app.session_tokens();
     StatuslineData {
         model: app.model_display().to_owned(),
-        mode,
+        status,
         context_percent,
         context_used,
         context_window,
@@ -1074,7 +1074,7 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// 模板渲染：`{model} · {mode} → {workdir}`，占位符按语义着色。
+/// 模板渲染：`{model} · {status} → {workdir}`，占位符按语义着色。
 fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
     let theme = app.theme;
     let data = statusline_data(app);
@@ -1089,7 +1089,7 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
         let placeholder = &rest[start + 1..start + end];
         let value: Option<(String, ratatui::style::Color)> = match placeholder {
             "model" => Some((data.model.clone(), theme.accent_model)),
-            "mode" => Some((data.mode.clone(), theme.accent_tool)),
+            "status" => Some((data.status.clone(), theme.accent_tool)),
             "context" => data
                 .context_percent
                 .map(|_| (format_tokens(data.context_used), theme.text_secondary)),
@@ -1209,9 +1209,9 @@ mod tests {
         );
     }
 
-    /// 模式图例的命中区正好盖住模式名；就地菜单右上对齐图例、整体贴在其上方。
+    /// 状态图例的命中区正好盖住引擎名；就地菜单右上对齐图例、整体贴在其上方。
     #[test]
-    fn mode_legend_hit_area_carries_the_menu() {
+    fn status_legend_hit_area_carries_the_menu() {
         use moc_protocol::methods::SessionInfo;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -1223,9 +1223,10 @@ mod tests {
             title: "测试会话".into(),
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
-            mode: moc_protocol::SessionMode::Normal,
+            engine: moc_protocol::SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: true,
-            mode_locked: false,
+            engine_locked: false,
             parent_session_id: None,
             forked_from: None,
             agent_preset: None,
@@ -1247,28 +1248,28 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>()
         };
-        let legend = app.mode_area;
+        let legend = app.engine_area;
         assert_eq!(legend.height, 1);
         assert_eq!(
             row_text(&terminal, legend),
-            "normal+plan",
-            "命中区正好是模式名"
+            "standard+plan",
+            "命中区正好是状态图例"
         );
 
-        app.open_mode_menu();
+        app.open_engine_menu();
         assert_eq!(
-            app.mode_menu.as_ref().map(|menu| menu.selected),
+            app.engine_menu.as_ref().map(|menu| menu.selected),
             Some(0),
-            "默认高亮当前方言"
+            "默认高亮当前引擎"
         );
         terminal
             .draw(|frame| draw(frame, &mut app, &mut view))
             .expect("绘制成功");
-        let menu = app.mode_menu.as_ref().expect("菜单保持打开");
-        assert_eq!(menu.area.right(), legend.right(), "右缘对齐模式图例");
+        let menu = app.engine_menu.as_ref().expect("菜单保持打开");
+        assert_eq!(menu.area.right(), legend.right(), "右缘对齐状态图例");
         assert_eq!(menu.area.bottom(), legend.y, "整体贴在图例上方");
         assert_eq!(menu.entry_at(menu.area.x + 4, menu.area.y + 1), Some(0));
-        // 当前方言 normal 是菜单第一项，位于图例上方第 4 行（边框 + 3 条目）。
+        // 当前引擎 standard 是菜单第一项，位于图例上方第 4 行（边框 + 3 条目）。
         let current_y = legend.y - 4;
         assert!(
             row_text(
@@ -1280,8 +1281,8 @@ mod tests {
                     height: 1,
                 },
             )
-            .starts_with("❯ normal"),
-            "当前方言行同时是菜单高亮行"
+            .starts_with("❯ standard"),
+            "当前引擎行同时是菜单高亮行"
         );
         assert_eq!(
             terminal
@@ -1302,25 +1303,25 @@ mod tests {
             Theme::global().text_primary
         );
 
-        // 本次提示临时问答：图例追加 `+ask`，会话方言与 plan 叠加态不变；清除后即恢复。
-        app.mode_menu = None;
-        app.transient_contract = Some(moc_protocol::methods::PromptContract::Ask);
+        // 本次提示临时问答：图例追加 `+ask`，会话引擎与 plan 叠加态不变；清除后即恢复。
+        app.engine_menu = None;
+        app.transient_mode = Some(moc_protocol::methods::PromptMode::Ask);
         terminal
             .draw(|frame| draw(frame, &mut app, &mut view))
             .expect("绘制成功");
-        assert_eq!(row_text(&terminal, app.mode_area), "normal+plan+ask");
+        assert_eq!(row_text(&terminal, app.engine_area), "standard+plan+ask");
         assert_eq!(
             app.session
                 .as_ref()
-                .map(|session| { (session.mode, session.plan_active) }),
-            Some((moc_protocol::SessionMode::Normal, true)),
-            "临时契约不得改写会话方言与 plan 态"
+                .map(|session| { (session.engine, session.plan_active) }),
+            Some((moc_protocol::SessionEngine::Standard, true)),
+            "临时模式不得改写会话引擎与 plan 态"
         );
-        app.transient_contract = None;
+        app.transient_mode = None;
         terminal
             .draw(|frame| draw(frame, &mut app, &mut view))
             .expect("绘制成功");
-        assert_eq!(row_text(&terminal, app.mode_area), "normal+plan");
+        assert_eq!(row_text(&terminal, app.engine_area), "standard+plan");
     }
 
     /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。

@@ -675,8 +675,11 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     case "permission_changed":
       view.info.permission = update.permission;
       break;
-    case "mode_changed":
-      view.info.mode = update.mode;
+    case "engine_changed":
+      view.info.engine = update.engine;
+      break;
+    case "autonomy_changed":
+      view.info.autonomy = update.autonomy;
       break;
     case "plan_mode_changed":
       view.info.plan_active = update.active;

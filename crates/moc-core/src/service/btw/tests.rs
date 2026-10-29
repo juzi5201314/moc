@@ -5,7 +5,7 @@ use crate::Core;
 use crate::session::entries::SessionOrigin;
 use moc_protocol::methods::{
     BtwCancelParams, BtwUpdateMethod, BtwUpdateParams, ClientInfo, SessionBtw, SessionBtwCancel,
-    SessionMode, SessionPermission, SessionUpdateMethod,
+    SessionEngine, SessionPermission, SessionUpdateMethod,
 };
 use moc_protocol::{ClientBuilder, ClientHandle, Server, ServerConnection, transport};
 use serde_json::json;
@@ -56,7 +56,7 @@ impl Harness {
             .create(
                 &cwd,
                 "test/model:off",
-                SessionMode::Normal,
+                SessionEngine::Standard,
                 SessionPermission::Full,
                 None,
                 SessionOrigin::root(),
@@ -363,7 +363,7 @@ async fn clm_snapshot_uses_live_context_instead_of_raw_transcript() {
     h.append(Message::user_text("已由 CLM 替换的旧历史")).await;
     {
         let mut state = h.record.state.lock().await;
-        state.mode = SessionMode::ClmExperimental;
+        state.engine = SessionEngine::ClmExperimental;
         state.clm_context = Some("当前 CLM 工作视图".into());
     }
     let before = h.unchanged_snapshot().await;

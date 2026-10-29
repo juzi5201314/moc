@@ -141,12 +141,13 @@ async fn perform(
         let result = if cancelled.is_some() {
             Err(error("E_CANCELLED", "code execution terminated"))
         } else {
-            let ask = ctx.core.client_supports_ask(ctx.request.connection_id());
+            let ask = ctx.core.ask_available(
+                ctx.request.connection_id(),
+                ctx.state.lock().await.session.autonomy,
+            );
             match request.operation {
                 Operation::Servers => {
-                    Ok(ctx
-                        .catalog
-                        .servers(ctx.mode, ctx.contract, ask, &ctx.config))
+                    Ok(ctx.catalog.servers(ctx.engine, ctx.mode, ask, &ctx.config))
                 }
                 Operation::Search {
                     query,
@@ -156,8 +157,8 @@ async fn perform(
                 } => ctx
                     .catalog
                     .search(
+                        ctx.engine,
                         ctx.mode,
-                        ctx.contract,
                         ask,
                         &ctx.config,
                         query.as_deref().unwrap_or(""),
@@ -168,7 +169,7 @@ async fn perform(
                     .map_err(|err| error(err.code, err.message)),
                 Operation::Describe { name } => ctx
                     .catalog
-                    .describe(ctx.mode, ctx.contract, ask, &ctx.config, &name)
+                    .describe(ctx.engine, ctx.mode, ask, &ctx.config, &name)
                     .map_err(|err| error(err.code, err.message)),
                 operation => super::state::execute(ctx, operation).await,
             }

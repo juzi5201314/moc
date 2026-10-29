@@ -127,8 +127,8 @@ pub(super) async fn run(
         let context = crate::service::plugin_events::context(
             session_id,
             &state.session.cwd,
-            state.mode,
-            crate::service::mode::ModeContract::effective(state.plan_active, None),
+            state.engine,
+            crate::service::mode::Mode::effective(state.plan_active, None),
             state.permission,
             &state.model,
             state.session.is_subagent(),

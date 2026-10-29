@@ -279,12 +279,12 @@ async fn snapshot(
     session_id: &str,
 ) -> Result<Snapshot, RpcError> {
     let record = inner.sessions.get(session_id).await.map_err(to_rpc)?;
-    let (cwd, model_id, mode) = {
+    let (cwd, model_id, engine) = {
         let state = record.state.lock().await;
         (
             PathBuf::from(&state.session.cwd),
             state.model.clone(),
-            state.mode,
+            state.engine,
         )
     };
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
@@ -306,9 +306,12 @@ async fn snapshot(
     // 快照与声明都要等待 MCP/插件，必须在拿会话锁之前完成。
     let tool_declarations = inner
         .tool_declarations(
-            mode,
+            engine,
             &config,
-            inner.client_supports_ask(ctx.connection_id()),
+            inner.ask_available(
+                ctx.connection_id(),
+                record.state.lock().await.session.autonomy,
+            ),
         )
         .await
         .map_err(to_rpc)?;
@@ -326,8 +329,8 @@ async fn snapshot(
     );
     let system = crate::system_prompt::compose(pieces.clone(), &model);
     let tools = inner.tools.definitions(
-        state.mode,
-        inner.client_supports_ask(ctx.connection_id()),
+        state.engine,
+        inner.ask_available(ctx.connection_id(), state.session.autonomy),
         &config,
         crate::tools::ToolScope::for_session(&state, config.agents.max_depth),
         &plugin_tools,

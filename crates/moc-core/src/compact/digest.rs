@@ -793,7 +793,7 @@ fn truncate(text: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use moc_llm::{Message, ToolCall};
-    use moc_protocol::methods::{SessionMode, SessionPermission, TodoItem, TodoPhase};
+    use moc_protocol::methods::{SessionEngine, SessionPermission, TodoItem, TodoPhase};
 
     use super::*;
     use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
@@ -806,7 +806,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "t".into(),
@@ -891,7 +891,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "t".into(),

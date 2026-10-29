@@ -113,7 +113,7 @@ impl Tool for McpTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moc_protocol::SessionMode;
+    use moc_protocol::SessionEngine;
 
     fn tool(declared_read_only: bool) -> McpTool {
         McpTool::new(
@@ -144,24 +144,24 @@ mod tests {
                 tool.parallel_safe(),
                 "并发判定与服务端声明无关：同 server 串行由 McpManager 保证：{declared}"
             );
-            for contract in [
-                crate::service::mode::ModeContract::Ask,
-                crate::service::mode::ModeContract::Plan,
+            for mode in [
+                crate::service::mode::Mode::Ask,
+                crate::service::mode::Mode::Plan,
             ] {
                 assert!(
                     !crate::service::mode::mode_allows(
-                        SessionMode::Normal,
-                        contract,
+                        SessionEngine::Standard,
+                        mode,
                         tool.name(),
                         tool.tier(),
                         tool.origin()
                     ),
-                    "只读契约不得放行声明只读的 MCP 工具"
+                    "只读模式不得放行声明只读的 MCP 工具"
                 );
             }
             assert!(crate::service::mode::mode_allows(
-                SessionMode::Normal,
-                crate::service::mode::ModeContract::None,
+                SessionEngine::Standard,
+                crate::service::mode::Mode::Default,
                 tool.name(),
                 tool.tier(),
                 tool.origin()

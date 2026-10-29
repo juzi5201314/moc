@@ -125,7 +125,7 @@ fn render_segment(
 mod tests {
     use super::*;
     use moc_llm::Message;
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
     use tempfile::tempdir;
 
     use crate::session::entries::SessionOrigin;
@@ -141,7 +141,7 @@ mod tests {
             "ses_archive123".into(),
             "/tmp".into(),
             "p/m".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "default".into(),

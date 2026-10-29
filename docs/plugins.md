@@ -78,7 +78,7 @@ export default {
         required: ["name"],
         additionalProperties: false,
       },
-      modes: ["normal", "ask", "plan"], // 默认三种全开；收窄成 ["normal"] 也行
+      modes: ["default", "ask", "plan"], // 默认三种全开；收窄成 ["default"] 也行
       parallel: false,    // 默认 false：作为批次屏障
       async run(input, ctx) {
         return `你好，${input.name}`;
@@ -119,7 +119,7 @@ export default {
 |---|---|
 | `description` | 必填，非空。会作为工具描述进模型提示，按提示词规范写：只讲这个工具自己的用法。 |
 | `parameters` | 必填，JSON Schema 对象（`type: "object"`）。原样进模型提示；调用时按其中的 `type`、`required`、`properties`、`additionalProperties`、`items`、`enum` 校验参数。 |
-| `modes` | 可选，取值 `normal`/`ask`/`plan` 的数组，默认三种全开。取值是会话的执行契约词表（`normal` 指无契约的常规提示），决定该工具何时允许调用；工具表本身只随方言变化、不随契约裁剪。`normal` 同时覆盖 CLM 实验模式，PTC 不开放插件工具。空数组或未知模式会加载失败。 |
+| `modes` | 可选，取值 `default`/`ask`/`plan` 的数组，默认三种全开。取值是会话的执行模式词表（`default` 指无模式限制的常规提示），决定该工具何时允许调用；工具表本身只随引擎变化、不随执行模式裁剪。`default` 同时覆盖 CLM 实验引擎，PTC 不开放插件工具。空数组或未知模式会加载失败。 |
 | `parallel` | 默认 `false`。为 `true` 时允许与其它只读工具并发，否则整批作为屏障。 |
 | `run(input, ctx)` | 必填。第一个参数是按 schema 校验过的对象（不满足时模型收到 `E_PLUGIN_ARGUMENTS`），第二个是会话快照。 |
 
@@ -171,7 +171,7 @@ export default {
 | `beforePrompt` | 输入已落库、首次模型请求前 | `promptId, firstPrompt, model, mode, permission, source, text, images` |
 | `afterPrompt` | 提示成功 / 失败 / 取消后 | `promptId, finishReason, usage, durationMs, loopDetected, error` |
 | `sessionEnd` | 删除 / 卸载前 | `sessionId, reason(deleted\|unloaded)` |
-| `sessionConfigChanged` | 模式 / 模型 / 权限切换后 | `field, from, to` |
+| `sessionConfigChanged` | 引擎 / 自主程度 / 计划态 / 模型 / 权限切换后 | `field, from, to` |
 | `beforeModelCall` | 每次上游请求尝试前 | `promptId, attempt, provider, model, effort, messages, tools, contextTokens, maxOutputTokens` |
 | `afterModelCall` | 每次尝试落定 | `promptId, attempt, finishReason, usage, firstTokenMs, durationMs, mismatch, error` |
 | `beforeCompaction` | 压缩入口 | `reason(threshold\|overflow\|manual\|pre_approve\|switch), instructions, model` |
@@ -207,7 +207,7 @@ export default {
 | 导出 | 说明 |
 |---|---|
 | `version` | 宿主 API 版本（当前 `"2"`）。 |
-| `session()` | 当前会话快照 `{ sessionId, cwd, mode, permission, model, isSubagent }`。在 `activate`/`deactivate` 里调用会抛 `E_PLUGIN_STATE`（那时没有会话）。 |
+| `session()` | 当前会话快照 `{ sessionId, cwd, mode, permission, model, isSubagent }`；`mode` 是混合词表——执行模式非默认时报模式名（`ask`/`plan`），否则报引擎名（`standard`/`ptc`/`clm_experimental`）。在 `activate`/`deactivate` 里调用会抛 `E_PLUGIN_STATE`（那时没有会话）。 |
 | `log.debug/info/warn/error(...)` | 写 moc 日志，`RUST_LOG=moc_plugin=debug` 可见。 |
 | `tools.call(name, args)` | 调用宿主工具，返回 `{ content, structuredContent, isError }`。 |
 | `config.register/get/set` | 注册配置声明、读取有效值、按安装来源写回本插件配置。 |

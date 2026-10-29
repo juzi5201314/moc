@@ -122,7 +122,7 @@ async fn spawn_wait_returns_yield_report() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
 
     let waited = wait_children(&harness, &parent_id, None, Some(5)).await;
@@ -180,7 +180,7 @@ async fn failed_child_agent_reports_its_error_to_the_parent() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
 
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id]), Some(10)).await;
@@ -227,7 +227,7 @@ async fn missing_yield_reminds_three_times_then_falls_back() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "REFUSES_TASK").await;
 
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id.clone()]), Some(20)).await;
@@ -275,7 +275,7 @@ async fn wait_returns_on_first_settle_with_snapshot() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let fast = spawn_child(&harness, &parent_id, "FAST_TASK").await;
     let slow = spawn_child(&harness, &parent_id, "SLOW_TASK").await;
 
@@ -312,7 +312,7 @@ async fn wait_times_out_without_events() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let slow = spawn_child(&harness, &parent_id, "SLOW_TASK").await;
 
     let started = Instant::now();
@@ -333,7 +333,7 @@ async fn wait_without_children_is_rejected() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_| text_response("PARENT_OK")).await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
 
     let error = harness
         .client
@@ -370,7 +370,7 @@ async fn message_routes_running_as_injected_and_idle_as_woken() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "SLOW_TASK").await;
 
     let first = message_agent(&harness, &parent_id, &child_id, "INJECT_TEXT")
@@ -448,7 +448,7 @@ async fn broadcast_reaches_running_and_skips_idle() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let idle = spawn_child(&harness, &parent_id, "FAST_TASK").await;
     let running_a = spawn_child(&harness, &parent_id, "SLOW_A").await;
     let running_b = spawn_child(&harness, &parent_id, "SLOW_B").await;
@@ -517,7 +517,7 @@ async fn child_message_wakes_parent_wait() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "PINGER_TASK").await;
 
     let result = harness.prompt(&parent_id, "PARENT_WAIT").await;
@@ -567,7 +567,7 @@ async fn completed_child_result_lands_in_parent_notices() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id]), Some(10)).await;
     assert!(waited.settled);
@@ -590,7 +590,7 @@ async fn unknown_target_and_self_target_are_rejected() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_| text_response("PARENT_OK")).await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
 
     let unknown = message_agent(&harness, &parent_id, "ses_unknown0001", "hi")
         .await
@@ -633,7 +633,7 @@ async fn child_system_carries_the_task_and_the_roster_rides_a_tail_reminder() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     spawn_child(&harness, &parent_id, "CHILD_TASK").await;
     wait_children(&harness, &parent_id, None, Some(5)).await;
 
@@ -695,7 +695,7 @@ async fn rewind_stays_in_place_and_keeps_plain_session_shape() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_body| text_response("收到")).await;
     let harness = harness(&upstream).await;
-    let source = harness.session(moc_protocol::SessionMode::Normal).await;
+    let source = harness.session(moc_protocol::SessionEngine::Standard).await;
     harness.prompt(&source, "第一轮").await;
 
     let entries = harness.load(&source).await.entries;
@@ -761,7 +761,7 @@ async fn focused_child_session_keeps_subagent_contract_for_user_prompts() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
     wait_children(&harness, &parent_id, None, Some(5)).await;
 
@@ -808,7 +808,7 @@ async fn subagent_compaction_reuses_the_subagent_system_prefix() {
         "[compaction]\nsoft_method='moc'\nmethod_order=['soft']\nauto=false\nkeep_recent_tokens=0\n",
     )
     .await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
     wait_children(&harness, &parent_id, None, Some(5)).await;
     harness.prompt(&child_id, "子代理继续").await;
@@ -873,7 +873,7 @@ async fn explore_preset_denies_write_plan_and_control_but_keeps_the_rest() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = harness
         .client
         .call::<AgentSpawn>(AgentSpawnParams {
@@ -960,7 +960,7 @@ async fn unknown_preset_is_rejected_with_available_names() {
     let upstream = MockServer::builder().start().await;
     mount_router(&upstream, |_| text_response("PARENT_OK")).await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
 
     let error = harness
         .client
@@ -1020,7 +1020,7 @@ async fn nested_delegation_respects_max_depth() {
         "[agents]\nmax_depth=2\n",
     )
     .await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = spawn_child(&harness, &parent_id, "CHILD_TASK").await;
 
     let waited = wait_children(&harness, &parent_id, Some(vec![child_id.clone()]), Some(15)).await;
@@ -1103,7 +1103,7 @@ async fn structured_yield_validates_result_and_surfaces_it_in_wait() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     let child_id = harness
         .client
         .call::<AgentSpawn>(AgentSpawnParams {
@@ -1190,7 +1190,7 @@ async fn batch_spawn_creates_agents_and_reports_per_item_errors() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     harness.prompt(&parent_id, "开批量子代理").await;
 
     let loaded = harness.load(&parent_id).await;
@@ -1324,7 +1324,7 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
     })
     .await;
     let harness = harness(&upstream).await;
-    let parent_id = harness.session(moc_protocol::SessionMode::Normal).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
     harness.prompt(&parent_id, "开一个子代理").await;
 
     let loaded = harness.load(&parent_id).await;

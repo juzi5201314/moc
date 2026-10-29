@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use moc_protocol::methods::SessionMode;
+use moc_protocol::methods::SessionEngine;
 
 #[derive(Debug, Parser)]
 #[command(name = "moc", version, about = "MOC 编码代理")]
@@ -11,10 +11,10 @@ pub struct CliArgs {
     /// 覆盖会话模型 selector。
     #[arg(long)]
     pub model: Option<String>,
-    /// 新会话的方言（模型与工具的交互形态；跑过首条提示后锁定）。
-    #[arg(long, value_enum, default_value_t = ModeArg::Normal)]
-    pub mode: ModeArg,
-    /// 新会话直接进入 plan 叠加态（可与任意方言共存）。
+    /// 新会话的引擎（模型与工具的交互形态；跑过首条提示后锁定）。
+    #[arg(long, value_enum, default_value_t = EngineArg::Standard)]
+    pub engine: EngineArg,
+    /// 新会话直接进入 plan 模式（可与任意引擎共存）。
     #[arg(long)]
     pub plan: bool,
     /// 会话工作目录。
@@ -62,9 +62,10 @@ pub struct CliArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ModeArg {
-    Normal,
+pub enum EngineArg {
+    Standard,
     Ptc,
+    #[value(name = "clm")]
     ClmExperimental,
 }
 
@@ -86,12 +87,12 @@ impl From<DetailArg> for moc_tui::DetailLevel {
     }
 }
 
-impl From<ModeArg> for SessionMode {
-    fn from(mode: ModeArg) -> Self {
-        match mode {
-            ModeArg::Normal => Self::Normal,
-            ModeArg::Ptc => Self::Ptc,
-            ModeArg::ClmExperimental => Self::ClmExperimental,
+impl From<EngineArg> for SessionEngine {
+    fn from(engine: EngineArg) -> Self {
+        match engine {
+            EngineArg::Standard => Self::Standard,
+            EngineArg::Ptc => Self::Ptc,
+            EngineArg::ClmExperimental => Self::ClmExperimental,
         }
     }
 }

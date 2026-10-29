@@ -9,7 +9,7 @@
 //! | [`config::ConfigGet`] | C→S | core | 已初始化 | `-32014` |
 //! | [`session::SessionNew`] / `SessionList` / `SessionLoad` / `SessionRewind` / `SessionUnload` | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
-//! | [`session::SessionSetMode`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
+//! | [`session::SessionSetEngine`] / [`session::SessionSetAutonomy`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
 //! | [`plan::SessionPlanRevise`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32602` |
 //! | [`plan::SessionPlanDiff`] | C→S | core | 已初始化 | `-32010` / `-32602` |
@@ -101,7 +101,7 @@ pub use plugin::{
     PluginRunCommandResult, PluginToolInfo,
 };
 pub use prompt::{
-    InputPart, PromptContract, PromptParams, PromptResult, SessionCancel, SessionCancelParams,
+    InputPart, PromptMode, PromptParams, PromptResult, SessionCancel, SessionCancelParams,
     SessionCancelResult, SessionPrompt, SessionRetry, SessionRetryParams,
 };
 pub use resources::{
@@ -110,17 +110,17 @@ pub use resources::{
 pub use session::{
     CompactResult, ContextContentResult, ContextContentSection, ContextUsageResult,
     ContextUsageSection, ModelSwitchOverflow, ModelUsageSummary, ReminderItem, ReminderStamp,
-    SessionCompact, SessionCompactParams, SessionContext, SessionContextContent,
+    SessionAutonomy, SessionCompact, SessionCompactParams, SessionContext, SessionContextContent,
     SessionContextContentParams, SessionContextParams, SessionDelete, SessionDeleteParams,
-    SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad, SessionLoadPage,
-    SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams, SessionLoadResult,
-    SessionLockInfo, SessionMode, SessionModelOverflowAction, SessionNew, SessionNewParams,
+    SessionEngine, SessionInfo, SessionList, SessionListParams, SessionListResult, SessionLoad,
+    SessionLoadPage, SessionLoadPageParams, SessionLoadPageResult, SessionLoadParams,
+    SessionLoadResult, SessionLockInfo, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionRedo, SessionRedoParams, SessionRename, SessionRenameParams,
-    SessionRewind, SessionRewindParams, SessionSetMode, SessionSetModeParams, SessionSetModel,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams,
-    SessionUnload, SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage,
-    SessionUsageParams, SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall,
-    TranscriptEntry,
+    SessionRewind, SessionRewindParams, SessionSetAutonomy, SessionSetAutonomyParams,
+    SessionSetEngine, SessionSetEngineParams, SessionSetModel, SessionSetModelParams,
+    SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams, SessionUnload,
+    SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams,
+    SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -163,7 +163,8 @@ mod tests {
             (<SessionRename as Method>::NAME, "session/rename"),
             (<SessionDelete as Method>::NAME, "session/delete"),
             (<SessionUnlock as Method>::NAME, "session/unlock"),
-            (<SessionSetMode as Method>::NAME, "session/set_mode"),
+            (<SessionSetEngine as Method>::NAME, "session/set_engine"),
+            (<SessionSetAutonomy as Method>::NAME, "session/set_autonomy"),
             (
                 <SessionSetPermission as Method>::NAME,
                 "session/set_permission",
@@ -238,7 +239,8 @@ mod tests {
         client::<SessionRedo>();
         server_request::<SessionRequestPermission>();
         client::<SessionSetPermission>();
-        client::<SessionSetMode>();
+        client::<SessionSetEngine>();
+        client::<SessionSetAutonomy>();
         client::<SessionSetModel>();
         client::<SessionPlanMode>();
         client::<SessionPlanApprove>();

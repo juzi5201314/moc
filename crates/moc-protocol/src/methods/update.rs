@@ -34,8 +34,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::diff::ToolDiff;
-use super::session::{SessionLockInfo, ToolStatus};
-use super::{session::SessionMode, todo::TodoPhase};
+use super::session::{SessionAutonomy, SessionLockInfo, ToolStatus};
+use super::{session::SessionEngine, todo::TodoPhase};
 use crate::method::{Method, ServerNotification};
 use crate::{FinishReason, Message, ToolResult, Usage};
 
@@ -235,9 +235,11 @@ pub enum SessionUpdate {
     PermissionChanged {
         permission: super::session::SessionPermission,
     },
-    /// 会话模式方言变化（`session/set_mode`；只在空白会话期可能发生）。
-    ModeChanged { mode: SessionMode },
-    /// plan 叠加态变化（`session/plan_mode`，或计划批准退出 plan）。
+    /// 会话引擎变化（`session/set_engine`；只在空白会话期可能发生）。
+    EngineChanged { engine: SessionEngine },
+    /// 会话自主程度变化（`session/set_autonomy`）。
+    AutonomyChanged { autonomy: SessionAutonomy },
+    /// plan 模式变化（`session/plan_mode`，或计划批准退出 plan）。
     PlanModeChanged { active: bool },
     /// 会话模型变化（`session/set_model`，或计划模式切换引起的模型覆盖与恢复）。
     ModelChanged { model: String },
@@ -592,10 +594,16 @@ mod tests {
                 json!({ "type": "lock_changed", "lock": null }),
             ),
             (
-                SessionUpdate::ModeChanged {
-                    mode: SessionMode::Ptc,
+                SessionUpdate::EngineChanged {
+                    engine: SessionEngine::Ptc,
                 },
-                json!({ "type": "mode_changed", "mode": "ptc" }),
+                json!({ "type": "engine_changed", "engine": "ptc" }),
+            ),
+            (
+                SessionUpdate::AutonomyChanged {
+                    autonomy: SessionAutonomy::Unattended,
+                },
+                json!({ "type": "autonomy_changed", "autonomy": "unattended" }),
             ),
             (
                 SessionUpdate::PlanModeChanged { active: true },

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use moc_protocol::RequestContext;
 use moc_protocol::methods::{
-    ModelSwitchOverflow, SessionInfo, SessionMode, SessionModelOverflowAction, SessionUpdate,
+    ModelSwitchOverflow, SessionEngine, SessionInfo, SessionModelOverflowAction, SessionUpdate,
 };
 
 use super::CoreInner;
@@ -40,7 +40,7 @@ pub(crate) async fn switch(
         });
     }
     let config = inner.project_config(Path::new(&state.session.cwd))?;
-    let overflow = if config.compaction.enabled && state.mode != SessionMode::ClmExperimental {
+    let overflow = if config.compaction.enabled && state.engine != SessionEngine::ClmExperimental {
         let tokens = compact::model_context(inner, ctx, &state, &config, model)
             .await?
             .tokens;

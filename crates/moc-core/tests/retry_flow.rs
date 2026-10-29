@@ -93,7 +93,7 @@ async fn retry_drops_the_interrupted_turn_before_asking_again() {
     );
     let (url, requests) = partial_then_complete(partial, "续跑完成").await;
     let h = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
 
     let mut events = h.events.subscribe();
     let client = h.client.clone();
@@ -105,7 +105,7 @@ async fn retry_drops_the_interrupted_turn_before_asking_again() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -194,7 +194,7 @@ async fn retry_replays_tools_that_never_ran_without_asking_the_model() {
     );
     let (url, requests) = partial_then_complete(partial, "工具跑完继续").await;
     let h = Harness::new(&url, "openai_chat", "[compaction]\nenabled=false").await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
 
     let mut events = h.events.subscribe();
     let client = h.client.clone();
@@ -206,7 +206,7 @@ async fn retry_replays_tools_that_never_ran_without_asking_the_model() {
                 input: vec![InputPart::Text {
                     text: "开始".into(),
                 }],
-                contract: None,
+                mode: None,
                 agent_message: None,
             })
             .await
@@ -277,7 +277,7 @@ async fn retry_resends_context_without_appending_user_message() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     h.prompt(&id, "第一问").await;
 
     let result = h
@@ -345,7 +345,7 @@ async fn retry_without_context_is_rejected_before_any_request() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
 
     let error = h
         .client

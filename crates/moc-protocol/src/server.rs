@@ -41,8 +41,8 @@ use crate::methods::{
     SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanMode,
     SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename, SessionRetry, SessionRewind,
-    SessionSetMode, SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload,
-    SessionUnlock, SessionUnsteer, SessionUsage, WorkspaceGitBranch,
+    SessionSetAutonomy, SessionSetEngine, SessionSetModel, SessionSetPermission, SessionSteer,
+    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -769,12 +769,21 @@ impl<S: AgentService> ServerDispatch<S> {
                     .await?;
                 value_from(result)
             }
-            <SessionSetMode as Method>::NAME => {
-                let params = params_from_value::<SessionSetMode>(params)?;
+            <SessionSetEngine as Method>::NAME => {
+                let params = params_from_value::<SessionSetEngine>(params)?;
                 let result = self
                     .server
                     .service
-                    .session_set_mode(self.context(client, cancel), params)
+                    .session_set_engine(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionSetAutonomy as Method>::NAME => {
+                let params = params_from_value::<SessionSetAutonomy>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_set_autonomy(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

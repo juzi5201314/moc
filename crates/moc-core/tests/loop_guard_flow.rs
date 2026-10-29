@@ -2,7 +2,7 @@ mod support;
 
 use moc_llm::FinishReason;
 use moc_protocol::methods::SessionUpdate;
-use moc_protocol::{Role, SessionMode};
+use moc_protocol::{Role, SessionEngine};
 use serde_json::json;
 use std::sync::{
     Arc,
@@ -36,7 +36,7 @@ async fn loops_discard_failed_generation_release_lock_and_do_not_poison_next_pro
             "[compaction]\nenabled=false",
         )
         .await;
-        let id = h.session(SessionMode::Normal).await;
+        let id = h.session(SessionEngine::Standard).await;
         let result = h.prompt(&id, "执行循环场景").await;
         if terminates {
             assert_eq!(result.finish_reason, FinishReason::LoopDetected);
@@ -99,7 +99,7 @@ async fn repeated_tools_redirect_once_then_terminate_without_another_request() {
     )
     .await;
     std::fs::write(h.root.path().join("work/sample.txt"), "固定证据").unwrap();
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let result = h.prompt(&id, "持续读同一文件").await;
     assert_eq!(result.finish_reason, FinishReason::LoopDetected);
     let received = upstream.received_requests().await.unwrap();
@@ -156,7 +156,7 @@ async fn thinking_loop_gives_up_after_the_redirect_budget() {
         "[compaction]\nenabled=false",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let result = h.prompt(&id, "反复思考").await;
     assert_eq!(
         result.finish_reason,
@@ -205,7 +205,7 @@ async fn slow_request_only_warns_and_still_finishes() {
         "[compaction]\nenabled=false\n[limits]\nrequest_warn_secs=1",
     )
     .await;
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let result = h.prompt(&id, "执行慢请求场景").await;
     assert_eq!(result.message.text(), "慢请求正常完成");
     assert_eq!(result.finish_reason, FinishReason::Stop);
@@ -254,7 +254,7 @@ async fn guard_stop_reaps_background_processes_owned_by_the_failed_prompt() {
     )
     .await;
     std::fs::write(h.root.path().join("work/sample.txt"), "固定证据").unwrap();
-    let id = h.session(SessionMode::Normal).await;
+    let id = h.session(SessionEngine::Standard).await;
     let mut events = h.events.subscribe();
     let result = h.prompt(&id, "创建后台任务后循环读取").await;
     assert_eq!(result.finish_reason, FinishReason::LoopDetected);

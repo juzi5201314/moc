@@ -134,9 +134,9 @@ pub(crate) async fn model_context(
     let summary = inner.mcp_summary(config).await?;
     let tool_declarations = inner
         .tool_declarations(
-            state.mode,
+            state.engine,
             config,
-            inner.client_supports_ask(ctx.connection_id()),
+            inner.ask_available(ctx.connection_id(), state.session.autonomy),
         )
         .await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;
@@ -160,8 +160,8 @@ pub(crate) async fn model_context(
     let system = prompt.messages;
     let plugins = inner.plugin_tools(cwd).await;
     let tools = inner.tools.definitions(
-        state.mode,
-        inner.client_supports_ask(ctx.connection_id()),
+        state.engine,
+        inner.ask_available(ctx.connection_id(), state.session.autonomy),
         config,
         crate::tools::ToolScope::for_session(state, config.agents.max_depth),
         &plugins,
@@ -308,8 +308,8 @@ pub(crate) async fn compact(
     let plugin_context = crate::service::plugin_events::context(
         session_id,
         &state.session.cwd,
-        state.mode,
-        crate::service::mode::ModeContract::effective(state.plan_active, None),
+        state.engine,
+        crate::service::mode::Mode::effective(state.plan_active, None),
         state.permission,
         &model.selector,
         state.session.is_subagent(),
@@ -718,7 +718,7 @@ mod tests {
     use super::*;
     use crate::session::entries::{Entry, EntryPayload, SessionOrigin};
     use crate::session::state::SessionState;
-    use moc_protocol::methods::{SessionMode, SessionPermission};
+    use moc_protocol::methods::{SessionEngine, SessionPermission};
 
     const MODEL_BASE: &str = "[models.roles]\ndefault='p/m'\nexplore='p/m'\nplan='p/m'\n[providers.p]\napi='openai_chat'\nbase_url='https://example.invalid'\n[providers.p.models.m]\n";
 
@@ -819,7 +819,7 @@ mod tests {
             "ses_123456789abc".into(),
             "/tmp".into(),
             "gpt-x".into(),
-            SessionMode::Normal,
+            SessionEngine::Standard,
             SessionPermission::Full,
             SessionOrigin::root(),
             "t".into(),

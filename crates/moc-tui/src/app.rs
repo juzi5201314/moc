@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use moc_protocol::methods::TodoPhase;
 use moc_protocol::{
-    ContextUsageResult, ModelInfo, SessionInfo, SessionMode, SessionPermission, SessionUsageResult,
-    Usage,
+    ContextUsageResult, ModelInfo, SessionEngine, SessionInfo, SessionPermission,
+    SessionUsageResult, Usage,
 };
 
 use ratatui::layout::Rect;
@@ -183,8 +183,8 @@ pub struct App {
     pub prompt_area: Rect,
     /// 顶部上下文占用区域，用于鼠标点击打开详情。
     pub context_area: Rect,
-    /// 输入框下边框右端模式名的屏幕区域（鼠标点击就地弹出模式菜单）。
-    pub mode_area: Rect,
+    /// 输入框下边框右端引擎名的屏幕区域（鼠标点击就地弹出引擎菜单）。
+    pub engine_area: Rect,
     /// 输入框下边框模型名区域（鼠标点击打开模型选择）。
     pub model_tag_area: Rect,
     /// 输入框下边框权限区域（鼠标点击切换权限）。
@@ -215,12 +215,12 @@ pub struct App {
     pub ask_detail_area: Rect,
     /// 折叠细条区域（占据输入框位；点击展开回作答态）。
     pub ask_strip_area: Rect,
-    /// 就地模式菜单；`None` = 关闭。
-    pub mode_menu: Option<ModeMenu>,
-    /// 当前这条用户消息的临时契约覆盖（`/ask` 注入）；整条消息回复完毕才清空。
+    /// 就地引擎菜单；`None` = 关闭。
+    pub engine_menu: Option<EngineMenu>,
+    /// 当前这条用户消息的临时模式覆盖（`/ask` 注入）；整条消息回复完毕才清空。
     ///
-    /// 只影响图例与状态栏的展示，会话方言与 plan 叠加态仍以 `session` 为准。
-    pub transient_contract: Option<moc_protocol::methods::PromptContract>,
+    /// 只影响图例与状态栏的展示，会话引擎与 plan 叠加态仍以 `session` 为准。
+    pub transient_mode: Option<moc_protocol::methods::PromptMode>,
     /// Core 估算的上下文组成与总量。
     pub context_usage: Option<ContextUsageResult>,
     /// 滚动偏移（自尾部算起的行数；0 = 跟随尾部）。
@@ -309,7 +309,7 @@ pub struct App {
     /// 排队等待写入的配置改动；写入串行，期间的改动合并到最近一次。
     pub config_queue: Option<ConfigWrite>,
     pub startup_cwd: String,
-    pub startup_mode: SessionMode,
+    pub startup_engine: SessionEngine,
     /// 启动时新会话是否直接进 plan 叠加态（`--plan`）。
     pub startup_plan: bool,
     pub startup_pending: Option<String>,
@@ -490,7 +490,7 @@ impl App {
             btw: crate::btw::BtwState::default(),
             prompt_area: Rect::default(),
             context_area: Rect::default(),
-            mode_area: Rect::default(),
+            engine_area: Rect::default(),
             model_tag_area: Rect::default(),
             permission_tag_area: Rect::default(),
             modal_item_hits: Vec::new(),
@@ -505,8 +505,8 @@ impl App {
             ask_question_area: Rect::default(),
             ask_detail_area: Rect::default(),
             ask_strip_area: Rect::default(),
-            mode_menu: None,
-            transient_contract: None,
+            engine_menu: None,
+            transient_mode: None,
             context_usage: None,
             scroll_offset: 0,
             prompt_running: false,
@@ -555,7 +555,7 @@ impl App {
             config_flight: None,
             config_queue: None,
             startup_cwd: String::new(),
-            startup_mode: SessionMode::Normal,
+            startup_engine: SessionEngine::Standard,
             startup_plan: false,
             startup_pending: None,
             plugin_commands: Vec::new(),
@@ -1294,23 +1294,23 @@ impl App {
         entries
     }
 
-    /// 打开就地模式菜单：高亮当前方言，并让出可能叠在输入框上方的补全菜单。
-    /// 会话跑过第一条提示后方言锁定，菜单不再提供。
-    pub fn open_mode_menu(&mut self) {
+    /// 打开就地引擎菜单：高亮当前引擎，并让出可能叠在输入框上方的补全菜单。
+    /// 会话跑过第一条提示后引擎锁定，菜单不再提供。
+    pub fn open_engine_menu(&mut self) {
         let Some(session) = self.session.as_ref() else {
             self.set_notice("当前没有活动会话");
             return;
         };
-        if session.mode_locked {
-            self.set_notice("会话方言已锁定；换方言请新建会话");
+        if session.engine_locked {
+            self.set_notice("会话引擎已锁定；换引擎请新建会话");
             return;
         }
 
         self.completion = None;
-        let current = self.session.as_ref().map(|session| session.mode);
-        self.mode_menu = Some(ModeMenu {
+        let current = self.session.as_ref().map(|session| session.engine);
+        self.engine_menu = Some(EngineMenu {
             selected: current
-                .and_then(|mode| MODES.iter().position(|candidate| *candidate == mode))
+                .and_then(|engine| ENGINES.iter().position(|candidate| *candidate == engine))
                 .unwrap_or(0),
             area: Rect::default(),
         });
@@ -1351,7 +1351,7 @@ impl App {
                 self.focus = Focus::Prompt;
             }
         }
-        let clm_active = info.mode == SessionMode::ClmExperimental;
+        let clm_active = info.engine == SessionEngine::ClmExperimental;
         let session_id = info.id.clone();
         self.reset_prompt_state();
         // 默认按可写处理；只读加载由 `AppEvent::Loaded` 在处理完本函数后标回。
@@ -1404,7 +1404,7 @@ impl App {
         self.prompt_started_at = None;
         self.cancel_requested = false;
         self.ctrl_c_pending = None;
-        self.transient_contract = None;
+        self.transient_mode = None;
     }
 
     pub fn set_history_cursor(&mut self, has_more: bool, before_entry_id: Option<String>) {
@@ -1681,17 +1681,22 @@ impl App {
         (done, total)
     }
 
-    /// 图例与状态栏展示的模式标签：会话方言 + plan 叠加态 + 本次提示的临时契约。
-    pub fn display_mode(&self) -> String {
+    /// 图例与状态栏展示的状态标签：会话引擎 + plan 叠加态 + 本次提示的临时模式 + 非默认自主程度。
+    pub fn status_label(&self) -> String {
         let Some(session) = self.session.as_ref() else {
             return "idle".to_owned();
         };
-        let mut label = mode_label(session.mode).to_owned();
+        let mut label = engine_label(session.engine).to_owned();
         if session.plan_active {
             label.push_str("+plan");
         }
-        if self.transient_contract.is_some() {
+        if self.transient_mode.is_some() {
             label.push_str("+ask");
+        }
+        match session.autonomy {
+            moc_protocol::SessionAutonomy::Default => {}
+            moc_protocol::SessionAutonomy::DontAsk => label.push_str("+dont_ask"),
+            moc_protocol::SessionAutonomy::Unattended => label.push_str("+unattended"),
         }
         label
     }
@@ -1869,21 +1874,21 @@ mod tool_recovery_tests {
     }
 }
 
-/// 会话方言的展示名；CLM 以括号标识，保持实验状态始终可见。
-pub fn mode_label(mode: SessionMode) -> &'static str {
-    match mode {
-        SessionMode::Normal => "normal",
-        SessionMode::Ptc => "ptc",
-        SessionMode::ClmExperimental => "(clm)",
+/// 会话引擎的展示名；CLM 以括号标识，保持实验状态始终可见。
+pub fn engine_label(engine: SessionEngine) -> &'static str {
+    match engine {
+        SessionEngine::Standard => "standard",
+        SessionEngine::Ptc => "ptc",
+        SessionEngine::ClmExperimental => "(clm)",
     }
 }
 
-/// 会话方言顺序：就地菜单条目与键盘循环共用同一份顺序。
-/// plan/ask 不是方言，不在此列。
-pub const MODES: [SessionMode; 3] = [
-    SessionMode::Normal,
-    SessionMode::Ptc,
-    SessionMode::ClmExperimental,
+/// 会话引擎顺序：就地菜单条目与键盘循环共用同一份顺序。
+/// plan/ask 是模式不是引擎，不在此列。
+pub const ENGINES: [SessionEngine; 3] = [
+    SessionEngine::Standard,
+    SessionEngine::Ptc,
+    SessionEngine::ClmExperimental,
 ];
 
 /// Todo HUD 的一次左键按下：区分单击固定与拖动卡片。
@@ -2106,22 +2111,22 @@ pub fn ordered_selection(
     }
 }
 
-/// 点击图例模式名后就地弹出的菜单。
-pub struct ModeMenu {
-    /// 键盘 / 悬停高亮的条目下标（[`MODES`] 顺序）。
+/// 点击图例引擎名后就地弹出的菜单。
+pub struct EngineMenu {
+    /// 键盘 / 悬停高亮的条目下标（[`ENGINES`] 顺序）。
     pub selected: usize,
     /// 上一帧绘制的菜单区域；鼠标命中使用。
     pub area: Rect,
 }
 
-impl ModeMenu {
+impl EngineMenu {
     /// 命中的条目下标；点在边框和菜单外返回 `None`。
     pub fn entry_at(&self, column: u16, row: u16) -> Option<usize> {
         if !self.area.contains((column, row).into()) {
             return None;
         }
         let index = usize::from(row.checked_sub(self.area.y.saturating_add(1))?);
-        (index < MODES.len()).then_some(index)
+        (index < ENGINES.len()).then_some(index)
     }
 }
 
@@ -2145,8 +2150,8 @@ fn trimmable_tail_block(block: &Block, keep_reply: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModeMenu, mode_label, model_selector_label};
-    use moc_protocol::SessionMode;
+    use super::{EngineMenu, engine_label, model_selector_label};
+    use moc_protocol::SessionEngine;
     use ratatui::layout::Rect;
 
     /// M17：切会话收尾上一会话的本地状态，但保留会话级在飞记账。
@@ -2157,7 +2162,7 @@ mod tests {
     fn switch_session_resets_local_prompt_state() {
         use super::{App, CtrlCPending};
         use moc_protocol::methods::{TodoItem, TodoPhase, TodoStatus};
-        use moc_protocol::{SessionInfo, SessionMode, Usage};
+        use moc_protocol::{SessionEngine, SessionInfo, Usage};
         use tokio::sync::mpsc::unbounded_channel;
 
         let (events, _receiver) = unbounded_channel();
@@ -2167,9 +2172,10 @@ mod tests {
             title: "标题".into(),
             model: "test/model".into(),
             permission: moc_protocol::SessionPermission::Full,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
-            mode_locked: false,
+            engine_locked: false,
             parent_session_id: None,
             forked_from: None,
             agent_preset: None,
@@ -2186,7 +2192,7 @@ mod tests {
         app.prompt_started_at = Some(std::time::Instant::now());
         app.thinking_started_at = Some(std::time::Instant::now());
         app.cancel_requested = true;
-        app.transient_contract = Some(moc_protocol::methods::PromptContract::Ask);
+        app.transient_mode = Some(moc_protocol::methods::PromptMode::Ask);
         app.ctrl_c_pending = Some((CtrlCPending::Quit, std::time::Instant::now()));
         app.usage = Usage {
             input_tokens: 10,
@@ -2216,7 +2222,7 @@ mod tests {
         assert!(app.ctrl_c_pending.is_none());
         assert!(app.prompt_started_at.is_none());
         assert!(app.thinking_started_at.is_none());
-        assert!(app.transient_contract.is_none());
+        assert!(app.transient_mode.is_none());
         assert_eq!(app.usage, Usage::default());
         assert_eq!(app.cost_usd, 0.0);
         assert!(app.todos.is_empty());
@@ -2239,15 +2245,15 @@ mod tests {
         assert_eq!(model_selector_label("test/model:off"), "test/model");
         assert_eq!(model_selector_label("test/model:high"), "test/model:high");
         assert_eq!(model_selector_label("test/model"), "test/model");
-        assert_eq!(mode_label(SessionMode::Normal), "normal");
-        assert_eq!(mode_label(SessionMode::Ptc), "ptc");
-        assert_eq!(mode_label(SessionMode::ClmExperimental), "(clm)");
+        assert_eq!(engine_label(SessionEngine::Standard), "standard");
+        assert_eq!(engine_label(SessionEngine::Ptc), "ptc");
+        assert_eq!(engine_label(SessionEngine::ClmExperimental), "(clm)");
     }
 
     /// 菜单命中只认边框之间的一行一条目；边框与菜单外都不算条目。
     #[test]
-    fn mode_menu_hit_testing_skips_borders() {
-        let menu = ModeMenu {
+    fn engine_menu_hit_testing_skips_borders() {
+        let menu = EngineMenu {
             selected: 1,
             area: Rect::new(10, 5, 24, 6),
         };
@@ -2263,11 +2269,11 @@ mod tests {
 
     /// 没有活动会话就不开菜单，只提示（此时图例本身显示 `idle`）。
     #[test]
-    fn mode_menu_requires_an_active_session() {
+    fn engine_menu_requires_an_active_session() {
         let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = super::App::new(crate::theme::Theme::global(), events);
-        app.open_mode_menu();
-        assert!(app.mode_menu.is_none());
+        app.open_engine_menu();
+        assert!(app.engine_menu.is_none());
         assert_eq!(app.notice.as_deref(), Some("当前没有活动会话"));
     }
 
@@ -2463,9 +2469,10 @@ mod tests {
                 title: "下一个".into(),
                 model: "p/m".into(),
                 permission: moc_protocol::SessionPermission::Full,
-                mode: moc_protocol::SessionMode::Normal,
+                engine: moc_protocol::SessionEngine::Standard,
+                autonomy: moc_protocol::SessionAutonomy::Default,
                 plan_active: false,
-                mode_locked: false,
+                engine_locked: false,
                 parent_session_id: None,
                 forked_from: None,
                 agent_preset: None,

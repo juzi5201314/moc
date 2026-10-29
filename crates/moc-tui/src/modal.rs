@@ -185,8 +185,8 @@ pub struct PlanReviewState {
     pub selected: usize,
     pub scroll_offset: usize,
     pub execution_model: String,
-    /// 「在新会话执行」的目标方言；默认沿用当前会话方言。
-    pub execution_mode: moc_protocol::SessionMode,
+    /// 「在新会话执行」的目标引擎；默认沿用当前会话引擎。
+    pub execution_engine: moc_protocol::SessionEngine,
     pub submitting: bool,
     pub error: Option<String>,
     /// 与上一版的差异；`None` 表示没有上一版或还没加载。
@@ -203,7 +203,7 @@ impl PlanReviewState {
     pub fn new(
         plan: moc_protocol::methods::PlanInfo,
         execution_model: String,
-        execution_mode: moc_protocol::SessionMode,
+        execution_engine: moc_protocol::SessionEngine,
     ) -> Self {
         // 有上一版时优先让用户看「改了什么」，没有才看正文。
         let show_diff = plan.previous_plan_id.is_some();
@@ -225,7 +225,7 @@ impl PlanReviewState {
             selected: 0,
             scroll_offset: 0,
             execution_model,
-            execution_mode,
+            execution_engine,
             submitting: false,
             error: None,
             diff: None,

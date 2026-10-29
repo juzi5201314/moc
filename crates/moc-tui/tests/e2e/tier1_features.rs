@@ -5,7 +5,7 @@ use super::common::*;
 use moc_protocol::methods::AgentStatus;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
 use moc_tui::render::markdown::render_markdown;
-use moc_tui::render::modal::{draw_completion_menu, draw_modal, draw_mode_menu};
+use moc_tui::render::modal::{draw_completion_menu, draw_engine_menu, draw_modal};
 use moc_tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -216,22 +216,22 @@ fn test_f2_04_rewind_modal_outer_dialog_uses_rounded_borders() {
 }
 
 #[test]
-fn test_f2_05_mode_menu_uses_rounded_borders() {
+fn test_f2_05_engine_menu_uses_rounded_borders() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.mode_menu = Some(moc_tui::app::ModeMenu {
+    app.engine_menu = Some(moc_tui::app::EngineMenu {
         selected: 0,
         area: Rect::default(),
     });
-    app.mode_area = Rect::new(70, 20, 10, 1);
-    terminal.draw(|f| draw_mode_menu(f, &mut app)).unwrap();
+    app.engine_area = Rect::new(70, 20, 10, 1);
+    terminal.draw(|f| draw_engine_menu(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let menu_line = rows
         .iter()
-        .find(|r| r.contains("模式") || r.contains("Normal"))
+        .find(|r| r.contains("引擎") || r.contains("standard"))
         .unwrap_or(&rows[0]);
     assert!(
         !menu_line.contains("┌"),
-        "Mode menu should not have sharp 90-degree corners"
+        "Engine menu should not have sharp 90-degree corners"
     );
 }
 

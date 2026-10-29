@@ -160,28 +160,28 @@ pub fn draw_completion_menu(
     );
 }
 
-/// 就地模式菜单：右缘对齐图例里的模式名，整体贴在它上方（右键菜单那种小浮层）。
-pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
-    let Some(menu) = app.mode_menu.as_ref() else {
+/// 就地引擎菜单：右缘对齐图例里的引擎名，整体贴在它上方（右键菜单那种小浮层）。
+pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
+    let Some(menu) = app.engine_menu.as_ref() else {
         return;
     };
     let theme = app.theme;
-    let current = app.session.as_ref().map(|session| session.mode);
+    let current = app.session.as_ref().map(|session| session.engine);
     let selected = menu.selected;
-    let label_width = crate::app::MODES
+    let label_width = crate::app::ENGINES
         .iter()
-        .map(|mode| str_width(crate::app::mode_label(*mode)))
+        .map(|engine| str_width(crate::app::engine_label(*engine)))
         .max()
         .unwrap_or(0);
     let frame_area = frame.area();
     let width = u16::try_from(2 + label_width + 2 + 2)
         .unwrap_or(u16::MAX)
         .min(frame_area.width);
-    let height = u16::try_from(crate::app::MODES.len() + 2).unwrap_or(u16::MAX);
+    let height = u16::try_from(crate::app::ENGINES.len() + 2).unwrap_or(u16::MAX);
     let area = if !menu.area.is_empty() {
         menu.area
     } else {
-        let anchor = app.mode_area;
+        let anchor = app.engine_area;
         let x = (anchor.x.saturating_add(anchor.width))
             .saturating_sub(width)
             .min(frame_area.width.saturating_sub(width))
@@ -193,13 +193,13 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
             height,
         }
     };
-    if let Some(menu_mut) = app.mode_menu.as_mut() {
+    if let Some(menu_mut) = app.engine_menu.as_mut() {
         menu_mut.area = area;
     }
-    let lines: Vec<Line<'static>> = crate::app::MODES
+    let lines: Vec<Line<'static>> = crate::app::ENGINES
         .iter()
         .enumerate()
-        .map(|(index, mode)| {
+        .map(|(index, engine)| {
             let highlighted = index == selected;
             let base = if highlighted {
                 Style::new()
@@ -209,8 +209,8 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
             } else {
                 Style::new().fg(theme.text_primary)
             };
-            // 当前模式沿用图例里的强调色，与菜单高亮（反色）互相独立。
-            let label_style = if Some(*mode) == current {
+            // 当前引擎沿用图例里的强调色，与菜单高亮（反色）互相独立。
+            let label_style = if Some(*engine) == current {
                 base.fg(theme.accent_model)
             } else {
                 base
@@ -220,7 +220,7 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
                 Span::styled(
                     format!(
                         "{:<label_width$}",
-                        crate::app::mode_label(*mode),
+                        crate::app::engine_label(*engine),
                         label_width = label_width
                     ),
                     label_style,
@@ -241,7 +241,7 @@ pub fn draw_mode_menu(frame: &mut Frame, app: &mut App) {
         ),
         area,
     );
-    if let Some(menu) = app.mode_menu.as_mut() {
+    if let Some(menu) = app.engine_menu.as_mut() {
         menu.area = area;
     }
 }
@@ -639,7 +639,7 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             title: "# 会话与通用",
             rows: vec![
                 (get_key("model"), "选择模型"),
-                (get_key("mode"), "切换会话方言"),
+                (get_key("engine"), "切换会话引擎"),
                 (get_key("config"), "打开设置"),
                 (get_key("agents"), "打开子代理管理"),
                 (get_key("resume"), "恢复会话"),
@@ -2468,14 +2468,14 @@ fn join_columns(
 /// 计划审阅卡片顶部的固定行数：执行模型、标题/版本、路径。
 pub(crate) const PLAN_HEADER_ROWS: usize = 3;
 
-/// 待审阅计划的动作列表；「在新会话执行」带上所选目标方言。
+/// 待审阅计划的动作列表；「在新会话执行」带上所选目标引擎。
 fn plan_action_label(state: &PlanReviewState, index: usize) -> String {
     match index {
         0 => "执行（当前会话）".to_owned(),
         1 => "压缩当前会话后执行".to_owned(),
         2 => format!(
             "在新会话执行（{}）",
-            crate::app::mode_label(state.execution_mode)
+            crate::app::engine_label(state.execution_engine)
         ),
         _ => "继续计划".to_owned(),
     }
@@ -2638,10 +2638,10 @@ fn plan_lines(
 
     let hint = match state.pane {
         PlanPane::Read if state.show_diff && state.previous_plan_id.is_some() => {
-            "↑↓/PgUp/PgDn 滚动 · D 看计划 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换方言"
+            "↑↓/PgUp/PgDn 滚动 · D 看计划 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换引擎"
         }
         PlanPane::Read => {
-            "↑↓/PgUp/PgDn 滚动 · D 看改动 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换方言"
+            "↑↓/PgUp/PgDn 滚动 · D 看改动 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换引擎"
         }
         PlanPane::Annotate => {
             "↑↓ 移动 · v 选行 · c 批注 · Ctrl+G 建议改法 · x 删除 · s 发送 · A 返回阅读 · Esc 返回"
@@ -2880,8 +2880,8 @@ mod tests {
         theme::Theme,
     };
     use moc_protocol::methods::{
-        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection, SessionInfo,
-        SessionMode, SessionPermission,
+        AskOption, AskParams, AskQuestion, ContextUsageResult, ContextUsageSection, SessionEngine,
+        SessionInfo, SessionPermission,
     };
     use ratatui::style::Color;
     use ratatui::text::Line;
@@ -3191,9 +3191,10 @@ mod tests {
             title: title.into(),
             model: "p/model".into(),
             permission: SessionPermission::Full,
-            mode: SessionMode::Normal,
+            engine: SessionEngine::Standard,
+            autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
-            mode_locked: false,
+            engine_locked: false,
             parent_session_id: None,
             forked_from: forked_from.map(str::to_owned),
             agent_preset: None,
@@ -4149,19 +4150,19 @@ mod tests {
     }
 
     #[test]
-    fn mode_menu_renders_solid_opaque_background() {
-        use crate::app::ModeMenu;
+    fn engine_menu_renders_solid_opaque_background() {
+        use crate::app::EngineMenu;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
 
         let (events, _rx) = unbounded_channel();
         let mut app = App::new(Theme::global(), events);
-        app.mode_menu = Some(ModeMenu {
+        app.engine_menu = Some(EngineMenu {
             selected: 0,
             area: Rect::default(),
         });
-        app.mode_area = Rect::new(50, 20, 10, 1);
+        app.engine_area = Rect::new(50, 20, 10, 1);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("构造测试终端");
         terminal
@@ -4170,12 +4171,12 @@ mod tests {
                     Rect::new(0, 0, 80, 24),
                     ratatui::style::Style::new().bg(Color::Red),
                 );
-                super::draw_mode_menu(frame, &mut app);
+                super::draw_engine_menu(frame, &mut app);
             })
             .expect("绘制成功");
 
         let theme = app.theme;
-        let menu_area = app.mode_menu.as_ref().unwrap().area;
+        let menu_area = app.engine_menu.as_ref().unwrap().area;
         assert!(menu_area.width > 0 && menu_area.height > 0);
         let buffer = terminal.backend().buffer();
         for y in menu_area.y..menu_area.y + menu_area.height {
@@ -4184,9 +4185,9 @@ mod tests {
                 assert_ne!(
                     cell.bg,
                     Color::Reset,
-                    "模式菜单不应出现 Reset 穿透：({x}, {y})"
+                    "引擎菜单不应出现 Reset 穿透：({x}, {y})"
                 );
-                assert_ne!(cell.bg, Color::Red, "模式菜单不应泄露底层颜色：({x}, {y})");
+                assert_ne!(cell.bg, Color::Red, "引擎菜单不应泄露底层颜色：({x}, {y})");
                 assert!(
                     cell.bg == theme.bg_base || cell.bg == theme.bg_visual,
                     "单元格背景必须为实色 base 或 visual：({x}, {y}) 实际为 {:?}",

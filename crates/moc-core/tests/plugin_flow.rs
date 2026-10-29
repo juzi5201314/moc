@@ -4,8 +4,8 @@ mod support;
 
 use moc_protocol::methods::{
     ConfigAction, ConfigManage, ConfigReply, ConfigScope, PluginInfo, PluginList, PluginListParams,
-    PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams, SessionLoad,
-    SessionLoadParams, SessionMode, SessionUpdate,
+    PluginReload, PluginReloadParams, PluginRunCommand, PluginRunCommandParams, SessionEngine,
+    SessionLoad, SessionLoadParams, SessionUpdate,
 };
 use serde_json::{Value, json};
 use support::{Harness, text_stream, tool_result_texts, tool_stream};
@@ -87,7 +87,7 @@ async fn plugin_tool_runs_and_its_prompt_reaches_the_model() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "试试插件").await;
 
     let results = load(&harness, &session).await;
@@ -129,14 +129,14 @@ async fn plugin_tool_runs_and_its_prompt_reaches_the_model() {
         .expect("插件已加载");
     assert_eq!(demo.error, None);
     assert_eq!(demo.tools[0].name, "plugin_echo");
-    assert_eq!(demo.tools[0].modes.join(","), "normal,ask,plan");
+    assert_eq!(demo.tools[0].modes.join(","), "default,ask,plan");
     assert_eq!(demo.commands[0].name, "demo");
 
     harness.close().await;
 }
 
-/// 插件工具声明的 `modes` 约束执行许可但不影响声明面：工具表随方言恒定，
-/// plan 契约下 `normal_only` 仍被声明、调用时被 E_MODE 拒绝。
+/// 插件工具声明的 `modes` 约束执行许可但不影响声明面：工具表随引擎恒定，
+/// plan 模式下 `default_only` 仍被声明、调用时被 E_MODE 拒绝。
 #[tokio::test]
 async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
     let upstream = MockServer::builder().start().await;
@@ -151,7 +151,7 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
             } else {
                 ResponseTemplate::new(200).set_body_raw(
                     tool_stream(vec![
-                        ("hidden", "normal_only", json!({})),
+                        ("hidden", "default_only", json!({})),
                         ("visible", "everywhere", json!({})),
                     ]),
                     "text/event-stream",
@@ -167,10 +167,10 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
         r#"
         export default {
           tools: {
-            normal_only: {
-              description: "只在标准模式可见",
+            default_only: {
+              description: "只在默认模式可见",
               parameters: { type: "object" },
-              modes: ["normal"],
+              modes: ["default"],
               run() { return "HIDDEN_PLUGIN_EXECUTED"; }
             },
             everywhere: {
@@ -182,7 +182,7 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
         };
         "#,
     );
-    let session = harness.session_plan(SessionMode::Normal).await;
+    let session = harness.session_plan(SessionEngine::Standard).await;
     harness.prompt(&session, "先给计划").await;
 
     let requests = upstream.received_requests().await.expect("请求记录");
@@ -194,8 +194,8 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
         .filter_map(|tool| tool["function"]["name"].as_str())
         .collect();
     assert!(
-        names.contains(&"normal_only"),
-        "契约不裁剪工具表，normal_only 仍在声明面：{names:?}"
+        names.contains(&"default_only"),
+        "模式不裁剪工具表，default_only 仍在声明面：{names:?}"
     );
     assert!(
         names.contains(&"everywhere"),
@@ -219,12 +219,12 @@ async fn plugin_tool_modes_filter_the_model_tool_table_and_calls() {
         "可见工具应执行：{results:?}"
     );
     let plugins = plugin_list(&harness, &session).await;
-    let normal_only = plugins[0]
+    let default_only = plugins[0]
         .tools
         .iter()
-        .find(|tool| tool.name == "normal_only")
+        .find(|tool| tool.name == "default_only")
         .unwrap();
-    assert_eq!(normal_only.modes, ["normal"]);
+    assert_eq!(default_only.modes, ["default"]);
 
     harness.close().await;
 }
@@ -269,7 +269,7 @@ async fn before_hook_denial_stops_the_call() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "写个文件").await;
 
     let results = load(&harness, &session).await;
@@ -325,7 +325,7 @@ async fn before_hook_rewrites_arguments_before_execution() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "读文件").await;
 
     let results = load(&harness, &session).await;
@@ -350,7 +350,7 @@ async fn plugin_list_reloads_after_files_change() {
         "demo",
         r#"export default { tools: { alpha: { description: "第一个", parameters: { type: "object" }, run: () => "a" } } };"#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     let plugins = plugin_list(&harness, &session).await;
     assert_eq!(plugins[0].tools[0].name, "alpha");
 
@@ -373,7 +373,7 @@ async fn plugin_list_reloads_after_files_change() {
 async fn config_save_disables_plugins() {
     let harness = Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
     install_plugin(&harness, "demo", "export default { prompt: () => 'x' };");
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     assert_eq!(plugin_list(&harness, &session).await.len(), 1);
 
     let cwd = harness
@@ -476,7 +476,7 @@ async fn thrown_tool_error_disables_the_plugin_for_later_calls() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "先失败再继续").await;
 
     let results = load(&harness, &session).await;
@@ -543,7 +543,7 @@ async fn plugin_reload_recovers_a_disabled_plugin() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     let command = |name: &str| PluginRunCommandParams {
         session_id: session.clone(),
         name: name.into(),
@@ -659,7 +659,7 @@ async fn plugin_failure_reaches_frontend_and_next_model_turn() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "触发失败").await;
 
     let notices = plugin_notices(&harness);
@@ -705,7 +705,7 @@ async fn load_failure_notice_reaches_the_model_on_prompt_start() {
         .await;
     let harness = Harness::new(&upstream.uri(), "openai_chat", "").await;
     install_plugin(&harness, "broken", "export default { nope: 1 };");
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "你好").await;
 
     let notices = plugin_notices(&harness);
@@ -754,7 +754,7 @@ async fn message_received_rewrites_user_input_before_persisting() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "原始指令").await;
 
     let loaded = harness
@@ -806,7 +806,7 @@ async fn session_start_injects_messages_into_the_transcript() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
 
     let loaded = harness
         .client
@@ -871,7 +871,7 @@ async fn after_tool_call_rewrites_the_tool_result() {
         };
         "#,
     );
-    let session = harness.session(SessionMode::Normal).await;
+    let session = harness.session(SessionEngine::Standard).await;
     harness.prompt(&session, "读文件").await;
 
     let results = load(&harness, &session).await;

@@ -2,52 +2,55 @@
 
 use moc_llm::{FinishReason, Message};
 use moc_protocol::methods::{
-    PlanAnnotation, PlanStatus, SessionInfo, SessionLockInfo, SessionMode, SessionPermission,
-    TodoPhase, ToolExecution, TranscriptEntry,
+    PlanAnnotation, PlanStatus, SessionAutonomy, SessionEngine, SessionInfo, SessionLockInfo,
+    SessionPermission, TodoPhase, ToolExecution, TranscriptEntry,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::ids;
 
-/// transcript 里持久化的模式值。
+/// transcript 里持久化的引擎值。
 ///
-/// 与 [`SessionMode`] 方言不是一回事：旧版本曾把 `ask` / `plan` 当成会话模式
-/// 直接写进 transcript。方言与契约拆分后新代码只会写出三个方言值，但读取旧
-/// transcript 时必须能接受全部五种取值并按旧语义映射回方言与 plan 叠加态。
+/// 与 [`SessionEngine`] 不完全同构：旧版本曾把 `ask` / `plan` 当成会话模式
+/// 直接写进 transcript，引擎的 `normal` 在更早的版本里也写作 `normal` 字段值。
+/// 新代码只写出三个引擎值，但读取旧 transcript 时必须能接受全部五种取值
+/// 并按旧语义映射回引擎与 plan 模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PersistedMode {
-    Normal,
-    /// 旧记录的持久 ask 模式；回放为 Normal 方言。
+pub enum PersistedEngine {
+    /// 旧记录写作 `normal`；读取按别名映射，写入一律 `standard`。
+    #[serde(alias = "normal")]
+    Standard,
+    /// 旧记录的持久 ask 模式；回放为 Standard 引擎。
     Ask,
-    /// 旧记录的 plan 模式；回放为 Normal 方言 + plan 叠加态。
+    /// 旧记录的 plan 模式；回放为 Standard 引擎 + plan 模式。
     Plan,
     Ptc,
     ClmExperimental,
 }
 
-impl PersistedMode {
-    /// 持久化值对应的会话方言。
-    pub fn dialect(self) -> SessionMode {
+impl PersistedEngine {
+    /// 持久化值对应的会话引擎。
+    pub fn engine(self) -> SessionEngine {
         match self {
-            Self::Normal | Self::Ask | Self::Plan => SessionMode::Normal,
-            Self::Ptc => SessionMode::Ptc,
-            Self::ClmExperimental => SessionMode::ClmExperimental,
+            Self::Standard | Self::Ask | Self::Plan => SessionEngine::Standard,
+            Self::Ptc => SessionEngine::Ptc,
+            Self::ClmExperimental => SessionEngine::ClmExperimental,
         }
     }
 
-    /// 旧模式的语义是否等价于「进入 plan」。
+    /// 旧值的语义是否等价于「进入 plan」。
     pub fn legacy_enters_plan(self) -> bool {
         matches!(self, Self::Plan)
     }
 }
 
-impl From<SessionMode> for PersistedMode {
-    fn from(mode: SessionMode) -> Self {
-        match mode {
-            SessionMode::Normal => Self::Normal,
-            SessionMode::Ptc => Self::Ptc,
-            SessionMode::ClmExperimental => Self::ClmExperimental,
+impl From<SessionEngine> for PersistedEngine {
+    fn from(engine: SessionEngine) -> Self {
+        match engine {
+            SessionEngine::Standard => Self::Standard,
+            SessionEngine::Ptc => Self::Ptc,
+            SessionEngine::ClmExperimental => Self::ClmExperimental,
         }
     }
 }
@@ -77,7 +80,9 @@ pub enum Entry {
         session_id: String,
         cwd: String,
         model: String,
-        mode: PersistedMode,
+        /// 旧记录字段名是 `mode`；读取按别名映射，写入一律 `engine`。
+        #[serde(alias = "mode")]
+        engine: PersistedEngine,
         #[serde(default)]
         permission: SessionPermission,
         /// 只有 `spawn_agent` 创建的子代理才有父会话，其它会话为 `null`。模型侧据此
@@ -134,22 +139,33 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<String>,
     },
-    /// 模式方言变化（`session/set_mode`；只会出现在空白会话期）。
-    ModeChange {
+    /// 会话引擎变化（`session/set_engine`；只会出现在空白会话期）。
+    ///
+    /// 旧记录条目类型是 `mode_change`、字段是 `mode`；读取按别名映射，写入一律新名。
+    #[serde(alias = "mode_change")]
+    EngineChange {
         id: String,
         parent_id: Option<String>,
         at_ms: u64,
-        mode: PersistedMode,
-        /// 写入时的 plan 叠加态权威投影；旧记录没有这个字段，回放按旧模式值映射。
+        #[serde(alias = "mode")]
+        engine: PersistedEngine,
+        /// 写入时的 plan 模式权威投影；旧记录没有这个字段，回放按旧模式值映射。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plan_active: Option<bool>,
     },
-    /// plan 叠加态变化（`session/plan_mode`）。
+    /// plan 模式变化（`session/plan_mode`）。
     PlanMode {
         id: String,
         parent_id: Option<String>,
         at_ms: u64,
         active: bool,
+    },
+    /// 会话自主程度变化（`session/set_autonomy`）。
+    AutonomyChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        autonomy: SessionAutonomy,
     },
     /// 命令执行权限变化。
     PermissionChange {
@@ -284,14 +300,18 @@ pub enum EntryPayload {
         /// Grok Build 压缩时快照的运行时状态提醒；其它方法为 `None`。
         reminder: Option<String>,
     },
-    /// 方言变化；`plan_active` 是写入时的 plan 状态投影，供回放直接采用。
-    ModeChange {
-        mode: SessionMode,
+    /// 引擎变化；`plan_active` 是写入时的 plan 状态投影，供回放直接采用。
+    EngineChange {
+        engine: SessionEngine,
         plan_active: bool,
     },
-    /// plan 叠加态变化。
+    /// plan 模式变化。
     PlanMode {
         active: bool,
+    },
+    /// 自主程度变化。
+    AutonomyChange {
+        autonomy: SessionAutonomy,
     },
     PermissionChange {
         permission: SessionPermission,
@@ -447,7 +467,7 @@ impl Entry {
         session_id: String,
         cwd: String,
         model: String,
-        mode: SessionMode,
+        engine: SessionEngine,
         permission: SessionPermission,
         origin: SessionOrigin,
         title: String,
@@ -465,7 +485,7 @@ impl Entry {
             session_id,
             cwd,
             model,
-            mode: mode.into(),
+            engine: engine.into(),
             permission,
             parent_session_id: origin.parent_session_id,
             forked_from: origin.forked_from,
@@ -547,11 +567,14 @@ impl Entry {
                 model,
                 reminder,
             },
-            EntryPayload::ModeChange { mode, plan_active } => Self::ModeChange {
+            EntryPayload::EngineChange {
+                engine,
+                plan_active,
+            } => Self::EngineChange {
                 id,
                 parent_id,
                 at_ms,
-                mode: mode.into(),
+                engine: engine.into(),
                 plan_active: Some(plan_active),
             },
             EntryPayload::PlanMode { active } => Self::PlanMode {
@@ -559,6 +582,12 @@ impl Entry {
                 parent_id,
                 at_ms,
                 active,
+            },
+            EntryPayload::AutonomyChange { autonomy } => Self::AutonomyChange {
+                id,
+                parent_id,
+                at_ms,
+                autonomy,
             },
             EntryPayload::PermissionChange { permission } => Self::PermissionChange {
                 id,
@@ -664,7 +693,8 @@ impl Entry {
             Self::Header { id, .. }
             | Self::Message { id, .. }
             | Self::Compaction { id, .. }
-            | Self::ModeChange { id, .. }
+            | Self::EngineChange { id, .. }
+            | Self::AutonomyChange { id, .. }
             | Self::PlanMode { id, .. }
             | Self::PermissionChange { id, .. }
             | Self::ModelChange { id, .. }
@@ -685,7 +715,8 @@ impl Entry {
             Self::Header { parent_id, .. }
             | Self::Message { parent_id, .. }
             | Self::Compaction { parent_id, .. }
-            | Self::ModeChange { parent_id, .. }
+            | Self::EngineChange { parent_id, .. }
+            | Self::AutonomyChange { parent_id, .. }
             | Self::PlanMode { parent_id, .. }
             | Self::PermissionChange { parent_id, .. }
             | Self::ModelChange { parent_id, .. }
@@ -705,7 +736,8 @@ impl Entry {
             Self::Header { at_ms, .. }
             | Self::Message { at_ms, .. }
             | Self::Compaction { at_ms, .. }
-            | Self::ModeChange { at_ms, .. }
+            | Self::EngineChange { at_ms, .. }
+            | Self::AutonomyChange { at_ms, .. }
             | Self::PlanMode { at_ms, .. }
             | Self::PermissionChange { at_ms, .. }
             | Self::ModelChange { at_ms, .. }
@@ -727,7 +759,7 @@ impl Entry {
         &str,
         &str,
         &str,
-        SessionMode,
+        SessionEngine,
         SessionPermission,
         &str,
         u64,
@@ -738,7 +770,7 @@ impl Entry {
                 session_id,
                 cwd,
                 model,
-                mode,
+                engine,
                 permission,
                 title,
                 created_at_ms,
@@ -748,7 +780,7 @@ impl Entry {
                 session_id,
                 cwd,
                 model,
-                mode.dialect(),
+                engine.engine(),
                 *permission,
                 title,
                 *created_at_ms,
@@ -787,7 +819,7 @@ impl Entry {
             session_id,
             cwd,
             model,
-            mode,
+            engine,
             permission,
             parent_session_id,
             forked_from,
@@ -806,11 +838,12 @@ impl Entry {
             title: title.clone(),
             model: model.clone(),
             permission: *permission,
-            mode: mode.dialect(),
-            // 旧 header 的持久模式值映射到叠加态；新 header 只会是方言值。
-            plan_active: mode.legacy_enters_plan(),
-            // header 投影时还没有任何用户提示，方言必然未锁定。
-            mode_locked: false,
+            engine: engine.engine(),
+            autonomy: SessionAutonomy::default(),
+            // 旧 header 的持久模式值映射到 plan 模式；新 header 只会是引擎值。
+            plan_active: engine.legacy_enters_plan(),
+            // header 投影时还没有任何用户提示，引擎必然未锁定。
+            engine_locked: false,
             parent_session_id: parent_session_id.clone(),
             forked_from: forked_from.clone(),
             agent_preset: agent.as_ref().and_then(|meta| meta.preset.clone()),

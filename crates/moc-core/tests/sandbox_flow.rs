@@ -2,7 +2,7 @@ mod support;
 
 use moc_core::sandbox::{SandboxRunner, SandboxSupport};
 use moc_protocol::SessionPermission;
-use moc_protocol::methods::{SessionMode, SessionSetPermission, SessionSetPermissionParams};
+use moc_protocol::methods::{SessionEngine, SessionSetPermission, SessionSetPermissionParams};
 use support::Harness;
 
 fn all_modes() -> SandboxSupport {
@@ -32,7 +32,7 @@ async fn harness_with(support: SandboxSupport) -> Harness {
 #[tokio::test]
 async fn set_permission_accepts_only_supported_modes_and_clear_grants() {
     let harness = harness_with(all_modes()).await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
 
     let info = harness
         .client
@@ -62,7 +62,7 @@ async fn set_permission_accepts_only_supported_modes_and_clear_grants() {
 #[tokio::test]
 async fn set_permission_rejects_modes_without_a_runner() {
     let harness = harness_with(SandboxSupport::full_only()).await;
-    let id = harness.session(SessionMode::Normal).await;
+    let id = harness.session(SessionEngine::Standard).await;
     let error = harness
         .client
         .call::<SessionSetPermission>(SessionSetPermissionParams {
