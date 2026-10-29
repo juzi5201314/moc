@@ -1098,6 +1098,21 @@ pub(crate) async fn drain_inbox(
     Ok(count)
 }
 
+/// 提示自然收尾前调用：收件箱还有积压消息就返回 `false`（调用方继续跑一轮把
+/// 消息答掉）；为空则原子关闭投递窗口并返回 `true`，此后新消息只能走唤醒路径。
+///
+/// 与「结束阶段再 drain 一次」不同：那时消息虽落盘但永远拿不到应答，这里保证
+/// 不留下无人应答的投递。
+pub(crate) async fn close_inbox_if_empty(inner: &CoreInner, session: &str) -> bool {
+    let runtime = inner.runtime(session).await;
+    let mut inbox = runtime.agent_inbox.lock().await;
+    if !inbox.messages.is_empty() {
+        return false;
+    }
+    inbox.accepting = false;
+    true
+}
+
 /// `yield`：记录子代理交付的最终报告；声明了 `output_schema` 的子代理
 /// 必须同时交付通过校验的结构化结果。
 pub(crate) async fn record_yield(

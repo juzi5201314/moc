@@ -1439,3 +1439,42 @@ async fn rewinding_past_a_spawn_orphans_stops_and_hides_the_child() {
     assert!(!marks_file.exists(), "redo 必须清空孤儿标记文件");
     harness.close().await;
 }
+
+/// 收尾窗口投递：`yield` 响应延迟期间注入的消息必须让子代理再跑一轮作答，
+/// 不能只在结束后落盘而无人应答。
+#[tokio::test]
+async fn injected_message_during_closing_window_is_answered() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if body.to_string().contains("PARENT_LATE") {
+            return yield_call("call_yield", "FINAL_REPORT");
+        }
+        if is_subagent_request(body) {
+            // 首轮延迟交付，给收尾窗口留投递时间。
+            return delayed(yield_call("call_yield", "FIRST_REPORT"), 800);
+        }
+        text_response("PARENT_OK")
+    })
+    .await;
+    let harness = harness(&upstream).await;
+    let parent_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    let child_id = spawn_child(&harness, &parent_id, "SLOW_TASK").await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let receipt = message_agent(&harness, &parent_id, &child_id, "PARENT_LATE")
+        .await
+        .expect("收尾窗口投递");
+    assert_eq!(receipt.receipts[0].outcome, AgentMessageOutcome::Injected);
+
+    let waited = wait_children(&harness, &parent_id, Some(vec![child_id]), Some(10)).await;
+    assert!(waited.settled);
+
+    // 子代理必须再发一次请求把注入消息答掉：消息进入后续请求的上下文。
+    let requests = upstream.received_requests().await.expect("上游请求");
+    let answered = requests
+        .iter()
+        .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
+        .any(|body| is_subagent_request(&body) && body.to_string().contains("PARENT_LATE"));
+    assert!(answered, "注入消息必须进入子代理的模型请求");
+    harness.close().await;
+}

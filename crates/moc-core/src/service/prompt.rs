@@ -1424,6 +1424,11 @@ async fn run_prompt_locked(
                         if !steering.messages.is_empty() {
                             continue 'turns;
                         }
+                        // 收件箱里还压着投递就先别收：继续跑一轮把消息答掉。
+                        // 持 steering 锁时再取 inbox 锁（锁序 steering→inbox）。
+                        if !crate::agents::close_inbox_if_empty(&inner, &params.session_id).await {
+                            continue 'turns;
+                        }
                         steering.accepting = false;
                     }
                     break 'turns;
@@ -1493,6 +1498,15 @@ async fn run_prompt_locked(
                     detail,
                 )),
             }
+        }
+        // 子代理 `yield` 后收件箱可能还压着投递：有消息就再跑一轮作答，
+        // 后一轮的 yield 会覆盖前一份报告。
+        if control_end
+            && subagent
+            && !cancel.is_cancelled()
+            && !crate::agents::close_inbox_if_empty(&inner, &params.session_id).await
+        {
+            continue 'turns;
         }
         if control_end || cancel.is_cancelled() {
             final_reason = if control_end {
