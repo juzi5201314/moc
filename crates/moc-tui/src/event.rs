@@ -1540,8 +1540,9 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
 
 /// 提问卡片的鼠标处理。
 /// 作答态：点选项即选择（单选直接推进、多选切换勾选），点自定义行进入编辑，
-/// 点导航条跳问，点转写区或按滚动条折叠；滚轮按悬停区分流——落在可滚文本区
-/// （溢出的问题正文窗/详情区）滚该区，其余位置与 ↑↓ 同语义移动选项光标。
+/// 点导航条跳问（「确认」项落确认页、确认页上再点即提交），点转写区或按
+/// 滚动条折叠；滚轮按悬停区分流——落在可滚文本区（溢出的问题正文窗/详情区）
+/// 滚该区，其余位置与 ↑↓ 同语义移动选项光标。
 /// 折叠态：点细条展开回作答，其余鼠标行为与转写区一致（滚动/拖选/滚动条）。
 /// 命中矩形由渲染层每帧写入 `ask_option_hits`/`ask_nav_hits`/`ask_card_area`/
 /// `ask_question_area`/`ask_detail_area`/`ask_strip_area`；未命中区域不响应。
@@ -1624,30 +1625,41 @@ fn handle_ask_mouse(
                 }
                 return;
             }
-            // 导航条跳问：只动指针不提交，与 ←→ 同语义。
+            // 导航条：点问题项跳问（与 ←→ 同语义），点「确认」项是提交链路的鼠标入口。
             if let Some((target, _)) = app
                 .ask_nav_hits
                 .iter()
                 .find(|(_, area)| area.contains(position))
                 .cloned()
             {
+                let mut submitted = false;
                 if let Some(Modal::Ask {
                     params,
                     question,
+                    selected,
                     custom,
                     preview_scroll,
                     question_scroll,
+                    reply,
                     ..
                 }) = app.modal.as_mut()
-                    && target < params.questions.len()
                 {
-                    // 编辑中的文本留在原问，跳问即结束编辑态。
-                    if let Some(answer) = custom.get_mut(*question) {
-                        answer.editing = false;
+                    if target == params.questions.len() && *question == params.questions.len() {
+                        // 确认页上再点「确认」= 提交（纯鼠标的提交入口）。
+                        submitted = submit_ask(params, selected, custom, reply);
+                    } else if target <= params.questions.len() {
+                        // 点问题项跳问，点「确认」落到确认页；
+                        // 编辑中的文本留在原问，跳页即结束编辑态。
+                        if let Some(answer) = custom.get_mut(*question) {
+                            answer.editing = false;
+                        }
+                        *question = target;
+                        *preview_scroll = 0;
+                        *question_scroll = 0;
                     }
-                    *question = target;
-                    *preview_scroll = 0;
-                    *question_scroll = 0;
+                }
+                if submitted {
+                    app.modal = None;
                 }
                 return;
             }
@@ -9139,6 +9151,55 @@ mod tests {
             Some(Modal::Ask { parked, .. }) => assert!(*parked, "点转写区应折叠"),
             _ => unreachable!("模态应保留"),
         }
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 导航条「确认」项是纯鼠标的提交链路：作答页点它落到确认页，
+    /// 确认页上再点即提交（多选末问也能由此离开作答页）。
+    #[tokio::test]
+    async fn ask_mouse_confirm_nav_jumps_and_submits() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(ask_modal_with(
+            vec![multi_ask_question(), ask_question("q2")],
+            Some(reply_tx),
+        ));
+        app.ask_card_area = ratatui::layout::Rect::new(10, 5, 80, 10);
+        app.ask_nav_hits = vec![
+            (0, ratatui::layout::Rect::new(12, 6, 10, 1)),
+            (1, ratatui::layout::Rect::new(24, 6, 10, 1)),
+            (2, ratatui::layout::Rect::new(36, 6, 8, 1)),
+        ];
+
+        // 作答页点「确认」（下标 = questions.len()）：多选不切勾、不提交，落确认页。
+        handle_mouse_with_connection(&mut app, &connection, left_click(38, 6));
+        match app.modal.as_ref() {
+            Some(Modal::Ask {
+                question,
+                selected,
+                preview_scroll,
+                question_scroll,
+                ..
+            }) => {
+                assert_eq!(*question, 2, "点「确认」应落到确认页");
+                assert!(selected.iter().all(|set| set.is_empty()), "跳页不代选");
+                assert_eq!(*preview_scroll + *question_scroll, 0, "跳页复位滚动");
+            }
+            _ => unreachable!("落确认页不应提交"),
+        }
+        assert!(reply_rx.try_recv().is_err(), "未点第二次不应提交");
+
+        // 确认页上再点「确认」：提交并关闭模态。
+        handle_mouse_with_connection(&mut app, &connection, left_click(38, 6));
+        assert!(app.modal.is_none(), "确认页点「确认」应提交并关闭");
+        let answers = reply_rx
+            .await
+            .expect("应收到提交结果")
+            .expect("提交应成功")
+            .answers;
+        assert_eq!(answers.len(), 2, "每问一条答案记录");
 
         connection.shutdown().await;
         core.shutdown().await;

@@ -1922,6 +1922,11 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     .flatten()
     .collect::<Vec<_>>()
     .join(" · ");
+    // 页脚与正文之间空一行：提示贴向卡片底部、不黏在最后一行内容上。
+    // 这是装饰行——预算占满时先牺牲它，不挤掉选项/详情/页脚本身。
+    if lines.len() + 1 < max_lines {
+        lines.push(Line::from(String::new()));
+    }
     lines.push(Line::from(Span::styled(
         ellipsize(&footer, width),
         Style::new().fg(theme.gray_dim),
@@ -2091,6 +2096,10 @@ fn ask_confirm_layout(
     }
     let scroll = (*preview_scroll).min(answers.len().saturating_sub(rows));
     lines.extend(answers.into_iter().skip(scroll).take(rows));
+    // 与作答页同款：页脚前空一行（预算占满时让位），提示行沉到卡片底部。
+    if lines.len() + 1 < max_lines {
+        lines.push(Line::from(String::new()));
+    }
     lines.push(Line::from(Span::styled(
         ellipsize("enter 确认提交 · esc 折叠问题卡 · shift+X 跳过", width),
         Style::new().fg(theme.gray_dim),
@@ -3659,7 +3668,11 @@ mod tests {
             .iter()
             .position(|text| text.contains("滚轮/PgUp·PgDn"))
             .unwrap_or_else(|| panic!("超窗详情区应给滚动提示：{head:?}"));
-        assert_eq!(status, head.len() - 2, "滚动提示应是详情区末行：{head:?}");
+        assert_eq!(
+            status,
+            head.len() - 3,
+            "滚动提示应在详情区末行（其后是空行与页脚）：{head:?}"
+        );
 
         if let Modal::Ask { preview_scroll, .. } = &mut modal {
             *preview_scroll = 8;
