@@ -43,9 +43,9 @@ use moc_protocol::methods::{
     SessionCompact, SessionCompactParams, SessionEngine, SessionLoad, SessionLoadParams,
     SessionLoadResult, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPlanApprove, SessionPlanApproveParams, SessionPlanDiff, SessionPlanDiffParams,
-    SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams, SessionPrompt,
-    SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams, SessionUpdate,
-    SessionUpdateMethod, SessionUsage, SessionUsageParams, UpstreamField,
+    SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams,
+    SessionPrompt, SessionSetModel, SessionSetModelParams, SessionUnload, SessionUnloadParams,
+    SessionUpdate, SessionUpdateMethod, SessionUsage, SessionUsageParams, UpstreamField,
 };
 use moc_protocol::{ClientBuilder, Server, ServerOptions, transport};
 use wiremock::matchers::{method, path};
@@ -2306,11 +2306,7 @@ async fn plan_tools_reject_invalid_payloads_and_keep_round_open() {
                     "plan",
                     json!({"title":"方案", "markdown":"# 方案", "extra":true}),
                 ),
-                2 => (
-                    "save",
-                    "plan",
-                    json!({"title":"方案", "markdown":"# 方案"}),
-                ),
+                2 => ("save", "plan", json!({"title":"方案", "markdown":"# 方案"})),
                 3 => ("invalid_exit", "exit_plan", json!({"extra":true})),
                 4 => ("exit", "exit_plan", json!({})),
                 _ => panic!("成功退出计划后不得继续调用上游"),
@@ -3033,11 +3029,9 @@ async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
                     "plan",
                     json!({"title": "实施", "markdown": markdown_a}),
                 )]),
-                1 => support::tool_stream(vec![(
-                    "save_b",
-                    "plan",
-                    json!({"markdown": markdown_b}),
-                )]),
+                1 => {
+                    support::tool_stream(vec![("save_b", "plan", json!({"markdown": markdown_b}))])
+                }
                 2 => {
                     let body: Value = serde_json::from_slice(&request.body).unwrap();
                     support::tool_stream(vec![(
@@ -3117,8 +3111,7 @@ async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
         .expect("提交的 v1")
         .clone();
     assert_eq!(v1.version, 1);
-    let expected_v1 =
-        "# 方案\n1. 第一步\n2. 第二步\n2a. 新增的第二步\n3. 第三步\n4. 第四步\n";
+    let expected_v1 = "# 方案\n1. 第一步\n2. 第二步\n2a. 新增的第二步\n3. 第三步\n4. 第四步\n";
     assert_eq!(v1.markdown, expected_v1);
     let v1_file = plans_dir(&loaded).join(format!("{}.md", v1.plan_id));
     assert_eq!(

@@ -122,7 +122,10 @@ async fn write_draft(
     let title = title
         .or_else(|| draft.as_ref().map(|plan| plan.title.clone()))
         .ok_or_else(|| {
-            ToolError::new("E_BAD_PAYLOAD", "plan title is required for the first draft")
+            ToolError::new(
+                "E_BAD_PAYLOAD",
+                "plan title is required for the first draft",
+            )
         })?;
     // 起草期复用同一个 plan_id：工作草稿是唯一活动计划，反复写是原地覆盖；
     // 只有经 exit_plan 提交的版本才占审阅版本号。
@@ -221,10 +224,8 @@ async fn apply_edits(
     let base = match &target {
         EditTarget::Patch(plan) | EditTarget::Seed(plan) => plan,
     };
-    let base_path = std::fs::canonicalize(
-        ctx.paths.plans().join(format!("{}.md", base.plan_id)),
-    )
-    .map_err(|error| ToolError::new("E_PLAN_READ", error.to_string()))?;
+    let base_path = std::fs::canonicalize(ctx.paths.plans().join(format!("{}.md", base.plan_id)))
+        .map_err(|error| ToolError::new("E_PLAN_READ", error.to_string()))?;
     let served = ctx.anchors.served(&base_path).unwrap_or_default();
     let request = EditRequest {
         path: base_path.to_string_lossy().into_owned(),
@@ -232,12 +233,7 @@ async fn apply_edits(
         move_lines: None,
     };
     let max_edits = ctx.config.tools.edit.max_edits;
-    let max_bytes = ctx
-        .config
-        .tools
-        .output
-        .max_file_bytes
-        .min(4 * 1024 * 1024);
+    let max_bytes = ctx.config.tools.output.max_file_bytes.min(4 * 1024 * 1024);
     match target {
         EditTarget::Patch(draft) => {
             let output = match apply_edit(
@@ -285,9 +281,8 @@ async fn apply_edits(
             Ok(outcome)
         }
         EditTarget::Seed(base) => {
-            let edit_plan = match plan_edit(
-                &ctx.cwd, &request, &served, None, max_edits, max_bytes,
-            ) {
+            let edit_plan = match plan_edit(&ctx.cwd, &request, &served, None, max_edits, max_bytes)
+            {
                 Ok(edit_plan) => edit_plan,
                 Err(EditError::Tool(content)) => {
                     return Ok(error_outcome(ctx, &request, &base_path, None, content));
