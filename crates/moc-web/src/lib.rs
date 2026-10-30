@@ -11,9 +11,10 @@ mod assets;
 mod bridge;
 mod browser;
 
-use std::net::SocketAddr;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Query, State};
@@ -23,12 +24,19 @@ use axum::routing::get;
 use moc_core::Core;
 use moc_protocol::Server;
 use serde::Deserialize;
+use tokio::net::TcpListener;
+
+/// 未指定 `--port` 时优先尝试的端口。
+pub const DEFAULT_PORT: u16 = 7432;
 
 /// `moc web` 的启动参数。
 #[derive(Debug, Clone)]
 pub struct WebOptions {
-    /// 监听地址；只应绑定回环地址。
-    pub addr: SocketAddr,
+    /// 优先监听端口；只绑定回环地址。`0` 表示由系统分配。
+    pub port: u16,
+    /// 端口被占用时是否退回系统分配的随机端口。
+    /// 显式 `--port` 为 `false`：调用方指定了端口，换了就不算兑现。
+    pub fallback: bool,
     /// 访问令牌：浏览器必须用 `?token=` 带上它才能建立 WebSocket。
     pub token: String,
     /// 启动后用系统默认浏览器打开 WebUI。
@@ -37,11 +45,13 @@ pub struct WebOptions {
 
 /// 启动 Web 前端，直到进程退出。
 pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
-    if !options.addr.ip().is_loopback() {
-        anyhow::bail!("moc web 只允许绑定回环地址，收到 {}", options.addr);
-    }
-    let listener = tokio::net::TcpListener::bind(options.addr).await?;
+    let (listener, fell_back) = listen(options.port, options.fallback)
+        .await
+        .with_context(|| format!("无法监听 127.0.0.1:{}；端口被占用或权限不足", options.port))?;
     let addr = listener.local_addr()?;
+    if fell_back {
+        println!("端口 {} 已被占用，改用随机端口 {addr}", options.port);
+    }
     tracing::info!(%addr, "moc web 已启动");
 
     let server = Server::with_options((*core).clone(), bridge::options());
@@ -62,6 +72,18 @@ pub async fn run(core: Arc<Core>, options: WebOptions) -> anyhow::Result<()> {
     println!("按 Ctrl+C 停止服务");
     axum::serve(listener, routes(state)).await?;
     Ok(())
+}
+
+/// 绑定回环地址：先试 `port`，被占用且允许回退时改由系统分配。
+/// 第二个返回值表示是否回退过，供调用方把实际端口告诉用户。
+async fn listen(port: u16, fallback: bool) -> std::io::Result<(TcpListener, bool)> {
+    match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+        Err(error) if fallback && error.kind() == std::io::ErrorKind::AddrInUse => {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+            Ok((listener, true))
+        }
+        result => result.map(|listener| (listener, false)),
+    }
 }
 
 #[derive(Clone)]
@@ -229,5 +251,18 @@ mod tests {
         assert!(accepts_zstd(&accept_encoding("gzip, zstd")));
         assert!(accepts_zstd(&accept_encoding("ZSTD;q=1")));
         assert!(!accepts_zstd(&accept_encoding("zstd;q=0")));
+    }
+
+    #[tokio::test]
+    async fn occupied_port_falls_back_to_an_ephemeral_one_only_when_allowed() {
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = occupied.local_addr().unwrap().port();
+
+        let (listener, fell_back) = listen(port, true).await.unwrap();
+        assert!(fell_back);
+        assert_ne!(listener.local_addr().unwrap().port(), port);
+
+        let error = listen(port, false).await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     }
 }

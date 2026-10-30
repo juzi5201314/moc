@@ -46,7 +46,7 @@ shell 选择：Unix 上只接受 bash/zsh（fish/nushell 等回退 bash）；Win
 
 ```bash
 moc                           # 启动 TUI（默认）
-moc web                       # 启动浏览器前端（默认 127.0.0.1:7432）
+moc web                       # 启动浏览器前端（默认 127.0.0.1:7432，占用则改用随机端口）
 moc --print "问题"            # 一次性非交互输出
 moc --list                    # 查看会话列表
 moc --resume <id>             # 恢复历史会话

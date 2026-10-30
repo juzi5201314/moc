@@ -4,20 +4,25 @@
 它和 `moc`（TUI）是平级的两个入口，不引入 daemon，也不做前后端分离的进程间转发：
 
 ```bash
-moc web                       # 默认 127.0.0.1:7432，随机令牌，自动打开浏览器
+moc web                       # 优先 127.0.0.1:7432，被占用则改用随机端口；随机令牌，自动打开浏览器
 moc web --no-open             # 不自动打开浏览器（SSH / 无图形会话时也会自动跳过）
-moc web --port 8080           # 指定端口
+moc web --port 8080           # 指定端口；被占用直接报错，不静默换端口
+moc web --port 0              # 一律由系统分配端口
 moc web --token my-secret     # 固定令牌，方便脚本
 moc web --cwd ~/project       # 指定工作目录（沿用 CLI 的 --cwd）
 ```
 
-启动后终端会打印带令牌的 URL：
+启动后终端会打印带令牌的 URL（`--port 0` 或回退到随机端口时，这里的端口才是实际端口）：
 
 ```
 moc web 已启动：http://127.0.0.1:7432/?token=3f2a...
 ```
 
 没自动弹出时手动打开即可。令牌缺失或错误时 WebSocket 握手返回 401。
+
+端口只影响本次进程：同一台机器开多个 `moc web`（不同工作目录）时，后启动的会拿到随机端口，
+互不阻塞。也正因为端口可能变化，浏览器里按 origin 存的界面偏好（主题、面板宽度、标签页）
+只在端口不变时才延续；需要固定 origin 就显式传 `--port` 并先关掉占用它的实例。
 
 ## 能力
 
@@ -71,8 +76,9 @@ cargo build --release --bin moc
 没有 `web/dist` 时 `cargo build` 仍能通过，但只嵌入一页「Web 前端未构建」提示；
 设 `MOC_WEB_REQUIRE_DIST=1` 则直接构建失败（release CI 使用）。
 
-开发时一个终端跑 `moc web --token dev --no-open`，另一个跑 `pnpm --dir crates/moc-web/web dev`，
-打开 `http://localhost:5173/?token=dev`（Vite 把 `/ws` 代理到 7432）。
+开发时一个终端跑 `moc web --token dev --no-open --port 7432`，另一个跑 `pnpm --dir crates/moc-web/web dev`，
+打开 `http://localhost:5173/?token=dev`（Vite 把 `/ws` 代理到 7432）。这里必须显式指定端口：
+开发时端口是被代理的一方，静默回退会让前端连到空端口上。
 
 ## 连接模型：一个前端一个 core
 
@@ -116,7 +122,7 @@ cargo build --release --bin moc
 
 ## 安全边界
 
-- 只绑定回环地址（`127.0.0.1` / `::1`），非回环地址直接拒绝启动
+- 只绑定回环地址 `127.0.0.1`（IP 不可配置），端口缺省 7432 / 占用时随机
 - 访问令牌走 URL query，WebSocket 握手时校验；比较使用定长比较
 - 浏览器带 `Origin` 时只接受本机来源，防 DNS rebinding 与跨站页面连入
 - 令牌会出现在终端输出与浏览器地址栏；共享机器上建议用 `--token` 显式指定并妥善保管
