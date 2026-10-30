@@ -46,6 +46,9 @@ pub(crate) struct AgentRuntime {
     /// `sidekick` 工具的阻塞等待中：报告随工具结果直达 lead，
     /// 结束通知不再重复投递。
     pub awaited: bool,
+    /// 最近一次工具调用的一行摘要；wait/sidekick 的进度行据此显示
+    /// 「正在做什么」。每次提示前重建条目时清为 `None`。
+    pub activity: Option<String>,
 }
 
 /// 待投递的代理消息。
@@ -216,8 +219,40 @@ async fn prepare_agent(inner: &CoreInner, info: &AgentInfo, cancel: Cancellation
             yielded: None,
             structured: None,
             awaited: false,
+            activity: None,
         },
     );
+}
+
+/// 把子代理最近一次工具调用记进注册表：wait_agent/sidekick 的进度行据此
+/// 显示「正在做什么」。注册表里没有条目（顶层会话）时是空操作。
+///
+/// 摘要 = 工具名 + 空格 + 参数里第一个常见字符串字段的首行；参数不是合法
+/// JSON 或没有这些字段就只写工具名。整体用 [`preview_text`] 截到 80 字符。
+pub(crate) async fn note_activity(inner: &CoreInner, session_id: &str, call: &moc_llm::ToolCall) {
+    const ARG_KEYS: [&str; 7] = [
+        "command",
+        "path",
+        "file_path",
+        "pattern",
+        "query",
+        "url",
+        "target",
+    ];
+    let mut summary = call.name.clone();
+    if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        && let Some(arg) = ARG_KEYS
+            .iter()
+            .find_map(|key| args.get(*key).and_then(serde_json::Value::as_str))
+        && let Some(line) = arg.lines().next()
+    {
+        summary.push(' ');
+        summary.push_str(line);
+    }
+    let (summary, _) = preview_text(&summary, 80);
+    if let Some(runtime) = inner.agents.lock().await.items.get_mut(session_id) {
+        runtime.activity = Some(summary);
+    }
 }
 
 /// 子代理的取消令牌挂在「父代理的运行令牌」下：父是注册过的子代理时挂它的
@@ -480,6 +515,9 @@ struct Wakeup {
     agent: Option<AgentMessageMeta>,
     /// 派发前已抢占的提示锁。
     prompt_lock: Option<tokio::sync::OwnedMutexGuard<()>>,
+    /// `sidekick` 工具的 `mode="retry"`：不带新消息重跑，`run_prompt_locked`
+    /// 的 retry 分支负责剪尾并重放未执行的调用。
+    retry: bool,
 }
 
 /// 启动一次子代理提示。
@@ -494,7 +532,11 @@ async fn activate(
     cancel: CancellationToken,
     wakeup: Wakeup,
 ) -> Result<(), CoreError> {
-    let Wakeup { agent, prompt_lock } = wakeup;
+    let Wakeup {
+        agent,
+        prompt_lock,
+        retry,
+    } = wakeup;
     let record = inner.sessions.get(&agent_id).await?;
     // 锁被占说明该会话还有提示没结束，唤醒只能放弃（调用方据此改走收件箱）。
     let prompt_lock = match prompt_lock {
@@ -537,13 +579,18 @@ async fn activate(
             child_request,
             PromptParams {
                 session_id: agent_id.clone(),
-                input: vec![InputPart::Text { text: task }],
+                // retry 唤醒不带新输入；剪尾重放由 run_prompt_locked 负责。
+                input: if retry {
+                    Vec::new()
+                } else {
+                    vec![InputPart::Text { text: task }]
+                },
                 mode: None,
                 agent_message: agent,
             },
             record,
             prompt_lock,
-            false,
+            retry,
         )
         .await;
         finish(
@@ -848,12 +895,23 @@ struct MessageTarget {
 const BROADCAST_TARGET: &str = "all";
 const PARENT_TARGET: &str = "parent";
 
-fn resolve_targets(peers: &Peers, target: &str) -> Result<Vec<MessageTarget>, CoreError> {
+/// sidekick 只能经 `sidekick` 工具驱动：`message_agent` 绕开 handoff 的模型
+/// 同步，非 Fusion 顶层会话唤醒它还会在旧模型上继续计费。
+/// `from_subagent`：sidekick 自己或兄弟子代理不受此限（如 sidekick 发给 parent）。
+fn resolve_targets(
+    peers: &Peers,
+    target: &str,
+    from_subagent: bool,
+) -> Result<Vec<MessageTarget>, CoreError> {
+    let is_sidekick = |entry: &&AgentEntry| {
+        entry.session.agent_preset.as_deref() == Some(preset::SIDEKICK_PRESET)
+    };
     if target == BROADCAST_TARGET {
         let targets: Vec<MessageTarget> = peers
             .siblings_or_children()
             .iter()
             .filter(|entry| live(entry.status))
+            .filter(|entry| from_subagent || !is_sidekick(entry))
             .map(|entry| MessageTarget {
                 session: entry.session.clone(),
             })
@@ -881,11 +939,45 @@ fn resolve_targets(peers: &Peers, target: &str) -> Result<Vec<MessageTarget>, Co
         .chain(peers.children.iter())
         .find(|entry| entry.session.id == target);
     match matched {
+        Some(entry) if !from_subagent && is_sidekick(&entry) => Err(invalid(
+            "Address the sidekick through the sidekick tool (available only in Fusion sessions).",
+        )),
         Some(entry) => Ok(vec![MessageTarget {
             session: entry.session.clone(),
         }]),
         None => Err(invalid(format!("目标 {target} 不是可投递的代理"))),
     }
+}
+
+/// sidekick `mode="retry"` 的唤醒：失败/停止态的代理会话不带新消息重跑一轮。
+///
+/// 与 `deliver` 的唤醒路径同构：重建注册表条目（收件箱重开、cancel 重新挂
+/// 父令牌），预占的提示锁转交给 `activate`；`retry = true` 让
+/// `run_prompt_locked` 走剪尾+重放分支而不是追加输入。
+pub(crate) async fn retry_wakeup(
+    inner: Arc<CoreInner>,
+    request: RequestContext,
+    parent_id: String,
+    target: &SessionInfo,
+    prompt_lock: tokio::sync::OwnedMutexGuard<()>,
+) -> Result<(), CoreError> {
+    let info = info_from_session(target, AgentStatus::Queued);
+    let cancel = child_cancel(&inner, &parent_id).await;
+    prepare_agent(&inner, &info, cancel.clone()).await;
+    activate(
+        inner,
+        request,
+        parent_id,
+        target.id.clone(),
+        String::new(),
+        cancel,
+        Wakeup {
+            agent: None,
+            prompt_lock: Some(prompt_lock),
+            retry: true,
+        },
+    )
+    .await
 }
 
 /// `agent/message`：给其它代理投递消息；目标在运行就注入，空闲就唤醒。
@@ -917,7 +1009,7 @@ pub(crate) async fn message(
         from_title: peers.me.title.clone(),
         delivery: AgentMessageOutcome::Injected,
     };
-    let targets = resolve_targets(&peers, &target)?;
+    let targets = resolve_targets(&peers, &target, peers.is_subagent())?;
     let mut receipts = Vec::with_capacity(targets.len());
     for target in targets {
         receipts.push(deliver(&inner, &request, &from, &target, &text).await);
@@ -991,6 +1083,7 @@ async fn deliver(
                 Wakeup {
                     agent: Some(woken),
                     prompt_lock: Some(prompt_lock),
+                    retry: false,
                 },
             )
             .await
@@ -1271,6 +1364,8 @@ pub(crate) async fn stop(
 struct WaitRow {
     entry: AgentWaitEntry,
     elapsed_ms: u64,
+    /// 最近一次工具调用摘要；仅运行中的代理有值。
+    activity: Option<String>,
 }
 
 /// 在注册表锁内取等待快照：必须先建好等待者，再读状态。
@@ -1304,6 +1399,7 @@ fn wait_snapshot(registry: &AgentRegistry, targets: &[SessionInfo]) -> WaitSnaps
                     structured_result: None,
                 },
                 elapsed_ms: 0,
+                activity: None,
             });
             continue;
         };
@@ -1327,6 +1423,9 @@ fn wait_snapshot(registry: &AgentRegistry, targets: &[SessionInfo]) -> WaitSnaps
             } else {
                 0
             },
+            activity: live(info.status)
+                .then(|| runtime.activity.clone())
+                .flatten(),
         });
     }
     WaitSnapshot {
@@ -1370,6 +1469,7 @@ async fn push_progress(progress: Option<&WaitProgress>, rows: &[WaitRow]) {
             title: row.entry.title.clone(),
             status: row.entry.status,
             elapsed_ms: row.elapsed_ms,
+            activity: row.activity.clone(),
         })
         .collect();
     if let Err(error) = progress
@@ -1547,10 +1647,13 @@ pub(crate) async fn subagent_prompt(inner: &CoreInner, session_id: &str) -> Opti
             block.push_str(prompt);
             block.push('\n');
         }
-        if meta.output_schema.is_some() {
+        if let Some(schema) = &meta.output_schema {
+            // schema 是会话级静态内容，附在系统块里不影响前缀缓存。
             block.push_str(
-                "\nOutput contract: this run declares an `output_schema`. `yield` must include a `result` value conforming to it, alongside the readable `report`.\n",
+                "\nOutput contract: this run declares an `output_schema`. `yield` must include a `result` value conforming to it, alongside the readable `report`.\nSchema: ",
             );
+            block.push_str(&schema.to_string());
+            block.push('\n');
         }
     }
     // sidekick 的首次 handoff 不具权威地位：它的上下文跨 handoff 延续，后续
@@ -1645,6 +1748,7 @@ mod tests {
             yielded: None,
             structured: None,
             awaited: false,
+            activity: None,
         }
     }
 
@@ -1754,13 +1858,13 @@ mod tests {
             parent: None,
             siblings: Vec::new(),
         };
-        let broadcast = resolve_targets(&peers, BROADCAST_TARGET).expect("广播解析");
+        let broadcast = resolve_targets(&peers, BROADCAST_TARGET, false).expect("广播解析");
         assert_eq!(broadcast.len(), 1, "广播只覆盖运行中的直接子代理");
         assert_eq!(broadcast[0].session.id, "ses_child00001");
-        assert!(resolve_targets(&peers, PARENT_TARGET).is_err());
-        assert!(resolve_targets(&peers, "ses_parent0001").is_err());
-        assert!(resolve_targets(&peers, "ses_unknown0001").is_err());
-        let explicit = resolve_targets(&peers, "ses_child00002").expect("显式目标");
+        assert!(resolve_targets(&peers, PARENT_TARGET, false).is_err());
+        assert!(resolve_targets(&peers, "ses_parent0001", false).is_err());
+        assert!(resolve_targets(&peers, "ses_unknown0001", false).is_err());
+        let explicit = resolve_targets(&peers, "ses_child00002", false).expect("显式目标");
         assert_eq!(explicit[0].session.id, "ses_child00002");
     }
 

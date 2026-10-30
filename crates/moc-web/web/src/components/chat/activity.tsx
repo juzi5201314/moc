@@ -288,6 +288,7 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
                 />
               )}
               <span className="min-w-0 flex-1 truncate">{row.title}</span>
+              {row.activity && <span className="truncate text-text-tertiary">{row.activity}</span>}
               <span className="font-mono text-[11px] text-text-tertiary">
                 {formatDuration(row.elapsed_ms)}
               </span>
@@ -427,8 +428,8 @@ export function ActivityRow({ block, live = false }: { block: Block; live?: bool
         disabled={!detail}
         onClick={() => setManual(!open)}
         className={cn(
-          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13.5px] text-muted-foreground transition-colors",
-          detail ? "hover:bg-surface-hover hover:text-foreground" : "cursor-default",
+          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] text-muted-foreground transition-colors",
+          detail ? "hover:text-foreground" : "cursor-default",
         )}
       >
         <span
@@ -439,16 +440,14 @@ export function ActivityRow({ block, live = false }: { block: Block; live?: bool
         >
           {failed ? <CircleAlertIcon /> : iconFor(block)}
         </span>
-        <span className={cn("shrink-0 font-medium", streamingThought && "animate-pulse")}>
-          {verb}
-        </span>
+        <span className={cn("shrink-0", streamingThought && "animate-pulse")}>{verb}</span>
         {snippet && (
           <span
             className={cn(
               "min-w-0 flex-1 truncate",
               block.kind === "reasoning"
                 ? "text-text-tertiary"
-                : "font-mono text-[12.5px] text-text-tertiary",
+                : "font-mono text-[12px] text-text-tertiary",
               failed && "text-destructive/80",
             )}
           >

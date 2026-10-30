@@ -16,7 +16,7 @@
 //! | [`plugin::PluginList`] / [`plugin::PluginRunCommand`] / [`plugin::PluginReload`] | C→S | core | 已初始化 + 插件可用 | `-32010` / `-32014` |
 //! | [`session::SessionCompact`] | C→S | core | 会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | [`prompt::SessionPrompt`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
-//! | [`prompt::SessionRetry`] | C→S | core | 已初始化 + 该会话无进行中的提示 + 已有上下文 | `-32010` / `-32015` / `-32011` / `-32602` |
+//! | [`prompt::SessionRetry`] | C→S | core | 已初始化 + 该会话无进行中的提示 + 已有上下文且上一轮未正常结束 | `-32010` / `-32015` / `-32011` / `-32602` |
 //! | [`btw::SessionBtw`] | C→S | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |
 //! | [`btw::SessionBtwCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |

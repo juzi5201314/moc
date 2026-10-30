@@ -98,6 +98,9 @@ pub struct ToolProgressRow {
     pub status: AgentStatus,
     /// 自进入当前运行起的毫秒数；非运行状态为 0（渲染时不显示）。
     pub elapsed_ms: u64,
+    /// 最近一次工具调用的一行摘要（工具名 + 关键参数首行）；仅在代理运行期间提供。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
 }
 
 /// `agent/spawn`：创建并异步启动一个直接子代理。

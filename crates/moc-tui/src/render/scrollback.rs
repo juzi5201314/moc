@@ -1899,16 +1899,23 @@ fn wait_agent_tool_rows(
     limit: usize,
 ) -> (Vec<Line<'static>>, usize) {
     use moc_protocol::methods::AgentStatus;
-    let rows: Vec<(String, AgentStatus, u64)> = match &tool.progress {
+    let rows: Vec<(String, AgentStatus, u64, Option<String>)> = match &tool.progress {
         Some(progress) => progress
             .iter()
-            .map(|row| (row.title.clone(), row.status, row.elapsed_ms))
+            .map(|row| {
+                (
+                    row.title.clone(),
+                    row.status,
+                    row.elapsed_ms,
+                    row.activity.clone(),
+                )
+            })
             .collect(),
         None => wait_result(tool).map_or_else(Vec::new, |result| {
             result
                 .agents
                 .into_iter()
-                .map(|entry| (entry.title, entry.status, 0))
+                .map(|entry| (entry.title, entry.status, 0, None))
                 .collect()
         }),
     };
@@ -1917,7 +1924,7 @@ fn wait_agent_tool_rows(
     }
     let dropped = rows.len().saturating_sub(limit);
     let mut lines = Vec::with_capacity(rows.len().min(limit));
-    for (title, status, elapsed_ms) in rows.into_iter().take(limit) {
+    for (title, status, elapsed_ms, activity) in rows.into_iter().take(limit) {
         let (glyph, color) = match status {
             AgentStatus::Queued | AgentStatus::Running => ("▸", theme.accent_running),
             AgentStatus::Completed => ("◆", theme.accent_tool),
@@ -1936,6 +1943,14 @@ fn wait_agent_tool_rows(
         if elapsed_ms > 0 {
             spans.push(Span::styled(
                 format!(" · {}", format_duration(elapsed_ms)),
+                Style::new().fg(theme.gray_dim),
+            ));
+        }
+        if let Some(activity) = activity
+            && !activity.is_empty()
+        {
+            spans.push(Span::styled(
+                format!(" · {activity}"),
                 Style::new().fg(theme.gray_dim),
             ));
         }
@@ -2005,7 +2020,37 @@ fn sidekick_tool_rows(
     if !status.is_empty() {
         spans.push(Span::styled(format!(" · {status}"), Style::new().fg(color)));
     }
+    if let Some(model) = json.get("model").and_then(Value::as_str)
+        && !model.is_empty()
+    {
+        spans.push(Span::styled(
+            format!(" · {model}"),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
     lines.push(Line::from(spans));
+    // 结构化结果：状态摘要行 + 每条 open_issue 一行。
+    if let Some(result_obj) = json.get("result").and_then(Value::as_object) {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", sidekick_result_summary(result_obj)),
+            Style::new().fg(theme.text_secondary),
+        )));
+        if let Some(issues) = result_obj.get("open_issues").and_then(Value::as_array) {
+            let budget = limit.saturating_sub(lines.len());
+            for issue in issues.iter().take(budget) {
+                // 每条恒占一行：与 `sidekick_rows_count` 的计数保持一致。
+                let text = truncate_to_width(
+                    issue.as_str().unwrap_or_default().to_owned(),
+                    width.saturating_sub(4),
+                );
+                lines.push(Line::from(Span::styled(
+                    format!("  ! {text}"),
+                    Style::new().fg(theme.accent_running),
+                )));
+            }
+            dropped += issues.len().saturating_sub(budget);
+        }
+    }
     if let Some(note) = json.get("note").and_then(Value::as_str)
         && !note.is_empty()
     {
@@ -2045,6 +2090,17 @@ fn sidekick_rows_count(tool: &ToolCallBlock, width: usize, limit: usize) -> (usi
             .is_some_and(|note| !note.is_empty()),
     );
     let mut dropped = 0;
+    // 结构化结果的摘要行与 open_issue 行同样占用行数预算。
+    if let Some(result_obj) = json.get("result").and_then(Value::as_object) {
+        rows += 1;
+        let issues = result_obj
+            .get("open_issues")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        let shown = issues.min(limit.saturating_sub(rows));
+        rows += shown;
+        dropped += issues.saturating_sub(shown);
+    }
     if let Some(report) = json.get("report").and_then(Value::as_str)
         && !report.is_empty()
     {
@@ -2054,6 +2110,47 @@ fn sidekick_rows_count(tool: &ToolCallBlock, width: usize, limit: usize) -> (usi
         dropped += clamped.dropped;
     }
     (rows, dropped)
+}
+
+/// `result` 对象的一行摘要：`结果 <status> · 改动 N 个文件 · 验证 P 通过 F 失败 U 未跑`，
+/// 为 0 的部分省略。
+fn sidekick_result_summary(result: &serde_json::Map<String, Value>) -> String {
+    let mut parts = vec![format!(
+        "结果 {}",
+        result
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    )];
+    let changes = result.get("changes").and_then(Value::as_array);
+    if let Some(changes) = changes
+        && !changes.is_empty()
+    {
+        parts.push(format!("改动 {} 个文件", changes.len()));
+    }
+    if let Some(verification) = result.get("verification").and_then(Value::as_array)
+        && !verification.is_empty()
+    {
+        let count = |outcome: &str| {
+            verification
+                .iter()
+                .filter(|item| item.get("outcome").and_then(Value::as_str) == Some(outcome))
+                .count()
+        };
+        let (passed, failed, not_run) = (count("passed"), count("failed"), count("not_run"));
+        let mut word = String::from("验证");
+        if passed > 0 {
+            word.push_str(&format!(" {passed} 通过"));
+        }
+        if failed > 0 {
+            word.push_str(&format!(" {failed} 失败"));
+        }
+        if not_run > 0 {
+            word.push_str(&format!(" {not_run} 未跑"));
+        }
+        parts.push(word);
+    }
+    parts.join(" · ")
 }
 
 /// ask 转写卡 key 列宽上限（格）：对齐答案正文，超长 header/id 截断。
@@ -2251,13 +2348,22 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             summary
         }
         "sidekick" => {
-            // 摘要只占一行：handoff 首行；后台执行（block=false）时标注。
+            // 摘要只占一行：handoff 首行；mode 与后台执行（block=false）附注。
+            let mode = args.get("mode").and_then(Value::as_str).unwrap_or("keep");
             let mut summary = args
                 .get("message")
                 .and_then(Value::as_str)
                 .and_then(|text| text.lines().next())
                 .unwrap_or_default()
                 .to_owned();
+            if mode == "retry" {
+                summary = "重试".to_owned();
+            }
+            if mode == "compact" {
+                summary.push_str(" · 压缩后");
+            } else if mode == "fresh" {
+                summary.push_str(" · 新会话");
+            }
             if args.get("block").and_then(Value::as_bool) == Some(false) {
                 summary.push_str(" · 后台");
             }
@@ -3863,12 +3969,14 @@ mod tests {
                     title: "甲".into(),
                     status: AgentStatus::Running,
                     elapsed_ms: 3_200,
+                    activity: Some("cargo test".into()),
                 },
                 ToolProgressRow {
                     agent_id: "ses_b".into(),
                     title: "乙".into(),
                     status: AgentStatus::Completed,
                     elapsed_ms: 0,
+                    activity: None,
                 },
             ],
         );
@@ -3880,8 +3988,8 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("等待 2 个代理"));
         assert!(
-            text.contains("▸ 甲 · 运行中 · 3.2s"),
-            "运行行带耗时：{text}"
+            text.contains("▸ 甲 · 运行中 · 3.2s · cargo test"),
+            "运行行带耗时与活动摘要：{text}"
         );
         assert!(text.contains("◆ 乙 · 已完成"));
         assert_eq!(
@@ -3927,6 +4035,77 @@ mod tests {
             lines.len(),
             "结果态估算与渲染同源"
         );
+    }
+
+    /// sidekick 卡片：摘要带 mode 标注；落定后状态行带模型、结构化结果一行
+    /// 摘要与 open_issue 逐条列出，note/report 照常。
+    #[test]
+    fn sidekick_card_renders_model_result_and_mode() {
+        use moc_protocol::ToolResult;
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        let width = 60u16;
+        app.start_tool_block(ToolCallStart {
+            id: "call_sk".into(),
+            name: "sidekick".into(),
+            parent_id: None,
+            arguments: r#"{"mode":"compact","message":"跑一轮验证"}"#.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: "call_sk".into(),
+            name: "sidekick".into(),
+            parent_id: None,
+            arguments: String::new(),
+            status: ToolStatus::Completed,
+            result: ToolResult {
+                tool_call_id: "call_sk".into(),
+                content: serde_json::json!({
+                    "agent_id": "ses_sk",
+                    "delivery": "compacted",
+                    "status": "completed",
+                    "model": "test/gpt-cheap:off",
+                    "result": {
+                        "status": "done",
+                        "changes": [{"path": "a.rs", "summary": "改"}],
+                        "verification": [
+                            {"command": "cargo test", "outcome": "passed"},
+                            {"command": "lint", "outcome": "not_run"}
+                        ],
+                        "open_issues": ["还有一个待定项"]
+                    },
+                    "note": "switched model",
+                    "report": "验证通过"
+                })
+                .to_string(),
+                is_error: false,
+                images: Vec::new(),
+            },
+            duration_ms: Some(900),
+            diff: None,
+        });
+        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("跑一轮验证 · 压缩后"), "摘要带 mode：{text}");
+        assert!(
+            text.contains("◆ Sidekick · compacted · completed · test/gpt-cheap:off"),
+            "{text}"
+        );
+        assert!(
+            text.contains("结果 done · 改动 1 个文件 · 验证 1 通过 1 未跑"),
+            "{text}"
+        );
+        assert!(text.contains("! 还有一个待定项"), "{text}");
+        assert!(
+            text.contains("switched model") && text.contains("验证通过"),
+            "{text}"
+        );
+        assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
     /// ask 结果解析：header 优先 id 兜底、逐问「未回答」标记、整单取消与超时哨兵、

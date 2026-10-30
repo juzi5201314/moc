@@ -14,7 +14,7 @@ use futures_util::{
     future::BoxFuture,
     stream::{FuturesUnordered, StreamExt},
 };
-use moc_llm::{ContentPart, Message, Role};
+use moc_llm::{ContentPart, FinishReason, Message, Role};
 use moc_protocol::{
     RpcError, RpcErrorCode,
     methods::{SessionUpdate, ToolExecution, ToolStatus},
@@ -126,6 +126,9 @@ async fn commit_prepared(
         is_error: outcome.is_error,
         images: outcome.images.clone(),
     };
+    // EndTurn 工具（yield/exit_plan）的结果带上「正常结束」标记：transcript 尾部
+    // 据此区分已完成回合与「工具跑完、下一次模型请求失败」——条目级字段，不进协议。
+    let finish_reason = (outcome.control == ToolControl::EndTurn).then_some(FinishReason::Stop);
     inner
         .sessions
         .append_message(
@@ -139,7 +142,7 @@ async fn commit_prepared(
                 status,
                 duration_ms: Some(duration_ms),
             }),
-            None,
+            finish_reason,
         )
         .await?;
     Ok(CommittedTool {
@@ -256,6 +259,8 @@ pub(super) async fn execute_tool_batch(
             }
         }
         started[index] = true;
+        // 子代理的最近一次工具调用记进注册表，wait/sidekick 的进度行据此展示。
+        crate::agents::note_activity(inner, session_id, call).await;
         if let Err(error) = update
             .emit(
                 session_id.to_owned(),

@@ -55,6 +55,7 @@ pub struct SessionPrompt;
 /// 与 [`SessionPrompt`] 共用提示注册表、取消令牌和提示级更新（`prompt_started` /
 /// `prompt_finished` 等）；区别只在输入：`retry` 不落库任何用户消息，直接把当前
 /// transcript 原样再请求一次模型——即使最后一条不是用户消息。
+/// 前提是会话已有上下文且上一轮未正常结束：正常结束的回合没有可重试的内容。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionRetry;
 

@@ -68,7 +68,10 @@ Writing a handoff
 
 Running handoffs
 - block=true (default) waits and returns the report. Use block=false only when you have real parallel work; then collect the report with `wait_agent` before ending your turn, never guess what it will say.
+- `mode` picks the context: default `keep` continues it; `compact` (long history, next task only partly related) compacts then delivers; `fresh` (unrelated task) spawns a clean sidekick; `retry` resumes an interrupted run. `compact`/`fresh`/`retry` all need the sidekick to be idle.
 - Calling `sidekick` while it runs interrupts it with your message: use this to redirect, add information, or tell it to wrap up.
+- When a handoff returns failed or stopped (upstream error, network, a stop), call `sidekick` again with mode=\"retry\" to continue the interrupted work; do not resend the brief.
+- If the failure is the sidekick's model or provider (quota, auth, outage, or the same upstream error twice), stop retrying: you cannot switch models and must not work around it. End your turn and tell the user the sidekick model errored — have them pick a new sidekick model in the model selector, or offer to take over yourself; the next handoff or retry uses the model they pick. Do not use `ask` for this (the session stays busy during ask, blocking their model switch).
 - If the user writes while a handoff is in flight, decide what it means for the running work and redirect the sidekick if needed before waiting again.
 
 Reviewing

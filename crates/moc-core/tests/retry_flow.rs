@@ -11,7 +11,7 @@ use serde_json::Value;
 use support::{Harness, text_stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
+    Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path},
 };
 
@@ -264,11 +264,18 @@ async fn retry_replays_tools_that_never_ran_without_asking_the_model() {
 #[tokio::test]
 async fn retry_resends_context_without_appending_user_message() {
     let upstream = MockServer::builder().start().await;
+    // 第一次请求直接 500：什么都没落库，尾部只有那条用户消息，retry 必须能接着跑。
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(text_stream("收到"), "text/event-stream"),
-        )
+        .respond_with(move |_req: &Request| {
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(500).set_body_string("upstream boom")
+            } else {
+                ResponseTemplate::new(200).set_body_raw(text_stream("收到"), "text/event-stream")
+            }
+        })
         .mount(&upstream)
         .await;
     let h = Harness::new(
@@ -278,7 +285,17 @@ async fn retry_resends_context_without_appending_user_message() {
     )
     .await;
     let id = h.session(SessionEngine::Standard).await;
-    h.prompt(&id, "第一问").await;
+    h.client
+        .call::<SessionPrompt>(PromptParams {
+            session_id: id.clone(),
+            input: vec![InputPart::Text {
+                text: "第一问".into(),
+            }],
+            mode: None,
+            agent_message: None,
+        })
+        .await
+        .expect_err("上游 500 的提示应失败");
 
     let result = h
         .client
@@ -290,7 +307,7 @@ async fn retry_resends_context_without_appending_user_message() {
     assert_eq!(result.session_id, id);
     assert_eq!(result.message.text(), "收到");
 
-    // 重试不发新请求以外的任何写入：transcript 仍是「一问一答」。
+    // 重试不发新请求以外的任何写入：transcript 只有「一问一答」。
     // 运行时提醒也是 user 角色，但它属于模型内部状态，不算用户消息。
     let entries = h.load(&id).await.entries;
     let user_texts: Vec<String> = entries
@@ -319,12 +336,43 @@ async fn retry_resends_context_without_appending_user_message() {
                     .is_some_and(|text| text.starts_with("<system-reminder>"))
         })
         .collect();
-    // 第二次请求的对话段与第一次完全一致：一问一答，末尾没有被塞进新的用户消息。
-    assert_eq!(conversation.len(), 2, "上下文原样重发：一问一答");
+    // 失败的第一次什么都没落库：重发时的对话段只有那条用户消息。
+    assert_eq!(conversation.len(), 1, "上下文原样重发：只有用户消息");
     assert_eq!(conversation[0]["role"], "user");
     assert_eq!(conversation[0]["content"], "第一问");
-    assert_eq!(conversation[1]["role"], "assistant");
-    assert_eq!(conversation[1]["content"], "收到");
+    h.close().await;
+}
+
+/// 正常结束的回合没有可重试的内容：`session/retry` 必须在任何模型请求
+/// 之前就拒绝（InvalidParams）。
+#[tokio::test]
+async fn retry_after_a_completed_turn_is_rejected_before_any_request() {
+    let upstream = MockServer::builder().start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(text_stream("收到"), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let h = Harness::new(
+        &upstream.uri(),
+        "openai_chat",
+        "[compaction]\nenabled=false",
+    )
+    .await;
+    let id = h.session(SessionEngine::Standard).await;
+    h.prompt(&id, "第一问").await;
+
+    let error = h
+        .client
+        .call::<SessionRetry>(SessionRetryParams {
+            session_id: id.clone(),
+        })
+        .await
+        .expect_err("正常结束后不可重试");
+    assert_eq!(error.code(), Some(RpcErrorCode::InvalidParams.code()));
     h.close().await;
 }
 

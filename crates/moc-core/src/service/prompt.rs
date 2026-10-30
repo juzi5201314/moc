@@ -13,7 +13,7 @@ use crate::{
     },
     tools::ToolCtx,
 };
-use moc_llm::{FinishReason, Message, Usage};
+use moc_llm::{FinishReason, Message, Role, Usage};
 use moc_protocol::{
     RequestContext, RpcError, RpcErrorCode,
     methods::{PromptResult, SessionUpdate, ToolStatus},
@@ -133,6 +133,12 @@ pub(crate) async fn run_prompt_with_lock(
         retry,
     )
     .await;
+    // 用户取消 lead 的提示时，后台（block=false）仍在跑的 sidekick 一并停掉；
+    // 这里必须用外层 ctx 的取消令牌（guard/scoped 令牌不代表用户取消）。
+    // 普通 spawn_agent 子代理行为不变。
+    if ctx.cancel().is_cancelled() {
+        crate::agents::sidekick::stop_running(&inner, &session_id).await;
+    }
     let result = if let Some(violation) = guard.violation() {
         async {
             let prompt_id = match &result {
@@ -1556,11 +1562,71 @@ enum RetryTrim {
     Replay(Vec<moc_llm::ToolCall>),
 }
 
+/// transcript 尾部是否标记着「上一轮已正常结束」。
+///
+/// 只认正向标记，缺标记一律视为可重试：正常结束的判定必须能区分「EndTurn 工具收尾」
+/// 与「工具跑完但下一次请求失败」——两者在 transcript 上都是 assistant(调用)+工具结果，
+/// 区别只在 EndTurn 的结果带 [`FinishReason::Stop`]（`commit_prepared` 写入）。拿注册表
+/// 或「看起来结束了」来猜都会误伤：请求失败时尾部只有一条用户消息或半截工具批次。
+///
+/// 判定只看尾部连续的可见消息段，记账/状态条目（Usage、ChildTool、PtcState、
+/// ModelChange、Compaction、Todos、Plan、Reminder、Bash 等）一律跳过：
+///
+/// - 尾部是连续的 Tool 角色消息：任一条 `finish_reason == Some(Stop)` 即为真——EndTurn
+///   后同批剩余调用可能补了「未执行」占位，所以要扫整段而不是只看最后一条。
+/// - 尾部是 assistant 消息：`Stop`/`StopSequence` 且不带工具调用为真；Length、
+///   ContentFilter、Cancelled、Interrupted、LoopDetected 或带调用都为假。
+/// - 其它（user / custom / 代理消息 / 提醒 / 没有消息）都为假。
+pub(crate) fn turn_completed(entries: &[Entry]) -> bool {
+    for entry in entries.iter().rev() {
+        let Entry::Message {
+            message,
+            finish_reason,
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        return match message.role {
+            Role::Tool => {
+                // 整段连续 Tool 结果：任一条带 Stop 标记即为正常结束
+                //（EndTurn 后同批的「未执行」占位也在这段里）。
+                let mut completed = false;
+                for entry in entries.iter().rev() {
+                    match entry {
+                        Entry::Message {
+                            message,
+                            finish_reason,
+                            ..
+                        } if message.role == Role::Tool => {
+                            if *finish_reason == Some(FinishReason::Stop) {
+                                completed = true;
+                            }
+                        }
+                        Entry::Message { .. } => break,
+                        _ => continue,
+                    }
+                }
+                completed
+            }
+            Role::Assistant => {
+                matches!(
+                    finish_reason,
+                    Some(FinishReason::Stop | FinishReason::StopSequence)
+                ) && message.tool_calls().next().is_none()
+            }
+            _ => false,
+        };
+    }
+    false
+}
+
 /// 剪掉上一轮没跑完的尾巴，让重试「像什么都没发生」。
 ///
+/// 上一轮已正常结束（[`turn_completed`] 有正向标记）时直接拒绝——没有可重试的内容，
+/// 重发上下文只会花一次模型请求重复上一轮的产出。
 /// 只认 [`failed_turn_reason`] 认定的失败回合：模型请求直接失败时没有落库内容，这里
-/// 什么也剪不到；正常结束的回合一律保留——重试是「顺着现在的上下文继续」，不是「删掉
-/// 最后一句重新回答」。
+/// 什么也剪不到。
 ///
 /// 三种收场分别处理：
 ///
@@ -1575,6 +1641,12 @@ async fn trim_failed_tail(inner: &Arc<CoreInner>, session_id: &str) -> Result<Re
         .read_entries(session_id)
         .await
         .map_err(to_rpc)?;
+    // 上一轮正常结束就没有可重试的东西；这一步先于任何模型请求与 transcript 改写。
+    if turn_completed(&entries) {
+        return Err(crate::service::invalid_params(
+            "上一轮已正常结束，没有可重试的内容；请直接发送新消息",
+        ));
+    }
     // 尾部先剥掉不属于模型上下文、但同属这一轮的东西：取消路径给「模型请求过、一个都
     // 没跑」的工具补的占位结果，以及用量、PTC 子结果这类记账条目。整段一起剪掉，留下
     // 的前缀 parent 链才连续。
@@ -1733,4 +1805,94 @@ async fn apply_skill_invocation(
         injected.push_str(&format!("\n\nUser instructions: {arguments}"));
     }
     Ok(Message::user_text(injected))
+}
+
+#[cfg(test)]
+mod tests {
+    use moc_llm::{ContentPart, ToolCall};
+
+    use super::*;
+    use crate::session::entries::EntryPayload;
+
+    fn message_entry(message: Message, finish_reason: Option<FinishReason>, at_ms: u64) -> Entry {
+        Entry::from_payload(
+            EntryPayload::Message {
+                message,
+                tool: None,
+                finish_reason,
+                agent: None,
+            },
+            "parent".into(),
+            at_ms,
+        )
+    }
+
+    fn assistant_call(id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::ToolCall(ToolCall {
+                id: id.into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            })],
+        }
+    }
+
+    /// 尾部判定只认正向标记：自然 Stop / EndTurn 工具结果为真，
+    /// 失败、中断与普通工具批次一律为假。
+    #[test]
+    fn turn_completed_only_accepts_positive_markers() {
+        // 自然结束：assistant + Stop，无工具调用。
+        assert!(turn_completed(&[
+            message_entry(Message::user_text("问"), None, 1),
+            message_entry(Message::assistant_text("答"), Some(FinishReason::Stop), 2,),
+        ]));
+        // Stop 后跟记账条目（Usage/ModelChange 等非消息条目）：仍然算正常结束。
+        assert!(turn_completed(&[
+            message_entry(Message::assistant_text("答"), Some(FinishReason::Stop), 1,),
+            Entry::from_payload(
+                EntryPayload::ModelChange {
+                    model: "p/m".into(),
+                },
+                "parent".into(),
+                2,
+            ),
+        ]));
+        // EndTurn 收尾：工具结果带 Stop，同批剩余调用的「未执行」占位跟在后面。
+        assert!(turn_completed(&[
+            message_entry(assistant_call("call_a"), None, 1),
+            message_entry(
+                Message::tool_result("call_a", "done", false),
+                Some(FinishReason::Stop),
+                2,
+            ),
+            message_entry(Message::tool_result("call_b", "未执行", false), None, 3),
+        ]));
+        // 工具批次跑完但没有标记：下一次模型请求失败，可重试。
+        assert!(!turn_completed(&[
+            message_entry(assistant_call("call_a"), None, 1),
+            message_entry(Message::tool_result("call_a", "done", false), None, 2),
+        ]));
+        // 尾部是用户消息：上游请求直接失败，什么都没落库。
+        assert!(!turn_completed(&[message_entry(
+            Message::user_text("问"),
+            None,
+            1
+        )]));
+        // 非正常结束的 assistant：Length、Cancelled 都可重试。
+        for reason in [FinishReason::Length, FinishReason::Cancelled] {
+            assert!(!turn_completed(&[message_entry(
+                Message::assistant_text("半截"),
+                Some(reason),
+                1,
+            )]));
+        }
+        // assistant 带工具调用（即使标了 Stop 也不认）与空 transcript。
+        assert!(!turn_completed(&[message_entry(
+            assistant_call("call_a"),
+            Some(FinishReason::Stop),
+            1,
+        )]));
+        assert!(!turn_completed(&[]));
+    }
 }

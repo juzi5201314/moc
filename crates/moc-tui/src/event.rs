@@ -7063,6 +7063,7 @@ mod tests {
                     title: "探查者".into(),
                     status: AgentStatus::Running,
                     elapsed_ms: 500,
+                    activity: None,
                 }],
             },
         );

@@ -279,6 +279,7 @@ export type ToolProgressRow = {
   title: string;
   status: AgentStatus;
   elapsed_ms: number;
+  activity?: string;
 };
 
 export type ReminderItem = {

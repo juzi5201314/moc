@@ -75,8 +75,9 @@ struct YieldArgs {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SidekickArgs {
-    message: String,
+    message: Option<String>,
     block: Option<bool>,
+    mode: Option<String>,
 }
 
 pub struct SpawnAgentTool;
@@ -446,7 +447,7 @@ impl Tool for SidekickTool {
         "sidekick"
     }
     fn description(&self) -> &'static str {
-        "Hand off work to your persistent sidekick (Fusion sessions only). Its context persists across handoffs. block=true (default) waits and returns its report; block=false returns at once, then collect the report with wait_agent. Calling it while the sidekick is running delivers the message as an interrupt."
+        "Hand off work to your persistent sidekick (Fusion sessions only). Its context persists across handoffs. mode (default \"keep\"): \"keep\" continues its context; \"compact\" compacts its history then delivers your message; \"fresh\" spawns a new sidekick; \"retry\" resumes an interrupted run without a message. compact/fresh/retry require the sidekick to be idle. block=true (default) waits and returns its report; block=false returns at once, then collect the report with wait_agent. Calling it while the sidekick is running delivers the message as an interrupt."
     }
     fn tier(&self) -> Tier {
         Tier::Write
@@ -460,9 +461,10 @@ impl Tool for SidekickTool {
             schema(
                 serde_json::json!({
                     "message": {"type": "string", "minLength": 1},
-                    "block": {"type": "boolean"}
+                    "block": {"type": "boolean"},
+                    "mode": {"type": "string", "enum": ["keep", "compact", "fresh", "retry"]}
                 }),
-                &["message"],
+                &[],
             ),
         )
     }
@@ -474,7 +476,35 @@ impl Tool for SidekickTool {
         Box::pin(async move {
             let args: SidekickArgs = serde_json::from_value(args)
                 .map_err(|error| ToolError::new("E_BAD_PAYLOAD", error.to_string()))?;
-            let message = text(&args.message, "message")?;
+            // mode 与 message 的组合是执行契约：retry 不带消息，其余必须带。
+            let mode = match args.mode.as_deref().unwrap_or("keep") {
+                "keep" => crate::agents::sidekick::HandoffMode::Keep,
+                "compact" => crate::agents::sidekick::HandoffMode::Compact,
+                "fresh" => crate::agents::sidekick::HandoffMode::Fresh,
+                "retry" => crate::agents::sidekick::HandoffMode::Retry,
+                other => {
+                    return Err(ToolError::new(
+                        "E_BAD_PAYLOAD",
+                        format!("unknown sidekick mode `{other}`"),
+                    ));
+                }
+            };
+            let message = match args.message {
+                Some(_) if matches!(mode, crate::agents::sidekick::HandoffMode::Retry) => {
+                    return Err(ToolError::new(
+                        "E_BAD_PAYLOAD",
+                        "`message` must be empty when mode is \"retry\"",
+                    ));
+                }
+                Some(message) => Some(text(&message, "message")?),
+                None if matches!(mode, crate::agents::sidekick::HandoffMode::Retry) => None,
+                None => {
+                    return Err(ToolError::new(
+                        "E_BAD_PAYLOAD",
+                        "`message` is required unless mode is \"retry\"",
+                    ));
+                }
+            };
             let block = args.block.unwrap_or(true);
             let (subagent, model) = {
                 let state = ctx.state.lock().await;
@@ -507,7 +537,8 @@ impl Tool for SidekickTool {
                 &ctx.request,
                 &ctx.session_id,
                 &sidekick,
-                &message,
+                mode,
+                message.as_deref(),
                 block,
                 &progress,
                 &ctx.cancel,
@@ -520,7 +551,7 @@ impl Tool for SidekickTool {
                 Ok(crate::agents::sidekick::Handoff::Cancelled) => {
                     let mut outcome = ToolOutcome::failure(
                         "E_CANCELLED",
-                        "Prompt cancelled; this call was not executed or was terminated.",
+                        "Prompt cancelled; the sidekick was stopped. To resume its interrupted work, call sidekick with mode=\"retry\".",
                     );
                     outcome.status = Some(moc_protocol::methods::ToolStatus::Cancelled);
                     Ok(outcome)

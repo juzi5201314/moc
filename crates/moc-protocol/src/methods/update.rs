@@ -753,6 +753,7 @@ mod tests {
                     prompt_id: "prompt_1".into(),
                     tool_call_id: "call_9".into(),
                     rows: vec![crate::methods::ToolProgressRow {
+                        activity: None,
                         agent_id: "ses_child".into(),
                         title: "子代理 A".into(),
                         status: crate::methods::AgentStatus::Running,

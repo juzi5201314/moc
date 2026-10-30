@@ -57,6 +57,24 @@ pub const MAX_PRESET_PROMPT_CHARS: usize = 4000;
 /// Fusion 会话执行侧的 preset 名；只能经 `sidekick` 工具的内部 spawn 路径创建。
 pub const SIDEKICK_PRESET: &str = "sidekick";
 
+/// sidekick `yield` 的结构化交付契约：spawn 时随 `output_schema` 注入。
+///
+/// 已存在的旧 sidekick 会话没有这条契约，照旧允许纯文本 `yield`。
+pub(crate) fn sidekick_report_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "changes", "verification", "open_issues"],
+        "properties": {
+            "status": {"type": "string", "enum": ["done", "partial", "blocked", "needs_decision"]},
+            "changes": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "summary"], "properties": {"path": {"type": "string"}, "summary": {"type": "string"}}}},
+            "verification": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["command", "outcome"], "properties": {"command": {"type": "string"}, "outcome": {"type": "string", "enum": ["passed", "failed", "not_run"]}, "detail": {"type": "string"}}}},
+            "artifacts": {"type": "array", "items": {"type": "string"}},
+            "open_issues": {"type": "array", "items": {"type": "string"}}
+        }
+    })
+}
+
 /// preset 名：小写字母/数字/连字符，小写字母开头（与插件名同一形状）。
 pub fn valid_preset_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
@@ -191,7 +209,7 @@ Preset: sidekick — the execution partner of a Fusion lead.
 - A new message from the lead while you work is an interrupt: fold it in at once; where it conflicts with the earlier brief, it wins.
 - Run every verification command the lead names; that list is mandatory. If something fails for reasons outside the task, report it instead of working around it. Never weaken tests, checks, or security settings to make them pass.
 - Never commit, push, or take other actions with external side effects unless the handoff explicitly asks for them.
-- End every handoff with `yield`. The report must let the lead review without redoing your work: what you changed (files and why), the exact commands you ran and their outcomes, paths to logs, screenshots or other artifacts (keep them; do not clean up), anything left unfinished, and every deviation from the brief. State plainly what is unverified."
+- End every handoff with `yield`. Put a concise narrative in `report`: what you did, deviations from the brief, and what is unverified. Fill `result` per the declared schema: `status` (done / partial / blocked / needs_decision), `changes` (every file you changed), `verification` (each command you ran or owe, with its outcome), `artifacts` (paths to logs, screenshots or other kept output), and `open_issues` (anything unfinished or needing the lead's decision)."
             .to_owned(),
         tools: ToolPolicy::Deny(denied),
     }

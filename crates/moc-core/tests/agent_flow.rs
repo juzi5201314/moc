@@ -6,15 +6,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use moc_llm::Role;
 use moc_protocol::methods::{
     AgentList, AgentListParams, AgentMessage, AgentMessageOutcome, AgentMessageParams, AgentSpawn,
-    AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, SessionCompact,
-    SessionCompactParams, SessionLoad, SessionLoadParams, SessionRedo, SessionRedoParams,
-    SessionRewind, SessionRewindParams, SessionUsage, SessionUsageParams, UsageSource,
+    AgentSpawnParams, AgentStatus, AgentWait, AgentWaitParams, InputPart, PromptParams,
+    SessionCancel, SessionCancelParams, SessionCompact, SessionCompactParams, SessionLoad,
+    SessionLoadParams, SessionModelOverflowAction, SessionPrompt, SessionRedo, SessionRedoParams,
+    SessionRewind, SessionRewindParams, SessionSetModel, SessionSetModelParams, SessionUsage,
+    SessionUsageParams, UsageSource,
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
-use support::Harness;
+use support::{Harness, transcript_entries};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
     matchers::{method, path},
@@ -99,6 +102,26 @@ async fn message_agent(
 fn yield_call(_id: &str, report: &str) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_raw(
         support::tool_stream(vec![("call_yield", "yield", json!({"report": report}))]),
+        "text/event-stream",
+    )
+}
+
+/// sidekick 声明了 `output_schema`：`yield` 必须带合规的 `result`。
+fn sidekick_yield_call(report: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(
+        support::tool_stream(vec![(
+            "call_yield",
+            "yield",
+            json!({
+                "report": report,
+                "result": {
+                    "status": "done",
+                    "changes": [{"path": "src/lib.rs", "summary": "改了一个文件"}],
+                    "verification": [{"command": "cargo test", "outcome": "passed"}],
+                    "open_issues": []
+                }
+            }),
+        )]),
         "text/event-stream",
     )
 }
@@ -1474,7 +1497,7 @@ async fn fusion_lead_hands_off_to_a_persistent_sidekick() {
             } else {
                 "SIDEKICK_REPORT"
             };
-            return delayed(yield_call("call_yield", report), 50);
+            return delayed(sidekick_yield_call(report), 50);
         }
         if is_subagent_request(body) {
             return yield_call("call_yield", "CHILD_DONE");
@@ -1674,5 +1697,467 @@ async fn injected_message_during_closing_window_is_answered() {
         .filter_map(|request| serde_json::from_slice::<Value>(&request.body).ok())
         .any(|body| is_subagent_request(&body) && body.to_string().contains("PARENT_LATE"));
     assert!(answered, "注入消息必须进入子代理的模型请求");
+    harness.close().await;
+}
+
+/// sidekick `mode="retry"`：上游失败进入 Failed 后，用户在模型选择器里把
+/// sidekick 换成别的模型，retry 必须先把会话切到新模型再重放——重跑请求落在
+/// 新模型上、会话头已切换、不追加新的 handoff 消息，结果 delivery=retried。
+#[tokio::test]
+async fn fusion_sidekick_retry_runs_on_the_new_sidekick_model() {
+    let upstream = MockServer::builder().start().await;
+    let bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&bodies);
+    mount_router(&upstream, move |body| {
+        recorded.lock().push(body.clone());
+        // gpt-cheap 上游直接 500；换型后重跑走 gpt-alt。
+        if body["model"] == "gpt-cheap" {
+            return ResponseTemplate::new(500).set_body_string("upstream boom");
+        }
+        if body["model"] == "gpt-alt" {
+            return sidekick_yield_call("RETRIED_REPORT");
+        }
+        let last = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last());
+        if last.is_some_and(|message| message["role"] == "tool") {
+            // 失败的 handoff 结果回来就收尾；retry 结果回来也收尾。
+            return text_response("LEAD_DONE");
+        }
+        // 首个用户提示发 handoff，第二个提示发 retry。
+        let calls = recorded
+            .lock()
+            .iter()
+            .filter(|request| request["model"] == "gpt-test")
+            .count();
+        if calls <= 2 {
+            ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![(
+                    "call_sk",
+                    "sidekick",
+                    json!({"message": "HANDOFF_ONE"}),
+                )]),
+                "text/event-stream",
+            )
+        } else {
+            ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![("call_retry", "sidekick", json!({"mode": "retry"}))]),
+                "text/event-stream",
+            )
+        }
+    })
+    .await;
+    let harness = Harness::with_roles(
+        &upstream.uri(),
+        "openai_chat",
+        "fusion",
+        "fusion",
+        "[providers.test.models.gpt-cheap]\ncontext_window=1000000\nmax_output_tokens=4096\n\
+         [providers.test.models.gpt-alt]\ncontext_window=1000000\nmax_output_tokens=4096\n\
+         [models.fusion]\nlead='test/gpt-test'\nsidekick='test/gpt-cheap'\n",
+    )
+    .await;
+    let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    // 首轮 handoff：sidekick 上游 500 → 注册表 Failed，lead 拿到 failed。
+    assert_eq!(
+        harness.prompt(&lead_id, "开工").await.message.text(),
+        "LEAD_DONE"
+    );
+    let agents = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: lead_id.clone(),
+        })
+        .await
+        .expect("代理列表");
+    let sidekick = agents
+        .agents
+        .iter()
+        .find(|agent| agent.preset.as_deref() == Some("sidekick"))
+        .expect("sidekick 会话存在");
+    assert_eq!(sidekick.status, AgentStatus::Failed, "{:?}", agents.agents);
+
+    // 用户在模型选择器里换 sidekick 模型。
+    harness
+        .client
+        .call::<SessionSetModel>(SessionSetModelParams {
+            session_id: lead_id.clone(),
+            selector: "fusion:test/gpt-test+test/gpt-alt".into(),
+            overflow: SessionModelOverflowAction::Switch,
+        })
+        .await
+        .expect("set_model 成功");
+    assert_eq!(
+        harness.prompt(&lead_id, "再试一次").await.message.text(),
+        "LEAD_DONE"
+    );
+
+    // retry 请求打到新模型；sidekick 会话头已切换。
+    let bodies = bodies.lock().clone();
+    assert!(
+        bodies.iter().any(|body| body["model"] == "gpt-alt"),
+        "retry 应落在新模型上：{bodies:?}"
+    );
+    let entries = transcript_entries(&harness, &sidekick.id).await;
+    assert!(
+        entries.iter().any(|entry| matches!(
+            entry,
+            moc_core::session::entries::Entry::ModelChange { model, .. }
+                if model == "test/gpt-alt:off"
+        )),
+        "sidekick 会话应记录模型切换"
+    );
+    let handoff_users = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            moc_core::session::entries::Entry::Message { message, .. } => Some(message),
+            _ => None,
+        })
+        .filter(|message| message.role == Role::User && message.text().contains("HANDOFF_ONE"))
+        .count();
+    assert_eq!(handoff_users, 1, "retry 不追加重复的 handoff 消息");
+
+    let loaded = harness.load(&lead_id).await;
+    let results: Vec<Value> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .filter_map(|result| serde_json::from_str::<Value>(&result.content).ok())
+        .filter(|value| value["delivery"].is_string())
+        .collect();
+    let retry = results
+        .iter()
+        .find(|value| value["delivery"] == "retried")
+        .expect("应有一条 retried 结果");
+    assert_eq!(retry["status"], "completed");
+    assert_eq!(retry["report"], "RETRIED_REPORT");
+    assert_eq!(retry["model"], "test/gpt-alt:off");
+    assert_eq!(retry["result"]["status"], "done");
+    assert_eq!(results[0]["status"], "failed", "首轮 handoff 是 failed");
+    harness.close().await;
+}
+
+/// `compact` 在投递前产生压缩 checkpoint，新 handoff 排在它之后；`fresh`
+/// 新建会话并成为后续 `keep` 的目标；已完成会话的 `retry` 被拒。
+#[tokio::test]
+async fn fusion_sidekick_compact_fresh_and_completed_guards() {
+    let upstream = MockServer::builder().start().await;
+    // 工具结果回来的次序决定下一步：compact → fresh → retry（completed 拒）→ 收尾。
+    let phase = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&phase);
+    mount_router(&upstream, move |body| {
+        // 压缩摘要请求（soft checkpoint）。
+        if body
+            .to_string()
+            .contains("compressing an agent conversation")
+        {
+            return ResponseTemplate::new(200)
+                .set_body_json(support::complete(&support::soft_checkpoint("COMPACTED")));
+        }
+        if body["model"] == "gpt-cheap" {
+            return sidekick_yield_call("SK_REPORT");
+        }
+        let last = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last());
+        let Some(last) = last else {
+            return text_response("LEAD_DONE");
+        };
+        if last["role"] != "tool" {
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![("call_h1", "sidekick", json!({"message": "H1"}))]),
+                "text/event-stream",
+            );
+        }
+        let next = match counter.fetch_add(1, Ordering::SeqCst) {
+            0 => json!({"message": "H2", "mode": "compact"}),
+            1 => json!({"message": "H3", "mode": "fresh"}),
+            2 => json!({"mode": "retry"}),
+            _ => return text_response("LEAD_DONE"),
+        };
+        ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![("call_next", "sidekick", next)]),
+            "text/event-stream",
+        )
+    })
+    .await;
+    let harness = fusion_harness(&upstream).await;
+    let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    assert_eq!(
+        harness.prompt(&lead_id, "开工").await.message.text(),
+        "LEAD_DONE"
+    );
+
+    let agents = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: lead_id.clone(),
+        })
+        .await
+        .expect("代理列表");
+    let mut sidekicks: Vec<_> = agents
+        .agents
+        .iter()
+        .filter(|agent| agent.preset.as_deref() == Some("sidekick"))
+        .collect();
+    sidekicks.sort_by_key(|agent| agent.created_at_ms);
+    assert_eq!(sidekicks.len(), 2, "fresh 后应有两个 sidekick 会话");
+
+    // 旧会话：压缩 checkpoint 之后才是 H2 的 handoff 消息；且收不到 H3。
+    let user_text = |entry: &moc_core::session::entries::Entry| match entry {
+        moc_core::session::entries::Entry::Message { message, .. }
+            if message.role == Role::User =>
+        {
+            Some(message.text())
+        }
+        _ => None,
+    };
+    let old_entries = transcript_entries(&harness, &sidekicks[0].id).await;
+    let checkpoint_at = old_entries
+        .iter()
+        .position(|entry| matches!(entry, moc_core::session::entries::Entry::Compaction { .. }))
+        .expect("compact 应留下压缩 checkpoint");
+    let h2_at = old_entries
+        .iter()
+        .position(|entry| user_text(entry).is_some_and(|text| text.contains("H2")))
+        .expect("H2 handoff 消息存在");
+    assert!(
+        h2_at > checkpoint_at,
+        "handoff 消息必须排在 checkpoint 之后"
+    );
+    assert!(
+        !old_entries
+            .iter()
+            .filter_map(user_text)
+            .any(|text| text.contains("H3")),
+        "H3 必须进新会话"
+    );
+
+    // 新会话拿到了 H3（fresh spawn 的任务）。
+    let new_entries = transcript_entries(&harness, &sidekicks[1].id).await;
+    assert!(
+        new_entries
+            .iter()
+            .filter_map(user_text)
+            .any(|text| text.contains("H3")),
+        "fresh spawn 的 handoff 必须落在新会话"
+    );
+
+    // 工具结果链：spawned → compacted → spawned → retry 被拒（completed）。
+    let loaded = harness.load(&lead_id).await;
+    let texts: Vec<String> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .map(|result| result.content.clone())
+        .collect();
+    let joined = texts.join("\n");
+    assert!(joined.contains("\"compacted\""), "{joined}");
+    assert!(
+        joined.contains("The sidekick's last handoff completed; send a new message instead."),
+        "{joined}"
+    );
+    harness.close().await;
+}
+
+/// 用户在后台（block=false）handoff 进行中取消 lead 的提示：sidekick 必须被
+/// 一并停掉，注册表状态落定 stopped。
+#[tokio::test]
+async fn fusion_cancel_stops_a_background_sidekick() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if body["model"] == "gpt-cheap" {
+            return delayed(sidekick_yield_call("SK_REPORT"), 3_000);
+        }
+        let last = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last());
+        if last.is_some_and(|message| message["role"] == "tool") {
+            // 工具结果回来后 lead 拖延应答，把提示撑在运行中。
+            return delayed(text_response("LEAD_DONE"), 2_000);
+        }
+        ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![(
+                "call_sk",
+                "sidekick",
+                json!({"message": "HANDOFF", "block": false}),
+            )]),
+            "text/event-stream",
+        )
+    })
+    .await;
+    let harness = fusion_harness(&upstream).await;
+    let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    let client = harness.client.clone();
+    let session = lead_id.clone();
+    let prompt = tokio::spawn(async move {
+        client
+            .call::<SessionPrompt>(PromptParams {
+                session_id: session,
+                input: vec![InputPart::Text {
+                    text: "开工".into(),
+                }],
+                mode: None,
+                agent_message: None,
+            })
+            .await
+    });
+    // 等 sidekick 起来（block=false 立即返回，上游 3s）。
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let cancelled = harness
+        .client
+        .call::<SessionCancel>(SessionCancelParams {
+            session_id: lead_id.clone(),
+        })
+        .await
+        .expect("取消成功");
+    assert!(cancelled.cancelled, "提示应确实被取消");
+    let _ = prompt.await;
+
+    // 注册表里的 sidekick 状态必须落定 stopped。
+    let mut status = AgentStatus::Idle;
+    for _ in 0..40 {
+        let agents = harness
+            .client
+            .call::<AgentList>(AgentListParams {
+                session_id: lead_id.clone(),
+            })
+            .await
+            .expect("代理列表");
+        if let Some(agent) = agents
+            .agents
+            .iter()
+            .find(|agent| agent.preset.as_deref() == Some("sidekick"))
+        {
+            status = agent.status;
+            if status == AgentStatus::Stopped {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status, AgentStatus::Stopped, "后台 sidekick 必须被停掉");
+    harness.close().await;
+}
+
+/// sidekick 只能经 `sidekick` 工具驱动：lead 直接拿 `message_agent` 寻址
+/// sidekick 子会话必须被拒（绕过它会在旧模型上继续计费）。
+#[tokio::test]
+async fn message_agent_to_a_sidekick_requires_the_sidekick_tool() {
+    let upstream = MockServer::builder().start().await;
+    mount_router(&upstream, |body| {
+        if body["model"] == "gpt-cheap" {
+            return sidekick_yield_call("SK_REPORT");
+        }
+        let last = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last());
+        if last.is_some_and(|message| message["role"] == "tool") {
+            return text_response("LEAD_DONE");
+        }
+        ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![("call_sk", "sidekick", json!({"message": "HANDOFF"}))]),
+            "text/event-stream",
+        )
+    })
+    .await;
+    let harness = fusion_harness(&upstream).await;
+    let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    assert_eq!(
+        harness.prompt(&lead_id, "开工").await.message.text(),
+        "LEAD_DONE"
+    );
+    let agents = harness
+        .client
+        .call::<AgentList>(AgentListParams {
+            session_id: lead_id.clone(),
+        })
+        .await
+        .expect("代理列表");
+    let sidekick = agents
+        .agents
+        .iter()
+        .find(|agent| agent.preset.as_deref() == Some("sidekick"))
+        .expect("sidekick 会话存在");
+
+    // 显式寻址 sidekick 子会话：无论 Fusion 与否都拒绝。
+    let error = harness
+        .client
+        .call::<AgentMessage>(AgentMessageParams {
+            session_id: lead_id.clone(),
+            target: sidekick.id.clone(),
+            message: "wake up".into(),
+        })
+        .await
+        .expect_err("直接寻址 sidekick 必须失败");
+    assert!(
+        error
+            .to_string()
+            .contains("Address the sidekick through the sidekick tool"),
+        "{error}"
+    );
+    harness.close().await;
+}
+
+/// sidekick 运行中：compact/fresh/retry 都被拒——这三种模式都要求 sidekick
+/// 空闲，只有 keep 能把手头的消息注进运行中的会话。
+#[tokio::test]
+async fn fusion_sidekick_busy_rejects_compact_fresh_and_retry() {
+    let upstream = MockServer::builder().start().await;
+    let phases = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&phases);
+    mount_router(&upstream, move |body| {
+        // sidekick 上游慢：handoff 派出后一直 Running。
+        if body["model"] == "gpt-cheap" {
+            return delayed(sidekick_yield_call("SK_REPORT"), 1_500);
+        }
+        let last = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last());
+        if last.is_some_and(|message| message["role"] == "tool") {
+            // keep(block=false) 的结果回来后：连着发三次忙碌态应报错的 mode。
+            let next = match counter.fetch_add(1, Ordering::SeqCst) {
+                1 => json!({"message": "H2", "mode": "compact"}),
+                2 => json!({"message": "H3", "mode": "fresh"}),
+                3 => json!({"mode": "retry"}),
+                _ => return text_response("LEAD_DONE"),
+            };
+            return ResponseTemplate::new(200).set_body_raw(
+                support::tool_stream(vec![("call", "sidekick", next)]),
+                "text/event-stream",
+            );
+        }
+        // 首轮提示：先派出后台运行的 handoff。
+        counter.fetch_add(1, Ordering::SeqCst);
+        ResponseTemplate::new(200).set_body_raw(
+            support::tool_stream(vec![(
+                "call",
+                "sidekick",
+                json!({"message": "HANDOFF", "block": false}),
+            )]),
+            "text/event-stream",
+        )
+    })
+    .await;
+    let harness = fusion_harness(&upstream).await;
+    let lead_id = harness.session(moc_protocol::SessionEngine::Standard).await;
+    assert_eq!(
+        harness.prompt(&lead_id, "开工").await.message.text(),
+        "LEAD_DONE"
+    );
+
+    let loaded = harness.load(&lead_id).await;
+    let texts: Vec<String> = loaded
+        .entries
+        .iter()
+        .flat_map(|entry| entry.message.tool_results())
+        .map(|result| result.content.clone())
+        .collect();
+    let joined = texts.join("\n");
+    assert_eq!(
+        joined.matches("The sidekick is running").count(),
+        3,
+        "compact/fresh/retry 在运行中的 sidekick 上都必须报错：{joined}"
+    );
     harness.close().await;
 }
