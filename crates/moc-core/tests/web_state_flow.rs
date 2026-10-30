@@ -1,9 +1,11 @@
 mod support;
 
 use moc_protocol::{
-    RpcErrorCode, WebState, WebStateGet, WebStateGetParams, WebStateSave, WebStateSaveParams,
-    WebSubmitAction, WebTheme,
+    ClientBuilder, ClientCapabilities, ClientInfo, RpcErrorCode, WebState, WebStateDocument,
+    WebStateGet, WebStateGetParams, WebStateSave, WebStateSaveParams, WebStateUpdated,
+    WebSubmitAction, WebTheme, transport,
 };
+use std::sync::Arc;
 
 #[tokio::test]
 async fn web_state_round_trips_through_rpc() {
@@ -60,4 +62,65 @@ async fn web_state_round_trips_through_rpc() {
     assert!(config_toml.contains("[providers.test]"));
 
     harness.close().await;
+}
+
+/// 另一条连接保存后，core 向其余读过 `web/state` 的连接广播 `web/state_updated`。
+#[tokio::test]
+async fn web_state_save_broadcasts_to_other_connections() {
+    let harness = support::Harness::new("http://127.0.0.1:1", "openai_chat", "").await;
+
+    // 第二条连接模拟另一个浏览器：注册通知处理器并读一次状态进扇出表。
+    let received = Arc::new(parking_lot::Mutex::new(Vec::<WebStateDocument>::new()));
+    let inbox = Arc::clone(&received);
+    let (server_side, client_side) = transport::duplex(65536);
+    let watcher_connection = harness.server.spawn(server_side);
+    let (watcher, _) = ClientBuilder::new(ClientInfo {
+        name: "旁观".into(),
+        version: "1".into(),
+        frontend: "test".into(),
+    })
+    .capabilities(ClientCapabilities {
+        permission_requests: false,
+        ask_requests: false,
+    })
+    .on_notification::<WebStateUpdated, _, _>(move |doc, _ctx| {
+        inbox.lock().push(doc);
+        std::future::ready(())
+    })
+    .connect(client_side)
+    .await
+    .expect("第二客户端连接");
+    let doc = watcher
+        .call::<WebStateGet>(WebStateGetParams {})
+        .await
+        .expect("旁观连接读 web/state");
+
+    let saved = harness
+        .client
+        .call::<WebStateSave>(WebStateSaveParams {
+            revision: doc.revision,
+            state: WebState {
+                theme: WebTheme::Dark,
+                ..WebState::default()
+            },
+        })
+        .await
+        .expect("保存成功");
+
+    // 扇出在独立任务里发，等通知到达即可断言收到了同一份文档。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(doc) = received.lock().last() {
+            assert_eq!(*doc, saved);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "等待 web/state_updated 超时"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    harness.close().await;
+    watcher_connection.wait().await;
 }

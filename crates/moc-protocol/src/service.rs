@@ -566,6 +566,24 @@ impl UpdateSink {
             )))
             .await
     }
+
+    /// 推送一条任意服务端通知（如 `web/state_updated`）。
+    ///
+    /// `emit`/`emit_btw` 是转写高频路径的具名特化；低频通知走这里，
+    /// 背压与连接关闭语义完全相同。
+    pub async fn notify<M: crate::method::ServerNotification>(
+        &self,
+        params: M::Params,
+    ) -> Result<(), ProtocolError> {
+        let value = serde_json::to_value(params)
+            .map_err(|error| ProtocolError::Encode(error.to_string()))?;
+        self.traffic
+            .send(Outbound::Notification(Notification::new(
+                <M as Method>::NAME,
+                Some(value),
+            )))
+            .await
+    }
 }
 
 /// 反向请求出口。

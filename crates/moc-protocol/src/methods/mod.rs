@@ -25,7 +25,8 @@
 //! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` |
 //! | [`workspace::WorkspaceGitBranch`] | C→S | core | 已初始化 | `-32602` |
 //! | [`web::WebStateGet`] / [`web::WebStateSave`] | C→S | core | 已初始化 | `-32602` / `-32014` |
-//! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
+//! | [`update::SessionUpdateMethod`] / [`update::BtwUpdateMethod`] | S→C | 前端 | — | — |
+//! | [`web::WebStateUpdated`] | S→C | 前端 | — | — |
 //!
 //! 方向隔离是强制的：客户端向服务端发 `session/update` /
 //! `session/request_permission` / `session/request_ask`，或服务端收到 `session/prompt`
@@ -133,7 +134,7 @@ pub use update::{
 };
 pub use web::{
     WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams, WebStateSave,
-    WebStateSaveParams, WebSubmitAction, WebTheme,
+    WebStateSaveParams, WebStateUpdated, WebSubmitAction, WebTheme,
 };
 pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult};
 
@@ -226,6 +227,7 @@ mod tests {
             (<SessionRequestAsk as Method>::NAME, "session/request_ask"),
             (<SessionUpdateMethod as Method>::NAME, "session/update"),
             (<BtwUpdateMethod as Method>::NAME, "session/btw_update"),
+            (<WebStateUpdated as Method>::NAME, "web/state_updated"),
         ];
         for (actual, expected) in server_methods {
             assert_eq!(actual, expected);
@@ -264,6 +266,7 @@ mod tests {
         server_request::<SessionRequestAsk>();
         server_notification::<SessionUpdateMethod>();
         server_notification::<BtwUpdateMethod>();
+        server_notification::<WebStateUpdated>();
         client::<ChartAnalyze>();
         client::<WorkspaceGitBranch>();
         assert_eq!(Empty {}, Empty::default());

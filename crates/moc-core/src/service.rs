@@ -29,7 +29,7 @@ use moc_protocol::methods::{
     SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
     WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
-use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
+use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode, UpdateSink};
 use parking_lot::RwLock;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -117,6 +117,9 @@ pub(crate) struct CoreInner {
     pub prompts: Mutex<tokio::task::JoinSet<()>>,
     pub shutdown: tokio_util::sync::CancellationToken,
     pub sandbox_support: crate::sandbox::SandboxSupport,
+    /// 读过 `web/state` 的连接的 `web/state_updated` 扇出表；键为连接号。
+    /// 连接断开没有回调，死连接在下次扇出发送失败时剔除。
+    pub web_state_sinks: parking_lot::Mutex<HashMap<u64, UpdateSink>>,
 }
 
 /// 会话状态里的插件调用上下文；构建提示词时还没有 `ToolCtx`，先按会话头取一份。
@@ -592,6 +595,7 @@ impl Core {
                 prompts: Mutex::new(tokio::task::JoinSet::new()),
                 shutdown: tokio_util::sync::CancellationToken::new(),
                 sandbox_support,
+                web_state_sinks: parking_lot::Mutex::new(HashMap::new()),
             }),
         }))
     }
@@ -790,18 +794,20 @@ impl AgentService for Core {
 
     async fn web_state(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         _params: WebStateGetParams,
     ) -> Result<WebStateDocument, RpcError> {
-        management::web_state(&self.inner).await.map_err(to_rpc)
+        management::web_state(&self.inner, &ctx)
+            .await
+            .map_err(to_rpc)
     }
 
     async fn web_state_save(
         &self,
-        _ctx: RequestContext,
+        ctx: RequestContext,
         params: WebStateSaveParams,
     ) -> Result<WebStateDocument, RpcError> {
-        management::web_state_save(&self.inner, params)
+        management::web_state_save(&self.inner, &ctx, params)
             .await
             .map_err(to_rpc)
     }

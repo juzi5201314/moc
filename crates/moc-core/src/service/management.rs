@@ -6,8 +6,9 @@ use crate::{
     config::{discovery, editor},
 };
 use moc_protocol::{
-    ConfigAction, ConfigReply, ConfigScope, RequestContext, SteerParams, SteerResult,
-    UnsteerParams, UnsteerResult, WebStateDocument, WebStateSaveParams,
+    ConfigAction, ConfigReply, ConfigScope, ProtocolError, RequestContext, SteerParams,
+    SteerResult, UnsteerParams, UnsteerResult, UpdateSink, WebStateDocument, WebStateSaveParams,
+    WebStateUpdated,
 };
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
@@ -155,22 +156,64 @@ pub(super) async fn drain_steering(
 }
 
 /// `web/state`：读取 `config_home()/web.toml` 前端状态文档。
-pub(super) async fn web_state(inner: &CoreInner) -> Result<WebStateDocument, CoreError> {
+///
+/// 顺手把这条连接登记进 `web/state_updated` 扇出表：只有读过状态的前端
+/// 才关心后续变更；TUI 这类不读的内嵌连接自然不会收到通知。
+pub(super) async fn web_state(
+    inner: &CoreInner,
+    ctx: &RequestContext,
+) -> Result<WebStateDocument, CoreError> {
+    inner
+        .web_state_sinks
+        .lock()
+        .insert(ctx.connection_id(), ctx.updates());
     let home = inner.config().home.clone();
     tokio::task::spawn_blocking(move || crate::config::web::load(&home))
         .await
         .map_err(|error| CoreError::Config(error.to_string()))?
 }
 
-/// `web/state_save`：版本戳乐观锁整文档写回。
+/// `web/state_save`：版本戳乐观锁整文档写回，成功后向其余连接扇出新文档。
 pub(super) async fn web_state_save(
-    inner: &CoreInner,
+    inner: &Arc<CoreInner>,
+    ctx: &RequestContext,
     params: WebStateSaveParams,
 ) -> Result<WebStateDocument, CoreError> {
     let home = inner.config().home.clone();
-    tokio::task::spawn_blocking(move || crate::config::web::save(&home, params))
+    let document = tokio::task::spawn_blocking(move || crate::config::web::save(&home, params))
         .await
-        .map_err(|error| CoreError::Config(error.to_string()))?
+        .map_err(|error| CoreError::Config(error.to_string()))??;
+    broadcast_web_state(inner, ctx.connection_id(), &document);
+    Ok(document)
+}
+
+/// 把保存结果推给其余已登记的连接；发起方不回推（它的乐观更新已经领先）。
+///
+/// 在独立任务里发：出站队列满时发送会背压，不能拖慢保存方的响应。
+/// 发送失败按连接已死处理，顺手从扇出表剔除。
+fn broadcast_web_state(inner: &Arc<CoreInner>, origin: u64, document: &WebStateDocument) {
+    let targets: Vec<(u64, UpdateSink)> = inner
+        .web_state_sinks
+        .lock()
+        .iter()
+        .filter(|(id, _)| **id != origin)
+        .map(|(id, sink)| (*id, sink.clone()))
+        .collect();
+    if targets.is_empty() {
+        return;
+    }
+    let inner = Arc::clone(inner);
+    let document = document.clone();
+    tokio::spawn(async move {
+        for (id, sink) in targets {
+            if matches!(
+                sink.notify::<WebStateUpdated>(document.clone()).await,
+                Err(ProtocolError::ConnectionClosed)
+            ) {
+                inner.web_state_sinks.lock().remove(&id);
+            }
+        }
+    });
 }
 
 pub(super) async fn manage(

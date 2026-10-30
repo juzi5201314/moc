@@ -16,6 +16,7 @@ import {
   PROTOCOL_VERSION,
   SESSION_UPDATE_TYPES,
   type SessionUpdateParams,
+  type WebStateDocument,
 } from "./types";
 
 export type ConnectionStatus = "connecting" | "online" | "offline";
@@ -39,6 +40,7 @@ const RECONNECT_MAX_MS = 8000;
 type NotificationMap = {
   "session/update": SessionUpdateParams;
   "session/btw_update": BtwUpdateParams;
+  "web/state_updated": WebStateDocument;
 };
 
 type RequestMap = {

@@ -5,10 +5,13 @@
 //! `web/state_save` 读写同一份文件，写以 `revision` 乐观锁互斥。
 //!
 //! 布局、标签页这类设备态仍在浏览器侧，不走这两个方法。
+//!
+//! `web/state_save` 成功后 core 向其余读过 `web/state` 的连接广播
+//! `web/state_updated`，负载就是新文档——收到即采用，无需回读。
 
 use serde::{Deserialize, Serialize};
 
-use crate::method::{ClientRequest, Method};
+use crate::method::{ClientRequest, Method, ServerNotification};
 
 /// `web/state`。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -115,6 +118,19 @@ pub struct WebStateDocument {
     pub state: WebState,
 }
 
+/// `web/state_updated` 的方法标记：保存成功后 core 扇出给其余连接。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebStateUpdated;
+
+impl Method for WebStateUpdated {
+    const NAME: &'static str = "web/state_updated";
+    type Params = WebStateDocument;
+    type Result = crate::methods::Empty;
+}
+
+// 通知不返回结果；`Result` 只是 `Method` 的形状要求。
+impl ServerNotification for WebStateUpdated {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +140,7 @@ mod tests {
     fn shapes() {
         assert_eq!(<WebStateGet as Method>::NAME, "web/state");
         assert_eq!(<WebStateSave as Method>::NAME, "web/state_save");
+        assert_eq!(<WebStateUpdated as Method>::NAME, "web/state_updated");
         assert_eq!(
             serde_json::to_value(WebStateGetParams {}).expect("可序列化"),
             json!({})
