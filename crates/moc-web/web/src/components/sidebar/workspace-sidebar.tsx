@@ -32,6 +32,7 @@ import type { SessionInfo } from "@/protocol/types";
 import { useConnection } from "@/store/connection";
 import { useLayout } from "@/store/layout";
 import { createQuickSession, openSession, renameSession } from "@/store/lifecycle";
+import { usePrefs } from "@/store/prefs";
 import { allSessions, groupWorkspaces, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { attentionCount, useTranscript } from "@/store/transcript";
@@ -76,7 +77,7 @@ function NavRow({
 export function WorkspaceSidebar() {
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
-  const workspaces = useSessions((state) => state.workspaces);
+  const workspaces = usePrefs((state) => state.workspaces);
   const draft = useSessions((state) => state.draftSession);
   const active = useTabs((state) => state.active);
   const status = useConnection((state) => state.status);
@@ -97,7 +98,7 @@ export function WorkspaceSidebar() {
       folderPicker: {
         open: true,
         onPick: (path) => {
-          useSessions.getState().addWorkspace(path);
+          usePrefs.getState().addWorkspace(path);
           createQuickSession(path);
         },
       },
@@ -339,7 +340,7 @@ function WorkspaceMenu({ cwd, removable }: { cwd: string; removable: boolean }) 
         {removable && (
           <DropdownMenuItem
             variant="destructive"
-            onSelect={() => useSessions.getState().removeWorkspace(cwd)}
+            onSelect={() => usePrefs.getState().removeWorkspace(cwd)}
           >
             <XIcon />
             从列表移除

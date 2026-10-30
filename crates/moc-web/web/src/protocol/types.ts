@@ -175,6 +175,34 @@ export type ConfigReply =
   | { kind: "maintenance"; data: MaintenanceReport }
   | { kind: "updated"; data: string };
 
+// ---------- web/state ----------
+
+export type WebTheme = "system" | "light" | "dark";
+export type WebSubmitAction = "steering" | "interrupt";
+export type WebDiffMode = "unified" | "split";
+
+/** `web.toml` 的内容；字段名与 `tui.toml` 的对应项同一套词汇。 */
+export type WebState = {
+  theme: WebTheme;
+  active_submit: WebSubmitAction;
+  notify: boolean;
+  diff_mode: WebDiffMode;
+  expand_thinking: boolean;
+  workspaces: string[];
+};
+
+/** 带版本戳的状态文档：`exists` 为 false 时可做一次性旧数据迁移。 */
+export type WebStateDocument = {
+  revision: string;
+  exists: boolean;
+  state: WebState;
+};
+
+export type WebStateSaveParams = {
+  revision: string;
+  state: WebState;
+};
+
 // ---------- 会话 ----------
 
 /** 会话引擎：模型与工具的交互形态。跑过首条提示后锁定（`engine_locked`）。 */

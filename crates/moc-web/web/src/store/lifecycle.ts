@@ -20,6 +20,7 @@ import type {
 } from "@/protocol/types";
 import { useComposer } from "./composer";
 import { useConnection } from "./connection";
+import { usePrefs } from "./prefs";
 import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
@@ -262,7 +263,8 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
     activeId && activeId !== "draft-session"
       ? useTranscript.getState().bySession[activeId]?.info
       : undefined;
-  const { workspaces, list } = useSessions.getState();
+  const { list } = useSessions.getState();
+  const { workspaces } = usePrefs.getState();
   const config = useConnection.getState().config;
   const cwd = targetCwd ?? activeInfo?.cwd ?? workspaces[0] ?? list[0]?.cwd ?? config?.cwd ?? "";
   // 沿用当前会话的模型；没有时留空，交给 core 用 `models.roles.default`。

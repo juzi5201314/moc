@@ -1,4 +1,4 @@
-// 设置里需要定制界面的分区：通用（浏览器本地偏好）、快捷键、模型角色、插件、会话存储维护。
+// 设置里需要定制界面的分区：通用（webui 前端偏好）、快捷键、模型角色、插件、会话存储维护。
 
 import { Loader2Icon, MonitorIcon, MoonIcon, RefreshCwIcon, SunIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
@@ -193,7 +193,9 @@ export function GeneralSection() {
             </div>
           </SettingRow>
         </Card>
-        <p className="px-1 text-[11.5px] text-text-tertiary">以上偏好只保存在当前浏览器。</p>
+        <p className="px-1 text-[11.5px] text-text-tertiary">
+          以上偏好保存在 web.toml，对所有连接到此 moc 的浏览器生效。
+        </p>
       </section>
 
       <section className="space-y-2">

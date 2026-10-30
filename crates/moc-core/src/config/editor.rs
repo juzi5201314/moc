@@ -15,7 +15,7 @@ fn path(home: &Path, cwd: &Path, scope: ConfigScope) -> PathBuf {
     }
 }
 
-fn contents(path: &Path) -> Result<String, CoreError> {
+pub(crate) fn contents(path: &Path) -> Result<String, CoreError> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
@@ -23,14 +23,14 @@ fn contents(path: &Path) -> Result<String, CoreError> {
     }
 }
 
-fn revision(text: &str) -> String {
+pub(crate) fn revision(text: &str) -> String {
     format!("{:032x}", xxhash_rust::xxh3::xxh3_128(text.as_bytes()))
 }
 fn parse(text: &str) -> Result<toml::Value, CoreError> {
     toml::from_str(text).map_err(|error| CoreError::Config(format!("配置文件格式有误：{error}")))
 }
 
-fn write_atomic(target: &Path, text: &str) -> Result<(), CoreError> {
+pub(crate) fn write_atomic(target: &Path, text: &str) -> Result<(), CoreError> {
     let parent = target
         .parent()
         .ok_or_else(|| CoreError::Config("配置路径缺少父目录".into()))?;

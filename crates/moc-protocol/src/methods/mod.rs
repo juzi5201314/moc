@@ -24,6 +24,7 @@
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` |
 //! | [`workspace::WorkspaceGitBranch`] | C→S | core | 已初始化 | `-32602` |
+//! | [`web::WebStateGet`] / [`web::WebStateSave`] | C→S | core | 已初始化 | `-32602` / `-32014` |
 //! | [`update::SessionUpdateMethod`] | S→C | 前端 | — | — |
 //!
 //! 方向隔离是强制的：客户端向服务端发 `session/update` /
@@ -48,6 +49,7 @@ pub mod resources;
 pub mod session;
 pub mod todo;
 pub mod update;
+pub mod web;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
@@ -129,6 +131,10 @@ pub use update::{
     AssistantDelta, PathChange, SessionUpdate, SessionUpdateMethod, SessionUpdateParams,
     ToolBatchCall, UpstreamField, UpstreamFieldMismatch,
 };
+pub use web::{
+    WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams, WebStateSave,
+    WebStateSaveParams, WebSubmitAction, WebTheme,
+};
 pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult};
 
 /// 空结果：序列化为 `{}`。
@@ -199,6 +205,8 @@ mod tests {
             (<FsCreateDir as Method>::NAME, "fs/create_dir"),
             (<ChartAnalyze as Method>::NAME, "chart/analyze"),
             (<WorkspaceGitBranch as Method>::NAME, "workspace/git_branch"),
+            (<WebStateGet as Method>::NAME, "web/state"),
+            (<WebStateSave as Method>::NAME, "web/state_save"),
             (<AgentList as Method>::NAME, "agent/list"),
             (<AgentMessage as Method>::NAME, "agent/message"),
             (<AgentStop as Method>::NAME, "agent/stop"),

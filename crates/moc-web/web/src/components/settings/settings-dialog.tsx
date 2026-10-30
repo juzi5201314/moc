@@ -1,5 +1,5 @@
 // 设置：左侧分类导航 + 右侧分区内容；改动即保存，顶栏显示保存状态。
-// 浏览器本地偏好（通用、快捷键）与 core 配置（其余分区，分全局 / 项目两个范围）分开。
+// webui 偏好（通用、快捷键）与 core 配置（其余分区，分全局 / 项目两个范围）分开。
 
 import {
   BlocksIcon,
@@ -56,7 +56,7 @@ const NAV: { group: string; items: SectionMeta[] }[] = [
       {
         id: "general",
         label: "通用",
-        description: "外观、交互与通知；只保存在当前浏览器。",
+        description: "外观、交互与通知；保存在 web.toml，对所有浏览器生效。",
         icon: <Settings2Icon />,
       },
       {

@@ -24,6 +24,7 @@ pub mod discovery;
 pub mod editor;
 pub mod model;
 mod schema;
+pub mod web;
 
 pub use model::{InstructionRole, ModelCapabilities, ROLE_INHERIT, ROLE_NONE, ThinkingLevel};
 pub use schema::{
@@ -935,14 +936,10 @@ mod tests {
         // [models.fusion] 只配一侧：合法且视为未配置，但非空侧必须可解析。
         fs::write(
             home.join("config.toml"),
-            fusion_provider_config(
-                "default='p/model'",
-                "[models.fusion]\nlead='p/model'\n",
-            ),
+            fusion_provider_config("default='p/model'", "[models.fusion]\nlead='p/model'\n"),
         )
         .expect("写半配置");
-        let config =
-            ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("半配置可加载");
+        let config = ResolvedConfig::load(&core_config(&home, &cwd, vec![])).expect("半配置可加载");
         let Err(error) = config.resolve_model("fusion") else {
             panic!("半配置下别名仍按未配置报错");
         };
@@ -952,10 +949,7 @@ mod tests {
         );
         fs::write(
             home.join("config.toml"),
-            fusion_provider_config(
-                "default='p/model'",
-                "[models.fusion]\nsidekick='p/nope'\n",
-            ),
+            fusion_provider_config("default='p/model'", "[models.fusion]\nsidekick='p/nope'\n"),
         )
         .expect("写坏配置");
         let Err(error) = ResolvedConfig::load(&core_config(&home, &cwd, vec![])) else {

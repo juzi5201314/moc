@@ -42,7 +42,8 @@ use crate::methods::{
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanMode,
     SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename, SessionRetry, SessionRewind,
     SessionSetAutonomy, SessionSetEngine, SessionSetModel, SessionSetPermission, SessionSteer,
-    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WorkspaceGitBranch,
+    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WebStateGet, WebStateSave,
+    WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -606,6 +607,24 @@ impl<S: AgentService> ServerDispatch<S> {
                     .config_get(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
+            }
+            <WebStateGet as Method>::NAME => {
+                let params = params_from_value::<WebStateGet>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .web_state(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <WebStateSave as Method>::NAME => {
+                let params = params_from_value::<WebStateSave>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .web_state_save(self.context(client, cancel), params)
+                        .await?,
+                )
             }
             <PluginList as Method>::NAME => {
                 let params = params_from_value::<PluginList>(params)?;

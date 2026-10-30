@@ -7,7 +7,7 @@ use crate::{
 };
 use moc_protocol::{
     ConfigAction, ConfigReply, ConfigScope, RequestContext, SteerParams, SteerResult,
-    UnsteerParams, UnsteerResult,
+    UnsteerParams, UnsteerResult, WebStateDocument, WebStateSaveParams,
 };
 use std::{collections::VecDeque, path::Path, sync::Arc};
 
@@ -152,6 +152,25 @@ pub(super) async fn drain_steering(
         applied.push(AppliedSteering { id: entry.id, text });
     }
     Ok(applied)
+}
+
+/// `web/state`：读取 `config_home()/web.toml` 前端状态文档。
+pub(super) async fn web_state(inner: &CoreInner) -> Result<WebStateDocument, CoreError> {
+    let home = inner.config().home.clone();
+    tokio::task::spawn_blocking(move || crate::config::web::load(&home))
+        .await
+        .map_err(|error| CoreError::Config(error.to_string()))?
+}
+
+/// `web/state_save`：版本戳乐观锁整文档写回。
+pub(super) async fn web_state_save(
+    inner: &CoreInner,
+    params: WebStateSaveParams,
+) -> Result<WebStateDocument, CoreError> {
+    let home = inner.config().home.clone();
+    tokio::task::spawn_blocking(move || crate::config::web::save(&home, params))
+        .await
+        .map_err(|error| CoreError::Config(error.to_string()))?
 }
 
 pub(super) async fn manage(

@@ -45,8 +45,8 @@ use crate::methods::{
     SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
     SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
     SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
-    SessionUsageResult, UnsteerParams, UnsteerResult, WorkspaceGitBranchParams,
-    WorkspaceGitBranchResult,
+    SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument, WebStateGetParams,
+    WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。
@@ -74,6 +74,24 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: crate::ConfigAction,
     ) -> impl Future<Output = Result<crate::ConfigReply, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 读取 webui 前端状态文档（`config_home()/web.toml`）。
+    fn web_state(
+        &self,
+        _ctx: RequestContext,
+        _params: WebStateGetParams,
+    ) -> impl Future<Output = Result<WebStateDocument, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 以 `revision` 乐观锁写回 webui 前端状态文档。
+    fn web_state_save(
+        &self,
+        _ctx: RequestContext,
+        _params: WebStateSaveParams,
+    ) -> impl Future<Output = Result<WebStateDocument, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

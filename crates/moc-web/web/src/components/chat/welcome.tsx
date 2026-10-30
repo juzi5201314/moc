@@ -18,6 +18,7 @@ import {
 import { useGitBranch } from "@/lib/use-git-branch";
 import { cn } from "@/lib/utils";
 import { setDraftCwd } from "@/store/lifecycle";
+import { usePrefs } from "@/store/prefs";
 import { allSessions, useSessions, workspaceName } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
@@ -35,7 +36,7 @@ function greeting(): string {
 function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
   const cwd = useTranscript((state) => state.bySession[sessionId]?.info.cwd ?? "");
   const branch = useGitBranch(cwd || undefined);
-  const workspaces = useSessions((state) => state.workspaces);
+  const workspaces = usePrefs((state) => state.workspaces);
   const list = useSessions((state) => state.list);
   const extra = useSessions((state) => state.extra);
   const isDraft = sessionId === "draft-session";
@@ -51,7 +52,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
         open: true,
         start: cwd || undefined,
         onPick: (path) => {
-          useSessions.getState().addWorkspace(path);
+          usePrefs.getState().addWorkspace(path);
           setDraftCwd(path);
         },
       },

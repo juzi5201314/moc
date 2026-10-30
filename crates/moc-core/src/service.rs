@@ -26,8 +26,8 @@ use moc_protocol::methods::{
     SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
     SessionSetAutonomyParams, SessionSetEngineParams, SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WorkspaceGitBranchParams,
-    WorkspaceGitBranchResult,
+    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
+    WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode};
 use parking_lot::RwLock;
@@ -784,6 +784,24 @@ impl AgentService for Core {
         params: moc_protocol::ConfigAction,
     ) -> Result<moc_protocol::ConfigReply, RpcError> {
         management::manage(&self.inner, ctx, params)
+            .await
+            .map_err(to_rpc)
+    }
+
+    async fn web_state(
+        &self,
+        _ctx: RequestContext,
+        _params: WebStateGetParams,
+    ) -> Result<WebStateDocument, RpcError> {
+        management::web_state(&self.inner).await.map_err(to_rpc)
+    }
+
+    async fn web_state_save(
+        &self,
+        _ctx: RequestContext,
+        params: WebStateSaveParams,
+    ) -> Result<WebStateDocument, RpcError> {
+        management::web_state_save(&self.inner, params)
             .await
             .map_err(to_rpc)
     }
@@ -1939,12 +1957,7 @@ impl AgentService for Core {
         )];
         members.extend(usage_descendants(&self.inner, &params.session_id).await?);
         for (source, session_id) in members {
-            let record = self
-                .inner
-                .sessions
-                .get(&session_id)
-                .await
-                .map_err(to_rpc)?;
+            let record = self.inner.sessions.get(&session_id).await.map_err(to_rpc)?;
             let state = record.state.lock().await;
             tool_ms = tool_ms.saturating_add(state.tool_ms);
             for (model, usage) in &state.model_usage {

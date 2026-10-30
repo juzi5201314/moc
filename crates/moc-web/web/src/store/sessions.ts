@@ -1,4 +1,5 @@
 // 会话列表与工作区：工作区 = 会话 cwd 分组，外加用户手动添加的目录。
+// 手动目录属于 webui 前端状态，存在 core 侧 web.toml，由 store/prefs.ts 维护。
 
 import { create } from "zustand";
 import { rpc } from "@/protocol/client";
@@ -9,31 +10,6 @@ import type {
   SessionListResult,
   SessionPermission,
 } from "@/protocol/types";
-
-const WORKSPACES_KEY = "dsh-workspaces-paths";
-
-function loadWorkspaces(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(WORKSPACES_KEY) ?? "[]");
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveWorkspaces(list: string[]): void {
-  try {
-    localStorage.setItem(WORKSPACES_KEY, JSON.stringify(list));
-  } catch {
-    // 写不进去时只影响下次打开
-  }
-}
-
-function cleanPath(cwd: string): string {
-  return cwd.trim().replace(/(.)[\\/]+$/, "$1");
-}
 
 /** 本地草稿会话上用户显式选过的参数；未选的项交给 core 默认值。 */
 export type DraftSession = {
@@ -57,23 +33,18 @@ export type SessionsState = {
   list: SessionInfo[];
   /** 已打开但还不在 session/list 里的会话（首条消息落盘前） */
   extra: Record<string, SessionInfo>;
-  /** 用户手动添加的工作区目录 */
-  workspaces: string[];
   /** 本地空白新会话（未发送首条提示前不写 core，离开即丢弃） */
   draftSession: DraftSession | null;
 
   refresh: () => Promise<void>;
   upsert: (info: SessionInfo) => void;
   remove: (id: string) => void;
-  addWorkspace: (cwd: string) => void;
-  removeWorkspace: (cwd: string) => void;
   setDraftSession: (draft: DraftSession | null) => void;
 };
 
 export const useSessions = create<SessionsState>()((set, get) => ({
   list: [],
   extra: {},
-  workspaces: loadWorkspaces(),
   draftSession: null,
 
   refresh: async () => {
@@ -96,21 +67,6 @@ export const useSessions = create<SessionsState>()((set, get) => ({
     const { list, extra } = get();
     const { [id]: _removed, ...rest } = extra;
     set({ list: list.filter((session) => session.id !== id), extra: rest });
-  },
-
-  addWorkspace: (cwd) => {
-    const clean = cleanPath(cwd);
-    if (!clean || get().workspaces.includes(clean)) return;
-    const workspaces = [clean, ...get().workspaces];
-    saveWorkspaces(workspaces);
-    set({ workspaces });
-  },
-
-  removeWorkspace: (cwd) => {
-    const clean = cleanPath(cwd);
-    const workspaces = get().workspaces.filter((item) => item !== clean);
-    saveWorkspaces(workspaces);
-    set({ workspaces });
   },
 
   setDraftSession: (draft) => set({ draftSession: draft }),
