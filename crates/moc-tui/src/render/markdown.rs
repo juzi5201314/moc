@@ -166,7 +166,7 @@ pub fn render_markdown_with(
     for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
         if let Event::Start(Tag::CodeBlock(kind)) = &event {
             renderer.code_closed = match kind {
-                CodeBlockKind::Fenced(_) => fence_is_closed(source, range.end),
+                CodeBlockKind::Fenced(_) => fence_is_closed(source, range),
                 CodeBlockKind::Indented => true,
             };
         }
@@ -208,30 +208,27 @@ pub(crate) fn is_mermaid_fence_info(info: &str) -> bool {
 /// 围栏代码块的源码区间是否以闭合围栏结尾。
 ///
 /// pulldown 把未闭合的围栏收到文件末尾，并把空余量当成一次长度为 0 的闭合，
-/// 所以区间终点落在真正的 `` ``` `` / `~~~` 上才算闭合。对不齐时当成已闭合：
+/// 所以区间终点必须落在与开围栏同字符且不更短的真围栏上才算闭合——内容行
+/// 末尾的 `` ``` `` 在 ```` ```` ```` 块里并不算闭合。对不齐时当成已闭合：
 /// 画不出来会退回代码块，比把已写完的图留在源码里好。
-fn fence_is_closed(source: &str, end: usize) -> bool {
+fn fence_is_closed(source: &str, range: std::ops::Range<usize>) -> bool {
     let bytes = source.as_bytes();
-    if end == 0 || end > bytes.len() {
+    if range.end == 0 || range.end > bytes.len() || range.start > bytes.len() {
         return true;
     }
-    let mut index = end;
-    while index > 0 && bytes[index - 1] == b' ' {
+    let Some((fence, needed)) = fence_marker(&bytes[range.start..]) else {
+        return true;
+    };
+    let mut index = range.end;
+    while index > range.start && matches!(bytes[index - 1], b' ' | b'\t' | b'\r' | b'\n') {
         index -= 1;
-    }
-    if index < 3 {
-        return false;
-    }
-    let fence = bytes[index - 1];
-    if fence != b'`' && fence != b'~' {
-        return false;
     }
     let mut count = 0;
     while index > 0 && bytes[index - 1] == fence {
         index -= 1;
         count += 1;
     }
-    if count < 3 {
+    if count < needed {
         return false;
     }
     let mut spaces = 0;
@@ -243,6 +240,30 @@ fn fence_is_closed(source: &str, end: usize) -> bool {
         }
     }
     index == 0 || bytes[index - 1] == b'\n'
+}
+
+/// 行首的围栏标记：至多 3 格缩进后跟 `` ``` `` / `~~~` 连续段。
+/// 返回 `(字符, 长度)`；够不上围栏时返回 `None`。
+fn fence_marker(bytes: &[u8]) -> Option<(u8, usize)> {
+    let mut index = 0;
+    let mut spaces = 0;
+    while bytes.get(index) == Some(&b' ') {
+        index += 1;
+        spaces += 1;
+        if spaces > 3 {
+            return None;
+        }
+    }
+    let fence = *bytes.get(index)?;
+    if fence != b'`' && fence != b'~' {
+        return None;
+    }
+    let start = index;
+    while bytes.get(index) == Some(&fence) {
+        index += 1;
+    }
+    let len = index - start;
+    (len >= 3).then_some((fence, len))
 }
 
 /// `file://` 之后的部分 → 本地路径。
@@ -2212,6 +2233,31 @@ mod tests {
             settled.contains("Start") && !settled.contains("flowchart"),
             "{settled}"
         );
+
+        // CRLF 行尾与闭围栏后的尾随空白都算闭合。
+        let crlf = "```mermaid\r\nflowchart TD\r\n  A[Start] --> B[End]\r\n```\r\n";
+        let live_crlf = joined(
+            crlf,
+            RenderViews {
+                streaming: true,
+                ..RenderViews::default()
+            },
+        );
+        assert!(
+            live_crlf.contains("Start") && !live_crlf.contains("flowchart"),
+            "{live_crlf}"
+        );
+
+        // ``` 内容行在 ```` 块里不算闭合。
+        let nested = "````mermaid\nflowchart TD\n  A[Start] --> B[End]\n```\n";
+        let nested_live = joined(
+            nested,
+            RenderViews {
+                streaming: true,
+                ..RenderViews::default()
+            },
+        );
+        assert!(nested_live.contains("flowchart"), "{nested_live}");
     }
 
     /// 引用和列表里没有独立的图区，围栏保持代码块。

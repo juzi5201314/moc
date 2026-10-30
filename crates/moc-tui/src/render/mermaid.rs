@@ -58,6 +58,8 @@ struct GEdge {
     from: usize,
     to: usize,
     label: String,
+    /// `x`/`o`/`>` 箭头头或 `<` 反箭头算有向；裸的 `---`/`--`/`-.-` 只画连线。
+    directed: bool,
 }
 
 enum Diagram {
@@ -132,14 +134,23 @@ fn parse(source: &str) -> Option<Diagram> {
     let kind = header_kind(&header)?;
     match kind {
         Header::Flow(dir) | Header::State(dir) => {
+            let state = matches!(kind, Header::State(_));
             let mut graph = Graph {
                 dir,
                 nodes: Vec::new(),
                 edges: Vec::new(),
             };
             let mut ids: HashMap<String, usize> = HashMap::new();
+            // `end note` 收尾的多行 note 块（`note right of X` 不带冒号时开启）。
+            let mut in_note = false;
             for line in lines {
                 let line = line.trim();
+                if in_note {
+                    if line.to_ascii_lowercase().starts_with("end note") {
+                        in_note = false;
+                    }
+                    continue;
+                }
                 if line.is_empty() || skippable(line) {
                     continue;
                 }
@@ -147,9 +158,21 @@ fn parse(source: &str) -> Option<Diagram> {
                     graph.dir = dir;
                     continue;
                 }
-                if let Some((id, label)) = state_alias(line) {
-                    upsert(&mut graph, &mut ids, &id, &label, Shape::Box, true);
-                    continue;
+                if state {
+                    if let Some(rest) = strip_prefix_ignore_case(line, "note ") {
+                        if !rest.contains(':') {
+                            in_note = true;
+                        }
+                        continue;
+                    }
+                    if let Some(rest) = strip_prefix_ignore_case(line, "state ") {
+                        state_line(&mut graph, &mut ids, rest.trim());
+                        continue;
+                    }
+                    if let Some((id, desc)) = v1_description(line) {
+                        upsert(&mut graph, &mut ids, &id, &desc, Shape::Box, true);
+                        continue;
+                    }
                 }
                 for statement in split_semicolons(line) {
                     feed_statement(&mut graph, &mut ids, statement);
@@ -198,6 +221,7 @@ fn parse_dir(token: &str) -> Option<Dir> {
 fn skippable(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower == "end"
+        || lower.starts_with("end note")
         || lower.starts_with("classdef ")
         || lower.starts_with("class ")
         || lower.starts_with("style ")
@@ -207,23 +231,71 @@ fn skippable(line: &str) -> bool {
         || lower.starts_with("autonumber")
         || lower.starts_with("activate ")
         || lower.starts_with("deactivate ")
+        || lower.starts_with("acctitle")
+        || lower.starts_with("accdescr")
         || (lower.starts_with("state ") && lower.ends_with('{'))
 }
 
-fn state_alias(line: &str) -> Option<(String, String)> {
-    let rest = strip_prefix_ignore_case(line, "state ")?;
+/// `state` 关键字的单行写法：`state "长名" as id`、`state id <<构造型>>`、
+/// `state id : 描述`、裸 `state id`。复合块 `state X {` 已被 [`skippable`] 挡掉。
+fn state_line(graph: &mut Graph, ids: &mut HashMap<String, usize>, rest: &str) {
+    if let Some((id, label)) = state_alias(rest) {
+        upsert(graph, ids, &id, &label, Shape::Box, true);
+        return;
+    }
+    if let Some((id, stereo)) = rest.split_once("<<") {
+        let id = id.trim();
+        if !id.is_empty() {
+            let shape = if stereo.starts_with("choice") {
+                Shape::Diamond
+            } else {
+                Shape::Dot
+            };
+            upsert(graph, ids, id, id, shape, true);
+        }
+        return;
+    }
+    if let Some((id, desc)) = rest.split_once(':') {
+        let id = id.trim();
+        if !id.is_empty() {
+            upsert(graph, ids, id, desc.trim(), Shape::Box, true);
+        }
+        return;
+    }
+    // 只允许整段是单个 id 的裸写法，带箭头等残片的一律不碰。
+    if let Some((id, tail)) = read_id(rest)
+        && tail.trim().is_empty()
+    {
+        upsert(graph, ids, id, id, Shape::Box, true);
+    }
+}
+
+/// `rest` 是 `state ` 之后的部分。只认带引号的 `state "标签" as id`。
+fn state_alias(rest: &str) -> Option<(String, String)> {
     let rest = rest.trim_start();
-    let (label, after) = if let Some(stripped) = rest.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        (&stripped[..end], stripped[end + 1..].trim_start())
-    } else {
-        return None;
-    };
-    let id = after.strip_prefix("as ")?.trim();
+    let stripped = rest.strip_prefix('"')?;
+    let end = stripped.find('"')?;
+    let label = &stripped[..end];
+    let id = stripped[end + 1..].trim_start().strip_prefix("as ")?.trim();
     if id.is_empty() {
         None
     } else {
         Some((id.to_string(), label.to_string()))
+    }
+}
+
+/// stateDiagram v1 的 `id : 描述` 行（无箭头）：整行必须是 `id : 文本` 的形状。
+fn v1_description(line: &str) -> Option<(String, String)> {
+    let (id, desc) = line.split_once(':')?;
+    let desc = desc.trim();
+    if desc.is_empty() {
+        return None;
+    }
+    let (id, tail) = read_id(id.trim_start())?;
+    if tail.trim().is_empty() {
+        Some((id.to_string(), desc.to_string()))
+    } else {
+        None
     }
 }
 
@@ -235,7 +307,7 @@ fn feed_statement(graph: &mut Graph, ids: &mut HashMap<String, usize>, statement
     let Some(mut sources) = node_group(graph, ids, &mut rest) else {
         return;
     };
-    while let Some(mut label) = arrow(&mut rest) {
+    while let Some((mut label, reversed, directed)) = arrow(&mut rest) {
         let Some(targets) = node_group(graph, ids, &mut rest) else {
             break;
         };
@@ -244,10 +316,12 @@ fn feed_statement(graph: &mut Graph, ids: &mut HashMap<String, usize>, statement
         }
         for &from in &sources {
             for &to in &targets {
+                let (from, to) = if reversed { (to, from) } else { (from, to) };
                 graph.edges.push(GEdge {
                     from,
                     to,
                     label: label.clone(),
+                    directed,
                 });
             }
         }
@@ -301,12 +375,7 @@ fn read_id(text: &str) -> Option<(&str, &str)> {
         }
         if ch == '-' {
             let rest = &text[index..];
-            if rest.starts_with("-->")
-                || rest.starts_with("---")
-                || rest.starts_with("-.->")
-                || rest.starts_with("->")
-                || rest.starts_with("==>")
-            {
+            if rest.starts_with("--") || rest.starts_with("-.") || rest.starts_with("->") {
                 break;
             }
             end = index + ch.len_utf8();
@@ -323,11 +392,9 @@ fn read_id(text: &str) -> Option<(&str, &str)> {
 
 fn read_shape(text: &str) -> Option<(Shape, String, &str)> {
     if let Some(text) = text.strip_prefix("[[") {
-        let (inner, rest) = take_close(text, '[', ']')?;
-        let (inner, rest) = take_close(inner, '[', ']').unwrap_or((inner, rest));
-        // `[[label]]`：第一次 take 从 `label]]` 收到第一个 `]`，inner 是 label，rest 以 `]` 开头。
-        let rest = rest.strip_prefix(']').unwrap_or(rest);
-        return Some((Shape::Box, clean_label(inner), rest));
+        // `[[label]]` 子程序形：直接找成对的 `]]`。
+        let end = text.find("]]")?;
+        return Some((Shape::Box, clean_label(&text[..end]), &text[end + 2..]));
     }
     if text.starts_with("([") {
         let (inner, rest) = take_close(&text[1..], '[', ']')?;
@@ -441,51 +508,63 @@ fn upsert(
     index
 }
 
-fn arrow(rest: &mut &str) -> Option<String> {
+/// 返回值：`(标签, 反箭头, 有向)`。反箭头是 `<` 左箭头头（`A <-- B` 即 B→A）。
+fn arrow(rest: &mut &str) -> Option<(String, bool, bool)> {
     let trimmed = rest.trim_start();
-    let (label, consumed) = arrow_at(trimmed)?;
+    let (label, consumed, reversed, directed) = arrow_at(trimmed)?;
     *rest = &trimmed[consumed..];
-    Some(label)
+    Some((label, reversed, directed))
 }
 
-fn arrow_at(text: &str) -> Option<(String, usize)> {
-    if let Some(rest) = text.strip_prefix("-->") {
-        return Some(labeled_pipe(rest, 3));
-    }
-    if text.starts_with("-.->") {
-        return Some((String::new(), 4));
-    }
-    if let Some(rest) = text.strip_prefix("==>") {
-        return Some(labeled_pipe(rest, 3));
-    }
-    if text.starts_with("---") {
-        return Some((String::new(), 3));
-    }
-    if let Some(rest) = text.strip_prefix("--")
-        && let Some(index) = rest.find("-->")
-    {
-        let label = rest[..index].trim().to_string();
-        if !label.is_empty() {
-            return Some((label, 2 + index + 3));
+/// 链接 = 可选左箭头头（`<`/`x`/`o`）+ 至少两个 `-`/`=`/`.` 主体 +
+/// 可选右箭头头（`>`/`x`/`o`）+ 可选 `|label|`；`-- 标签 -->` 这类夹标签
+/// 写法要求第二段主体也以箭头头结尾。
+///
+/// 返回值：`(标签, 消费字节数, 反箭头, 有向)`。
+fn arrow_at(text: &str) -> Option<(String, usize, bool, bool)> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut reversed = false;
+    let mut directed = false;
+    match bytes.first() {
+        Some(b'<') => {
+            reversed = true;
+            directed = true;
+            i += 1;
         }
+        Some(b'x' | b'o') => i += 1,
+        _ => {}
     }
-    if let Some(rest) = text.strip_prefix("==")
-        && let Some(index) = rest.find("==>")
+    let left_marker = i != 0;
+    let body_start = i;
+    while matches!(bytes.get(i), Some(b'-' | b'=' | b'.')) {
+        i += 1;
+    }
+    if i - body_start < 2 {
+        return None;
+    }
+    let mut right_head = false;
+    if matches!(bytes.get(i), Some(b'>' | b'x' | b'o')) {
+        directed = true;
+        right_head = true;
+        i += 1;
+    }
+    let rest = &text[i..];
+    if rest.trim_start().starts_with('|') {
+        let (label, consumed) = labeled_pipe(rest, i);
+        return Some((label, consumed, reversed, directed));
+    }
+    // 夹标签只在裸主体后算：`--> B --> C` 是 A→B→C 链，`-- B --> C` 才是
+    // 带标签的 A→C。
+    if !left_marker && !right_head
+        && let Some((label, consumed)) = label_then_link(rest, i)
     {
-        let label = rest[..index].trim().to_string();
-        if !label.is_empty() {
-            return Some((label, 2 + index + 3));
-        }
+        return Some((label, consumed, reversed, true));
     }
-    if let Some(rest) = text.strip_prefix("-.")
-        && let Some(index) = rest.find(".->")
-    {
-        let label = rest[..index].trim().to_string();
-        return Some((label, 2 + index + 3));
-    }
-    None
+    Some((String::new(), i, reversed, directed))
 }
 
+/// `|label|` 跟在箭头头之后。`consumed` 以 `base` 为起点累计。
 fn labeled_pipe(rest: &str, base: usize) -> (String, usize) {
     let trimmed = rest.trim_start();
     let spaces = rest.len() - trimmed.len();
@@ -495,6 +574,42 @@ fn labeled_pipe(rest: &str, base: usize) -> (String, usize) {
         return (inner[..end].to_string(), base + spaces + 1 + end + 1);
     }
     (String::new(), base)
+}
+
+/// `-- 标签 -->` / `-. 标签 .->`：第一段主体之后以空白开头时，找下一段
+/// `[-=.]{2,}` 主体，只有它紧跟箭头头（`>`/`x`/`o`）才算夹标签链接；
+/// 否则交给调用方按普通无标签链接处理。
+fn label_then_link(rest: &str, base: usize) -> Option<(String, usize)> {
+    if !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    for (off, ch) in rest.char_indices() {
+        if !matches!(ch, '-' | '=' | '.') {
+            continue;
+        }
+        let mut end = off + ch.len_utf8();
+        while let Some(next) = rest[end..].chars().next() {
+            if !matches!(next, '-' | '=' | '.') {
+                break;
+            }
+            end += next.len_utf8();
+        }
+        if end - off < 2 {
+            continue;
+        }
+        let Some(head) = rest[end..].chars().next() else {
+            continue;
+        };
+        if !matches!(head, '>' | 'x' | 'o') {
+            continue;
+        }
+        let label = rest[..off].trim();
+        if label.is_empty() {
+            return None;
+        }
+        return Some((label.to_string(), base + end + head.len_utf8()));
+    }
+    None
 }
 
 fn colon_label(rest: &mut &str) -> String {
@@ -624,14 +739,18 @@ fn is_group_open(line: &str) -> bool {
 /// `(from, to, text, dashed, reverse)`。
 fn parse_message(line: &str) -> Option<(&str, &str, String, bool, bool)> {
     const TOKENS: &[(&str, bool, bool)] = &[
+        ("<<-->>", true, false),
+        ("<<->>", false, false),
         ("-->>", true, false),
         ("->>", false, false),
+        ("--x", true, false),
         ("--)", true, false),
         ("-->", true, false),
+        ("-x", false, false),
+        ("-)", true, false),
         ("<<--", true, true),
         ("<<-", false, true),
         ("->", false, false),
-        ("-)", true, false),
     ];
     let mut best: Option<(usize, &str, bool, bool)> = None;
     for &(token, dashed, reverse) in TOKENS {
@@ -891,12 +1010,13 @@ fn finish_graph(
         let to = &places[edge.to];
         let adjacent = rank[edge.from].abs_diff(rank[edge.to]) == 1 && edge.from != edge.to;
         if adjacent && can_route(from, to) {
-            routed.push((edge.from, edge.to));
+            routed.push((edge.from, edge.to, edge.directed));
             if !edge.label.is_empty() {
                 footers.push(link_text(
                     &graph.nodes[edge.from].label,
                     &graph.nodes[edge.to].label,
                     &edge.label,
+                    edge.directed,
                 ));
             }
         } else {
@@ -904,6 +1024,7 @@ fn finish_graph(
                 &graph.nodes[edge.from].label,
                 &graph.nodes[edge.to].label,
                 &edge.label,
+                edge.directed,
             ));
         }
     }
@@ -923,8 +1044,8 @@ fn finish_graph(
         return None;
     }
     let mut grid = Grid::new(width, height);
-    for &(from, to) in &routed {
-        route(&mut grid, &places[from], &places[to]);
+    for &(from, to, directed) in &routed {
+        route(&mut grid, &places[from], &places[to], directed);
     }
     for place in places {
         for (row, line) in place.lines.iter().enumerate() {
@@ -966,29 +1087,36 @@ fn can_route(from: &Place, to: &Place) -> bool {
     below || above || right || left
 }
 
-fn route(grid: &mut Grid, from: &Place, to: &Place) {
+fn route(grid: &mut Grid, from: &Place, to: &Place, directed: bool) {
     let x0 = from.x + from.w / 2;
     let x1 = to.x + to.w / 2;
     if from.y + from.h < to.y && to.y > 0 {
-        route_south(grid, x0, from.y + from.h, x1, to.y - 1);
+        route_south(grid, x0, from.y + from.h, x1, to.y - 1, directed);
         return;
     }
     if to.y + to.h < from.y {
-        route_north(grid, x0, from.y, x1, to.y + to.h);
+        route_north(grid, x0, from.y, x1, to.y + to.h, directed);
         return;
     }
     let y0 = from.y + from.h / 2;
     let y1 = to.y + to.h / 2;
     if from.x + from.w < to.x && to.x > 0 {
-        route_east(grid, from.x + from.w, y0, to.x - 1, y1);
+        route_east(grid, from.x + from.w, y0, to.x - 1, y1, directed);
         return;
     }
     if to.x + to.w < from.x && from.x > 0 {
-        route_west(grid, from.x - 1, y0, to.x + to.w, y1);
+        route_west(grid, from.x - 1, y0, to.x + to.w, y1, directed);
     }
 }
 
-fn route_south(grid: &mut Grid, x0: usize, y_start: usize, x1: usize, y_arrow: usize) {
+fn route_south(
+    grid: &mut Grid,
+    x0: usize,
+    y_start: usize,
+    x1: usize,
+    y_arrow: usize,
+    directed: bool,
+) {
     if y_arrow <= y_start {
         return;
     }
@@ -997,10 +1125,21 @@ fn route_south(grid: &mut Grid, x0: usize, y_start: usize, x1: usize, y_arrow: u
     if x0 != x1 {
         grid.hline(x0, x1, horiz);
     }
-    grid.arrow(x1, y_arrow, ARROW_S);
+    if directed {
+        grid.arrow(x1, y_arrow, ARROW_S);
+    } else {
+        grid.vline(x1, horiz, y_arrow);
+    }
 }
 
-fn route_north(grid: &mut Grid, x0: usize, y_source: usize, x1: usize, y_arrow: usize) {
+fn route_north(
+    grid: &mut Grid,
+    x0: usize,
+    y_source: usize,
+    x1: usize,
+    y_arrow: usize,
+    directed: bool,
+) {
     if y_arrow >= y_source || y_source == 0 {
         return;
     }
@@ -1008,36 +1147,61 @@ fn route_north(grid: &mut Grid, x0: usize, y_source: usize, x1: usize, y_arrow: 
     if horiz < y_source {
         grid.vline(x0, horiz, y_source - 1);
     }
+    let cross = horiz.min(y_source - 1);
     if x0 != x1 {
-        grid.hline(x0, x1, horiz.min(y_source - 1));
+        grid.hline(x0, x1, cross);
     }
-    grid.arrow(x1, y_arrow, ARROW_N);
+    if directed {
+        grid.arrow(x1, y_arrow, ARROW_N);
+    } else {
+        grid.vline(x1, y_arrow, cross);
+    }
 }
 
-fn route_east(grid: &mut Grid, x_from: usize, y_from: usize, x_arrow: usize, y_to: usize) {
+fn route_east(
+    grid: &mut Grid,
+    x_from: usize,
+    y_from: usize,
+    x_arrow: usize,
+    y_to: usize,
+    directed: bool,
+) {
     if x_from >= x_arrow {
         return;
     }
+    let stop = if directed { x_arrow - 1 } else { x_arrow };
     if y_from == y_to {
-        grid.hline(x_from, x_arrow - 1, y_from);
+        grid.hline(x_from, stop, y_from);
     } else {
         grid.vline(x_from, y_from, y_to);
-        grid.hline(x_from, x_arrow - 1, y_to);
+        grid.hline(x_from, stop, y_to);
     }
-    grid.arrow(x_arrow, y_to, ARROW_E);
+    if directed {
+        grid.arrow(x_arrow, y_to, ARROW_E);
+    }
 }
 
-fn route_west(grid: &mut Grid, x_from: usize, y_from: usize, x_arrow: usize, y_to: usize) {
+fn route_west(
+    grid: &mut Grid,
+    x_from: usize,
+    y_from: usize,
+    x_arrow: usize,
+    y_to: usize,
+    directed: bool,
+) {
     if x_arrow >= x_from {
         return;
     }
+    let start = if directed { x_arrow + 1 } else { x_arrow };
     if y_from == y_to {
-        grid.hline(x_arrow + 1, x_from, y_from);
+        grid.hline(start, x_from, y_from);
     } else {
         grid.vline(x_from, y_from, y_to);
-        grid.hline(x_arrow + 1, x_from, y_to);
+        grid.hline(start, x_from, y_to);
     }
-    grid.arrow(x_arrow, y_to, ARROW_W);
+    if directed {
+        grid.arrow(x_arrow, y_to, ARROW_W);
+    }
 }
 
 fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
@@ -1062,7 +1226,8 @@ fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
         y += h + ROW_GAP;
     }
     let rank = rank_of(ranks);
-    let mut linked = vec![false; order.len().saturating_sub(1)];
+    // `Some(directed)` 标记该间隙要画连线：有向补箭头，无向补竖线。
+    let mut linked = vec![None; order.len().saturating_sub(1)];
     let mut footers = Vec::new();
     for edge in &graph.edges {
         let from_at = order.iter().position(|&id| id == edge.from);
@@ -1073,13 +1238,14 @@ fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
         };
         if consecutive && rank[edge.from] <= rank[edge.to] {
             if let Some(from_at) = from_at {
-                linked[from_at] = true;
+                linked[from_at] = Some(edge.directed);
             }
             if !edge.label.is_empty() {
                 footers.push(link_text(
                     &graph.nodes[edge.from].label,
                     &graph.nodes[edge.to].label,
                     &edge.label,
+                    edge.directed,
                 ));
             }
         } else {
@@ -1087,6 +1253,7 @@ fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
                 &graph.nodes[edge.from].label,
                 &graph.nodes[edge.to].label,
                 &edge.label,
+                edge.directed,
             ));
         }
     }
@@ -1107,12 +1274,16 @@ fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
             grid.put_str(place.x, place.y + row, line, Ink::Border);
             paint_label(&mut grid, place.x, place.y + row, line);
         }
-        if linked.get(index).copied().unwrap_or(false) {
+        if let Some(directed) = linked.get(index).copied().flatten() {
             let x = place.x + place.w / 2;
             let y = place.y + place.h;
             if y + 1 < grid.h {
-                grid.vline(x, y, y);
-                grid.arrow(x, y + 1, ARROW_S);
+                if directed {
+                    grid.vline(x, y, y);
+                    grid.arrow(x, y + 1, ARROW_S);
+                } else {
+                    grid.vline(x, y, y + 1);
+                }
             }
         }
     }
@@ -1126,11 +1297,12 @@ fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
     grid
 }
 
-fn link_text(from: &str, to: &str, label: &str) -> String {
+fn link_text(from: &str, to: &str, label: &str, directed: bool) -> String {
+    let mark = if directed { "→" } else { "—" };
     if label.is_empty() {
-        format!("  {from} → {to}")
+        format!("  {from} {mark} {to}")
     } else {
-        format!("  {from} → {to}  {label}")
+        format!("  {from} {mark} {to}  {label}")
     }
 }
 
@@ -1647,5 +1819,90 @@ mod tests {
         for label in ["Alpha", "Beta", "Gamma", "Delta"] {
             assert!(picture.contains(label), "{label} missing in {picture}");
         }
+    }
+
+    /// `[[label]]` 子程序形曾经整条边被丢：节点、边、目标都得在。
+    #[test]
+    fn subroutine_shape_keeps_label_and_edge() {
+        let picture = draw("flowchart TD\n  A[[sub]] --> B\n", 40).expect("子程序形");
+        assert!(picture.contains("sub"), "{picture}");
+        assert!(picture.contains('B'), "{picture}");
+        assert!(picture.contains('▼'), "{picture}");
+    }
+
+    /// 长链接、x/o 标记头、反箭头、无向链接、`---|标签|` 都要成边。
+    #[test]
+    fn link_variants_reach_their_targets() {
+        for (link, arrowed) in [
+            ("---->", true),
+            ("--o", true),
+            ("--x", true),
+            ("<--", true),
+            ("---", false),
+            ("-----", false),
+            ("-.-", false),
+        ] {
+            let source = format!("flowchart TD\n  A {link} B\n");
+            let picture = draw(&source, 40).unwrap_or_else(|| panic!("{link} 应能画"));
+            assert!(picture.contains('A'), "{link}: {picture}");
+            assert!(picture.contains('B'), "{link}: {picture}");
+            assert_eq!(
+                picture.contains('▼'),
+                arrowed,
+                "{link} 的有向性与箭头不符: {picture}"
+            );
+        }
+        let labeled = draw("flowchart TD\n  A ---|lbl| B\n", 40).expect("---|lbl|");
+        assert!(labeled.contains("lbl"), "{labeled}");
+        assert!(!labeled.contains('▼'), "{labeled}");
+    }
+
+    /// `A --> B --> C` 是链不是带标签边；`-- B --> C` 才是标签。
+    #[test]
+    fn chains_and_inline_labels_do_not_collide() {
+        let chain = draw("flowchart TD\n  A --> B --> C\n", 40).expect("链");
+        assert!(chain.contains('B'), "{chain}");
+
+        // 夹标签边照常画出，标签进 footer；`yes` 不能成为节点。
+        let labeled = draw("flowchart TD\n  A -- yes --> B\n", 40).expect("夹标签");
+        assert!(labeled.contains("yes"), "{labeled}");
+        assert!(!labeled.contains("│yes│"), "{labeled}");
+    }
+
+    /// `state` 别名、构造型、描述行和 `note` 都不能产生幻影节点。
+    #[test]
+    fn state_lines_do_not_make_phantom_nodes() {
+        let source = "stateDiagram-v2\n  state c <<choice>>\n  state idle : waiting\n  note right of idle : hi\n  [*] --> c\n  c --> idle\n";
+        let picture = draw(source, 40).expect("状态行");
+        assert!(picture.contains('c'), "{picture}");
+        assert!(picture.contains("waiting"), "{picture}");
+        assert!(!picture.contains("state"), "{picture}");
+        assert!(!picture.contains("note"), "{picture}");
+
+        let multi = "stateDiagram-v2\n  note right of Idle\n    长说明\n  end note\n  [*] --> Idle\n";
+        let picture = draw(multi, 40).expect("多行 note");
+        assert!(picture.contains("Idle"), "{picture}");
+        assert!(!picture.contains("note"), "{picture}");
+    }
+
+    /// stateDiagram v1 的 `id : 描述` 把描述当标签。
+    #[test]
+    fn v1_colon_description_labels_the_node() {
+        let picture = draw("stateDiagram\n  s1 : waiting\n  [*] --> s1\n", 40).expect("v1 描述");
+        assert!(picture.contains("waiting"), "{picture}");
+    }
+
+    /// `-x`、`<<->>` 这些消息箭头不能整条丢掉或造出怪 actor。
+    #[test]
+    fn sequence_extra_arrow_tokens_parse() {
+        let source = "sequenceDiagram\n  A -x B: ping\n  C <<->> D: pong\n";
+        let picture = draw(source, 60).expect("额外箭头");
+        for name in ["A", "B", "C", "D"] {
+            assert!(picture.contains(name), "{name} missing in {picture}");
+        }
+        assert!(picture.contains("ping"), "{picture}");
+        assert!(picture.contains("pong"), "{picture}");
+        assert!(!picture.contains(">>"), "{picture}");
+        assert!(!picture.contains("<<"), "{picture}");
     }
 }
