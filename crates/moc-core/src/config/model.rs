@@ -87,6 +87,19 @@ pub fn is_fusion_selector(selector: &str) -> bool {
     selector == FUSION_ALIAS || selector.starts_with(FUSION_PREFIX)
 }
 
+/// 已持久化的 selector 字符串 → 真实发请求的 selector：规范 Fusion 形式
+/// 返回 lead 段，普通 selector 原样返回。
+///
+/// 与 [`crate::ResolvedModel::actual_selector`] 对应：后者作用于已解析的
+/// `ResolvedModel`，本函数作用于未解析的字符串（如 transcript 里落盘的
+/// `model` 字段）。
+pub fn request_selector(selector: &str) -> &str {
+    match selector.strip_prefix(FUSION_PREFIX) {
+        Some(rest) => rest.split_once('+').map_or(rest, |(lead, _)| lead),
+        None => selector,
+    }
+}
+
 /// `[models.fusion]`：别名 `fusion` 展开用的默认组合；两侧都为空表示未配置。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -883,5 +896,15 @@ mod tests {
         assert_eq!(selector.model_id, "ag/gpt-5.6-sol");
         assert_eq!(selector.level, Some(ThinkingLevel::Xhigh));
         assert!(ModelSelector::parse("provider/model:invalid").is_err());
+    }
+
+    #[test]
+    fn request_selector_maps_canonical_fusion_to_the_lead() {
+        // 规范形 → lead 段（含等级后缀），普通 selector 与别名原样。
+        assert_eq!(request_selector("fusion:p/a+p/b"), "p/a");
+        assert_eq!(request_selector("fusion:p/a:high+p/b"), "p/a:high");
+        assert_eq!(request_selector("fusion:p/a"), "p/a");
+        assert_eq!(request_selector("p/a"), "p/a");
+        assert_eq!(request_selector("fusion"), "fusion");
     }
 }

@@ -22,7 +22,10 @@ pub(crate) fn available(
     config.compaction.remote.enabled
         && model.remote_compaction
         && model.llm.protocol == Protocol::OpenAiResponses
-        && !inner.remote_unavailable.read().contains(&model.selector)
+        && !inner
+            .remote_unavailable
+            .read()
+            .contains(model.actual_selector())
 }
 
 pub(crate) async fn compact(
@@ -120,7 +123,7 @@ pub(crate) async fn compact(
                 inner
                     .remote_unavailable
                     .write()
-                    .insert(model.selector.clone());
+                    .insert(model.actual_selector().to_owned());
             }
             return Err(error.into());
         }
