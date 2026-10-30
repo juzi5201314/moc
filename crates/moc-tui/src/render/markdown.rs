@@ -2,7 +2,8 @@
 //!
 //! inline 内容在缓冲区里以「片段序列（文本 + 已合成样式）」积累，段落 /
 //! 标题结束时统一按显示宽度换行产出（续行悬挂缩进）；代码块整块交给
-//! syntect 高亮；表格按内容定列宽，单元格折行，表头/行之间用细线分隔。
+//! syntect 高亮。`mermaid` 围栏画成字符图，`svg` 围栏在有图形协议时换成位图。
+//! 表格按内容定列宽，单元格折行，表头/行之间用细线分隔。
 //!
 //! 顶层表格下方会挂一个可点击入口（`▸ 可视化图表`）：点击后在表格下方追加
 //! 像素图占位行（真正的位图由 `render::graphics` 在帧后贴上），再点
@@ -144,6 +145,7 @@ pub fn render_markdown_with(
         code_info: None,
         code_buf: String::new(),
         in_code: false,
+        code_closed: true,
         table: None,
         table_cell: Vec::new(),
         in_table_head: false,
@@ -161,7 +163,13 @@ pub fn render_markdown_with(
     };
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    for event in Parser::new_ext(source, options) {
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+        if let Event::Start(Tag::CodeBlock(kind)) = &event {
+            renderer.code_closed = match kind {
+                CodeBlockKind::Fenced(_) => fence_is_closed(source, range.end),
+                CodeBlockKind::Indented => true,
+            };
+        }
         renderer.handle(event);
     }
     renderer.finish()
@@ -188,6 +196,53 @@ pub(crate) fn is_svg_fence_info(info: &str) -> bool {
     info.split_whitespace()
         .next()
         .is_some_and(|tag| tag.eq_ignore_ascii_case("svg"))
+}
+
+/// 代码块 info 串是否声明了 mermaid。判定口径与 [`is_svg_fence_info`] 相同。
+pub(crate) fn is_mermaid_fence_info(info: &str) -> bool {
+    info.split_whitespace()
+        .next()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("mermaid"))
+}
+
+/// 围栏代码块的源码区间是否以闭合围栏结尾。
+///
+/// pulldown 把未闭合的围栏收到文件末尾，并把空余量当成一次长度为 0 的闭合，
+/// 所以区间终点落在真正的 `` ``` `` / `~~~` 上才算闭合。对不齐时当成已闭合：
+/// 画不出来会退回代码块，比把已写完的图留在源码里好。
+fn fence_is_closed(source: &str, end: usize) -> bool {
+    let bytes = source.as_bytes();
+    if end == 0 || end > bytes.len() {
+        return true;
+    }
+    let mut index = end;
+    while index > 0 && bytes[index - 1] == b' ' {
+        index -= 1;
+    }
+    if index < 3 {
+        return false;
+    }
+    let fence = bytes[index - 1];
+    if fence != b'`' && fence != b'~' {
+        return false;
+    }
+    let mut count = 0;
+    while index > 0 && bytes[index - 1] == fence {
+        index -= 1;
+        count += 1;
+    }
+    if count < 3 {
+        return false;
+    }
+    let mut spaces = 0;
+    while index > 0 && bytes[index - 1] == b' ' {
+        index -= 1;
+        spaces += 1;
+        if spaces > 3 {
+            return false;
+        }
+    }
+    index == 0 || bytes[index - 1] == b'\n'
 }
 
 /// `file://` 之后的部分 → 本地路径。
@@ -291,6 +346,8 @@ struct MdRenderer<'a> {
     code_buf: String,
     /// 是否位于代码块内（缩进代码块无 info 串，需与 [`Self::code_info`] 分开记）。
     in_code: bool,
+    /// 当前围栏是否已经闭合。流式输出里未闭合的 mermaid 先保持代码块。
+    code_closed: bool,
     table: Option<TableAcc>,
     table_cell: Vec<Run>,
     in_table_head: bool,
@@ -734,6 +791,25 @@ impl<'a> MdRenderer<'a> {
         self.emit_placeholder(&key, state)
     }
 
+    /// mermaid 代码块：画成字符图。引用、列表、未闭合的流式围栏和认不出的图种留下代码块。
+    fn place_mermaid(&mut self, info: &str, code: &str) -> bool {
+        if self.quote_depth > 0 || !self.list_stack.is_empty() {
+            return false;
+        }
+        if !is_mermaid_fence_info(info) {
+            return false;
+        }
+        if self.views.streaming && !self.code_closed {
+            return false;
+        }
+        let Some(lines) = super::mermaid::render(code, self.width, self.theme) else {
+            return false;
+        };
+        self.out.extend(lines);
+        self.out.push(Line::from(String::new()));
+        true
+    }
+
     /// SVG 代码块：整块换成位图占位行（比一屏坐标文本有用得多）。
     fn place_svg(&mut self, info: &str, code: &str) -> bool {
         if self.quote_depth > 0 || !self.list_stack.is_empty() {
@@ -1070,7 +1146,7 @@ impl<'a> MdRenderer<'a> {
         let info = self.code_info.take().unwrap_or_default();
         let code = std::mem::take(&mut self.code_buf);
 
-        if self.place_svg(&info, &code) {
+        if self.place_mermaid(&info, &code) || self.place_svg(&info, &code) {
             return;
         }
         let highlighted = highlight::highlight(&info, &code);
@@ -2080,5 +2156,77 @@ mod tests {
                 .any(|line| line.contains("<svg")),
             "未就绪时保留代码块"
         );
+    }
+
+    fn joined(source: &str, views: RenderViews<'_>) -> String {
+        text(&render(source, 40, views).lines).join("\n")
+    }
+
+    /// 闭合的流程图画成字符图；类图仍是代码块。
+    #[test]
+    fn mermaid_fence_draws_flowchart() {
+        let source = "```mermaid\nflowchart TD\n  A[Start] --> B[End]\n```\n";
+        let picture = joined(source, RenderViews::default());
+        assert!(
+            picture.contains("Start") && picture.contains("End"),
+            "{picture}"
+        );
+        assert!(picture.contains('▼'), "{picture}");
+        assert!(!picture.contains("flowchart"), "{picture}");
+
+        let class = joined(
+            "```mermaid\nclassDiagram\n  Animal <|-- Duck\n```\n",
+            RenderViews::default(),
+        );
+        assert!(class.contains("classDiagram"), "{class}");
+    }
+
+    /// 流式输出里未闭合的围栏保持源码；收尾后即使缺闭合围栏也尝试画。
+    #[test]
+    fn streaming_mermaid_stays_code_until_the_fence_closes() {
+        let open = "```mermaid\nflowchart TD\n  A[Start] --> B[End]\n";
+        let streaming = joined(
+            open,
+            RenderViews {
+                streaming: true,
+                ..RenderViews::default()
+            },
+        );
+        assert!(streaming.contains("flowchart"), "{streaming}");
+
+        let closed = "```mermaid\nflowchart TD\n  A[Start] --> B[End]\n```\n后面还有字";
+        let live = joined(
+            closed,
+            RenderViews {
+                streaming: true,
+                ..RenderViews::default()
+            },
+        );
+        assert!(
+            live.contains("Start") && !live.contains("flowchart"),
+            "{live}"
+        );
+
+        let settled = joined(open, RenderViews::default());
+        assert!(
+            settled.contains("Start") && !settled.contains("flowchart"),
+            "{settled}"
+        );
+    }
+
+    /// 引用和列表里没有独立的图区，围栏保持代码块。
+    #[test]
+    fn mermaid_in_quote_or_list_stays_code() {
+        let quoted = joined(
+            "> ```mermaid\n> flowchart TD\n>   A[Start] --> B[End]\n> ```\n",
+            RenderViews::default(),
+        );
+        assert!(quoted.contains("flowchart"), "{quoted}");
+
+        let listed = joined(
+            "- ```mermaid\n  flowchart TD\n  A[Start] --> B[End]\n  ```\n",
+            RenderViews::default(),
+        );
+        assert!(listed.contains("flowchart"), "{listed}");
     }
 }

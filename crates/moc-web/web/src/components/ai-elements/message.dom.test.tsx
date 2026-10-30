@@ -1,6 +1,32 @@
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { MessageResponse } from "./message";
+
+class ImmediateIntersectionObserver {
+  readonly callback: IntersectionObserverCallback;
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+  }
+  observe() {
+    this.callback(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+  root = null;
+  rootMargin = "";
+  thresholds = [];
+}
+
+if (!("IntersectionObserver" in globalThis)) {
+  globalThis.IntersectionObserver =
+    ImmediateIntersectionObserver as unknown as typeof IntersectionObserver;
+}
 
 const MD = `# 标题一
 
@@ -55,4 +81,58 @@ describe("MessageResponse GitHub 风格渲染", () => {
     // 无行号 gutter 类
     expect(container.querySelector('[class*="counter(line)"]')).toBeNull();
   });
+
+  it("闭合的 svg 围栏内联成图，坏围栏留在代码块", async () => {
+    const ok = [
+      "```svg",
+      '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="var(--fg)"/><script>alert(1)</script></svg>',
+      "```",
+    ].join("\n");
+    const { container } = render(<MessageResponse>{ok}</MessageResponse>);
+    await waitFor(() => {
+      expect(container.querySelector("svg.moc-svg-figure")).not.toBeNull();
+    });
+
+    const svg = container.querySelector("svg.moc-svg-figure");
+    expect(svg?.querySelector("script")).toBeNull();
+    expect(container.textContent).not.toContain("alert");
+    expect(svg?.querySelector("rect")?.getAttribute("fill")).toBe("#171717");
+
+    const linked = [
+      "```svg",
+      '<svg xmlns="http://www.w3.org/2000/svg"><use href="#mark"/><image href="data:image/png;base64,aaaa"/></svg>',
+      "```",
+    ].join("\n");
+    const linkedView = render(<MessageResponse>{linked}</MessageResponse>);
+    await waitFor(() => {
+      expect(linkedView.container.querySelector("svg.moc-svg-figure")).not.toBeNull();
+    });
+    const figure = linkedView.container.querySelector("svg.moc-svg-figure");
+    expect(figure?.querySelector("use")?.getAttribute("href")).toBe("#mark");
+    const image = figure?.querySelector("image");
+    const dataHref = image?.getAttribute("href") ?? image?.getAttribute("xlink:href");
+    expect(dataHref).toContain("data:image/png;base64,aaaa");
+    expect(figure?.innerHTML).not.toContain("https://");
+
+    const bad = render(<MessageResponse>{"```svg\nnot svg\n```"}</MessageResponse>);
+    await waitFor(() => {
+      expect(bad.container.querySelector('[data-streamdown="code-block"]')).not.toBeNull();
+    });
+    expect(bad.container.querySelector("svg.moc-svg-figure")).toBeNull();
+  });
+
+  it("mermaid 解析失败时显示源码，不画红框", async () => {
+    const { container } = render(
+      <MessageResponse>{"```mermaid\nflowchart TD\n  A-->B\n```"}</MessageResponse>,
+    );
+    await waitFor(
+      () => {
+        expect(
+          container.querySelector('[data-streamdown="mermaid"], .moc-mermaid-fallback'),
+        ).not.toBeNull();
+      },
+      { timeout: 8000 },
+    );
+    expect(container.querySelector(".bg-red-50")).toBeNull();
+  }, 15000);
 });

@@ -534,6 +534,40 @@
   overflow-y: hidden;
 }
 
+.moc-prose .moc-svg-figure {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em 0;
+  border-radius: var(--radius-xl);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.moc-prose [data-streamdown="mermaid"] {
+  margin: 1em 0;
+  max-height: none;
+  background: transparent;
+}
+
+.moc-prose [data-streamdown="mermaid"] svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.moc-prose .moc-mermaid-fallback {
+  margin: 1em 0;
+  padding: 14px 18px;
+  overflow-x: auto;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
 /* 放在 prose 规则末尾：同等特异性下靠源码顺序压过各块级元素自身的上下外边距。 */
 .moc-prose > :first-child {
   margin-top: 0;

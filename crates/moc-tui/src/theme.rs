@@ -141,6 +141,10 @@ pub struct RawPalette {
     pub accent_success: [u8; 3],
     pub accent_warning: [u8; 3],
     pub accent_error: [u8; 3],
+    /// 内容边框。SVG 的 `var(--border)` 用它，字符图框线用量化后的同名槽。
+    pub border: [u8; 3],
+    /// 次级灰，与 [`Theme::gray`] 同源。字符图箭头用量化后的槽。
+    pub gray: [u8; 3],
 }
 
 impl RawPalette {
@@ -157,6 +161,8 @@ impl RawPalette {
             accent_success: [0; 3],
             accent_warning: [0; 3],
             accent_error: [0; 3],
+            border: [0; 3],
+            gray: [0; 3],
         }
     }
 }
@@ -216,6 +222,12 @@ macro_rules! raw_palette_field {
     };
     ($raw:ident, accent_error, ($r:expr, $g:expr, $b:expr)) => {
         $raw.accent_error = [$r, $g, $b];
+    };
+    ($raw:ident, border, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.border = [$r, $g, $b];
+    };
+    ($raw:ident, gray, ($r:expr, $g:expr, $b:expr)) => {
+        $raw.gray = [$r, $g, $b];
     };
     ($raw:ident, chart_1, ($r:expr, $g:expr, $b:expr)) => {
         $raw.chart[0] = [$r, $g, $b];
