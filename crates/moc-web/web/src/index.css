@@ -56,6 +56,8 @@
   --surface-hover: rgba(23, 23, 23, 0.04);
   --text-tertiary: #9a9aa0;
   --code-bg: #f7f7f8;
+  /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
+  --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
   --elevation-card:
     0 0 0 1px rgba(23, 23, 23, 0.07), 0 1px 2px rgba(23, 23, 23, 0.04),
@@ -109,6 +111,7 @@
   --surface-hover: rgba(255, 255, 255, 0.045);
   --text-tertiary: #6e6e76;
   --code-bg: #1b1b1e;
+  --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
   --elevation-card:
     0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.3),
@@ -301,8 +304,8 @@
 }
 
 /* ---------------- Markdown 排版 ----------------
-   Streamdown 自带一套偏「文档站」的排版（3xl 标题、list-inside、带边框的代码卡）。
-   对话流需要的是紧凑、行宽受控的阅读排版，这里按 data-streamdown 标记统一收敛。 */
+   收敛为 GitHub markdown-body 观感：h1/h2 下边框、无边框代码块、
+   全边框单元格 + 斑马纹表格、无描边行内代码，按 data-streamdown 标记统一收敛。 */
 .moc-prose {
   font-size: var(--moc-prose-size, 14.5px);
   line-height: var(--moc-prose-leading, 1.72);
@@ -324,26 +327,38 @@
 .moc-prose [data-streamdown="heading-4"],
 .moc-prose [data-streamdown="heading-5"],
 .moc-prose [data-streamdown="heading-6"] {
-  margin: 1.5em 0 0.5em;
+  margin: 1.4em 0 0.6em;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.3;
   letter-spacing: -0.01em;
   color: var(--foreground);
 }
 
+/* GitHub 标志性的 h1/h2 下边框 */
+.moc-prose [data-streamdown="heading-1"],
+.moc-prose [data-streamdown="heading-2"] {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+
 .moc-prose [data-streamdown="heading-1"] {
-  font-size: 1.45em;
+  font-size: 1.5em;
 }
 .moc-prose [data-streamdown="heading-2"] {
-  font-size: 1.25em;
+  font-size: 1.3em;
 }
 .moc-prose [data-streamdown="heading-3"] {
-  font-size: 1.1em;
+  font-size: 1.12em;
 }
-.moc-prose [data-streamdown="heading-4"],
-.moc-prose [data-streamdown="heading-5"],
-.moc-prose [data-streamdown="heading-6"] {
+.moc-prose [data-streamdown="heading-4"] {
   font-size: 1em;
+}
+.moc-prose [data-streamdown="heading-5"] {
+  font-size: 0.95em;
+}
+.moc-prose [data-streamdown="heading-6"] {
+  font-size: 0.9em;
+  color: var(--muted-foreground);
 }
 
 .moc-prose [data-streamdown="unordered-list"],
@@ -396,19 +411,18 @@
 }
 
 .moc-prose [data-streamdown="inline-code"] {
-  padding: 0.12em 0.4em;
-  border-radius: 5px;
+  padding: 0.2em 0.4em;
+  border-radius: 6px;
   background: var(--muted);
   font-family: var(--font-mono);
-  font-size: 0.86em;
+  font-size: 0.85em;
   color: var(--foreground);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
 }
 
 .moc-prose [data-streamdown="blockquote"] {
   margin: 0.9em 0;
-  padding: 0.1em 0 0.1em 1em;
-  border-left: 3px solid var(--border-strong);
+  padding: 0 1em;
+  border-left: 0.25em solid var(--border-strong);
   color: var(--muted-foreground);
   font-style: normal;
 }
@@ -419,97 +433,98 @@
   border-top: 1px solid var(--border);
 }
 
-/* 表格：外框圆角卡片、表头弱底色、行间发丝线 */
+/* 表格：GitHub 式全边框单元格 + tbody 偶数行斑马纹，无外框卡片 */
 .moc-prose [data-streamdown="table-wrapper"] {
   margin: 1em 0;
   gap: 0;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: transparent;
-  overflow: hidden;
-}
-.moc-prose [data-streamdown="table-wrapper"] > div:first-child {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  z-index: 1;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-.moc-prose [data-streamdown="table-wrapper"]:hover > div:first-child {
-  opacity: 1;
-}
-.moc-prose [data-streamdown="table-wrapper"] {
-  position: relative;
-}
-.moc-prose [data-streamdown="table"] {
   border: 0;
   border-radius: 0;
+  background: transparent;
+  overflow-x: auto;
+}
+/* 内层滚动容器（无 data-streamdown 标记）自带描边圆角底纹，一并去掉 */
+.moc-prose [data-streamdown="table-wrapper"] > div:has(> [data-streamdown="table"]) {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.moc-prose [data-streamdown="table"] {
+  width: max-content;
+  max-width: 100%;
+  border: 0;
+  border-radius: 0;
+  border-collapse: collapse;
   font-size: 13px;
 }
+.moc-prose [data-streamdown="table-header-cell"],
+.moc-prose [data-streamdown="table-cell"] {
+  padding: 6px 13px;
+  border: 1px solid var(--border-strong);
+  font-size: 13px;
+}
+/* GitHub 表头无底纹，只有加粗字重 */
 .moc-prose [data-streamdown="table-header"] {
-  background: var(--muted);
+  background: transparent;
 }
 .moc-prose [data-streamdown="table-header-cell"] {
-  padding: 8px 14px;
-  font-size: 12.5px;
   font-weight: 600;
-  color: var(--muted-foreground);
+  color: var(--foreground);
 }
-.moc-prose [data-streamdown="table-cell"] {
-  padding: 8px 14px;
-  font-size: 13px;
+.moc-prose [data-streamdown="table-body"] [data-streamdown="table-row"]:nth-child(even) {
+  background: var(--muted);
 }
 
-/* 代码块：单层底色 + 顶部语言标签，工具按钮悬停出现 */
+/* 代码块：GitHub 风——无语言头/行号/卡片边框，仅右上角线框复制按钮 */
 .moc-prose [data-streamdown="code-block"],
 .moc-code-block [data-streamdown="code-block"] {
   position: relative;
   margin: 1em 0;
   gap: 0;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border: 0;
+  border-radius: 6px;
   background: var(--code-bg);
   overflow: hidden;
 }
 .moc-prose [data-streamdown="code-block-header"] {
-  height: 34px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-subtle);
-  font-size: 12px;
-  color: var(--text-tertiary);
+  display: none;
 }
-.moc-prose [data-streamdown="code-block-header"] span {
-  margin-left: 0;
-  font-size: 12px;
-  text-transform: none;
-}
-.moc-prose [data-streamdown="code-block"] > div.absolute {
-  top: 3px;
-  right: 6px;
-}
-.moc-prose [data-streamdown="code-block"] > div.absolute > div {
+/* 复制按钮：GitHub btn 质感（描边 + 内高光 + 轻投影），悬停代码块才出现 */
+.moc-prose [data-streamdown="code-block-actions"] {
   padding: 0;
-  border: 0;
-  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--code-bg);
+  box-shadow: var(--code-btn-shadow);
   backdrop-filter: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.moc-prose [data-streamdown="code-block"]:hover [data-streamdown="code-block-actions"],
+.moc-prose [data-streamdown="code-block"]:focus-within [data-streamdown="code-block-actions"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.moc-prose [data-streamdown="code-block-copy-button"] {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 5px;
 }
 .moc-prose [data-streamdown="code-block-body"] {
-  padding: 12px 14px;
+  padding: 12px 16px;
   border: 0;
   border-radius: 0;
   background: transparent;
   font-size: 12.5px;
-  line-height: 1.65;
+  line-height: 1.55;
 }
 .moc-prose [data-streamdown="code-block-body"] pre {
   background: transparent;
-}
-.moc-prose [data-streamdown="code-block-body"] code > span::before {
-  color: var(--text-tertiary);
-  opacity: 0.6;
 }
 
 .moc-prose .katex {

@@ -268,13 +268,19 @@ export const MessageBranchPage = ({ className, ...props }: MessageBranchPageProp
   );
 };
 
-// 模型常用 `$…$` 写行内公式；代码高亮用一对浅/深主题，深色由 `.dark` 祖先切换。
+// 模型常用 `$…$` 写行内公式；代码高亮用 GitHub 同款浅/深主题，深色由 `.dark` 祖先切换。
 export const streamdownPlugins = {
   cjk,
-  code: createCodePlugin({ themes: ["github-light", "github-dark-dimmed"] }),
+  code: createCodePlugin({ themes: ["github-light", "github-dark"] }),
   math: createMathPlugin({ singleDollarTextMath: true }),
   mermaid,
 };
+
+// GitHub 观感：代码块只留复制按钮，表格不带复制/下载/全屏工具条。
+export const streamdownControls = {
+  code: { copy: true, download: false },
+  table: false,
+} as const;
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
@@ -282,6 +288,8 @@ export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn("moc-prose size-full", className)}
+      controls={streamdownControls}
+      lineNumbers={false}
       plugins={streamdownPlugins}
       {...props}
     />
