@@ -60,6 +60,10 @@ rquickjs = { version = "=0.14.0", features = ["loader"] }
 [profile.dev]
 debug = 1
 
+# moc-web 的 build.rs 每次前端变化都要压缩约 17MB 产物；zstd-sys 不开优化时压缩慢数倍。
+[profile.dev.package.zstd-sys]
+opt-level = 3
+
 [profile.test]
 debug = 1
 

@@ -2477,6 +2477,7 @@ dependencies = [
  "moc-core",
  "moc-protocol",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

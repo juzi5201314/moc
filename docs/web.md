@@ -60,21 +60,27 @@ Web 作为 moc 的 Agent 工作台而不是 IDE：项目内文件阅读、变更
 ## 构建
 
 前端采用 React 19、Vite 8、TypeScript、Tailwind CSS 4、shadcn/ui 与 Zustand；依赖由 pnpm 管理。服务启动后，前端使用同源 WebSocket JSON-RPC 连接 Core。
-`build.rs` 在编译期把 `web/dist` 嵌入二进制，分发仍只需一个可执行文件：
+`build.rs` 在编译期构建前端并嵌入二进制，分发仍只需一个可执行文件，构建只需一条命令（要求 Node.js ≥ 22）：
 
 ```bash
-pnpm --dir crates/moc-web/web install
-pnpm --dir crates/moc-web/web build
 cargo build --release --bin moc
 ```
 
-嵌入前会把所有产物打成一条记录序列、整体压成单个 zstd 帧（19 级）：跨文件共享匹配窗口，
-比逐文件压缩小约两成。`*.map` 不进二进制（`vite.config.ts` 也已关闭 sourcemap 生成），
+`web/` 下的源码与配置（`src`、`public`、`index.html`、`package.json`、`pnpm-lock.yaml`、
+`vite.config.ts`、`tsconfig*.json`）有变化时，cargo 才重跑 `build.rs`：先 `pnpm install --frozen-lockfile`，
+再 `pnpm build`，产物写到 `OUT_DIR/dist`（经 `MOC_WEB_OUT_DIR` 传给 Vite），不落进源码树；
+前端没改时不会重新构建。
+
+`pnpm-lock.yaml` 是唯一锁文件。PATH 上有 pnpm 就直接用；只有 npm 时，`build.rs` 经
+`npm exec --package=pnpm@<版本> -- pnpm …` 运行 `package.json` 里 `packageManager` 钉住的 pnpm，
+依赖解析结果与 pnpm 环境一致。两者都没有则构建失败。
+
+嵌入前会把所有产物打成一条记录序列、整体压成单个 zstd 帧（release 19 级，其余 profile 3 级以缩短前端改动后的重编译）：
+跨文件共享匹配窗口，比逐文件压缩小约两成。`*.map` 不进二进制（`vite.config.ts` 也已关闭 sourcemap 生成），
 调试前端用 `pnpm dev`。运行时首次请求解压归档，浏览器在 `Accept-Encoding` 里声明 zstd 时
 响应带 `Content-Encoding: zstd`。
 
-没有 `web/dist` 时 `cargo build` 仍能通过，但只嵌入一页「Web 前端未构建」提示；
-设 `MOC_WEB_REQUIRE_DIST=1` 则直接构建失败（release CI 使用）。
+手动 `pnpm build` 仍输出到 `web/dist`，与 cargo 构建互不影响。
 
 开发时一个终端跑 `moc web --token dev --no-open --port 7432`，另一个跑 `pnpm --dir crates/moc-web/web dev`，
 打开 `http://localhost:5173/?token=dev`（Vite 把 `/ws` 代理到 7432）。这里必须显式指定端口：

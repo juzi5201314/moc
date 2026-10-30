@@ -14,7 +14,8 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "dist",
+    // cargo 构建时 build.rs 经 MOC_WEB_OUT_DIR 指向 OUT_DIR，产物不落进源码树。
+    outDir: process.env.MOC_WEB_OUT_DIR ?? "dist",
     assetsDir: "assets",
     emptyOutDir: true,
     // 产物会被压进二进制分发；sourcemap 占 dist 的三分之二且只对 `pnpm dev` 有用。

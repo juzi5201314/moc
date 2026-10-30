@@ -9,7 +9,7 @@ use std::sync::{LazyLock, OnceLock};
 const MAGIC: &[u8; 8] = b"MOCWEB\x01\n";
 /// 小于这个长度的响应不压缩：省下的字节抵不过 zstd 帧头的开销。
 const MIN_ENCODABLE: usize = 1024;
-/// 传输层压缩级别：要的是快，体积由构建期的 19 级拿下。
+/// 传输层压缩级别：要的是快，体积由构建期的归档压缩拿下。
 const LEVEL: i32 = 3;
 
 include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
@@ -65,9 +65,9 @@ pub fn lookup(path: &str) -> Option<&'static Asset> {
         .map(|index| &assets.entries[index])
 }
 
-/// SPA 入口；`build.rs` 无论 dist 是否存在都会生成它。
+/// SPA 入口；Vite 构建总会产出它。
 pub fn index() -> &'static Asset {
-    lookup("/index.html").expect("build.rs 总会生成 /index.html")
+    lookup("/index.html").expect("前端产物总有 /index.html")
 }
 
 impl Assets {
