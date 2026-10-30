@@ -38,6 +38,8 @@ export function setPath(root: Json, path: string[], value: unknown): Json {
 /** 值 → 输入框文本。 */
 export function formatField(value: unknown, kind: FieldKind): string {
   if (value === undefined || value === null) return "";
+  // 数组形态的 choice（模型 `input`）按选项值的 "a, b" 写法展示。
+  if (kind.type === "choice" && Array.isArray(value)) return value.join(", ");
   if (kind.type === "strings") {
     return Array.isArray(value) ? value.filter((item) => typeof item === "string").join(", ") : "";
   }
@@ -104,4 +106,13 @@ export function parseField(text: string, kind: FieldKind): ParseResult {
 /** Choice 选项展示：标签与取值相同时只显示一次（同 `ChoiceOption::display`）。 */
 export function choiceDisplay(option: { value: string; label: string }): string {
   return option.label === option.value ? option.value : `${option.label}（${option.value}）`;
+}
+
+/**
+ * 模型 `input` 在 catalog 里是 choice（`text` / `text, image`），文档里却存成字符串数组；
+ * 与 core `catalog.rs` 的特判保持一致。
+ */
+export function choiceValue(path: string[], option: string): unknown {
+  const modelInput = path.at(-1) === "input" && path.includes("models");
+  return modelInput ? option.split(",").map((item) => item.trim()) : option;
 }

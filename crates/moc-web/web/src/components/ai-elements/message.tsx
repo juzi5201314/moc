@@ -1,8 +1,8 @@
 "use client";
 
 import { cjk } from "@streamdown/cjk";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
+import { createCodePlugin } from "@streamdown/code";
+import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
@@ -268,14 +268,20 @@ export const MessageBranchPage = ({ className, ...props }: MessageBranchPageProp
   );
 };
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+// 模型常用 `$…$` 写行内公式；代码高亮用一对浅/深主题，深色由 `.dark` 祖先切换。
+export const streamdownPlugins = {
+  cjk,
+  code: createCodePlugin({ themes: ["github-light", "github-dark-dimmed"] }),
+  math: createMathPlugin({ singleDollarTextMath: true }),
+  mermaid,
+};
 
-const streamdownPlugins = { cjk, code, math, mermaid };
+export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
-      className={cn("size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
+      className={cn("moc-prose size-full", className)}
       plugins={streamdownPlugins}
       {...props}
     />

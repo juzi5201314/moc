@@ -28,6 +28,11 @@ export const useConnection = create<ConnectionState>()((set) => ({
   },
 }));
 
+const NO_MODELS: ConfigGetResult["models"] = [];
+
+/** 模型目录选择器：config 未加载时返回同一个空数组，避免 `?? []` 每次产生新引用导致无限重渲染。 */
+export const selectModels = (state: ConnectionState) => state.config?.models ?? NO_MODELS;
+
 clientListeners.status.add((status) => useConnection.setState({ status }));
 clientListeners.ready.add((server) => {
   useConnection.setState({ server, handshakeError: null, everOnline: true });

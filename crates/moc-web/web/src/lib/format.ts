@@ -33,10 +33,10 @@ export function clockTime(atMs: number): string {
 }
 
 export type DiffLineItem = { kind: "equal" | "insert" | "delete"; text: string };
-export type SplitRow = { left?: DiffLineItem; right?: DiffLineItem };
+export type SplitRow<T extends DiffLineItem = DiffLineItem> = { left?: T; right?: T };
 
-export function toSplitRows(lines: DiffLineItem[]): SplitRow[] {
-  const rows: SplitRow[] = [];
+export function toSplitRows<T extends DiffLineItem>(lines: T[]): SplitRow<T>[] {
+  const rows: SplitRow<T>[] = [];
   let i = 0;
   while (i < lines.length) {
     const cur = lines[i];
@@ -45,13 +45,13 @@ export function toSplitRows(lines: DiffLineItem[]): SplitRow[] {
       i++;
     } else if (cur.kind === "delete") {
       // Collect consecutive deletes
-      const deletes: DiffLineItem[] = [];
+      const deletes: T[] = [];
       while (i < lines.length && lines[i].kind === "delete") {
         deletes.push(lines[i]);
         i++;
       }
       // Collect consecutive inserts
-      const inserts: DiffLineItem[] = [];
+      const inserts: T[] = [];
       while (i < lines.length && lines[i].kind === "insert") {
         inserts.push(lines[i]);
         i++;

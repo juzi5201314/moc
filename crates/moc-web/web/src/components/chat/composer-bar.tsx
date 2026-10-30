@@ -1,173 +1,296 @@
+// 输入区：多行输入 + 斜杠命令 / 资源 URI 补全 + `!` 手动命令 + 图片（选择 / 粘贴 / 拖放）
+// + 权限、引擎、计划、模型与上下文占用；运行中回车按偏好插队或中断，Ctrl+Enter 排队。
+
 import {
   ArrowUpIcon,
-  CheckCircle2Icon,
-  CheckSquareIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
-  CircleIcon,
-  DatabaseIcon,
-  GaugeIcon,
-  Loader2Icon,
-  PlusIcon,
-  RotateCcwIcon,
-  ShieldCheckIcon,
+  BookOpenIcon,
+  FileTextIcon,
+  FolderIcon,
+  HistoryIcon,
+  ImageIcon,
+  LockIcon,
+  PackageIcon,
+  PaperclipIcon,
+  PuzzleIcon,
+  SlashIcon,
   SquareIcon,
-  XIcon,
+  TerminalIcon,
 } from "lucide-react";
 import { nanoid } from "nanoid";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import {
   Attachment,
-  AttachmentInfo,
   AttachmentPreview,
   AttachmentRemove,
   Attachments,
 } from "@/components/ai-elements/attachments";
-import { ModelSelectPopover } from "@/components/chat/model-select-popover";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { leadSelector, parseSelector } from "@/lib/models";
+import { BUILTIN_COMMANDS, runSlash, type SlashCommand, slashMatches } from "@/lib/slash";
+import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
-import type { ImageSource, SessionPermission, SteerResult, TodoItem } from "@/protocol/types";
-import { retryLast, sendPrompt } from "@/store/actions";
-import { type Attachment as ComposerAttachment, toInput, useComposer } from "@/store/composer";
-import { dispatchNext } from "@/store/dispatch";
-import { togglePlanMode } from "@/store/lifecycle";
+import type {
+  ImageSource,
+  PluginListResult,
+  ResourceCandidate,
+  SteerResult,
+} from "@/protocol/types";
+import { dispatchNext, runBash, sendPrompt } from "@/store/actions";
+import {
+  type Attachment as ComposerAttachment,
+  type PendingItem,
+  toInput,
+  useComposer,
+} from "@/store/composer";
+import { selectModels, useConnection } from "@/store/connection";
+import { reacquire } from "@/store/lifecycle";
 import { usePrefs } from "@/store/prefs";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+import {
+  CHIP,
+  ContextRing,
+  PendingList,
+  PlanToggle,
+  SessionOptions,
+  type Suggestion,
+  SuggestionMenu,
+  TodoTray,
+} from "./composer-parts";
+import { ModelPicker } from "./model-select-popover";
 
-interface ComposerBarProps {
-  sessionId: string;
-  /** 空态用：不套底部 dock 的留白，直接内嵌在居中列里。 */
-  inline?: boolean;
+const EMPTY_PENDING: PendingItem[] = [];
+const MAX_HEIGHT = 320;
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-const PERMISSIONS: { id: SessionPermission; label: string; desc: string }[] = [
-  { id: "full", label: "完全权限", desc: "允许工具读写系统与执行命令" },
-  { id: "workspace", label: "工作区写入", desc: "仅允许修改当前工作区文件" },
-  { id: "workspace_only", label: "只读保护", desc: "禁止工具自动修改任何磁盘文件" },
-];
-
-const EMPTY_PENDING: ReturnType<typeof useComposer.getState>["pending"][string] = [];
-
-const SLASH_COMMANDS = [
-  { command: "/retry", description: "重试上一次提交" },
-  { command: "/clear", description: "清空当前草稿" },
-  { command: "/plan", description: "进入/退出计划状态（可带提示词）" },
-  { command: "/ask", description: "仅本条消息只读问答" },
-];
-
-function imageDataUrl(source: ImageSource): string {
+function imageUrl(source: ImageSource): string {
   if ("Url" in source) return source.Url;
   return `data:${source.Base64.media_type};base64,${source.Base64.data}`;
 }
 
 function readImage(file: File): Promise<ComposerAttachment> {
-  return new Promise((resolve, reject) => {
-    if (!file.type.startsWith("image/")) {
-      reject(new Error("仅支持图片附件"));
+  const { promise, resolve, reject } = Promise.withResolvers<ComposerAttachment>();
+  const reader = new FileReader();
+  reader.onload = () => {
+    const match =
+      typeof reader.result === "string" ? /^data:([^;]+);base64,(.*)$/s.exec(reader.result) : null;
+    if (!match) {
+      reject(new Error(file.name));
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") {
-        reject(new Error(`无法读取图片：${file.name}`));
-        return;
-      }
-      const match = /^data:([^;]+);base64,(.*)$/s.exec(reader.result);
-      if (!match) {
-        reject(new Error(`无法读取图片：${file.name}`));
-        return;
-      }
-      resolve({
-        id: nanoid(),
-        name: file.name,
-        source: { Base64: { media_type: match[1], data: match[2] } },
-      });
-    };
-    reader.onerror = () => reject(new Error(`无法读取图片：${file.name}`));
-    reader.readAsDataURL(file);
-  });
+    resolve({
+      id: nanoid(),
+      name: file.name || "粘贴的图片",
+      source: { Base64: { media_type: match[1], data: match[2] } },
+    });
+  };
+  reader.onerror = () => reject(new Error(file.name));
+  reader.readAsDataURL(file);
+  return promise;
 }
 
-export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
-  const [taskExpanded, setTaskExpanded] = useState(false);
-  const [isReadingImages, setIsReadingImages] = useState(false);
+/** 光标所在的空白分隔 token；以 `//`、`scheme:/` 或含 `://` 时视为资源 URI 前缀（与 TUI 一致）。 */
+function resourceToken(
+  text: string,
+  cursor: number,
+): { prefix: string; start: number; end: number } | null {
+  const before = text.slice(0, cursor);
+  const start =
+    Math.max(before.lastIndexOf(" "), before.lastIndexOf("\n"), before.lastIndexOf("\t")) + 1;
+  const tail = text.slice(cursor).search(/\s/);
+  const end = tail < 0 ? text.length : cursor + tail;
+  const prefix = text.slice(start, cursor);
+  const isUri = prefix === "//" || prefix.endsWith(":/") || prefix.includes("://");
+  return isUri ? { prefix, start, end } : null;
+}
 
+const RESOURCE_ICON: Record<string, typeof FileTextIcon> = {
+  artifact: PackageIcon,
+  history: HistoryIcon,
+  local: FileTextIcon,
+  skill: BookOpenIcon,
+  namespace: FolderIcon,
+};
+
+/** 当前工作区插件注册的斜杠命令；每个会话只拉一次。 */
+const pluginCommandCache = new Map<string, Promise<SlashCommand[]>>();
+
+function loadPluginCommands(sessionId: string): Promise<SlashCommand[]> {
+  let cached = pluginCommandCache.get(sessionId);
+  if (!cached) {
+    cached = rpc
+      .call<PluginListResult>("plugin/list", { session_id: sessionId })
+      .then((result) =>
+        result.plugins.flatMap((plugin) =>
+          plugin.error
+            ? []
+            : plugin.commands.map((command) => ({
+                name: command.name,
+                description: command.description,
+                usage: command.usage || undefined,
+                plugin: plugin.name,
+                needsSession: true,
+              })),
+        ),
+      )
+      .catch(() => {
+        pluginCommandCache.delete(sessionId);
+        return [];
+      });
+    pluginCommandCache.set(sessionId, cached);
+  }
+  return cached;
+}
+
+type ComposerBarProps = {
+  sessionId: string;
+  /** 欢迎页：卡片内嵌在居中列里，不套底部 dock。 */
+  inline?: boolean;
+};
+
+export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [cursor, setCursor] = useState(0);
+  const [reading, setReading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  /** Esc 关闭补全时记下当时的输入，内容变化前不再弹出。 */
+  const [dismissedAt, setDismissedAt] = useState<string | null>(null);
+  const [resources, setResources] = useState<{ prefix: string; items: ResourceCandidate[] }>({
+    prefix: "",
+    items: [],
+  });
+  const [pluginCommands, setPluginCommands] = useState<SlashCommand[]>([]);
 
   const view = useTranscript((state) => state.bySession[sessionId]);
   const focusCount = useUi((state) => state.focusComposer);
   const draft = useComposer((state) => state.drafts[sessionId]);
   const pending = useComposer((state) => state.pending[sessionId] ?? EMPTY_PENDING);
-  const lastInput = useComposer((state) => state.lastInput[sessionId]);
   const runningEnter = usePrefs((state) => state.runningEnter);
+  const models = useConnection(selectModels);
+
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const isDraft = sessionId === "draft-session";
+  const running = Boolean(view?.running);
+  const readOnly = Boolean(view?.readOnly);
+  const bashMode = text.startsWith("!");
+  const model = parseSelector(leadSelector(view?.info.model ?? ""), models).model;
+  // 模型没声明 inputs 时不拦，交给 core 校验。
+  const acceptsImages = !model?.inputs || model.inputs.includes("image");
 
-  const currentModelId = view?.info.model ?? "";
-  const currentPermission = view?.info.permission ?? "full";
-  const currentPermissionItem =
-    PERMISSIONS.find((p) => p.id === currentPermission) ?? PERMISSIONS[0];
+  const todos = useMemo(() => (view?.todos ?? []).flatMap((phase) => phase.items), [view?.todos]);
+  const context = view?.context;
 
-  const isRunning = Boolean(view?.running);
-  const isReadOnly = Boolean(view?.readOnly);
+  // ---------- 补全 ----------
 
-  // 监听外部聚焦请求
+  const token = resourceToken(text, cursor);
+  const tokenPrefix = token?.prefix ?? "";
+  const commands = useMemo(() => {
+    const builtin = new Set(BUILTIN_COMMANDS.map((command) => command.name));
+    return [...BUILTIN_COMMANDS, ...pluginCommands.filter((command) => !builtin.has(command.name))];
+  }, [pluginCommands]);
+  const slashItems = slashMatches(text, commands);
+  const slashMode = text.startsWith("/");
+
   useEffect(() => {
-    if (focusCount > 0) {
-      textareaRef.current?.focus();
-    }
+    if (isDraft || !slashMode) return;
+    let alive = true;
+    void loadPluginCommands(sessionId).then((list) => alive && setPluginCommands(list));
+    return () => {
+      alive = false;
+    };
+  }, [isDraft, sessionId, slashMode]);
+
+  useEffect(() => {
+    if (!tokenPrefix || isDraft) return;
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      rpc
+        .call<{ candidates: ResourceCandidate[] }>("resource/complete", {
+          session_id: sessionId,
+          prefix: tokenPrefix,
+        })
+        .then((result) => alive && setResources({ prefix: tokenPrefix, items: result.candidates }))
+        .catch(() => alive && setResources({ prefix: tokenPrefix, items: [] }));
+    }, 120);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [isDraft, sessionId, tokenPrefix]);
+
+  const resourceItems = token && resources.prefix === tokenPrefix ? resources.items : [];
+  const menu: { heading: string; items: Suggestion[] } | null =
+    dismissedAt === text
+      ? null
+      : slashItems.length > 0
+        ? {
+            heading: "命令",
+            items: slashItems.map((command) => ({
+              key: `/${command.name}`,
+              title: `/${command.name}`,
+              hint: command.usage,
+              detail: command.plugin
+                ? `${command.description} · ${command.plugin}`
+                : command.description,
+              icon: command.plugin ? <PuzzleIcon /> : <SlashIcon />,
+            })),
+          }
+        : resourceItems.length > 0
+          ? {
+              heading: "资源",
+              items: resourceItems.map((candidate) => {
+                const Icon = RESOURCE_ICON[candidate.kind] ?? FileTextIcon;
+                return {
+                  key: candidate.uri,
+                  title: candidate.label || candidate.uri,
+                  detail: candidate.description,
+                  icon: <Icon />,
+                };
+              }),
+            }
+          : null;
+  const menuSize = menu?.items.length ?? 0;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 候选集合变化（数量或类别）时把高亮复位到首项
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [menuSize, menu?.heading]);
+
+  // ---------- 输入框 ----------
+
+  useEffect(() => {
+    if (focusCount > 0) textareaRef.current?.focus();
   }, [focusCount]);
 
-  // 输入框随内容长高，最高 336px（与 DSH 的上限一致）
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 以 text 作为重测高度的信号
   useEffect(() => {
-    const el = textareaRef.current;
-    if (!el || el.value !== text) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 336)}px`;
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT)}px`;
   }, [text]);
 
-  // 任务清单数据 (从 TodoPhase 折叠提取各项 TodoItem)
-  const allTodoItems = useMemo(
-    (): TodoItem[] => (view?.todos ?? []).flatMap((phase) => phase.items),
-    [view?.todos],
-  );
-  const todoDoneCount = allTodoItems.filter((t: TodoItem) => t.status === "completed").length;
-  const todoActiveCount = allTodoItems.filter((t: TodoItem) => t.status === "in_progress").length;
-  const todoPendingCount = allTodoItems.length - todoDoneCount - todoActiveCount;
-
-  // 上下文 meter 只展示已从 session/context 获取的真实数据。
-  const context = view?.context;
-  const contextPercent =
-    context && context.context_window > 0
-      ? Math.min(100, Math.round((context.total_tokens / context.context_window) * 100))
-      : null;
-
-  // 轮次与步数统计
-  const turnsCount = view?.blocks.filter((b) => b.kind === "user").length ?? 0;
-  // 步数只算真正动过手的步骤（工具与命令），正文/思考不计入，避免数字虚高
-  const stepsCount = view?.blocks.filter((b) => b.kind === "tool" || b.kind === "bash").length ?? 0;
-  const slashSuggestions = text.startsWith("/")
-    ? SLASH_COMMANDS.filter(({ command }) =>
-        text.includes(" ")
-          ? `${command} ` === text.slice(0, command.length + 1)
-          : command.startsWith(text),
-      )
-    : [];
-
+  // 插队被 core 吸收后从待发区移除。
   useEffect(
     () =>
-      rpc.on("session/update", ({ session_id: updateSessionId, update }) => {
-        if (updateSessionId !== sessionId || update.type !== "steering_applied") return;
+      rpc.on("session/update", ({ session_id: updated, update }) => {
+        if (updated !== sessionId || update.type !== "steering_applied") return;
         const item = useComposer
           .getState()
           .pending[sessionId]?.find(
@@ -181,177 +304,149 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     [sessionId],
   );
 
-  const handleSelectPermission = async (perm: SessionPermission) => {
-    if (sessionId === "draft-session") {
-      useTranscript.getState().mutate(sessionId, (v) => {
-        v.info.permission = perm;
+  const setText = (value: string, caret?: number) => {
+    useComposer.getState().setText(sessionId, value);
+    if (caret !== undefined) {
+      setCursor(caret);
+      requestAnimationFrame(() => {
+        const element = textareaRef.current;
+        if (!element) return;
+        element.focus();
+        element.setSelectionRange(caret, caret);
       });
+    }
+  };
+
+  const pick = (index: number) => {
+    if (!menu) return;
+    if (menu.heading === "命令") {
+      const command = slashItems[index];
+      if (!command) return;
+      if (command.usage) setText(`/${command.name} `, command.name.length + 2);
+      else if (runSlash(sessionId, `/${command.name}`, commands)) setCursor(0);
       return;
     }
+    const candidate = resourceItems[index];
+    if (!candidate || !token) return;
+    const suffix = candidate.append_space ? " " : "";
+    const next = `${text.slice(0, token.start)}${candidate.uri}${suffix}${text.slice(token.end)}`;
+    setText(next, token.start + candidate.uri.length + suffix.length);
+  };
+
+  // ---------- 图片 ----------
+
+  const addFiles = async (files: File[]) => {
+    const supported = files.filter((file) => file.type.startsWith("image/"));
+    if (supported.length < files.length) toast.error("只支持图片附件");
+    if (supported.length === 0) return;
+    if (!acceptsImages) {
+      toast.error("当前模型不支持图片输入");
+      return;
+    }
+    setReading(true);
     try {
-      await rpc.call("session/set_permission", {
-        session_id: sessionId,
-        permission: perm,
-        clear_grants: false,
-      });
-      toast.success(`已切换权限为: ${PERMISSIONS.find((p) => p.id === perm)?.label}`);
-    } catch (err) {
-      toast.error(`切换权限失败: ${err instanceof Error ? err.message : String(err)}`);
+      const results = await Promise.allSettled(supported.map(readImage));
+      for (const result of results) {
+        if (result.status === "fulfilled") useComposer.getState().addImage(sessionId, result.value);
+      }
+      const failed = results.filter((result) => result.status === "rejected").length;
+      if (failed > 0) toast.error(`${failed} 张图片读取失败`);
+    } finally {
+      setReading(false);
     }
   };
 
-  const executeSlash = (command: string): boolean => {
-    if (command === "/clear") {
-      useComposer.getState().clearDraft(sessionId);
-      return true;
-    }
-    if (command === "/retry") {
-      if (!lastInput) {
-        toast.info("当前会话还没有可重试的输入");
-        return true;
-      }
-      useComposer.getState().clearDraft(sessionId);
-      retryLast(sessionId);
-      return true;
-    }
-    if (command === "/plan" || command.startsWith("/plan ")) {
-      const argument = command.slice("/plan".length).trim();
-      const active = argument ? true : !view?.info.plan_active;
-      useComposer.getState().clearDraft(sessionId);
-      void togglePlanMode(sessionId, active)
-        .then(() => {
-          toast.success(active ? "已进入计划状态" : "已退出计划状态");
-          if (argument) void sendPrompt(sessionId, toInput(argument, []));
-        })
-        .catch((err) =>
-          toast.error(`切换计划状态失败: ${err instanceof Error ? err.message : String(err)}`),
-        );
-      return true;
-    }
-    if (command.startsWith("/ask")) {
-      const argument = command.slice("/ask".length).trim();
-      if (!argument) {
-        toast.info("用法：/ask <问题>");
-        return true;
-      }
-      useComposer.getState().clearDraft(sessionId);
-      if (!isRunning) {
-        void sendPrompt(sessionId, toInput(argument, []), { contract: "ask" });
-      } else {
-        useComposer.getState().pushPending(sessionId, {
-          key: nanoid(),
-          kind: "queue",
-          text: argument,
-          images: [],
-          contract: "ask",
-        });
-      }
-      return true;
-    }
-    return false;
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...event.clipboardData.files];
+    if (files.length === 0) return;
+    event.preventDefault();
+    void addFiles(files);
   };
 
-  const handleSend = (forceQueue = false) => {
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    setDragging(false);
+    const files = [...event.dataTransfer.files];
+    if (files.length === 0) return;
+    event.preventDefault();
+    void addFiles(files);
+  };
+
+  // ---------- 发送 ----------
+
+  const canSend = (text.trim().length > 0 || images.length > 0) && !readOnly && !reading;
+
+  const send = (forceQueue = false) => {
     const trimmed = text.trim();
-    if ((!trimmed && images.length === 0) || isReadOnly || isReadingImages) return;
-    if (executeSlash(trimmed)) return;
+    if (!canSend) return;
+
+    if (bashMode && images.length === 0) {
+      const exclude = trimmed.startsWith("!!");
+      const command = trimmed.slice(exclude ? 2 : 1).trim();
+      if (!command) return;
+      if (running) {
+        toast("正在生成，命令请稍后再执行");
+        return;
+      }
+      useComposer.getState().clearDraft(sessionId);
+      void runBash(sessionId, command, exclude);
+      return;
+    }
+    if (images.length === 0 && runSlash(sessionId, trimmed, commands)) return;
 
     const input = toInput(trimmed, images);
-    if (!isRunning) {
-      useComposer.getState().clearDraft(sessionId);
+    useComposer.getState().clearDraft(sessionId);
+    if (!running) {
       void sendPrompt(sessionId, input);
       return;
     }
 
     const queue = forceQueue || runningEnter === "interrupt";
-    useComposer.getState().clearDraft(sessionId);
-    const item = {
+    const item: PendingItem = {
       key: nanoid(),
-      kind: queue ? ("queue" as const) : ("steer" as const),
+      kind: queue ? "queue" : "steer",
       text: trimmed,
       images,
     };
     useComposer.getState().pushPending(sessionId, item);
-
     if (queue) {
       dispatchNext(sessionId);
-      if (!forceQueue && runningEnter === "interrupt") {
-        void rpc.call("session/cancel", { session_id: sessionId }).catch((err: unknown) => {
-          toast.error(
-            `中断失败，消息仍在待发区: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
+      if (!forceQueue) {
+        void rpc
+          .call("session/cancel", { session_id: sessionId })
+          .catch((error) => toast.error(`中断失败，消息仍在队列中：${errorText(error)}`));
       }
       return;
     }
-
     void rpc
       .call<SteerResult>("session/steer", { session_id: sessionId, input })
       .then((result) => {
+        const composer = useComposer.getState();
         if (!result.accepted) {
-          useComposer.getState().updatePending(sessionId, item.key, { kind: "queue" });
+          composer.updatePending(sessionId, item.key, { kind: "queue" });
           dispatchNext(sessionId);
-          toast("补充未被接受，已转入待发区");
-          return;
-        }
-        if (result.id !== undefined) {
-          useComposer.getState().updatePending(sessionId, item.key, { steerId: result.id });
+          toast("本轮已不能补充，消息转入队列");
+        } else if (result.id !== undefined) {
+          composer.updatePending(sessionId, item.key, { steerId: result.id });
         }
       })
-      .catch((err: unknown) => {
+      .catch((error) => {
         const composer = useComposer.getState();
-        const stillPending = composer.pending[sessionId]?.some((entry) => entry.key === item.key);
-        if (stillPending) {
+        if (composer.pending[sessionId]?.some((entry) => entry.key === item.key)) {
           composer.removePending(sessionId, item.key);
-          const currentDraft = composer.drafts[sessionId];
-          if (!currentDraft?.text && !currentDraft?.images.length) {
+          const current = composer.drafts[sessionId];
+          if (!current?.text && !current?.images.length)
             composer.restore(sessionId, { text: trimmed, images });
-          }
         }
-        toast.error(`补充发送失败: ${err instanceof Error ? err.message : String(err)}`);
+        toast.error(`补充发送失败：${errorText(error)}`);
       });
   };
 
-  const handleStop = async () => {
-    try {
-      await rpc.call("session/cancel", { session_id: sessionId });
-      toast("已停止生成");
-    } catch (err) {
-      toast.error(`停止失败: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
+  const stop = () =>
+    void rpc
+      .call("session/cancel", { session_id: sessionId })
+      .catch((error) => toast.error(`停止失败：${errorText(error)}`));
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      handleSend(e.ctrlKey || e.metaKey);
-    }
-  };
-
-  const handlePickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const selected = [...files];
-    e.target.value = "";
-    const unsupported = selected.filter((file) => !file.type.startsWith("image/"));
-    const supported = selected.filter((file) => file.type.startsWith("image/"));
-    if (unsupported.length > 0) toast.error("附件暂不支持非图片文件，请选择图片");
-    if (supported.length === 0) return;
-    setIsReadingImages(true);
-    try {
-      const results = await Promise.allSettled(supported.map(readImage));
-      const added = results.flatMap((result) =>
-        result.status === "fulfilled" ? [result.value] : [],
-      );
-      for (const image of added) useComposer.getState().addImage(sessionId, image);
-      const failed = results.length - added.length;
-      if (failed > 0) toast.error(`${failed} 张图片读取失败`);
-    } finally {
-      setIsReadingImages(false);
-    }
-  };
-
-  const handleRemovePending = async (item: (typeof pending)[number]) => {
+  const removePending = async (item: PendingItem) => {
     if (item.kind === "queue") {
       useComposer.getState().removePending(sessionId, item.key);
       return;
@@ -363,120 +458,136 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
         id: item.steerId,
       });
       if (result.removed) useComposer.getState().removePending(sessionId, item.key);
-      else toast("补充已写入会话，无法撤回");
-    } catch (err) {
-      toast.error(`撤回失败: ${err instanceof Error ? err.message : String(err)}`);
+      else toast("补充已进入上下文，无法撤回");
+    } catch (error) {
+      toast.error(`撤回失败：${errorText(error)}`);
     }
   };
 
-  return (
-    <div className={inline ? "relative w-full" : "relative w-full bg-background px-4 pt-2 pb-3"}>
-      <div className={inline ? "space-y-2" : "moc-composer-card space-y-2"}>
-        {/* 1. 任务清单折叠条 (对齐 dsh := 任务 X已完成 ^) */}
-        {allTodoItems.length > 0 && (
-          <div className="overflow-hidden rounded-t-lg bg-muted text-xs">
-            <button
-              type="button"
-              onClick={() => setTaskExpanded((v) => !v)}
-              className="flex h-8 w-full items-center justify-between px-3 text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <div className="flex items-center gap-2">
-                <CheckSquareIcon className="size-3.5 text-primary" />
-                <span className="font-medium text-foreground">任务</span>
-                <span className="text-[11px] text-muted-foreground">
-                  {todoDoneCount} 已完成
-                  {todoActiveCount > 0 ? ` · ${todoActiveCount} 进行中` : ""}
-                  {todoPendingCount > 0 ? ` · ${todoPendingCount} 待办` : ""}
-                </span>
-              </div>
-              <span className="text-muted-foreground">
-                {taskExpanded ? (
-                  <ChevronDownIcon className="size-3.5" />
-                ) : (
-                  <ChevronUpIcon className="size-3.5" />
-                )}
-              </span>
-            </button>
+  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    if (menu && menuSize > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setActiveIndex((index) => (index + step + menuSize) % menuSize);
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) {
+        event.preventDefault();
+        pick(activeIndex);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setDismissedAt(text);
+        return;
+      }
+    }
+    if (event.key === "Escape" && running && !text) {
+      event.preventDefault();
+      stop();
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send(event.ctrlKey || event.metaKey);
+    }
+  };
 
-            {taskExpanded && (
-              <ul className="max-h-40 overflow-y-auto divide-y divide-border/30 border-t border-border/50 bg-background/60 p-1.5 space-y-0.5">
-                {allTodoItems.map((item) => (
-                  <li
-                    key={item.task}
-                    className="flex items-center gap-2 px-2 py-1 text-xs text-foreground/90"
-                  >
-                    {item.status === "completed" ? (
-                      <CheckCircle2Icon className="size-3.5 text-emerald-500 shrink-0" />
-                    ) : item.status === "in_progress" ? (
-                      <Loader2Icon className="size-3.5 text-primary shrink-0 animate-spin" />
-                    ) : (
-                      <CircleIcon className="size-3 text-muted-foreground/40 shrink-0" />
-                    )}
-                    <span
-                      className={`truncate ${
-                        item.status === "completed" ? "line-through text-muted-foreground" : ""
-                      }`}
-                    >
-                      {item.task}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+  const syncCursor = () => setCursor(textareaRef.current?.selectionStart ?? 0);
+
+  // ---------- 渲染 ----------
+
+  if (readOnly) {
+    const holder = view?.holder;
+    return (
+      <ComposerDock inline={inline}>
+        <div className="flex min-h-14 items-center gap-3 rounded-2xl border border-border bg-muted/40 px-4 py-3 text-[13px] text-muted-foreground">
+          <LockIcon className="size-4 shrink-0" />
+          <span className="min-w-0 flex-1">
+            只读打开
+            {holder ? `：会话正由 ${holder.frontend}（pid ${holder.pid}）写入` : ""}
+            ，可以查看但不能发送。
+          </span>
+          {!view?.info.parent_session_id && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 rounded-lg"
+              onClick={() =>
+                void reacquire(sessionId).catch((error) =>
+                  toast.error(`获取写权限失败：${errorText(error)}`),
+                )
+              }
+            >
+              获取写权限
+            </Button>
+          )}
+        </div>
+      </ComposerDock>
+    );
+  }
+
+  const placeholder = running
+    ? runningEnter === "interrupt"
+      ? "回车中断当前生成并发送，Ctrl+Enter 排队"
+      : "回车补充到当前轮，Ctrl+Enter 排队"
+    : inline
+      ? "描述任务，/ 查看命令，! 执行命令"
+      : "继续对话，/ 查看命令，! 执行命令";
+
+  return (
+    <ComposerDock inline={inline}>
+      <div className="relative">
+        {menu && (
+          <SuggestionMenu
+            heading={menu.heading}
+            items={menu.items}
+            active={activeIndex}
+            onPick={pick}
+            onHover={setActiveIndex}
+          />
+        )}
+
+        {(todos.length > 0 || pending.length > 0) && (
+          <div className="mx-3 rounded-t-xl border border-b-0 border-border bg-panel/80 backdrop-blur">
+            {todos.length > 0 && <TodoTray items={todos} />}
+            {pending.length > 0 && (
+              <PendingList items={pending} onRemove={(item) => void removePending(item)} />
             )}
           </div>
         )}
 
-        {pending.length > 0 && (
-          <ul className="space-y-1 rounded-md border border-border bg-muted/30 p-2">
-            {pending.map((item) => (
-              <li key={item.key} className="flex min-w-0 items-center gap-2 text-xs">
-                <span className="shrink-0 text-[10px] font-medium uppercase text-muted-foreground">
-                  {item.kind === "steer" ? "补充" : "排队"}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-foreground/90">
-                  {item.text || (item.images.length > 0 ? "图片" : "")}
-                  {item.images.length > 0 ? ` · ${item.images.length} 张图片` : ""}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void handleRemovePending(item)}
-                  disabled={item.kind === "steer" && item.steerId === undefined}
-                  className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-                  aria-label={item.kind === "steer" ? "撤回补充消息" : "移除排队消息"}
-                  title={item.kind === "steer" ? "撤回补充消息" : "移除排队消息"}
-                >
-                  <XIcon className="size-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* 2. 主输入框：DSH 用 28px 大圆角 + 半透明细环代替描边 */}
-        <div className="relative rounded-[28px] bg-background shadow-[var(--elevation-card)]">
-          {slashSuggestions.length > 0 && (
-            <div className="absolute bottom-full left-2 z-20 mb-2 w-64 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-md">
-              {slashSuggestions.map(({ command, description }) => (
-                <button
-                  key={command}
-                  type="button"
-                  onClick={() => executeSlash(command)}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted"
-                >
-                  {command === "/retry" ? (
-                    <RotateCcwIcon className="size-3.5 text-muted-foreground" />
-                  ) : (
-                    <XIcon className="size-3.5 text-muted-foreground" />
-                  )}
-                  <span className="font-mono">{command}</span>
-                  <span className="ml-auto truncate text-muted-foreground">{description}</span>
-                </button>
-              ))}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击空白处聚焦输入框只是鼠标便利，键盘本就在输入框内 */}
+        <div
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) textareaRef.current?.focus();
+          }}
+          className={cn(
+            "relative rounded-[20px] border bg-background shadow-[var(--elevation-card)] transition-[border-color,box-shadow]",
+            "focus-within:border-border-strong",
+            bashMode ? "border-warn/50" : "border-border",
+            dragging && "border-brand ring-4 ring-brand/15",
+          )}
+        >
+          {bashMode && (
+            <div className="flex items-center gap-1.5 px-4 pt-2.5 text-[11.5px] font-medium text-warn">
+              <TerminalIcon className="size-3.5" />
+              {text.startsWith("!!") ? "执行命令 · 输出不进入上下文" : "执行命令 · 输出写入上下文"}
             </div>
           )}
 
           {images.length > 0 && (
-            <Attachments variant="inline" className="px-3 pt-2">
+            <Attachments variant="inline" className="px-3 pt-3">
               {images.map((image) => (
                 <Attachment
                   key={image.id}
@@ -486,12 +597,11 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                     filename: image.name,
                     mediaType:
                       "Base64" in image.source ? image.source.Base64.media_type : "image/*",
-                    url: imageDataUrl(image.source),
+                    url: imageUrl(image.source),
                   }}
                   onRemove={() => useComposer.getState().removeImage(sessionId, image.id)}
                 >
                   <AttachmentPreview />
-                  <AttachmentInfo />
                   <AttachmentRemove label={`移除 ${image.name}`} />
                 </Attachment>
               ))}
@@ -501,175 +611,105 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           <textarea
             ref={textareaRef}
             value={text}
-            onChange={(e) => useComposer.getState().setText(sessionId, e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isReadOnly}
-            placeholder="发消息或创建任务，输入 / 查看指令"
-            className="max-h-[336px] min-h-[52px] w-full resize-none overflow-y-auto bg-transparent px-4 pt-3 pb-1 text-sm font-normal leading-6 outline-none placeholder:text-muted-foreground/70"
+            rows={1}
+            onChange={(event) => {
+              setText(event.target.value);
+              setCursor(event.target.selectionStart);
+            }}
+            onSelect={syncCursor}
+            onKeyDown={onKeyDown}
+            onPaste={onPaste}
+            placeholder={placeholder}
+            aria-label="输入消息"
+            className={cn(
+              "block w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[14.5px] leading-6 text-foreground outline-none placeholder:text-text-tertiary",
+              bashMode && "font-mono text-[13.5px]",
+              inline ? "min-h-[84px]" : "min-h-[52px]",
+            )}
+            style={{ maxHeight: MAX_HEIGHT }}
           />
 
-          {/* 底部内嵌工具条 */}
-          <div className="flex h-10 items-center justify-between px-2 pb-1">
-            <div className="flex items-center gap-1.5">
-              <input ref={fileInputRef} type="file" multiple hidden onChange={handlePickFiles} />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex size-7 items-center justify-center rounded-full bg-muted text-muted-foreground transition-colors hover:text-foreground"
-                    aria-label="添加附件或文件"
-                  >
-                    <PlusIcon className="size-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">添加附件或文件</TooltipContent>
-              </Tooltip>
+          <div className="flex h-12 items-center gap-1 px-2.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = "";
+                void addFiles(files);
+              }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!acceptsImages || reading}
+                  className={cn(CHIP, "w-7 justify-center px-0")}
+                  aria-label="添加图片"
+                >
+                  {acceptsImages ? (
+                    <PaperclipIcon className="size-4" />
+                  ) : (
+                    <ImageIcon className="size-4" />
+                  )}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                {acceptsImages ? "添加图片，也可以直接粘贴或拖入" : "当前模型不支持图片输入"}
+              </TooltipContent>
+            </Tooltip>
+            <SessionOptions sessionId={sessionId} />
+            <PlanToggle sessionId={sessionId} />
 
-              {/* 权限选择器 (完全权限 ⌵) */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-[var(--accent)] hover:text-foreground"
-                  >
-                    <ShieldCheckIcon className="size-3.5" />
-                    <span>{currentPermissionItem.label}</span>
-                    <ChevronDownIcon className="size-3 opacity-60" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" side="top" className="w-56 text-xs">
-                  <DropdownMenuLabel className="text-[11px] font-medium text-muted-foreground">
-                    权限预设级别
-                  </DropdownMenuLabel>
-                  {PERMISSIONS.map((p) => (
-                    <DropdownMenuItem
-                      key={p.id}
-                      onClick={() => void handleSelectPermission(p.id)}
-                      className="flex flex-col items-start py-1.5"
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className="font-medium">{p.label}</span>
-                        {currentPermission === p.id && (
-                          <span className="size-1.5 rounded-full bg-primary" />
-                        )}
-                      </div>
-                      <span className="text-[10px] text-muted-foreground">{p.desc}</span>
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-
-            {/* 右侧：模型选择 + 圆形发送/停止按钮 */}
-            <div className="flex items-center gap-2">
-              <ModelSelectPopover sessionId={sessionId} currentModelId={currentModelId} />
-
-              {isRunning ? (
+            <div className="ml-auto flex min-w-0 items-center gap-1">
+              {context && context.context_window > 0 && (
+                <ContextRing used={context.total_tokens} window={context.context_window} />
+              )}
+              <ModelPicker sessionId={sessionId} />
+              {running && !canSend ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      onClick={handleStop}
-                      className="flex size-[34px] items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:bg-primary/90 active:scale-95"
-                      aria-label="停止当前生成"
+                      onClick={stop}
+                      className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
+                      aria-label="停止生成"
                     >
-                      <SquareIcon className="size-3.5 fill-current" />
+                      <SquareIcon className="size-3 fill-current" />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">停止 (Stop)</TooltipContent>
+                  <TooltipContent side="top">停止 · Esc</TooltipContent>
                 </Tooltip>
               ) : (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={() => handleSend()}
-                      disabled={
-                        (!text.trim() && images.length === 0) || isReadOnly || isReadingImages
-                      }
-                      className="flex size-[34px] items-center justify-center rounded-full bg-primary text-primary-foreground transition-transform hover:bg-primary/90 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-                      aria-label="发送消息"
-                    >
-                      <ArrowUpIcon className="size-4 stroke-[2.5]" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">发送 (Enter)</TooltipContent>
-                </Tooltip>
+                <button
+                  type="button"
+                  onClick={() => send()}
+                  disabled={!canSend}
+                  className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-[transform,opacity] active:scale-95 disabled:opacity-25"
+                  aria-label={running ? "补充到当前轮" : "发送"}
+                >
+                  <ArrowUpIcon className="size-4" strokeWidth={2.4} />
+                </button>
               )}
             </div>
           </div>
         </div>
-
-        {/* 3. 会话状态与真实上下文用量：居中一簇，不两端顶死 */}
-        {inline ? null : (
-          <div className="flex items-center justify-center gap-5 text-[11px] text-[var(--text-tertiary)]">
-            <span className="inline-flex items-center gap-1.5">
-              <GaugeIcon className="size-3" />
-              <span>
-                {turnsCount > 0 ? `${turnsCount} 轮 ${stepsCount} 步` : "未开始"}
-                {isRunning ? " · 处理中" : ""}
-              </span>
-            </span>
-
-            {context && contextPercent !== null && (
-              <>
-                <span className="inline-flex items-center gap-1.5">
-                  <DatabaseIcon className="size-3 shrink-0" />
-                  <span className="font-mono">
-                    {(context.total_tokens / 1000).toFixed(1)}k /{" "}
-                    {(context.context_window / 1000).toFixed(0)}k tok
-                  </span>
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <ContextGauge percent={contextPercent} />
-                  <span className="font-mono">{contextPercent}%</span>
-                </span>
-              </>
-            )}
-          </div>
-        )}
       </div>
-    </div>
+    </ComposerDock>
   );
 }
 
-/** 上下文占用圆环：12px，超过 80% 转成警示色。 */
-function ContextGauge({ percent }: { percent: number }) {
-  const size = 12;
-  const stroke = 1.6;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const clamped = Math.max(0, Math.min(100, percent));
-
+function ComposerDock({ inline, children }: { inline: boolean; children: React.ReactNode }) {
+  if (inline) return <div className="w-full">{children}</div>;
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      className={`shrink-0 -rotate-90 ${clamped > 80 ? "text-warn" : "text-primary"}`}
-      aria-hidden="true"
-    >
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeOpacity={0.22}
-        strokeWidth={stroke}
-      />
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={stroke}
-        strokeLinecap="round"
-        strokeDasharray={circumference}
-        strokeDashoffset={circumference * (1 - clamped / 100)}
-      />
-    </svg>
+    <div className="moc-chat-pane relative shrink-0 bg-background">
+      {/* 渐隐遮罩：转写滚到输入框下方时不硬切 */}
+      <div className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-t from-background to-transparent" />
+      <div className="moc-chat-column pt-1 pb-4">{children}</div>
+    </div>
   );
 }

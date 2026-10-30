@@ -1,6 +1,6 @@
-// 轮次重组：把扁平的 block 流切成"用户提示 → 活动流 → 正文"的轮次结构。
-// 消息流按三级折叠渲染：轮次摘要 → 活动分组 → 单条活动行，
-// 分组标题由本轮实际出现的动作类型现场归纳，不需要协议侧提供字段。
+// 轮次重组：把扁平的 block 流切成「用户提示 → 按时间排列的片段」的轮次结构。
+// 片段保留原始先后：连续的思考/工具/命令合成一个活动组，中间穿插的正文、
+// 计划卡与告警各自成段；完成后的轮次只露出最后一段正文，其余收进「处理过程」。
 
 import type { Block } from "@/lib/transcript-model";
 
@@ -8,20 +8,44 @@ type UserBlock = Extract<Block, { kind: "user" }>;
 type TextBlock = Extract<Block, { kind: "text" }>;
 type FooterBlock = Extract<Block, { kind: "footer" }>;
 type ToolBlock = Extract<Block, { kind: "tool" }>;
+type PlanBlock = Extract<Block, { kind: "plan" }>;
+type StatusBlock = Extract<Block, { kind: "status" }>;
 
-export interface Turn {
+export type Segment =
+  | { kind: "activity"; id: string; blocks: Block[] }
+  | { kind: "text"; id: string; block: TextBlock }
+  | { kind: "plan"; id: string; block: PlanBlock }
+  | { kind: "notice"; id: string; block: StatusBlock };
+
+export type Turn = {
   /** 轮次 id：优先用用户块，续接轮（开头没有用户块）退回首个块的 id。 */
   id: string;
   user?: UserBlock;
   /** 思考 / 命令 / 工具 / 状态 / 计划等非正文块，按原顺序。 */
   activity: Block[];
   texts: TextBlock[];
+  /** 按时间排列的渲染片段。 */
+  segments: Segment[];
   footer?: FooterBlock;
-}
+};
 
-/** 活动块是否需要在折叠区里占一行。 */
-function isActivityBlock(block: Block): boolean {
-  return block.kind !== "user" && block.kind !== "text" && block.kind !== "footer";
+function pushSegment(turn: Turn, block: Block): void {
+  if (block.kind === "text") {
+    turn.segments.push({ kind: "text", id: block.id, block });
+    return;
+  }
+  if (block.kind === "plan") {
+    turn.segments.push({ kind: "plan", id: block.id, block });
+    return;
+  }
+  // 告警与错误不藏进折叠组：用户必须一眼看到。
+  if (block.kind === "status" && block.tone !== "info") {
+    turn.segments.push({ kind: "notice", id: block.id, block });
+    return;
+  }
+  const last = turn.segments.at(-1);
+  if (last?.kind === "activity") last.blocks.push(block);
+  else turn.segments.push({ kind: "activity", id: block.id, blocks: [block] });
 }
 
 export function groupTurns(blocks: Block[]): Turn[] {
@@ -30,18 +54,21 @@ export function groupTurns(blocks: Block[]): Turn[] {
 
   for (const block of blocks) {
     if (block.kind === "user") {
-      current = { id: block.id, user: block, activity: [], texts: [] };
+      current = { id: block.id, user: block, activity: [], texts: [], segments: [] };
       turns.push(current);
       continue;
     }
     if (!current) {
-      current = { id: block.id, activity: [], texts: [] };
+      current = { id: block.id, activity: [], texts: [], segments: [] };
       turns.push(current);
     }
-    const turn = current;
-    if (block.kind === "text") turn.texts.push(block);
-    else if (block.kind === "footer") turn.footer = block;
-    else if (isActivityBlock(block)) turn.activity.push(block);
+    if (block.kind === "footer") {
+      current.footer = block;
+      continue;
+    }
+    if (block.kind === "text") current.texts.push(block);
+    else current.activity.push(block);
+    pushSegment(current, block);
   }
 
   return turns;
@@ -79,7 +106,9 @@ function toolKind(name: string): ActivityKind {
     return "webFetch";
   }
   if (/(^|_)(bash|shell|terminal|exec|command|run|sh)(_|$)/.test(normalized)) return "commands";
-  if (/(^|_)(subagent|task|workflow|agent|spawn|delegate|dispatch)(_|$)/.test(normalized)) {
+  if (
+    /(^|_)(subagent|task|workflow|agent|spawn|delegate|dispatch|sidekick)(_|$)/.test(normalized)
+  ) {
     return "subagents";
   }
   if (/(^|_)(read|view|capture)(_|$)/.test(normalized)) {

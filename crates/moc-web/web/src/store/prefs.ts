@@ -4,45 +4,46 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type Theme = "system" | "light" | "dark";
-export type DetailTier = "hidden" | "brief" | "full";
+/** 运行中按 Enter：插队补充到当前提示（steer），或中断后作为下一条提示（interrupt）。 */
 export type RunningEnter = "steer" | "interrupt";
 export type DiffMode = "unified" | "split";
-export type RightTab = "plan" | "todo" | "changes" | "agents" | "context" | "btw";
 
 export type Prefs = {
   theme: Theme;
-  thinkingTier: DetailTier;
-  toolTier: DetailTier;
   runningEnter: RunningEnter;
   notify: boolean;
   diffMode: DiffMode;
-  rightPanel: { open: boolean; tab: RightTab; width: number };
-  sidebarWidth: number;
-  sidebarCollapsed: boolean;
+  /** 思考过程默认展开。 */
+  expandThinking: boolean;
 };
 
 type PrefsStore = Prefs & {
   set: (patch: Partial<Prefs>) => void;
-  setRightPanel: (patch: Partial<Prefs["rightPanel"]>) => void;
 };
-
-export const TIER_ORDER: DetailTier[] = ["hidden", "brief", "full"];
 
 export const usePrefs = create<PrefsStore>()(
   persist(
     (set) => ({
       theme: "system",
-      thinkingTier: "brief",
-      toolTier: "brief",
       runningEnter: "steer",
       notify: false,
       diffMode: "unified",
-      rightPanel: { open: false, tab: "plan", width: 360 },
-      sidebarWidth: 280,
-      sidebarCollapsed: false,
+      expandThinking: false,
       set: (patch) => set(patch),
-      setRightPanel: (patch) => set((state) => ({ rightPanel: { ...state.rightPanel, ...patch } })),
     }),
-    { name: "moc-web-prefs" },
+    {
+      name: "moc-web-prefs",
+      version: 2,
+      migrate: (persisted) => {
+        const old = (persisted ?? {}) as Partial<Prefs>;
+        return {
+          theme: old.theme ?? "system",
+          runningEnter: old.runningEnter ?? "steer",
+          notify: old.notify ?? false,
+          diffMode: old.diffMode ?? "unified",
+          expandThinking: false,
+        } as PrefsStore;
+      },
+    },
   ),
 );

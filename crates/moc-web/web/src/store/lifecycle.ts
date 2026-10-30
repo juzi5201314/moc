@@ -3,21 +3,24 @@
 // 只有 `session/load` 会取跨进程写租约，所以打开时先 load（max_entries=1，顺带拿
 // todos / plans），再用 `session/load_page` 取展示用的转写。
 
-import { toast } from "sonner";
 import { attachEntryIds, entriesToBlocks } from "@/lib/transcript-model";
 import { clientListeners, rpc } from "@/protocol/client";
 import { ErrorCode, RpcError } from "@/protocol/errors";
 import type {
+  CompactResult,
   ContextUsageResult,
   PluginListResult,
+  SessionAutonomy,
+  SessionEngine,
   SessionInfo,
   SessionLoadPageResult,
   SessionLoadResult,
-  SessionMode,
+  SessionPermission,
+  SessionSetModelResult,
 } from "@/protocol/types";
 import { useComposer } from "./composer";
 import { useConnection } from "./connection";
-import { useSessions } from "./sessions";
+import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
 import { useTranscript } from "./transcript";
 import { requestComposerFocus } from "./ui";
@@ -229,7 +232,7 @@ export async function releaseSession(sessionId: string): Promise<void> {
 export type NewSessionOptions = {
   cwd?: string;
   model?: string;
-  mode?: SessionMode;
+  engine?: SessionEngine;
   plan?: boolean;
 };
 
@@ -237,7 +240,7 @@ export async function newSession(options: NewSessionOptions = {}): Promise<Sessi
   const info = await rpc.call<SessionInfo>("session/new", {
     cwd: options.cwd,
     model: options.model,
-    mode: options.mode ?? "normal",
+    engine: options.engine ?? "standard",
     plan_active: options.plan ?? false,
   });
   // session/new 已取写租约；第一条消息落盘前 session/list 看不到它。
@@ -250,80 +253,139 @@ export async function newSession(options: NewSessionOptions = {}): Promise<Sessi
 }
 
 /**
- * 极速新建会话：对齐 deepseek-harness 交互。
- * 不立即写入后端数据库，而是创建本地空白临时会话（draft）；
- * 若用户离开或关闭，直接丢弃；仅在输入首条提示词后才向后端写入会话。
+ * 新建会话：先建本地空白草稿（draft），首条提示发出时才向 core 创建真实会话；
+ * 草稿离开即丢弃，不在会话列表里留下空会话。
  */
 export function createQuickSession(targetCwd?: string): SessionInfo {
-  let cwd = targetCwd;
-  if (!cwd) {
-    const activeId = useTabs.getState().active;
-    if (activeId && activeId !== "draft-session") {
-      cwd = useTranscript.getState().bySession[activeId]?.info?.cwd;
-    }
-  }
-  if (!cwd) {
-    const workspaces = useSessions.getState().workspaces;
-    const list = useSessions.getState().list;
-    cwd = workspaces[0] ?? list[0]?.cwd ?? "/home/soeur/project/moc";
-  }
-
   const activeId = useTabs.getState().active;
-  const currentModel =
+  const activeInfo =
     activeId && activeId !== "draft-session"
-      ? useTranscript.getState().bySession[activeId]?.info?.model
+      ? useTranscript.getState().bySession[activeId]?.info
       : undefined;
-  const models = useConnection.getState().config?.models;
-  const defaultModel = currentModel || models?.[0]?.id;
+  const { workspaces, list } = useSessions.getState();
+  const config = useConnection.getState().config;
+  const cwd = targetCwd ?? activeInfo?.cwd ?? workspaces[0] ?? list[0]?.cwd ?? config?.cwd ?? "";
+  // 沿用当前会话的模型；没有时留空，交给 core 用 `models.roles.default`。
+  const model = activeInfo?.model;
 
-  const draftId = "draft-session";
+  const now = Date.now();
   const draftInfo: SessionInfo = {
-    id: draftId,
+    id: "draft-session",
     title: "新会话",
     cwd,
-    model: defaultModel ?? "",
-    mode: "normal",
+    model: model ?? config?.default_model ?? "",
+    engine: "standard",
+    autonomy: "default",
     plan_active: false,
-    mode_locked: false,
-    permission: "full",
-    created_at_ms: Date.now(),
-    updated_at_ms: Date.now(),
+    engine_locked: false,
+    // 草稿的权限展示读 DraftSession.permission；这里只是占位，不会发给 core。
+    permission: "workspace",
+    created_at_ms: now,
+    updated_at_ms: now,
   };
 
-  useSessions.getState().setDraftSession({
-    id: draftId,
-    cwd,
-    title: "新会话",
-    isDraft: true,
-    model: defaultModel,
-    mode: "normal",
-    plan: false,
-  });
-
+  useSessions
+    .getState()
+    .setDraftSession({ cwd, model, engine: "standard", autonomy: "default", plan: false });
+  useTranscript.getState().drop(draftInfo.id);
   useTranscript.getState().ensureView(draftInfo);
-  useTabs.getState().add(draftId);
+  useTabs.getState().add(draftInfo.id);
   requestComposerFocus();
   return draftInfo;
+}
+
+/** 草稿会话：同时改 DraftSession（发给 core 的参数）与视图上的展示信息。 */
+function patchDraft(patch: Partial<DraftSession>, info: Partial<SessionInfo>): void {
+  const draft = useSessions.getState().draftSession;
+  if (draft) useSessions.getState().setDraftSession({ ...draft, ...patch });
+  useTranscript.getState().mutate("draft-session", (view) => {
+    Object.assign(view.info, info);
+  });
+}
+
+function applyInfo(info: SessionInfo): void {
+  useSessions.getState().upsert(info);
+  useTranscript.getState().mutate(info.id, (view) => {
+    view.info = info;
+  });
+}
+
+/** 欢迎页切换工作目录：只改草稿的 cwd，保留已选的模型、权限与输入。 */
+export function setDraftCwd(cwd: string): void {
+  patchDraft({ cwd }, { cwd });
 }
 
 /** 切换 plan 叠加态：草稿会话只改本地标记，真实会话走 `session/plan_mode`。 */
 export async function togglePlanMode(sessionId: string, active: boolean): Promise<void> {
   if (sessionId === "draft-session") {
-    useTranscript.getState().mutate(sessionId, (view) => {
-      view.info.plan_active = active;
-    });
-    const draft = useSessions.getState().draftSession;
-    if (draft) useSessions.getState().setDraftSession({ ...draft, plan: active });
+    patchDraft({ plan: active }, { plan_active: active });
     return;
   }
-  const info = await rpc.call<SessionInfo>("session/plan_mode", {
+  applyInfo(await rpc.call<SessionInfo>("session/plan_mode", { session_id: sessionId, active }));
+}
+
+/** 切换引擎；跑过首条提示的会话由 core 拒绝（`engine_locked`）。 */
+export async function setSessionEngine(sessionId: string, engine: SessionEngine): Promise<void> {
+  if (sessionId === "draft-session") {
+    patchDraft({ engine }, { engine });
+    return;
+  }
+  applyInfo(await rpc.call<SessionInfo>("session/set_engine", { session_id: sessionId, engine }));
+}
+
+/** 切换自主程度：随时可改、立即生效，只决定之后的确认由谁应答。 */
+export async function setSessionAutonomy(
+  sessionId: string,
+  autonomy: SessionAutonomy,
+): Promise<void> {
+  if (sessionId === "draft-session") {
+    patchDraft({ autonomy }, { autonomy });
+    return;
+  }
+  applyInfo(
+    await rpc.call<SessionInfo>("session/set_autonomy", { session_id: sessionId, autonomy }),
+  );
+}
+
+export async function setSessionPermission(
+  sessionId: string,
+  permission: SessionPermission,
+): Promise<void> {
+  if (sessionId === "draft-session") {
+    patchDraft({ permission }, { permission });
+    return;
+  }
+  applyInfo(
+    await rpc.call<SessionInfo>("session/set_permission", {
+      session_id: sessionId,
+      permission,
+      clear_grants: false,
+    }),
+  );
+}
+
+/** 切换模型（selector 可带 `:level`）；返回 core 的容量检查结果供调用方提示。 */
+export async function setSessionModel(
+  sessionId: string,
+  selector: string,
+): Promise<SessionSetModelResult | null> {
+  if (sessionId === "draft-session") {
+    patchDraft({ model: selector }, { model: selector });
+    return null;
+  }
+  const result = await rpc.call<SessionSetModelResult>("session/set_model", {
     session_id: sessionId,
-    active,
+    selector,
   });
-  useSessions.getState().upsert(info);
-  useTranscript.getState().mutate(sessionId, (view) => {
-    view.info = info;
-  });
+  applyInfo(result.session);
+  return result;
+}
+
+/** 手动压缩上下文；完成后刷新上下文占用。 */
+export async function compactSession(sessionId: string): Promise<CompactResult> {
+  const result = await rpc.call<CompactResult>("session/compact", { session_id: sessionId });
+  void refreshSideData(sessionId);
+  return result;
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -347,50 +409,45 @@ export async function renameSession(sessionId: string, title: string): Promise<v
   });
 }
 
-/** 分叉/分支会话：继承当前会话的上下文工作区、模式与模型，开启独立新分支 */
-export async function forkSession(sessionId: string): Promise<SessionInfo | undefined> {
-  const current =
-    useTranscript.getState().bySession[sessionId]?.info ??
-    useSessions.getState().list.find((s) => s.id === sessionId);
-  if (!current) return undefined;
-  try {
-    const info = await newSession({
-      cwd: current.cwd,
-      model: current.model,
-      mode: current.mode,
-      plan: current.plan_active,
-    });
-    const forkTitle = `${current.title || "会话"} (分支)`;
-    await renameSession(info.id, forkTitle).catch(() => undefined);
-    toast.success(`已分叉生成新会话: ${forkTitle}`);
-    return info;
-  } catch (error) {
-    toast.error(`分叉会话失败: ${error instanceof Error ? error.message : String(error)}`);
-    return undefined;
-  }
-}
-
 /**
- * 从某条消息回退：core 在当前会话内原地截断（被截掉的尾部可用 `session/redo` 接回）。
- * 目标是用户消息时，原文回到输入框供修改后重发。
+ * 从某条消息回退：core 在当前会话内原地截断，截掉的尾部留在 core 内存里，可用 `redo` 接回。
+ * 目标是用户消息时，原文回到输入框供修改后重发。返回可前滚到的最后一条条目 id。
  */
 export async function rewind(
   sessionId: string,
   entryId: string,
   restoreText?: string,
-): Promise<void> {
+): Promise<string | undefined> {
   const result = await rpc.call<SessionLoadResult>("session/rewind", {
     session_id: sessionId,
     entry_id: entryId,
   });
-  const targetId = result.session.id;
-  if (targetId !== sessionId) useTabs.getState().replace(sessionId, targetId);
-  useTranscript.getState().drop(targetId);
-  useSessions.getState().upsert(result.session);
-  await openSession(targetId);
+  await reopenWith(sessionId, result);
   if (restoreText !== undefined) {
-    useComposer.getState().restore(targetId, { text: restoreText, images: [] });
+    useComposer.getState().restore(sessionId, { text: restoreText, images: [] });
   }
+  // 回退结果不带可前滚的尾部，只有 load_page 返回；取一条就够拿到栈顶 id。
+  const page = await rpc.call<SessionLoadPageResult>("session/load_page", {
+    session_id: sessionId,
+    max_entries: 1,
+    max_message_bytes: 1024,
+  });
+  return page.redo_entries?.at(-1)?.id;
+}
+
+/** 前滚：把最近一次回退截掉的尾部接回到 `entryId`（含该条目）。 */
+export async function redo(sessionId: string, entryId: string): Promise<void> {
+  const result = await rpc.call<SessionLoadResult>("session/redo", {
+    session_id: sessionId,
+    entry_id: entryId,
+  });
+  await reopenWith(sessionId, result);
+}
+
+async function reopenWith(sessionId: string, result: SessionLoadResult): Promise<void> {
+  useTranscript.getState().drop(sessionId);
+  useSessions.getState().upsert(result.session);
+  await openSession(sessionId);
   void useSessions.getState().refresh();
 }
 

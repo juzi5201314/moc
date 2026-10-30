@@ -98,6 +98,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
   const [executionEngine, setExecutionEngine] = useState<SessionEngine>(sourceEngine);
 
   const lines = useMemo(() => sourceLines(plan.markdown), [plan.markdown]);
+  const submitted = plan.annotations ?? [];
 
   // 换代（v1 → v2）时清掉草稿与提示，默认回到「本版改动」。
   const lastPlanId = useRef<string | null>(null);
@@ -301,7 +302,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
           <div className="overflow-hidden rounded-md border border-border/70 px-3 py-2">
             <PlanMarkdown
               markdown={plan.markdown}
-              annotations={[...plan.annotations, ...drafts]}
+              annotations={[...submitted, ...drafts]}
               onAnnotate={annotatable ? (range) => openEditor(range) : undefined}
               onSelectText={annotatable ? (range) => setSelection(range) : undefined}
             />
@@ -386,7 +387,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         </ul>
       )}
 
-      {plan.annotations.length > 0 && (
+      {submitted.length > 0 && (
         <div className="space-y-1.5">
           <button
             type="button"
@@ -396,11 +397,11 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             <ChevronDownIcon
               className={cn("size-3 transition-transform", showSubmitted && "rotate-180")}
             />
-            已提交的 {plan.annotations.length} 条批注
+            已提交的 {submitted.length} 条批注
           </button>
           {showSubmitted && (
             <ul className="space-y-1.5">
-              {plan.annotations.map((annotation) => (
+              {submitted.map((annotation) => (
                 <AnnotationCard key={annotation.id} annotation={annotation} />
               ))}
             </ul>

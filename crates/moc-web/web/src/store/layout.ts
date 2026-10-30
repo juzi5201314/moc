@@ -1,250 +1,118 @@
-// 布局与多栏面板状态：三列尺寸、折叠、右侧标签页抽屉（完全对齐 deepseek-harness 的 ui-layout 与 ui-sidebar-right）。
+// 三栏布局：左侧工作区栏宽度/折叠，右侧检查面板开关/宽度/当前页，持久化到 localStorage。
 
 import { create } from "zustand";
 
-export const SIDEBAR_MIN = 264;
-export const SIDEBAR_MAX = 420;
-export const SIDEBAR_DEFAULT = 280;
-export const SIDEBAR_COLLAPSED = 56;
-export const SIDEBAR_AUTO_COLLAPSE = 1024;
+export const SIDEBAR_MIN = 232;
+export const SIDEBAR_MAX = 400;
+export const SIDEBAR_DEFAULT = 264;
+/** 窗口窄于此值时侧栏改为浮层，主舞台不被挤压。 */
+export const NARROW_VIEWPORT = 960;
 
-export const RIGHTBAR_MIN = 300;
-export const RIGHTBAR_DEFAULT = 450;
-export const RIGHTBAR_MAX_RATIO = 0.7;
+export const RIGHTBAR_MIN = 320;
+export const RIGHTBAR_DEFAULT = 420;
+export const RIGHTBAR_MAX_RATIO = 0.6;
 
-export interface RightTab {
-  id: string;
-  kind:
-    | "guide"
-    | "files"
-    | "doc"
-    | "changes"
-    | "plan"
-    | "terminal"
-    | "subagents"
-    | "context"
-    | "usage";
-  title: string;
-  path?: string;
-  data?: unknown;
-}
+export type InspectorTab = "changes" | "plan" | "todo" | "agents" | "context" | "usage" | "btw";
 
-interface LayoutStorage {
-  sidebarCollapsed: boolean;
-  sidebarWidth: number;
-  rightbarWidth: number;
-  pinnedSessions: string[];
-}
-
-const STORAGE_KEY = "moc-web-layout-v1";
-
-function loadStorage(): LayoutStorage {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        sidebarCollapsed: Boolean(parsed.sidebarCollapsed),
-        sidebarWidth:
-          typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : SIDEBAR_DEFAULT,
-        rightbarWidth:
-          typeof parsed.rightbarWidth === "number" ? parsed.rightbarWidth : RIGHTBAR_DEFAULT,
-        pinnedSessions: Array.isArray(parsed.pinnedSessions) ? parsed.pinnedSessions : [],
-      };
-    }
-  } catch {
-    // 损坏数据忽略
-  }
-  return {
-    sidebarCollapsed: typeof window !== "undefined" && window.innerWidth < SIDEBAR_AUTO_COLLAPSE,
-    sidebarWidth: SIDEBAR_DEFAULT,
-    rightbarWidth: RIGHTBAR_DEFAULT,
-    pinnedSessions: [],
-  };
-}
-
-function saveStorage(state: LayoutStorage) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // 忽略存储失败
-  }
-}
-
-const DEFAULT_TABS: RightTab[] = [
-  { id: "guide", kind: "guide", title: "🧭 开始" },
-  { id: "files", kind: "files", title: "工作区文件" },
-  { id: "terminal", kind: "terminal", title: "新建终端" },
+export const INSPECTOR_TABS: InspectorTab[] = [
+  "changes",
+  "plan",
+  "todo",
+  "agents",
+  "context",
+  "usage",
+  "btw",
 ];
 
-export interface LayoutState {
+type Persisted = {
   sidebarCollapsed: boolean;
   sidebarWidth: number;
-  rightbarOpen: boolean;
   rightbarWidth: number;
-  rightbarFullscreen: boolean;
-  openRightTabs: RightTab[];
-  activeRightTabId: string;
-  pinnedSessions: string[];
+  inspectorTab: InspectorTab;
+};
 
-  toggleSidebar: () => void;
-  setSidebarCollapsed: (collapsed: boolean) => void;
-  setSidebarWidth: (width: number) => void;
+const STORAGE_KEY = "moc-web-layout-v2";
 
-  toggleRightbar: (open?: boolean) => void;
-  setRightbarWidth: (width: number) => void;
-  toggleRightbarFullscreen: () => void;
-
-  openRightTab: (tab: {
-    kind: RightTab["kind"];
-    title?: string;
-    path?: string;
-    data?: unknown;
-  }) => void;
-  closeRightTab: (id: string) => void;
-  activateRightTab: (id: string) => void;
-
-  togglePinSession: (sessionId: string) => void;
-  isSessionPinned: (sessionId: string) => boolean;
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
 }
 
-export const useLayout = create<LayoutState>()((set, get) => {
-  const initial = loadStorage();
-
-  const sync = () => {
-    const { sidebarCollapsed, sidebarWidth, rightbarWidth, pinnedSessions } = get();
-    saveStorage({ sidebarCollapsed, sidebarWidth, rightbarWidth, pinnedSessions });
+function load(): Persisted {
+  const fallback: Persisted = {
+    sidebarCollapsed: false,
+    sidebarWidth: SIDEBAR_DEFAULT,
+    rightbarWidth: RIGHTBAR_DEFAULT,
+    inspectorTab: "changes",
   };
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
+    if (!parsed || typeof parsed !== "object") return fallback;
+    const raw = parsed as Partial<Persisted>;
+    return {
+      sidebarCollapsed: Boolean(raw.sidebarCollapsed),
+      sidebarWidth: clamp(raw.sidebarWidth ?? SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX),
+      rightbarWidth: Math.max(RIGHTBAR_MIN, raw.rightbarWidth ?? RIGHTBAR_DEFAULT),
+      inspectorTab: INSPECTOR_TABS.includes(raw.inspectorTab as InspectorTab)
+        ? (raw.inspectorTab as InspectorTab)
+        : "changes",
+    };
+  } catch {
+    return fallback;
+  }
+}
 
+export type LayoutState = Persisted & {
+  rightbarOpen: boolean;
+  /** 窄窗口下侧栏以浮层展开（不持久化）。 */
+  sidebarOverlay: boolean;
+  toggleSidebar: () => void;
+  setSidebarOverlay: (open: boolean) => void;
+  setSidebarWidth: (width: number) => void;
+  toggleRightbar: (open?: boolean) => void;
+  setRightbarWidth: (width: number) => void;
+  /** 打开右侧面板并切到指定页。 */
+  openInspector: (tab: InspectorTab) => void;
+};
+
+export const useLayout = create<LayoutState>()((set, get) => {
+  const persist = () => {
+    const { sidebarCollapsed, sidebarWidth, rightbarWidth, inspectorTab } = get();
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ sidebarCollapsed, sidebarWidth, rightbarWidth, inspectorTab }),
+      );
+    } catch {
+      // 隐私模式等写不进去时只影响下次打开的布局
+    }
+  };
   return {
-    sidebarCollapsed: initial.sidebarCollapsed,
-    sidebarWidth: Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, initial.sidebarWidth)),
-    // 与 DSH 一致：右栏默认收起，由顶栏按钮或具体入口按需打开
+    ...load(),
     rightbarOpen: false,
-    rightbarWidth: Math.max(RIGHTBAR_MIN, initial.rightbarWidth),
-    rightbarFullscreen: false,
-    openRightTabs: DEFAULT_TABS,
-    activeRightTabId: "guide",
-    pinnedSessions: initial.pinnedSessions,
-
+    sidebarOverlay: false,
     toggleSidebar: () => {
+      if (window.innerWidth < NARROW_VIEWPORT) {
+        set((state) => ({ sidebarOverlay: !state.sidebarOverlay }));
+        return;
+      }
       set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }));
-      sync();
+      persist();
     },
-
-    setSidebarCollapsed: (collapsed) => {
-      set({ sidebarCollapsed: collapsed });
-      sync();
-    },
-
+    setSidebarOverlay: (open) => set({ sidebarOverlay: open }),
     setSidebarWidth: (width) => {
-      const clamped = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.round(width)));
-      set({ sidebarWidth: clamped });
-      sync();
+      set({ sidebarWidth: clamp(width, SIDEBAR_MIN, SIDEBAR_MAX) });
+      persist();
     },
-
-    toggleRightbar: (open) => {
-      set((state) => ({ rightbarOpen: open ?? !state.rightbarOpen }));
-    },
-
+    toggleRightbar: (open) => set((state) => ({ rightbarOpen: open ?? !state.rightbarOpen })),
     setRightbarWidth: (width) => {
-      const max = typeof window !== "undefined" ? window.innerWidth * RIGHTBAR_MAX_RATIO : 800;
-      const clamped = Math.max(RIGHTBAR_MIN, Math.min(max, Math.round(width)));
-      set({ rightbarWidth: clamped });
-      sync();
-    },
-
-    toggleRightbarFullscreen: () => {
-      set((state) => ({ rightbarFullscreen: !state.rightbarFullscreen }));
-    },
-
-    openRightTab: ({ kind, title, path, data }) => {
-      const { openRightTabs } = get();
-      const id = kind === "doc" && path ? `doc:${path}` : kind;
-      const existing = openRightTabs.find((t) => t.id === id);
-
-      const resolvedTitle =
-        title ??
-        (kind === "doc" && path
-          ? path.split("/").pop() || path
-          : kind === "files"
-            ? "文件"
-            : kind === "changes"
-              ? "变更"
-              : kind === "plan"
-                ? "计划"
-                : kind === "terminal"
-                  ? "终端"
-                  : kind === "subagents"
-                    ? "子代理"
-                    : kind === "context"
-                      ? "上下文"
-                      : kind === "usage"
-                        ? "用量"
-                        : "指南");
-
-      if (existing) {
-        set({
-          activeRightTabId: id,
-          rightbarOpen: true,
-        });
-      } else {
-        const newTab: RightTab = {
-          id,
-          kind,
-          title: resolvedTitle,
-          path,
-          data,
-        };
-        set({
-          openRightTabs: [...openRightTabs, newTab],
-          activeRightTabId: id,
-          rightbarOpen: true,
-        });
-      }
-    },
-
-    closeRightTab: (id) => {
-      const { openRightTabs, activeRightTabId } = get();
-      const index = openRightTabs.findIndex((t) => t.id === id);
-      if (index < 0) return;
-
-      const remaining = openRightTabs.filter((t) => t.id !== id);
-      let nextActive = activeRightTabId;
-
-      if (activeRightTabId === id) {
-        if (remaining.length > 0) {
-          const nextIndex = Math.min(index, remaining.length - 1);
-          nextActive = remaining[nextIndex]?.id ?? "guide";
-        } else {
-          nextActive = "guide";
-          remaining.push({ id: "guide", kind: "guide", title: "开始指南" });
-        }
-      }
-
       set({
-        openRightTabs: remaining,
-        activeRightTabId: nextActive,
+        rightbarWidth: clamp(width, RIGHTBAR_MIN, window.innerWidth * RIGHTBAR_MAX_RATIO),
       });
+      persist();
     },
-
-    activateRightTab: (id) => {
-      set({ activeRightTabId: id, rightbarOpen: true });
-    },
-
-    togglePinSession: (sessionId) => {
-      set((state) => {
-        const isPinned = state.pinnedSessions.includes(sessionId);
-        const next = isPinned
-          ? state.pinnedSessions.filter((id) => id !== sessionId)
-          : [...state.pinnedSessions, sessionId];
-        return { pinnedSessions: next };
-      });
-      sync();
-    },
-
-    isSessionPinned: (sessionId) => {
-      return get().pinnedSessions.includes(sessionId);
+    openInspector: (tab) => {
+      set({ inspectorTab: tab, rightbarOpen: true });
+      persist();
     },
   };
 });

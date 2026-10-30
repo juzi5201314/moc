@@ -1,126 +1,127 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/* Tailwind v4 不扫描 node_modules：Streamdown 与插件渲染出的标题、列表、表格、
+   代码高亮都依赖这些包里写死的工具类，缺了就会退化成无样式的纯文本。 */
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/math/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+@source "../node_modules/@streamdown/cjk/dist/*.js";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* =========================================================================
-   DSH 语义色板
-   取值对齐 @deepseek-ai/dsh-client-ui-theme：light 见 body 覆盖、dark 见
-   body[data-ds-dark-theme] 覆盖。描边走 --dsw-alias-border-l* 的半透明黑/白，
-   阴影走 --dsw-elevation-*。圆角（--radius 及派生值）暂未对齐。
+   设计令牌：中性灰阶 + 单一强调色。
+   面的层级：sidebar/panel（最底）< background（主舞台）< card/popover（浮起）。
+   描边一律用半透明前景色，跨深浅主题保持同样的「发丝线」观感。
    ========================================================================= */
 
 :root {
   color-scheme: light;
-  /* 画布：内容区纯白（--dsw-alias-bg-base），侧栏 #f9fafb（--dsw-specific-sidebar-fill） */
   --background: #ffffff;
-  --foreground: #0f1115; /* --dsw-alias-label-primary */
-  --panel: #f9fafb;
-  --card: #ffffff; /* --dsw-alias-bg-layer-1 */
-  --card-foreground: #0f1115;
+  --foreground: #171717;
+  --panel: #fafafa;
+  --card: #ffffff;
+  --card-foreground: #171717;
   --popover: #ffffff;
-  --popover-foreground: #0f1115;
-  --primary: #4176e6; /* --dsw-static-deepseek-500，即 --dsw-alias-link */
-  --primary-foreground: #ffffff;
-  --secondary: #ebeef2; /* --dsw-static-neutral-bluish-100 */
-  --secondary-foreground: #0f1115;
-  --muted: #f5f6f7; /* --dsw-static-neutral-bluish-60 */
-  --muted-foreground: #61666b; /* --dsw-alias-label-secondary */
-  --accent: rgba(38, 49, 72, 0.06); /* --dsw-alias-interactive-bg-hover */
-  --accent-foreground: #0f1115;
-  --bubble: #edf3fe; /* --dsw-static-deepseek-50：用户气泡底色 */
-  --brand: #4176e6;
+  --popover-foreground: #171717;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #171717;
+  --muted: #f4f4f5;
+  --muted-foreground: #6b6b70;
+  --accent: rgba(23, 23, 23, 0.05);
+  --accent-foreground: #171717;
+  --bubble: #f3f3f4;
+  --brand: #3b6ff5;
   --brand-foreground: #ffffff;
-  --destructive: #ec1313; /* --dsw-static-red-600 */
-  --success: #22c55e; /* --dsw-static-green-500 */
-  --warn: #dd8629; /* --dsw-alias-state-warn-label */
-  --border: rgba(0, 0, 0, 0.1); /* --dsw-alias-border-l2 */
-  --border-strong: rgba(0, 0, 0, 0.16); /* --dsw-alias-border-l4 */
-  --input: rgba(0, 0, 0, 0.12); /* --dsw-alias-border-l3 */
-  --ring: rgba(65, 118, 230, 0.36);
-  --diff-insert: rgba(34, 197, 94, 0.08); /* --dsw-static-green-500-a08 */
-  --diff-delete: rgba(236, 19, 19, 0.08); /* --dsw-static-red-600-a08 */
-  --radius: 0.75rem;
-  --sidebar: #f9fafb;
-  --sidebar-foreground: #0f1115;
-  --sidebar-accent: #ebeef2; /* --dsw-specific-sidebar-nav-item-active */
-  --sidebar-accent-foreground: #0f1115;
+  --destructive: #dc2626;
+  --success: #16a34a;
+  --warn: #d97706;
+  --border: rgba(23, 23, 23, 0.09);
+  --border-strong: rgba(23, 23, 23, 0.16);
+  --border-subtle: rgba(23, 23, 23, 0.05);
+  --input: rgba(23, 23, 23, 0.12);
+  --ring: rgba(59, 111, 245, 0.45);
+  --diff-insert: rgba(22, 163, 74, 0.1);
+  --diff-delete: rgba(220, 38, 38, 0.09);
+  --radius: 0.625rem;
+  --sidebar: #f7f7f8;
+  --sidebar-foreground: #171717;
+  --sidebar-accent: rgba(23, 23, 23, 0.06);
+  --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
-  --surface-hover: #f1f3f5; /* --dsw-alias-interactive-bg-hover-solid */
-  --border-subtle: rgba(0, 0, 0, 0.04); /* --dsw-alias-border-l1 */
-  --text-tertiary: #81858c; /* --dsw-alias-label-tertiary */
-  --shadow-soft:
-    0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 3px 8px rgba(0, 0, 0, 0.031), 0 0 16px rgba(0, 0, 0, 0.02); /* --dsw-elevation-panel */
-  --shadow-floating:
-    0 0 0 0.5px rgba(0, 0, 0, 0.16), 0 3px 8px rgba(0, 0, 0, 0.039), 0 0 20px rgba(0, 0, 0, 0.051); /* --dsw-elevation-prominent */
-  /* 浮层描边：DSH 输入框/回底按钮用 0.5px 半透明环代替 border，边缘更薄 */
-  --elevation-ring: 0 0 0 0.5px rgba(0, 0, 0, 0.1);
+  --surface-hover: rgba(23, 23, 23, 0.04);
+  --text-tertiary: #9a9aa0;
+  --code-bg: #f7f7f8;
+  --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
   --elevation-card:
-    0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 4px 16px rgba(0, 0, 0, 0.03), 0 0 24px rgba(0, 0, 0, 0.03);
-  --chart-1: #4176e6;
-  --chart-2: #61666b;
-  --chart-3: #979da6;
-  --chart-4: #cfd3d6;
-  --chart-5: #22c55e;
-  --chart-6: #dd8629;
-  --chart-muted: #adb2b8;
-  --chart-negative: #ec1313;
+    0 0 0 1px rgba(23, 23, 23, 0.07), 0 1px 2px rgba(23, 23, 23, 0.04),
+    0 6px 24px -6px rgba(23, 23, 23, 0.08);
+  --elevation-popover:
+    0 0 0 1px rgba(23, 23, 23, 0.08), 0 8px 28px -6px rgba(23, 23, 23, 0.16),
+    0 2px 6px rgba(23, 23, 23, 0.04);
+  --chart-1: #3b6ff5;
+  --chart-2: #6b6b70;
+  --chart-3: #a1a1a8;
+  --chart-4: #d4d4d8;
+  --chart-5: #16a34a;
+  --chart-6: #d97706;
 }
 
 .dark {
   color-scheme: dark;
-  --background: #151517; /* --dsw-static-neutral-bluish-950 */
-  --foreground: #f9fafb; /* --dsw-alias-label-primary */
-  --panel: #1b1b1c;
-  --card: #232324; /* --dsw-alias-bg-layer-1 */
-  --card-foreground: #f9fafb;
-  --popover: #2c2c2e; /* --dsw-alias-bg-layer-2 */
-  --popover-foreground: #f9fafb;
-  --primary: #7aaaff; /* --dsw-static-deepseek-400，即 --dsw-alias-link */
-  --primary-foreground: #0f1115;
-  --secondary: #43454a; /* --dsw-static-neutral-bluish-750 */
-  --secondary-foreground: #f9fafb;
-  --muted: #2c2c2e;
-  --muted-foreground: #cfd3d6; /* --dsw-alias-label-secondary */
-  --accent: rgba(255, 255, 255, 0.08); /* --dsw-alias-interactive-bg-hover */
-  --accent-foreground: #f9fafb;
-  --bubble: #1e2a40; /* 会话气泡：深色下取深蓝，避免纯灰和品牌色脱节 */
-  --brand: #7aaaff;
-  --brand-foreground: #0f1115;
-  --destructive: #f25a5a; /* --dsw-static-red-400 */
-  --success: #22c55e;
-  --warn: #dd8629;
-  --border: rgba(255, 255, 255, 0.12); /* --dsw-alias-border-l2 */
-  --border-strong: rgba(255, 255, 255, 0.2); /* --dsw-alias-border-l4 */
-  --input: rgba(255, 255, 255, 0.16); /* --dsw-alias-border-l3 */
-  --ring: rgba(122, 170, 255, 0.4);
-  --diff-insert: rgba(34, 197, 94, 0.12); /* --dsw-static-green-500-a12 */
-  --diff-delete: rgba(245, 90, 90, 0.12); /* --dsw-static-red-400-a12 */
-  --sidebar: #1b1b1c; /* --dsw-specific-sidebar-fill */
-  --sidebar-foreground: #f9fafb;
-  --sidebar-accent: #43454a; /* --dsw-specific-sidebar-nav-item-active */
-  --sidebar-accent-foreground: #f9fafb;
-  --surface-raised: #2c2c2e;
-  --surface-hover: #353638; /* --dsw-alias-interactive-bg-hover-solid */
-  --border-subtle: rgba(255, 255, 255, 0.06); /* --dsw-alias-border-l1 */
-  --text-tertiary: #adb2b8; /* --dsw-alias-label-tertiary */
-  --shadow-soft:
-    0 0 0 0.5px rgba(255, 255, 255, 0.2), 0 3px 8px rgba(0, 0, 0, 0.031),
-    0 0 16px rgba(0, 0, 0, 0.02);
-  --shadow-floating:
-    0 0 0 0.5px rgba(255, 255, 255, 0.2), 0 3px 8px rgba(0, 0, 0, 0.039),
-    0 0 20px rgba(0, 0, 0, 0.051);
-  --elevation-ring: 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+  --background: #161618;
+  --foreground: #ededef;
+  --panel: #111113;
+  --card: #1c1c1f;
+  --card-foreground: #ededef;
+  --popover: #1f1f22;
+  --popover-foreground: #ededef;
+  --primary: #ededef;
+  --primary-foreground: #161618;
+  --secondary: #26262a;
+  --secondary-foreground: #ededef;
+  --muted: #222225;
+  --muted-foreground: #a0a0a8;
+  --accent: rgba(255, 255, 255, 0.06);
+  --accent-foreground: #ededef;
+  --bubble: #26262a;
+  --brand: #6d97ff;
+  --brand-foreground: #0b0b0c;
+  --destructive: #f26161;
+  --success: #3fc56f;
+  --warn: #f0a33a;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --input: rgba(255, 255, 255, 0.12);
+  --ring: rgba(109, 151, 255, 0.5);
+  --diff-insert: rgba(63, 197, 111, 0.13);
+  --diff-delete: rgba(242, 97, 97, 0.13);
+  --sidebar: #111113;
+  --sidebar-foreground: #ededef;
+  --sidebar-accent: rgba(255, 255, 255, 0.07);
+  --sidebar-accent-foreground: #ededef;
+  --surface-raised: #1f1f22;
+  --surface-hover: rgba(255, 255, 255, 0.045);
+  --text-tertiary: #6e6e76;
+  --code-bg: #1b1b1e;
+  --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
   --elevation-card:
-    0 0 0 0.5px rgba(255, 255, 255, 0.14), 0 4px 16px rgba(0, 0, 0, 0.36),
-    0 0 24px rgba(0, 0, 0, 0.24);
-  --chart-1: #7aaaff;
-  --chart-2: #cfd3d6;
-  --chart-3: #979da6;
-  --chart-4: #61666b;
-  --chart-5: #22c55e;
-  --chart-6: #dd8629;
-  --chart-muted: #81858c;
-  --chart-negative: #f25a5a;
+    0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.3),
+    0 8px 28px -6px rgba(0, 0, 0, 0.45);
+  --elevation-popover:
+    0 0 0 1px rgba(255, 255, 255, 0.09), 0 12px 32px -6px rgba(0, 0, 0, 0.6),
+    0 2px 6px rgba(0, 0, 0, 0.3);
+  --chart-1: #6d97ff;
+  --chart-2: #a0a0a8;
+  --chart-3: #6e6e76;
+  --chart-4: #3a3a40;
+  --chart-5: #3fc56f;
+  --chart-6: #f0a33a;
 }
 
 @theme inline {
@@ -139,12 +140,21 @@
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
+  --color-bubble: var(--bubble);
   --color-brand: var(--brand);
   --color-brand-foreground: var(--brand-foreground);
   --color-destructive: var(--destructive);
   --color-success: var(--success);
   --color-warn: var(--warn);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-border-subtle: var(--border-subtle);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-diff-insert: var(--diff-insert);
@@ -155,29 +165,26 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-surface-raised: var(--surface-raised);
   --color-surface-hover: var(--surface-hover);
-  --color-border-subtle: var(--border-subtle);
   --color-text-tertiary: var(--text-tertiary);
-  /* 圆角阶对齐 --dsw-radius-*：4 / 8 / 12 / 16 / 20 / 28。
-     大圆角面（输入框卡片 28、气泡与入口卡 20）在组件里用显式 px，避免语义漂移。 */
+  --color-code: var(--code-bg);
   --radius-xs: 4px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-2xl: 28px;
-  /* 阴影：取 --dsw-elevation-* / --dsw-shadow-lv* 的柔和多层级，去掉描边那层
-     （组件本身已有 border，重复描边会压出硬边）。 */
-  --shadow-2xs: 0 1px 1px 0 rgba(0, 0, 0, 0.031);
-  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.031);
-  --shadow-sm: 0 2px 6px 0 rgba(0, 0, 0, 0.039), 0 0 12px 0 rgba(0, 0, 0, 0.02);
-  --shadow-md: 0 3px 8px 0 rgba(0, 0, 0, 0.031), 0 0 16px 0 rgba(0, 0, 0, 0.02);
-  --shadow-lg: 0 3px 8px 0 rgba(0, 0, 0, 0.039), 0 0 20px 0 rgba(0, 0, 0, 0.051);
-  --shadow-xl: 0 12px 32px 0 rgba(0, 0, 0, 0.078), 0 4px 12px 0 rgba(0, 0, 0, 0.02);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+  --radius-3xl: 22px;
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 8px 28px -6px rgba(0, 0, 0, 0.14), 0 2px 6px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-xl: 0 18px 48px -12px rgba(0, 0, 0, 0.25), 0 4px 12px rgba(0, 0, 0, 0.08);
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-mono:
-    ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+    "Geist Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
+    Consolas, monospace;
 }
 
 @layer base {
@@ -195,9 +202,9 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-size: 14px;
-    letter-spacing: 0;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    line-height: 1.5;
     text-rendering: optimizeLegibility;
+    font-feature-settings: "ss01", "cv11";
   }
   button,
   input,
@@ -208,160 +215,316 @@
   button {
     touch-action: manipulation;
   }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
   ::selection {
-    color: var(--foreground);
-    background: color-mix(in srgb, var(--primary) 20%, transparent);
+    background: color-mix(in srgb, var(--brand) 22%, transparent);
   }
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 1px;
   }
-}
-
-.moc-empty-mark {
-  color: var(--primary);
-  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
-  background: color-mix(in srgb, var(--primary) 9%, var(--card));
-}
-
-/* 用 superellipse 圆角做"圆而不软"的手感；不支持时无副作用地退回普通圆角。 */
-@supports (corner-shape: superellipse(1.5)) {
-  *,
-  ::before,
-  ::after {
-    corner-shape: superellipse(1.5);
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-tertiary);
   }
 }
 
-/* ---------------- 会话列宽 ----------------
-   列宽随面板比例缩放：clamp(680, 列宽*0.64, 920)，输入卡片再宽 28。
-   用容器查询单位 cqi 实现，免得靠 JS 测量。 */
-.moc-chat-pane {
-  container-type: inline-size;
-
-  /* 执行轨迹字号阶梯：所有行高/字号/图标跟随正文基准整体伸缩。
-     --moc-content-size 是唯一旋钮（基准 14px），改它整体放大缩小；
-     副档字号在 ≤14 时取正文-1、>14 时取正文-2。 */
-  --moc-content-size: 14px;
-  --moc-n: calc(var(--moc-content-size) - 14px);
-  --moc-secondary-size: calc(
-    var(--moc-content-size) -
-    1px -
-    clamp(0px, var(--moc-content-size) - 14px, 1px)
-  );
-  /* 详情卡片的代码体：独立小字号档（基准 11px）。 */
-  --moc-code-size: 11px;
-  --moc-code-n: calc(var(--moc-code-size) - 11px);
+/* ---------------- 滚动条：细、半透明、只在悬停时加深 ---------------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 22%, transparent) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--muted-foreground) 22%, transparent) padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted-foreground) 40%, transparent) padding-box;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
-/* 活动行首图标跟随正文字号缩放（基准 14px）。 */
-.moc-activity-icon {
-  width: calc(14px + var(--moc-n));
-  height: calc(14px + var(--moc-n));
-  flex: none;
+/* ---------------- 会话列宽 ----------------
+   正文列宽随主舞台缩放并封顶 768px，输入卡片与正文同宽；容器查询免去 JS 测量。 */
+.moc-chat-pane {
+  container-type: inline-size;
 }
 
 .moc-chat-column {
-  width: clamp(680px, 64cqi, 920px);
-  max-width: calc(100% - 32px);
-  margin-inline: auto;
-}
-
-.moc-composer-card {
-  width: clamp(712px, calc(64cqi + 28px), 948px);
-  max-width: calc(100% - 16px);
+  width: min(768px, calc(100cqi - 48px));
   margin-inline: auto;
 }
 
 @supports not (width: 1cqi) {
   .moc-chat-column {
-    width: min(calc(100% - 32px), 920px);
-  }
-  .moc-composer-card {
-    width: min(calc(100% - 16px), 948px);
+    width: min(768px, calc(100% - 48px));
   }
 }
 
-/* ---------------- Markdown 代码块 ----------------
-   streamdown 默认是「外框卡片 + 内层白框 + 浮动工具条」的三层结构，
-   DSH 只有一个 muted 底 + 顶部标签条；这里按它暴露的 data-streamdown 标记收敛。 */
-[data-streamdown="code-block"] {
-  margin: 12px 0;
+/* ---------------- 运行指示：三点呼吸 ---------------- */
+@keyframes moc-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.moc-dots > span {
+  animation: moc-dot 1.2s infinite ease-in-out;
+}
+.moc-dots > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.moc-dots > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moc-dots > span {
+    animation: none;
+  }
+}
+
+/* ---------------- Markdown 排版 ----------------
+   Streamdown 自带一套偏「文档站」的排版（3xl 标题、list-inside、带边框的代码卡）。
+   对话流需要的是紧凑、行宽受控的阅读排版，这里按 data-streamdown 标记统一收敛。 */
+.moc-prose {
+  font-size: var(--moc-prose-size, 14.5px);
+  line-height: var(--moc-prose-leading, 1.72);
+  color: var(--moc-prose-color, var(--foreground));
+  overflow-wrap: anywhere;
+}
+
+.moc-prose > * + * {
+  margin-top: 0.85em;
+}
+
+.moc-prose p {
+  margin: 0;
+}
+
+.moc-prose [data-streamdown="heading-1"],
+.moc-prose [data-streamdown="heading-2"],
+.moc-prose [data-streamdown="heading-3"],
+.moc-prose [data-streamdown="heading-4"],
+.moc-prose [data-streamdown="heading-5"],
+.moc-prose [data-streamdown="heading-6"] {
+  margin: 1.5em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+.moc-prose [data-streamdown="heading-1"] {
+  font-size: 1.45em;
+}
+.moc-prose [data-streamdown="heading-2"] {
+  font-size: 1.25em;
+}
+.moc-prose [data-streamdown="heading-3"] {
+  font-size: 1.1em;
+}
+.moc-prose [data-streamdown="heading-4"],
+.moc-prose [data-streamdown="heading-5"],
+.moc-prose [data-streamdown="heading-6"] {
+  font-size: 1em;
+}
+
+.moc-prose [data-streamdown="unordered-list"],
+.moc-prose [data-streamdown="ordered-list"] {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+  list-style-position: outside;
+}
+.moc-prose [data-streamdown="unordered-list"] {
+  list-style-type: disc;
+}
+.moc-prose [data-streamdown="ordered-list"] {
+  list-style-type: decimal;
+}
+.moc-prose [data-streamdown="list-item"] {
+  margin: 0.2em 0;
+  padding-left: 0.2em;
+}
+.moc-prose [data-streamdown="list-item"]::marker {
+  color: var(--text-tertiary);
+}
+.moc-prose [data-streamdown="list-item"] > [data-streamdown="unordered-list"],
+.moc-prose [data-streamdown="list-item"] > [data-streamdown="ordered-list"] {
+  margin: 0.15em 0;
+  padding-left: 1.3em;
+}
+/* 任务列表：去掉圆点，复选框与文字对齐 */
+.moc-prose li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -1.3em;
+}
+.moc-prose li > input[type="checkbox"] {
+  margin: 0 0.5em 0 0;
+  vertical-align: -0.1em;
+  accent-color: var(--brand);
+}
+
+.moc-prose [data-streamdown="link"] {
+  font-weight: 500;
+  color: var(--brand);
+  text-decoration: none;
+}
+.moc-prose [data-streamdown="link"]:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.moc-prose [data-streamdown="strong"] {
+  font-weight: 600;
+}
+
+.moc-prose [data-streamdown="inline-code"] {
+  padding: 0.12em 0.4em;
+  border-radius: 5px;
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--foreground);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.moc-prose [data-streamdown="blockquote"] {
+  margin: 0.9em 0;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted-foreground);
+  font-style: normal;
+}
+
+.moc-prose [data-streamdown="horizontal-rule"] {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* 表格：外框圆角卡片、表头弱底色、行间发丝线 */
+.moc-prose [data-streamdown="table-wrapper"] {
+  margin: 1em 0;
   gap: 0;
   padding: 0;
-  border: 0;
-  border-radius: 12px;
-  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  overflow: hidden;
 }
-
-[data-streamdown="code-block-header"] {
-  height: 32px;
-  padding: 0 12px;
-  color: var(--text-tertiary);
-  border-bottom: 1px solid var(--border-subtle);
+.moc-prose [data-streamdown="table-wrapper"] > div:first-child {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
 }
-
-[data-streamdown="code-block-header"] span {
-  font-size: 11px;
+.moc-prose [data-streamdown="table-wrapper"]:hover > div:first-child {
+  opacity: 1;
 }
-
-/* 内层滚动容器：去掉白框与内边距，融进 muted 底 */
-[data-streamdown="code-block"] > div:has(> pre) {
-  padding: 10px 12px;
+.moc-prose [data-streamdown="table-wrapper"] {
+  position: relative;
+}
+.moc-prose [data-streamdown="table"] {
   border: 0;
   border-radius: 0;
-  background: transparent;
+  font-size: 13px;
+}
+.moc-prose [data-streamdown="table-header"] {
+  background: var(--muted);
+}
+.moc-prose [data-streamdown="table-header-cell"] {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.moc-prose [data-streamdown="table-cell"] {
+  padding: 8px 14px;
+  font-size: 13px;
 }
 
-/* 右上角的下载/复制浮动条：去掉自成一块的描边与底色 */
-[data-streamdown="code-block"] > div.absolute > div {
+/* 代码块：单层底色 + 顶部语言标签，工具按钮悬停出现 */
+.moc-prose [data-streamdown="code-block"],
+.moc-code-block [data-streamdown="code-block"] {
+  position: relative;
+  margin: 1em 0;
+  gap: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg);
+  overflow: hidden;
+}
+.moc-prose [data-streamdown="code-block-header"] {
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.moc-prose [data-streamdown="code-block-header"] span {
+  margin-left: 0;
+  font-size: 12px;
+  text-transform: none;
+}
+.moc-prose [data-streamdown="code-block"] > div.absolute {
+  top: 3px;
+  right: 6px;
+}
+.moc-prose [data-streamdown="code-block"] > div.absolute > div {
   padding: 0;
   border: 0;
   background: transparent;
   backdrop-filter: none;
 }
-
-/* 会话标题：静置时省略号截断；鼠标指向且确实溢出时才横向滚动露出全文。
-   AI Elements / shadcn 没有等价的滚动标题组件，这是唯一必要的自定义动画。 */
-.moc-scroll-title {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.moc-scroll-title[data-overflow]:hover .moc-scroll-title-text {
-  display: inline-block;
-  animation: moc-scroll-title var(--moc-title-duration, 4s) linear infinite alternate;
-}
-
-@keyframes moc-scroll-title {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(var(--moc-title-shift, 0));
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .moc-scroll-title[data-overflow]:hover .moc-scroll-title-text {
-    animation: none;
-  }
-}
-
-* {
-  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 20%, transparent) transparent;
-  scrollbar-width: thin;
-}
-
-::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
-  border-radius: 9999px;
-}
-::-webkit-scrollbar-track {
+.moc-prose [data-streamdown="code-block-body"] {
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
   background: transparent;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.moc-prose [data-streamdown="code-block-body"] pre {
+  background: transparent;
+}
+.moc-prose [data-streamdown="code-block-body"] code > span::before {
+  color: var(--text-tertiary);
+  opacity: 0.6;
+}
+
+.moc-prose .katex {
+  font-size: 1.05em;
+}
+.moc-prose .katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* 放在 prose 规则末尾：同等特异性下靠源码顺序压过各块级元素自身的上下外边距。 */
+.moc-prose > :first-child {
+  margin-top: 0;
+}
+.moc-prose > :last-child {
+  margin-bottom: 0;
 }

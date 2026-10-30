@@ -1,17 +1,20 @@
-// 会话列表与工作区管理。工作区 = 文件夹路径分组，对齐 deepseek-harness 交互规范。
+// 会话列表与工作区：工作区 = 会话 cwd 分组，外加用户手动添加的目录。
 
 import { create } from "zustand";
 import { rpc } from "@/protocol/client";
-import type { SessionInfo, SessionListResult, SessionMode } from "@/protocol/types";
+import type {
+  SessionAutonomy,
+  SessionEngine,
+  SessionInfo,
+  SessionListResult,
+  SessionPermission,
+} from "@/protocol/types";
 
-const WORKSPACES_STORAGE_KEY = "dsh-workspaces-paths";
-const LEGACY_PINNED_KEY = "moc-web-workspaces";
+const WORKSPACES_KEY = "dsh-workspaces-paths";
 
 function loadWorkspaces(): string[] {
   try {
-    const raw =
-      localStorage.getItem(WORKSPACES_STORAGE_KEY) || localStorage.getItem(LEGACY_PINNED_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    const parsed: unknown = JSON.parse(localStorage.getItem(WORKSPACES_KEY) ?? "[]");
     return Array.isArray(parsed)
       ? parsed.filter((item): item is string => typeof item === "string")
       : [];
@@ -22,27 +25,30 @@ function loadWorkspaces(): string[] {
 
 function saveWorkspaces(list: string[]): void {
   try {
-    localStorage.setItem(WORKSPACES_STORAGE_KEY, JSON.stringify(list));
+    localStorage.setItem(WORKSPACES_KEY, JSON.stringify(list));
   } catch {
-    // ignore
+    // 写不进去时只影响下次打开
   }
 }
 
+function cleanPath(cwd: string): string {
+  return cwd.trim().replace(/(.)[\\/]+$/, "$1");
+}
+
+/** 本地草稿会话上用户显式选过的参数；未选的项交给 core 默认值。 */
 export type DraftSession = {
-  id: string;
   cwd: string;
-  title: string;
-  isDraft: true;
   model?: string;
-  mode?: SessionMode;
-  plan?: boolean;
+  engine: SessionEngine;
+  autonomy: SessionAutonomy;
+  plan: boolean;
+  permission?: SessionPermission;
 };
 
 export type Workspace = {
   cwd: string;
   name: string;
-  pinned: boolean;
-  /** 顶层会话（子代理会话挂在父会话下） */
+  /** 顶层会话（子代理会话挂在父会话的检查面板里） */
   sessions: SessionInfo[];
   updatedAt: number;
 };
@@ -51,17 +57,14 @@ export type SessionsState = {
   list: SessionInfo[];
   /** 已打开但还不在 session/list 里的会话（首条消息落盘前） */
   extra: Record<string, SessionInfo>;
-  pinned: string[];
-  /** 用户添加或置顶的工作区文件夹路径列表 */
+  /** 用户手动添加的工作区目录 */
   workspaces: string[];
-  /** 本地临时空白新会话（未发送首条提示词前不写后端，离开后自动丢弃） */
+  /** 本地空白新会话（未发送首条提示前不写 core，离开即丢弃） */
   draftSession: DraftSession | null;
 
   refresh: () => Promise<void>;
   upsert: (info: SessionInfo) => void;
   remove: (id: string) => void;
-  pin: (cwd: string) => void;
-  unpin: (cwd: string) => void;
   addWorkspace: (cwd: string) => void;
   removeWorkspace: (cwd: string) => void;
   setDraftSession: (draft: DraftSession | null) => void;
@@ -70,7 +73,6 @@ export type SessionsState = {
 export const useSessions = create<SessionsState>()((set, get) => ({
   list: [],
   extra: {},
-  pinned: loadWorkspaces(),
   workspaces: loadWorkspaces(),
   draftSession: null,
 
@@ -96,91 +98,52 @@ export const useSessions = create<SessionsState>()((set, get) => ({
     set({ list: list.filter((session) => session.id !== id), extra: rest });
   },
 
-  pin: (cwd) => {
-    const clean = cwd.trim().replace(/[\\/]+$/, "");
-    if (!clean) return;
-    const workspaces = get().workspaces.includes(clean)
-      ? get().workspaces
-      : [...get().workspaces, clean];
-    saveWorkspaces(workspaces);
-    set({ workspaces, pinned: workspaces });
-  },
-
-  unpin: (cwd) => {
-    const clean = cwd.trim().replace(/[\\/]+$/, "");
-    const workspaces = get().workspaces.filter((item) => item !== clean);
-    saveWorkspaces(workspaces);
-    set({ workspaces, pinned: workspaces });
-  },
-
   addWorkspace: (cwd) => {
-    const clean = cwd.trim().replace(/[\\/]+$/, "");
-    if (!clean) return;
-    const workspaces = get().workspaces.includes(clean)
-      ? get().workspaces
-      : [clean, ...get().workspaces];
+    const clean = cleanPath(cwd);
+    if (!clean || get().workspaces.includes(clean)) return;
+    const workspaces = [clean, ...get().workspaces];
     saveWorkspaces(workspaces);
-    set({ workspaces, pinned: workspaces });
+    set({ workspaces });
   },
 
   removeWorkspace: (cwd) => {
-    const clean = cwd.trim().replace(/[\\/]+$/, "");
+    const clean = cleanPath(cwd);
     const workspaces = get().workspaces.filter((item) => item !== clean);
     saveWorkspaces(workspaces);
-    set({ workspaces, pinned: workspaces });
+    set({ workspaces });
   },
 
-  setDraftSession: (draft) => {
-    set({ draftSession: draft });
-  },
+  setDraftSession: (draft) => set({ draftSession: draft }),
 }));
 
-/** 全部会话（list ∪ extra）。默认按更新时间降序；手动模式保留当前列表顺序。 */
-export function allSessions(
-  state: Pick<SessionsState, "list" | "extra">,
-  order: "updated" | "manual" = "updated",
-): SessionInfo[] {
-  const sessions = [...Object.values(state.extra), ...state.list];
-  return order === "manual" ? sessions : sessions.sort((a, b) => b.updated_at_ms - a.updated_at_ms);
-}
-
-/** 父会话 ID → 子代理会话。 */
-export function childrenByParent(sessions: SessionInfo[]): Record<string, SessionInfo[]> {
-  const result: Record<string, SessionInfo[]> = {};
-  for (const session of sessions) {
-    if (!session.parent_session_id) continue;
-    result[session.parent_session_id] ??= [];
-    result[session.parent_session_id].push(session);
-  }
-  return result;
+/** 全部会话（list ∪ extra），按更新时间降序。 */
+export function allSessions(state: Pick<SessionsState, "list" | "extra">): SessionInfo[] {
+  return [...Object.values(state.extra), ...state.list].sort(
+    (a, b) => b.updated_at_ms - a.updated_at_ms,
+  );
 }
 
 /**
- * 将会话按照工作区（cwd 文件夹）进行分组，对齐 dsh 规则。
- * 保留用户添加的工作区，即使用户刚添加的工作区还没有会话也会列出。
+ * 按 cwd 分组。手动添加的目录与草稿所在目录即使还没有会话也列出；
+ * 搜索时只保留标题或路径命中的会话。工作区按最近活动降序。
  */
 export function groupWorkspaces(
   sessions: SessionInfo[],
-  workspaces: string[],
+  extraDirs: string[],
   query = "",
-  order: "updated" | "manual" = "updated",
 ): Workspace[] {
   const needle = query.trim().toLowerCase();
   const groups = new Map<string, Workspace>();
+  const ensure = (cwd: string) => {
+    let group = groups.get(cwd);
+    if (!group) {
+      group = { cwd, name: workspaceName(cwd), sessions: [], updatedAt: 0 };
+      groups.set(cwd, group);
+    }
+    return group;
+  };
 
-  // 1. 先置入已添加的工作区
-  for (const cwd of workspaces) {
-    if (!cwd) continue;
-    groups.set(cwd, {
-      cwd,
-      name: workspaceName(cwd),
-      pinned: true,
-      sessions: [],
-      updatedAt: 0,
-    });
-  }
-
-  // 2. 将会话归类到各自的 cwd 下
+  for (const cwd of extraDirs) if (cwd) ensure(cwd);
   for (const session of sessions) {
     if (session.parent_session_id) continue;
     if (
@@ -190,34 +153,18 @@ export function groupWorkspaces(
     ) {
       continue;
     }
-    let group = groups.get(session.cwd);
-    if (!group) {
-      group = {
-        cwd: session.cwd,
-        name: workspaceName(session.cwd),
-        pinned: false,
-        sessions: [],
-        updatedAt: 0,
-      };
-      groups.set(session.cwd, group);
-    }
+    const group = ensure(session.cwd);
     group.sessions.push(session);
     group.updatedAt = Math.max(group.updatedAt, session.updated_at_ms);
   }
 
-  // 3. 对各个工作区内部的会话按更新时间降序排列
-  for (const group of groups.values()) {
-    if (order === "updated") group.sessions.sort((a, b) => b.updated_at_ms - a.updated_at_ms);
-  }
-
-  // 4. 返回符合搜索条件的工作区列表
-  const result = [...groups.values()].filter(
-    (group) => !needle || group.sessions.length > 0 || group.cwd.toLowerCase().includes(needle),
-  );
-  return order === "updated" ? result.sort((a, b) => b.updatedAt - a.updatedAt) : result;
+  return [...groups.values()]
+    .filter(
+      (group) => !needle || group.sessions.length > 0 || group.cwd.toLowerCase().includes(needle),
+    )
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function workspaceName(cwd: string): string {
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) ?? cwd;
+  return cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? cwd;
 }

@@ -133,6 +133,36 @@ describe("entriesToBlocks", () => {
     const user = blocks[0];
     expect(user.kind === "user" && user.text).toBe("你好");
   });
+
+  it("历史里的 exit_plan 结果复原计划卡，失败的提交不复原", () => {
+    const call = (id: string): TranscriptEntry => ({
+      id: `a_${id}`,
+      at_ms: 1,
+      message: {
+        role: "Assistant",
+        content: [{ ToolCall: { id, name: "exit_plan", arguments: "{}" } }],
+      },
+    });
+    const result = (id: string, content: string, isError: boolean): TranscriptEntry => ({
+      id: `t_${id}`,
+      at_ms: 2,
+      message: {
+        role: "Tool",
+        content: [{ ToolResult: { tool_call_id: id, content, is_error: isError } }],
+      },
+    });
+    const blocks = entriesToBlocks(
+      [
+        call("ok"),
+        result("ok", "Plan plan_7 (v2) is ready for review at local://plan_7.md.", false),
+        call("bad"),
+        result("bad", "no plan draft to submit", true),
+      ],
+      [],
+    );
+    expect(blocks.map((block) => block.kind)).toEqual(["tool", "plan", "tool"]);
+    expect(blocks[1]).toMatchObject({ planId: "plan_7", version: 2, path: "local://plan_7.md" });
+  });
 });
 
 describe("applyUpdate", () => {

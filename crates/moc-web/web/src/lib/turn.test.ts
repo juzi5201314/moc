@@ -124,6 +124,7 @@ describe("activityVerb / activitySnippet", () => {
   it("识别常见工具动词", () => {
     expect(activityVerb(tool("bash"))).toBe("运行命令");
     expect(activityVerb(tool("run_code"))).toBe("运行代码");
+    expect(activityVerb(tool("sidekick"))).toBe("协调子智能体");
     expect(activityVerb(tool("read_file"))).toBe("读取文件");
     expect(activityVerb(tool("write_file"))).toBe("写入文件");
     expect(activityVerb(tool("mcp__fs__str_replace_editor"))).toBe("编辑文件");

@@ -1,134 +1,101 @@
 // 全局快捷键。Alt 组合用 event.code 判断：macOS 上 Option 会改写 event.key。
 // 避开浏览器保留的 Ctrl+N/T/W/Tab；Esc 由 composer 和各浮层自己处理。
+// 键位表同时供设置页「快捷键」分区展示，改动只需改这一处。
 
 import { useEffect } from "react";
 import { toast } from "sonner";
-import { rpc } from "@/protocol/client";
-import type { SessionMode } from "@/protocol/types";
+import type { SessionEngine } from "@/protocol/types";
 import { useLayout } from "@/store/layout";
-import { closeSession, createQuickSession, togglePlanMode } from "@/store/lifecycle";
-import { type DetailTier, TIER_ORDER, usePrefs } from "@/store/prefs";
-import { useSessions } from "@/store/sessions";
+import { createQuickSession, setSessionEngine, togglePlanMode } from "@/store/lifecycle";
+import { usePrefs } from "@/store/prefs";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
-import { useUi } from "@/store/ui";
+import { openSettings, requestComposerFocus, useUi } from "@/store/ui";
 
-async function setMode(sessionId: string, mode: SessionMode): Promise<void> {
-  if (sessionId === "draft-session") {
-    useTranscript.getState().mutate(sessionId, (view) => {
-      view.info.mode = mode;
-    });
-    const draft = useSessions.getState().draftSession;
-    if (draft) useSessions.getState().setDraftSession({ ...draft, mode });
-    return;
-  }
-  await rpc.call("session/set_mode", { session_id: sessionId, mode });
-}
+export const SHORTCUTS: { keys: string; label: string }[] = [
+  { keys: "Ctrl K", label: "命令面板" },
+  { keys: "Alt N", label: "新会话" },
+  { keys: "Ctrl B", label: "展开 / 收起侧栏" },
+  { keys: "Alt R", label: "展开 / 收起检查面板" },
+  { keys: "Alt P", label: "切换模型" },
+  { keys: "Alt M", label: "切换会话引擎（首条消息前）" },
+  { keys: "Alt J", label: "进入 / 退出计划状态" },
+  { keys: "Alt T", label: "默认展开 / 折叠思考过程" },
+  { keys: "Ctrl /", label: "查看快捷键" },
+  { keys: "Enter", label: "发送；生成中按偏好补充或中断" },
+  { keys: "Ctrl Enter", label: "生成中排队发送" },
+  { keys: "Shift Enter", label: "换行" },
+  { keys: "Esc", label: "生成中且输入为空时停止" },
+];
 
-async function runAction(fn: () => Promise<unknown>, label?: string): Promise<void> {
-  try {
-    await fn();
-    if (label) toast(label);
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : String(err));
-  }
-}
-
-const MODE_CYCLE: SessionMode[] = ["normal", "ptc", "clm_experimental"];
-const MODE_LABEL: Record<string, string> = {
-  normal: "标准",
+const ENGINE_CYCLE: SessionEngine[] = ["standard", "ptc", "clm_experimental"];
+const ENGINE_LABEL: Record<SessionEngine, string> = {
+  standard: "标准",
   ptc: "PTC",
-  clm_experimental: "CLM 实验",
+  clm_experimental: "CLM（实验）",
 };
-const TIER_LABEL: Record<DetailTier, string> = { hidden: "隐藏", brief: "简要", full: "完整" };
 
-function nextTier(tier: DetailTier): DetailTier {
-  return TIER_ORDER[(TIER_ORDER.indexOf(tier) + 1) % TIER_ORDER.length] ?? "brief";
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function cycleMode(sessionId: string): void {
-  const view = useTranscript.getState().bySession[sessionId];
-  if (!view || view.readOnly) return;
-  if (view.info.mode_locked) {
-    toast("会话方言已锁定；换方言请新建会话");
+function activeView() {
+  const active = useTabs.getState().active;
+  const view = active ? useTranscript.getState().bySession[active] : undefined;
+  return active && view && !view.readOnly ? { id: active, view } : null;
+}
+
+function cycleEngine(): void {
+  const target = activeView();
+  if (!target) return;
+  if (target.view.info.engine_locked) {
+    toast("会话引擎已锁定；换引擎请新建会话");
     return;
   }
-  const index = MODE_CYCLE.indexOf(view.info.mode);
-  const next = MODE_CYCLE[(index + 1) % MODE_CYCLE.length] ?? "normal";
-  void runAction(() => setMode(sessionId, next), `方言：${MODE_LABEL[next]}`);
+  const index = ENGINE_CYCLE.indexOf(target.view.info.engine);
+  const next = ENGINE_CYCLE[(index + 1) % ENGINE_CYCLE.length];
+  setSessionEngine(target.id, next)
+    .then(() => toast(`引擎：${ENGINE_LABEL[next]}`))
+    .catch((error) => toast.error(`切换失败：${errorText(error)}`));
 }
 
-function cyclePlan(sessionId: string): void {
-  const view = useTranscript.getState().bySession[sessionId];
-  if (!view || view.readOnly) return;
-  const next = !view.info.plan_active;
-  void runAction(() => togglePlanMode(sessionId, next), next ? "已进入计划状态" : "已退出计划状态");
-}
-
-function switchTab(offset: number): void {
-  const { open, active, activate } = useTabs.getState();
-  if (open.length === 0) return;
-  const index = active ? open.indexOf(active) : 0;
-  const next = open[(index + offset + open.length) % open.length];
-  if (next) activate(next);
+export function cyclePlan(): void {
+  const target = activeView();
+  if (!target) return;
+  const next = !target.view.info.plan_active;
+  togglePlanMode(target.id, next)
+    .then(() => toast(next ? "已进入计划状态" : "已退出计划状态"))
+    .catch((error) => toast.error(`切换失败：${errorText(error)}`));
 }
 
 /** 返回 true 表示已处理（调用方 preventDefault）。 */
 function handleAlt(code: string): boolean {
-  const ui = useUi.getState();
-  const prefs = usePrefs.getState();
-  const tabs = useTabs.getState();
-  const active = tabs.active;
-  if (/^Digit[1-9]$/.test(code)) {
-    const target = tabs.open[Number(code.slice(5)) - 1];
-    if (target) tabs.activate(target);
-    return true;
-  }
   switch (code) {
     case "KeyN": {
+      const active = useTabs.getState().active;
       const cwd = active ? useTranscript.getState().bySession[active]?.info.cwd : undefined;
-      void createQuickSession(cwd);
+      createQuickSession(cwd);
+      requestComposerFocus();
       return true;
     }
-    case "KeyW": {
-      if (!active) return true;
-      const view = useTranscript.getState().bySession[active];
-      if (view?.running && !view.readOnly) ui.set({ confirmClose: active });
-      else void runAction(() => closeSession(active));
-      return true;
-    }
-    case "BracketLeft":
-      switchTab(-1);
-      return true;
-    case "BracketRight":
-      switchTab(1);
-      return true;
-    case "KeyS":
-    case "KeyB":
-      useLayout.getState().toggleSidebar();
-      return true;
     case "KeyR":
       useLayout.getState().toggleRightbar();
       return true;
-    case "KeyP":
-      if (active) ui.set({ modelPicker: active });
-      return true;
-    case "KeyM":
-      if (active) cycleMode(active);
-      return true;
-    case "KeyJ":
-      if (active) cyclePlan(active);
-      return true;
-    case "KeyT": {
-      const thinkingTier = nextTier(prefs.thinkingTier);
-      prefs.set({ thinkingTier });
-      toast(`思考显示：${TIER_LABEL[thinkingTier]}`);
+    case "KeyP": {
+      const target = activeView();
+      if (target) useUi.getState().set({ modelPicker: target.id });
       return true;
     }
-    case "KeyO": {
-      const toolTier = nextTier(prefs.toolTier);
-      prefs.set({ toolTier });
-      toast(`工具显示：${TIER_LABEL[toolTier]}`);
+    case "KeyM":
+      cycleEngine();
+      return true;
+    case "KeyJ":
+      cyclePlan();
+      return true;
+    case "KeyT": {
+      const expandThinking = !usePrefs.getState().expandThinking;
+      usePrefs.getState().set({ expandThinking });
+      toast(expandThinking ? "思考过程默认展开" : "思考过程默认折叠");
       return true;
     }
     default:
@@ -137,25 +104,17 @@ function handleAlt(code: string): boolean {
 }
 
 function handleCtrl(code: string): boolean {
-  const ui = useUi.getState();
   switch (code) {
-    case "KeyK":
+    case "KeyK": {
+      const ui = useUi.getState();
       ui.set({ palette: !ui.palette });
       return true;
+    }
     case "KeyB":
       useLayout.getState().toggleSidebar();
       return true;
-    case "KeyN": {
-      const active = useTabs.getState().active;
-      const cwd = active ? useTranscript.getState().bySession[active]?.info.cwd : undefined;
-      void createQuickSession(cwd);
-      return true;
-    }
     case "Slash":
-      ui.set({ help: !ui.help });
-      return true;
-    case "Semicolon":
-      useLayout.getState().openRightTab({ kind: "terminal", title: "终端" });
+      openSettings("shortcuts");
       return true;
     default:
       return false;

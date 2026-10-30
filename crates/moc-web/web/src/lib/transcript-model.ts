@@ -302,6 +302,22 @@ export function entriesToBlocks(
           block.images = result.images ?? [];
           block.status = entry.tool?.status ?? (result.is_error ? "error" : "completed");
           block.durationMs = entry.tool?.duration_ms;
+          // 计划卡只由实时 plan_submitted 生成；历史里靠 exit_plan 的固定结果文本复原，状态与标题由卡片从 view.plans 读取。
+          const submitted =
+            block.name === "exit_plan" && !result.is_error
+              ? EXIT_PLAN_RESULT.exec(result.content)
+              : null;
+          if (submitted) {
+            const [, planId, version, path] = submitted;
+            blocks.push({
+              kind: "plan",
+              id: nextId(),
+              planId,
+              title: "计划",
+              path,
+              version: Number(version),
+            });
+          }
         }
         break;
       }
@@ -327,6 +343,9 @@ export function entriesToBlocks(
   return blocks;
 }
 
+/** `crates/moc-core/src/tools/plan.rs` 中 exit_plan 的成功结果：`Plan {id} (v{n}) is ready for review at {path}.` */
+const EXIT_PLAN_RESULT = /^Plan (\S+) \(v(\d+)\) is ready for review at (\S+)\.$/;
+
 function toolResultText(message: Message): string {
   return message.content
     .flatMap((part) => ("ToolResult" in part ? [part.ToolResult.content] : []))
@@ -334,22 +353,39 @@ function toolResultText(message: Message): string {
 }
 
 /**
- * 直播阶段插入的用户块没有 entry id；提示结束后按最新一页的用户条目从后往前补上，
- * 回退功能依赖它。
+ * 直播阶段插入的用户块与正文块没有 entry id；提示结束后按最新一页的条目从后往前
+ * 补上。回退（用户块）与「从这里分叉」（正文块）都依赖它。
  */
 export function attachEntryIds(blocks: Block[], entries: TranscriptEntry[]): void {
-  const users = entries.filter((entry) => entry.message.role === "User" && !entry.bash);
-  let cursor = users.length - 1;
+  backfill(
+    blocks,
+    entries.filter((entry) => entry.message.role === "User" && !entry.bash),
+    "user",
+  );
+  backfill(
+    blocks,
+    entries.filter((entry) => entry.message.role === "Assistant" && messageText(entry.message)),
+    "text",
+  );
+}
+
+/** 对照用的正文前缀：分页接口会按字节截断长消息，只比较开头足够区分相邻消息。 */
+function fingerprint(text: string): string {
+  return text.trim().slice(0, 160);
+}
+
+function backfill(blocks: Block[], entries: TranscriptEntry[], kind: "user" | "text"): void {
+  let cursor = entries.length - 1;
   for (let index = blocks.length - 1; index >= 0 && cursor >= 0; index--) {
     const block = blocks[index];
-    if (block.kind !== "user") continue;
+    if (block.kind !== kind || (block.kind !== "user" && block.kind !== "text")) continue;
     if (block.entryId) {
-      while (cursor >= 0 && users[cursor].id !== block.entryId) cursor--;
+      while (cursor >= 0 && entries[cursor].id !== block.entryId) cursor--;
       cursor--;
       continue;
     }
-    if (messageText(users[cursor].message) === block.text) {
-      block.entryId = users[cursor].id;
+    if (fingerprint(messageText(entries[cursor].message)) === fingerprint(block.text)) {
+      block.entryId = entries[cursor].id;
       cursor--;
     }
   }

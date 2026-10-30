@@ -106,6 +106,8 @@ export type ConfigGetResult = {
   agents: { id: string; display_name: string; description?: string }[];
   default_agent?: string;
   cwd: string;
+  /** `[models.fusion]` 默认组合的规范 selector；双侧都配置时才有值。 */
+  fusion?: { lead: string; sidekick: string };
 };
 
 // ---------- config/manage ----------
@@ -314,7 +316,8 @@ export type PlanInfo = {
   /** 审阅版本号，从 1 开始；草稿为 0。 */
   version: number;
   previous_plan_id?: string | null;
-  annotations: PlanAnnotation[];
+  /** core 在为空时省略该字段（`skip_serializing_if = "Vec::is_empty"`）。 */
+  annotations?: PlanAnnotation[];
 };
 
 export type SessionPlanReviseResult = {
@@ -402,6 +405,8 @@ export type ContextContentResult = {
 
 export type ModelUsageSummary = {
   model: string;
+  /** 用量来源：会话自身（缺省省略）、Fusion sidekick 或普通子代理。 */
+  source?: "session" | "sidekick" | "subagent";
   calls: number;
   input_tokens: number;
   output_tokens: number;
