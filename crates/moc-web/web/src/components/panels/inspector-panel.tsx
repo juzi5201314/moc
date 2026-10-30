@@ -59,7 +59,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="flex h-full w-full min-w-0 flex-col bg-panel text-foreground">
+    <div className="flex h-full w-full min-w-0 flex-col bg-background text-foreground">
       <div className="flex h-12 shrink-0 items-center gap-1 border-b border-border-subtle pr-2 pl-2">
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
           {TABS.map((item) => {
@@ -70,7 +70,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                 type="button"
                 onClick={() => useLayout.getState().openInspector(item.id)}
                 className={cn(
-                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] transition-colors",
+                  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13.5px] transition-colors",
                   tab === item.id
                     ? "bg-accent font-medium text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -80,7 +80,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                 {count > 0 && (
                   <span
                     className={cn(
-                      "min-w-4 rounded-full px-1 text-center text-[10.5px] leading-4 tabular-nums",
+                      "min-w-4 rounded-full px-1 text-center text-[11px] leading-4 tabular-nums",
                       item.id === "plan"
                         ? "bg-brand text-brand-foreground"
                         : "bg-foreground/10 text-muted-foreground",
@@ -141,7 +141,7 @@ function ChangesTab({ sessionId }: { sessionId: string }) {
   }
   return (
     <div className="flex flex-col">
-      <div className="flex h-9 items-center justify-between px-4">
+      <div className="flex h-10 items-center justify-between px-4">
         <span className="text-xs font-medium text-muted-foreground">{files.length} 个文件</span>
         <div className="flex items-center rounded-md bg-muted p-0.5">
           {(["unified", "split"] as const).map((mode) => (
@@ -238,7 +238,9 @@ function TodoTab({ sessionId }: { sessionId: string }) {
           // biome-ignore lint/suspicious/noArrayIndexKey: todo 由 core 整表替换，位置即身份，阶段名可重复
           <section key={phaseIndex}>
             <div className="mb-1 flex items-baseline justify-between gap-2 px-2">
-              <h3 className="min-w-0 truncate text-[13px] font-medium">{phase.phase || "任务"}</h3>
+              <h3 className="min-w-0 truncate text-[13.5px] font-medium">
+                {phase.phase || "任务"}
+              </h3>
               <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">
                 {done}/{phase.items.length}
               </span>
@@ -257,7 +259,7 @@ function TodoTab({ sessionId }: { sessionId: string }) {
                     <span className="flex h-5 shrink-0 items-center" title={meta.label}>
                       <Icon className={cn("size-3.5", meta.className)} />
                     </span>
-                    <span className="min-w-0 flex-1 text-[13px] leading-5">
+                    <span className="min-w-0 flex-1 text-[13.5px] leading-5">
                       <span
                         className={cn(
                           finished ? "text-text-tertiary" : "text-foreground",

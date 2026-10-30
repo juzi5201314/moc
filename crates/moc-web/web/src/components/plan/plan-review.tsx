@@ -226,13 +226,13 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       </header>
 
       {plan.previous_plan_id && (
-        <div className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-[10px] text-muted-foreground">
+        <div className="flex items-center gap-2 rounded-md bg-muted/30 px-2 py-1 text-[10px] text-muted-foreground ring-1 ring-inset ring-border-subtle">
           <span>对比上一版</span>
           <span className="font-mono">{plan.previous_plan_id}</span>
         </div>
       )}
 
-      <div className="flex items-center gap-1 border-b border-border/70 pb-1.5">
+      <div className="flex items-center gap-1 border-b border-border-subtle pb-1.5">
         <TabButton
           active={tab === "diff"}
           disabled={!plan.previous_plan_id}
@@ -262,7 +262,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
           ) : diff.files.length === 0 ? (
             <p className="text-muted-foreground">本版没有文本改动。</p>
           ) : (
-            <div className="overflow-hidden rounded-md border border-border/70">
+            <div className="overflow-hidden rounded-md ring-1 ring-inset ring-border-subtle">
               {diff.files.map((file) => (
                 <DiffFile key={file.path} file={file} />
               ))}
@@ -299,7 +299,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
               </div>
             </div>
           )}
-          <div className="overflow-hidden rounded-md border border-border/70 px-3 py-2">
+          <div className="overflow-hidden rounded-md px-3 py-2 ring-1 ring-inset ring-border-subtle">
             <PlanMarkdown
               markdown={plan.markdown}
               annotations={[...submitted, ...drafts]}
@@ -311,7 +311,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       )}
 
       {editor && (
-        <div className="space-y-2 rounded-md border border-border bg-background p-2.5 shadow-sm">
+        <div className="space-y-2 rounded-md bg-background p-2.5 shadow-sm ring-1 ring-inset ring-border-subtle">
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
             <span>
               批注第 {editor.startLine}-{editor.endLine} 行
@@ -422,7 +422,7 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       )}
 
       {annotatable && (
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border/70 pt-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle pt-2">
           <button
             type="button"
             onClick={() => onAction(plan, "reject")}
@@ -522,7 +522,7 @@ function AnnotationCard({
 }) {
   const parsed = splitSuggestion(annotation.body);
   return (
-    <li className="rounded-md border border-border/70 bg-muted/20 p-2">
+    <li className="rounded-md bg-muted/20 p-2 ring-1 ring-inset ring-border-subtle">
       <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
         <span className="font-mono">
           第 {annotation.start_line}-{annotation.end_line} 行

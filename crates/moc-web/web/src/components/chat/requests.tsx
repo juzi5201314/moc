@@ -38,7 +38,7 @@ export function PermissionCard({
     <Confirmation
       approval={{ id: request.request_id }}
       state="approval-requested"
-      className="gap-0 overflow-hidden rounded-xl border-warn/30 bg-card p-0 shadow-[var(--elevation-card)]"
+      className="gap-0 overflow-hidden rounded-xl bg-card p-0 ring-1 ring-inset ring-warn/30"
     >
       <ConfirmationRequest>
         <div className="flex items-start gap-3 px-4 pt-3.5 pb-3">
@@ -58,7 +58,7 @@ export function PermissionCard({
           </div>
         </div>
         {request.body && (
-          <pre className="mx-4 mb-3 max-h-56 overflow-auto rounded-lg border border-border bg-code px-3 py-2 font-mono text-[12px] leading-[19px] whitespace-pre-wrap [overflow-wrap:anywhere] text-muted-foreground">
+          <pre className="mx-4 mb-3 max-h-56 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-[12.5px] leading-[19px] whitespace-pre-wrap [overflow-wrap:anywhere] text-muted-foreground ring-1 ring-inset ring-border-subtle">
             {request.body}
           </pre>
         )}
@@ -111,7 +111,7 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
     });
 
   return (
-    <div className="overflow-hidden rounded-xl border border-brand/25 bg-card shadow-[var(--elevation-card)]">
+    <div className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-brand/25">
       <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5 text-[13px] font-medium">
         <SparklesIcon className="size-4 text-brand" />
         需要你的回答
@@ -213,7 +213,7 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
                 </div>
               )}
               {selected?.preview && (
-                <pre className="max-h-48 overflow-auto rounded-lg border border-border bg-code px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-muted-foreground">
+                <pre className="max-h-48 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-[12.5px] whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
                   {selected.preview}
                 </pre>
               )}

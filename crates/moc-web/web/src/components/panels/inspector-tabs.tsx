@@ -178,7 +178,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
       </SectionBar>
 
       {task !== null && (
-        <div className="mx-3 mb-3 rounded-xl border border-border bg-background p-2">
+        <div className="mx-3 mb-3 rounded-xl bg-muted p-2 ring-1 ring-inset ring-border-subtle">
           <textarea
             // biome-ignore lint/a11y/noAutofocus: 点开即输入
             autoFocus
@@ -522,7 +522,7 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
         <div ref={endRef} />
       </div>
       <div className="shrink-0 p-3 pt-0">
-        <div className="flex items-end gap-1.5 rounded-xl border border-border bg-background p-1.5 focus-within:border-border-strong">
+        <div className="flex items-end gap-1.5 rounded-xl bg-muted p-1.5 ring-1 ring-inset ring-border-subtle focus-within:ring-border-strong">
           <textarea
             ref={inputRef}
             value={question}

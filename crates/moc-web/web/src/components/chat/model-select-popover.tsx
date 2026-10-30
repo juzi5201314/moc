@@ -215,7 +215,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
         <button
           type="button"
           disabled={disabled}
-          className="inline-flex h-7 min-w-0 items-center gap-1 rounded-lg px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          className="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground"
           aria-label="选择模型"
         >
           <span className="max-w-[180px] truncate">{label}</span>
@@ -264,7 +264,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
                 onChange={(selector) => setDraft((prev) => ({ ...prev, sidekick: selector }))}
               />
             </div>
-            <div className="border-t border-border p-1.5">
+            <div className="border-t border-border-subtle p-1.5">
               <Button
                 size="sm"
                 className="w-full"
@@ -328,7 +328,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
             </Command>
 
             {!fusion && levels.length > 0 && (
-              <div className="border-t border-border px-3 py-2.5">
+              <div className="border-t border-border-subtle px-3 py-2.5">
                 <div className="mb-2 text-[11px] font-medium text-text-tertiary">思考强度</div>
                 <div className="flex flex-wrap gap-1">
                   {levels.map((level) => (
@@ -356,7 +356,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
                 setOpen(false);
                 openSettings("providers");
               }}
-              className="flex h-9 w-full items-center gap-2 border-t border-border px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="flex h-9 w-full items-center gap-2 border-t border-border-subtle px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <Settings2Icon className="size-3.5" />
               管理供应商与模型

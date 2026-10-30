@@ -43,7 +43,7 @@ import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 
 export const CHIP =
-  "inline-flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-2 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground";
+  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

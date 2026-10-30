@@ -503,7 +503,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     const holder = view?.holder;
     return (
       <ComposerDock inline={inline}>
-        <div className="flex min-h-14 items-center gap-3 rounded-2xl border border-border bg-muted/40 px-4 py-3 text-[13px] text-muted-foreground">
+        <div className="flex min-h-14 items-center gap-3 rounded-2xl bg-muted px-4 py-3 text-[13.5px] text-muted-foreground ring-1 ring-inset ring-border-subtle">
           <LockIcon className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">
             只读打开
@@ -550,15 +550,6 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           />
         )}
 
-        {(todos.length > 0 || pending.length > 0) && (
-          <div className="mx-3 rounded-t-xl border border-b-0 border-border bg-panel/80 backdrop-blur">
-            {todos.length > 0 && <TodoTray items={todos} />}
-            {pending.length > 0 && (
-              <PendingList items={pending} onRemove={(item) => void removePending(item)} />
-            )}
-          </div>
-        )}
-
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击空白处聚焦输入框只是鼠标便利，键盘本就在输入框内 */}
         <div
@@ -573,12 +564,21 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             if (event.target === event.currentTarget) textareaRef.current?.focus();
           }}
           className={cn(
-            "relative rounded-[20px] border bg-background shadow-[var(--elevation-card)] transition-[border-color,box-shadow]",
-            "focus-within:border-border-strong",
-            bashMode ? "border-warn/50" : "border-border",
-            dragging && "border-brand ring-4 ring-brand/15",
+            "relative rounded-[22px] bg-card shadow-[var(--elevation-composer)] transition-[box-shadow]",
+            "focus-within:ring-1 focus-within:ring-inset focus-within:ring-border",
+            bashMode && "ring-1 ring-inset ring-warn/50",
+            dragging && "ring-2 ring-brand/40",
           )}
         >
+          {(todos.length > 0 || pending.length > 0) && (
+            <div className="rounded-t-[21px] bg-muted/60 px-2 py-1">
+              {todos.length > 0 && <TodoTray items={todos} />}
+              {pending.length > 0 && (
+                <PendingList items={pending} onRemove={(item) => void removePending(item)} />
+              )}
+            </div>
+          )}
+
           {bashMode && (
             <div className="flex items-center gap-1.5 px-4 pt-2.5 text-[11.5px] font-medium text-warn">
               <TerminalIcon className="size-3.5" />
@@ -622,14 +622,14 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             placeholder={placeholder}
             aria-label="输入消息"
             className={cn(
-              "block w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[14.5px] leading-6 text-foreground outline-none placeholder:text-text-tertiary",
+              "block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-6 text-foreground outline-none placeholder:text-text-tertiary",
               bashMode && "font-mono text-[13.5px]",
-              inline ? "min-h-[84px]" : "min-h-[52px]",
+              inline ? "min-h-[96px]" : "min-h-[64px]",
             )}
             style={{ maxHeight: MAX_HEIGHT }}
           />
 
-          <div className="flex h-12 items-center gap-1 px-2.5">
+          <div className="flex h-11 items-center gap-1 px-3 pb-1">
             <input
               ref={fileInputRef}
               type="file"
@@ -648,7 +648,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={!acceptsImages || reading}
-                  className={cn(CHIP, "w-7 justify-center px-0")}
+                  className={cn(CHIP, "w-8 justify-center px-0")}
                   aria-label="添加图片"
                 >
                   {acceptsImages ? (
@@ -689,7 +689,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
                   type="button"
                   onClick={() => send()}
                   disabled={!canSend}
-                  className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-[transform,opacity] active:scale-95 disabled:opacity-25"
+                  className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
                   aria-label={running ? "补充到当前轮" : "发送"}
                 >
                   <ArrowUpIcon className="size-4" strokeWidth={2.4} />
@@ -709,7 +709,7 @@ function ComposerDock({ inline, children }: { inline: boolean; children: React.R
     <div className="moc-chat-pane relative shrink-0 bg-background">
       {/* 渐隐遮罩：转写滚到输入框下方时不硬切 */}
       <div className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-t from-background to-transparent" />
-      <div className="moc-chat-column pt-1 pb-4">{children}</div>
+      <div className="moc-chat-column pt-1 pb-5">{children}</div>
     </div>
   );
 }

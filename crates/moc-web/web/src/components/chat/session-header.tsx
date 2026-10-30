@@ -143,14 +143,14 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
           <button
             type="button"
             onDoubleClick={() => !isDraft && setEditing(title)}
-            className="min-w-0 truncate rounded-md px-1 text-sm font-medium text-foreground"
+            className="min-w-0 truncate rounded-md px-1 text-[15px] font-medium text-foreground"
             title={isDraft ? title : `${title}（双击重命名）`}
           >
             {title}
           </button>
         )}
 
-        <div className="hidden min-w-0 items-center gap-2.5 text-xs text-text-tertiary md:flex">
+        <div className="hidden min-w-0 items-center gap-2.5 text-[12.5px] text-text-tertiary md:flex">
           <span className="flex min-w-0 items-center gap-1" title={view.info.cwd}>
             <FolderIcon className="size-3.5 shrink-0" />
             <span className="truncate">{workspaceName(view.info.cwd)}</span>
@@ -158,7 +158,7 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
           {branch && (
             <span className="flex min-w-0 items-center gap-1" title={`分支 ${branch}`}>
               <GitBranchIcon className="size-3.5 shrink-0" />
-              <span className="max-w-[160px] truncate font-mono text-[11px]">{branch}</span>
+              <span className="max-w-[160px] truncate font-mono text-[12px]">{branch}</span>
             </span>
           )}
         </div>

@@ -21,7 +21,7 @@
   color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
-  --panel: #fafafa;
+  --panel: #f7f7f8;
   --card: #ffffff;
   --card-foreground: #171717;
   --popover: #ffffff;
@@ -34,7 +34,7 @@
   --muted-foreground: #6b6b70;
   --accent: rgba(23, 23, 23, 0.05);
   --accent-foreground: #171717;
-  --bubble: #f3f3f4;
+  --bubble: #f4f4f5;
   --brand: #3b6ff5;
   --brand-foreground: #ffffff;
   --destructive: #dc2626;
@@ -59,9 +59,8 @@
   /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
-  --elevation-card:
-    0 0 0 1px rgba(23, 23, 23, 0.07), 0 1px 2px rgba(23, 23, 23, 0.04),
-    0 6px 24px -6px rgba(23, 23, 23, 0.08);
+  /* composer：白卡靠极软投影从白底上抬起，不发灰、不靠深描边 */
+  --elevation-composer: 0 1px 2px rgba(23, 23, 23, 0.04), 0 16px 40px -16px rgba(23, 23, 23, 0.12);
   --elevation-popover:
     0 0 0 1px rgba(23, 23, 23, 0.08), 0 8px 28px -6px rgba(23, 23, 23, 0.16),
     0 2px 6px rgba(23, 23, 23, 0.04);
@@ -90,7 +89,7 @@
   --muted-foreground: #a0a0a8;
   --accent: rgba(255, 255, 255, 0.06);
   --accent-foreground: #ededef;
-  --bubble: #26262a;
+  --bubble: #222225;
   --brand: #6d97ff;
   --brand-foreground: #0b0b0c;
   --destructive: #f26161;
@@ -113,9 +112,7 @@
   --code-bg: #1b1b1e;
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --elevation-card:
-    0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.3),
-    0 8px 28px -6px rgba(0, 0, 0, 0.45);
+  --elevation-composer: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.6);
   --elevation-popover:
     0 0 0 1px rgba(255, 255, 255, 0.09), 0 12px 32px -6px rgba(0, 0, 0, 0.6),
     0 2px 6px rgba(0, 0, 0, 0.3);
@@ -233,6 +230,10 @@
   textarea::placeholder {
     color: var(--text-tertiary);
   }
+  /* lucide 默认 stroke-width 2 偏重；1.75 更接近主流 agent UI 的轻盈线性图标。 */
+  .lucide {
+    stroke-width: 1.75px;
+  }
 }
 
 /* ---------------- 滚动条：细、半透明、只在悬停时加深 ---------------- */
@@ -304,17 +305,17 @@
 }
 
 /* ---------------- Markdown 排版 ----------------
-   收敛为 GitHub markdown-body 观感：h1/h2 下边框、无边框代码块、
-   全边框单元格 + 斑马纹表格、无描边行内代码，按 data-streamdown 标记统一收敛。 */
+   产品化排版（对齐主流 agent UI）：标题无下边框、表格只留水平分隔线、
+   无边框代码块 + 大圆角、行内代码灰底 + 发丝内描边，按 data-streamdown 标记统一收敛。 */
 .moc-prose {
-  font-size: var(--moc-prose-size, 14.5px);
-  line-height: var(--moc-prose-leading, 1.72);
+  font-size: var(--moc-prose-size, 15px);
+  line-height: var(--moc-prose-leading, 1.7);
   color: var(--moc-prose-color, var(--foreground));
   overflow-wrap: anywhere;
 }
 
 .moc-prose > * + * {
-  margin-top: 0.85em;
+  margin-top: 1em;
 }
 
 .moc-prose p {
@@ -332,13 +333,6 @@
   line-height: 1.3;
   letter-spacing: -0.01em;
   color: var(--foreground);
-}
-
-/* GitHub 标志性的 h1/h2 下边框 */
-.moc-prose [data-streamdown="heading-1"],
-.moc-prose [data-streamdown="heading-2"] {
-  padding-bottom: 0.3em;
-  border-bottom: 1px solid var(--border);
 }
 
 .moc-prose [data-streamdown="heading-1"] {
@@ -411,18 +405,19 @@
 }
 
 .moc-prose [data-streamdown="inline-code"] {
-  padding: 0.2em 0.4em;
-  border-radius: 6px;
+  padding: 0.1em 0.4em;
+  border-radius: 7px;
   background: var(--muted);
+  box-shadow: inset 0 0 0 0.5px var(--border);
   font-family: var(--font-mono);
-  font-size: 0.85em;
+  font-size: 0.875em;
   color: var(--foreground);
 }
 
 .moc-prose [data-streamdown="blockquote"] {
   margin: 0.9em 0;
   padding: 0 1em;
-  border-left: 0.25em solid var(--border-strong);
+  border-left: 2px solid var(--text-tertiary);
   color: var(--muted-foreground);
   font-style: normal;
 }
@@ -430,10 +425,10 @@
 .moc-prose [data-streamdown="horizontal-rule"] {
   margin: 1.6em 0;
   border: 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-subtle);
 }
 
-/* 表格：GitHub 式全边框单元格 + tbody 偶数行斑马纹，无外框卡片 */
+/* 表格：只留水平分隔线——表头下划 strong、行下划常规、首末列贴边。 */
 .moc-prose [data-streamdown="table-wrapper"] {
   margin: 1em 0;
   gap: 0;
@@ -455,27 +450,30 @@
   border: 0;
   border-radius: 0;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 13.5px;
 }
 .moc-prose [data-streamdown="table-header-cell"],
 .moc-prose [data-streamdown="table-cell"] {
-  padding: 6px 13px;
-  border: 1px solid var(--border-strong);
-  font-size: 13px;
-}
-/* GitHub 表头无底纹，只有加粗字重 */
-.moc-prose [data-streamdown="table-header"] {
-  background: transparent;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
 }
 .moc-prose [data-streamdown="table-header-cell"] {
+  border-bottom-color: var(--border-strong);
   font-weight: 600;
   color: var(--foreground);
 }
-.moc-prose [data-streamdown="table-body"] [data-streamdown="table-row"]:nth-child(even) {
-  background: var(--muted);
+.moc-prose [data-streamdown="table-header-cell"]:first-child,
+.moc-prose [data-streamdown="table-cell"]:first-child {
+  padding-left: 0;
+}
+.moc-prose [data-streamdown="table-header-cell"]:last-child,
+.moc-prose [data-streamdown="table-cell"]:last-child {
+  padding-right: 0;
 }
 
-/* 代码块：GitHub 风——无语言头/行号/卡片边框，仅右上角线框复制按钮 */
+/* 代码块：填充灰底 + 大圆角，无语言头/行号/卡片边框，仅右上角线框复制按钮 */
 .moc-prose [data-streamdown="code-block"],
 .moc-code-block [data-streamdown="code-block"] {
   position: relative;
@@ -483,14 +481,14 @@
   gap: 0;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 10px;
   background: var(--code-bg);
   overflow: hidden;
 }
 .moc-prose [data-streamdown="code-block-header"] {
   display: none;
 }
-/* 复制按钮：GitHub btn 质感（描边 + 内高光 + 轻投影），悬停代码块才出现 */
+/* 复制按钮：描边 + 内高光 + 轻投影，悬停代码块才出现 */
 .moc-prose [data-streamdown="code-block-actions"] {
   padding: 0;
   border: 1px solid var(--border-strong);
@@ -516,12 +514,12 @@
   border-radius: 5px;
 }
 .moc-prose [data-streamdown="code-block-body"] {
-  padding: 12px 16px;
+  padding: 14px 18px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .moc-prose [data-streamdown="code-block-body"] pre {
   background: transparent;

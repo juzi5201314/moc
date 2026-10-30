@@ -94,7 +94,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
               className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] animate-in fade-in-0"
               onClick={() => setSidebarOverlay(false)}
             />
-            <aside className="fixed inset-y-0 left-0 z-50 w-[280px] border-r border-border bg-sidebar shadow-[var(--elevation-popover)] animate-in slide-in-from-left-4 duration-200">
+            <aside className="fixed inset-y-0 left-0 z-50 w-[280px] border-r border-border-subtle bg-sidebar shadow-[var(--elevation-popover)] animate-in slide-in-from-left-4 duration-200">
               {sidebar}
             </aside>
           </>
@@ -137,14 +137,14 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
                 className="absolute inset-0 z-30 bg-black/20 animate-in fade-in-0"
                 onClick={() => toggleRightbar(false)}
               />
-              <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] border-l border-border bg-panel shadow-[var(--elevation-popover)] animate-in slide-in-from-right-4 duration-200">
+              <aside className="absolute inset-y-0 right-0 z-40 w-[min(420px,92%)] border-l border-border-subtle bg-background shadow-[var(--elevation-popover)] animate-in slide-in-from-right-4 duration-200">
                 {rightbar}
               </aside>
             </>
           ) : (
             <aside
               style={{ width: rightbarWidth }}
-              className="relative h-full shrink-0 border-l border-border bg-panel"
+              className="relative h-full shrink-0 border-l border-border-subtle bg-background"
             >
               <ResizeHandle side="right" width={rightbarWidth} onResize={setRightbarWidth} />
               {rightbar}

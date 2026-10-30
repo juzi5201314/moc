@@ -183,7 +183,7 @@ export function WorkspacePicker() {
         </div>
 
         {/* 子目录列表 */}
-        <div className="h-72 overflow-y-auto rounded-lg border border-border bg-background p-1">
+        <div className="h-72 overflow-y-auto rounded-lg bg-background p-1 ring-1 ring-inset ring-border-subtle">
           {newName !== null && (
             <div className="flex items-center gap-2.5 rounded-md bg-accent px-2.5 py-1.5">
               <FolderPlusIcon className="size-4 shrink-0 text-muted-foreground" />

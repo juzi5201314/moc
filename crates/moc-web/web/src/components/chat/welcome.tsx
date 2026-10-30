@@ -59,12 +59,12 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
     });
 
   return (
-    <div className="flex items-center justify-center gap-1 text-[13px] text-muted-foreground">
+    <div className="flex items-center justify-center gap-1 text-[13.5px] text-muted-foreground">
       <DropdownMenu>
         <DropdownMenuTrigger asChild disabled={!isDraft}>
           <button
             type="button"
-            className="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-lg px-2 transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none data-[state=open]:bg-accent"
+            className="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none data-[state=open]:bg-accent"
             title={cwd}
           >
             <FolderOpenIcon className="size-3.5 shrink-0" />
@@ -120,9 +120,9 @@ export function WelcomeView({ sessionId }: { sessionId: string }) {
         </div>
       </header>
       <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-[12vh]">
-        <div className="my-auto flex w-full max-w-[720px] flex-col gap-6">
-          <div className="flex flex-col items-center gap-3 text-center">
-            <h1 className="text-[26px] font-semibold tracking-[-0.01em] text-foreground">
+        <div className="my-auto flex w-full max-w-[720px] flex-col gap-8">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-foreground">
               {greeting()}
             </h1>
             <WorkspaceSwitch sessionId={sessionId} />

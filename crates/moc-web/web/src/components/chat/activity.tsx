@@ -118,8 +118,8 @@ function CommandCard({
 }) {
   const prompt = cwd?.split(/[\\/]/).filter(Boolean).pop();
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-code font-mono text-[12px] leading-[19px]">
-      <div className="group/cmd flex items-start gap-2 px-3 py-2">
+    <div className="overflow-hidden rounded-xl bg-code font-mono text-[12.5px] leading-[19px] ring-1 ring-inset ring-border-subtle">
+      <div className="group/cmd flex items-start gap-2 px-3.5 py-2.5">
         <span className="select-none text-text-tertiary">{prompt ? `${prompt} $` : "$"}</span>
         <div className="min-w-0 flex-1">
           <div className="max-h-[120px] overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground">
@@ -171,7 +171,7 @@ function IoCard({
   isError?: boolean;
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-border bg-code font-mono text-[12px] leading-[19px]">
+    <div className="overflow-hidden rounded-xl bg-code font-mono text-[12.5px] leading-[19px] ring-1 ring-inset ring-border-subtle">
       {input && (
         <div className="group/io relative">
           <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-[11px] text-text-tertiary">
@@ -218,8 +218,11 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
     <div className="space-y-2">
       {tool.diff?.files.length ? (
         tool.diff.files.map((file) => (
-          <div key={file.path} className="overflow-hidden rounded-lg border border-border">
-            <div className="flex h-8 items-center gap-2 border-b border-border-subtle bg-card px-3 text-[12px]">
+          <div
+            key={file.path}
+            className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle"
+          >
+            <div className="flex h-9 items-center gap-2 border-b border-border-subtle bg-card px-3.5 text-[12.5px]">
               <span
                 className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
                 title={file.path}
@@ -258,7 +261,7 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
               href={imageSrc(image)}
               target="_blank"
               rel="noreferrer"
-              className="overflow-hidden rounded-lg border border-border"
+              className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle"
             >
               <img
                 src={imageSrc(image)}
@@ -271,7 +274,7 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
       )}
 
       {tool.progress && tool.progress.length > 0 && (
-        <div className="space-y-1 rounded-lg border border-border bg-card px-3 py-2 text-[12px]">
+        <div className="space-y-1 rounded-xl bg-card px-3.5 py-2.5 text-[12.5px] ring-1 ring-inset ring-border-subtle">
           {tool.progress.map((row) => (
             <div key={row.agent_id} className="flex items-center gap-2">
               {row.status === "running" || row.status === "queued" ? (
@@ -308,7 +311,7 @@ function BlockDetail({ block }: { block: Block }) {
   switch (block.kind) {
     case "reasoning":
       return (
-        <div className="border-l-2 border-border pl-3 [--moc-prose-color:var(--muted-foreground)] [--moc-prose-leading:1.65] [--moc-prose-size:13px]">
+        <div className="border-l-2 border-border pl-3 [--moc-prose-color:var(--muted-foreground)] [--moc-prose-leading:1.65] [--moc-prose-size:13.5px]">
           <MessageResponse>{block.text}</MessageResponse>
         </div>
       );
@@ -325,7 +328,7 @@ function BlockDetail({ block }: { block: Block }) {
       return <ToolDetail tool={block} />;
     case "agent-message":
       return (
-        <div className="rounded-lg border border-border bg-card px-3 py-2 text-[13px] whitespace-pre-wrap text-muted-foreground">
+        <div className="rounded-xl bg-card px-3.5 py-2.5 text-[13.5px] whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
           {block.body}
         </div>
       );
@@ -424,7 +427,7 @@ export function ActivityRow({ block, live = false }: { block: Block; live?: bool
         disabled={!detail}
         onClick={() => setManual(!open)}
         className={cn(
-          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] text-muted-foreground transition-colors",
+          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13.5px] text-muted-foreground transition-colors",
           detail ? "hover:bg-surface-hover hover:text-foreground" : "cursor-default",
         )}
       >
@@ -445,7 +448,7 @@ export function ActivityRow({ block, live = false }: { block: Block; live?: bool
               "min-w-0 flex-1 truncate",
               block.kind === "reasoning"
                 ? "text-text-tertiary"
-                : "font-mono text-[12px] text-text-tertiary",
+                : "font-mono text-[12.5px] text-text-tertiary",
               failed && "text-destructive/80",
             )}
           >

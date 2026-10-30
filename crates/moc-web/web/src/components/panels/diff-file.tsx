@@ -117,7 +117,7 @@ export function DiffBody({
   const effective = mode ?? preferred;
   return (
     <div
-      className="overflow-auto bg-code py-1 font-mono text-[12px] leading-[20px]"
+      className="overflow-auto bg-code py-1 font-mono text-[12.5px] leading-[20px]"
       style={maxHeight ? { maxHeight } : undefined}
     >
       {file.hunks.map((hunk, index) => (
@@ -155,11 +155,11 @@ export function DiffFile({
   const name = slash >= 0 ? file.path.slice(slash + 1) : file.path;
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border bg-card">
+    <section className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex h-9 w-full items-center gap-2 px-3 text-left text-[12.5px] hover:bg-surface-hover"
+        className="flex h-10 w-full items-center gap-2 px-3.5 text-left text-[12.5px] hover:bg-surface-hover"
         title={file.path}
       >
         <ChevronRightIcon

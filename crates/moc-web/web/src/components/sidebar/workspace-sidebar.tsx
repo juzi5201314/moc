@@ -41,7 +41,7 @@ import { openSettings, useUi } from "@/store/ui";
 /** 每个工作区默认展示的会话数；更多的折叠在「显示更多」后面。 */
 const VISIBLE_SESSIONS = 6;
 
-const ROW = "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-[13px] transition-colors";
+const ROW = "flex h-9 w-full items-center gap-2 rounded-lg px-2 text-[13.5px] transition-colors";
 
 function NavRow({
   icon,
@@ -144,7 +144,7 @@ export function WorkspaceSidebar() {
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => event.key === "Escape" && closeSearch()}
               placeholder="筛选会话与目录"
-              className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
+              className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none"
             />
             <button
               type="button"
@@ -167,7 +167,9 @@ export function WorkspaceSidebar() {
       </div>
 
       <div className="mt-4 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
-        <span className="text-xs font-medium text-text-tertiary">工作区</span>
+        <span className="text-[11px] font-medium uppercase tracking-wider text-text-tertiary">
+          工作区
+        </span>
         <IconButton label="添加工作区目录" size="xs" onClick={addWorkspace}>
           <FolderPlusIcon />
         </IconButton>
@@ -381,7 +383,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             if (event.key === "Escape") setRenaming(null);
           }}
           onBlur={commitRename}
-          className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
+          className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none"
         />
       </div>
     );

@@ -121,7 +121,7 @@ export function ChatThread({ sessionId }: { sessionId: string }) {
   return (
     <div className="moc-chat-pane relative flex min-h-0 flex-1 overflow-hidden">
       <Conversation className="flex-1">
-        <ConversationContent className="moc-chat-column gap-7 px-0 pt-6 pb-10">
+        <ConversationContent className="moc-chat-column gap-10 px-0 pt-10 pb-16">
           {view.hasMore && <LoadOlder sessionId={sessionId} loading={view.loadingOlder} />}
           {turns.map((turn, index) => (
             <TurnView
@@ -245,7 +245,7 @@ function ImageThumbs({ images, className }: { images: ImageSource[]; className?:
             key={index}
             type="button"
             onClick={() => setPreview(imageSrc(image))}
-            className="overflow-hidden rounded-lg border border-border bg-card transition-opacity hover:opacity-90"
+            className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle transition-opacity hover:opacity-90"
           >
             <img src={imageSrc(image)} alt="图片附件" className="h-24 max-w-[200px] object-cover" />
           </button>
@@ -282,7 +282,7 @@ function UserMessage({
     <div className="group/user flex flex-col items-end gap-1">
       <ImageThumbs images={block.images} className="justify-end" />
       {block.text && (
-        <div className="relative max-w-[85%] rounded-[18px] bg-bubble px-4 py-2.5 text-[14.5px] leading-[1.65] text-foreground">
+        <div className="relative max-w-[85%] rounded-[20px] bg-bubble px-4.5 py-3 text-[15px] leading-[1.65] text-foreground">
           <div
             className={cn(
               "whitespace-pre-wrap break-words",
@@ -409,7 +409,7 @@ function AssistantTurn({
   };
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-4">
       {live ? (
         segments.map(renderSegment)
       ) : (
@@ -419,7 +419,7 @@ function AssistantTurn({
               <button
                 type="button"
                 onClick={() => setProcessOpen((value) => !value)}
-                className="group/proc -ml-1.5 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[13px] text-text-tertiary transition-colors hover:bg-surface-hover hover:text-muted-foreground"
+                className="group/proc -ml-1.5 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[13.5px] text-text-tertiary transition-colors hover:bg-surface-hover hover:text-muted-foreground"
               >
                 <span>
                   {durationMs !== undefined ? `处理用时 ${formatDuration(durationMs)}` : "处理过程"}
@@ -431,7 +431,7 @@ function AssistantTurn({
                 />
               </button>
               {processOpen && (
-                <div className="mt-1 flex flex-col gap-2.5 border-l border-border pl-4">
+                <div className="mt-2 flex flex-col gap-3 border-l border-border pl-4">
                   {segments.map((segment, index) =>
                     index === finalIndex || segment.kind === "plan" || segment.kind === "notice"
                       ? null
@@ -452,7 +452,7 @@ function AssistantTurn({
       )}
 
       {live && (
-        <div className="flex h-7 items-center gap-2 text-[13px]">
+        <div className="flex h-7 items-center gap-2 text-[13.5px]">
           <span className="moc-dots flex gap-[3px]">
             <span className="size-1.5 rounded-full bg-text-tertiary" />
             <span className="size-1.5 rounded-full bg-text-tertiary" />
@@ -523,7 +523,7 @@ function NoticeCard({
   return (
     <div
       className={cn(
-        "flex items-start gap-2.5 rounded-lg border px-3 py-2 text-[13px] leading-5",
+        "flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-[13.5px] leading-5",
         error
           ? "border-destructive/25 bg-destructive/6 text-destructive"
           : "border-warn/25 bg-warn/8 text-warn",
@@ -574,8 +574,8 @@ function PlanCard({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-xl border bg-card px-3.5 py-3",
-        pending ? "border-brand/35 shadow-[var(--elevation-card)]" : "border-border",
+        "flex items-center gap-3 rounded-xl bg-card px-3.5 py-3 ring-1 ring-inset",
+        pending ? "ring-brand/35" : "ring-border-subtle",
       )}
     >
       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">

@@ -194,7 +194,7 @@ function AddProvider({
           填好地址与密钥后会自动从供应商拉取可用模型，勾选即可加入。
         </p>
       </div>
-      <div className="space-y-3.5 rounded-xl border border-border bg-card p-4">
+      <div className="space-y-3.5 rounded-xl bg-card p-4 ring-1 ring-inset ring-border-subtle">
         <Labeled
           label="标识"
           hint={invalid ?? duplicate ?? "用于模型选择器里的 provider/model 前缀"}
@@ -416,7 +416,7 @@ function ProviderDetail({
           />
         )}
 
-        <div className="divide-y divide-border-subtle overflow-hidden rounded-xl border border-border bg-card">
+        <div className="divide-y divide-border-subtle overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle">
           {models.length === 0 && (
             <p className="px-4 py-6 text-center text-[13px] text-text-tertiary">
               还没有模型。点「从供应商获取」，或在下方手动添加模型 ID。
@@ -615,7 +615,7 @@ function DiscoveryPanel({
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-brand/30 bg-card">
+    <div className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-brand/30">
       <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
         <SearchIcon className="size-3.5 shrink-0 text-text-tertiary" />
         <input

@@ -337,7 +337,7 @@ export function FieldList({
               {GROUP_TITLES[group.key] ?? group.key.split(".").at(-1)}
             </h3>
           )}
-          <div className="divide-y divide-border-subtle rounded-xl border border-border bg-card px-4">
+          <div className="divide-y divide-border-subtle rounded-xl bg-card px-4 ring-1 ring-inset ring-border-subtle">
             {group.fields.map((field) => (
               <FieldRow key={field.path.join(".")} field={field} doc={doc} />
             ))}

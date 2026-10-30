@@ -58,7 +58,7 @@ export function Card({ children, className }: { children: ReactNode; className?:
   return (
     <div
       className={cn(
-        "divide-y divide-border-subtle rounded-xl border border-border bg-card px-4",
+        "divide-y divide-border-subtle rounded-xl bg-card px-4 ring-1 ring-inset ring-border-subtle",
         className,
       )}
     >
