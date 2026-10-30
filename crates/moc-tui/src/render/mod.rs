@@ -12,6 +12,7 @@ pub mod graphics;
 pub mod highlight;
 pub mod image;
 pub mod markdown;
+pub mod mermaid;
 pub mod modal;
 pub mod scrollback;
 pub mod subagent;

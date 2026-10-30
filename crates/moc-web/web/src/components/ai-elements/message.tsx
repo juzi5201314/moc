@@ -8,11 +8,14 @@ import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, type MermaidErrorComponentProps } from "streamdown";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup, ButtonGroupText } from "@/components/ui/button-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useIsDark } from "@/lib/use-dark";
 import { cn } from "@/lib/utils";
+import { mermaidConfig } from "./mermaid-theme";
+import { SVG_ALLOWED_TAGS, liftSvgFences, readFigureTokens } from "./svg-figure";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -276,24 +279,46 @@ export const streamdownPlugins = {
   mermaid,
 };
 
-// GitHub 观感：代码块只留复制按钮，表格不带复制/下载/全屏工具条。
+// GitHub 观感：代码块只留复制按钮，表格和 mermaid 不带复制/下载/全屏工具条。
 export const streamdownControls = {
   code: { copy: true, download: false },
   table: false,
+  mermaid: { download: false, copy: false, fullscreen: false, panZoom: false },
 } as const;
+
+function MermaidFallback({ chart }: MermaidErrorComponentProps) {
+  return (
+    <pre className="moc-mermaid-fallback">
+      <code>{chart}</code>
+    </pre>
+  );
+}
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
-      className={cn("moc-prose size-full", className)}
-      controls={streamdownControls}
-      lineNumbers={false}
-      plugins={streamdownPlugins}
-      {...props}
-    />
-  ),
+  ({ className, children, ...props }: MessageResponseProps) => {
+    const dark = useIsDark();
+    const tokens = useMemo(() => readFigureTokens(dark), [dark]);
+    const mermaid = useMemo(
+      () => ({ config: mermaidConfig(tokens, dark), errorComponent: MermaidFallback }),
+      [tokens, dark],
+    );
+    const source = typeof children === "string" ? liftSvgFences(children, tokens) : children;
+    return (
+      <Streamdown
+        allowedTags={SVG_ALLOWED_TAGS}
+        className={cn("moc-prose size-full", className)}
+        controls={streamdownControls}
+        lineNumbers={false}
+        mermaid={mermaid}
+        plugins={streamdownPlugins}
+        {...props}
+      >
+        {source}
+      </Streamdown>
+    );
+  },
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children && nextProps.isAnimating === prevProps.isAnimating,
 );

@@ -113,10 +113,11 @@ fn raster_decode(bytes: &[u8]) -> Result<super::DecodedImage, DecodeError> {
 
 /// 矢量：只解析成树，栅格化留给贴图时按目标像素尺寸做（矢量放大不糊）。
 fn svg_decode(text: &str) -> Result<super::DecodedImage, DecodeError> {
+    let text = substitute_svg_tokens(text, crate::theme::Theme::global().raw());
     if text.trim().is_empty() {
         return Err(DecodeError::EmptySvg);
     }
-    let tree = resvg::usvg::Tree::from_str(text, &svg_options())?;
+    let tree = resvg::usvg::Tree::from_str(&text, &svg_options())?;
     let size = tree.size();
     let w = size.width().round();
     let h = size.height().round();
@@ -138,6 +139,64 @@ fn svg_decode(text: &str) -> Result<super::DecodedImage, DecodeError> {
         h,
         tree: Box::new(tree),
     })
+}
+
+/// 把提示词约定的颜色写成调色板里的真彩色。
+///
+/// `currentColor` 和 `var(--fg)` 这一组在 usvg 里没有对应的自定义属性，
+/// 不换掉就会变成黑色或被丢掉。未知的 `var(--*)` 原样留下。
+pub(crate) fn substitute_svg_tokens(text: &str, palette: &crate::theme::RawPalette) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("currentColor") {
+            out.push_str(&hex(palette.text_primary));
+            rest = after;
+            continue;
+        }
+        if let Some((name, consumed)) = var_token(rest) {
+            if let Some(rgb) = token_rgb(name, palette) {
+                out.push_str(&hex(rgb));
+                rest = &rest[consumed..];
+                continue;
+            }
+        }
+        let ch = rest.chars().next().expect("rest 非空");
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+fn var_token(text: &str) -> Option<(&str, usize)> {
+    let after = text.strip_prefix("var(")?;
+    let body = after.trim_start();
+    let name_src = body.strip_prefix("--")?;
+    let close = name_src.find(')')?;
+    let name = name_src[..close].split(',').next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let consumed = text.len() - name_src.len() + close + 1;
+    Some((name, consumed))
+}
+
+fn token_rgb(name: &str, palette: &crate::theme::RawPalette) -> Option<[u8; 3]> {
+    Some(match name {
+        "fg" => palette.text_primary,
+        "muted" => palette.text_secondary,
+        "border" => palette.border,
+        "surface" => palette.bg_panel,
+        "accent" => palette.chart[0],
+        "success" => palette.accent_success,
+        "warning" => palette.accent_warning,
+        "error" => palette.accent_error,
+        _ => return None,
+    })
+}
+
+fn hex(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
 /// SVG 解析选项：只允许 data URL 内嵌资源，禁止读本地文件。
@@ -202,6 +261,28 @@ mod tests {
                 .into(),
         );
         assert_eq!(decode(spec).expect("SVG 应能解析").size(), (20, 10));
+    }
+
+    #[test]
+    fn svg_var_tokens_resolve_to_palette_hex() {
+        let palette = crate::theme::Theme::global().raw();
+        let out = substitute_svg_tokens(
+            r#"<svg fill="var(--fg)" stroke="currentColor" style="color:var( --muted )"/>"#,
+            palette,
+        );
+        let fg = format!(
+            "#{:02x}{:02x}{:02x}",
+            palette.text_primary[0], palette.text_primary[1], palette.text_primary[2]
+        );
+        let muted = format!(
+            "#{:02x}{:02x}{:02x}",
+            palette.text_secondary[0], palette.text_secondary[1], palette.text_secondary[2]
+        );
+        assert!(out.contains(&fg), "{out}");
+        assert!(out.contains(&muted), "{out}");
+        assert!(!out.contains("var("));
+        assert!(!out.contains("currentColor"));
+        assert!(substitute_svg_tokens("var(--nope)", palette).contains("var(--nope)"));
     }
 
     /// 回归：SVG 的固有尺寸必须有上限。

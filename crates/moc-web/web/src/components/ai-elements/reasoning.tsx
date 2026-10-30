@@ -13,11 +13,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
-import { streamdownControls, streamdownPlugins } from "./message";
+import { MessageResponse } from "./message";
 import { Shimmer } from "./shimmer";
 
 interface ReasoningContextValue {
@@ -194,14 +193,9 @@ export const ReasoningContent = memo(({ className, children, ...props }: Reasoni
     )}
     {...props}
   >
-    <Streamdown
-      className="moc-prose [--moc-prose-color:var(--muted-foreground)] [--moc-prose-size:13px]"
-      controls={streamdownControls}
-      lineNumbers={false}
-      plugins={streamdownPlugins}
-    >
+    <MessageResponse className="[--moc-prose-color:var(--muted-foreground)] [--moc-prose-size:13px]">
       {children}
-    </Streamdown>
+    </MessageResponse>
   </CollapsibleContent>
 ));
 

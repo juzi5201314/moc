@@ -33,6 +33,9 @@ use crate::config::ResolvedSandboxConfig;
 use crate::config::model::ResolvedModel;
 
 const DEFAULT_INTRO: &str = "You are a precise software-engineering agent working in the user's local workspace through tools.";
+/// 回复里的图怎么写。自定义身份会换掉 [`DEFAULT_INTRO`]，这句仍接在后面：
+/// 终端和网页都按这个契约渲染，换身份不该把图画不出来。
+const VISUAL_GUIDE: &str = "Use a ```mermaid fence for flow, sequence, state, or dependencies, and a ```svg fence for a layout, mockup, or geometry mermaid cannot draw; both render inline, so do not restate the figure. In SVG use only currentColor and var(--fg), var(--muted), var(--border), var(--surface), var(--accent), var(--success), var(--warning), var(--error); no background, scripts, animation, foreignObject, or external hrefs.";
 // 跨工具纪律只写在这里；单个工具的用法写在各自的 description，这里不重复。
 const TOOL_POLICY: &str = "Use read for files and directories, grep for content, find for paths, edit for anchored changes, write for new or complete files, and bash only when a shell is required.";
 /// web_search/web_fetch 按各自可见性拼进工具政策。
@@ -341,15 +344,16 @@ pub(crate) fn build_btw(
 }
 
 fn intro_piece(config: &ResolvedConfig) -> PromptPiece {
+    let identity = if config.system_prompt.override_text.trim().is_empty() {
+        DEFAULT_INTRO
+    } else {
+        config.system_prompt.override_text.trim()
+    };
     PromptPiece {
         title: "system",
         name: PIECE_INTRO,
         scope: PieceScope::Static,
-        text: if config.system_prompt.override_text.trim().is_empty() {
-            DEFAULT_INTRO.to_owned()
-        } else {
-            config.system_prompt.override_text.trim().to_owned()
-        },
+        text: format!("{identity}\n\n{VISUAL_GUIDE}"),
     }
 }
 
@@ -562,6 +566,7 @@ mod tests {
         let system = prompt.messages[0].instruction_text();
         let user = prompt.messages[1].instruction_text();
         assert!(system.starts_with("Custom identity."));
+        assert!(system.contains(VISUAL_GUIDE));
         assert!(system.contains("<env>"));
         assert!(user.contains("Keep the local rule."));
         assert!(user.contains("Keep the appendix."));
@@ -602,6 +607,7 @@ mod tests {
         );
         let text = prompt_text(&prompt);
         assert!(text.starts_with(DEFAULT_INTRO));
+        assert!(text.contains(VISUAL_GUIDE));
         assert!(text.contains("Follow local rule."));
         assert!(text.contains(REPO_RULES_INTRO));
         assert!(text.contains("model: p/model"));

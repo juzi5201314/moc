@@ -460,10 +460,11 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     let Some(entry) = app.blocks.get(index) else {
         return 0;
     };
-    // 含表格 / 图片的正文不能用折行近似：表格列宽收缩、入口按钮、图表占位行、
-    // 图片占位行都是渲染期才算出来的，估错会让滚动范围与懒渲染的可见区间一起失真。
+    // 含表格 / 图片 / mermaid 的正文不能用折行近似：表格列宽收缩、入口按钮、
+    // 图表占位行、图片占位行和字符图的行数都是渲染期才算出来的，估错会让滚动
+    // 范围与懒渲染的可见区间一起失真。
     if let Block::Assistant { text } = &entry.block
-        && (may_contain_table(text) || may_contain_image(text))
+        && (may_contain_table(text) || may_contain_image(text) || may_contain_mermaid(text))
     {
         return render_entry_estimate(index, entry, app, width, index == 0)
             .lines
@@ -590,6 +591,19 @@ fn may_contain_image(text: &str) -> bool {
             .take_while(|ch| *ch == '`' || *ch == '~')
             .count();
         fence_len >= 3 && crate::render::markdown::is_svg_fence_info(&trimmed[fence_len..])
+    })
+}
+
+/// 正文里是否可能出现 mermaid 围栏。口径与 [`may_contain_image`] 相同：漏判会让
+/// 字符图的行数被折行近似顶替。
+fn may_contain_mermaid(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        let fence_len = trimmed
+            .chars()
+            .take_while(|ch| *ch == '`' || *ch == '~')
+            .count();
+        fence_len >= 3 && crate::render::markdown::is_mermaid_fence_info(&trimmed[fence_len..])
     })
 }
 
@@ -2530,6 +2544,22 @@ mod tests {
         );
         assert!(may_contain_image("前文\n\n![](./a.png)\n"), "markdown 图片");
         assert!(!may_contain_image("纯文本\n没有图也没有代码块"), "纯文本");
+    }
+
+    #[test]
+    fn mermaid_prefilter_matches_the_renderer() {
+        for fence in ["```mermaid", "```Mermaid", "~~~mermaid", "``` mermaid"] {
+            let source = format!("{fence}\nflowchart TD\n  A-->B\n```\n");
+            assert!(may_contain_mermaid(&source), "{fence} 应被预筛命中");
+        }
+        assert!(
+            !may_contain_mermaid("```rust\nfn main() {}\n```"),
+            "普通代码块不该命中"
+        );
+        assert!(
+            !may_contain_mermaid("```svg\n<svg/>\n```"),
+            "SVG 围栏走图片预筛"
+        );
     }
 
     /// 用户消息：使用 `>` 前缀，短消息时间戳右对齐，窄宽度时另起一行。
