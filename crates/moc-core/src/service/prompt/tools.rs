@@ -1332,7 +1332,8 @@ mod tests {
         }
         let edit = serde_json::json!({
             "path":"src/main.rs",
-            "edits":[["1aa","1aa","change"]]
+            "tag":"0000",
+            "edits":[{"op":"replace","from":1,"to":1,"text":"change"}]
         });
         assert!(
             outside_workspace_targets(&root, "edit", &edit)
@@ -1356,8 +1357,9 @@ mod tests {
         // move 的 target_path 与源文件一起授权，越出工作区的目标也必须检查出来。
         let edit = serde_json::json!({
             "path": "src/main.rs",
-            "edits": [["1aa","1aa","change"]],
-            "move": {"from":"1aa","to":"1aa","target_path": outside.join("moved.txt").display().to_string()}
+            "tag": "0000",
+            "edits": [{"op":"replace","from":1,"to":1,"text":"change"}],
+            "move": {"from":2,"to":2,"target_path": outside.join("moved.txt").display().to_string(),"target_tag":"0000"}
         });
         assert_eq!(
             outside_workspace_targets(&root, "edit", &edit).unwrap(),

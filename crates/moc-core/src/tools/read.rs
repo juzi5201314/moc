@@ -1,4 +1,4 @@
-//! read 工具：展示目录和文本文件，给完整显示出来的行分配 hashline 锚点。
+//! read 工具：展示目录和文本文件；文件头部带快照 tag，完整显示的行登记为可编辑。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
-use crate::hashline::{anchor_line_token, served::read_snapshot};
+use crate::hashline::{numbered_line, served::read_snapshot, tag_text};
 use crate::resources::{ResourceBacking, ResourceRouter};
 
 #[derive(Debug, Deserialize)]
@@ -27,7 +27,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &'static str {
-        "Read a text file, directory, or session resource URI; returns hashline anchors for edit and plan edits."
+        "Read a text file, directory, or session resource URI; file output starts with [path#TAG] and numbers each line as N│text for edit and plan edits."
     }
     fn tier(&self) -> Tier {
         Tier::Read
@@ -85,11 +85,13 @@ impl Tool for ReadTool {
                 .max(1);
             let start = offset.saturating_sub(1).min(snapshot.lines.len());
             let end = start.saturating_add(limit).min(snapshot.lines.len());
-            let mut output = format!("[{display}]\n");
+            let anchored = snapshot.bytes.len() <= 4 * 1024 * 1024;
+            // tag 固定 4 个字符：先按最终头部长度（含换行）预留预算，登记后再写入头部。
+            let header_len = display.len() + if anchored { 8 } else { 3 };
             let mut notices = String::new();
-            if snapshot.bytes.len() > 4 * 1024 * 1024 {
+            if !anchored {
                 notices.push_str(
-                    "\n[File exceeds the 4 MiB snapshot limit; anchored edits are unavailable; use bash or write.]",
+                    "\n[File exceeds the 4 MiB snapshot limit; line-number edits are unavailable; use bash or write.]",
                 );
             }
             if std::str::from_utf8(&snapshot.bytes).is_err() {
@@ -105,14 +107,13 @@ impl Tool for ReadTool {
                 .read
                 .max_bytes
                 .min(super::output::budget(&ctx.config.tools.output))
-                .saturating_sub(output.len() + notices.len() + footer_budget);
+                .saturating_sub(header_len + notices.len() + footer_budget);
             let max_line_bytes = ctx
                 .config
                 .tools
                 .read
                 .line_max_bytes
                 .min(page_budget.saturating_sub(7));
-            let anchored = snapshot.bytes.len() <= 4 * 1024 * 1024;
             let mut selected = Vec::new();
             let mut modes = Vec::new();
             let mut rendered_bytes = 0usize;
@@ -120,7 +121,7 @@ impl Tool for ReadTool {
             for (offset, line) in snapshot.lines[start..end].iter().enumerate() {
                 let position = start + offset;
                 let (mode, rendered_len) = if line.len() > max_line_bytes {
-                    let placeholder = placeholder_line(position + 1, line.len(), anchored);
+                    let placeholder = placeholder_line(position + 1, line.len());
                     let mode = if anchored {
                         LineMode::AnchorPlaceholder
                     } else {
@@ -160,25 +161,22 @@ impl Tool for ReadTool {
                 windows.push(start_window..last_served.expect("显示窗口一定有结束行"));
             }
 
-            let tokens = if anchored {
-                ctx.anchors.record_served(path.clone(), &snapshot, &windows)
+            let mut output = if anchored {
+                let tag = ctx.anchors.record_served(path.clone(), &snapshot, &windows);
+                format!("[{display}#{}]\n", tag_text(tag))
             } else {
-                Vec::new()
+                format!("[{display}]\n")
             };
-            let mut token_iter = tokens.into_iter();
+            debug_assert_eq!(output.len(), header_len);
             let mut rendered = Vec::with_capacity(selected.len());
             for (position, mode) in selected.iter().copied().zip(modes.iter().copied()) {
                 let line = &snapshot.lines[position];
                 let text = match mode {
-                    LineMode::Anchor => {
-                        let (token_position, token) =
-                            token_iter.next().expect("锚点行一定已登记令牌");
-                        debug_assert_eq!(token_position, position);
-                        anchor_line_token(token, line)
+                    LineMode::Anchor => numbered_line(position + 1, line),
+                    LineMode::AnchorPlaceholder | LineMode::PlainPlaceholder => {
+                        placeholder_line(position + 1, line.len())
                     }
-                    LineMode::AnchorPlaceholder => placeholder_line(position + 1, line.len(), true),
                     LineMode::Plain => line.clone(),
-                    LineMode::PlainPlaceholder => placeholder_line(position + 1, line.len(), false),
                 };
                 rendered.push(text);
             }
@@ -191,7 +189,7 @@ impl Tool for ReadTool {
             output.push_str(&page_footer(start + 1, shown_end, total));
             output.push_str(&notices);
             if has_uneditable_shown {
-                output.push_str("\nLines shown as a size notice instead of an anchor are not editable; inspect them with bash or rewrite the file with write.");
+                output.push_str("\nLines shown as a size notice instead of N│text are not editable; inspect them with bash or rewrite the file with write.");
             }
             if !anchored {
                 ctx.anchors.invalidate(&path);
@@ -216,17 +214,12 @@ fn digits_of(value: usize) -> usize {
     })
 }
 
-/// 超长行的占位文本；可编辑模式带 `N│` 前缀，其它模式不带任何像锚点的前缀。
-fn placeholder_line(line_no: usize, bytes: usize, anchored: bool) -> String {
-    let notice = format!(
+/// 超长行的占位文本；不带 `N│` 前缀，避免被当成可编辑行。
+fn placeholder_line(line_no: usize, bytes: usize) -> String {
+    format!(
         "[Line {line_no} is {} KB and exceeds the limit; content omitted; use bash to inspect it]",
         bytes.div_ceil(1024)
-    );
-    if anchored {
-        format!("  {line_no}│{notice}")
-    } else {
-        notice
-    }
+    )
 }
 
 fn render_text_resource(uri: &str, text: &str, offset: Option<usize>, limit: usize) -> String {

@@ -1,15 +1,16 @@
 //! Hashline 批量编辑解析、验证、搬运与原子提交。
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
-use super::served::{RangeError, read_snapshot, verify_range};
+use super::served::read_snapshot;
 use crate::error::CoreError;
 use crate::hashline::{
-    AnchorStore, FileSnapshot, ServedFile, anchor_line_token, id_str, parse_anchor,
+    AnchorStore, FileSnapshot, ServedFile, TagError, numbered_line, parse_tag, tag_text,
 };
 use moc_protocol::{LineChange, ToolDiff, ToolFileDiff, build_hunks_from_changes};
 
@@ -27,21 +28,36 @@ pub enum EditError {
 #[serde(deny_unknown_fields)]
 pub struct EditRequest {
     pub path: String,
-    pub edits: Vec<[String; 3]>,
+    /// read 或 edit 输出头部 `[path#TAG]` 里的 tag；全部行号都指这个版本。
+    pub tag: String,
+    #[serde(default)]
+    pub edits: Vec<EditOp>,
     #[serde(default, rename = "move")]
     pub move_lines: Option<MoveRequest>,
+}
+
+/// 单个编辑操作；行号是 1 基、闭区间，均指请求 tag 对应的版本。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
+pub enum EditOp {
+    Replace { from: usize, to: usize, text: String },
+    Insert { after: usize, text: String },
+    Delete { from: usize, to: usize },
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoveRequest {
-    pub from: String,
-    pub to: String,
+    pub from: usize,
+    pub to: usize,
     pub target_path: String,
+    pub target_tag: String,
+    /// 目标文件中插入位置之前的行号；`0` 表示开头，省略表示追加到末尾。
     #[serde(default)]
-    pub target_anchor: Option<String>,
+    pub after: Option<usize>,
 }
 
+/// 映射到当前坐标后的编辑：半开区间 `start..end`，插入时 `start == end`。
 #[derive(Debug, Clone)]
 struct VerifiedEdit {
     start: usize,
@@ -57,6 +73,7 @@ struct MoveTargetPlan {
     lines: Vec<String>,
     insert_at: usize,
     moved_lines: Vec<String>,
+    served: ServedFile,
 }
 
 /// 一个待提交文件的内容计划：原始快照 + 计算后的最终行。
@@ -68,11 +85,11 @@ pub struct EditPlan {
     pub snapshot: FileSnapshot,
     /// 编辑后的最终行序列。
     pub lines: Vec<String>,
-    /// 给模型看的 diff 文本（已包含当前锚点）。
+    /// 给模型看的 diff 文本（头部带新 tag）。
     pub output: String,
     /// 给前端看的结构化 diff。
     pub diff: ToolDiff,
-    /// 编辑后按位移表重定位并刷新过展示窗口的 served 状态。
+    /// 编辑后压入新版本、并登记了 diff 展示窗口的 served 状态。
     pub served: ServedFile,
     /// 编辑前后内容完全一致（`apply_edit` 直接早退，`preview_edit` 返回空 diff）。
     pub no_changes: bool,
@@ -89,11 +106,11 @@ pub struct EditPlanTarget {
     pub served: ServedFile,
 }
 
-/// 验证全部范围并计算文件最终内容；不触碰磁盘、不更新锚点状态。
+/// 验证全部范围并计算文件最终内容；不触碰磁盘、不更新 served 状态。
 ///
 /// [`apply_edit`]（提交）与 [`preview_edit`]（授权 diff 预览）共用同一份计划，
-/// 保证「弹窗里预览的」与「实际落盘的」完全一致。计划同时按位移表重定位
-/// served 令牌，并把 diff 展示窗口内的令牌刷新到当前行号。
+/// 保证「弹窗里预览的」与「实际落盘的」完全一致。请求里的行号先沿版本链
+/// 映射到当前坐标，再统一排序、生成位移表。
 pub fn plan_edit(
     cwd: &Path,
     request: &EditRequest,
@@ -102,90 +119,80 @@ pub fn plan_edit(
     max_edits: usize,
     max_file_bytes: u64,
 ) -> Result<EditPlan, EditError> {
-    if request.edits.is_empty() || request.edits.len() > max_edits {
+    if (request.edits.is_empty() && request.move_lines.is_none())
+        || request.edits.len() > max_edits
+    {
         return Err(tool_error(
             "E_BAD_PAYLOAD",
-            "edits must contain at least one item and must not exceed the configured limit",
+            "edits must not exceed the configured limit; provide edits, move, or both",
         ));
     }
+    let tag = parse_tag(&request.tag).ok_or_else(bad_tag)?;
     let source_path = resolve_path(cwd, &request.path)?;
     let source_snapshot =
         read_snapshot(&source_path, max_file_bytes).map_err(tool_error_from_io)?;
-    ensure_snapshot_current(served, &source_snapshot, &source_path)?;
+    if served.epoch != Some(source_snapshot.epoch) {
+        let message = if served.epoch.is_none() {
+            format!("{} has not been read in this session", source_path.display())
+        } else {
+            format!(
+                "{} changed outside this session since it was read",
+                source_path.display()
+            )
+        };
+        return Err(tool_error("E_STALE_TAG", &message));
+    }
+    let version = resolve_tag(served, tag, &source_path)?;
 
-    let mut edits = Vec::with_capacity(request.edits.len());
-    let mut warnings = Vec::new();
-    let mut ranges = Vec::with_capacity(request.edits.len());
-    for [from, to, replacement] in &request.edits {
-        let parsed_from = parse_anchor(from).map_err(|received| {
-            range_tool_error(RangeError::BadAnchor {
-                field: "from",
-                received,
-            })
-        })?;
-        let parsed_to = parse_anchor(to).map_err(|received| {
-            range_tool_error(RangeError::BadAnchor {
-                field: "to",
-                received,
-            })
-        })?;
-        if let Some(trimmed) = parsed_from.trimmed {
-            warnings.push(format!(
-                "edit[{}]: from cleaned to \"{trimmed}\" (copy only the anchor, not the line content)",
-                edits.len()
-            ));
-        }
-        if let Some(trimmed) = parsed_to.trimmed {
-            warnings.push(format!(
-                "edit[{}]: to cleaned to \"{trimmed}\" (copy only the anchor, not the line content)",
-                edits.len()
-            ));
-        }
-        let (start, end, warning) =
-            verify_range(served, &source_snapshot, from, to).map_err(range_tool_error)?;
-        if ranges
-            .iter()
-            .any(|&(left, right)| start <= right && left <= end)
-        {
+    let mut edits: Vec<VerifiedEdit> = Vec::with_capacity(request.edits.len() + 1);
+    for (index, op) in request.edits.iter().enumerate() {
+        let field = Some(index);
+        let edit = match op {
+            EditOp::Replace { from, to, text } => {
+                let (start, end) = map_range(served, version, *from, *to, tag, field)?;
+                VerifiedEdit {
+                    start,
+                    end,
+                    replacement: split_text(text),
+                }
+            }
+            EditOp::Delete { from, to } => {
+                let (start, end) = map_range(served, version, *from, *to, tag, field)?;
+                VerifiedEdit {
+                    start,
+                    end,
+                    replacement: Vec::new(),
+                }
+            }
+            EditOp::Insert { after, text } => {
+                let gap = map_gap(served, version, *after, tag, field)?;
+                VerifiedEdit {
+                    start: gap,
+                    end: gap,
+                    replacement: split_text(text),
+                }
+            }
+        };
+        if let Some(other) = edits.iter().position(|existing| overlaps(existing, &edit)) {
             return Err(tool_error(
                 "E_OVERLAP",
-                "edit ranges overlap or reuse the same anchor",
+                &format!("edits[{index}] overlaps edits[{other}]"),
             ));
         }
-        ranges.push((start, end));
-        if let Some(warning) = warning {
-            warnings.push(warning);
-        }
-        let replacement = split_replacement(replacement);
-        let (start, end, replacement) = if start == end && !replacement.is_empty() {
-            (start + 1, start + 1, replacement)
-        } else {
-            (start, end + 1, replacement)
-        };
-
-        edits.push(VerifiedEdit {
-            start,
-            end,
-            replacement,
-        });
+        edits.push(edit);
     }
 
-    // `move` 的源删除与目标插入都并入统一位移表：先在原始行号上完成验证，
-    // 再与 edits 一起排序、生成一次 moves，避免重基漏掉任一侧的位移。
+    // `move` 的源删除与目标插入都并入统一位移表：先映射到当前坐标完成验证，
+    // 再与 edits 一起排序、生成一次 moves，避免版本链漏掉任一侧的位移。
     let mut target_plan: Option<MoveTargetPlan> = None;
-    let mut all_edits = edits.clone();
-    let mut target_moves = Vec::new();
     if let Some(movement) = &request.move_lines {
-        let (start, end, warning) =
-            verify_range(served, &source_snapshot, &movement.from, &movement.to)
-                .map_err(range_tool_error)?;
-        if let Some(warning) = warning {
-            warnings.push(warning);
-        }
-        if ranges
-            .iter()
-            .any(|&(left, right)| start <= right && left <= end)
-        {
+        let (start, end) = map_range(served, version, movement.from, movement.to, tag, None)?;
+        let source_range = VerifiedEdit {
+            start,
+            end,
+            replacement: Vec::new(),
+        };
+        if edits.iter().any(|edit| overlaps(edit, &source_range)) {
             return Err(tool_error(
                 "E_OVERLAP",
                 "the edit batch overlaps the move source range",
@@ -198,52 +205,54 @@ pub fn plan_edit(
                 "move target_path must differ from source path",
             ));
         }
-        let target_served_for_check = target_served.ok_or_else(|| {
-            tool_error(
-                "E_UNSERVED_RANGE",
-                "target file has not been read; read it before moving lines",
-            )
-        })?;
+        let target_tag = parse_tag(&movement.target_tag).ok_or_else(bad_tag)?;
+        let target_served = target_served
+            .filter(|record| record.epoch.is_some())
+            .ok_or_else(|| {
+                tool_error(
+                    "E_STALE_TAG",
+                    "target file has not been read; read it before moving lines",
+                )
+            })?;
         let target_snapshot =
             read_snapshot(&target_path, max_file_bytes).map_err(tool_error_from_io)?;
-        ensure_snapshot_current(target_served_for_check, &target_snapshot, &target_path)?;
-        let target_position = if let Some(anchor) = &movement.target_anchor {
-            let (position, _, warning) =
-                verify_range(target_served_for_check, &target_snapshot, anchor, anchor)
-                    .map_err(range_tool_error)?;
-            if let Some(warning) = warning {
-                warnings.push(warning);
-            }
-            position + 1
-        } else {
-            target_snapshot.lines.len()
+        if target_served.epoch != Some(target_snapshot.epoch) {
+            return Err(tool_error(
+                "E_STALE_TAG",
+                "target changed outside this session since it was read",
+            ));
+        }
+        let target_version = resolve_tag(target_served, target_tag, &target_path)?;
+        let insert_at = match movement.after {
+            None => target_snapshot.lines.len(),
+            Some(after) => map_gap(target_served, target_version, after, target_tag, None)?,
         };
-        let moved_lines = source_snapshot.lines[start..=end].to_vec();
-        all_edits.push(VerifiedEdit {
-            start,
-            end: end + 1,
-            replacement: Vec::new(),
-        });
-        target_moves = vec![(
-            target_position,
+        let moved_lines = source_snapshot.lines[start..end].to_vec();
+        edits.push(source_range);
+        let target_moves = [(
+            insert_at,
             isize::try_from(moved_lines.len()).expect("moved line count must fit in isize"),
         )];
         let mut target_lines = target_snapshot.lines.clone();
-        target_lines.splice(target_position..target_position, moved_lines.clone());
+        target_lines.splice(insert_at..insert_at, moved_lines.iter().cloned());
+        let target_after = target_served.advanced(&target_moves, &target_lines);
         target_plan = Some(MoveTargetPlan {
             path: target_path,
             snapshot: target_snapshot,
             lines: target_lines,
-            insert_at: target_position,
+            insert_at,
             moved_lines,
+            served: target_after,
         });
     }
 
-    all_edits.sort_by_key(|edit| (edit.start, edit.end));
-    let moves = build_moves(&all_edits);
+    // 稳定排序：同一插入点上的多个插入保持请求顺序，并排在从该点开始的替换之前；
+    // 逆序 splice 后插入内容按请求顺序出现在替换内容之前。
+    edits.sort_by_key(|edit| (edit.start, edit.end));
+    let moves = build_moves(&edits);
     let mut source_lines = source_snapshot.lines.clone();
-    for edit in all_edits.iter().rev() {
-        source_lines.splice(edit.start..edit.end, edit.replacement.clone());
+    for edit in edits.iter().rev() {
+        source_lines.splice(edit.start..edit.end, edit.replacement.iter().cloned());
     }
 
     if source_lines.is_empty() && !source_snapshot.lines.is_empty() {
@@ -269,18 +278,17 @@ pub fn plan_edit(
         });
     }
 
-    let mut source_served = served.rebased(&moves, source_lines.len());
+    let mut source_served = served.advanced(&moves, &source_lines);
     let mut output = render_diff(
         &source_path,
         &source_snapshot,
         &source_lines,
-        served,
         &mut source_served,
     );
     // edit 的变更范围在规划阶段已经确定：直接按范围构造完整 hunk，
     // 不再对整份文件做 LCS，因此文件再大也不会把少量改动误判成截断。
     let source_refs: Vec<&str> = source_snapshot.lines.iter().map(String::as_str).collect();
-    let source_changes: Vec<LineChange<'_>> = all_edits
+    let source_changes: Vec<LineChange<'_>> = edits
         .iter()
         .map(|edit| LineChange {
             start: edit.start,
@@ -292,15 +300,12 @@ pub fn plan_edit(
         path: source_path.display().to_string(),
         hunks: build_hunks_from_changes(&source_refs, &source_changes),
     }];
-    let target = if let Some(target_plan) = target_plan {
-        let before = target_served.expect("move 目标已验证");
-        let mut after = before.rebased(&target_moves, target_plan.lines.len());
+    let target = if let Some(mut target_plan) = target_plan {
         let rendered = render_diff(
             &target_plan.path,
             &target_plan.snapshot,
             &target_plan.lines,
-            before,
-            &mut after,
+            &mut target_plan.served,
         );
         output.push('\n');
         output.push_str(&rendered);
@@ -323,14 +328,11 @@ pub fn plan_edit(
             path: target_plan.path,
             snapshot: target_plan.snapshot,
             lines: target_plan.lines,
-            served: after,
+            served: target_plan.served,
         })
     } else {
         None
     };
-    if !warnings.is_empty() {
-        output.push_str(&format!("\nWarning: {}", warnings.join("; ")));
-    }
     Ok(EditPlan {
         path: source_path,
         snapshot: source_snapshot,
@@ -500,10 +502,10 @@ async fn commit_plan(
     })
 }
 
-/// 授权预览：计算 edit 将产生的结构化 diff，不落盘、不更新锚点。
+/// 授权预览：计算 edit 将产生的结构化 diff，不落盘、不更新 served 状态。
 ///
 /// 与 [`apply_edit`] 共用 [`plan_edit`]，预览通过即代表实际执行可用；
-/// 返回 [`EditError`]（如 E_UNSERVED_RANGE）时调用方应直接放弃预览，
+/// 返回 [`EditError`]（如 E_STALE_TAG）时调用方应直接放弃预览，
 /// 真实错误由执行阶段给出。
 pub fn preview_edit(
     cwd: &Path,
@@ -576,35 +578,153 @@ fn resolve_path(cwd: &Path, value: &str) -> Result<PathBuf, EditError> {
     std::fs::canonicalize(cwd.join(value)).map_err(tool_error_from_io)
 }
 
-fn ensure_snapshot_current(
-    served: &ServedFile,
-    snapshot: &FileSnapshot,
-    path: &Path,
-) -> Result<(), EditError> {
-    if served.epoch != Some(snapshot.epoch) {
-        let message = if served.epoch.is_none() {
-            format!(
-                "{} has not been read; read it before editing",
-                path.display()
-            )
-        } else {
-            format!("{} changed externally after read", path.display())
-        };
-        return Err(tool_error("E_UNSERVED_RANGE", &message));
-    }
-    Ok(())
+fn bad_tag() -> EditError {
+    tool_error(
+        "E_BAD_PAYLOAD",
+        "tag must be the 4-hex value from the [path#TAG] header of read or edit output",
+    )
 }
 
-fn split_replacement(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        return Vec::new();
+fn resolve_tag(served: &ServedFile, tag: u16, path: &Path) -> Result<usize, EditError> {
+    served.resolve(tag).map_err(|error| {
+        let tag = tag_text(tag);
+        let message = match error {
+            TagError::Unknown => format!("tag {tag} is not a known version of {}", path.display()),
+            TagError::Ambiguous => {
+                format!("tag {tag} matches several versions of {}", path.display())
+            }
+        };
+        tool_error("E_STALE_TAG", &message)
+    })
+}
+
+/// 错误消息里的字段名：`edits[i]` 或 `move`。
+fn field_name(index: Option<usize>) -> String {
+    index.map_or_else(|| "move".to_owned(), |index| format!("edits[{index}]"))
+}
+
+fn stale_line(index: Option<usize>, line: usize, tag: u16) -> EditError {
+    tool_error(
+        "E_STALE_LINE",
+        &format!(
+            "{}: line {line} of tag {} was changed by a later edit",
+            field_name(index),
+            tag_text(tag)
+        ),
+    )
+}
+
+fn unseen_line(index: Option<usize>, line: usize) -> EditError {
+    tool_error(
+        "E_UNSEEN",
+        &format!(
+            "{}: line {line} has not been shown; read it first",
+            field_name(index)
+        ),
+    )
+}
+
+/// 把 tag 版本中的 1 基闭区间 `from..=to` 映射为当前版本的半开区间。
+///
+/// 区间内每一行都必须仍然存在、在当前版本里保持连续，并且已展示给模型。
+fn map_range(
+    served: &ServedFile,
+    version: usize,
+    from: usize,
+    to: usize,
+    tag: u16,
+    index: Option<usize>,
+) -> Result<(usize, usize), EditError> {
+    let len = served.version_len(version);
+    if from == 0 || from > to || to > len {
+        return Err(tool_error(
+            "E_BAD_PAYLOAD",
+            &format!(
+                "{}: lines {from}-{to} are outside 1-{len} or reversed",
+                field_name(index)
+            ),
+        ));
     }
-    text.split('\n').map(str::to_owned).collect()
+    if to - from >= 100_000 {
+        return Err(tool_error(
+            "E_RANGE_TOO_LARGE",
+            &format!(
+                "{}: one range may contain at most 100000 lines",
+                field_name(index)
+            ),
+        ));
+    }
+    let mut first = None;
+    let mut last: Option<usize> = None;
+    for line in from..=to {
+        let position = served
+            .map_line(version, line - 1)
+            .filter(|position| last.is_none_or(|previous| *position == previous + 1))
+            .ok_or_else(|| stale_line(index, line, tag))?;
+        if !served.is_seen(position) {
+            return Err(unseen_line(index, line));
+        }
+        first.get_or_insert(position);
+        last = Some(position);
+    }
+    let first = first.expect("非空区间至少映射一行");
+    let last = last.expect("非空区间至少映射一行");
+    Ok((first, last + 1))
+}
+
+/// 把「在 tag 版本第 `after` 行之后插入」映射为当前版本的插入点。
+fn map_gap(
+    served: &ServedFile,
+    version: usize,
+    after: usize,
+    tag: u16,
+    index: Option<usize>,
+) -> Result<usize, EditError> {
+    let len = served.version_len(version);
+    if after > len {
+        return Err(tool_error(
+            "E_BAD_PAYLOAD",
+            &format!(
+                "{}: after {after} is outside 0-{len}",
+                field_name(index)
+            ),
+        ));
+    }
+    if after == 0 {
+        return Ok(0);
+    }
+    let position = served
+        .map_line(version, after - 1)
+        .ok_or_else(|| stale_line(index, after, tag))?;
+    if !served.is_seen(position) {
+        return Err(unseen_line(index, after));
+    }
+    Ok(position + 1)
+}
+
+/// 两个编辑是否冲突：非空区间相交，或插入点落在另一区间内部；同一插入点可共存。
+fn overlaps(left: &VerifiedEdit, right: &VerifiedEdit) -> bool {
+    match (left.start == left.end, right.start == right.end) {
+        (true, true) => false,
+        (true, false) => right.start < left.start && left.start < right.end,
+        (false, true) => left.start < right.start && right.start < left.end,
+        (false, false) => left.start < right.end && right.start < left.end,
+    }
+}
+
+/// 把 `text` 拆成行：容忍 CRLF，去掉恰好一个末尾换行；空串得到一个空行。
+fn split_text(text: &str) -> Vec<String> {
+    let text = text
+        .strip_suffix('\n')
+        .map_or(text, |rest| rest.strip_suffix('\r').unwrap_or(rest));
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+        .collect()
 }
 
 /// 生成按原行位置升序的位移表。
 ///
-/// 调用方必须先按 `(start, end)` 排序；`rebase` 的二分查找依赖该顺序。
+/// 调用方必须先按 `(start, end)` 排序；`shifted_position` 的二分查找依赖该顺序。
 /// 删除区间逐行写入 `isize::MIN`，区间结束位置写入累计位移。
 fn build_moves(edits: &[VerifiedEdit]) -> Vec<(usize, isize)> {
     debug_assert!(
@@ -652,7 +772,7 @@ pub(crate) fn encode_file(snapshot: &FileSnapshot, lines: &[String]) -> Vec<u8> 
 
 /// rename 前紧邻重读目标文件；epoch 与计划不一致说明窗口内被并发写入。
 ///
-/// 失败错误固定为 `E_STALE_RANGE`：调用方保留磁盘上的外部内容，不覆盖。
+/// 失败错误固定为 `E_STALE_TAG`：调用方保留磁盘上的外部内容，不覆盖。
 async fn ensure_epoch(
     path: &Path,
     expected: super::SnapshotId,
@@ -660,9 +780,9 @@ async fn ensure_epoch(
 ) -> Result<(), EditError> {
     let stale = || {
         tool_error(
-            "E_STALE_RANGE",
+            "E_STALE_TAG",
             &format!(
-                "{} changed externally while the edit was being committed; retry with current anchors",
+                "{} changed externally while the edit was being committed; use the current tag",
                 path.display()
             ),
         )
@@ -732,15 +852,13 @@ async fn cleanup_staged(first: PathBuf, second: Option<PathBuf>) {
     }
 }
 
-/// 渲染带锚点的 diff 文本。
+/// 渲染带新 tag 头部与当前行号的 diff 文本，并把展示窗口登记为已展示。
 ///
-/// 展示窗口内的 after 行会被刷新为当前行号令牌；窗口外已服务行保留旧令牌，
-/// 因此旧锚点在位移后仍然可用。被删除行保留展示时的行号与 id（删除后不可编辑）。
+/// 被删除的行只写原文、不带行号：它们已不可寻址。
 fn render_diff(
     path: &Path,
     before: &FileSnapshot,
     after_lines: &[String],
-    before_served: &ServedFile,
     after_served: &mut ServedFile,
 ) -> String {
     let prefix = before
@@ -761,36 +879,22 @@ fn render_diff(
     let end = (new_end + 2).min(after_lines.len());
     let epoch = after_served.epoch.expect("diff 渲染前必须已有快照纪元");
     let window = start..end;
-    let _ = after_served.serve(epoch, after_lines, std::slice::from_ref(&window));
+    let tag = after_served.serve(epoch, after_lines, std::slice::from_ref(&window));
 
-    let mut output = format!("[{}]", path.display());
+    let mut output = format!("[{}#{}]", path.display(), tag_text(tag));
     for (index, line) in after_lines.iter().enumerate().take(prefix).skip(start) {
-        let token = after_served.token(index).expect("展示窗口内必须已登记令牌");
-        output.push_str(&format!("\n  {}", anchor_line_token(token, line)));
+        let _ = write!(output, "\n  {}", numbered_line(index + 1, line));
     }
-    for (index, line) in before.lines.iter().enumerate().take(old_end).skip(prefix) {
-        let token = before_served.token(index).expect("被删除行必须曾展示");
-        output.push_str(&format!("\n- {}{}│{}", index + 1, id_str(token.id), line));
+    for line in &before.lines[prefix..old_end] {
+        let _ = write!(output, "\n- {line}");
     }
     for (index, line) in after_lines.iter().enumerate().take(new_end).skip(prefix) {
-        let token = after_served.token(index).expect("展示窗口内必须已登记令牌");
-        output.push_str(&format!("\n+ {}", anchor_line_token(token, line)));
+        let _ = write!(output, "\n+ {}", numbered_line(index + 1, line));
     }
     for (index, line) in after_lines.iter().enumerate().take(end).skip(new_end) {
-        let token = after_served.token(index).expect("展示窗口内必须已登记令牌");
-        output.push_str(&format!("\n  {}", anchor_line_token(token, line)));
+        let _ = write!(output, "\n  {}", numbered_line(index + 1, line));
     }
     output
-}
-
-fn range_tool_error(error: RangeError) -> EditError {
-    let message = error.to_string();
-    match error {
-        RangeError::Unserved { .. } => tool_error("E_UNSERVED_RANGE", &message),
-        RangeError::BadAnchor { .. } => tool_error("E_BAD_ANCHOR", &message),
-        RangeError::Stale { .. } => tool_error("E_STALE_ANCHOR", &message),
-        RangeError::TooLarge => tool_error("E_RANGE_TOO_LARGE", &message),
-    }
 }
 
 fn tool_error(code: &str, message: &str) -> EditError {
@@ -814,33 +918,56 @@ fn tool_error_from_io(error: std::io::Error) -> EditError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashline::{AnchorStore, ServedFile, anchor_token};
+    use crate::hashline::{AnchorStore, ServedFile};
 
-    fn served_snapshot(path: &Path, text: &str) -> (FileSnapshot, ServedFile) {
+    /// 写文件、整份展示，返回快照、served 状态和 tag 文本。
+    fn served_snapshot(path: &Path, text: &str) -> (FileSnapshot, ServedFile, String) {
         std::fs::write(path, text).expect("写测试文件");
-        let snapshot = read_snapshot(path, 4096).expect("读取快照");
+        let snapshot = read_snapshot(path, 1_000_000).expect("读取快照");
         let mut served = ServedFile::new();
-        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
-        (snapshot, served)
+        let tag = served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
+        (snapshot, served, tag_text(tag))
+    }
+
+    fn request(path: &str, tag: &str, edits: Vec<EditOp>) -> EditRequest {
+        EditRequest {
+            path: path.into(),
+            tag: tag.into(),
+            edits,
+            move_lines: None,
+        }
+    }
+
+    fn replace(from: usize, to: usize, text: &str) -> EditOp {
+        EditOp::Replace {
+            from,
+            to,
+            text: text.into(),
+        }
+    }
+
+    fn insert(after: usize, text: &str) -> EditOp {
+        EditOp::Insert {
+            after,
+            text: text.into(),
+        }
+    }
+
+    fn delete(from: usize, to: usize) -> EditOp {
+        EditOp::Delete { from, to }
     }
 
     #[tokio::test]
-    async fn applies_replacement_and_preserves_crlf_bom() {
+    async fn applies_single_line_replacement_and_preserves_crlf_bom() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
         std::fs::write(&path, b"\xef\xbb\xbffirst\r\nsecond\r\nthird\r\n").expect("写文件");
         let snapshot = read_snapshot(&path, 4096).expect("读取");
         let mut served = ServedFile::new();
-        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
-        let anchor = served.token(1).expect("第二行令牌").text();
-        let request = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[anchor.clone(), anchor, "replacement".into()]],
-            move_lines: None,
-        };
+        let tag = tag_text(served.serve(snapshot.epoch, &snapshot.lines, &[0..3]));
         apply_edit(
             dir.path(),
-            &request,
+            &request("file.txt", &tag, vec![replace(2, 2, "replacement")]),
             &served,
             None,
             &AnchorStore::new(),
@@ -851,193 +978,167 @@ mod tests {
         .expect("编辑成功");
         assert_eq!(
             std::fs::read(&path).expect("读取结果"),
-            b"\xef\xbb\xbffirst\r\nsecond\r\nreplacement\r\nthird\r\n"
+            b"\xef\xbb\xbffirst\r\nreplacement\r\nthird\r\n"
         );
     }
 
     #[tokio::test]
-    async fn edit_then_continue_without_reread() {
+    async fn older_tag_remaps_untouched_lines_and_rejects_changed_ones() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        let (snapshot, served) = served_snapshot(&path, "one\ntwo\nthree\n");
+        let (_snapshot, served, t0) = served_snapshot(&path, "a\nb\nc\n");
         let store = AnchorStore::new();
-        let first = served.token(0).expect("首行令牌").text();
-        let request = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[first.clone(), first, "inserted".into()]],
-            move_lines: None,
-        };
-        let output = apply_edit(dir.path(), &request, &served, None, &store, 32, 4096)
-            .await
-            .expect("首次编辑成功");
-        let second = output
-            .content
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("+ ")
-                    .filter(|line| line.contains("│inserted"))
-                    .and_then(|line| line.split_once('│').map(|(anchor, _)| anchor.to_owned()))
-            })
-            .expect("diff 应包含可继续编辑的锚点");
-        let request = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[second.clone(), second, "changed".into()]],
-            move_lines: None,
-        };
-        let served = store.served(&path).expect("首次编辑已提交 served");
-        apply_edit(dir.path(), &request, &served, None, &store, 32, 4096)
-            .await
-            .expect("无需重读即可继续编辑");
-        let _ = snapshot;
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("读取结果"),
-            "one\ninserted\nchanged\ntwo\nthree\n"
+        let output = apply_edit(
+            dir.path(),
+            &request("file.txt", &t0, vec![insert(0, "top")]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("顶部插入成功");
+        let header = output.content.lines().next().expect("diff 头部");
+        assert!(
+            header.ends_with(']') && !header.ends_with(&format!("#{t0}]")),
+            "{header}"
         );
-    }
+        assert!(output.content.contains("+ 1│top"), "{}", output.content);
+        assert!(output.content.contains("  2│a"), "{}", output.content);
 
-    #[tokio::test]
-    async fn anchors_track_edits_that_shift_lines() {
-        let dir = tempfile::tempdir().expect("临时目录");
-        let path = dir.path().join("file.txt");
-        let text = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n";
-        let (snapshot, served) = served_snapshot(&path, text);
-        let store = AnchorStore::new();
-        let old_ninth = served.token(8).expect("第九行令牌").text();
-        let first = served.token(0).expect("首行令牌").text();
-        let insert = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[first.clone(), first, "inserted".into()]],
-            move_lines: None,
-        };
-        apply_edit(dir.path(), &insert, &served, None, &store, 32, 4096)
-            .await
-            .expect("插入成功");
-        // 第九行在 diff 展示窗口之外，旧令牌保持有效。
         let served = store.served(&path).expect("插入后 served");
-        let delete = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[old_ninth.clone(), old_ninth, String::new()]],
-            move_lines: None,
-        };
-        apply_edit(dir.path(), &delete, &served, None, &store, 32, 4096)
-            .await
-            .expect("旧锚点应重定位");
+        apply_edit(
+            dir.path(),
+            &request("file.txt", &t0, vec![replace(3, 3, "C")]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("旧 tag 的未改动行可重映射");
         assert_eq!(
             std::fs::read_to_string(&path).expect("读取结果"),
-            "l1\ninserted\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl10\n"
+            "top\na\nb\nC\n"
         );
-        let _ = snapshot;
+
+        let served = store.served(&path).expect("替换后 served");
+        let error = apply_edit(
+            dir.path(),
+            &request("file.txt", &t0, vec![replace(3, 3, "X")]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect_err("旧 tag 的已改动行必须拒绝");
+        assert!(error.to_string().starts_with("[E_STALE_LINE]"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("读取结果"),
+            "top\na\nb\nC\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn same_gap_inserts_keep_request_order_before_replacement() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("file.txt");
+        let (_snapshot, served, tag) = served_snapshot(&path, "a\nb\n");
+        apply_edit(
+            dir.path(),
+            &request(
+                "file.txt",
+                &tag,
+                vec![insert(1, "x"), insert(1, "y"), replace(2, 2, "B")],
+            ),
+            &served,
+            None,
+            &AnchorStore::new(),
+            32,
+            4096,
+        )
+        .await
+        .expect("编辑成功");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("读取结果"),
+            "a\nx\ny\nB\n"
+        );
     }
 
     #[tokio::test]
     async fn reread_expands_the_served_window() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        let (snapshot, served) = served_snapshot(&path, "one\ntwo\nthree\n");
+        let (snapshot, _served, tag) = served_snapshot(&path, "one\ntwo\nthree\n");
         let mut partial = ServedFile::new();
         partial.serve(snapshot.epoch, &snapshot.lines, &[0..1]);
         let store = AnchorStore::new();
-        let from = partial.token(0).expect("首行令牌").text();
-        let to = anchor_token(3, &snapshot.lines[2]);
-        let request = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[from.clone(), to.clone(), "rewritten".into()]],
-            move_lines: None,
-        };
-        let error = apply_edit(dir.path(), &request, &partial, None, &store, 32, 4096)
+        let edit = request("file.txt", &tag, vec![replace(1, 3, "rewritten")]);
+        let error = apply_edit(dir.path(), &edit, &partial, None, &store, 32, 4096)
             .await
-            .expect_err("未服务范围必须拒绝");
-        assert!(error.to_string().contains("E_UNSERVED_RANGE"));
-        apply_edit(dir.path(), &request, &served, None, &store, 32, 4096)
+            .expect_err("未展示的行必须拒绝");
+        assert!(error.to_string().contains("E_UNSEEN"), "{error}");
+        partial.serve(snapshot.epoch, &snapshot.lines, &[0..3]);
+        apply_edit(dir.path(), &edit, &partial, None, &store, 32, 4096)
             .await
             .expect("重读后范围可编辑");
     }
 
     #[tokio::test]
-    async fn rejects_unserved_and_overlapping_edits_without_mutating_files() {
+    async fn rejects_unseen_and_overlapping_edits_without_mutating_files() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        let (snapshot, served) = served_snapshot(&path, "one\ntwo\nthree\n");
+        let (snapshot, served, tag) = served_snapshot(&path, "one\ntwo\nthree\n");
         let before = std::fs::read(&path).expect("读取原文件");
         let mut partial = ServedFile::new();
         partial.serve(snapshot.epoch, &snapshot.lines, &[0..1, 2..3]);
-        let from = partial.token(0).expect("首行令牌").text();
-        let middle = anchor_token(2, &snapshot.lines[1]);
-        let denied = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[from, middle, "x".into()]],
-            move_lines: None,
-        };
-        assert!(
-            apply_edit(
+        let store = AnchorStore::new();
+        let error = apply_edit(
+            dir.path(),
+            &request("file.txt", &tag, vec![replace(1, 2, "x")]),
+            &partial,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect_err("未展示的中间行必须拒绝");
+        assert!(error.to_string().contains("E_UNSEEN"), "{error}");
+        for edits in [
+            vec![replace(1, 2, "x"), replace(2, 3, "y")],
+            vec![replace(1, 1, "one"), replace(1, 1, "two")],
+            vec![replace(1, 3, "x"), insert(1, "y")],
+        ] {
+            let error = apply_edit(
                 dir.path(),
-                &denied,
-                &partial,
+                &request("file.txt", &tag, edits),
+                &served,
                 None,
-                &AnchorStore::new(),
+                &store,
                 32,
-                4096
+                4096,
             )
             .await
-            .is_err()
-        );
-        assert_eq!(std::fs::read(&path).expect("读取原文件"), before);
-        let overlap = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![
-                [
-                    served.token(0).expect("首行令牌").text(),
-                    served.token(1).expect("第二行令牌").text(),
-                    "x".into(),
-                ],
-                [
-                    served.token(1).expect("第二行令牌").text(),
-                    served.token(2).expect("第三行令牌").text(),
-                    "y".into(),
-                ],
-            ],
-            move_lines: None,
-        };
+            .expect_err("重叠范围必须拒绝");
+            assert!(error.to_string().contains("E_OVERLAP"), "{error}");
+        }
         let error = apply_edit(
             dir.path(),
-            &overlap,
+            &request("file.txt", &tag, vec![replace(3, 1, "x")]),
             &served,
             None,
-            &AnchorStore::new(),
+            &store,
             32,
             4096,
         )
         .await
-        .expect_err("重叠范围必须拒绝");
-        assert!(error.to_string().contains("E_OVERLAP"));
-        let duplicate = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![
-                [
-                    served.token(0).expect("首行令牌").text(),
-                    served.token(0).expect("首行令牌").text(),
-                    "one".into(),
-                ],
-                [
-                    served.token(0).expect("首行令牌").text(),
-                    served.token(0).expect("首行令牌").text(),
-                    "two".into(),
-                ],
-            ],
-            move_lines: None,
-        };
-        let error = apply_edit(
-            dir.path(),
-            &duplicate,
-            &served,
-            None,
-            &AnchorStore::new(),
-            32,
-            4096,
-        )
-        .await
-        .expect_err("重复锚点必须拒绝");
-        assert!(error.to_string().contains("E_OVERLAP"));
+        .expect_err("反向范围必须拒绝");
+        assert!(error.to_string().contains("E_BAD_PAYLOAD"), "{error}");
         assert_eq!(std::fs::read(&path).expect("读取原文件"), before);
     }
 
@@ -1047,16 +1148,10 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.txt");
-        let (_snapshot, served) = served_snapshot(&path, "alpha\nbeta\ngamma\n");
+        let (_snapshot, served, tag) = served_snapshot(&path, "alpha\nbeta\ngamma\n");
         let store = AnchorStore::new();
-        let anchor = served.token(1).expect("第二行令牌").text();
-        let request = EditRequest {
-            path: "file.txt".into(),
-            edits: vec![[anchor.clone(), anchor, "delta\nbeta".into()]],
-            move_lines: None,
-        };
-        let preview =
-            preview_edit(dir.path(), &request, &served, None, 32, 4096).expect("预览成功");
+        let edit = request("file.txt", &tag, vec![insert(2, "delta\nbeta")]);
+        let preview = preview_edit(dir.path(), &edit, &served, None, 32, 4096).expect("预览成功");
         assert!(!preview.truncated);
         assert_eq!(preview.files.len(), 1);
         let kinds: Vec<_> = preview.files[0]
@@ -1071,7 +1166,7 @@ mod tests {
         assert!(kinds.contains(&(DiffLineKind::Insert, "delta")));
         assert!(kinds.contains(&(DiffLineKind::Insert, "beta")));
         assert!(!kinds.iter().any(|(kind, _)| *kind == DiffLineKind::Delete));
-        let output = apply_edit(dir.path(), &request, &served, None, &store, 32, 4096)
+        let output = apply_edit(dir.path(), &edit, &served, None, &store, 32, 4096)
             .await
             .expect("编辑成功");
         assert_eq!(
@@ -1092,7 +1187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn move_commits_both_files_and_rebases_both_served_tables() {
+    async fn move_commits_both_files_and_advances_both_served_states() {
         let dir = tempfile::tempdir().expect("临时目录");
         let source = dir.path().join("source");
         let target = dir.path().join("target");
@@ -1101,32 +1196,29 @@ mod tests {
         let source_snapshot = read_snapshot(&source, 4096).expect("读取源文件");
         let target_snapshot = read_snapshot(&target, 4096).expect("读取目标文件");
         let mut source_served = ServedFile::new();
-        source_served.serve(source_snapshot.epoch, &source_snapshot.lines, &[0..2, 5..6]);
+        let source_tag = tag_text(source_served.serve(
+            source_snapshot.epoch,
+            &source_snapshot.lines,
+            &[0..2, 5..6],
+        ));
         let mut target_served = ServedFile::new();
-        target_served.serve(
+        let target_tag = tag_text(target_served.serve(
             target_snapshot.epoch,
             &target_snapshot.lines,
             &[0..target_snapshot.lines.len()],
-        );
+        ));
         let store = AnchorStore::new();
-        let first = source_served.token(0).expect("源首行令牌").text();
-        let moved = source_served.token(1).expect("源第二行令牌").text();
-        let last = source_served.token(5).expect("源末行令牌").text();
-        let target_first = target_served.token(0).expect("目标首行令牌").text();
-        let seventh = target_served.token(6).expect("目标第七行令牌").text();
-        let request = EditRequest {
-            path: "source".into(),
-            edits: vec![[first.clone(), first, "x".into()]],
-            move_lines: Some(MoveRequest {
-                from: moved.clone(),
-                to: moved,
-                target_path: "target".into(),
-                target_anchor: Some(target_first),
-            }),
-        };
+        let mut edit = request("source", &source_tag, vec![insert(1, "x")]);
+        edit.move_lines = Some(MoveRequest {
+            from: 2,
+            to: 2,
+            target_path: "target".into(),
+            target_tag: target_tag.clone(),
+            after: Some(1),
+        });
         let output = apply_edit(
             dir.path(),
-            &request,
+            &edit,
             &source_served,
             Some(&target_served),
             &store,
@@ -1143,23 +1235,19 @@ mod tests {
             std::fs::read_to_string(&target).expect("读取目标文件"),
             "t1\nb\nt2\nt3\nt4\nt5\nt6\nt7\nt8\n"
         );
-        assert!(output.content.contains(&format!("[{}]", target.display())));
+        assert!(output.content.contains(&format!("[{}#", target.display())));
         assert_eq!(
             std::fs::read_dir(dir.path()).expect("读取目录").count(),
             2,
             "临时文件必须清理"
         );
 
+        // 两侧都用编辑前的旧 tag：位移必须已进入各自的版本链。
         let source_served = store.served(&source).expect("提交后的源 served");
         let target_served = store.served(&target).expect("提交后的目标 served");
-        let delete_last = EditRequest {
-            path: "source".into(),
-            edits: vec![[last.clone(), last, String::new()]],
-            move_lines: None,
-        };
         apply_edit(
             dir.path(),
-            &delete_last,
+            &request("source", &source_tag, vec![delete(6, 6)]),
             &source_served,
             None,
             &store,
@@ -1172,14 +1260,9 @@ mod tests {
             std::fs::read_to_string(&source).expect("读取源文件"),
             "a\nx\nc\nd\ne\n"
         );
-        let delete_seventh = EditRequest {
-            path: "target".into(),
-            edits: vec![[seventh.clone(), seventh, String::new()]],
-            move_lines: None,
-        };
         apply_edit(
             dir.path(),
-            &delete_seventh,
+            &request("target", &target_tag, vec![delete(7, 7)]),
             &target_served,
             None,
             &store,
@@ -1187,14 +1270,14 @@ mod tests {
             4096,
         )
         .await
-        .expect("move 目标插入必须重基");
+        .expect("move 目标插入必须进入位移表");
         assert_eq!(
             std::fs::read_to_string(&target).expect("读取目标文件"),
             "t1\nb\nt2\nt3\nt4\nt5\nt6\nt8\n"
         );
     }
 
-    /// 白盒核对：乱序编辑排序后的位移表把令牌映射到正确的新位置。
+    /// 白盒核对：乱序编辑排序后的位移表把旧行映射到正确的新位置。
     #[test]
     fn out_of_order_edits_build_a_correct_move_table() {
         let dir = tempfile::tempdir().expect("临时目录");
@@ -1203,7 +1286,6 @@ mod tests {
         let snapshot = read_snapshot(&path, 4096).expect("读取");
         let mut served = ServedFile::new();
         served.serve(snapshot.epoch, &snapshot.lines, &[1..2, 3..4, 10..11]);
-        let old_fourth = served.token(3).expect("第 4 行令牌");
         let mut edits = vec![
             VerifiedEdit {
                 start: 10,
@@ -1218,27 +1300,30 @@ mod tests {
         ];
         edits.sort_by_key(|edit| (edit.start, edit.end));
         let moves = build_moves(&edits);
-        let rebased = served.rebased(&moves, 10);
-        assert_eq!(rebased.token(2), Some(old_fourth), "第 4 行落到 index 2");
-        assert!(rebased.token(1).is_none(), "第 2 行已删除");
-        assert!(rebased.token(9).is_none(), "第 11 行已删除");
+        let advanced = served.advanced(&moves, &vec!["}".to_owned(); 10]);
+        assert_eq!(advanced.map_line(0, 3), Some(2), "第 4 行落到 index 2");
+        assert!(advanced.is_seen(2));
+        assert_eq!(advanced.map_line(0, 1), None, "第 2 行已删除");
+        assert_eq!(advanced.map_line(0, 10), None, "第 11 行已删除");
     }
 
     #[tokio::test]
     async fn undo_rejects_external_changes_without_consuming_history() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("source");
-        let (_snapshot, served) = served_snapshot(&path, "first\nlast\n");
+        let (_snapshot, served, tag) = served_snapshot(&path, "first\nlast\n");
         let store = AnchorStore::new();
-        let anchor = served.token(0).expect("首行令牌").text();
-        let request = EditRequest {
-            path: "source".into(),
-            edits: vec![[anchor.clone(), anchor, "added".into()]],
-            move_lines: None,
-        };
-        apply_edit(dir.path(), &request, &served, None, &store, 32, 4096)
-            .await
-            .expect("编辑成功");
+        apply_edit(
+            dir.path(),
+            &request("source", &tag, vec![insert(1, "added")]),
+            &served,
+            None,
+            &store,
+            32,
+            4096,
+        )
+        .await
+        .expect("编辑成功");
         std::fs::write(&path, "external content").expect("外部改写");
         for _ in 0..2 {
             let error = undo(&path, &store, 4096)
@@ -1256,20 +1341,15 @@ mod tests {
     async fn commit_rejects_external_writes_that_land_after_planning() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("source");
-        let (_snapshot, served) = served_snapshot(&path, "one\ntwo\n");
+        let (_snapshot, served, tag) = served_snapshot(&path, "one\ntwo\n");
         let store = AnchorStore::new();
-        let anchor = served.token(0).expect("首行令牌").text();
-        let request = EditRequest {
-            path: "source".into(),
-            edits: vec![[anchor.clone(), anchor, "inserted".into()]],
-            move_lines: None,
-        };
-        let plan = plan_edit(dir.path(), &request, &served, None, 32, 4096).expect("计划成功");
+        let edit = request("source", &tag, vec![insert(1, "inserted")]);
+        let plan = plan_edit(dir.path(), &edit, &served, None, 32, 4096).expect("计划成功");
         std::fs::write(&path, "external\n").expect("外部改写");
         let error = commit_plan(plan, &store, 4096)
             .await
             .expect_err("计划后外部写入必须拒绝提交");
-        assert!(error.to_string().contains("E_STALE_RANGE"), "{error}");
+        assert!(error.to_string().contains("E_STALE_TAG"), "{error}");
         assert_eq!(
             std::fs::read_to_string(&path).expect("读取文件"),
             "external\n"
@@ -1287,38 +1367,21 @@ mod tests {
         let dir = tempfile::tempdir().expect("临时目录");
         let source = dir.path().join("source");
         let target = dir.path().join("target");
-        std::fs::write(&source, "move\nkeep\n").expect("写源文件");
-        std::fs::write(&target, "target\n").expect("写目标文件");
-        let source_snapshot = read_snapshot(&source, 4096).expect("读取源文件");
-        let target_snapshot = read_snapshot(&target, 4096).expect("读取目标文件");
-        let mut source_served = ServedFile::new();
-        source_served.serve(
-            source_snapshot.epoch,
-            &source_snapshot.lines,
-            &[0..source_snapshot.lines.len()],
-        );
-        let mut target_served = ServedFile::new();
-        target_served.serve(
-            target_snapshot.epoch,
-            &target_snapshot.lines,
-            &[0..target_snapshot.lines.len()],
-        );
+        let (_source_snapshot, source_served, source_tag) =
+            served_snapshot(&source, "move\nkeep\n");
+        let (_target_snapshot, target_served, target_tag) = served_snapshot(&target, "target\n");
         let store = AnchorStore::new();
-        let moved = source_served.token(0).expect("源首行令牌").text();
-        let keep = source_served.token(1).expect("源第二行令牌").text();
-        let request = EditRequest {
-            path: "source".into(),
-            edits: vec![[keep.clone(), keep, "after".into()]],
-            move_lines: Some(MoveRequest {
-                from: moved.clone(),
-                to: moved,
-                target_path: "target".into(),
-                target_anchor: None,
-            }),
-        };
+        let mut edit = request("source", &source_tag, vec![insert(2, "after")]);
+        edit.move_lines = Some(MoveRequest {
+            from: 1,
+            to: 1,
+            target_path: "target".into(),
+            target_tag,
+            after: None,
+        });
         let plan = plan_edit(
             dir.path(),
-            &request,
+            &edit,
             &source_served,
             Some(&target_served),
             32,
@@ -1329,7 +1392,7 @@ mod tests {
         let error = commit_plan(plan, &store, 4096)
             .await
             .expect_err("目标 epoch 变化必须回滚源文件");
-        assert!(error.to_string().contains("E_STALE_RANGE"), "{error}");
+        assert!(error.to_string().contains("E_STALE_TAG"), "{error}");
         assert_eq!(
             std::fs::read_to_string(&source).expect("读取源文件"),
             "move\nkeep\n"
@@ -1356,18 +1419,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        std::fs::write(&path, &text).expect("写大文件");
-        let snapshot = read_snapshot(&path, 1_000_000).expect("读取快照");
-        let mut served = ServedFile::new();
-        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
-        let anchor = served.token(2400).expect("第 2401 行令牌").text();
-        let request = EditRequest {
-            path: "large.txt".into(),
-            edits: vec![[anchor.clone(), anchor, "inserted".into()]],
-            move_lines: None,
-        };
+        let (_snapshot, served, tag) = served_snapshot(&path, &text);
+        let edit = request("large.txt", &tag, vec![insert(2401, "inserted")]);
         let preview =
-            preview_edit(dir.path(), &request, &served, None, 32, 1_000_000).expect("预览成功");
+            preview_edit(dir.path(), &edit, &served, None, 32, 1_000_000).expect("预览成功");
         assert!(!preview.truncated, "大文件里的单行改动不应截断");
         fn diff_lines(diff: &ToolDiff) -> Vec<(moc_protocol::DiffLineKind, &str)> {
             diff.files[0]
@@ -1384,7 +1439,7 @@ mod tests {
 
         let output = apply_edit(
             dir.path(),
-            &request,
+            &edit,
             &served,
             None,
             &AnchorStore::new(),
@@ -1420,23 +1475,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        std::fs::write(&path, &text).expect("写文件");
-        let snapshot = read_snapshot(&path, 1_000_000).expect("读取快照");
-        let mut served = ServedFile::new();
-        served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
-        let first = served.token(10).expect("前部令牌").text();
-        let second = served.token(4000).expect("后部令牌").text();
-        let request = EditRequest {
-            path: "sparse.txt".into(),
-            edits: vec![
-                [first.clone(), first, "first".into()],
-                [second.clone(), second, "second".into()],
-            ],
-            move_lines: None,
-        };
+        let (_snapshot, served, tag) = served_snapshot(&path, &text);
         let output = apply_edit(
             dir.path(),
-            &request,
+            &request(
+                "sparse.txt",
+                &tag,
+                vec![insert(11, "first"), insert(4001, "second")],
+            ),
             &served,
             None,
             &AnchorStore::new(),
@@ -1464,42 +1510,26 @@ mod tests {
         let dir = tempfile::tempdir().expect("临时目录");
         let source = dir.path().join("source.txt");
         let target = dir.path().join("target.txt");
-        std::fs::write(&source, "move\nkeep\n").expect("写源文件");
         let target_text = (0..2500)
             .map(|index| format!("target {index}"))
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        std::fs::write(&target, &target_text).expect("写目标文件");
-        let source_snapshot = read_snapshot(&source, 1_000_000).expect("读取源文件");
-        let target_snapshot = read_snapshot(&target, 1_000_000).expect("读取目标文件");
-        let mut source_served = ServedFile::new();
-        source_served.serve(
-            source_snapshot.epoch,
-            &source_snapshot.lines,
-            &[0..source_snapshot.lines.len()],
-        );
-        let mut target_served = ServedFile::new();
-        target_served.serve(
-            target_snapshot.epoch,
-            &target_snapshot.lines,
-            &[0..target_snapshot.lines.len()],
-        );
-        let moved = source_served.token(0).expect("搬运行令牌").text();
-        let keep = source_served.token(1).expect("保留行令牌").text();
-        let request = EditRequest {
-            path: "source.txt".into(),
-            edits: vec![[keep.clone(), keep, "after".into()]],
-            move_lines: Some(MoveRequest {
-                from: moved.clone(),
-                to: moved,
-                target_path: "target.txt".into(),
-                target_anchor: None,
-            }),
-        };
+        let (_source_snapshot, source_served, source_tag) =
+            served_snapshot(&source, "move\nkeep\n");
+        let (_target_snapshot, target_served, target_tag) =
+            served_snapshot(&target, &target_text);
+        let mut edit = request("source.txt", &source_tag, vec![insert(2, "after")]);
+        edit.move_lines = Some(MoveRequest {
+            from: 1,
+            to: 1,
+            target_path: "target.txt".into(),
+            target_tag,
+            after: None,
+        });
         let output = apply_edit(
             dir.path(),
-            &request,
+            &edit,
             &source_served,
             Some(&target_served),
             &AnchorStore::new(),

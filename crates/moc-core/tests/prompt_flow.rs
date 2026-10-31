@@ -992,17 +992,18 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
 async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use moc_core::hashline::anchor_token;
+    use moc_core::hashline::{content_hash, tag_of, tag_text};
     use serde_json::{Value, json};
 
-    let first_line = "old value".to_owned();
-    let second_line = "second value".to_owned();
-    let from = anchor_token(1, &first_line);
-    let to = anchor_token(2, &second_line);
+    let tag = tag_text(tag_of(content_hash(&[
+        "old value".to_owned(),
+        "second value".to_owned(),
+    ])));
     let read_arguments = json!({"path": "target.txt"});
     let edit_arguments = json!({
         "path": "target.txt",
-        "edits": [[from, to, "new value"]],
+        "tag": tag,
+        "edits": [{"op": "replace", "from": 1, "to": 2, "text": "new value"}],
     });
     let tool_response = |call_id: &str, name: &str, arguments: &Value| {
         let first = json!({
@@ -1155,7 +1156,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             _ => None,
         })
         .expect("edit tool result content");
-    assert!(read_output.contains(&format!("{from}│old value")));
+    assert!(read_output.contains("1│old value") && read_output.contains(&format!("#{tag}]")));
     assert!(edit_output.contains("+ ") && edit_output.contains("new value"));
     {
         let updates = updates.lock();
@@ -3016,13 +3017,20 @@ async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
         let end = tail.find(".md").map(|at| at + 3).unwrap_or(tail.len());
         tail[..end].to_owned()
     }
-    /// `read` 输出里取目标行的锚点前缀（`{anchor}│{line}`）。
-    fn anchor_for(text: &str, needle: &str) -> String {
+    /// `read` 输出里取目标行的行号（`N│line` 中 `│` 前的数字）。
+    fn line_for(text: &str, needle: &str) -> usize {
         text.lines()
             .filter_map(|line| line.split_once('│'))
             .find(|(_, content)| *content == needle)
-            .map(|(anchor, _)| anchor.to_owned())
-            .unwrap_or_else(|| panic!("行 {needle} 应有锚点：{text}"))
+            .and_then(|(number, _)| number.parse().ok())
+            .unwrap_or_else(|| panic!("行 {needle} 应有行号：{text}"))
+    }
+    /// `read` 输出首行 `[path#TAG]` 里的 tag。
+    fn tag_in(text: &str) -> String {
+        let header = text.lines().next().expect("read 输出应有头部");
+        let start = header.rfind('#').expect("头部应带 tag") + 1;
+        let end = header.rfind(']').expect("头部应以 ] 结尾");
+        header[start..end].to_owned()
     }
 
     let markdown_a = "# 方案\n1. 第一步\n2. 第二步\n3. 第三步\n";
@@ -3053,21 +3061,23 @@ async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
                 }
                 3 => {
                     let body: Value = serde_json::from_slice(&request.body).unwrap();
-                    let anchor = anchor_for(&result_text(&body, "read_draft"), "2. 第二步");
+                    let read_output = result_text(&body, "read_draft");
+                    let tag = tag_in(&read_output);
+                    let after = line_for(&read_output, "2. 第二步");
                     support::tool_stream(vec![
                         (
                             "patch_draft",
                             "plan",
-                            json!({"edits": [[anchor, anchor, "2a. 新增的第二步"]]}),
+                            json!({"tag": tag, "edits": [{"op": "insert", "after": after, "text": "2a. 新增的第二步"}]}),
                         ),
                         ("exit_draft", "exit_plan", json!({})),
                     ])
                 }
-                // 审阅中尝试 edits：应在锚点校验之前就被拒绝。
+                // 审阅中尝试 edits：应在 tag 校验之前就被拒绝。
                 4 => support::tool_stream(vec![(
                     "blocked",
                     "plan",
-                    json!({"edits": [["1aa", "1aa", "篡改"]]}),
+                    json!({"tag": "0000", "edits": [{"op": "replace", "from": 1, "to": 1, "text": "篡改"}]}),
                 )]),
                 5 => text_stream("等审阅结果"),
                 // 批注返回后：读冻结底版 → edits 播种新草稿 → 提交。
@@ -3082,13 +3092,14 @@ async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
                 7 => {
                     let body: Value = serde_json::from_slice(&request.body).unwrap();
                     let read_output = result_text(&body, "read_v1");
-                    let from = anchor_for(&read_output, "3. 第三步");
-                    let to = anchor_for(&read_output, "4. 第四步");
+                    let tag = tag_in(&read_output);
+                    let from = line_for(&read_output, "3. 第三步");
+                    let to = line_for(&read_output, "4. 第四步");
                     support::tool_stream(vec![
                         (
                             "seed_draft",
                             "plan",
-                            json!({"edits": [[from, to, "3. 细化后的第三步\n4. 第四步"]]}),
+                            json!({"tag": tag, "edits": [{"op": "replace", "from": from, "to": to, "text": "3. 细化后的第三步\n4. 第四步"}]}),
                         ),
                         ("exit_seed", "exit_plan", json!({})),
                     ])

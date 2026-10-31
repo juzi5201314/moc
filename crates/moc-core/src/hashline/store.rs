@@ -1,12 +1,12 @@
-//! 每个会话的文件快照、稳定锚点令牌与 undo 历史。
+//! 每个会话的文件快照、tag 版本链与 undo 历史。
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::hashline::{AnchorToken, ID_TOTAL, id_from_index, id_index, id_of, token_key};
+use crate::hashline::{content_hash, tag_of};
 
 /// 文件元数据及原始内容组成的快照纪元；任一变化都会使 served 记录失效。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,19 +116,40 @@ impl LineEnding {
     }
 }
 
-/// 单路径最多保留的已退役令牌数；超过后允许复用最旧的令牌。
-const MAX_RETIRED_TOKENS: usize = 65_536;
+/// 版本链上限：本会话连续编辑超过该次数后，最旧的 tag 不再可用。
+const MAX_VERSIONS: usize = 16;
 
-/// 只有成功 `read` 或 diff 展示给模型的行才持有令牌。
+/// 版本链中的一个文件版本。
+#[derive(Debug, Clone)]
+struct Version {
+    hash: u64,
+    tag: u16,
+    len: usize,
+    /// 本版本到下一版本的位移表（按起始位置升序）；当前版本为空。
+    moves: Vec<(usize, isize)>,
+}
+
+/// 旧 tag 无法解析到版本链上的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagError {
+    Unknown,
+    /// 16 位 tag 碰撞：多个内容不同的版本共用同一 tag。
+    Ambiguous,
+}
+
+/// 一个文件在本会话中的可编辑状态：当前快照纪元、已展示行与编辑版本链。
 ///
-/// `entries[position]` 为 `Some(token)` 表示该行已展示；令牌行号是它最近一次
-/// 展示时的位置，随行移动而保留，使旧锚点在位移后仍能精确命中原行。
+/// 只有成功 `read` 或 diff 展示给模型的行才可编辑；本会话自身的编辑把旧
+/// 版本保留在链上，旧 tag 的行号可沿位移表映射到当前坐标。
 #[derive(Debug, Clone, Default)]
 pub struct ServedFile {
-    pub entries: Vec<Option<AnchorToken>>,
     pub epoch: Option<SnapshotId>,
-    /// 已失效令牌；新令牌优先避开它们，避免旧锚点误命中后来的行。
-    retired: BTreeSet<u64>,
+    /// 当前版本已展示行的位图。按 u64 字打包，n 行只占 n/8 字节，大文件也不按行分配。
+    /// 不变量：`seen.len() == len.div_ceil(64)`。
+    seen: Vec<u64>,
+    len: usize,
+    /// 本会话自身编辑形成的版本链，最旧在前，`last()` 是当前版本；长度 ≤ `MAX_VERSIONS`。
+    versions: Vec<Version>,
 }
 
 impl ServedFile {
@@ -136,161 +157,137 @@ impl ServedFile {
         Self::default()
     }
 
-    pub fn is_served(&self, position: usize) -> bool {
-        self.entries.get(position).is_some_and(Option::is_some)
-    }
-
-    pub fn token(&self, position: usize) -> Option<AnchorToken> {
-        self.entries.get(position).copied().flatten()
-    }
-
-    /// 覆盖式登记本次读取实际展示给模型的多个行窗口。
+    /// 登记本次展示给模型的行窗口并返回当前 tag。
     ///
-    /// 同 epoch 下已有令牌保持不变，只把令牌行号更新到当前位置；新行分配
-    /// 令牌。返回窗口内实际登记的行与令牌，供调用方按当前行号渲染。
+    /// epoch 变化（外部修改、首次读取）时重置为只有当前版本的链。
     pub fn serve(
         &mut self,
         epoch: SnapshotId,
         lines: &[String],
         windows: &[std::ops::Range<usize>],
-    ) -> Vec<(usize, AnchorToken)> {
-        if self.epoch != Some(epoch) || self.entries.len() != lines.len() {
-            self.entries = vec![None; lines.len()];
-            self.retired.clear();
+    ) -> u16 {
+        if self.epoch != Some(epoch) || self.versions.is_empty() {
+            let hash = content_hash(lines);
+            self.versions = vec![Version {
+                hash,
+                tag: tag_of(hash),
+                len: lines.len(),
+                moves: Vec::new(),
+            }];
+            self.len = lines.len();
+            self.seen = vec![0; self.len.div_ceil(64)];
             self.epoch = Some(epoch);
         }
-        self.refresh(lines, windows, true)
-    }
-
-    /// 只刷新已服务行的令牌行号，不新增服务范围。
-    ///
-    /// 用于编辑失败后的“当前锚点”回灌：只更新真正展示的窗口，避免把未读行
-    /// 误标成可编辑。
-    pub fn refresh_existing(
-        &mut self,
-        lines: &[String],
-        windows: &[std::ops::Range<usize>],
-    ) -> Vec<(usize, AnchorToken)> {
-        self.refresh(lines, windows, false)
-    }
-
-    fn refresh(
-        &mut self,
-        lines: &[String],
-        windows: &[std::ops::Range<usize>],
-        extend: bool,
-    ) -> Vec<(usize, AnchorToken)> {
-        debug_assert_eq!(self.entries.len(), lines.len());
-        let mut used: BTreeSet<u64> = self
-            .entries
-            .iter()
-            .flatten()
-            .map(|token| token_key(*token))
-            .collect();
-        used.extend(self.retired.iter().copied());
-        let mut served = Vec::new();
+        debug_assert_eq!(self.len, lines.len(), "同 epoch 的行数必须与当前版本一致");
         for window in windows {
-            let start = window.start.min(lines.len());
-            let end = window.end.min(lines.len());
-            for position in start..end {
-                let previous = self.entries[position];
-                if !extend && previous.is_none() {
-                    continue;
-                }
-                let line = position + 1;
-                let preferred =
-                    previous.map_or_else(|| id_of(line, &lines[position]), |token| token.id);
-                if let Some(old) = previous {
-                    used.remove(&token_key(old));
-                }
-                let mut index = id_index(preferred);
-                let mut probes = 0u16;
-                while used.contains(&token_key_at(line, index)) && probes < ID_TOTAL {
-                    index = (index + 1) % ID_TOTAL;
-                    probes += 1;
-                }
-                let token = AnchorToken {
-                    line,
-                    id: id_from_index(u32::from(index)),
-                };
-                if let Some(old) = previous
-                    && old != token
-                {
-                    self.retire(old);
-                    used.insert(token_key(old));
-                }
-                used.insert(token_key(token));
-                self.entries[position] = Some(token);
-                served.push((position, token));
+            for position in window.start.min(self.len)..window.end.min(self.len) {
+                self.mark_seen(position);
             }
         }
-        served
+        debug_assert_eq!(self.seen.len(), self.len.div_ceil(64));
+        self.versions.last().expect("版本链非空").tag
     }
 
-    /// 将已服务行按编辑产生的原行位移重定位到新文件。
+    fn mark_seen(&mut self, position: usize) {
+        self.seen[position / 64] |= 1 << (position % 64);
+    }
+
+    pub fn is_seen(&self, position: usize) -> bool {
+        position < self.len && self.seen[position / 64] & (1 << (position % 64)) != 0
+    }
+
+    pub fn current_tag(&self) -> Option<u16> {
+        self.versions.last().map(|version| version.tag)
+    }
+
+    /// 版本链中某个版本的行数。
+    pub fn version_len(&self, version: usize) -> usize {
+        self.versions[version].len
+    }
+
+    /// 返回本会话一次编辑之后的状态，不修改当前状态。
     ///
-    /// 位移表必须按起始位置升序；删除区间用 `isize::MIN` 标记，对应行丢弃。
-    /// 返回被丢弃的行数。
-    pub fn rebase(&mut self, moves: &[(usize, isize)], line_count: usize) -> usize {
+    /// 已展示位图按位移表搬到新坐标（被删除的行丢弃），版本链压入新版本；
+    /// `epoch` 原样保留，由提交阶段覆盖。
+    pub fn advanced(&self, moves: &[(usize, isize)], lines: &[String]) -> Self {
         debug_assert!(
             moves.windows(2).all(|pair| pair[0].0 <= pair[1].0),
-            "rebase 位移表必须按起始位置升序"
+            "位移表必须按起始位置升序"
         );
-        let mut rebased = vec![None; line_count];
-        let mut dropped = 0;
-        for position in 0..self.entries.len() {
-            let Some(token) = self.entries[position] else {
-                continue;
-            };
-            match shifted_position(moves, position) {
-                Some(target) if target < line_count => {
-                    debug_assert!(
-                        rebased[target].is_none(),
-                        "合法位移表不应把两行映射到同一位置"
-                    );
-                    rebased[target] = Some(token);
-                }
-                _ => {
-                    self.retire(token);
-                    dropped += 1;
+        let len = lines.len();
+        let mut seen = vec![0u64; len.div_ceil(64)];
+        for (word_index, &word) in self.seen.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let bit = usize::try_from(bits.trailing_zeros()).expect("bit index < 64");
+                let position = word_index * 64 + bit;
+                bits &= bits - 1;
+                if let Some(target) = shifted_position(moves, position)
+                    && target < len
+                {
+                    seen[target / 64] |= 1 << (target % 64);
                 }
             }
         }
-        self.entries = rebased;
-        dropped
-    }
-
-    /// 返回按位移表重定位后的副本，不修改当前状态。
-    pub fn rebased(&self, moves: &[(usize, isize)], line_count: usize) -> Self {
-        let mut next = self.clone();
-        next.rebase(moves, line_count);
-        next
-    }
-
-    /// 外部改写后使本纪元所有 served 许可失效。
-    pub fn invalidate(&mut self) {
-        self.epoch = None;
-        self.entries.fill(None);
-        self.retired.clear();
-    }
-
-    fn retire(&mut self, token: AnchorToken) {
-        self.retired.insert(token_key(token));
-        if self.retired.len() > MAX_RETIRED_TOKENS {
-            // 极端长会话下只保留近期退役记录；令牌空间按行号隔离，
-            // 复用只可能在同一行号上发生，旧锚点误命中的概率极低。
-            self.retired.clear();
+        let mut versions = self.versions.clone();
+        if let Some(last) = versions.last_mut() {
+            last.moves = moves.to_vec();
+        }
+        let hash = content_hash(lines);
+        versions.push(Version {
+            hash,
+            tag: tag_of(hash),
+            len,
+            moves: Vec::new(),
+        });
+        if versions.len() > MAX_VERSIONS {
+            versions.remove(0);
+        }
+        debug_assert!(versions.len() <= MAX_VERSIONS);
+        Self {
+            epoch: self.epoch,
+            seen,
+            len,
+            versions,
         }
     }
+
+    /// 把 tag 解析为版本链下标；内容相同的多个版本取最新的一个。
+    pub fn resolve(&self, tag: u16) -> Result<usize, TagError> {
+        let mut found: Option<(usize, u64)> = None;
+        for (index, version) in self.versions.iter().enumerate().rev() {
+            if version.tag != tag {
+                continue;
+            }
+            match found {
+                None => found = Some((index, version.hash)),
+                Some((_, hash)) if hash != version.hash => return Err(TagError::Ambiguous),
+                Some(_) => {}
+            }
+        }
+        found.ok_or(TagError::Unknown).map(|(index, _)| index)
+    }
+
+    /// 把某个版本中的 0 基位置映射到当前版本；途中被删除或改写时返回 `None`。
+    pub fn map_line(&self, version: usize, position: usize) -> Option<usize> {
+        self.versions[version..self.versions.len() - 1]
+            .iter()
+            .try_fold(position, |position, step| {
+                shifted_position(&step.moves, position)
+            })
+    }
+
+    /// 外部改写后使本纪元所有 served 许可与版本链失效。
+    pub fn invalidate(&mut self) {
+        self.epoch = None;
+        self.seen.clear();
+        self.versions.clear();
+        self.len = 0;
+    }
 }
 
-/// 位移表里「该位置已删除」的标记。
-fn token_key_at(line: usize, index: u16) -> u64 {
-    u64::try_from(line).expect("line number must fit in u64") * u64::from(ID_TOTAL)
-        + u64::from(index)
-}
-
-/// 省略 `moves` 为空时的分支；调用方已保证升序。
+/// 按位移表求原位置的新位置；落在删除区间时返回 `None`。
+/// 调用方保证 `moves` 按起始位置升序。
 fn shifted_position(moves: &[(usize, isize)], position: usize) -> Option<usize> {
     let index = moves.partition_point(|(start, _)| *start <= position);
     if index == 0 {
@@ -372,57 +369,18 @@ impl AnchorStore {
         self.files.read().get(path).cloned()
     }
 
-    /// 登记一次读取展示的行窗口，返回窗口内当前令牌。
+    /// 登记一次读取展示的行窗口，返回当前 tag。
     pub fn record_served(
         &self,
         path: PathBuf,
         snapshot: &FileSnapshot,
         windows: &[std::ops::Range<usize>],
-    ) -> Vec<(usize, AnchorToken)> {
+    ) -> u16 {
         self.files
             .write()
             .entry(path)
             .or_default()
             .serve(snapshot.epoch, &snapshot.lines, windows)
-    }
-
-    /// 编辑失败后的当前锚点回灌：优先返回离失败锚点最近的已服务行。
-    ///
-    /// 只刷新选中的行令牌；`max_lines` 限制输出规模。epoch 或行数不匹配时
-    /// 返回 None，由调用方提示重读。
-    pub fn refresh_nearest(
-        &self,
-        path: &Path,
-        snapshot: &FileSnapshot,
-        hints: &[usize],
-        max_lines: usize,
-    ) -> Option<Vec<(usize, AnchorToken)>> {
-        let mut files = self.files.write();
-        let served = files.get_mut(path)?;
-        if served.epoch != Some(snapshot.epoch) || served.entries.len() != snapshot.lines.len() {
-            return None;
-        }
-        let mut positions: Vec<usize> = served
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(position, entry)| entry.is_some().then_some(position))
-            .collect();
-        if !hints.is_empty() {
-            positions.sort_by_key(|position| {
-                hints
-                    .iter()
-                    .map(|hint| hint.abs_diff(position + 1))
-                    .min()
-                    .unwrap_or(0)
-            });
-            positions.truncate(max_lines.max(1));
-            positions.sort_unstable();
-        } else {
-            positions.truncate(max_lines.max(1));
-        }
-        let windows = contiguous_windows(&positions);
-        Some(served.refresh_existing(&snapshot.lines, &windows))
     }
 
     pub fn commit_edit(&self, path: PathBuf, served: ServedFile) {
@@ -537,27 +495,6 @@ impl Default for AnchorStore {
     }
 }
 
-/// 将有序位置合并成连续窗口。
-fn contiguous_windows(positions: &[usize]) -> Vec<std::ops::Range<usize>> {
-    let mut windows = Vec::new();
-    let mut iter = positions.iter().copied();
-    let Some(mut start) = iter.next() else {
-        return windows;
-    };
-    let mut end = start + 1;
-    for position in iter {
-        if position == end {
-            end += 1;
-        } else {
-            windows.push(start..end);
-            start = position;
-            end = position + 1;
-        }
-    }
-    windows.push(start..end);
-    windows
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,38 +527,19 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_rows_get_distinct_tokens_and_keep_them_across_shifts() {
+    fn older_tag_maps_untouched_rows_and_drops_rewritten_ones() {
         let mut served = ServedFile::new();
-        let epoch = id(3);
-        let lines = rows(&["end", "end", "tail"]);
-        served.serve(epoch, &lines, &[0..3]);
-        let first = served.token(0).expect("第一行令牌");
-        let second = served.token(1).expect("第二行令牌");
-        let third = served.token(2).expect("第三行令牌");
-        assert_eq!(first.id, second.id, "同内容首选 id 相同");
-        assert_ne!(first, second, "行号使完整令牌唯一");
-
-        // 在第一行后插入一行：后两行下移，但令牌随行保留。
-        served.rebase(&[(1, 0), (1, 1), (3, 1)], 4);
-        assert_eq!(served.token(0), Some(first));
-        assert_eq!(served.token(2), Some(second));
-        assert_eq!(served.token(3), Some(third));
-        assert!(served.token(1).is_none());
-    }
-
-    #[test]
-    fn rebase_drops_rows_past_new_file_end() {
-        let mut served = ServedFile::new();
-        let epoch = id(3);
-        served.serve(epoch, &rows(&["one", "two", "three"]), &[0..3]);
-        let token = served.token(0).expect("令牌");
-        // 删除第 2、3 行（1、2 号位置），只保留第 1 行。
-        assert_eq!(
-            served.rebase(&[(1, isize::MIN), (2, isize::MIN), (3, -2)], 1),
-            2
-        );
-        assert_eq!(served.entries.len(), 1);
-        assert_eq!(served.token(0), Some(token));
+        let before = rows(&["one", "two", "three"]);
+        let old_tag = served.serve(id(3), &before, &[0..3]);
+        // 删除第 2 行（位置 1），并在开头插入一行：one → 1，three → 3。
+        let after = rows(&["top", "one", "three"]);
+        let next = served.advanced(&[(0, 0), (0, 1), (1, isize::MIN), (2, 0)], &after);
+        let version = next.resolve(old_tag).expect("旧 tag 仍在版本链上");
+        assert_eq!(next.map_line(version, 0), Some(1));
+        assert_eq!(next.map_line(version, 1), None);
+        assert_eq!(next.map_line(version, 2), Some(2));
+        assert!(next.is_seen(1) && next.is_seen(2) && !next.is_seen(0));
+        assert_ne!(next.current_tag(), Some(old_tag));
     }
 
     #[test]
@@ -661,6 +579,7 @@ mod tests {
         store.record_served(path.clone(), &snapshot, &[0..1]);
         store.invalidate(&path);
         let served = store.served(&path).expect("served record");
-        assert!(served.entries.iter().all(Option::is_none));
+        assert_eq!(served.current_tag(), None);
+        assert!(!served.is_seen(0));
     }
 }

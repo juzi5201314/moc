@@ -1,7 +1,7 @@
 //! 计划工具：`plan` 保存或修订计划草稿，`exit_plan` 提交工作草稿并结束本轮。
 //!
 //! `plan` 的两种用法：`markdown` 全量写草稿（起草期复用同一个 `plan_id`，反复
-//! 写是原地覆盖）；`edits` 按 hashline 锚点增量修订——锚点来自 `read` 的展示行：
+//! 写是原地覆盖）；`edits` 按 tag + 行号增量修订——tag 与行号来自 `read` 的输出：
 //! 有工作草稿时原地修订，没有草稿时以最近一版已评审计划为底播种新草稿。提交过
 //! 的版本始终冻结，批注按行锚定它们。
 
@@ -11,9 +11,9 @@ use moc_protocol::{PlanInfo, PlanStatus, SessionUpdate, ToolDiff};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::edit::{edits_items_schema, error_outcome, normalize_edit_item};
+use super::edit::{edits_items_schema, error_outcome};
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
-use crate::hashline::apply::{EditError, EditRequest, apply_edit, encode_file, plan_edit};
+use crate::hashline::apply::{EditError, EditOp, EditRequest, apply_edit, encode_file, plan_edit};
 use crate::session::entries::EntryPayload;
 
 /// 单个计划文件的字节上限。
@@ -24,7 +24,8 @@ const MAX_PLAN_BYTES: usize = 512 * 1024;
 struct PlanArgs {
     title: Option<String>,
     markdown: Option<String>,
-    edits: Option<Vec<Value>>,
+    tag: Option<String>,
+    edits: Option<Vec<EditOp>>,
 }
 
 pub struct PlanTool;
@@ -35,7 +36,7 @@ impl Tool for PlanTool {
     }
 
     fn description(&self) -> &'static str {
-        "Save or refine the session plan draft. markdown writes or overwrites the working draft (title required on the first save). edits patches the plan with anchored line edits copied from read of the plan file — on the working draft in place, or on the last reviewed plan to produce the next draft. Call exit_plan to submit the draft for review."
+        "Save or refine the session plan draft. markdown writes or overwrites the working draft (title required on the first save). tag plus edits patches the plan with line-number edits from read of the plan file — on the working draft in place, or on the last reviewed plan to produce the next draft. Call exit_plan to submit the draft for review."
     }
 
     fn tier(&self) -> Tier {
@@ -53,9 +54,10 @@ impl Tool for PlanTool {
                 serde_json::json!({
                     "title": {"type":"string","description":"Plan title; required for the first draft, afterwards kept or overridden."},
                     "markdown": {"type":"string","description":"Full plan text; writes or overwrites the working draft. Mutually exclusive with edits."},
+                    "tag": {"type":"string","description":"Required with edits: the 4-hex tag from the [local://<id>.md#TAG] header of the latest read of the plan."},
                     "edits": {
                         "type":"array","minItems":1,
-                        "description":"Anchored edits like the edit tool's, applied together; patches the working draft in place, or turns the latest reviewed plan into the next draft. Mutually exclusive with markdown.",
+                        "description":"Line-number edits like the edit tool's, applied together; patches the working draft in place, or turns the latest reviewed plan into the next draft. Mutually exclusive with markdown.",
                         "items": edits_items_schema()
                     },
                 }),
@@ -76,10 +78,10 @@ impl Tool for PlanTool {
             let title = normalized_title(args.title);
             match (args.markdown, args.edits) {
                 (Some(markdown), None) => write_draft(ctx, title, markdown).await,
-                (None, Some(edits)) => apply_edits(ctx, title, edits, payload).await,
+                (None, Some(edits)) => apply_edits(ctx, title, args.tag, edits, payload).await,
                 (None, None) => Err(ToolError::new(
                     "E_BAD_PAYLOAD",
-                    "plan takes markdown (write the draft) or edits (anchored patch); read the plan file for anchors",
+                    "plan takes markdown (write the draft) or tag plus edits (line-number patch); read the plan file for its tag and line numbers",
                 )),
                 (Some(_), Some(_)) => Err(ToolError::new(
                     "E_BAD_PAYLOAD",
@@ -163,18 +165,19 @@ async fn write_draft(
     )))
 }
 
-/// `plan(edits)` 的锚定目标：工作草稿原地修订，或以最近一版已评审计划为底播种。
+/// `plan(edits)` 的修订目标：工作草稿原地修订，或以最近一版已评审计划为底播种。
 enum EditTarget {
-    /// 有工作草稿：锚点落在草稿文件上，原地改。
+    /// 有工作草稿：tag 与行号指草稿文件，原地改。
     Patch(PlanInfo),
-    /// 无草稿：锚点落在被评审版本上，改出的结果另存为新草稿，底版保持冻结。
+    /// 无草稿：tag 与行号指被评审版本，改出的结果另存为新草稿，底版保持冻结。
     Seed(PlanInfo),
 }
 
 async fn apply_edits(
     ctx: &ToolCtx,
     title: Option<String>,
-    edits: Vec<Value>,
+    tag: Option<String>,
+    edits: Vec<EditOp>,
     payload: String,
 ) -> Result<ToolOutcome, ToolError> {
     if edits.is_empty() {
@@ -182,10 +185,6 @@ async fn apply_edits(
             "E_BAD_PAYLOAD",
             "edits must contain at least one item.",
         ));
-    }
-    let mut normalized = Vec::with_capacity(edits.len());
-    for (index, item) in edits.into_iter().enumerate() {
-        normalized.push(normalize_edit_item(index, item)?);
     }
     let target = {
         let state = ctx.state.lock().await;
@@ -221,6 +220,7 @@ async fn apply_edits(
             }
         }
     };
+    let tag = tag.ok_or_else(|| ToolError::new("E_BAD_PAYLOAD", "tag is required with edits"))?;
     let base = match &target {
         EditTarget::Patch(plan) | EditTarget::Seed(plan) => plan,
     };
@@ -229,7 +229,8 @@ async fn apply_edits(
     let served = ctx.anchors.served(&base_path).unwrap_or_default();
     let request = EditRequest {
         path: base_path.to_string_lossy().into_owned(),
-        edits: normalized,
+        tag,
+        edits,
         move_lines: None,
     };
     let max_edits = ctx.config.tools.edit.max_edits;
@@ -322,7 +323,7 @@ async fn apply_edits(
                 .await
                 .map_err(|error| ToolError::new("E_PLAN_WRITE", error.to_string()))?;
             let mut outcome = ToolOutcome::success(format!(
-                "{}\n\nSaved as plan draft {plan_id} at {path_text}; read it for anchors before further edits, then call exit_plan to submit.",
+                "{}\n\nSaved as plan draft {plan_id} at {path_text}; read it for line numbers before further edits, then call exit_plan to submit.",
                 edit_plan.output
             ));
             outcome.diff = redirect_diff_path(Some(edit_plan.diff), &path_text);
@@ -331,7 +332,7 @@ async fn apply_edits(
     }
 }
 
-/// 与 `edit` 一致的复读防护：同一批锚点反复打不出变化时让模型停下重读。
+/// 与 `edit` 一致的复读防护：同一批编辑反复打不出变化时让模型停下重读。
 fn observe_noop(ctx: &ToolCtx, payload: String, changed: bool) -> Result<(), ToolError> {
     let count = ctx.anchors.observe_edit(payload, changed);
     if count >= ctx.config.tools.edit.noop_loop_threshold {

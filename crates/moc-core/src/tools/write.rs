@@ -169,9 +169,9 @@ pub(crate) async fn preview_arguments(ctx: &ToolCtx, args: &WriteArgs) -> Option
     write_diff(&path, old.as_deref(), &content, WRITE_DIFF_MAX_BYTES)
 }
 
-/// 拒绝把 read/diff 输出里带锚点的行原样写回文件。
+/// 拒绝把 read/diff 输出里带行号的行（`N│text`）原样写回文件。
 ///
-/// 直接用会话里已登记的令牌校验，不为此重读磁盘：既不会把旧位图和新内容混在一起，
+/// 直接用会话里已登记的展示位图校验，不为此重读磁盘：既不会把旧位图和新内容混在一起，
 /// 也不会在大文件上无限制地分配内存。
 fn reject_served_hash_echo(
     path: &Path,
@@ -182,30 +182,25 @@ fn reject_served_hash_echo(
     let Some(served) = anchors.served(path) else {
         return Ok(());
     };
-    let expected: std::collections::BTreeSet<u64> = served
-        .entries
-        .iter()
-        .flatten()
-        .map(|token| crate::hashline::token_key(*token))
-        .collect();
-    if expected.is_empty() {
-        return Ok(());
-    }
     let echoes = content
         .lines()
         .filter(|line| {
-            let Some((raw, _)) = line.split_once('│') else {
+            let Some((raw, _)) = line.trim_start_matches([' ', '+']).split_once('│') else {
                 return false;
             };
-            let token = raw.trim_start_matches(['+', '-', '>', ' ']).trim();
-            crate::hashline::parse_anchor(token)
-                .is_ok_and(|parsed| expected.contains(&crate::hashline::token_key(parsed.token())))
+            !raw.is_empty()
+                && raw.bytes().all(|byte| byte.is_ascii_digit())
+                && raw.parse::<usize>().is_ok_and(|line_no| {
+                    line_no
+                        .checked_sub(1)
+                        .is_some_and(|position| served.is_seen(position))
+                })
         })
         .count();
     if echoes >= threshold && threshold > 0 {
         return Err(ToolError::new(
             "E_WRITE_HASH_ECHO",
-            "content appears to echo anchored read output; use only the intended file text",
+            "content appears to echo numbered read output; use only the intended file text",
         ));
     }
     Ok(())
@@ -309,25 +304,19 @@ async fn stage(path: &Path, content: &[u8]) -> Result<PathBuf, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hashline::{AnchorStore, anchor_token, served::read_snapshot};
+    use crate::hashline::{AnchorStore, served::read_snapshot};
     use std::fs;
 
     #[test]
-    fn write_hash_echo_is_rejected_only_for_served_anchors() {
+    fn write_hash_echo_is_rejected_only_for_shown_lines() {
         let dir = tempfile::tempdir().expect("临时目录");
         let path = dir.path().join("file.rs");
         fs::write(&path, "fn main() {}\nfn other() {}\n").expect("写文件");
         let snapshot = read_snapshot(&path, 1024).expect("读取快照");
         let anchors = AnchorStore::new();
         anchors.record_served(path.clone(), &snapshot, &[0..2]);
-        let content = format!(
-            "{}│one\n{}│two",
-            anchor_token(1, &snapshot.lines[0]),
-            anchor_token(2, &snapshot.lines[1])
-        );
-        assert!(reject_served_hash_echo(&path, &content, &anchors, 2).is_err());
-        let content = format!("{}│not previously served", anchor_token(3, "new"));
-        assert!(reject_served_hash_echo(&path, &content, &anchors, 2).is_ok());
+        assert!(reject_served_hash_echo(&path, "1│one\n2│two", &anchors, 2).is_err());
+        assert!(reject_served_hash_echo(&path, "3│x", &anchors, 2).is_ok());
     }
 
     #[test]

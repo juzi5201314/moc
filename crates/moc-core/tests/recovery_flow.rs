@@ -1009,14 +1009,19 @@ async fn oversized_read_line_does_not_block_later_anchors_or_replace_symlinks() 
                         .unwrap();
                     let output = support::content::content_text(&result["content"]);
                     assert!(output.contains("content omitted"));
-                    let anchor = output
+                    let after: usize = output
                         .lines()
                         .find_map(|line| line.strip_suffix("│short"))
-                        .unwrap();
+                        .expect("read 输出应展示 short 行")
+                        .parse()
+                        .expect("short 行前缀应是行号");
+                    let header = output.lines().next().expect("read 输出应有头部");
+                    let tag = &header[header.rfind('#').expect("头部应带 tag") + 1
+                        ..header.rfind(']').expect("头部应以 ] 结尾")];
                     tool_stream(vec![(
                         "edit_link",
                         "edit",
-                        json!({"path":"alias.txt","edits":[[anchor,anchor,"inserted"]]}),
+                        json!({"path":"alias.txt","tag":tag,"edits":[{"op":"insert","after":after,"text":"inserted"}]}),
                     )])
                 }
                 _ => text_stream("已编辑真实目标"),

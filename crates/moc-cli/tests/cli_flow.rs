@@ -99,8 +99,9 @@ async fn print_runs_write_grep_read_edit_and_resume_without_notification_noise()
             3 => {
                 let result = body["messages"].as_array().unwrap().iter().find(|message| message["tool_call_id"] == "read").unwrap();
                 let output = content_text(&result["content"]);
-                let anchors: Vec<_> = output.lines().filter_map(|line| line.split_once('│').map(|(anchor, _)| anchor)).collect();
-                call("edit", "edit", json!({"path":"hello.py","edits":[[anchors[0],anchors[1],"print('hello moc')"]]}))
+                let header = output.lines().next().expect("read 输出应有头部");
+                let tag = &header[header.rfind('#').expect("头部应带 tag") + 1..header.rfind(']').expect("头部应以 ] 结尾")];
+                call("edit", "edit", json!({"path":"hello.py","tag":tag,"edits":[{"op":"replace","from":1,"to":2,"text":"print('hello moc')"}]}))
             }
             _ => text("任务完成"),
         };

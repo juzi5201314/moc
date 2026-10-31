@@ -1,12 +1,9 @@
-//! Hashline 锚点：稳定令牌、served 范围校验与原子编辑。
+//! Hashline：文件快照 tag、行号重映射与原子编辑。
 
-mod anchor;
 pub mod apply;
 pub mod served;
 pub mod store;
+mod tag;
 
-pub use anchor::{
-    AnchorParse, AnchorToken, ID_TOTAL, anchor_line_token, anchor_token, id_from_index, id_index,
-    id_of, id_str, parse_anchor, token_key,
-};
-pub use store::{AnchorStore, FileSnapshot, LineEnding, ServedFile, SnapshotId};
+pub use tag::{content_hash, numbered_line, parse_tag, tag_of, tag_text};
+pub use store::{AnchorStore, FileSnapshot, LineEnding, ServedFile, SnapshotId, TagError};
