@@ -119,6 +119,7 @@ impl Harness {
                 title: None,
                 engine,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap()
@@ -134,6 +135,7 @@ impl Harness {
                 title: None,
                 engine,
                 plan_active: true,
+                fast_mode: false,
             })
             .await
             .unwrap()

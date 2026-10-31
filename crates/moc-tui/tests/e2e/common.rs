@@ -212,6 +212,7 @@ pub fn sample_session_info(id: &str, title: &str, cwd: &str) -> SessionInfo {
         engine: SessionEngine::Standard,
         autonomy: SessionAutonomy::Default,
         plan_active: false,
+        fast_mode: false,
         engine_locked: false,
         parent_session_id: None,
         forked_from: None,

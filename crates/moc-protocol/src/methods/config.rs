@@ -92,6 +92,9 @@ pub struct ModelInfo {
     /// Responses 原生服务端压缩是否启用。
     #[serde(default)]
     pub remote_compaction: bool,
+    /// 是否支持 Fast Mode（模型配置 `fast_mode = true`）；前端只在支持时展示开关。
+    #[serde(default)]
+    pub fast_mode: bool,
 }
 
 /// 每百万 token 定价（美元）。
@@ -150,6 +153,7 @@ mod tests {
                 }),
                 inputs: vec![ModelInput::Text, ModelInput::Image],
                 remote_compaction: true,
+                fast_mode: true,
             }],
             default_model: Some("deepseek-flash".into()),
             agents: vec![AgentProfile {
@@ -167,7 +171,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
             json!({
-                "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "inputs": ["text", "image"], "remote_compaction": true }],
+                "models": [{ "id": "deepseek-flash", "display_name": "DeepSeek Flash", "context_window": 128000, "pricing": { "input": 0.27, "output": 1.1, "cache_read": 0.07 }, "inputs": ["text", "image"], "remote_compaction": true, "fast_mode": true }],
                 "default_model": "deepseek-flash",
                 "agents": [{ "id": "build", "display_name": "Build" }],
                 "default_agent": "build",

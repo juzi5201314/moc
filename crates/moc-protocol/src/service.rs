@@ -43,7 +43,8 @@ use crate::methods::{
     SessionPlanApproveResult, SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams,
     SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams, SessionRenameParams,
     SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
-    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetPermissionParams, SessionUnloadParams,
     SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
     SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument, WebStateGetParams,
     WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
@@ -327,6 +328,13 @@ pub trait AgentService: Send + Sync + 'static {
         ctx: RequestContext,
         params: SessionSetModelParams,
     ) -> impl Future<Output = Result<SessionSetModelResult, RpcError>> + Send;
+
+    /// 开关会话 Fast Mode；随时可改，被他人持锁时回 `SessionLocked`。
+    fn session_set_fast_mode(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetFastModeParams,
+    ) -> impl Future<Output = Result<SessionInfo, RpcError>> + Send;
 
     /// 批准或拒绝已提交计划。
     fn session_plan_approve(

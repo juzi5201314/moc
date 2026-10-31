@@ -324,6 +324,9 @@ impl SessionState {
             Entry::AutonomyChange { autonomy, .. } => {
                 self.session.autonomy = *autonomy;
             }
+            Entry::FastModeChange { enabled, .. } => {
+                self.session.fast_mode = *enabled;
+            }
             Entry::PlanMode { active, .. } => {
                 if *active && !self.plan_active {
                     self.plan_base_model = Some(self.model.clone());

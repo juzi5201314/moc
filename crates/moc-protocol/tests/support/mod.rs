@@ -27,7 +27,8 @@ use moc_protocol::methods::{
     SessionPlanApproveParams, SessionPlanApproveResult, SessionPlanDiffParams,
     SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
     SessionRenameParams, SessionRequestAsk, SessionRetryParams, SessionSetAutonomyParams,
-    SessionSetEngineParams, SessionSetModelParams, SessionSetPermissionParams, SessionUnloadParams,
+    SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams,
+    SessionSetPermissionParams, SessionUnloadParams,
     SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
     TranscriptEntry, default_options,
 };
@@ -155,6 +156,7 @@ impl ScriptedService {
                         engine: SessionEngine::Standard,
                         autonomy: SessionAutonomy::Default,
                         plan_active: false,
+                        fast_mode: false,
                         engine_locked: false,
                         parent_session_id: None,
                         forked_from: None,
@@ -184,6 +186,7 @@ impl ScriptedService {
                             pricing: None,
                             inputs: vec![ModelInput::Text],
                             remote_compaction: false,
+                            fast_mode: false,
                         },
                         ModelInfo {
                             id: "claude-sonnet".to_owned(),
@@ -194,6 +197,7 @@ impl ScriptedService {
                             pricing: None,
                             inputs: vec![ModelInput::Text, ModelInput::Image],
                             remote_compaction: false,
+                            fast_mode: false,
                         },
                     ],
                     default_model: Some("deepseek-flash".to_owned()),
@@ -547,6 +551,7 @@ impl AgentService for ScriptedService {
                 pricing: None,
                 inputs: Vec::new(),
                 remote_compaction: false,
+                fast_mode: false,
             });
         }
         Ok(ConfigGetResult {
@@ -607,6 +612,7 @@ impl AgentService for ScriptedService {
             engine: params.engine,
             autonomy: SessionAutonomy::Default,
             plan_active: params.plan_active,
+            fast_mode: params.fast_mode,
             engine_locked: false,
         };
         state.sessions.insert(
@@ -809,6 +815,14 @@ impl AgentService for ScriptedService {
         _ctx: RequestContext,
         _params: SessionSetModelParams,
     ) -> Result<moc_protocol::methods::SessionSetModelResult, RpcError> {
+        Err(RpcError::of(RpcErrorCode::NotSupported))
+    }
+
+    async fn session_set_fast_mode(
+        &self,
+        _ctx: RequestContext,
+        _params: SessionSetFastModeParams,
+    ) -> Result<SessionInfo, RpcError> {
         Err(RpcError::of(RpcErrorCode::NotSupported))
     }
 
@@ -1032,6 +1046,7 @@ pub fn update_tag(update: &SessionUpdate) -> &'static str {
         SessionUpdate::PlanModeChanged { .. } => "plan_mode_changed",
         SessionUpdate::PermissionChanged { .. } => "permission_changed",
         SessionUpdate::ModelChanged { .. } => "model_changed",
+        SessionUpdate::FastModeChanged { .. } => "fast_mode_changed",
         SessionUpdate::TodoChanged { .. } => "todo_changed",
         SessionUpdate::TodoReminder { .. } => "todo_reminder",
         SessionUpdate::PlanSubmitted { .. } => "plan_submitted",

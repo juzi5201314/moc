@@ -41,7 +41,8 @@ use crate::methods::{
     SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
     SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanMode,
     SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename, SessionRetry, SessionRewind,
-    SessionSetAutonomy, SessionSetEngine, SessionSetModel, SessionSetPermission, SessionSteer,
+    SessionSetAutonomy, SessionSetEngine, SessionSetFastMode, SessionSetModel,
+    SessionSetPermission, SessionSteer,
     SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WebStateGet, WebStateSave,
     WorkspaceGitBranch,
 };
@@ -821,6 +822,15 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_set_model(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionSetFastMode as Method>::NAME => {
+                let params = params_from_value::<SessionSetFastMode>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_set_fast_mode(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

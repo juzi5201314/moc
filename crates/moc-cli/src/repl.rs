@@ -346,6 +346,7 @@ async fn run_repl(
                 title: None,
                 engine: args.engine.into(),
                 plan_active: args.plan,
+                fast_mode: false,
             })
             .await?
     };
@@ -477,6 +478,7 @@ async fn run_command(
                     title: None,
                     engine: session.engine,
                     plan_active: false,
+                    fast_mode: session.fast_mode,
                 })
                 .await?;
             println!("新会话：{}", session.id);

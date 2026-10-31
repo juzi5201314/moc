@@ -24,7 +24,8 @@ use moc_protocol::methods::{
     SessionNewParams, SessionPermission, SessionPlanApproveParams, SessionPlanApproveResult,
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult,
     SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
-    SessionSetAutonomyParams, SessionSetEngineParams, SessionSetModelParams, SessionSetModelResult,
+    SessionSetAutonomyParams, SessionSetEngineParams, SessionSetFastModeParams,
+    SessionSetModelParams, SessionSetModelResult,
     SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
     SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
     WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
@@ -943,6 +944,7 @@ impl AgentService for Core {
                 .filter_map(|(supported, input)| supported.then_some(input))
                 .collect(),
                 remote_compaction: model.remote_compaction,
+                fast_mode: model.fast_mode,
             })
             .collect::<Vec<_>>();
         let fusion = if config.fusion.lead.is_empty() || config.fusion.sidekick.is_empty() {
@@ -1296,6 +1298,14 @@ impl AgentService for Core {
                     .await
                     .map_err(to_rpc)?;
             }
+        }
+        if params.fast_mode {
+            info = self
+                .inner
+                .sessions
+                .set_fast_mode(&info.id, true)
+                .await
+                .map_err(to_rpc)?;
         }
         info.permission = self.inner.effective_permission(info.permission);
         if params.plan_active && config.workspace.watch {
@@ -1786,6 +1796,42 @@ impl AgentService for Core {
                 .unwrap_or_default(),
         )
         .await;
+        Ok(info)
+    }
+
+    async fn session_set_fast_mode(
+        &self,
+        ctx: RequestContext,
+        params: SessionSetFastModeParams,
+    ) -> Result<SessionInfo, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let mut info = self
+            .inner
+            .sessions
+            .set_fast_mode(&params.session_id, params.enabled)
+            .await
+            .map_err(to_rpc)?;
+        info.lock = None;
+        info.permission = self.inner.effective_permission(info.permission);
+        ctx.updates()
+            .emit(
+                params.session_id,
+                SessionUpdate::FastModeChanged {
+                    enabled: info.fast_mode,
+                },
+            )
+            .await
+            .map_err(protocol_to_rpc)?;
         Ok(info)
     }
 

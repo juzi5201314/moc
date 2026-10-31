@@ -213,6 +213,8 @@ pub(super) struct ModelDocument {
     pub remote_compaction: Option<bool>,
     /// 每百万 token 定价（美元）；未配置时前端隐藏费用段。
     pub pricing: Option<moc_protocol::ModelPricing>,
+    /// 是否支持 Fast Mode；开启后前端显示开关，会话打开开关时请求带 `service_tier = "fast"`。
+    pub fast_mode: bool,
 }
 impl Default for ModelDocument {
     fn default() -> Self {
@@ -226,6 +228,7 @@ impl Default for ModelDocument {
             compat: ModelCompat::default(),
             remote_compaction: None,
             pricing: None,
+            fast_mode: false,
         }
     }
 }
@@ -385,6 +388,8 @@ pub struct ResolvedModel {
     pub remote_compaction: bool,
     /// 每百万 token 定价（美元）；`None` 表示未配置。
     pub pricing: Option<moc_protocol::ModelPricing>,
+    /// 模型配置了 `fast_mode = true`，即上游接受 `service_tier = "fast"`。
+    pub fast_mode: bool,
     /// 供应商协议配置。
     pub llm: LlmConfig,
     pub max_concurrency: usize,
@@ -423,6 +428,17 @@ impl ResolvedModel {
             Some(fusion) => &fusion.lead,
             None => &self.selector,
         }
+    }
+
+    /// 按会话开关启用 Fast Mode：模型支持且会话打开时在请求体顶层写入
+    /// `service_tier = "fast"`；三种协议的编码器都会把 `extra_body` 并入请求体。
+    pub fn with_fast_mode(mut self, enabled: bool) -> Self {
+        if enabled && self.fast_mode {
+            self.llm
+                .extra_body
+                .insert("service_tier".to_owned(), serde_json::json!("fast"));
+        }
+        self
     }
 }
 
@@ -593,6 +609,7 @@ impl ResolvedProvider {
             thinking_levels,
             remote_compaction,
             pricing: model.pricing,
+            fast_mode: model.fast_mode,
             llm,
             max_concurrency: self.max_concurrency,
             cache: self.cache,

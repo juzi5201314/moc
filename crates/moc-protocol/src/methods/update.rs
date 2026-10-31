@@ -243,6 +243,8 @@ pub enum SessionUpdate {
     PlanModeChanged { active: bool },
     /// 会话模型变化（`session/set_model`，或计划模式切换引起的模型覆盖与恢复）。
     ModelChanged { model: String },
+    /// Fast Mode 开关变化（`session/set_fast_mode`）。
+    FastModeChanged { enabled: bool },
     /// Todo 清单变化。
     TodoChanged { phases: Vec<TodoPhase> },
     /// 隐式注入了一次 todo 提醒；前端按工具样式展示占位行，提醒本身无参数与结果。
@@ -608,6 +610,10 @@ mod tests {
             (
                 SessionUpdate::PlanModeChanged { active: true },
                 json!({ "type": "plan_mode_changed", "active": true }),
+            ),
+            (
+                SessionUpdate::FastModeChanged { enabled: true },
+                json!({ "type": "fast_mode_changed", "enabled": true }),
             ),
             (
                 SessionUpdate::ModelChanged {

@@ -255,6 +255,13 @@ impl Renderer {
             SessionUpdate::AutonomyChanged { autonomy } => {
                 let _ = writeln!(out, "\n[自主程度：{autonomy:?}]");
             }
+            SessionUpdate::FastModeChanged { enabled } => {
+                let _ = writeln!(
+                    out,
+                    "\n[Fast Mode：{}]",
+                    if enabled { "开启" } else { "关闭" }
+                );
+            }
             SessionUpdate::PlanModeChanged { active } => {
                 let _ = writeln!(
                     out,

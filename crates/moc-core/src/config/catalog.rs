@@ -12,7 +12,7 @@ pub fn provider_template() -> Value {
 
 pub fn model_template() -> Value {
     json!({"context_window":200000,"max_output_tokens":32000,"max_request_bytes":null,"reasoning":false,
-        "thinking_levels":null,"input":["text"],"remote_compaction":null,"pricing":null,
+        "thinking_levels":null,"input":["text"],"remote_compaction":null,"pricing":null,"fast_mode":false,
         "compat":{"max_output_tokens_field":"max_tokens","supports_stop":true,
             "supports_prompt_cache_key":true,"reasoning_field":"reasoning_content",
             "reasoning_field_aliases":["reasoning_content","reasoning"],"tool_choice_dialect":"standard",
@@ -556,6 +556,10 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "模型支持接收的内容类型：仅文本 或 文本与图片/多模态。",
             ),
             "remote_compaction" => ("由服务端压缩", "留空自动判断；仅部分接口支持。"),
+            "fast_mode" => (
+                "支持 Fast Mode",
+                "开启后模型选择器显示 Fast Mode 开关；会话打开开关时请求体带 service_tier = \"fast\"。仅部分模型支持，默认关闭。",
+            ),
             "pricing" => (
                 "价格（每百万 token）",
                 "JSON：input/output 必填，cache_read/cache_write 可选，单位美元。",

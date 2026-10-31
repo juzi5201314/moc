@@ -31,17 +31,21 @@ pub(crate) async fn run(
         .await
         .map_err(to_rpc)?;
     // 不抢主提示锁、不申请写租约；锁内只复制当前模型视图，不复制整份日志或等待 I/O。
-    let (cwd, selector, messages, mut native_input) = {
+    let (cwd, selector, fast_mode, messages, mut native_input) = {
         let state = record.state.lock().await;
         (
             PathBuf::from(&state.session.cwd),
             state.model.clone(),
+            state.session.fast_mode,
             model_messages(&state, None, None),
             state.native_input.clone(),
         )
     };
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
-    let model = config.resolve_model(&selector).map_err(to_rpc)?;
+    let model = config
+        .resolve_model(&selector)
+        .map_err(to_rpc)?
+        .with_fast_mode(fast_mode);
     if !model.capabilities.text {
         return Err(RpcError::new(
             RpcErrorCode::NotSupported.code(),

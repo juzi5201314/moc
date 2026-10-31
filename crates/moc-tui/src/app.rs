@@ -2275,6 +2275,7 @@ mod tests {
             engine: SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: None,
@@ -2577,6 +2578,7 @@ mod tests {
                 engine: moc_protocol::SessionEngine::Standard,
                 autonomy: moc_protocol::SessionAutonomy::Default,
                 plan_active: false,
+                fast_mode: false,
                 engine_locked: false,
                 parent_session_id: None,
                 forked_from: None,
@@ -2723,6 +2725,7 @@ mod tests {
             }),
             inputs: Vec::new(),
             remote_compaction: false,
+            fast_mode: false,
         }];
         app.session = Some(SessionInfo {
             id: "ses_fusion".into(),
@@ -2732,6 +2735,7 @@ mod tests {
             engine: SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: None,
@@ -2772,6 +2776,7 @@ mod tests {
             }),
             inputs: Vec::new(),
             remote_compaction: false,
+            fast_mode: false,
         }];
         let summary =
             |model: &str, source, input: u64, cached: u64, output: u64| ModelUsageSummary {

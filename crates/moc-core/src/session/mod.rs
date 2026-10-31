@@ -919,6 +919,20 @@ impl SessionTable {
         Ok(session)
     }
 
+    /// 记录会话 Fast Mode 开关的变更。
+    pub async fn set_fast_mode(
+        &self,
+        session_id: &str,
+        enabled: bool,
+    ) -> Result<SessionInfo, CoreError> {
+        let record = self.get(session_id).await?;
+        self.append(session_id, EntryPayload::FastModeChange { enabled })
+            .await?;
+        let mut session = record.state.lock().await.session_info();
+        session.lock = lock::read(record.paths.lock_file(session_id));
+        Ok(session)
+    }
+
     /// 取会话写租约；已持有则直接返回。
     ///
     /// 只读打开过的会话升级为写模式时，先拿到租约再对齐磁盘：租约之前的写入可能来自

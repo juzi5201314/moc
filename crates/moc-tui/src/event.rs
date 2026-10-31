@@ -182,6 +182,7 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
                         title: None,
                         engine: opts.engine,
                         plan_active: opts.plan,
+                        fast_mode: false,
                     })
                     .await?;
                 (info, Vec::new(), false, None)
@@ -4609,6 +4610,11 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
                 session.autonomy = autonomy;
             }
         }
+        SessionUpdate::FastModeChanged { enabled } => {
+            if let Some(session) = app.session.as_mut() {
+                session.fast_mode = enabled;
+            }
+        }
         SessionUpdate::PlanModeChanged { active } => {
             if let Some(session) = app.session.as_mut() {
                 session.plan_active = active;
@@ -5018,7 +5024,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/new" => {
             let client = connection.client.clone();
             let events = app.events.clone();
-            let (cwd, model, engine) = app
+            let (cwd, model, engine, fast_mode) = app
                 .session
                 .as_ref()
                 .map(|session| {
@@ -5026,9 +5032,10 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                         Some(session.cwd.clone()),
                         Some(session.model.clone()),
                         session.engine,
+                        session.fast_mode,
                     )
                 })
-                .unwrap_or((None, None, SessionEngine::Standard));
+                .unwrap_or((None, None, SessionEngine::Standard, false));
             tokio::spawn(async move {
                 match client
                     .call::<SessionNew>(SessionNewParams {
@@ -5037,6 +5044,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                         title: None,
                         engine,
                         plan_active: false,
+                        fast_mode,
                     })
                     .await
                 {
@@ -5805,6 +5813,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -6077,6 +6086,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -6235,6 +6245,7 @@ mod tests {
             engine: SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: None,
@@ -6294,6 +6305,7 @@ mod tests {
             engine: SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: None,
@@ -6356,6 +6368,7 @@ mod tests {
             engine: SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: None,
@@ -6427,6 +6440,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -6539,6 +6553,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -6718,6 +6733,7 @@ mod tests {
                     title: None,
                     engine: SessionEngine::Standard,
                     plan_active: false,
+                    fast_mode: false,
                 })
                 .await
                 .unwrap();
@@ -7179,6 +7195,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -7532,6 +7549,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -7598,6 +7616,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -7689,6 +7708,7 @@ mod tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();
@@ -9825,6 +9845,7 @@ mod tests {
                 title: Some(title.to_owned()),
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .expect("创建子会话")
@@ -10268,6 +10289,7 @@ mod config_picker_tests {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: false,
+                fast_mode: false,
             })
             .await
             .unwrap();

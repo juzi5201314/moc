@@ -9,7 +9,7 @@
 //! | [`config::ConfigGet`] | C→S | core | 已初始化 | `-32014` |
 //! | [`session::SessionNew`] / `SessionList` / `SessionLoad` / `SessionRewind` / `SessionUnload` | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`session::SessionRename`] / `SessionDelete` / `SessionUnlock` | C→S | core | 已初始化 | `-32010` / `-32015` |
-//! | [`session::SessionSetEngine`] / [`session::SessionSetAutonomy`] / [`session::SessionSetModel`] | C→S | core | 已初始化 | `-32010` / `-32015` |
+//! | [`session::SessionSetEngine`] / [`session::SessionSetAutonomy`] / [`session::SessionSetModel`] / [`session::SessionSetFastMode`] | C→S | core | 已初始化 | `-32010` / `-32015` |
 //! | [`plan::SessionPlanApprove`] | C→S | core | 已初始化 | `-32010` / `-32602` |
 //! | [`plan::SessionPlanRevise`] | C→S | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32602` |
 //! | [`plan::SessionPlanDiff`] | C→S | core | 已初始化 | `-32010` / `-32602` |
@@ -121,8 +121,9 @@ pub use session::{
     SessionLoadResult, SessionLockInfo, SessionModelOverflowAction, SessionNew, SessionNewParams,
     SessionPermission, SessionRedo, SessionRedoParams, SessionRename, SessionRenameParams,
     SessionRewind, SessionRewindParams, SessionSetAutonomy, SessionSetAutonomyParams,
-    SessionSetEngine, SessionSetEngineParams, SessionSetModel, SessionSetModelParams,
-    SessionSetModelResult, SessionSetPermission, SessionSetPermissionParams, SessionUnload,
+    SessionSetEngine, SessionSetEngineParams, SessionSetFastMode, SessionSetFastModeParams,
+    SessionSetModel, SessionSetModelParams, SessionSetModelResult, SessionSetPermission,
+    SessionSetPermissionParams, SessionUnload,
     SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams,
     SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry,
     UsageSource,
@@ -179,6 +180,7 @@ mod tests {
                 "session/set_permission",
             ),
             (<SessionSetModel as Method>::NAME, "session/set_model"),
+            (<SessionSetFastMode as Method>::NAME, "session/set_fast_mode"),
             (<SessionPlanMode as Method>::NAME, "session/plan_mode"),
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionPlanRevise as Method>::NAME, "session/plan_revise"),
@@ -254,6 +256,7 @@ mod tests {
         client::<SessionSetEngine>();
         client::<SessionSetAutonomy>();
         client::<SessionSetModel>();
+        client::<SessionSetFastMode>();
         client::<SessionPlanMode>();
         client::<SessionPlanApprove>();
         client::<AgentSpawn>();

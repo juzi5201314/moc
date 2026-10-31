@@ -177,6 +177,13 @@ pub struct SessionSetPermission;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionSetModel;
 
+/// `session/set_fast_mode`：开关会话的 Fast Mode。
+///
+/// 会话级偏好，随时可改、随会话持久化；只有模型配置了 `fast_mode = true` 时请求
+/// 才带 `service_tier = "fast"`，换到不支持的模型时开关保留但不生效。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionSetFastMode;
+
 /// `session/compact`：手动压缩会话上下文。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionCompact;
@@ -360,6 +367,9 @@ pub struct SessionNewParams {
     /// 新会话直接进入 plan 模式。
     #[serde(default)]
     pub plan_active: bool,
+    /// 新会话初始 Fast Mode 开关（通常沿用上一个会话）。
+    #[serde(default)]
+    pub fast_mode: bool,
 }
 
 /// 一条会话的元信息。
@@ -384,6 +394,9 @@ pub struct SessionInfo {
     /// plan 模式是否激活；激活时本次各次提示按计划模式运行。
     #[serde(default)]
     pub plan_active: bool,
+    /// Fast Mode 开关；当前模型支持时请求带 `service_tier = "fast"`。
+    #[serde(default)]
+    pub fast_mode: bool,
     /// 引擎是否已锁定：会话跑过第一条用户提示后为真，此后 `session/set_engine` 会被拒绝。
     #[serde(default)]
     pub engine_locked: bool,
@@ -710,6 +723,14 @@ pub struct SessionSetPermissionParams {
     pub clear_grants: bool,
 }
 
+/// `session/set_fast_mode` 的参数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSetFastModeParams {
+    pub session_id: String,
+    pub enabled: bool,
+}
+
 /// `session/set_model` 的参数：按选择器切换会话模型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -894,6 +915,14 @@ impl Method for SessionSetPermission {
 
 impl ClientRequest for SessionSetPermission {}
 
+impl Method for SessionSetFastMode {
+    const NAME: &'static str = "session/set_fast_mode";
+    type Params = SessionSetFastModeParams;
+    type Result = SessionInfo;
+}
+
+impl ClientRequest for SessionSetFastMode {}
+
 impl Method for SessionSetModel {
     const NAME: &'static str = "session/set_model";
     type Params = SessionSetModelParams;
@@ -1003,6 +1032,7 @@ mod tests {
             engine: SessionEngine::Ptc,
             autonomy: SessionAutonomy::Unattended,
             plan_active: true,
+            fast_mode: true,
             engine_locked: true,
             updated_at_ms: 2,
             lock: None,
@@ -1012,7 +1042,7 @@ mod tests {
             serde_json::json!({
                 "id": "ses_1", "title": "t", "model": "m", "permission": "full",
                 "engine": "ptc", "autonomy": "unattended",
-                "plan_active": true, "engine_locked": true,
+                "plan_active": true, "fast_mode": true, "engine_locked": true,
                 "delegation_depth": 0,
                 "cwd": "/tmp", "created_at_ms": 1, "updated_at_ms": 2
             })
@@ -1025,6 +1055,7 @@ mod tests {
         .expect("旧取值可回读");
         assert_eq!(old.engine, SessionEngine::Standard);
         assert_eq!(old.autonomy, SessionAutonomy::Default);
+        assert!(!old.fast_mode);
         assert_eq!(old.permission, SessionPermission::Full);
         assert_eq!(
             serde_json::to_value(SessionPermission::Workspace).unwrap(),

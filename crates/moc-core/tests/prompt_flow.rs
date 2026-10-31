@@ -127,6 +127,7 @@ async fn hot_switch_persists_across_prompts_compaction_and_resume() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create session");
@@ -634,6 +635,7 @@ async fn plain_text_turn_persists_authoritative_message_over_rpc() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create session");
@@ -814,6 +816,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: true,
+            fast_mode: false,
         })
         .await
         .expect("create plan session");
@@ -1099,6 +1102,7 @@ async fn model_read_then_edit_updates_the_workspace_and_replays_tool_results() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create session");
@@ -1272,6 +1276,7 @@ async fn plan_mode_reports_shell_workspace_changes_in_the_next_request() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: true,
+            fast_mode: false,
         })
         .await
         .expect("create plan session");
@@ -1457,6 +1462,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create session");
@@ -1621,6 +1627,7 @@ async fn transient_prompt_mode_is_read_only_and_not_persisted() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create standard session");
@@ -1761,6 +1768,7 @@ async fn upstream_model_and_effort_rewrites_are_reported_over_rpc() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create session");
@@ -1846,6 +1854,7 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .expect("create session");
@@ -1899,6 +1908,7 @@ async fn plan_mode_switches_to_the_plan_role_model_and_restores_it() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: true,
+            fast_mode: false,
         })
         .await
         .expect("create plan session");
@@ -2052,6 +2062,7 @@ async fn plan_approval_defaults_to_current_session_model() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: true,
+            fast_mode: false,
         })
         .await
         .expect("create plan session");

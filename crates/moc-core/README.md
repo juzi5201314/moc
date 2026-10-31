@@ -53,6 +53,7 @@ deny_write_paths = []
 
 `[defaults.models]` 的键支持 glob 匹配，匹配结果按模式具体度合并，具体模型字段优先。例如 `"*-reasoner"` 会匹配 `provider/example-reasoner`；以上名称仅演示配置结构，不代表内置模型。模型的 `max_output_tokens` 是模型自身上限，不再受跨模型的全局输出上限截断。
 支持 `input = ["image"]` 的模型会接收所有图片输入形式。输入文本中的独立 `@path/to/image.png`、`@~/image.png` 标记会由 core 读取本地文件并转成 Base64；不再需要配置 `compat.image_url`。Responses 协议中，模型 ID 末段以 `gpt-` 开头时默认启用远程压缩，可用模型字段 `remote_compaction = false` 关闭。
+模型字段 `fast_mode = true` 声明该模型接受 `service_tier = "fast"`（默认 `false`）。只有这类模型在模型选择器里显示 Fast Mode 开关；开关是会话级状态（`session/set_fast_mode`，写入会话 JSONL），默认关闭，新会话沿用上一个会话的选择。开关打开且当前模型支持时，主请求、压缩与 `/btw` 请求体都带 `service_tier = "fast"`；切到不支持的模型时开关保留但不生效。
 
 完整工具、上下文与模型兼容配置见 `src/config/defaults.toml`、`src/config/schema.rs` 和 `src/config/model.rs`。不要把供应商密钥提交到仓库。
 

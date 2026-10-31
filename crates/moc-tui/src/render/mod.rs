@@ -1227,6 +1227,7 @@ mod tests {
             engine: moc_protocol::SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: true,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: None,

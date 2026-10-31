@@ -292,6 +292,7 @@ async fn grok_build_ladder_shrinks_after_context_length() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: false,
+            fast_mode: false,
         })
         .await
         .unwrap()

@@ -181,6 +181,13 @@ pub enum Entry {
         at_ms: u64,
         model: String,
     },
+    /// Fast Mode 开关变化（`session/set_fast_mode`）。
+    FastModeChange {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        enabled: bool,
+    },
     /// 标题变化。
     TitleChange {
         id: String,
@@ -318,6 +325,9 @@ pub enum EntryPayload {
     },
     ModelChange {
         model: String,
+    },
+    FastModeChange {
+        enabled: bool,
     },
     TitleChange {
         title: String,
@@ -601,6 +611,12 @@ impl Entry {
                 at_ms,
                 model,
             },
+            EntryPayload::FastModeChange { enabled } => Self::FastModeChange {
+                id,
+                parent_id,
+                at_ms,
+                enabled,
+            },
             EntryPayload::TitleChange { title } => Self::TitleChange {
                 id,
                 parent_id,
@@ -698,6 +714,7 @@ impl Entry {
             | Self::PlanMode { id, .. }
             | Self::PermissionChange { id, .. }
             | Self::ModelChange { id, .. }
+            | Self::FastModeChange { id, .. }
             | Self::TitleChange { id, .. }
             | Self::Todos { id, .. }
             | Self::Plan { id, .. }
@@ -720,6 +737,7 @@ impl Entry {
             | Self::PlanMode { parent_id, .. }
             | Self::PermissionChange { parent_id, .. }
             | Self::ModelChange { parent_id, .. }
+            | Self::FastModeChange { parent_id, .. }
             | Self::TitleChange { parent_id, .. }
             | Self::Todos { parent_id, .. }
             | Self::Plan { parent_id, .. }
@@ -741,6 +759,7 @@ impl Entry {
             | Self::PlanMode { at_ms, .. }
             | Self::PermissionChange { at_ms, .. }
             | Self::ModelChange { at_ms, .. }
+            | Self::FastModeChange { at_ms, .. }
             | Self::TitleChange { at_ms, .. }
             | Self::Todos { at_ms, .. }
             | Self::Plan { at_ms, .. }
@@ -844,6 +863,7 @@ impl Entry {
             plan_active: engine.legacy_enters_plan(),
             // header 投影时还没有任何用户提示，引擎必然未锁定。
             engine_locked: false,
+            fast_mode: false,
             parent_session_id: parent_session_id.clone(),
             forked_from: forked_from.clone(),
             agent_preset: agent.as_ref().and_then(|meta| meta.preset.clone()),

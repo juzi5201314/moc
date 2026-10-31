@@ -350,7 +350,8 @@ async fn run_prompt_locked(
         .map_err(to_rpc)?;
     let model = project_config
         .resolve_model(&state_snapshot.model)
-        .map_err(to_rpc)?;
+        .map_err(to_rpc)?
+        .with_fast_mode(state_snapshot.session.fast_mode);
     // `/retry` 剪掉的失败回合如果整批工具都没跑，就直接重放这批调用，省掉一次模型请求。
     let mut replay_calls: Option<Vec<moc_llm::ToolCall>> = None;
     let user_message = if retry {

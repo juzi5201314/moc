@@ -3301,6 +3301,7 @@ mod tests {
             engine: SessionEngine::Standard,
             autonomy: moc_protocol::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             parent_session_id: None,
             forked_from: forked_from.map(str::to_owned),

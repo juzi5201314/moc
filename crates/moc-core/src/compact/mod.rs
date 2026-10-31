@@ -287,7 +287,9 @@ pub(crate) async fn compact(
             "NotSupported: compaction is disabled".into(),
         ));
     }
-    let model = config.resolve_model(model_selector.unwrap_or(&state.model))?;
+    let model = config
+        .resolve_model(model_selector.unwrap_or(&state.model))?
+        .with_fast_mode(state.session.fast_mode);
     let mut measured = model_context(inner, ctx, &state, &config, &model).await?;
     let budget = CompactionBudget {
         tokens_before: measured.tokens,

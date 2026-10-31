@@ -32,6 +32,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             title: None,
                             engine,
                             plan_active,
+                            fast_mode: false,
                         })
                         .await
                     {

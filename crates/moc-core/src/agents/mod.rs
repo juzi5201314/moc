@@ -1765,6 +1765,7 @@ mod tests {
             engine: moc_protocol::methods::SessionEngine::Standard,
             autonomy: moc_protocol::methods::SessionAutonomy::Default,
             plan_active: false,
+            fast_mode: false,
             engine_locked: false,
             permission: moc_protocol::methods::SessionPermission::Workspace,
             created_at_ms: 1,

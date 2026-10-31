@@ -28,7 +28,7 @@
 //! | `config/get` | 前端→core | core | 已初始化 | `-32014` |
 //! | `session/new` / `list` / `load` / `unload` | 前端→core | core | 已初始化 | `-32602` / `-32010` / `-32014` |
 //! | `session/rename` / `delete` / `unlock` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
-//! | `session/set_engine` / `session/set_permission` / `session/set_model` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
+//! | `session/set_engine` / `session/set_permission` / `session/set_model` / `session/set_fast_mode` | 前端→core | core | 已初始化 | `-32010` / `-32015` |
 //! | `session/plan_approve` | 前端→core | core | 已初始化 | `-32010` / `-32602` |
 //! | `session/compact` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32011` / `-32014` |
 //! | `session/prompt` | 前端→core | core | 已初始化 + 该会话无进行中的提示 | `-32010` / `-32015` / `-32011` |
@@ -157,7 +157,7 @@
 //!     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams,
 //!     SessionPlanReviseResult,
 //!     SessionRenameParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
-//!     SessionSetModelParams,
+//!     SessionSetFastModeParams, SessionSetModelParams,
 //!     SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams,
 //!     SessionUpdate, PromptResult,
 //! };
@@ -287,6 +287,9 @@
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_set_model(&self, _ctx: RequestContext, _params: SessionSetModelParams) -> Result<SessionSetModelResult, RpcError> {
+//!         Err(RpcError::of(RpcErrorCode::NotSupported))
+//!     }
+//!     async fn session_set_fast_mode(&self, _ctx: RequestContext, _params: SessionSetFastModeParams) -> Result<SessionInfo, RpcError> {
 //!         Err(RpcError::of(RpcErrorCode::NotSupported))
 //!     }
 //!     async fn session_plan_approve(&self, _ctx: RequestContext, _params: SessionPlanApproveParams) -> Result<SessionPlanApproveResult, RpcError> {

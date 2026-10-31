@@ -82,6 +82,7 @@ impl PlanHarness {
                 title: None,
                 engine: SessionEngine::Standard,
                 plan_active: true,
+                fast_mode: false,
             })
             .await
             .expect("计划会话");
@@ -469,6 +470,7 @@ async fn plan_review_continue_keeps_plan_mode_and_confirm_plan_reopens() {
             title: None,
             engine: SessionEngine::Standard,
             plan_active: true,
+            fast_mode: false,
         })
         .await
         .expect("尚无计划文件的会话");
