@@ -39,3 +39,4 @@
 - **标准性优先**：一切组件优先从 `@/components/ai-elements/*` 与 `@/components/ui/*` 导入。
 - **无状态呈现与数据解耦**：UI 组件专注于数据呈现与用户事件分发，底层通过 Zustand store 和 WebSocket RPC 驱动状态同步。
 - **深浅色主题无缝融合**：遵循 shadcn CSS variables，所有 AI Elements 自动适配 Dark / Light 主题。
+- **视觉语言**：配色、阴影、字号阶梯、组件外观与禁忌以 [`DESIGN.md`](./DESIGN.md) 为准，改界面前先读。
