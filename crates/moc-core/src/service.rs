@@ -780,6 +780,7 @@ impl AgentService for Core {
                 session_locking: self.inner.sessions.locking_enabled(),
                 ask_requests: true,
             },
+            tips: crate::tips::TIPS.iter().map(|&tip| tip.into()).collect(),
         })
     }
 

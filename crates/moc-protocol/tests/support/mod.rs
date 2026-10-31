@@ -530,6 +530,7 @@ impl AgentService for ScriptedService {
                 version: "0.0.1".to_owned(),
             },
             capabilities,
+            tips: Vec::new(),
         })
     }
 

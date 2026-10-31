@@ -186,6 +186,7 @@
 //!             protocol_version: PROTOCOL_VERSION.to_owned(),
 //!             server: ServerInfo { name: "moc-core".into(), version: "0.1.0".into() },
 //!             capabilities: ServerCapabilities { permission_requests: true, ask_requests: true, session_locking: true },
+//!             tips: Vec::new(),
 //!         })
 //!     }
 //!

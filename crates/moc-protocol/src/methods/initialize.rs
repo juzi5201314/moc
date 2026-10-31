@@ -55,6 +55,9 @@ pub struct InitializeResult {
     /// 服务端能力；缺省视为「无任何能力」（老 core 不报能力时前端按最小能力渲染）。
     #[serde(default)]
     pub capabilities: ServerCapabilities,
+    /// 前端空闲时随机展示的一句话提示；反引号片段按代码样式渲染。老 core 不下发时为空。
+    #[serde(default)]
+    pub tips: Vec<String>,
 }
 
 /// 服务端自报家门。
@@ -186,13 +189,15 @@ mod tests {
                 session_locking: true,
                 ask_requests: false,
             },
+            tips: vec!["`/retry` 接着生成".into()],
         };
         assert_eq!(
             serde_json::to_value(&result).expect("可序列化"),
             json!({
                 "protocol_version": "1.0",
                 "server": { "name": "moc-core", "version": "0.1.0" },
-                "capabilities": { "permission_requests": true, "session_locking": true, "ask_requests": false }
+                "capabilities": { "permission_requests": true, "session_locking": true, "ask_requests": false },
+                "tips": ["`/retry` 接着生成"]
             })
         );
         // 老 core 不回 capabilities 时按「无能力」处理
@@ -202,5 +207,6 @@ mod tests {
         }))
         .expect("可反序列化");
         assert_eq!(parsed.capabilities, ServerCapabilities::default());
+        assert!(parsed.tips.is_empty());
     }
 }

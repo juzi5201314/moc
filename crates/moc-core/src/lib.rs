@@ -22,6 +22,7 @@ pub mod session;
 pub mod shell;
 pub mod skills;
 pub mod system_prompt;
+mod tips;
 pub mod tools;
 pub mod websearch;
 pub mod workspace;
