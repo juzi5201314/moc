@@ -98,6 +98,7 @@ async function materialize(sessionId: string): Promise<string> {
     model: draft?.model,
     engine: draft?.engine,
     plan: draft?.plan,
+    fast: draft?.fast,
   });
   // session/new 不带权限与自主程度参数：草稿上改过的才在创建后补设。
   const tasks: Promise<void>[] = [];

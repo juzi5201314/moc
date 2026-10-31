@@ -16,6 +16,7 @@ const INFO: SessionInfo = {
   engine: "standard",
   autonomy: "default",
   plan_active: false,
+  fast_mode: false,
   engine_locked: false,
   cwd: "/tmp/work",
   created_at_ms: 0,

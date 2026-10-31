@@ -18,6 +18,7 @@ export type DraftSession = {
   engine: SessionEngine;
   autonomy: SessionAutonomy;
   plan: boolean;
+  fast: boolean;
   permission?: SessionPermission;
 };
 

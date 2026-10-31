@@ -98,6 +98,8 @@ export type ModelInfo = {
   pricing?: ModelPricing;
   inputs?: ModelInput[];
   remote_compaction: boolean;
+  /** 模型配置了 `fast_mode = true`；只有这类模型显示 Fast Mode 开关。 */
+  fast_mode?: boolean;
 };
 
 export type ConfigGetResult = {
@@ -230,6 +232,8 @@ export type SessionInfo = {
   autonomy: SessionAutonomy;
   /** plan 模式是否激活；与引擎正交，可随时进出。 */
   plan_active: boolean;
+  /** Fast Mode 开关；当前模型支持时请求带 `service_tier = "fast"`。 */
+  fast_mode: boolean;
   /** 引擎是否已锁定：会话跑过第一条用户提示后为真。 */
   engine_locked: boolean;
   parent_session_id?: string;
@@ -660,6 +664,7 @@ export type SessionUpdate =
   | { type: "autonomy_changed"; autonomy: SessionAutonomy }
   | { type: "plan_mode_changed"; active: boolean }
   | { type: "model_changed"; model: string }
+  | { type: "fast_mode_changed"; enabled: boolean }
   | { type: "todo_changed"; phases: TodoPhase[] }
   | { type: "todo_reminder"; prompt_id: string; open_items: number }
   | { type: "plan_submitted"; plan: PlanInfo }
@@ -713,6 +718,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   autonomy_changed: true,
   plan_mode_changed: true,
   model_changed: true,
+  fast_mode_changed: true,
   todo_changed: true,
   todo_reminder: true,
   plan_submitted: true,

@@ -235,6 +235,7 @@ export type NewSessionOptions = {
   model?: string;
   engine?: SessionEngine;
   plan?: boolean;
+  fast?: boolean;
 };
 
 export async function newSession(options: NewSessionOptions = {}): Promise<SessionInfo> {
@@ -243,6 +244,7 @@ export async function newSession(options: NewSessionOptions = {}): Promise<Sessi
     model: options.model,
     engine: options.engine ?? "standard",
     plan_active: options.plan ?? false,
+    fast_mode: options.fast ?? false,
   });
   // session/new 已取写租约；第一条消息落盘前 session/list 看不到它。
   useSessions.getState().upsert(info);
@@ -267,8 +269,9 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
   const { workspaces } = usePrefs.getState();
   const config = useConnection.getState().config;
   const cwd = targetCwd ?? activeInfo?.cwd ?? workspaces[0] ?? list[0]?.cwd ?? config?.cwd ?? "";
-  // 沿用当前会话的模型；没有时留空，交给 core 用 `models.roles.default`。
+  // 沿用当前会话的模型与 Fast Mode；没有时留空，交给 core 用 `models.roles.default`。
   const model = activeInfo?.model;
+  const fast = activeInfo?.fast_mode ?? false;
 
   const now = Date.now();
   const draftInfo: SessionInfo = {
@@ -279,6 +282,7 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
     engine: "standard",
     autonomy: "default",
     plan_active: false,
+    fast_mode: fast,
     engine_locked: false,
     // 草稿的权限展示读 DraftSession.permission；这里只是占位，不会发给 core。
     permission: "workspace",
@@ -288,7 +292,7 @@ export function createQuickSession(targetCwd?: string): SessionInfo {
 
   useSessions
     .getState()
-    .setDraftSession({ cwd, model, engine: "standard", autonomy: "default", plan: false });
+    .setDraftSession({ cwd, model, engine: "standard", autonomy: "default", plan: false, fast });
   useTranscript.getState().drop(draftInfo.id);
   useTranscript.getState().ensureView(draftInfo);
   useTabs.getState().add(draftInfo.id);
@@ -381,6 +385,17 @@ export async function setSessionModel(
   });
   applyInfo(result.session);
   return result;
+}
+
+/** 开关 Fast Mode：会话级偏好，只在当前模型支持时影响请求。 */
+export async function setSessionFastMode(sessionId: string, enabled: boolean): Promise<void> {
+  if (sessionId === "draft-session") {
+    patchDraft({ fast: enabled }, { fast_mode: enabled });
+    return;
+  }
+  applyInfo(
+    await rpc.call<SessionInfo>("session/set_fast_mode", { session_id: sessionId, enabled }),
+  );
 }
 
 /** 手动压缩上下文；完成后刷新上下文占用。 */

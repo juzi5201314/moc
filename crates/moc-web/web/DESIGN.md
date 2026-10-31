@@ -98,6 +98,11 @@
 - 选中标记用 `muted-foreground` 的勾，不用强调色。
 - 模态框 `rounded-2xl p-6`，标题 `text-heading`，描述 `text-ui text-muted-foreground`。
 
+### 模型选择器
+- 触发器只显示「模型 · 思考强度」，不带下箭头。
+- 浮层左右两块：右侧可搜索列表（按供应商分组），左侧详情卡跟随列表高亮项，展示上下文、输出上限、图片输入、思考强度、Fast Mode 与价格。
+- 只显示模型真有的信息：Fast Mode 开关只在模型配置 `fast_mode = true` 时出现；价格只在配置了 `pricing` 时出现，缺失就整段隐藏，不写「未知」。
+
 ### 徽标
 - 用 `Badge variant="brand"`：`text-2xs`、`bg-brand/10 text-brand`。颜色随状态变化的才允许手写。
 

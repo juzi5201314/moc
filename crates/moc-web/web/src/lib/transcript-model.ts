@@ -720,6 +720,9 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
     case "plan_mode_changed":
       view.info.plan_active = update.active;
       break;
+    case "fast_mode_changed":
+      view.info.fast_mode = update.enabled;
+      break;
     case "model_changed":
       view.info.model = update.model;
       break;
