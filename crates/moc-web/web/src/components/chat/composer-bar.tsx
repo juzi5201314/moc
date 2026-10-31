@@ -549,7 +549,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           />
         )}
 
-        {/* Devin 式双层：有任务 / 待发时外层是灰托盘，抬头放在托盘里，白卡嵌在其中；否则只剩白卡。 */}
+        {/* Devin 式双层：外层灰托盘始终存在，白卡嵌在其中；有任务 / 待发时抬头放在托盘里，否则托盘顶边约为任务条高度的 2/3。 */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
         <div
           onDragOver={(event) => {
@@ -560,8 +560,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
           className={cn(
-            "relative shadow-[var(--elevation-composer)]",
-            tray ? "rounded-[24px] bg-[var(--composer-tray)] p-1" : "rounded-[22px]",
+            "relative rounded-[24px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
+            !tray && "pt-7",
             dragging && "ring-2 ring-brand/40",
           )}
         >
@@ -581,8 +581,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               if (event.target === event.currentTarget) textareaRef.current?.focus();
             }}
             className={cn(
-              "relative bg-card transition-[box-shadow]",
-              tray ? "rounded-[20px] shadow-[var(--elevation-composer-inset)]" : "rounded-[22px]",
+              "relative rounded-[20px] bg-card shadow-[var(--elevation-composer-inset)] transition-[box-shadow]",
               bashMode && "ring-1 ring-inset ring-warn/50",
             )}
           >
