@@ -1,6 +1,6 @@
 // 模型 selector 的纯函数：`provider/model[:level]` ↔ 模型条目与思考等级。
 
-import type { ModelInfo } from "@/protocol/types";
+import type { ModelInfo, SessionUsageResult } from "@/protocol/types";
 
 export type ParsedSelector = { model?: ModelInfo; id: string; level?: string };
 
@@ -77,4 +77,23 @@ export function compactTokens(value: number | undefined): string {
   if (!value) return "";
   if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
   return `${Math.round(value / 1000)}K`;
+}
+
+/**
+ * 会话累计费用（美元），与 TUI 状态栏同一算法：每行按各自模型定价折算，
+ * `input_tokens` 已含缓存命中，命中部分按缓存价（无缓存价退回输入价）；无定价的行按 0 计。
+ */
+export function sessionCost(usage: SessionUsageResult, models: ModelInfo[]): number {
+  let total = 0;
+  for (const row of usage.models) {
+    const pricing = parseSelector(row.model, models).model?.pricing;
+    if (!pricing) continue;
+    const cached = row.cached_input_tokens ?? 0;
+    total +=
+      (Math.max(0, row.input_tokens - cached) * pricing.input +
+        cached * (pricing.cache_read ?? pricing.input) +
+        row.output_tokens * pricing.output) /
+      1e6;
+  }
+  return total;
 }

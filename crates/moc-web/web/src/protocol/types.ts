@@ -78,6 +78,8 @@ export type InitializeResult = {
     session_locking?: boolean;
     ask_requests?: boolean;
   };
+  /** 空闲时随机展示的一句话提示，反引号片段按代码渲染；老 core 不下发。 */
+  tips?: string[];
 };
 
 export type ModelInput = "text" | "image";

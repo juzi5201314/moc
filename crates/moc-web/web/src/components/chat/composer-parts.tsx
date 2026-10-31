@@ -1,4 +1,4 @@
-// Composer 的小部件：任务托盘、待发队列、会话选项（权限 / 自主程度 / 引擎）、计划开关、上下文圆环、补全菜单。
+// Composer 的小部件：状态条（任务 / 提示 + 改动、子代理、费用）、待发队列、会话选项（权限 / 自主程度 / 引擎）、计划开关、上下文圆环、补全菜单。
 
 import {
   CheckCircle2Icon,
@@ -13,8 +13,9 @@ import {
   ShieldIcon,
   XIcon,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,10 +29,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AUTONOMY } from "@/lib/autonomy";
-import { compactTokens } from "@/lib/models";
+import { compactTokens, sessionCost } from "@/lib/models";
 import { cn } from "@/lib/utils";
-import type { SessionEngine, SessionPermission, TodoItem } from "@/protocol/types";
+import { rpc } from "@/protocol/client";
+import type {
+  SessionEngine,
+  SessionPermission,
+  SessionUsageResult,
+  TodoItem,
+} from "@/protocol/types";
 import type { PendingItem } from "@/store/composer";
+import { selectModels, useConnection } from "@/store/connection";
 import { useLayout } from "@/store/layout";
 import {
   setSessionAutonomy,
@@ -49,37 +57,177 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// ---------- 任务托盘 ----------
+// ---------- 状态条 ----------
 
-/** 输入框上沿的任务进度：收起时只露出进行中的一项。 */
-export function TodoTray({ items }: { items: TodoItem[] }) {
+/** 状态条右侧的小按钮：只变文字色，点击跳到检查面板对应分页。 */
+const STAT =
+  "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 transition-colors hover:text-foreground";
+
+/** 提示文案：反引号片段按代码样式渲染。 */
+function TipText({ tip }: { tip: string }) {
+  return tip.split("`").map((part, index) =>
+    index % 2 === 1 ? (
+      // biome-ignore lint/suspicious/noArrayIndexKey: 片段由同一句文案切出，位置即身份
+      <code key={index} className="font-mono text-muted-foreground">
+        {part}
+      </code>
+    ) : (
+      part
+    ),
+  );
+}
+
+/** 进入会话（含新会话）与每次开始运行时换一条，且不与上一条重复。 */
+function useTip(sessionId: string, running: boolean): string | undefined {
+  const tips = useConnection((state) => state.server?.tips);
+  const count = tips?.length ?? 0;
+  const [index, setIndex] = useState(() => Math.floor(Math.random() * Math.max(count, 1)));
+  const seen = useRef({ sessionId, running });
+
+  useEffect(() => {
+    const previous = seen.current;
+    seen.current = { sessionId, running };
+    const entered = previous.sessionId !== sessionId;
+    const started = running && !previous.running;
+    if (count > 1 && (entered || started)) {
+      setIndex((current) => (current + 1 + Math.floor(Math.random() * (count - 1))) % count);
+    }
+  }, [sessionId, running, count]);
+
+  return tips?.[index % Math.max(count, 1)];
+}
+
+/** 会话累计费用：进入会话与每轮结束后重读 `session/usage`；没有定价或没有调用时为 0。 */
+function useSessionCost(sessionId: string, running: boolean): number {
+  const models = useConnection(selectModels);
+  const [usage, setUsage] = useState<{ sessionId: string; result: SessionUsageResult } | null>(
+    null,
+  );
+  const isDraft = sessionId === "draft-session";
+
+  useEffect(() => {
+    if (isDraft || running) return;
+    let alive = true;
+    rpc
+      .call<SessionUsageResult>("session/usage", { session_id: sessionId })
+      .then((result) => alive && setUsage({ sessionId, result }))
+      .catch(() => alive && setUsage(null));
+    return () => {
+      alive = false;
+    };
+  }, [isDraft, running, sessionId]);
+
+  return usage?.sessionId === sessionId ? sessionCost(usage.result, models) : 0;
+}
+
+function formatCost(value: number): string {
+  return value < 0.01 ? "<$0.01" : `$${value.toFixed(2)}`;
+}
+
+/**
+ * 托盘顶部 32px 状态条：左侧有任务时显示任务进度（可展开清单），否则显示随机提示；
+ * 右侧依次是本会话改动、后台子代理与会话费用，各自有值才出现。
+ */
+export function ComposerStatus({ sessionId, todos }: { sessionId: string; todos: TodoItem[] }) {
+  const view = useTranscript((state) => state.bySession[sessionId]);
+  const running = Boolean(view?.running);
   const [open, setOpen] = useState(false);
-  const done = items.filter((item) => item.status === "completed").length;
+  const tip = useTip(sessionId, running);
+  const cost = useSessionCost(sessionId, running);
+
+  const changes = useMemo(() => {
+    const paths = new Set<string>();
+    let added = 0;
+    let removed = 0;
+    for (const record of view?.diffs ?? []) {
+      for (const file of record.diff.files) {
+        paths.add(file.path);
+        const stats = diffStats(file);
+        added += stats.added;
+        removed += stats.removed;
+      }
+    }
+    return { files: paths.size, added, removed };
+  }, [view?.diffs]);
+  const agents = Object.values(view?.agents ?? {}).filter(
+    (agent) => agent.status === "running" || agent.status === "queued",
+  ).length;
+
+  const done = todos.filter((item) => item.status === "completed").length;
   const current =
-    items.find((item) => item.status === "in_progress") ??
-    items.find((item) => item.status !== "completed");
+    todos.find((item) => item.status === "in_progress") ??
+    todos.find((item) => item.status !== "completed");
+  const inspect = (tab: "changes" | "agents" | "usage") => useLayout.getState().openInspector(tab);
 
   return (
-    <div className="text-ui">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-muted-foreground transition-colors hover:text-foreground"
-        aria-expanded={open}
-      >
-        <ListChecksIcon className="size-4 shrink-0" />
-        <span className="shrink-0 font-medium text-foreground">任务</span>
-        <span className="shrink-0 tabular-nums text-text-tertiary">
-          {done}/{items.length}
-        </span>
-        {!open && current && <span className="min-w-0 truncate">{current.task}</span>}
-        <ChevronDownIcon
-          className={cn("ml-auto size-3.5 shrink-0 transition-transform", !open && "rotate-180")}
-        />
-      </button>
-      {open && (
-        <ul className="max-h-48 space-y-0.5 overflow-y-auto px-2.5 pb-2">
-          {items.map((item, index) => (
+    <div className="text-xs">
+      <div className="flex h-7 items-center gap-2 px-3.5 text-text-tertiary">
+        <div className="flex min-w-0 flex-1 items-center">
+          {todos.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setOpen((value) => !value)}
+              className="flex h-6 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-muted-foreground transition-colors hover:text-foreground"
+              aria-expanded={open}
+            >
+              <ListChecksIcon className="size-3.5 shrink-0" />
+              <span className="shrink-0 font-medium text-foreground">任务</span>
+              <span className="shrink-0 tabular-nums text-text-tertiary">
+                {done}/{todos.length}
+              </span>
+              {!open && current && <span className="min-w-0 truncate">{current.task}</span>}
+              <ChevronDownIcon
+                className={cn("size-3 shrink-0 transition-transform", !open && "rotate-180")}
+              />
+            </button>
+          ) : (
+            tip && (
+              <p
+                key={tip}
+                className="min-w-0 truncate px-1.5 animate-in fade-in-0 duration-300"
+                title={tip.replaceAll("`", "")}
+              >
+                <TipText tip={tip} />
+              </p>
+            )
+          )}
+        </div>
+        {changes.files > 0 && (
+          <button
+            type="button"
+            onClick={() => inspect("changes")}
+            className={STAT}
+            title="查看本会话改动"
+          >
+            <span>{changes.files} 个文件</span>
+            <DiffStat added={changes.added} removed={changes.removed} />
+          </button>
+        )}
+        {agents > 0 && (
+          <button
+            type="button"
+            onClick={() => inspect("agents")}
+            className={STAT}
+            title="查看子代理"
+          >
+            <span className="size-1.5 animate-pulse rounded-full bg-brand" />
+            {agents} 个子代理运行中
+          </button>
+        )}
+        {cost > 0 && (
+          <button
+            type="button"
+            onClick={() => inspect("usage")}
+            className={cn(STAT, "font-mono tabular-nums")}
+            title="查看本会话用量"
+          >
+            {formatCost(cost)}
+          </button>
+        )}
+      </div>
+      {open && todos.length > 0 && (
+        <ul className="max-h-48 space-y-0.5 overflow-y-auto px-5 pt-0.5 pb-2 text-ui">
+          {todos.map((item, index) => (
             <li
               // biome-ignore lint/suspicious/noArrayIndexKey: todo 由 core 整表替换，位置即身份，任务文本可重复
               key={index}

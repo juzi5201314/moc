@@ -57,13 +57,13 @@ import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
 import {
   CHIP,
+  ComposerStatus,
   ContextRing,
   PendingList,
   PlanToggle,
   SessionOptions,
   type Suggestion,
   SuggestionMenu,
-  TodoTray,
 } from "./composer-parts";
 import { ModelPicker } from "./model-select-popover";
 
@@ -534,8 +534,6 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       ? "描述任务，/ 查看命令，! 执行命令"
       : "继续对话，/ 查看命令，! 执行命令";
 
-  const tray = todos.length > 0 || pending.length > 0;
-
   return (
     <ComposerDock inline={inline}>
       <div className="relative">
@@ -549,7 +547,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           />
         )}
 
-        {/* Devin 式双层：外层灰托盘始终存在，白卡嵌在其中；有任务 / 待发时抬头放在托盘里，否则托盘顶边约为任务条高度的 2/3。 */}
+        {/* Devin 式双层：外层灰托盘始终存在，白卡嵌在其中；托盘顶部是固定 32px 的状态条（任务或提示 + 改动 / 子代理 / 费用），待发队列接在其下。 */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
         <div
           onDragOver={(event) => {
@@ -561,16 +559,13 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           onDrop={onDrop}
           className={cn(
             "relative rounded-[24px] bg-[var(--composer-tray)] p-1 shadow-[var(--elevation-composer)]",
-            !tray && "pt-7",
             dragging && "ring-2 ring-brand/40",
           )}
         >
-          {tray && (
+          <ComposerStatus sessionId={sessionId} todos={todos} />
+          {pending.length > 0 && (
             <div className="px-2 pb-0.5">
-              {todos.length > 0 && <TodoTray items={todos} />}
-              {pending.length > 0 && (
-                <PendingList items={pending} onRemove={(item) => void removePending(item)} />
-              )}
+              <PendingList items={pending} onRemove={(item) => void removePending(item)} />
             </div>
           )}
 
