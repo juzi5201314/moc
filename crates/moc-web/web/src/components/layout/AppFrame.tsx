@@ -1,4 +1,4 @@
-// 三栏骨架：侧栏贴底色，主舞台与检查面板作为一张内嵌卡片浮在侧栏底色上。
+// 三栏骨架：侧栏近白底，主舞台纯白贴边铺满，两者之间只有一条发丝线。
 // 窄窗口下侧栏与检查面板都改成浮层，主舞台保持完整宽度。
 
 import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from "react";
@@ -122,8 +122,7 @@ export function AppFrame({ sidebar, main, rightbar }: AppFrameProps) {
       <div
         className={cn(
           "relative flex min-w-0 flex-1 overflow-hidden bg-background",
-          !narrow && "my-2 mr-2 rounded-xl shadow-[var(--elevation-ring)]",
-          !narrow && !sidebarVisible && "ml-2",
+          !narrow && sidebarVisible && "border-l border-border",
         )}
       >
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{main}</main>

@@ -22,7 +22,7 @@ export function diffStats(file: ToolFileDiff): { added: number; removed: number 
 
 export function DiffStat({ added, removed }: { added: number; removed: number }) {
   return (
-    <span className="shrink-0 font-mono text-[11px] tabular-nums">
+    <span className="shrink-0 font-mono text-2xs tabular-nums">
       {added > 0 && <span className="text-success">+{added}</span>}
       {added > 0 && removed > 0 && " "}
       {removed > 0 && <span className="text-destructive">-{removed}</span>}
@@ -117,13 +117,13 @@ export function DiffBody({
   const effective = mode ?? preferred;
   return (
     <div
-      className="overflow-auto bg-code py-1 font-mono text-[12.5px] leading-[20px]"
+      className="overflow-auto bg-code py-1 font-mono text-xs leading-[20px]"
       style={maxHeight ? { maxHeight } : undefined}
     >
       {file.hunks.map((hunk, index) => (
         <div key={`${hunk.old_start}:${hunk.new_start}`}>
           {index > 0 && (
-            <div className="my-1 border-y border-border-subtle bg-muted/50 px-3 py-0.5 text-[11px] text-text-tertiary">
+            <div className="my-1 border-y border-border-subtle bg-muted/50 px-3 py-0.5 text-2xs text-text-tertiary">
               @@ -{hunk.old_start} +{hunk.new_start} @@
             </div>
           )}
@@ -159,7 +159,7 @@ export function DiffFile({
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex h-10 w-full items-center gap-2 px-3.5 text-left text-[12.5px] hover:bg-surface-hover"
+        className="flex h-10 w-full items-center gap-2 px-3.5 text-left text-xs hover:bg-surface-hover"
         title={file.path}
       >
         <ChevronRightIcon

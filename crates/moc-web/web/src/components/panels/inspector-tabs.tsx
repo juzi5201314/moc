@@ -69,7 +69,7 @@ function useFetch<T>(key: string, load: () => Promise<T>) {
 export function PanelEmpty({ title, hint }: { title: string; hint?: string }) {
   return (
     <div className="flex flex-col items-center gap-1 px-6 py-16 text-center">
-      <p className="text-[13px] text-muted-foreground">{title}</p>
+      <p className="text-ui text-muted-foreground">{title}</p>
       {hint && <p className="max-w-64 text-xs leading-5 text-text-tertiary">{hint}</p>}
     </div>
   );
@@ -190,7 +190,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
             }}
             rows={3}
             placeholder="交给子代理的任务，Ctrl+Enter 启动"
-            className="w-full resize-none bg-transparent px-1.5 py-1 text-[13px] outline-none placeholder:text-text-tertiary"
+            className="w-full resize-none bg-transparent px-1.5 py-1 text-ui outline-none placeholder:text-text-tertiary"
           />
           <div className="flex justify-end gap-1.5">
             <Button size="xs" variant="ghost" onClick={() => setTask(null)}>
@@ -228,17 +228,17 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
                 >
                   <span className="flex w-full min-w-0 items-center gap-2 pr-7">
                     <span className={cn("size-1.5 shrink-0 rounded-full", status.dot)} />
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
+                    <span className="min-w-0 flex-1 truncate text-ui text-foreground">
                       {agent.title || agent.id}
                     </span>
-                    <span className="shrink-0 text-[11px] text-text-tertiary">{status.label}</span>
+                    <span className="shrink-0 text-2xs text-text-tertiary">{status.label}</span>
                   </span>
                   {agent.last_message && (
                     <span className="line-clamp-2 pl-3.5 text-xs leading-5 text-muted-foreground">
                       {agent.last_message}
                     </span>
                   )}
-                  <span className="pl-3.5 text-[11px] text-text-tertiary">
+                  <span className="pl-3.5 text-2xs text-text-tertiary">
                     {modelName(agent.model)} · {relativeTime(agent.updated_at_ms)}
                   </span>
                 </button>
@@ -304,7 +304,7 @@ export function ContextTab({ sessionId }: { sessionId: string }) {
       </SectionBar>
       <div className="space-y-2.5 px-4 pb-4">
         <div className="flex items-baseline justify-between">
-          <span className="text-[22px] font-semibold tabular-nums tracking-tight">
+          <span className="text-2xl font-semibold tabular-nums tracking-tight">
             {percent.toFixed(1)}%
           </span>
           <span className="font-mono text-xs text-text-tertiary">
@@ -330,7 +330,7 @@ export function ContextTab({ sessionId }: { sessionId: string }) {
               <button
                 type="button"
                 onClick={() => setOpen(expanded ? null : section.name)}
-                className="flex h-10 w-full items-center gap-2.5 px-4 text-left text-[13px] hover:bg-surface-hover"
+                className="flex h-10 w-full items-center gap-2.5 px-4 text-left text-ui hover:bg-surface-hover"
               >
                 <span
                   className={cn(
@@ -351,11 +351,11 @@ export function ContextTab({ sessionId }: { sessionId: string }) {
               </button>
               {expanded && (
                 <div className="px-4 pb-3">
-                  <pre className="max-h-96 overflow-auto rounded-lg bg-code p-3 font-mono text-[11.5px] leading-[18px] break-words whitespace-pre-wrap text-foreground/90">
+                  <pre className="max-h-96 overflow-auto rounded-lg bg-code p-3 font-mono text-xs leading-[18px] break-words whitespace-pre-wrap text-foreground/90">
                     {section.text || "（空）"}
                   </pre>
                   {section.truncated_bytes > 0 && (
-                    <p className="mt-1.5 text-[11px] text-text-tertiary">
+                    <p className="mt-1.5 text-2xs text-text-tertiary">
                       已截断 {section.truncated_bytes.toLocaleString()} 字节
                     </p>
                   )}
@@ -374,8 +374,8 @@ export function ContextTab({ sessionId }: { sessionId: string }) {
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg bg-muted/60 px-3 py-2">
-      <div className="text-[11px] text-text-tertiary">{label}</div>
-      <div className="mt-0.5 font-mono text-[13px] tabular-nums text-foreground">{value}</div>
+      <div className="text-2xs text-text-tertiary">{label}</div>
+      <div className="mt-0.5 font-mono text-ui tabular-nums text-foreground">{value}</div>
     </div>
   );
 }
@@ -385,8 +385,8 @@ function UsageCard({ summary, title }: { summary: ModelUsageSummary; title: stri
   return (
     <section className="space-y-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="min-w-0 truncate text-[13px] font-medium">{title}</span>
-        <span className="shrink-0 text-[11px] text-text-tertiary">{summary.calls} 次请求</span>
+        <span className="min-w-0 truncate text-ui font-medium">{title}</span>
+        <span className="shrink-0 text-2xs text-text-tertiary">{summary.calls} 次请求</span>
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         <Metric label="输入" value={tokens(summary.input_tokens)} />
@@ -421,7 +421,7 @@ export function UsageTab({ sessionId }: { sessionId: string }) {
   return (
     <div className="flex flex-col">
       <SectionBar title="会话用量">
-        <span className="mr-1 font-mono text-[11px] text-text-tertiary">
+        <span className="mr-1 font-mono text-2xs text-text-tertiary">
           工具耗时 {formatDuration(data.tool_ms)}
         </span>
         <RefreshButton loading={loading} onClick={reload} />
@@ -498,7 +498,7 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
         )}
         {turns.map((turn) => (
           <div key={turn.requestId} className="space-y-2">
-            <div className="ml-auto w-fit max-w-[90%] rounded-2xl rounded-br-md bg-bubble px-3 py-1.5 text-[13px] whitespace-pre-wrap">
+            <div className="ml-auto w-fit max-w-[90%] rounded-2xl rounded-br-md bg-bubble px-3 py-1.5 text-ui whitespace-pre-wrap">
               {turn.question}
             </div>
             {turn.answer ? (
@@ -509,7 +509,7 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
                 {turn.answer}
               </MessageResponse>
             ) : turn.status === "waiting" || turn.status === "generating" ? (
-              <Shimmer as="span" className="text-[13px]">
+              <Shimmer as="span" className="text-ui">
                 思考中…
               </Shimmer>
             ) : null}
@@ -535,7 +535,7 @@ export function BtwTab({ sessionId }: { sessionId: string }) {
               }
             }}
             placeholder="问点什么…"
-            className="max-h-32 min-h-7 flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] leading-5 outline-none placeholder:text-text-tertiary"
+            className="max-h-32 min-h-7 flex-1 resize-none bg-transparent px-1.5 py-1 text-ui leading-5 outline-none placeholder:text-text-tertiary"
           />
           {inflight ? (
             <IconButton label="停止" size="sm" onClick={() => useBtw.getState().cancel(sessionId)}>

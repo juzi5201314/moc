@@ -9,6 +9,7 @@ import {
 } from "@/components/ai-elements/confirmation";
 import { Question, QuestionInput, type QuestionValue } from "@/components/ai-elements/question";
 import { DiffFile } from "@/components/panels/diff-file";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AskParams, PermissionOption, PermissionRequestParams } from "@/protocol/types";
@@ -46,19 +47,19 @@ export function PermissionCard({
             <ShieldAlertIcon className="size-4" />
           </span>
           <div className="min-w-0 flex-1 space-y-1">
-            <div className="text-[13.5px] font-medium text-foreground">
+            <div className="text-sm font-medium text-foreground">
               {request.title || "工具请求授权"}
             </div>
             <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
               <span>工具</span>
-              <code className="rounded bg-muted px-1.5 py-px font-mono text-[11px] text-muted-foreground">
+              <code className="rounded bg-muted px-1.5 py-px font-mono text-2xs text-muted-foreground">
                 {request.tool_name}
               </code>
             </div>
           </div>
         </div>
         {request.body && (
-          <pre className="mx-4 mb-3 max-h-56 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-[12.5px] leading-[19px] whitespace-pre-wrap [overflow-wrap:anywhere] text-muted-foreground ring-1 ring-inset ring-border-subtle">
+          <pre className="mx-4 mb-3 max-h-56 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-xs leading-[19px] whitespace-pre-wrap [overflow-wrap:anywhere] text-muted-foreground ring-1 ring-inset ring-border-subtle">
             {request.body}
           </pre>
         )}
@@ -112,7 +113,7 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
 
   return (
     <div className="overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-brand/25">
-      <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5 text-[13px] font-medium">
+      <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-2.5 text-ui font-medium">
         <SparklesIcon className="size-4 text-brand" />
         需要你的回答
         {request.questions.length > 1 && (
@@ -140,13 +141,11 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
             >
               <div className="space-y-1">
                 {question.header && (
-                  <span className="inline-block rounded bg-muted px-1.5 py-px text-[11px] font-medium text-muted-foreground">
+                  <span className="inline-block rounded bg-muted px-1.5 py-px text-2xs font-medium text-muted-foreground">
                     {question.header}
                   </span>
                 )}
-                <p className="text-[14px] leading-6 font-medium text-foreground">
-                  {question.question}
-                </p>
+                <p className="text-sm leading-6 font-medium text-foreground">{question.question}</p>
                 {question.multi && <p className="text-xs text-text-tertiary">可多选</p>}
               </div>
               {question.options.length > 0 && (
@@ -192,14 +191,10 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
                           {isSelected && <CheckIcon className="size-3" strokeWidth={3} />}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-2 text-[13.5px] font-medium text-foreground">
+                          <span className="flex items-center gap-2 text-sm font-medium text-foreground">
                             <span className="text-text-tertiary tabular-nums">{index + 1}.</span>
                             {option.label}
-                            {recommended && (
-                              <span className="rounded bg-brand/10 px-1.5 py-px text-[10.5px] font-medium text-brand">
-                                推荐
-                              </span>
-                            )}
+                            {recommended && <Badge variant="brand">推荐</Badge>}
                           </span>
                           {option.description && (
                             <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
@@ -213,14 +208,14 @@ export function AskCard({ sessionId, request }: { sessionId: string; request: As
                 </div>
               )}
               {selected?.preview && (
-                <pre className="max-h-48 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-[12.5px] whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
+                <pre className="max-h-48 overflow-auto rounded-lg bg-code px-3 py-2 font-mono text-xs leading-5 whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
                   {selected.preview}
                 </pre>
               )}
               <QuestionInput
                 placeholder={question.options.length > 0 ? "其他想法（可选）" : "输入你的回答"}
                 rows={question.options.length > 0 ? 1 : 3}
-                className="min-h-0 resize-none rounded-lg text-[13px]"
+                className="min-h-0 resize-none rounded-lg text-ui"
                 aria-label={`第 ${questionIndex + 1} 题补充说明`}
               />
             </Question>

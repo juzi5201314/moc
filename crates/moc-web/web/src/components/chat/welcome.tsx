@@ -59,7 +59,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
     });
 
   return (
-    <div className="flex items-center justify-center gap-1 text-[13.5px] text-muted-foreground">
+    <div className="flex items-center justify-center gap-1 text-sm text-muted-foreground">
       <DropdownMenu>
         <DropdownMenuTrigger asChild disabled={!isDraft}>
           <button
@@ -75,7 +75,7 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center" className="w-80 p-1">
-          <DropdownMenuLabel className="px-2 py-1.5 text-[11px] font-medium text-text-tertiary">
+          <DropdownMenuLabel className="px-2 py-1.5 text-2xs font-medium text-text-tertiary">
             工作目录
           </DropdownMenuLabel>
           <div className="max-h-72 overflow-y-auto">
@@ -86,8 +86,8 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
                 className="gap-2.5 rounded-lg px-2 py-1.5"
               >
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-[13px] text-foreground">{workspaceName(dir)}</span>
-                  <span className="truncate font-mono text-[11px] text-text-tertiary">{dir}</span>
+                  <span className="truncate text-ui text-foreground">{workspaceName(dir)}</span>
+                  <span className="truncate font-mono text-2xs text-text-tertiary">{dir}</span>
                 </span>
                 <CheckIcon className={cn("size-4 text-brand", dir !== cwd && "invisible")} />
               </DropdownMenuItem>
@@ -96,14 +96,14 @@ function WorkspaceSwitch({ sessionId }: { sessionId: string }) {
           {dirs.length > 0 && <DropdownMenuSeparator />}
           <DropdownMenuItem onSelect={addDirectory} className="gap-2.5 rounded-lg px-2 py-1.5">
             <FolderPlusIcon className="size-4" />
-            <span className="text-[13px]">打开其他目录…</span>
+            <span className="text-ui">打开其他目录…</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       {branch && (
         <span className="inline-flex min-w-0 items-center gap-1 px-1 text-text-tertiary">
           <GitBranchIcon className="size-3.5 shrink-0" />
-          <span className="max-w-[160px] truncate font-mono text-[12px]">{branch}</span>
+          <span className="max-w-[160px] truncate font-mono text-xs">{branch}</span>
         </span>
       )}
     </div>
@@ -122,7 +122,7 @@ export function WelcomeView({ sessionId }: { sessionId: string }) {
       <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pb-[12vh]">
         <div className="my-auto flex w-full max-w-[720px] flex-col gap-8">
           <div className="flex flex-col items-center gap-4 text-center">
-            <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-foreground">
+            <h1 className="text-3xl font-semibold tracking-[-0.02em] text-foreground">
               {greeting()}
             </h1>
             <WorkspaceSwitch sessionId={sessionId} />

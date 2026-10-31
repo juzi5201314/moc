@@ -73,20 +73,6 @@ export function reasoningLevels(model: ModelInfo | undefined): string[] {
   return (model?.thinking_levels ?? []).filter((level) => level !== "off");
 }
 
-export const LEVEL_LABEL: Record<string, string> = {
-  off: "关闭",
-  minimal: "极简",
-  low: "低",
-  medium: "中",
-  high: "高",
-  xhigh: "超高",
-  max: "最大",
-};
-
-export function levelLabel(level: string): string {
-  return LEVEL_LABEL[level] ?? level;
-}
-
 export function compactTokens(value: number | undefined): string {
   if (!value) return "";
   if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;

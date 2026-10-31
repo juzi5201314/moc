@@ -62,7 +62,7 @@ function Item({
         useUi.getState().set({ palette: false });
         onSelect();
       }}
-      className="h-9 gap-2.5 rounded-lg px-2.5 text-[13px] [&_svg]:size-4 [&_svg]:text-muted-foreground"
+      className="h-9 gap-2.5 rounded-lg px-2.5 text-ui [&_svg]:size-4 [&_svg]:text-muted-foreground"
     >
       {icon}
       <span className="min-w-0 truncate">{label}</span>

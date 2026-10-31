@@ -118,7 +118,7 @@ function CommandCard({
 }) {
   const prompt = cwd?.split(/[\\/]/).filter(Boolean).pop();
   return (
-    <div className="overflow-hidden rounded-xl bg-code font-mono text-[12.5px] leading-[19px] ring-1 ring-inset ring-border-subtle">
+    <div className="overflow-hidden rounded-xl bg-code font-mono text-xs leading-[19px] ring-1 ring-inset ring-border-subtle">
       <div className="group/cmd flex items-start gap-2 px-3.5 py-2.5">
         <span className="select-none text-text-tertiary">{prompt ? `${prompt} $` : "$"}</span>
         <div className="min-w-0 flex-1">
@@ -148,7 +148,7 @@ function CommandCard({
         </div>
       )}
       {!running && (durationMs !== undefined || isError) && (
-        <div className="flex items-center gap-2 border-t border-border-subtle px-3 py-1 text-[11px] text-text-tertiary">
+        <div className="flex items-center gap-2 border-t border-border-subtle px-3 py-1 text-2xs text-text-tertiary">
           <span
             className={cn("size-1.5 rounded-full", isError ? "bg-destructive" : "bg-success")}
           />
@@ -171,10 +171,10 @@ function IoCard({
   isError?: boolean;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl bg-code font-mono text-[12.5px] leading-[19px] ring-1 ring-inset ring-border-subtle">
+    <div className="overflow-hidden rounded-xl bg-code font-mono text-xs leading-[19px] ring-1 ring-inset ring-border-subtle">
       {input && (
         <div className="group/io relative">
-          <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-[11px] text-text-tertiary">
+          <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-2xs text-text-tertiary">
             <span>参数</span>
             <span className="opacity-0 transition-opacity group-hover/io:opacity-100">
               <CopyButton text={input} />
@@ -187,7 +187,7 @@ function IoCard({
       )}
       {output && (
         <div className={cn("group/io relative", input && "border-t border-border-subtle")}>
-          <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-[11px] text-text-tertiary">
+          <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-2xs text-text-tertiary">
             <span>{isError ? "错误" : "结果"}</span>
             <span className="opacity-0 transition-opacity group-hover/io:opacity-100">
               <CopyButton text={output} />
@@ -222,7 +222,7 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
             key={file.path}
             className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle"
           >
-            <div className="flex h-9 items-center gap-2 border-b border-border-subtle bg-card px-3.5 text-[12.5px]">
+            <div className="flex h-9 items-center gap-2 border-b border-border-subtle bg-card px-3.5 text-xs">
               <span
                 className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
                 title={file.path}
@@ -274,7 +274,7 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
       )}
 
       {tool.progress && tool.progress.length > 0 && (
-        <div className="space-y-1 rounded-xl bg-card px-3.5 py-2.5 text-[12.5px] ring-1 ring-inset ring-border-subtle">
+        <div className="space-y-1 rounded-xl bg-card px-3.5 py-2.5 text-xs ring-1 ring-inset ring-border-subtle">
           {tool.progress.map((row) => (
             <div key={row.agent_id} className="flex items-center gap-2">
               {row.status === "running" || row.status === "queued" ? (
@@ -289,7 +289,7 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
               )}
               <span className="min-w-0 flex-1 truncate">{row.title}</span>
               {row.activity && <span className="truncate text-text-tertiary">{row.activity}</span>}
-              <span className="font-mono text-[11px] text-text-tertiary">
+              <span className="font-mono text-2xs text-text-tertiary">
                 {formatDuration(row.elapsed_ms)}
               </span>
             </div>
@@ -329,7 +329,7 @@ function BlockDetail({ block }: { block: Block }) {
       return <ToolDetail tool={block} />;
     case "agent-message":
       return (
-        <div className="rounded-xl bg-card px-3.5 py-2.5 text-[13.5px] whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
+        <div className="rounded-xl bg-card px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
           {block.body}
         </div>
       );
@@ -362,7 +362,7 @@ function rowSuffix(block: Block): ReactNode {
   if (block.kind === "tool") {
     if (block.status === "running") {
       return block.awaitingPermission ? (
-        <span className="text-[11px] text-warn">等待授权</span>
+        <span className="text-2xs text-warn">等待授权</span>
       ) : (
         <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
       );
@@ -378,12 +378,12 @@ function rowSuffix(block: Block): ReactNode {
       );
       return <DiffStat {...total} />;
     }
-    if (block.status === "denied") return <span className="text-[11px] text-warn">已拒绝</span>;
+    if (block.status === "denied") return <span className="text-2xs text-warn">已拒绝</span>;
     if (block.status === "cancelled")
-      return <span className="text-[11px] text-text-tertiary">已取消</span>;
+      return <span className="text-2xs text-text-tertiary">已取消</span>;
     if (block.durationMs !== undefined && block.durationMs >= 1000) {
       return (
-        <span className="text-[11px] tabular-nums text-text-tertiary">
+        <span className="text-2xs tabular-nums text-text-tertiary">
           {formatDuration(block.durationMs)}
         </span>
       );
@@ -391,7 +391,7 @@ function rowSuffix(block: Block): ReactNode {
   }
   if (block.kind === "reasoning" && block.durationMs !== undefined && block.durationMs >= 1000) {
     return (
-      <span className="text-[11px] tabular-nums text-text-tertiary">
+      <span className="text-2xs tabular-nums text-text-tertiary">
         {formatDuration(block.durationMs)}
       </span>
     );
@@ -428,7 +428,7 @@ export function ActivityRow({ block, live = false }: { block: Block; live?: bool
         disabled={!detail}
         onClick={() => setManual(!open)}
         className={cn(
-          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-[13px] text-muted-foreground transition-colors",
+          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-ui text-muted-foreground transition-colors",
           detail ? "hover:text-foreground" : "cursor-default",
         )}
       >
@@ -447,7 +447,7 @@ export function ActivityRow({ block, live = false }: { block: Block; live?: bool
               "min-w-0 flex-1 truncate",
               block.kind === "reasoning"
                 ? "text-text-tertiary"
-                : "font-mono text-[12px] text-text-tertiary",
+                : "font-mono text-xs text-text-tertiary",
               failed && "text-destructive/80",
             )}
           >

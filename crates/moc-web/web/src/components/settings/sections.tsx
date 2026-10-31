@@ -4,6 +4,7 @@ import { Loader2Icon, MonitorIcon, MoonIcon, RefreshCwIcon, SunIcon } from "luci
 import { type ReactNode, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Kbd } from "@/components/common/icon-button";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -15,14 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import {
-  FUSION_ALIAS,
-  groupByProvider,
-  levelLabel,
-  modelName,
-  parseFusion,
-  parseSelector,
-} from "@/lib/models";
+import { FUSION_ALIAS, groupByProvider, modelName, parseFusion, parseSelector } from "@/lib/models";
 import { SHORTCUTS } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
@@ -84,7 +78,7 @@ function Segmented<T extends string>({
           type="button"
           onClick={() => onChange(option.value)}
           className={cn(
-            "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors",
+            "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors",
             value === option.value
               ? "bg-background text-foreground shadow-xs"
               : "text-muted-foreground hover:text-foreground",
@@ -193,7 +187,7 @@ export function GeneralSection() {
             </div>
           </SettingRow>
         </Card>
-        <p className="px-1 text-[11.5px] text-text-tertiary">
+        <p className="px-1 text-xs text-text-tertiary">
           以上偏好保存在 web.toml，对所有连接到此 moc 的浏览器生效。
         </p>
       </section>
@@ -215,10 +209,10 @@ export function GeneralSection() {
 
 function InfoRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex items-center justify-between gap-6 py-2.5 text-[13px]">
+    <div className="flex items-center justify-between gap-6 py-2.5 text-ui">
       <span className="shrink-0 text-muted-foreground">{label}</span>
       <span
-        className={cn("min-w-0 truncate text-foreground", mono && "font-mono text-[12px]")}
+        className={cn("min-w-0 truncate text-foreground", mono && "font-mono text-xs")}
         title={value}
       >
         {value}
@@ -233,11 +227,11 @@ export function ShortcutsSection() {
   return (
     <Card className="py-1">
       {SHORTCUTS.map((item) => (
-        <div key={item.keys} className="flex items-center justify-between py-2.5 text-[13px]">
+        <div key={item.keys} className="flex items-center justify-between py-2.5 text-ui">
           <span className="text-foreground">{item.label}</span>
           <span className="flex gap-1">
             {item.keys.split(" ").map((key) => (
-              <Kbd key={key} className="h-5 min-w-5 px-1.5 text-[11px]">
+              <Kbd key={key} className="h-5 min-w-5 px-1.5 text-2xs">
                 {key}
               </Kbd>
             ))}
@@ -282,10 +276,7 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
           value={selector ? (fusionCurrent ? FUSION_ALIAS : parsed.id) : INHERIT}
           onValueChange={(value) => write(value === INHERIT ? "" : value)}
         >
-          <SelectTrigger
-            size="sm"
-            className="h-8 min-w-0 flex-1 rounded-lg text-[13px] shadow-none"
-          >
+          <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 rounded-lg text-ui shadow-none">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -298,7 +289,7 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
             {unknown && <SelectItem value={parsed.id}>{parsed.id}（未找到）</SelectItem>}
             {groupByProvider(models).map(([provider, list]) => (
               <SelectGroup key={provider}>
-                <SelectLabel className="text-[11px]">{provider}</SelectLabel>
+                <SelectLabel className="text-2xs">{provider}</SelectLabel>
                 {list.map((model) => (
                   <SelectItem key={model.id} value={model.id}>
                     {modelName(model.id)}
@@ -315,7 +306,7 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
           >
             <SelectTrigger
               size="sm"
-              className="h-8 w-[84px] shrink-0 rounded-lg text-[13px] shadow-none"
+              className="h-8 w-[84px] shrink-0 rounded-lg text-ui shadow-none"
               aria-label="思考强度"
             >
               <SelectValue />
@@ -324,7 +315,7 @@ function ModelSelectorRow({ field, doc }: { field: ConfigField; doc: SettingsDoc
               <SelectItem value={INHERIT}>默认</SelectItem>
               {levels.map((level) => (
                 <SelectItem key={level} value={level}>
-                  {levelLabel(level)}
+                  {level}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -391,9 +382,7 @@ export function PluginsOverview() {
       {error && <p className="text-xs text-destructive">{error}</p>}
       <Card>
         {plugins?.length === 0 && (
-          <p className="py-6 text-center text-[13px] text-text-tertiary">
-            当前工作区没有发现插件。
-          </p>
+          <p className="py-6 text-center text-ui text-text-tertiary">当前工作区没有发现插件。</p>
         )}
         {plugins?.map((plugin) => (
           <div key={`${plugin.source}:${plugin.name}`} className="space-y-1.5 py-3">
@@ -404,19 +393,19 @@ export function PluginsOverview() {
                   plugin.error ? "bg-destructive" : "bg-success",
                 )}
               />
-              <span className="text-[13.5px] font-medium">{plugin.name}</span>
+              <span className="text-sm font-medium">{plugin.name}</span>
               {plugin.version && (
-                <span className="font-mono text-[11px] text-text-tertiary">{plugin.version}</span>
+                <span className="font-mono text-2xs text-text-tertiary">{plugin.version}</span>
               )}
-              <span className="ml-auto shrink-0 text-[11px] text-text-tertiary">
-                {plugin.source}
-              </span>
+              <span className="ml-auto shrink-0 text-2xs text-text-tertiary">{plugin.source}</span>
             </div>
             {plugin.description && (
-              <p className="pl-3.5 text-[12.5px] text-muted-foreground">{plugin.description}</p>
+              <p className="pl-3.5 text-xs leading-5 text-muted-foreground">{plugin.description}</p>
             )}
             {plugin.error && (
-              <p className="pl-3.5 text-[12.5px] break-words text-destructive">{plugin.error}</p>
+              <p className="pl-3.5 text-xs leading-5 break-words text-destructive">
+                {plugin.error}
+              </p>
             )}
             {(plugin.tools.length > 0 || plugin.commands.length > 0) && (
               <div className="flex flex-wrap gap-1 pl-3.5">
@@ -424,19 +413,20 @@ export function PluginsOverview() {
                   <span
                     key={tool.name}
                     title={tool.description}
-                    className="rounded bg-muted px-1.5 py-px font-mono text-[11px] text-muted-foreground"
+                    className="rounded bg-muted px-1.5 py-px font-mono text-2xs text-muted-foreground"
                   >
                     {tool.name}
                   </span>
                 ))}
                 {plugin.commands.map((command) => (
-                  <span
+                  <Badge
                     key={command.name}
+                    variant="brand"
                     title={command.description}
-                    className="rounded bg-brand/10 px-1.5 py-px font-mono text-[11px] text-brand"
+                    className="font-mono font-normal"
                   >
                     /{command.name}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             )}

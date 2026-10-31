@@ -5,16 +5,26 @@
 
 import {
   CheckCircle2Icon,
-  ChevronDownIcon,
+  ChevronRightIcon,
   Loader2Icon,
   MessageSquarePlusIcon,
   PencilIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { IconButton } from "@/components/common/icon-button";
 import { DiffFile } from "@/components/panels/diff-file";
 import { PlanMarkdown } from "@/components/plan/plan-markdown";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   appendSuggestion,
   type PlanLineRange,
@@ -72,12 +82,12 @@ const STATUS_LABEL: Record<PlanInfo["status"], string> = {
 };
 
 const STATUS_CLASS: Record<PlanInfo["status"], string> = {
-  draft: "text-muted-foreground",
-  submitted: "text-emerald-600 dark:text-emerald-400",
-  revised: "text-amber-600 dark:text-amber-400",
-  superseded: "text-muted-foreground",
-  approved: "text-emerald-600 dark:text-emerald-400",
-  rejected: "text-rose-500",
+  draft: "text-text-tertiary",
+  submitted: "text-brand",
+  revised: "text-warn",
+  superseded: "text-text-tertiary",
+  approved: "text-success",
+  rejected: "text-destructive",
 };
 
 export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Props) {
@@ -212,27 +222,25 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
   const suggestionCount = drafts.filter((draft) => splitSuggestion(draft.body)).length;
 
   return (
-    <div className="space-y-3 p-3 text-xs">
+    <div className="space-y-4 p-4 text-ui">
       <header className="space-y-1">
-        <div className="flex items-start justify-between gap-2">
-          <h3 className="min-w-0 flex-1 font-medium">{plan.title}</h3>
-          <span className={cn("shrink-0 text-[10px]", STATUS_CLASS[plan.status])}>
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="min-w-0 flex-1 text-sm font-medium text-foreground">{plan.title}</h3>
+          <span className={cn("shrink-0 text-xs", STATUS_CLASS[plan.status])}>
             v{plan.version} · {STATUS_LABEL[plan.status]}
           </span>
         </div>
-        <p className="truncate font-mono text-[10px] text-muted-foreground" title={plan.path}>
+        <p className="truncate font-mono text-2xs text-text-tertiary" title={plan.path}>
           {plan.path}
         </p>
+        {plan.previous_plan_id && (
+          <p className="truncate text-2xs text-text-tertiary">
+            对比上一版 <span className="font-mono">{plan.previous_plan_id}</span>
+          </p>
+        )}
       </header>
 
-      {plan.previous_plan_id && (
-        <div className="flex items-center gap-2 rounded-md bg-muted/30 px-2 py-1 text-[10px] text-muted-foreground ring-1 ring-inset ring-border-subtle">
-          <span>对比上一版</span>
-          <span className="font-mono">{plan.previous_plan_id}</span>
-        </div>
-      )}
-
-      <div className="flex items-center gap-1 border-b border-border-subtle pb-1.5">
+      <div className="flex items-center gap-1">
         <TabButton
           active={tab === "diff"}
           disabled={!plan.previous_plan_id}
@@ -243,63 +251,55 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
         <TabButton active={tab === "plan"} onClick={() => setTab("plan")}>
           完整计划
         </TabButton>
-        <span className="ml-auto text-[10px] text-muted-foreground">
+        <span className="ml-auto text-xs text-text-tertiary">
           {drafts.length > 0 ? `${drafts.length} 条待提交` : "无未提交批注"}
         </span>
       </div>
 
       {tab === "diff" ? (
-        <div className="space-y-2">
-          {diffError ? (
-            <p className="rounded-md border border-rose-500/40 bg-rose-500/5 px-2 py-1.5 text-rose-600 dark:text-rose-400">
-              {diffError}
-            </p>
-          ) : diff === null ? (
-            <p className="flex items-center gap-1.5 text-muted-foreground">
-              <Loader2Icon className="size-3.5 animate-spin" />
-              正在加载本版改动…
-            </p>
-          ) : diff.files.length === 0 ? (
-            <p className="text-muted-foreground">本版没有文本改动。</p>
-          ) : (
-            <div className="overflow-hidden rounded-md ring-1 ring-inset ring-border-subtle">
-              {diff.files.map((file) => (
-                <DiffFile key={file.path} file={file} />
-              ))}
-            </div>
-          )}
-        </div>
+        diffError ? (
+          <Notice tone="error">{diffError}</Notice>
+        ) : diff === null ? (
+          <p className="flex items-center gap-1.5 text-muted-foreground">
+            <Loader2Icon className="size-3.5 animate-spin" />
+            正在加载本版改动…
+          </p>
+        ) : diff.files.length === 0 ? (
+          <p className="text-muted-foreground">本版没有文本改动。</p>
+        ) : (
+          <div className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle">
+            {diff.files.map((file) => (
+              <DiffFile key={file.path} file={file} />
+            ))}
+          </div>
+        )
       ) : (
         <div className="space-y-2">
           {selection && annotatable && (
-            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5">
-              <span className="min-w-0 truncate text-[11px]">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 rounded-lg bg-popover py-1 pr-1 pl-3 shadow-[var(--elevation-popover)]">
+              <span className="min-w-0 truncate text-muted-foreground">
                 选中第 {selection.startLine}-{selection.endLine} 行
               </span>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Button
+                  size="xs"
+                  variant="ghost"
                   onClick={() => {
                     openEditor(selection);
                     setSelection(null);
                   }}
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-border px-2 text-[11px] hover:bg-muted"
                 >
-                  <MessageSquarePlusIcon className="size-3" />
+                  <MessageSquarePlusIcon />
                   批注
-                </button>
-                <button
-                  type="button"
-                  aria-label="取消选区"
-                  onClick={() => setSelection(null)}
-                  className="inline-flex size-6 items-center justify-center rounded-md hover:bg-muted"
-                >
-                  <XIcon className="size-3" />
-                </button>
+                </Button>
+                <IconButton size="xs" label="取消选区" onClick={() => setSelection(null)}>
+                  <XIcon />
+                </IconButton>
               </div>
             </div>
           )}
-          <div className="overflow-hidden rounded-md px-3 py-2 ring-1 ring-inset ring-border-subtle">
+          {/* 左侧留出 pl-8 给悬停「＋」（块内 -left-6），不能用 overflow-hidden 裁掉它 */}
+          <div className="overflow-x-auto rounded-xl py-4 pr-5 pl-8 ring-1 ring-inset ring-border-subtle">
             <PlanMarkdown
               markdown={plan.markdown}
               annotations={[...submitted, ...drafts]}
@@ -311,24 +311,19 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       )}
 
       {editor && (
-        <div className="space-y-2 rounded-md bg-background p-2.5 shadow-sm ring-1 ring-inset ring-border-subtle">
-          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+        <div className="space-y-2.5 rounded-xl bg-card p-3 shadow-[var(--elevation-composer)]">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
               批注第 {editor.startLine}-{editor.endLine} 行
             </span>
-            <button
-              type="button"
-              aria-label="关闭批注编辑器"
-              onClick={() => setEditor(null)}
-              className="inline-flex size-5 items-center justify-center rounded hover:bg-muted"
-            >
-              <XIcon className="size-3" />
-            </button>
+            <IconButton size="xs" label="关闭批注编辑器" onClick={() => setEditor(null)}>
+              <XIcon />
+            </IconButton>
           </div>
-          <blockquote className="max-h-24 overflow-auto border-l-2 border-border pl-2 font-mono text-[10px] whitespace-pre-wrap text-muted-foreground">
+          <blockquote className="max-h-24 overflow-auto border-l-2 border-border-strong pl-2.5 font-mono text-2xs whitespace-pre-wrap text-muted-foreground">
             {editor.quote}
           </blockquote>
-          <textarea
+          <Textarea
             ref={bodyRef}
             value={editor.body}
             onChange={(event) => setEditor({ ...editor, body: event.target.value })}
@@ -340,32 +335,29 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
             }}
             rows={4}
             placeholder="写下意见；可用 ```suggestion 围栏给出替换文本"
-            className="w-full resize-y rounded-md border border-border bg-background px-2 py-1.5 text-[11px] outline-none focus:border-primary"
+            className="resize-y rounded-lg px-2.5 py-2 text-ui shadow-none placeholder:text-text-tertiary md:text-ui"
           />
           <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
+            <Button
+              size="xs"
+              variant="ghost"
+              className="text-muted-foreground"
               onClick={() => {
                 const replacement = lines.slice(editor.startLine - 1, editor.endLine).join("\n");
                 setEditor({ ...editor, body: appendSuggestion(editor.body, replacement) });
               }}
-              className="h-6 rounded-md border border-border px-2 text-[11px] hover:bg-muted"
             >
               插入建议改法
-            </button>
-            <button
-              type="button"
-              onClick={saveEditor}
-              className="h-6 rounded-md bg-primary px-2.5 text-[11px] text-primary-foreground"
-            >
+            </Button>
+            <Button size="xs" onClick={saveEditor}>
               保存批注
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
       {drafts.length > 0 && (
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {drafts.map((draft) => (
             <AnnotationCard
               key={draft.id}
@@ -388,19 +380,19 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       )}
 
       {submitted.length > 0 && (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           <button
             type="button"
             onClick={() => setShowSubmitted((value) => !value)}
-            className="flex w-full items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+            className="flex items-center gap-1 text-xs text-text-tertiary transition-colors hover:text-foreground"
           >
-            <ChevronDownIcon
-              className={cn("size-3 transition-transform", showSubmitted && "rotate-180")}
+            <ChevronRightIcon
+              className={cn("size-3.5 transition-transform", showSubmitted && "rotate-90")}
             />
             已提交的 {submitted.length} 条批注
           </button>
           {showSubmitted && (
-            <ul className="space-y-1.5">
+            <ul className="space-y-2">
               {submitted.map((annotation) => (
                 <AnnotationCard key={annotation.id} annotation={annotation} />
               ))}
@@ -410,77 +402,100 @@ export function PlanReview({ sessionId, plan, busy, actionError, onAction }: Pro
       )}
 
       {notice && (
-        <p className="flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/5 px-2 py-1.5 text-emerald-700 dark:text-emerald-400">
-          <CheckCircle2Icon className="size-3.5" />
+        <Notice tone="success">
+          <CheckCircle2Icon className="size-3.5 shrink-0" />
           {notice}
-        </p>
+        </Notice>
       )}
-      {(submitError || actionError) && (
-        <p className="rounded-md border border-rose-500/40 bg-rose-500/5 px-2 py-1.5 text-rose-600 dark:text-rose-400">
-          {submitError ?? actionError}
-        </p>
-      )}
+      {(submitError || actionError) && <Notice tone="error">{submitError ?? actionError}</Notice>}
 
       {annotatable && (
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle pt-2">
-          <button
-            type="button"
-            onClick={() => onAction(plan, "reject")}
-            disabled={busy || submitting}
-            className="h-7 rounded-md border border-border px-2.5 text-[11px] hover:bg-muted disabled:opacity-50"
-          >
-            拒绝
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={busy || submitting || drafts.length === 0}
-            title={drafts.length === 0 ? "先写批注再提交" : `提交 ${drafts.length} 条批注`}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-[11px] hover:bg-muted disabled:opacity-50"
-          >
-            {submitting && <Loader2Icon className="size-3 animate-spin" />}
-            提交修改意见{drafts.length > 0 ? `（${drafts.length}）` : ""}
-          </button>
-          <button
-            type="button"
-            onClick={() => onAction(plan, "execute")}
-            disabled={busy || submitting}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-[11px] text-primary-foreground disabled:opacity-50"
-          >
-            {busy && <Loader2Icon className="size-3 animate-spin" />}
-            批准并执行
-          </button>
-          <span className="inline-flex h-7 items-center overflow-hidden rounded-md border border-border text-[11px]">
-            <select
-              value={executionEngine}
-              onChange={(event) => setExecutionEngine(event.target.value as SessionEngine)}
+        <div className="space-y-2 border-t border-border-subtle pt-3">
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-ui"
+              onClick={() => onAction(plan, "reject")}
               disabled={busy || submitting}
-              title="新会话执行的引擎"
-              className="h-full bg-background px-1.5 text-[11px] outline-none disabled:opacity-50"
             >
-              {EXECUTION_ENGINES.map((engine) => (
-                <option key={engine.id} value={engine.id}>
-                  {engine.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
+              拒绝
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-ui"
+              onClick={() => void submit()}
+              disabled={busy || submitting || drafts.length === 0}
+              title={drafts.length === 0 ? "先写批注再提交" : `提交 ${drafts.length} 条批注`}
+            >
+              {submitting && <Loader2Icon className="animate-spin" />}
+              提交修改意见{drafts.length > 0 ? `（${drafts.length}）` : ""}
+            </Button>
+            <Button
+              size="sm"
+              className="text-ui"
+              onClick={() => onAction(plan, "execute")}
+              disabled={busy || submitting}
+            >
+              {busy && <Loader2Icon className="animate-spin" />}
+              批准并执行
+            </Button>
+          </div>
+          <div className="flex items-center justify-end gap-1.5">
+            <Select
+              value={executionEngine}
+              onValueChange={(value) => setExecutionEngine(value as SessionEngine)}
+              disabled={busy || submitting}
+            >
+              <SelectTrigger
+                size="sm"
+                title="新会话执行的引擎"
+                className="gap-1 px-2.5 text-ui shadow-none"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {EXECUTION_ENGINES.map((engine) => (
+                  <SelectItem key={engine.id} value={engine.id}>
+                    {engine.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-ui"
               onClick={() => onAction(plan, "execute_new_session", executionEngine)}
               disabled={busy || submitting}
-              className="h-full border-l border-border px-2 hover:bg-muted disabled:opacity-50"
             >
               在新会话执行
-            </button>
-          </span>
+            </Button>
+          </div>
+          {suggestionCount > 0 && (
+            <p className="text-right text-2xs text-text-tertiary">
+              其中 {suggestionCount} 条带建议改法
+            </p>
+          )}
         </div>
       )}
-      {annotatable && suggestionCount > 0 && (
-        <p className="text-right text-[10px] text-muted-foreground">
-          其中 {suggestionCount} 条带建议改法
-        </p>
-      )}
     </div>
+  );
+}
+
+function Notice({ tone, children }: { tone: "error" | "success"; children: ReactNode }) {
+  return (
+    <p
+      className={cn(
+        "flex items-center gap-2 rounded-lg px-3 py-2 ring-1 ring-inset",
+        tone === "error"
+          ? "bg-destructive/6 text-destructive ring-destructive/20"
+          : "bg-success/8 text-success ring-success/20",
+      )}
+    >
+      {children}
+    </p>
   );
 }
 
@@ -493,7 +508,7 @@ function TabButton({
   active: boolean;
   disabled?: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
@@ -501,9 +516,11 @@ function TabButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "h-6 rounded-md px-2 text-[11px] transition-colors",
-        active ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/60",
-        disabled && "cursor-not-allowed opacity-40",
+        "h-7 rounded-lg px-2.5 text-ui transition-colors",
+        active
+          ? "bg-accent font-medium text-foreground"
+          : "text-muted-foreground hover:text-foreground",
+        disabled && "cursor-not-allowed opacity-40 hover:text-muted-foreground",
       )}
     >
       {children}
@@ -522,39 +539,31 @@ function AnnotationCard({
 }) {
   const parsed = splitSuggestion(annotation.body);
   return (
-    <li className="rounded-md bg-muted/20 p-2 ring-1 ring-inset ring-border-subtle">
-      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+    <li className="rounded-xl bg-card p-3 ring-1 ring-inset ring-border-subtle">
+      <div className="flex h-5 items-center justify-between gap-2 text-2xs text-text-tertiary">
         <span className="font-mono">
           第 {annotation.start_line}-{annotation.end_line} 行
         </span>
         {(onEdit || onRemove) && (
-          <span className="flex items-center gap-1">
+          <span className="-mr-1 flex items-center">
             {onEdit && (
-              <button
-                type="button"
-                aria-label="编辑批注"
-                onClick={onEdit}
-                className="inline-flex size-5 items-center justify-center rounded hover:bg-muted"
-              >
+              <IconButton size="xs" label="编辑批注" onClick={onEdit}>
                 <PencilIcon className="size-3" />
-              </button>
+              </IconButton>
             )}
             {onRemove && (
-              <button
-                type="button"
-                aria-label="删除批注"
-                onClick={onRemove}
-                className="inline-flex size-5 items-center justify-center rounded hover:bg-muted"
-              >
+              <IconButton size="xs" label="删除批注" onClick={onRemove}>
                 <Trash2Icon className="size-3" />
-              </button>
+              </IconButton>
             )}
           </span>
         )}
       </div>
-      <p className="mt-1 whitespace-pre-wrap break-words">{parsed?.note || annotation.body}</p>
+      <p className="mt-1.5 whitespace-pre-wrap break-words text-foreground">
+        {parsed?.note || annotation.body}
+      </p>
       {parsed && (
-        <pre className="mt-1 overflow-x-auto rounded border border-emerald-500/30 bg-emerald-500/5 p-1.5 font-mono text-[10px] whitespace-pre-wrap">
+        <pre className="mt-2 overflow-x-auto rounded-lg bg-diff-insert px-2.5 py-2 font-mono text-2xs whitespace-pre-wrap">
           {parsed.suggestion}
         </pre>
       )}

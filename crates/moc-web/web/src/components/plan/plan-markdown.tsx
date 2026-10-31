@@ -2,8 +2,10 @@
 //
 // 这里直接用 react-markdown 而不是流式渲染器：批注锚点依赖 hast 的
 // `node.position`，块级的起止行刚好就是计划源码的 1-based 行。
+// 排版复用对话正文的 `.moc-prose`：各元素打上与 Streamdown 相同的 `data-streamdown`
+// 标记，标题/列表/表格/代码的样式就只有一份。
 
-import type { ElementType, MouseEvent } from "react";
+import type { CSSProperties, ElementType, MouseEvent } from "react";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -57,7 +59,7 @@ function Annotated({
       className={cn(
         "group/plan relative",
         className,
-        annotated && "border-l-2 border-amber-500/70 pl-2",
+        annotated && "-ml-2.5 border-l-2 border-brand/60 pl-2",
       )}
       data-line-start={range?.startLine}
       data-line-end={range?.endLine}
@@ -72,7 +74,7 @@ function Annotated({
             event.stopPropagation();
             onAnnotate(range);
           }}
-          className="absolute top-0 -left-6 hidden size-5 items-center justify-center rounded-full border border-border bg-background text-[11px] leading-none text-muted-foreground shadow-sm group-hover/plan:flex hover:text-foreground"
+          className="absolute top-0.5 -left-6 hidden size-5 items-center justify-center rounded-full bg-popover text-2xs leading-none text-muted-foreground shadow-[var(--elevation-popover)] group-hover/plan:flex hover:text-foreground"
         >
           ＋
         </button>
@@ -82,19 +84,58 @@ function Annotated({
   );
 }
 
+/** 块级标签 → 对应的 Streamdown 标记；没有块级批注需求的行内元素只打标记。 */
+const block = (tag: ElementType, name?: string) => (props: BlockProps) => (
+  <Annotated tag={tag} data-streamdown={name} {...props} />
+);
+const mark =
+  (Tag: ElementType, name: string) =>
+  ({ node: _node, ...props }: BlockProps) => <Tag data-streamdown={name} {...props} />;
+
+// pre 内的 code 是代码块正文，不能套行内代码的灰底
+const InPre = createContext(false);
+
+function Code({ node: _node, ...props }: BlockProps) {
+  const inPre = useContext(InPre);
+  return <code data-streamdown={inPre ? undefined : "inline-code"} {...props} />;
+}
+
+// 代码块自带 overflow:hidden，批注外壳要套在外面，否则悬停「＋」会被裁掉；
+// 外壳已经吃掉块间距，内层清掉 .moc-prose 给代码块的外边距。
+function Pre({ children, ...props }: BlockProps) {
+  return (
+    <Annotated tag="div" {...props}>
+      <div data-streamdown="code-block" style={{ margin: 0 }}>
+        <pre data-streamdown="code-block-body" className="overflow-x-auto">
+          <InPre.Provider value={true}>{children}</InPre.Provider>
+        </pre>
+      </div>
+    </Annotated>
+  );
+}
+
 const components = {
-  h1: (props: BlockProps) => <Annotated tag="h1" {...props} />,
-  h2: (props: BlockProps) => <Annotated tag="h2" {...props} />,
-  h3: (props: BlockProps) => <Annotated tag="h3" {...props} />,
-  h4: (props: BlockProps) => <Annotated tag="h4" {...props} />,
-  h5: (props: BlockProps) => <Annotated tag="h5" {...props} />,
-  h6: (props: BlockProps) => <Annotated tag="h6" {...props} />,
-  p: (props: BlockProps) => <Annotated tag="p" {...props} />,
-  li: (props: BlockProps) => <Annotated tag="li" {...props} />,
-  blockquote: (props: BlockProps) => <Annotated tag="blockquote" {...props} />,
-  pre: (props: BlockProps) => <Annotated tag="pre" {...props} />,
-  table: (props: BlockProps) => <Annotated tag="table" {...props} />,
-  tr: (props: BlockProps) => <Annotated tag="tr" {...props} />,
+  h1: block("h1", "heading-1"),
+  h2: block("h2", "heading-2"),
+  h3: block("h3", "heading-3"),
+  h4: block("h4", "heading-4"),
+  h5: block("h5", "heading-5"),
+  h6: block("h6", "heading-6"),
+  p: block("p"),
+  ul: mark("ul", "unordered-list"),
+  ol: mark("ol", "ordered-list"),
+  li: block("li", "list-item"),
+  blockquote: block("blockquote", "blockquote"),
+  pre: Pre,
+  code: Code,
+  a: mark("a", "link"),
+  strong: mark("strong", "strong"),
+  hr: mark("hr", "horizontal-rule"),
+  table: block("table", "table"),
+  thead: mark("thead", "table-header"),
+  th: mark("th", "table-header-cell"),
+  td: mark("td", "table-cell"),
+  tr: block("tr"),
 } as unknown as Components;
 
 export function PlanMarkdown({
@@ -126,18 +167,9 @@ export function PlanMarkdown({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: 只把文字选区换算成源码行
     <div
-      className={cn(
-        "plan-markdown text-sm leading-relaxed select-text",
-        "[&_h1]:mt-4 [&_h1]:mb-2 [&_h1]:text-lg [&_h1]:font-semibold",
-        "[&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-base [&_h2]:font-semibold",
-        "[&_h3]:mt-3 [&_h3]:mb-1.5 [&_h3]:text-sm [&_h3]:font-semibold",
-        "[&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5",
-        "[&_li]:my-0.5 [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground",
-        "[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_pre]:text-[11px]",
-        "[&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-[11px]",
-        "[&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_td]:border-b [&_td]:border-border [&_td]:px-3 [&_td]:py-1.5 [&_th]:border-b [&_th]:border-border-strong [&_th]:px-3 [&_th]:py-1.5 [&_th]:text-left [&_th]:font-semibold [&_td:first-child]:pl-0 [&_th:first-child]:pl-0 [&_td:last-child]:pr-0 [&_th:last-child]:pr-0",
-        className,
-      )}
+      // 侧栏比对话列窄，正文降一级字号
+      style={{ "--moc-prose-size": "13.5px" } as CSSProperties}
+      className={cn("plan-markdown moc-prose select-text", className)}
       onMouseUp={() => {
         if (!onSelectText) return;
         const range = rangeFromSelection(window.getSelection());

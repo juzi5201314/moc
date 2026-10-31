@@ -1,6 +1,6 @@
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "cn"
+import { cn } from "@/lib/utils"
 import { Slot } from "radix-ui"
 
 const badgeVariants = cva(
@@ -17,6 +17,8 @@ const badgeVariants = cva(
           "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         link: "text-primary underline-offset-4 [a&]:hover:underline",
+        // 行内小徽标（「项目覆盖」「推荐」「默认」等）：品牌色淡底、方角、紧凑
+        brand: "rounded px-1.5 py-px text-2xs bg-brand/10 text-brand",
       },
     },
     defaultVariants: {

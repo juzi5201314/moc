@@ -4,6 +4,7 @@
 
 import { RotateCcwIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -54,13 +55,9 @@ export function SettingRow({
     <div className="group/row py-3.5">
       <div className={cn("flex gap-6", wide ? "flex-col gap-2.5" : "items-center justify-between")}>
         <div className="min-w-0 flex-1" title={title}>
-          <div className="flex items-center gap-2 text-[13.5px] font-medium text-foreground">
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <span className="truncate">{label}</span>
-            {overridden && scope === "project" && (
-              <span className="shrink-0 rounded bg-brand/10 px-1.5 py-px text-[10.5px] font-medium text-brand">
-                项目覆盖
-              </span>
-            )}
+            {overridden && scope === "project" && <Badge variant="brand">项目覆盖</Badge>}
             {overridden && onReset && (
               <button
                 type="button"
@@ -74,7 +71,7 @@ export function SettingRow({
             )}
           </div>
           {description && (
-            <p className="mt-0.5 text-[12.5px] leading-5 text-muted-foreground">{description}</p>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p>
           )}
         </div>
         <div className={cn("shrink-0", wide ? "w-full" : "w-[260px] max-w-[45%]")}>{children}</div>
@@ -135,8 +132,8 @@ function TextEditor({
           if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) commit();
         }}
         className={cn(
-          "min-h-24 rounded-lg text-[13px] shadow-none",
-          field.kind.type === "object" && "font-mono text-[12px]",
+          "min-h-24 rounded-lg text-ui shadow-none",
+          field.kind.type === "object" && "font-mono text-xs",
         )}
       />
     );
@@ -156,7 +153,7 @@ function TextEditor({
         }
       }}
       className={cn(
-        "h-8 rounded-lg text-[13px] shadow-none",
+        "h-8 rounded-lg text-ui shadow-none",
         (field.kind.type === "integer" || field.kind.type === "number") && "font-mono tabular-nums",
       )}
     />
@@ -200,7 +197,7 @@ export function FieldRow({ field, doc }: { field: ConfigField; doc: SettingsDocu
       >
         <SelectTrigger
           size="sm"
-          className="h-8 w-full rounded-lg text-[13px] shadow-none"
+          className="h-8 w-full rounded-lg text-ui shadow-none"
           aria-label={field.label}
         >
           <SelectValue />

@@ -41,7 +41,7 @@ import { openSettings, useUi } from "@/store/ui";
 /** 每个工作区默认展示的会话数；更多的折叠在「显示更多」后面。 */
 const VISIBLE_SESSIONS = 6;
 
-const ROW = "flex h-9 w-full items-center gap-2 rounded-lg px-2 text-[13.5px] transition-colors";
+const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
 
 function NavRow({
   icon,
@@ -63,7 +63,7 @@ function NavRow({
         "group/nav text-sidebar-foreground/85 hover:bg-sidebar-accent hover:text-sidebar-foreground",
       )}
     >
-      <span className="flex size-4 items-center justify-center text-muted-foreground group-hover/nav:text-foreground [&_svg]:size-4">
+      <span className="flex size-4 items-center justify-center text-muted-foreground group-hover/nav:text-foreground [&_svg]:size-[15px]">
         {icon}
       </span>
       <span className="flex-1 truncate text-left">{label}</span>
@@ -113,10 +113,10 @@ export function WorkspaceSidebar() {
     <nav className="flex h-full w-full flex-col text-sidebar-foreground select-none">
       <div className="flex h-12 shrink-0 items-center justify-between pr-2 pl-4">
         <div className="flex items-center gap-2">
-          <span className="flex size-[22px] items-center justify-center rounded-[7px] bg-foreground text-[11px] font-bold tracking-tight text-background">
+          <span className="flex size-5 items-center justify-center rounded-[6px] bg-foreground text-2xs font-bold tracking-tight text-background">
             m
           </span>
-          <span className="text-[15px] font-semibold tracking-tight">moc</span>
+          <span className="text-sm font-semibold tracking-tight">moc</span>
         </div>
         <IconButton
           label="收起侧栏"
@@ -144,7 +144,7 @@ export function WorkspaceSidebar() {
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => event.key === "Escape" && closeSearch()}
               placeholder="筛选会话与目录"
-              className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none"
+              className="min-w-0 flex-1 bg-transparent text-ui outline-none"
             />
             <button
               type="button"
@@ -167,9 +167,7 @@ export function WorkspaceSidebar() {
       </div>
 
       <div className="mt-4 flex h-7 shrink-0 items-center justify-between pr-2 pl-4">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-text-tertiary">
-          工作区
-        </span>
+        <span className="text-xs font-medium text-text-tertiary">工作区</span>
         <IconButton label="添加工作区目录" size="xs" onClick={addWorkspace}>
           <FolderPlusIcon />
         </IconButton>
@@ -280,7 +278,7 @@ export function WorkspaceSidebar() {
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 border-t border-border-subtle px-2 py-2">
+      <div className="flex shrink-0 items-center gap-1 px-2 py-2">
         <button
           type="button"
           onClick={() => openSettings()}
@@ -383,7 +381,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
             if (event.key === "Escape") setRenaming(null);
           }}
           onBlur={commitRename}
-          className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none"
+          className="min-w-0 flex-1 bg-transparent text-ui outline-none"
         />
       </div>
     );
@@ -403,7 +401,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
         type="button"
         onClick={() => void openSession(session.id)}
         onDoubleClick={() => setRenaming(title)}
-        className="absolute inset-0 rounded-lg"
+        className="absolute inset-0 rounded-md"
         aria-label={title}
         aria-current={active || undefined}
       />
@@ -422,7 +420,7 @@ function SessionRow({ session, active }: { session: SessionInfo; active: boolean
           ) : attention ? (
             <span className="size-1.5 rounded-full bg-warn" title="等待你的操作" />
           ) : (
-            <span className="text-[11px] tabular-nums text-text-tertiary">
+            <span className="text-2xs tabular-nums text-text-tertiary">
               {relativeTime(session.updated_at_ms)}
             </span>
           )}

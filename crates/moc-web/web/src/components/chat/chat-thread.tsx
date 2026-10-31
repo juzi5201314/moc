@@ -149,7 +149,7 @@ export function ChatThread({ sessionId }: { sessionId: string }) {
             <AskCard key={request.request_id} sessionId={sessionId} request={request} />
           ))}
         </ConversationContent>
-        <ConversationScrollButton className="bottom-4 size-8 border-border bg-popover text-muted-foreground shadow-md hover:bg-popover hover:text-foreground dark:bg-popover" />
+        <ConversationScrollButton className="bottom-4 size-8 border-0 bg-popover text-muted-foreground shadow-[var(--elevation-popover)] hover:bg-popover hover:text-foreground dark:bg-popover" />
       </Conversation>
     </div>
   );
@@ -282,7 +282,7 @@ function UserMessage({
     <div className="group/user flex flex-col items-end gap-1">
       <ImageThumbs images={block.images} className="justify-end" />
       {block.text && (
-        <div className="relative max-w-[85%] rounded-[20px] bg-bubble px-4.5 py-3 text-[15px] leading-[1.65] text-foreground">
+        <div className="relative max-w-[80%] rounded-[18px] bg-bubble px-4 py-2.5 text-chat text-foreground">
           <div
             className={cn(
               "whitespace-pre-wrap break-words",
@@ -305,7 +305,7 @@ function UserMessage({
         </div>
       )}
       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100">
-        <span className="mr-1 text-[11px] tabular-nums text-text-tertiary">
+        <span className="mr-1 text-2xs tabular-nums text-text-tertiary">
           {clockTime(block.atMs)}
         </span>
         <IconButton label="复制" size="xs" onClick={() => copy(block.text, "已复制")}>
@@ -419,19 +419,19 @@ function AssistantTurn({
               <button
                 type="button"
                 onClick={() => setProcessOpen((value) => !value)}
-                className="group/proc -ml-1.5 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[13.5px] text-text-tertiary transition-colors hover:bg-surface-hover hover:text-muted-foreground"
+                className="group/proc -ml-1.5 flex h-7 items-center gap-1.5 rounded-md px-1.5 text-ui text-text-tertiary transition-colors hover:text-muted-foreground"
               >
+                <ChevronRightIcon
+                  className={cn("size-3.5 transition-transform", processOpen && "rotate-90")}
+                />
                 <span>
                   {durationMs !== undefined ? `处理用时 ${formatDuration(durationMs)}` : "处理过程"}
                 </span>
                 <span className="text-text-tertiary/60">·</span>
                 <span className="max-w-[420px] truncate">{summarizeActivity(turn.activity)}</span>
-                <ChevronRightIcon
-                  className={cn("size-3.5 transition-transform", processOpen && "rotate-90")}
-                />
               </button>
               {processOpen && (
-                <div className="mt-2 flex flex-col gap-3 border-l border-border pl-4">
+                <div className="mt-1.5 ml-[7px] flex flex-col gap-3 border-l border-border pl-4">
                   {segments.map((segment, index) =>
                     index === finalIndex || segment.kind === "plan" || segment.kind === "notice"
                       ? null
@@ -452,7 +452,7 @@ function AssistantTurn({
       )}
 
       {live && (
-        <div className="flex h-7 items-center gap-2 text-[13.5px]">
+        <div className="flex h-7 items-center gap-2 text-sm">
           <span className="moc-dots flex gap-[3px]">
             <span className="size-1.5 rounded-full bg-text-tertiary" />
             <span className="size-1.5 rounded-full bg-text-tertiary" />
@@ -499,7 +499,7 @@ function AssistantTurn({
               <RotateCcwIcon />
             </IconButton>
           )}
-          <span className="ml-1.5 flex items-center gap-1.5 text-[11px] text-text-tertiary">
+          <span className="ml-1.5 flex items-center gap-1.5 text-2xs text-text-tertiary">
             {turn.footer?.model && (
               <span className="font-mono">{modelName(turn.footer.model)}</span>
             )}
@@ -523,7 +523,7 @@ function NoticeCard({
   return (
     <div
       className={cn(
-        "flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-[13.5px] leading-5",
+        "flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm leading-5",
         error
           ? "border-destructive/25 bg-destructive/6 text-destructive"
           : "border-warn/25 bg-warn/8 text-warn",
@@ -582,7 +582,7 @@ function PlanCard({
         <ListChecksIcon className="size-4" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13.5px] font-medium">{plan?.title ?? block.title}</div>
+        <div className="truncate text-sm font-medium">{plan?.title ?? block.title}</div>
         <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
           <span>v{plan?.version ?? block.version}</span>
           <span>·</span>

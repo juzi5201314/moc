@@ -12,16 +12,17 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* =========================================================================
-   设计令牌：中性灰阶 + 单一强调色。
-   面的层级：sidebar/panel（最底）< background（主舞台）< card/popover（浮起）。
-   描边一律用半透明前景色，跨深浅主题保持同样的「发丝线」观感。
+   设计令牌：中性灰阶 + 单一强调色（参照 Devin 的克制设计语言）。
+   面的层级：sidebar/panel（近白底）< background（主舞台，纯白）< card/popover（浮起）。
+   分隔只靠发丝线，不靠色块；浮层靠「发丝描边 + 极软长投影」，不靠深阴影。
+   强调色只出现在选中、链接、进行中，其余一律灰阶。
    ========================================================================= */
 
 :root {
   color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
-  --panel: #f7f7f8;
+  --panel: #fafafa;
   --card: #ffffff;
   --card-foreground: #171717;
   --popover: #ffffff;
@@ -40,30 +41,43 @@
   --destructive: #dc2626;
   --success: #16a34a;
   --warn: #d97706;
-  --border: rgba(23, 23, 23, 0.09);
-  --border-strong: rgba(23, 23, 23, 0.16);
+  --border: rgba(23, 23, 23, 0.08);
+  --border-strong: rgba(23, 23, 23, 0.14);
   --border-subtle: rgba(23, 23, 23, 0.05);
   --input: rgba(23, 23, 23, 0.12);
   --ring: rgba(59, 111, 245, 0.45);
   --diff-insert: rgba(22, 163, 74, 0.1);
   --diff-delete: rgba(220, 38, 38, 0.09);
   --radius: 0.625rem;
-  --sidebar: #f7f7f8;
+  --sidebar: #fafafa;
   --sidebar-foreground: #171717;
-  --sidebar-accent: rgba(23, 23, 23, 0.06);
+  --sidebar-accent: rgba(23, 23, 23, 0.05);
   --sidebar-accent-foreground: #171717;
   --surface-raised: #ffffff;
   --surface-hover: rgba(23, 23, 23, 0.04);
   --text-tertiary: #9a9aa0;
   --code-bg: #f7f7f8;
+  /* 行内代码/选区用半透明：叠在表格行、引用块、选区上都能自然混色，不会出现不透明色块 */
+  --inline-code-bg: rgba(23, 23, 23, 0.055);
+  --selection: rgba(59, 111, 245, 0.14);
   /* GitHub btn 质感：顶部内高光 + 底部轻投影 */
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(23, 23, 23, 0.08);
   --elevation-ring: 0 0 0 1px rgba(23, 23, 23, 0.08);
-  /* composer：白卡靠极软投影从白底上抬起，不发灰、不靠深描边 */
-  --elevation-composer: 0 1px 2px rgba(23, 23, 23, 0.04), 0 16px 40px -16px rgba(23, 23, 23, 0.12);
+  /* composer：不画描边，只靠贴身柔影 + 长投影勾出轮廓 */
+  --elevation-composer:
+    0 0 2px rgba(23, 23, 23, 0.06), 0 2px 6px rgba(23, 23, 23, 0.04),
+    0 12px 32px -12px rgba(23, 23, 23, 0.12);
+  /* 灰托盘内的白卡：一层贴身软影把它和托盘分开，外投影交给托盘 */
+  --elevation-composer-inset: 0 1px 2px rgba(23, 23, 23, 0.05), 0 2px 8px rgba(23, 23, 23, 0.04);
+  /* 托盘比白卡暗一级：浅色是浅灰，深色要比卡片更深，否则层级会反过来 */
+  --composer-tray: #f4f4f5;
   --elevation-popover:
-    0 0 0 1px rgba(23, 23, 23, 0.08), 0 8px 28px -6px rgba(23, 23, 23, 0.16),
-    0 2px 6px rgba(23, 23, 23, 0.04);
+    0 0 0 1px rgba(23, 23, 23, 0.07), 0 10px 32px -8px rgba(23, 23, 23, 0.14),
+    0 2px 4px rgba(23, 23, 23, 0.03);
+  /* 模态框：比 popover 更高一层，投影更长更散，仍以发丝描边勾边而非实线 border */
+  --elevation-dialog:
+    0 0 0 1px rgba(23, 23, 23, 0.07), 0 24px 64px -16px rgba(23, 23, 23, 0.22),
+    0 4px 12px rgba(23, 23, 23, 0.04);
   --chart-1: #3b6ff5;
   --chart-2: #6b6b70;
   --chart-3: #a1a1a8;
@@ -110,12 +124,20 @@
   --surface-hover: rgba(255, 255, 255, 0.045);
   --text-tertiary: #6e6e76;
   --code-bg: #1b1b1e;
+  --inline-code-bg: rgba(255, 255, 255, 0.075);
+  --selection: rgba(109, 151, 255, 0.28);
   --code-btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.45);
   --elevation-ring: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --elevation-composer: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px -16px rgba(0, 0, 0, 0.6);
+  --elevation-composer:
+    0 0 2px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --elevation-composer-inset: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+  --composer-tray: #121214;
   --elevation-popover:
     0 0 0 1px rgba(255, 255, 255, 0.09), 0 12px 32px -6px rgba(0, 0, 0, 0.6),
     0 2px 6px rgba(0, 0, 0, 0.3);
+  --elevation-dialog:
+    0 0 0 1px rgba(255, 255, 255, 0.09), 0 24px 64px -12px rgba(0, 0, 0, 0.7),
+    0 4px 12px rgba(0, 0, 0, 0.35);
   --chart-1: #6d97ff;
   --chart-2: #a0a0a8;
   --chart-3: #6e6e76;
@@ -185,6 +207,19 @@
   --font-mono:
     "Geist Mono Variable", ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
     Consolas, monospace;
+  /* 字号阶梯：组件里只用这七级，不再写 text-[Npx]。新增名字须同步登记到 lib/utils.ts 的 cn。
+     2xs 徽标/计数/kbd · xs 次要说明/元信息 · ui 菜单项/列表行/控件 · sm 正文/标题行
+     chat 对话正文与输入框 · title 区块标题 · heading 弹窗标题 */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-ui: 13px;
+  --text-ui--line-height: 20px;
+  --text-chat: 14.5px;
+  --text-chat--line-height: 1.65;
+  --text-title: 15px;
+  --text-title--line-height: 1.4;
+  --text-heading: 17px;
+  --text-heading--line-height: 1.35;
 }
 
 @layer base {
@@ -220,7 +255,7 @@
     cursor: pointer;
   }
   ::selection {
-    background: color-mix(in srgb, var(--brand) 22%, transparent);
+    background: var(--selection);
   }
   :focus-visible {
     outline: 2px solid var(--ring);
@@ -308,8 +343,8 @@
    产品化排版（对齐主流 agent UI）：标题无下边框、表格只留水平分隔线、
    无边框代码块 + 大圆角、行内代码灰底 + 发丝内描边，按 data-streamdown 标记统一收敛。 */
 .moc-prose {
-  font-size: var(--moc-prose-size, 15px);
-  line-height: var(--moc-prose-leading, 1.7);
+  font-size: var(--moc-prose-size, 14.5px);
+  line-height: var(--moc-prose-leading, 1.75);
   color: var(--moc-prose-color, var(--foreground));
   overflow-wrap: anywhere;
 }
@@ -405,13 +440,14 @@
 }
 
 .moc-prose [data-streamdown="inline-code"] {
-  padding: 0.1em 0.4em;
-  border-radius: 7px;
-  background: var(--muted);
-  box-shadow: inset 0 0 0 0.5px var(--border);
+  padding: 0.1em 0.32em;
+  border-radius: 4px;
+  background: var(--inline-code-bg);
   font-family: var(--font-mono);
-  font-size: 0.875em;
+  font-size: 0.88em;
   color: var(--foreground);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 .moc-prose [data-streamdown="blockquote"] {
@@ -428,7 +464,7 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-/* 表格：只留水平分隔线——表头下划 strong、行下划常规、首末列贴边。 */
+/* 表格：只留水平分隔线——表头下划常规发丝线、行下划更淡的发丝线、首末列贴边。 */
 .moc-prose [data-streamdown="table-wrapper"] {
   margin: 1em 0;
   gap: 0;
@@ -452,17 +488,27 @@
   border-collapse: collapse;
   font-size: 13.5px;
 }
+/* streamdown 给 thead 自带 bg-muted/80 灰底，与"只留横线"冲突，去掉 */
+.moc-prose [data-streamdown="table-header"] {
+  background: transparent;
+}
 .moc-prose [data-streamdown="table-header-cell"],
 .moc-prose [data-streamdown="table-cell"] {
-  padding: 10px 16px;
+  padding: 8px 20px 8px 16px;
   border: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 13.5px;
+  line-height: 1.6;
+  vertical-align: top;
 }
+/* 表头做成弱化的列标签：中等字重、次级色，比行线稍深的一条线与数据区分开 */
 .moc-prose [data-streamdown="table-header-cell"] {
-  border-bottom-color: var(--border-strong);
-  font-weight: 600;
-  color: var(--foreground);
+  padding-block: 6px;
+  border-bottom-color: var(--border);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  text-align: left;
 }
 .moc-prose [data-streamdown="table-header-cell"]:first-child,
 .moc-prose [data-streamdown="table-cell"]:first-child {

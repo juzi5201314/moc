@@ -214,7 +214,7 @@ function ScopeSwitch({ doc }: { doc?: SettingsDocument }) {
       </div>
       {doc && (
         <span
-          className="max-w-[260px] truncate font-mono text-[11px] text-text-tertiary"
+          className="max-w-[260px] truncate font-mono text-2xs text-text-tertiary"
           title={doc.path}
         >
           {doc.path}
@@ -245,16 +245,14 @@ function SearchResults({ query, doc }: { query: string; doc: SettingsDocument })
 
   if (groups.length === 0) {
     return (
-      <p className="py-16 text-center text-[13px] text-text-tertiary">
-        没有匹配「{query}」的设置项
-      </p>
+      <p className="py-16 text-center text-ui text-text-tertiary">没有匹配「{query}」的设置项</p>
     );
   }
   return (
     <div className="space-y-7">
       {groups.map(({ section, fields }) => (
         <section key={section.id} className="space-y-2">
-          <h3 className="text-[13px] font-semibold">{section.label}</h3>
+          <h3 className="text-ui font-semibold">{section.label}</h3>
           <FieldList fields={fields} doc={doc} />
         </section>
       ))}
@@ -295,7 +293,7 @@ export function SettingsDialog() {
     if (section === "shortcuts" && !query) return <ShortcutsSection />;
     if (error)
       return (
-        <p className="rounded-lg bg-destructive/5 px-3 py-2 text-[13px] text-destructive">
+        <p className="rounded-lg bg-destructive/5 px-3 py-2 text-ui text-destructive">
           读取配置失败：{error}
         </p>
       );
@@ -316,9 +314,7 @@ export function SettingsDialog() {
         {fields.length > 0 ? (
           <FieldList fields={fields} doc={doc} />
         ) : (
-          <p className="py-10 text-center text-[13px] text-text-tertiary">
-            这个分区没有可编辑的项。
-          </p>
+          <p className="py-10 text-center text-ui text-text-tertiary">这个分区没有可编辑的项。</p>
         )}
         {section === "session" && <MaintenanceCard />}
       </div>
@@ -339,14 +335,14 @@ export function SettingsDialog() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索设置"
-                className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-text-tertiary"
+                className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-text-tertiary"
               />
             </label>
           </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-3">
             {NAV.map((group) => (
               <div key={group.group}>
-                <div className="px-2.5 pb-1 text-[11px] font-medium text-text-tertiary">
+                <div className="px-2.5 pb-1 text-2xs font-medium text-text-tertiary">
                   {group.group}
                 </div>
                 {group.items.map((item) => (
@@ -358,7 +354,7 @@ export function SettingsDialog() {
                       setQuery("");
                     }}
                     className={cn(
-                      "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-[13px] transition-colors [&_svg]:size-4",
+                      "flex h-8 w-full items-center gap-2.5 rounded-lg px-2.5 text-ui transition-colors [&_svg]:size-4",
                       item.id === section && !query
                         ? "bg-accent font-medium text-foreground"
                         : "text-muted-foreground hover:bg-surface-hover hover:text-foreground",
@@ -376,10 +372,8 @@ export function SettingsDialog() {
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border-subtle px-7 pt-5 pb-4 pr-14">
             <div className="min-w-0">
-              <DialogTitle className="text-[17px] font-semibold">
-                {query ? "搜索结果" : meta.label}
-              </DialogTitle>
-              <DialogDescription className="mt-1 text-[12.5px] text-muted-foreground">
+              <DialogTitle>{query ? "搜索结果" : meta.label}</DialogTitle>
+              <DialogDescription className="mt-1 text-xs leading-5">
                 {query ? `在${scope === "global" ? "全局" : "项目"}配置中搜索` : meta.description}
               </DialogDescription>
             </div>

@@ -11,8 +11,6 @@ import {
   LockIcon,
   PackageIcon,
   PaperclipIcon,
-  PuzzleIcon,
-  SlashIcon,
   SquareIcon,
   TerminalIcon,
 } from "lucide-react";
@@ -248,7 +246,6 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
               detail: command.plugin
                 ? `${command.description} · ${command.plugin}`
                 : command.description,
-              icon: command.plugin ? <PuzzleIcon /> : <SlashIcon />,
             })),
           }
         : resourceItems.length > 0
@@ -503,7 +500,7 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
     const holder = view?.holder;
     return (
       <ComposerDock inline={inline}>
-        <div className="flex min-h-14 items-center gap-3 rounded-2xl bg-muted px-4 py-3 text-[13.5px] text-muted-foreground ring-1 ring-inset ring-border-subtle">
+        <div className="flex min-h-14 items-center gap-3 rounded-2xl bg-muted px-4 py-3 text-sm text-muted-foreground ring-1 ring-inset ring-border-subtle">
           <LockIcon className="size-4 shrink-0" />
           <span className="min-w-0 flex-1">
             只读打开
@@ -537,6 +534,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
       ? "描述任务，/ 查看命令，! 执行命令"
       : "继续对话，/ 查看命令，! 执行命令";
 
+  const tray = todos.length > 0 || pending.length > 0;
+
   return (
     <ComposerDock inline={inline}>
       <div className="relative">
@@ -550,8 +549,8 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           />
         )}
 
+        {/* Devin 式双层：有任务 / 待发时外层是灰托盘，抬头放在托盘里，白卡嵌在其中；否则只剩白卡。 */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: 拖放区只承接文件，键盘用户走附件按钮 */}
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: 点击空白处聚焦输入框只是鼠标便利，键盘本就在输入框内 */}
         <div
           onDragOver={(event) => {
             if (!event.dataTransfer.types.includes("Files")) return;
@@ -560,18 +559,14 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
-          onClick={(event) => {
-            if (event.target === event.currentTarget) textareaRef.current?.focus();
-          }}
           className={cn(
-            "relative rounded-[22px] bg-card shadow-[var(--elevation-composer)] transition-[box-shadow]",
-            "focus-within:ring-1 focus-within:ring-inset focus-within:ring-border",
-            bashMode && "ring-1 ring-inset ring-warn/50",
+            "relative shadow-[var(--elevation-composer)]",
+            tray ? "rounded-[24px] bg-[var(--composer-tray)] p-1" : "rounded-[22px]",
             dragging && "ring-2 ring-brand/40",
           )}
         >
-          {(todos.length > 0 || pending.length > 0) && (
-            <div className="rounded-t-[21px] bg-muted/60 px-2 py-1">
+          {tray && (
+            <div className="px-2 pb-0.5">
               {todos.length > 0 && <TodoTray items={todos} />}
               {pending.length > 0 && (
                 <PendingList items={pending} onRemove={(item) => void removePending(item)} />
@@ -579,122 +574,137 @@ export function ComposerBar({ sessionId, inline = false }: ComposerBarProps) {
             </div>
           )}
 
-          {bashMode && (
-            <div className="flex items-center gap-1.5 px-4 pt-2.5 text-[11.5px] font-medium text-warn">
-              <TerminalIcon className="size-3.5" />
-              {text.startsWith("!!") ? "执行命令 · 输出不进入上下文" : "执行命令 · 输出写入上下文"}
-            </div>
-          )}
-
-          {images.length > 0 && (
-            <Attachments variant="inline" className="px-3 pt-3">
-              {images.map((image) => (
-                <Attachment
-                  key={image.id}
-                  data={{
-                    id: image.id,
-                    type: "file",
-                    filename: image.name,
-                    mediaType:
-                      "Base64" in image.source ? image.source.Base64.media_type : "image/*",
-                    url: imageUrl(image.source),
-                  }}
-                  onRemove={() => useComposer.getState().removeImage(sessionId, image.id)}
-                >
-                  <AttachmentPreview />
-                  <AttachmentRemove label={`移除 ${image.name}`} />
-                </Attachment>
-              ))}
-            </Attachments>
-          )}
-
-          <textarea
-            ref={textareaRef}
-            value={text}
-            rows={1}
-            onChange={(event) => {
-              setText(event.target.value);
-              setCursor(event.target.selectionStart);
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: 点击空白处聚焦输入框只是鼠标便利 */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: 键盘本就在输入框内 */}
+          <div
+            onClick={(event) => {
+              if (event.target === event.currentTarget) textareaRef.current?.focus();
             }}
-            onSelect={syncCursor}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            placeholder={placeholder}
-            aria-label="输入消息"
             className={cn(
-              "block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-6 text-foreground outline-none placeholder:text-text-tertiary",
-              bashMode && "font-mono text-[13.5px]",
-              inline ? "min-h-[96px]" : "min-h-[64px]",
+              "relative bg-card transition-[box-shadow]",
+              tray ? "rounded-[20px] shadow-[var(--elevation-composer-inset)]" : "rounded-[22px]",
+              bashMode && "ring-1 ring-inset ring-warn/50",
             )}
-            style={{ maxHeight: MAX_HEIGHT }}
-          />
+          >
+            {bashMode && (
+              <div className="flex items-center gap-1.5 px-4 pt-2.5 text-xs font-medium text-warn">
+                <TerminalIcon className="size-3.5" />
+                {text.startsWith("!!")
+                  ? "执行命令 · 输出不进入上下文"
+                  : "执行命令 · 输出写入上下文"}
+              </div>
+            )}
 
-          <div className="flex h-11 items-center gap-1 px-3 pb-1">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
+            {images.length > 0 && (
+              <Attachments variant="inline" className="px-3 pt-3">
+                {images.map((image) => (
+                  <Attachment
+                    key={image.id}
+                    data={{
+                      id: image.id,
+                      type: "file",
+                      filename: image.name,
+                      mediaType:
+                        "Base64" in image.source ? image.source.Base64.media_type : "image/*",
+                      url: imageUrl(image.source),
+                    }}
+                    onRemove={() => useComposer.getState().removeImage(sessionId, image.id)}
+                  >
+                    <AttachmentPreview />
+                    <AttachmentRemove label={`移除 ${image.name}`} />
+                  </Attachment>
+                ))}
+              </Attachments>
+            )}
+
+            <textarea
+              ref={textareaRef}
+              value={text}
+              rows={1}
               onChange={(event) => {
-                const files = [...(event.target.files ?? [])];
-                event.target.value = "";
-                void addFiles(files);
+                setText(event.target.value);
+                setCursor(event.target.selectionStart);
               }}
+              onSelect={syncCursor}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              placeholder={placeholder}
+              aria-label="输入消息"
+              className={cn(
+                "block w-full resize-none bg-transparent px-5 pt-4 pb-1 text-chat leading-6 text-foreground outline-none placeholder:text-text-tertiary",
+                bashMode && "font-mono text-sm",
+                inline ? "min-h-[96px]" : "min-h-[64px]",
+              )}
+              style={{ maxHeight: MAX_HEIGHT }}
             />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={!acceptsImages || reading}
-                  className={cn(CHIP, "w-8 justify-center px-0")}
-                  aria-label="添加图片"
-                >
-                  {acceptsImages ? (
-                    <PaperclipIcon className="size-4" />
-                  ) : (
-                    <ImageIcon className="size-4" />
-                  )}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                {acceptsImages ? "添加图片，也可以直接粘贴或拖入" : "当前模型不支持图片输入"}
-              </TooltipContent>
-            </Tooltip>
-            <SessionOptions sessionId={sessionId} />
-            <PlanToggle sessionId={sessionId} />
 
-            <div className="ml-auto flex min-w-0 items-center gap-1">
-              {context && context.context_window > 0 && (
-                <ContextRing used={context.total_tokens} window={context.context_window} />
-              )}
-              <ModelPicker sessionId={sessionId} />
-              {running && !canSend ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={stop}
-                      className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
-                      aria-label="停止生成"
-                    >
-                      <SquareIcon className="size-3 fill-current" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">停止 · Esc</TooltipContent>
-                </Tooltip>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => send()}
-                  disabled={!canSend}
-                  className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
-                  aria-label={running ? "补充到当前轮" : "发送"}
-                >
-                  <ArrowUpIcon className="size-4" strokeWidth={2.4} />
-                </button>
-              )}
+            <div className="flex h-11 items-center gap-1 px-3 pb-1">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(event) => {
+                  const files = [...(event.target.files ?? [])];
+                  event.target.value = "";
+                  void addFiles(files);
+                }}
+              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!acceptsImages || reading}
+                    className={cn(CHIP, "w-8 justify-center px-0")}
+                    aria-label="添加图片"
+                  >
+                    {acceptsImages ? (
+                      <PaperclipIcon className="size-4" />
+                    ) : (
+                      <ImageIcon className="size-4" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {acceptsImages ? "添加图片，也可以直接粘贴或拖入" : "当前模型不支持图片输入"}
+                </TooltipContent>
+              </Tooltip>
+              <SessionOptions sessionId={sessionId} />
+              <PlanToggle sessionId={sessionId} />
+
+              <div className="ml-auto flex min-w-0 items-center gap-1">
+                {context && context.context_window > 0 && (
+                  <ContextRing used={context.total_tokens} window={context.context_window} />
+                )}
+                <ModelPicker sessionId={sessionId} />
+                {running && !canSend ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={stop}
+                        className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-transform active:scale-95"
+                        aria-label="停止生成"
+                      >
+                        <SquareIcon className="size-3 fill-current" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">停止 · Esc</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => send()}
+                    disabled={!canSend}
+                    className="ml-1 flex size-8 items-center justify-center rounded-full bg-foreground text-background transition-[transform,background-color] active:scale-95 disabled:bg-text-tertiary/60 disabled:text-card"
+                    aria-label={running ? "补充到当前轮" : "发送"}
+                  >
+                    <ArrowUpIcon className="size-4" strokeWidth={2.4} />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

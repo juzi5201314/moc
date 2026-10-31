@@ -2,7 +2,6 @@
 // selector 形如 `provider/model[:level]`；规范 Fusion selector 经组合面板配置。
 
 import {
-  BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -34,7 +33,6 @@ import {
   compactTokens,
   fusionSelector,
   groupByProvider,
-  levelLabel,
   modelName,
   parseFusion,
   parseSelector,
@@ -74,22 +72,17 @@ async function apply(sessionId: string, selector: string): Promise<void> {
 function ModelRow({ model, selected }: { model: ModelInfo; selected: boolean }) {
   return (
     <>
-      <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
-        {modelName(model.id)}
-      </span>
+      <span className="min-w-0 flex-1 truncate text-ui text-foreground">{modelName(model.id)}</span>
       <div className="flex shrink-0 items-center gap-1.5 text-text-tertiary">
-        {reasoningLevels(model).length > 0 && (
-          <BrainIcon className="size-3.5" aria-label="支持思考" />
-        )}
         {model.inputs?.includes("image") && (
           <ImageIcon className="size-3.5" aria-label="支持图片" />
         )}
         {model.context_window ? (
-          <span className="min-w-8 text-right font-mono text-[11px] tabular-nums">
+          <span className="min-w-8 text-right font-mono text-2xs tabular-nums">
             {compactTokens(model.context_window)}
           </span>
         ) : null}
-        <CheckIcon className={cn("size-3.5 text-brand", !selected && "invisible")} />
+        <CheckIcon className={cn("size-3.5 text-muted-foreground", !selected && "invisible")} />
       </div>
     </>
   );
@@ -130,13 +123,13 @@ function FusionSlotRow({
           onChange(level ? `${id}:${level}` : id);
         }}
       >
-        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 rounded-lg text-[13px] shadow-none">
+        <SelectTrigger size="sm" className="h-8 min-w-0 flex-1 rounded-lg text-ui shadow-none">
           <SelectValue placeholder="未选择" />
         </SelectTrigger>
         <SelectContent>
           {groupByProvider(models).map(([provider, list]) => (
             <SelectGroup key={provider}>
-              <SelectLabel className="text-[11px]">{provider}</SelectLabel>
+              <SelectLabel className="text-2xs">{provider}</SelectLabel>
               {list.map((model) => (
                 <SelectItem key={model.id} value={model.id}>
                   {modelName(model.id)}
@@ -153,7 +146,7 @@ function FusionSlotRow({
         >
           <SelectTrigger
             size="sm"
-            className="h-8 w-[84px] shrink-0 rounded-lg text-[13px] shadow-none"
+            className="h-8 w-[84px] shrink-0 rounded-lg text-ui shadow-none"
             aria-label="思考强度"
           >
             <SelectValue placeholder="强度" />
@@ -161,7 +154,7 @@ function FusionSlotRow({
           <SelectContent>
             {efforts.map((level) => (
               <SelectItem key={level} value={level}>
-                {levelLabel(level)}
+                {level}
               </SelectItem>
             ))}
           </SelectContent>
@@ -215,7 +208,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
         <button
           type="button"
           disabled={disabled}
-          className="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          className="inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground"
           aria-label="选择模型"
         >
           <span className="max-w-[180px] truncate">{label}</span>
@@ -225,9 +218,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
             </span>
           ) : (
             parsed.level &&
-            parsed.level !== "off" && (
-              <span className="text-text-tertiary">· {levelLabel(parsed.level)}</span>
-            )
+            parsed.level !== "off" && <span className="text-text-tertiary">· {parsed.level}</span>
           )}
           <ChevronDownIcon className="size-3.5 opacity-60" />
         </button>
@@ -245,8 +236,8 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
               返回
             </button>
             <div className="px-1.5 pb-2 pt-1">
-              <div className="text-[13px] font-medium text-foreground">Fusion</div>
-              <div className="mt-0.5 text-[11px] text-text-tertiary">
+              <div className="text-ui font-medium text-foreground">Fusion</div>
+              <div className="mt-0.5 text-2xs text-text-tertiary">
                 前沿模型负责规划、调查与评审，高性价比模型执行实现与验证
               </div>
             </div>
@@ -290,7 +281,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
                 value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0
               }
             >
-              <CommandInput placeholder="搜索模型" className="h-10 text-[13px]" />
+              <CommandInput placeholder="搜索模型" className="h-10 text-ui" />
               <CommandList className="max-h-72 p-1">
                 <CommandEmpty className="py-8 text-center text-xs text-text-tertiary">
                   {models.length === 0 ? "还没有配置模型" : "没有匹配的模型"}
@@ -302,12 +293,14 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
                     className="gap-3 rounded-lg px-2 py-1.5"
                   >
                     <div className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate text-[13px] text-foreground">Fusion</span>
-                      <span className="truncate text-[11px] text-text-tertiary">
+                      <span className="truncate text-ui text-foreground">Fusion</span>
+                      <span className="truncate text-2xs text-text-tertiary">
                         前沿模型主导 · 高性价比执行
                       </span>
                     </div>
-                    <CheckIcon className={cn("size-3.5 text-brand", !fusion && "invisible")} />
+                    <CheckIcon
+                      className={cn("size-3.5 text-muted-foreground", !fusion && "invisible")}
+                    />
                   </CommandItem>
                 </CommandGroup>
                 {groupByProvider(models).map(([provider, list]) => (
@@ -329,7 +322,7 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
 
             {!fusion && levels.length > 0 && (
               <div className="border-t border-border-subtle px-3 py-2.5">
-                <div className="mb-2 text-[11px] font-medium text-text-tertiary">思考强度</div>
+                <div className="mb-2 text-2xs font-medium text-text-tertiary">思考强度</div>
                 <div className="flex flex-wrap gap-1">
                   {levels.map((level) => (
                     <button
@@ -337,13 +330,13 @@ export function ModelPicker({ sessionId, disabled }: { sessionId: string; disabl
                       type="button"
                       onClick={() => pickLevel(level)}
                       className={cn(
-                        "h-6 rounded-md px-2 text-xs transition-colors",
+                        "h-6 rounded-md px-2 text-xs ring-1 ring-inset transition-colors",
                         (parsed.level ?? "") === level
-                          ? "bg-foreground text-background"
-                          : "bg-muted text-muted-foreground hover:text-foreground",
+                          ? "bg-accent font-medium text-foreground ring-border"
+                          : "text-muted-foreground ring-border-subtle hover:bg-accent hover:text-foreground",
                       )}
                     >
-                      {levelLabel(level)}
+                      {level}
                     </button>
                   ))}
                 </div>

@@ -133,8 +133,8 @@ export function WorkspacePicker() {
           {pathDraft === null ? (
             <>
               <FolderOpenIcon className="size-4 shrink-0 text-muted-foreground" />
-              <span className="shrink-0 text-[13px] font-medium text-foreground">{label}</span>
-              <span className="truncate text-[11px] text-muted-foreground" title={listing?.path}>
+              <span className="shrink-0 text-ui font-medium text-foreground">{label}</span>
+              <span className="truncate text-2xs text-muted-foreground" title={listing?.path}>
                 {listing?.path}
               </span>
             </>
@@ -199,7 +199,7 @@ export function WorkspacePicker() {
                   if (event.key === "Escape") setNewName(null);
                 }}
                 placeholder="新建文件夹名称"
-                className="h-7 text-[13px]"
+                className="h-7 text-ui"
               />
             </div>
           )}
@@ -216,7 +216,7 @@ export function WorkspacePicker() {
                 key={entry.path}
                 type="button"
                 onClick={() => void load(entry.path, showHidden)}
-                className="group flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] text-foreground transition-colors hover:bg-accent"
+                className="group flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-ui text-foreground transition-colors hover:bg-accent"
               >
                 <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
                 <span className="truncate">{entry.name}</span>

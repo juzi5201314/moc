@@ -70,7 +70,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                 type="button"
                 onClick={() => useLayout.getState().openInspector(item.id)}
                 className={cn(
-                  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[13.5px] transition-colors",
+                  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-sm transition-colors",
                   tab === item.id
                     ? "bg-accent font-medium text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -80,7 +80,7 @@ export function InspectorPanel({ sessionId }: { sessionId: string }) {
                 {count > 0 && (
                   <span
                     className={cn(
-                      "min-w-4 rounded-full px-1 text-center text-[11px] leading-4 tabular-nums",
+                      "min-w-4 rounded-full px-1 text-center text-2xs leading-4 tabular-nums",
                       item.id === "plan"
                         ? "bg-brand text-brand-foreground"
                         : "bg-foreground/10 text-muted-foreground",
@@ -238,10 +238,8 @@ function TodoTab({ sessionId }: { sessionId: string }) {
           // biome-ignore lint/suspicious/noArrayIndexKey: todo 由 core 整表替换，位置即身份，阶段名可重复
           <section key={phaseIndex}>
             <div className="mb-1 flex items-baseline justify-between gap-2 px-2">
-              <h3 className="min-w-0 truncate text-[13.5px] font-medium">
-                {phase.phase || "任务"}
-              </h3>
-              <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">
+              <h3 className="min-w-0 truncate text-sm font-medium">{phase.phase || "任务"}</h3>
+              <span className="shrink-0 text-2xs tabular-nums text-text-tertiary">
                 {done}/{phase.items.length}
               </span>
             </div>
@@ -259,7 +257,7 @@ function TodoTab({ sessionId }: { sessionId: string }) {
                     <span className="flex h-5 shrink-0 items-center" title={meta.label}>
                       <Icon className={cn("size-3.5", meta.className)} />
                     </span>
-                    <span className="min-w-0 flex-1 text-[13.5px] leading-5">
+                    <span className="min-w-0 flex-1 text-sm leading-5">
                       <span
                         className={cn(
                           finished ? "text-text-tertiary" : "text-foreground",

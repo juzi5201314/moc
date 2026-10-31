@@ -43,7 +43,7 @@ import { useSessions } from "@/store/sessions";
 import { useTranscript } from "@/store/transcript";
 
 export const CHIP =
-  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground";
+  "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-ui text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -60,14 +60,14 @@ export function TodoTray({ items }: { items: TodoItem[] }) {
     items.find((item) => item.status !== "completed");
 
   return (
-    <div className="text-xs">
+    <div className="text-ui">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-muted-foreground transition-colors hover:text-foreground"
+        className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-muted-foreground transition-colors hover:text-foreground"
         aria-expanded={open}
       >
-        <ListChecksIcon className="size-3.5 shrink-0" />
+        <ListChecksIcon className="size-4 shrink-0" />
         <span className="shrink-0 font-medium text-foreground">任务</span>
         <span className="shrink-0 tabular-nums text-text-tertiary">
           {done}/{items.length}
@@ -132,8 +132,8 @@ export function PendingList({
           >
             <span
               className={cn(
-                "shrink-0 rounded px-1.5 py-px text-[10.5px] font-medium",
-                item.kind === "steer" ? "bg-brand/10 text-brand" : "bg-muted text-muted-foreground",
+                "shrink-0 rounded px-1.5 py-px text-2xs font-medium",
+                item.kind === "steer" ? "bg-brand/10 text-brand" : "bg-card text-muted-foreground",
               )}
             >
               {item.kind === "steer" ? "补充" : item.mode === "ask" ? "问答" : "排队"}
@@ -228,7 +228,7 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-72 p-1">
-        <DropdownMenuLabel className="px-2 py-1.5 text-[11px] font-medium text-text-tertiary">
+        <DropdownMenuLabel className="px-2 py-1.5 text-2xs font-medium text-text-tertiary">
           命令权限
         </DropdownMenuLabel>
         {PERMISSIONS.map((item) => (
@@ -268,7 +268,7 @@ export function SessionOptions({ sessionId, disabled }: { sessionId: string; dis
             />
           ))}
           {info?.engine_locked && (
-            <p className="px-2 pt-1 pb-1.5 text-[11px] text-text-tertiary">
+            <p className="px-2 pt-1 pb-1.5 text-2xs text-text-tertiary">
               首条消息后引擎已锁定；换引擎请新建会话
             </p>
           )}
@@ -290,7 +290,7 @@ function OptionGroup({
 }) {
   return (
     <DropdownMenuSub>
-      <DropdownMenuSubTrigger className="h-8 rounded-lg px-2 text-[13px]">
+      <DropdownMenuSubTrigger className="h-8 rounded-lg px-2 text-ui">
         <span>{title}</span>
         <span className="ml-auto truncate text-xs text-text-tertiary">{value}</span>
       </DropdownMenuSubTrigger>
@@ -324,8 +324,8 @@ function OptionItem({
     >
       {icon && <span className="mt-0.5 text-muted-foreground">{icon}</span>}
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="text-[13px] text-foreground">{label}</span>
-        <span className="text-[11.5px] leading-4 text-text-tertiary">{description}</span>
+        <span className="text-ui text-foreground">{label}</span>
+        <span className="text-xs leading-4 text-text-tertiary">{description}</span>
       </span>
       <CheckIcon className={cn("mt-0.5 size-4 text-brand", !selected && "invisible")} />
     </DropdownMenuItem>
@@ -456,11 +456,8 @@ export function SuggestionMenu({
   }, [active]);
 
   return (
-    <div className="absolute inset-x-0 bottom-full z-30 mb-2 overflow-hidden rounded-xl border border-border bg-popover shadow-lg">
-      <div className="flex items-center justify-between px-3 pt-2 pb-1 text-[11px] text-text-tertiary">
-        <span className="font-medium">{heading}</span>
-        <span>↑↓ 选择 · Tab 补全 · Esc 关闭</span>
-      </div>
+    <div className="absolute inset-x-0 bottom-full z-30 mb-2 overflow-hidden rounded-xl bg-popover shadow-[var(--elevation-popover)]">
+      <div className="px-3 pt-2 pb-1 text-2xs font-medium text-text-tertiary">{heading}</div>
       <div ref={listRef} className="max-h-64 overflow-y-auto p-1" role="listbox">
         {items.map((item, index) => (
           <button
@@ -476,7 +473,7 @@ export function SuggestionMenu({
             }}
             onMouseMove={() => onHover(index)}
             className={cn(
-              "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[13px]",
+              "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-left text-ui",
               index === active ? "bg-accent text-foreground" : "text-muted-foreground",
             )}
           >
@@ -485,9 +482,9 @@ export function SuggestionMenu({
                 {item.icon}
               </span>
             )}
-            <span className="shrink-0 font-mono text-[12.5px] text-foreground">{item.title}</span>
+            <span className="shrink-0 font-mono text-xs text-foreground">{item.title}</span>
             {item.hint && (
-              <span className="shrink-0 font-mono text-[12px] text-text-tertiary">{item.hint}</span>
+              <span className="shrink-0 font-mono text-xs text-text-tertiary">{item.hint}</span>
             )}
             {item.detail && (
               <span className="ml-auto min-w-0 truncate pl-3 text-xs text-text-tertiary">

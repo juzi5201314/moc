@@ -2,7 +2,6 @@
 // 新建供应商后自动向 `/models` 拉取候选，勾选即加入；每个模型可展开编辑元数据。
 
 import {
-  BrainIcon,
   CheckIcon,
   ChevronRightIcon,
   DownloadCloudIcon,
@@ -15,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { IconButton } from "@/components/common/icon-button";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -107,8 +107,8 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
                 id === current && !adding ? "bg-accent" : "hover:bg-surface-hover",
               )}
             >
-              <span className="truncate text-[13px] font-medium text-foreground">{id}</span>
-              <span className="truncate text-[11.5px] text-text-tertiary">
+              <span className="truncate text-ui font-medium text-foreground">{id}</span>
+              <span className="truncate text-xs text-text-tertiary">
                 {api ?? "未选择协议"} · {models} 个模型
               </span>
             </button>
@@ -118,7 +118,7 @@ export function ProvidersSection({ doc }: { doc: SettingsDocument }) {
           type="button"
           onClick={() => setAdding(true)}
           className={cn(
-            "flex h-9 w-full items-center gap-2 rounded-lg px-3 text-[13px] text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground",
+            "flex h-9 w-full items-center gap-2 rounded-lg px-3 text-ui text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground",
             adding && "bg-accent text-foreground",
           )}
         >
@@ -189,8 +189,8 @@ function AddProvider({
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-[15px] font-semibold">添加供应商</h3>
-        <p className="mt-1 text-[12.5px] text-muted-foreground">
+        <h3 className="text-title font-semibold">添加供应商</h3>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
           填好地址与密钥后会自动从供应商拉取可用模型，勾选即可加入。
         </p>
       </div>
@@ -204,12 +204,12 @@ function AddProvider({
             value={id}
             onChange={(event) => setId(event.target.value)}
             placeholder="例如 openai、deepseek"
-            className="h-8 rounded-lg text-[13px] shadow-none"
+            className="h-8 rounded-lg text-ui shadow-none"
           />
         </Labeled>
         <Labeled label="API 格式">
           <Select value={api} onValueChange={setApi}>
-            <SelectTrigger size="sm" className="h-8 w-full rounded-lg text-[13px] shadow-none">
+            <SelectTrigger size="sm" className="h-8 w-full rounded-lg text-ui shadow-none">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -226,7 +226,7 @@ function AddProvider({
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
             placeholder="https://api.example.com/v1"
-            className="h-8 rounded-lg font-mono text-[12.5px] shadow-none"
+            className="h-8 rounded-lg font-mono text-xs shadow-none"
             spellCheck={false}
           />
         </Labeled>
@@ -236,7 +236,7 @@ function AddProvider({
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
             autoComplete="off"
-            className="h-8 rounded-lg text-[13px] shadow-none"
+            className="h-8 rounded-lg text-ui shadow-none"
           />
         </Labeled>
       </div>
@@ -268,13 +268,11 @@ function Labeled({
 }) {
   return (
     <div className="grid grid-cols-[96px_1fr] items-start gap-3">
-      <span className="pt-1.5 text-[13px] text-muted-foreground">{label}</span>
+      <span className="pt-1.5 text-ui text-muted-foreground">{label}</span>
       <div className="space-y-1">
         {children}
         {hint && (
-          <p className={cn("text-[11.5px]", error ? "text-destructive" : "text-text-tertiary")}>
-            {hint}
-          </p>
+          <p className={cn("text-xs", error ? "text-destructive" : "text-text-tertiary")}>{hint}</p>
         )}
       </div>
     </div>
@@ -343,8 +341,8 @@ function ProviderDetail({
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h3 className="truncate text-[15px] font-semibold">{id}</h3>
-          <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          <h3 className="truncate text-title font-semibold">{id}</h3>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
             {explicit
               ? "连接参数与模型改动会立即保存。"
               : "这个供应商定义在全局配置里，这里只能覆盖部分字段。"}
@@ -418,7 +416,7 @@ function ProviderDetail({
 
         <div className="divide-y divide-border-subtle overflow-hidden rounded-xl bg-card ring-1 ring-inset ring-border-subtle">
           {models.length === 0 && (
-            <p className="px-4 py-6 text-center text-[13px] text-text-tertiary">
+            <p className="px-4 py-6 text-center text-ui text-text-tertiary">
               还没有模型。点「从供应商获取」，或在下方手动添加模型 ID。
             </p>
           )}
@@ -480,19 +478,12 @@ function ModelRow({
               open && "rotate-90",
             )}
           />
-          <span className="min-w-0 truncate font-mono text-[12.5px] text-foreground">
-            {modelId}
-          </span>
-          {isDefault && (
-            <span className="shrink-0 rounded bg-brand/10 px-1.5 py-px text-[10.5px] font-medium text-brand">
-              主模型
-            </span>
-          )}
+          <span className="min-w-0 truncate font-mono text-xs text-foreground">{modelId}</span>
+          {isDefault && <Badge variant="brand">主模型</Badge>}
           <span className="ml-auto flex shrink-0 items-center gap-2 text-text-tertiary">
-            {info.reasoning === true && <BrainIcon className="size-3.5" aria-label="支持思考" />}
             {image && <ImageIcon className="size-3.5" aria-label="支持图片" />}
             {context && (
-              <span className="font-mono text-[11.5px] tabular-nums">{compactTokens(context)}</span>
+              <span className="font-mono text-xs tabular-nums">{compactTokens(context)}</span>
             )}
           </span>
         </button>
@@ -546,7 +537,7 @@ function ManualAdd({ providerId, existing }: { providerId: string; existing: str
         onKeyDown={(event) => event.key === "Enter" && add()}
         placeholder="手动添加模型 ID"
         spellCheck={false}
-        className="h-7 min-w-0 flex-1 bg-transparent font-mono text-[12.5px] outline-none placeholder:font-sans placeholder:text-text-tertiary"
+        className="h-7 min-w-0 flex-1 bg-transparent font-mono text-xs outline-none placeholder:font-sans placeholder:text-text-tertiary"
       />
       {id && (
         <Button size="xs" variant="ghost" disabled={existing.includes(id)} onClick={add}>
@@ -622,7 +613,7 @@ function DiscoveryPanel({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder={`在 ${candidates.length} 个模型中搜索`}
-          className="h-7 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-text-tertiary"
+          className="h-7 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-text-tertiary"
         />
         <button
           type="button"
@@ -650,7 +641,7 @@ function DiscoveryPanel({
               {/* biome-ignore lint/a11y/noLabelWithoutControl: Radix Checkbox 渲染为 button，被 label 包裹即可点整行切换 */}
               <label
                 className={cn(
-                  "flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px]",
+                  "flex h-8 items-center gap-2.5 rounded-md px-2 text-ui",
                   added ? "opacity-50" : "cursor-pointer hover:bg-surface-hover",
                 )}
               >
@@ -662,12 +653,12 @@ function DiscoveryPanel({
                     onCheckedChange={() => toggle(model.id)}
                   />
                 )}
-                <span className="min-w-0 truncate font-mono text-[12.5px]">{model.id}</span>
+                <span className="min-w-0 truncate font-mono text-xs">{model.id}</span>
                 {model.name && model.name !== model.id && (
                   <span className="min-w-0 truncate text-xs text-text-tertiary">{model.name}</span>
                 )}
                 {added && (
-                  <span className="ml-auto shrink-0 text-[11px] text-text-tertiary">已添加</span>
+                  <span className="ml-auto shrink-0 text-2xs text-text-tertiary">已添加</span>
                 )}
               </label>
             </li>
