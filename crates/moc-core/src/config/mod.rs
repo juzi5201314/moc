@@ -831,7 +831,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_levels_missing_environment_and_invalid_toml() {
-        assert!("ultra".parse::<ThinkingLevel>().is_err());
+        assert!("Ultra".parse::<ThinkingLevel>().is_err());
+        assert!("x:y".parse::<ThinkingLevel>().is_err());
         let dir = tempfile::tempdir().expect("临时目录");
         let home = dir.path().join("home");
         fs::create_dir_all(&home).expect("创建 home");

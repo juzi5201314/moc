@@ -549,7 +549,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "thinking_levels" => (
                 "可选思考等级",
-                "支持 off、low、medium、high、xhigh、max（也支持中文低、中、高，用逗号或换行分隔；留空使用默认等级）。",
+                "勾选 low、medium、high、xhigh、max，也可添加自定义等级（小写字母、数字和 - _ .）；第一项为默认等级，off 始终可用；全部取消使用默认等级。",
             ),
             "input" => (
                 "输入模态",
@@ -767,7 +767,7 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             "enabled_value" => ("开启值", "表示开启思考的取值。"),
             "disabled_value" => ("关闭值", "表示关闭思考的取值。"),
             "effort_field" => ("强度字段名", "请求中思考强度的字段名；留空不发送。"),
-            "effort_map" => ("等级映射", "JSON：把通用思考等级映射为上游接受的值。"),
+            "effort_map" => ("等级映射", "把思考等级（含自定义等级）映射为上游接受的值；未映射的等级原样发送。"),
             "toggle_extra" => ("思考附加字段", "JSON：追加到思考对象内部的字段。"),
             _ => (key, "自定义配置项；修改前请确认该服务接受的值。"),
         },

@@ -170,10 +170,10 @@ impl Default for ThinkingWire {
 }
 
 impl ThinkingWire {
-    /// 按 [`Effort`] 取值，未配置改写时用小写原名。
-    pub(crate) fn effort_value(&self, effort: Effort) -> String {
+    /// 按 [`Effort`] 取值，未配置改写时用强度原名。
+    pub(crate) fn effort_value(&self, effort: &Effort) -> String {
         self.effort_map
-            .get(&effort)
+            .get(effort)
             .cloned()
             .unwrap_or_else(|| effort.as_str().to_owned())
     }
@@ -325,18 +325,19 @@ impl LlmConfig {
                 self.wire.thinking.effort_field.as_ref()?;
                 reasoning
                     .effort
+                    .as_ref()
                     .map(|effort| self.wire.thinking.effort_value(effort))
             }
             Protocol::OpenAiResponses => {
                 if reasoning.enabled {
-                    reasoning.effort.map(|effort| effort.as_str().to_owned())
+                    reasoning.effort.as_ref().map(|effort| effort.as_str().to_owned())
                 } else {
                     Some(Effort::None.as_str().to_owned())
                 }
             }
             Protocol::AnthropicMessages => {
                 if reasoning.enabled {
-                    reasoning.effort.map(|effort| effort.as_str().to_owned())
+                    reasoning.effort.as_ref().map(|effort| effort.as_str().to_owned())
                 } else {
                     None
                 }

@@ -421,10 +421,11 @@ pub enum ResponseFormat {
 
 /// 推理强度。
 ///
-/// 线上默认取变体名的小写形式（`xhigh` / `max`），厂商差异由
-/// [`crate::config::ThinkingWire::effort_map`] 改写。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// 内置强度在线上默认取小写名（`xhigh` / `max`），厂商差异由
+/// [`crate::config::ThinkingWire::effort_map`] 改写；`Custom` 承载配置里的自定义
+/// 等级名并原样发送。序列化形式统一是字符串。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum Effort {
     /// 关闭推理。
     None,
@@ -440,11 +441,13 @@ pub enum Effort {
     XHigh,
     /// 最高强度。
     Max,
+    /// 自定义强度名；经 [`Effort::from`] 构造时不会与内置名重复。
+    Custom(String),
 }
 
 impl Effort {
     /// 线上默认字符串。
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Effort::None => "none",
             Effort::Minimal => "minimal",
@@ -453,6 +456,32 @@ impl Effort {
             Effort::High => "high",
             Effort::XHigh => "xhigh",
             Effort::Max => "max",
+            Effort::Custom(name) => name,
+        }
+    }
+}
+
+impl From<String> for Effort {
+    /// 内置名归一到对应变体，其余名字作为自定义强度。
+    fn from(name: String) -> Self {
+        match name.as_str() {
+            "none" => Effort::None,
+            "minimal" => Effort::Minimal,
+            "low" => Effort::Low,
+            "medium" => Effort::Medium,
+            "high" => Effort::High,
+            "xhigh" => Effort::XHigh,
+            "max" => Effort::Max,
+            _ => Effort::Custom(name),
+        }
+    }
+}
+
+impl From<Effort> for String {
+    fn from(effort: Effort) -> Self {
+        match effort {
+            Effort::Custom(name) => name,
+            builtin => builtin.as_str().to_owned(),
         }
     }
 }

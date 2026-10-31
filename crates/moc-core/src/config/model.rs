@@ -292,8 +292,10 @@ fn default_instruction_system() -> Vec<String> {
     ]
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// 思考等级。内置等级之外允许自定义名（如 `ultra`），原样作为推理强度发送；
+/// 自定义名是否可用由模型的 `thinking_levels` 声明决定。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
 pub enum ThinkingLevel {
     Off,
     Low,
@@ -301,10 +303,12 @@ pub enum ThinkingLevel {
     High,
     Xhigh,
     Max,
+    /// 自定义等级名；经 [`str::parse`] 构造时已校验字符集且不与内置名重复。
+    Custom(String),
 }
 
 impl ThinkingLevel {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::Off => "off",
             Self::Low => "low",
@@ -312,18 +316,20 @@ impl ThinkingLevel {
             Self::High => "high",
             Self::Xhigh => "xhigh",
             Self::Max => "max",
+            Self::Custom(name) => name,
         }
     }
 
-    pub fn effort(self) -> Option<Effort> {
-        match self {
-            Self::Off => Some(Effort::None),
-            Self::Low => Some(Effort::Low),
-            Self::Medium => Some(Effort::Medium),
-            Self::High => Some(Effort::High),
-            Self::Xhigh => Some(Effort::XHigh),
-            Self::Max => Some(Effort::Max),
-        }
+    pub fn effort(&self) -> Option<Effort> {
+        Some(match self {
+            Self::Off => Effort::None,
+            Self::Low => Effort::Low,
+            Self::Medium => Effort::Medium,
+            Self::High => Effort::High,
+            Self::Xhigh => Effort::XHigh,
+            Self::Max => Effort::Max,
+            Self::Custom(name) => Effort::from(name.clone()),
+        })
     }
 }
 
@@ -338,10 +344,28 @@ impl std::str::FromStr for ThinkingLevel {
             "high" => Ok(Self::High),
             "xhigh" => Ok(Self::Xhigh),
             "max" => Ok(Self::Max),
+            // 自定义名会出现在 `供应商/模型:等级` 写法与请求体里：只收小写 ASCII 标识符，
+            // 避免与分隔符冲突，也避免大小写变体被当成不同等级。
+            _ if !value.is_empty()
+                && value.len() <= 32
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_.".contains(&byte)
+                }) =>
+            {
+                Ok(Self::Custom(value.to_owned()))
+            }
             _ => Err(CoreError::Config(format!(
-                "未知的思考等级 {value}；可用值：off、low、medium、high、xhigh、max"
+                "思考等级“{value}”不合法：只能使用小写字母、数字和 - _ .，最长 32 个字符"
             ))),
         }
+    }
+}
+
+impl TryFrom<String> for ThinkingLevel {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 
@@ -655,7 +679,7 @@ fn effective_thinking_levels(model: &ModelDocument) -> Vec<ThinkingLevel> {
         .unwrap_or_else(default_thinking_levels)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct ModelSelector<'a> {
     pub provider_id: &'a str,
     pub model_id: &'a str,
@@ -718,7 +742,7 @@ pub(super) fn resolve_one(
     let thinking_levels = effective_thinking_levels(model);
     let default_level = thinking_levels
         .first()
-        .copied()
+        .cloned()
         .unwrap_or(ThinkingLevel::Off);
     let level = parsed.level.or(fallback_level).unwrap_or(default_level);
     if model.reasoning && level != ThinkingLevel::Off && !thinking_levels.contains(&level) {
@@ -788,8 +812,8 @@ pub(super) fn all_models(providers: &BTreeMap<String, ResolvedProvider>) -> Vec<
     for (provider_id, provider) in providers {
         for (model_id, model) in &provider.models {
             let level = effective_thinking_levels(model)
-                .first()
-                .copied()
+                .into_iter()
+                .next()
                 .unwrap_or(ThinkingLevel::Off);
             result.push(provider.resolve_model(provider_id, model_id, model, level));
         }
@@ -912,7 +936,11 @@ mod tests {
         assert_eq!(selector.provider_id, "cpa-cx");
         assert_eq!(selector.model_id, "ag/gpt-5.6-sol");
         assert_eq!(selector.level, Some(ThinkingLevel::Xhigh));
-        assert!(ModelSelector::parse("provider/model:invalid").is_err());
+        let custom = ModelSelector::parse("provider/model:ultra-2").expect("自定义等级合法");
+        assert_eq!(custom.level, Some(ThinkingLevel::Custom("ultra-2".into())));
+        assert_eq!(custom.level.and_then(|level| level.effort()), Some(Effort::Custom("ultra-2".into())));
+        assert!(ModelSelector::parse("provider/model:Ultra").is_err());
+        assert!(ModelSelector::parse("provider/model:").is_err());
     }
 
     #[test]
