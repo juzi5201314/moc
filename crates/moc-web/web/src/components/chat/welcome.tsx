@@ -128,10 +128,6 @@ export function WelcomeView({ sessionId }: { sessionId: string }) {
             <WorkspaceSwitch sessionId={sessionId} />
           </div>
           <ComposerBar sessionId={sessionId} inline />
-          <p className="text-center text-xs text-text-tertiary">
-            <kbd className="font-sans">/</kbd> 命令 · <kbd className="font-sans">!</kbd> 执行 shell
-            · 粘贴或拖入图片 · <kbd className="font-sans">Ctrl K</kbd> 命令面板
-          </p>
         </div>
       </div>
     </div>
