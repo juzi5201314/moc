@@ -27,7 +27,7 @@ fn test_combo_01_queue_and_slash_palette() {
     ]);
     let prompt_area = Rect::new(0, 25, 100, 3);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut comp, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(rows.iter().any(|r| r.contains("help")));

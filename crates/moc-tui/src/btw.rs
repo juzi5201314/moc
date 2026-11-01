@@ -88,6 +88,8 @@ pub struct BtwState {
     pub expanded: bool,
     pub area: Rect,
     pub scroll_max: usize,
+    /// 面板底边提示条上的可点击键位（上一帧绘制登记）；点中先聚焦面板再按该键。
+    pub key_hits: Vec<crate::render::labels::KeyHit>,
 }
 
 impl BtwState {
@@ -431,6 +433,16 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent) -> bool {
             app.focus = Focus::Btw;
             app.selection = None;
             app.completion = None;
+            let position = (mouse.column, mouse.row).into();
+            if let Some(hit) = app
+                .btw
+                .key_hits
+                .iter()
+                .copied()
+                .find(|hit| hit.area.contains(position))
+            {
+                handle_key(app, hit.modifiers, hit.code);
+            }
         }
         MouseEventKind::ScrollUp => scroll(app, 3),
         MouseEventKind::ScrollDown => scroll(app, -3),

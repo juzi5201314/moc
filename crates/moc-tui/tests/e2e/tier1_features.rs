@@ -95,7 +95,7 @@ fn test_f1_04_slash_completion_menu_has_solid_background() {
         sample_custom_completion(vec![sample_slash_candidate("/help", "显示帮助")]);
     let prompt_area = Rect::new(5, 18, 70, 4);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut completion, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let help_row = rows
@@ -600,7 +600,7 @@ fn test_f7_01_long_command_greater_than_14_chars_does_not_collide_with_descripti
     )]);
     let prompt_area = Rect::new(5, 18, 90, 4);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut completion, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let cmd_row = rows
@@ -627,7 +627,7 @@ fn test_f7_02_dynamic_column_padding_at_least_two_spaces() {
     ]);
     let prompt_area = Rect::new(5, 15, 90, 4);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut completion, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let help_row = rows.iter().find(|r| r.contains("/help")).expect("help row");
@@ -644,7 +644,7 @@ fn test_f7_03_standard_short_commands_maintain_clean_layout() {
     let mut completion = sample_custom_completion(vec![sample_slash_candidate("/clear", "清屏")]);
     let prompt_area = Rect::new(2, 14, 76, 4);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut completion, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let clear_row = rows
@@ -663,7 +663,7 @@ fn test_f7_04_mixed_command_lengths_column_aligned() {
     ]);
     let prompt_area = Rect::new(5, 15, 90, 4);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut completion, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(
@@ -685,7 +685,7 @@ fn test_f7_05_long_command_descriptions_not_prematurely_truncated() {
     )]);
     let prompt_area = Rect::new(5, 15, 110, 4);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut completion, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut completion, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let cmd_row = rows

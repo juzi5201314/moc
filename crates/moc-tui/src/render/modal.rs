@@ -15,6 +15,7 @@ use crate::modal::{Modal, PlanPane, PlanReviewState, SessionScope};
 use crate::render::wrap::{
     clip_line, fit, fit_line, line_width, str_width, truncate, truncate_head,
 };
+use crate::render::labels::KeyHit;
 use crate::render::{context_content, labels, overlay};
 use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
@@ -28,19 +29,19 @@ pub fn completion_menu_height(candidates_len: usize, prompt_y: u16) -> u16 {
     (rows + 3).min(prompt_y)
 }
 
-/// 斜杠补全菜单：贴着输入框上沿，选中行反色。
+/// 斜杠补全菜单：贴着输入框上沿，选中行反色；返回 footer 上可点击键位的命中区。
 pub fn draw_completion_menu(
     frame: &mut Frame,
     completion: &mut CompletionState,
     prompt_area: Rect,
-) {
+) -> Vec<KeyHit> {
     let total = completion.candidates.len();
     let max_visible = 20usize.min(usize::from(prompt_area.y.saturating_sub(3)));
     let visible = total.min(max_visible);
     let width = prompt_area.width.clamp(20, 72);
     let height = completion_menu_height(total, prompt_area.y);
     if height == 0 {
-        return;
+        return Vec::new();
     }
     let area = Rect {
         x: prompt_area.x,
@@ -114,12 +115,23 @@ pub fn draw_completion_menu(
             Style::new().fg(theme.gray_dim),
         )));
     }
-    lines.push(overlay::footer(
+    let footer = overlay::footer(
         &[("↑↓", "选择"), ("tab/enter", "确认"), ("esc", "关闭")],
         content_width,
         theme,
-    ));
+    );
+    // footer 是边框内最后一行正文：左边框 + 内边距之后起排。
+    let footer_y = area.y + 1 + u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let keys = if footer_y < area.bottom().saturating_sub(1) {
+        footer
+            .hits(area.x + 1 + overlay::CARD_PAD_X, footer_y)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    lines.push(footer.line);
     frame.render_widget(Paragraph::new(lines).block(overlay::panel(theme)), area);
+    keys
 }
 
 /// 就地引擎菜单：右缘对齐图例里的引擎名，整体贴在它上方（右键菜单那种小浮层）。
@@ -202,15 +214,21 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
 #[derive(Default)]
 struct ModalBody {
     lines: Vec<Line<'static>>,
-    footer: Option<Line<'static>>,
+    footer: Option<overlay::Footer>,
     /// (条目下标, 正文行号)。
     hits: Vec<(usize, usize)>,
+    /// 思考等级芯片：(levels 下标, 正文行号, 起始列, 列宽)。
+    level_hits: Vec<(usize, usize, u16, u16)>,
 }
 
 /// 居中模态卡片。
 pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     app.plan_model_area = Rect::default();
     app.modal_item_hits.clear();
+    app.modal_level_hits.clear();
+    app.modal_card_area = Rect::default();
+    // 模态是阻塞层：底下界面登记的键位一律作废，只留模态自己的。
+    app.key_hits.clear();
     let area = frame.area();
     if area.width < 20 || area.height < 6 {
         return;
@@ -263,19 +281,37 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     }
     .render(frame, area, width, theme);
     // 第 i 行正文就在 `layout.body.y + i`：卡片不二次折行，行号即屏幕行。
+    let row_y = |row: usize| -> Option<u16> {
+        let y = layout.body.y.checked_add(u16::try_from(row).ok()?)?;
+        (y < layout.body.bottom()).then_some(y)
+    };
     app.modal_item_hits = body
         .hits
         .into_iter()
         .filter_map(|(index, row)| {
-            let y = layout.body.y.checked_add(u16::try_from(row).ok()?)?;
-            (y < layout.body.bottom()).then(|| {
-                (
-                    index,
-                    Rect::new(layout.area.x + 1, y, layout.area.width.saturating_sub(2), 1),
-                )
-            })
+            Some((
+                index,
+                Rect::new(
+                    layout.area.x + 1,
+                    row_y(row)?,
+                    layout.area.width.saturating_sub(2),
+                    1,
+                ),
+            ))
         })
         .collect();
+    app.modal_level_hits = body
+        .level_hits
+        .into_iter()
+        .filter_map(|(index, row, start, width)| {
+            Some((
+                index,
+                Rect::new(layout.body.x.saturating_add(start), row_y(row)?, width, 1),
+            ))
+        })
+        .collect();
+    app.modal_card_area = layout.area;
+    app.key_hits = layout.keys;
     if let Modal::Plan { state } = modal {
         let prefix_width =
             u16::try_from(str_width(PLAN_MODEL_PREFIX)).expect("固定标签宽度可表示为 u16");
@@ -298,7 +334,8 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
             app.plan_row_map = window;
         }
         if state.editor.is_some() {
-            draw_plan_editor(frame, app, layout.area, area);
+            // 编辑器盖在审阅卡片上：只有它的键位可点。
+            app.key_hits = draw_plan_editor(frame, app, layout.area, area);
         }
     }
 }
@@ -348,6 +385,7 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     .render(frame, area, width, theme);
     app.ask_card_area = card.area;
+    app.key_hits = card.keys;
     let body = card.body;
     let row_y = |row: usize| -> Option<u16> {
         let y = body.y.checked_add(u16::try_from(row).ok()?)?;
@@ -437,7 +475,8 @@ fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
     };
     // 内宽 = 边框 2 + 左右内边距 2。
     let inner = usize::from(area.width.saturating_sub(4));
-    let right = labels::hints(&[("tab", "展开作答"), ("esc", "取消")], usize::MAX);
+    let (right, right_keys) =
+        labels::hint_layout(&[("tab", "展开作答"), ("esc", "取消")], usize::MAX);
     let right_width = str_width(&right);
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         "▸ ",
@@ -479,12 +518,17 @@ fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
             .fg(theme.text_primary)
             .add_modifier(Modifier::BOLD),
     ));
+    let inner_rows = usize::from(area.height.saturating_sub(2));
+    let top_pad = inner_rows.saturating_sub(1) / 2;
+    let mut keys = Vec::new();
     if used + right_width < inner {
+        // 细条右端的键位同样可点：Tab 展开作答、Esc 取消整单。
+        let x = area.x + 2 + u16::try_from(inner - right_width).unwrap_or(u16::MAX);
+        let y = area.y + 1 + u16::try_from(top_pad).unwrap_or(u16::MAX);
+        keys.extend(right_keys.into_iter().map(|key| key.at(x, y)));
         spans.push(Span::from(" ".repeat(inner - used - right_width)));
         spans.push(Span::styled(right, Style::new().fg(theme.gray_dim)));
     }
-    let inner_rows = usize::from(area.height.saturating_sub(2));
-    let top_pad = inner_rows.saturating_sub(1) / 2;
     let mut lines = vec![Line::from(String::new()); top_pad];
     lines.push(Line::from(spans));
     overlay::paint_opaque(
@@ -503,6 +547,7 @@ fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
         area,
     );
     app.ask_strip_area = area;
+    app.key_hits = keys;
 }
 
 /// 快捷键帮助：键位列与描述列之间的间距（格）。
@@ -890,7 +935,10 @@ const ASK_PREVIEW_SEPARATOR: &str = " │ ";
 #[cfg(test)]
 fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<Line<'static>> {
     let body = modal_body(app, modal, width, max_lines);
-    body.lines.into_iter().chain(body.footer).collect()
+    body.lines
+        .into_iter()
+        .chain(body.footer.map(|footer| footer.line))
+        .collect()
 }
 
 /// 列表窗口起点：沿用选择器自己的偏移，但保证选中项落在 `visible` 行之内。
@@ -941,6 +989,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
     let theme = app.theme;
     let dim = Style::new().fg(theme.gray_dim);
     let mut hits = Vec::new();
+    let mut level_hits = Vec::new();
     let (mut lines, footer) = match modal {
         Modal::Permission {
             params,
@@ -1057,11 +1106,15 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     ]));
                 }
             } else {
-                lines.extend(
-                    level_lines(theme, highlighted, resolved.as_deref(), width)
+                let (rows, chips) = level_lines(theme, highlighted, resolved.as_deref(), width);
+                // 芯片在等级条的第二行；整行被裁到正文宽度，越界的芯片本就不会画出来。
+                let chip_row = lines.len() + 1;
+                level_hits.extend(
+                    chips
                         .into_iter()
-                        .map(|line| clip_line(line, width)),
+                        .map(|(index, start, chip_width)| (index, chip_row, start, chip_width)),
                 );
+                lines.extend(rows.into_iter().map(|line| clip_line(line, width)));
             }
             if gaps {
                 lines.push(Line::from(String::new()));
@@ -1318,6 +1371,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 ));
             }
             for (index, text) in ["切换并压缩", "取消"].iter().enumerate() {
+                hits.push((index, lines.len()));
                 lines.push(overlay::list_row(text, index == *option, width, theme));
             }
             let items: &[(&str, &str)] = if error.is_some() {
@@ -1328,7 +1382,9 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             (lines, overlay::footer(items, width, theme))
         }
         // 回退视图与上下文正文窗自带布局，`draw_modal` 在此之前就已分派走。
-        Modal::Rewind { .. } | Modal::ContextContent { .. } => (Vec::new(), Line::default()),
+        Modal::Rewind { .. } | Modal::ContextContent { .. } => {
+            (Vec::new(), overlay::Footer::default())
+        }
         Modal::Sessions {
             sessions,
             cwd,
@@ -1451,6 +1507,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     }
                     used += heights[index];
                     let status = crate::render::scrollback::agent_status_label(agent.status);
+                    hits.push((index, lines.len()));
                     lines.push(overlay::list_row(
                         &format!(
                             "{}{}{status}{}{}",
@@ -1464,6 +1521,8 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                         theme,
                     ));
                     if let Some(message) = &agent.last_message {
+                        // 最近消息行属于同一项：点它与点标题行等价。
+                        hits.push((index, lines.len()));
                         lines.push(Line::from(Span::styled(
                             format!(
                                 "    {}",
@@ -1498,6 +1557,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
         lines,
         footer: Some(footer),
         hits,
+        level_hits,
     }
 }
 
@@ -1505,7 +1565,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
 #[derive(Default)]
 struct AskLayout {
     lines: Vec<Line<'static>>,
-    footer: Line<'static>,
+    footer: overlay::Footer,
     /// (选项下标, 行号)；`options.len()` 下标代表自定义行。
     option_hits: Vec<(usize, usize)>,
     /// (问题下标, 行号, 起始列, 结束列)：顶部问题导航条的点击范围。
@@ -2053,12 +2113,13 @@ fn ask_confirm_layout(
 ///
 /// 标签行只负责命名，重心落在芯片行：选中项反白成强调色，其余降一档灰，`│` 分隔线再暗一档，
 /// 眼睛先读等级、后读分隔。条目没有可选等级（角色伪值）时照旧占两行、显示占位。
+/// 另返回芯片行上每个可见芯片的 `(levels 下标, 起始列, 列宽)`，鼠标点芯片即切档。
 fn level_lines(
     theme: &Theme,
     entry: Option<&crate::modal::ModelEntry>,
     resolved: Option<&str>,
     width: usize,
-) -> [Line<'static>; 2] {
+) -> ([Line<'static>; 2], Vec<(usize, u16, u16)>) {
     let corner_style = Style::new().fg(theme.border_active);
     let label = Line::from(vec![
         Span::styled("╭ ".to_owned(), corner_style),
@@ -2071,21 +2132,24 @@ fn level_lines(
     ]);
     let levels = entry.map_or(&[][..], |entry| entry.levels.as_slice());
     if levels.is_empty() {
-        return [
-            label,
-            Line::from(vec![
-                Span::styled("╰ ".to_owned(), corner_style),
-                Span::styled(
-                    if entry.is_some() {
-                        "— 不适用"
-                    } else {
-                        "—"
-                    }
-                    .to_owned(),
-                    Style::new().fg(theme.gray_dim),
-                ),
-            ]),
-        ];
+        return (
+            [
+                label,
+                Line::from(vec![
+                    Span::styled("╰ ".to_owned(), corner_style),
+                    Span::styled(
+                        if entry.is_some() {
+                            "— 不适用"
+                        } else {
+                            "—"
+                        }
+                        .to_owned(),
+                        Style::new().fg(theme.gray_dim),
+                    ),
+                ]),
+            ],
+            Vec::new(),
+        );
     }
     let bracket_style = Style::new().fg(theme.text_secondary);
     let separator_style = Style::new().fg(theme.gray_dim);
@@ -2097,7 +2161,8 @@ fn level_lines(
     ];
     let mut used = str_width("╰ [");
     let mut shown = 0usize;
-    for level in levels {
+    let mut chips = Vec::with_capacity(levels.len());
+    for (index, level) in levels.iter().enumerate() {
         let chip = format!(" {level} ");
         let separator = usize::from(shown > 0);
         if used + str_width(&chip) + separator + 1 > width {
@@ -2105,6 +2170,12 @@ fn level_lines(
         }
         if shown > 0 {
             spans.push(Span::styled("│".to_owned(), separator_style));
+        }
+        if let (Ok(start), Ok(chip_width)) = (
+            u16::try_from(used + separator),
+            u16::try_from(str_width(&chip)),
+        ) {
+            chips.push((index, start, chip_width));
         }
         used += str_width(&chip) + separator;
         spans.push(Span::styled(
@@ -2130,7 +2201,7 @@ fn level_lines(
     } else {
         spans.push(Span::styled("]".to_owned(), bracket_style));
     }
-    [label, Line::from(spans)]
+    ([label, Line::from(spans)], chips)
 }
 
 /// 规格卡片出现的正文宽度下限：再窄就把整行让给候选列表，不再分栏。
@@ -2394,7 +2465,7 @@ fn plan_lines(
     max_lines: usize,
     theme: &Theme,
     hits: &mut Vec<(usize, usize)>,
-) -> (Vec<Line<'static>>, Line<'static>) {
+) -> (Vec<Line<'static>>, overlay::Footer) {
     let mut lines = Vec::with_capacity(max_lines);
     lines.push(Line::from(vec![
         Span::styled(PLAN_MODEL_PREFIX, Style::new().fg(theme.text_secondary)),
@@ -2666,14 +2737,14 @@ fn wrap_input(input: &crate::widgets::prompt::PromptState, width: usize) -> Wrap
     }
 }
 
-/// 批注编辑器：居中覆盖在模态卡片之上，光标落在正文里。
-fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) {
+/// 批注编辑器：居中覆盖在模态卡片之上，光标落在正文里；返回 footer 键位的命中区。
+fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) -> Vec<KeyHit> {
     let theme = app.theme;
     let Some(Modal::Plan { state }) = &app.modal else {
-        return;
+        return Vec::new();
     };
     let Some(editor) = &state.editor else {
-        return;
+        return Vec::new();
     };
     let width = area
         .width
@@ -2743,6 +2814,7 @@ fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) 
         x.min(layout.body.right().saturating_sub(1)),
         y.min(layout.body.bottom().saturating_sub(1)),
     ));
+    layout.keys
 }
 
 #[cfg(test)]
@@ -2884,7 +2956,7 @@ mod tests {
                 body.lines.len() <= budget,
                 "{width}/{budget} 超出预算：{texts:?}"
             );
-            let footer = line_text(body.footer.as_ref().expect("缺少提示条"));
+            let footer = line_text(&body.footer.as_ref().expect("缺少提示条").line);
             for text in texts.iter().chain([&footer]) {
                 assert!(
                     crate::render::wrap::str_width(text) <= width,

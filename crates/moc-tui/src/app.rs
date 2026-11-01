@@ -193,6 +193,17 @@ pub struct App {
     pub permission_tag_area: Rect,
     /// 模态选项行命中矩形（Permission、Model、Sessions 等）。
     pub modal_item_hits: Vec<(usize, Rect)>,
+    /// 模型选择器思考等级芯片的命中矩形：`(高亮模型 levels 下标, 区域)`。
+    pub modal_level_hits: Vec<(usize, Rect)>,
+    /// 通用模态卡片的外框；点到卡片外即关闭（仅浏览/选择类模态）。
+    pub modal_card_area: Rect,
+    /// 本帧画出的可点击键位（提示条、回退 dock 等）：点中等价于按下该键。
+    /// 模态绘制时整表重建，底层界面的键位不会漏到模态上。
+    pub key_hits: Vec<crate::render::labels::KeyHit>,
+    /// 输入框下边框左端提示（空闲「帮助」、运行中「停止」）的命中区。
+    pub legend_tip_area: Rect,
+    /// 聚焦子代理时头部「Esc 返回」的命中区。
+    pub header_back_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
     pub plan_model_area: Rect,
     /// 计划批注视图的正文区域（鼠标行选择换算用）。
@@ -499,6 +510,11 @@ impl App {
             model_tag_area: Rect::default(),
             permission_tag_area: Rect::default(),
             modal_item_hits: Vec::new(),
+            modal_level_hits: Vec::new(),
+            modal_card_area: Rect::default(),
+            key_hits: Vec::new(),
+            legend_tip_area: Rect::default(),
+            header_back_area: Rect::default(),
             plan_model_area: Rect::default(),
             plan_body_area: Rect::default(),
             plan_row_map: Vec::new(),

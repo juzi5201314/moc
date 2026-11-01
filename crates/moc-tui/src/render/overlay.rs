@@ -78,12 +78,27 @@ pub fn title_span(title: &str, width: usize, theme: &Theme) -> Span<'static> {
     )
 }
 
-/// 卡片/浮层底部的操作提示行：[`super::labels::hints`] 排版、`gray_dim` 着色。
-pub fn footer(items: &[(&str, &str)], width: usize, theme: &Theme) -> Line<'static> {
-    Line::from(Span::styled(
-        super::labels::hints(items, width),
-        Style::new().fg(theme.gray_dim),
-    ))
+/// 卡片/浮层底部的操作提示行：排版好的一行字与其中可点击的键位（列区间相对行首）。
+#[derive(Default)]
+pub struct Footer {
+    pub line: Line<'static>,
+    pub keys: Vec<super::labels::HintKey>,
+}
+
+impl Footer {
+    /// 提示行画在 `(x, y)` 起时各键位的屏幕命中区。
+    pub fn hits(&self, x: u16, y: u16) -> impl Iterator<Item = super::labels::KeyHit> + '_ {
+        self.keys.iter().map(move |key| key.at(x, y))
+    }
+}
+
+/// [`super::labels::hints`] 排版、`gray_dim` 着色的提示行；单键项可点击。
+pub fn footer(items: &[(&str, &str)], width: usize, theme: &Theme) -> Footer {
+    let (text, keys) = super::labels::hint_layout(items, width);
+    Footer {
+        line: Line::from(Span::styled(text, Style::new().fg(theme.gray_dim))),
+        keys,
+    }
 }
 
 /// 列表项：`❯ ` / 两格缩进 + 正文，补满 `width` 列，选中整行反白成同一条色带。
@@ -133,14 +148,16 @@ pub fn max_body_rows(area: Rect, has_footer: bool) -> usize {
 pub struct Card {
     pub title: String,
     pub body: Vec<Line<'static>>,
-    pub footer: Option<Line<'static>>,
+    pub footer: Option<Footer>,
 }
 
-/// 卡片落位：鼠标命中按 `body` 的行号换算（第 i 行正文在 `body.y + i`）。
-#[derive(Debug, Clone, Copy, Default)]
+/// 卡片落位：鼠标命中按 `body` 的行号换算（第 i 行正文在 `body.y + i`），
+/// `keys` 是 footer 上可点击键位的屏幕命中区。
+#[derive(Debug, Clone, Default)]
 pub struct CardLayout {
     pub area: Rect,
     pub body: Rect,
+    pub keys: Vec<super::labels::KeyHit>,
 }
 
 impl Card {
@@ -173,7 +190,7 @@ impl Card {
         debug_assert!(
             self.body
                 .iter()
-                .chain(self.footer.as_ref())
+                .chain(self.footer.as_ref().map(|footer| &footer.line))
                 .all(|line| line_width(line) <= inner_width),
             "卡片正文必须先按 content_width 折行/截断（{inner_width} 列）"
         );
@@ -213,12 +230,21 @@ impl Card {
         let body_bottom = bottom.saturating_sub(footer_rows).max(top);
         let body = Rect::new(x, top, inner_w, body_bottom - top);
         frame.render_widget(Paragraph::new(self.body), body);
+        let mut keys = Vec::new();
         if let Some(footer) = self.footer
             && bottom > top
         {
-            frame.render_widget(Paragraph::new(footer), Rect::new(x, bottom - 1, inner_w, 1));
+            keys.extend(footer.hits(x, bottom - 1));
+            frame.render_widget(
+                Paragraph::new(footer.line),
+                Rect::new(x, bottom - 1, inner_w, 1),
+            );
         }
-        CardLayout { area: rect, body }
+        CardLayout {
+            area: rect,
+            body,
+            keys,
+        }
     }
 }
 

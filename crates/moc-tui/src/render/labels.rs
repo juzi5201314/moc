@@ -9,6 +9,9 @@
 //!
 //! 渲染层不得再手写这些字面量；改文案只改这里。
 
+use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::layout::Rect;
+
 /// 整行或整块被略去时的引导符（`⋯ 还有 3 行`）。
 pub const OMITTED: &str = "⋯";
 /// 同一行内并列信息的分隔符。
@@ -127,6 +130,42 @@ pub fn keys(bindings: &[String]) -> String {
 /// 键为空时只显示动作（`输入搜索`）。放不下 `width` 时**从左往右**丢项，最后一项
 /// 恒保留（再放不下才截断）：调用方把最可省的项写在前面、关闭/确认写在末尾。
 pub fn hints(items: &[(&str, &str)], width: usize) -> String {
+    hint_layout(items, width).0
+}
+
+/// 提示条上一段可点击的「键 动作」：列区间相对提示条起点，点中等价于按下该键。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HintKey {
+    pub start: u16,
+    pub width: u16,
+    pub modifiers: KeyModifiers,
+    pub code: KeyCode,
+}
+
+/// 一块屏幕区域等价于一次按键（提示条上的键位、图例按钮）；渲染每帧重建。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyHit {
+    pub area: Rect,
+    pub modifiers: KeyModifiers,
+    pub code: KeyCode,
+}
+
+impl HintKey {
+    /// 提示条画在 `(x, y)` 起的一行上时，这一段的屏幕命中区。
+    pub fn at(self, x: u16, y: u16) -> KeyHit {
+        KeyHit {
+            area: Rect::new(x.saturating_add(self.start), y, self.width, 1),
+            modifiers: self.modifiers,
+            code: self.code,
+        }
+    }
+}
+
+/// [`hints`] 的排版，同时给出每个可点击项（整段「键 动作」）的列区间。
+///
+/// 只有单一按键的项可点：`↑↓`、`1-9`、`pgup/pgdn`、`e/c` 这类多键或多义的项点了
+/// 不知道该按哪个，保持纯文字；截断后不完整的项也不登记。
+pub fn hint_layout(items: &[(&str, &str)], width: usize) -> (String, Vec<HintKey>) {
     let shown: Vec<String> = items
         .iter()
         .map(|(binding, action)| {
@@ -139,13 +178,53 @@ pub fn hints(items: &[(&str, &str)], width: usize) -> String {
         })
         .collect();
     let mut start = 0;
-    loop {
-        let text = shown[start..].join(SEP);
-        if start + 1 >= shown.len() || super::wrap::str_width(&text) <= width {
-            return super::wrap::truncate(text, width).into_owned();
-        }
+    while start + 1 < shown.len()
+        && super::wrap::str_width(&shown[start..].join(SEP)) > width
+    {
         start += 1;
     }
+    let text = super::wrap::truncate(shown[start..].join(SEP), width).into_owned();
+    let limit = super::wrap::str_width(&text);
+    let mut keys = Vec::new();
+    let mut column = 0usize;
+    for (item, (binding, _)) in shown[start..].iter().zip(&items[start..]) {
+        let item_width = super::wrap::str_width(item);
+        if column + item_width <= limit
+            && let Some((modifiers, code)) = hint_key(binding)
+            && let (Ok(start), Ok(width)) = (u16::try_from(column), u16::try_from(item_width))
+        {
+            keys.push(HintKey {
+                start,
+                width,
+                modifiers,
+                code,
+            });
+        }
+        column += item_width + super::wrap::str_width(SEP);
+    }
+    (text, keys)
+}
+
+/// 提示条键位 → 终端真实上报的按键：`shift+tab` 是 `BackTab`，`shift+x` 是大写 `X`，
+/// 与键盘处理分支的匹配口径一致。
+fn hint_key(binding: &str) -> Option<(KeyModifiers, KeyCode)> {
+    if binding.is_empty() || (binding != "/" && binding.contains('/')) {
+        return None;
+    }
+    let binding = match binding {
+        "del" => "delete",
+        "pgup" => "pageup",
+        "pgdn" => "pagedown",
+        other => other,
+    };
+    let (modifiers, code) = crate::config::parse_key(binding).ok()?;
+    Some(match code {
+        KeyCode::Tab if modifiers == KeyModifiers::SHIFT => (modifiers, KeyCode::BackTab),
+        KeyCode::Char(character) if modifiers.contains(KeyModifiers::SHIFT) => {
+            (modifiers, KeyCode::Char(character.to_ascii_uppercase()))
+        }
+        _ => (modifiers, code),
+    })
 }
 
 fn modifier_name(modifier: &str) -> &'static str {
@@ -191,7 +270,8 @@ fn code_name(code: &str, modified: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{duration, hints, key, keys};
+    use super::{HintKey, duration, hint_layout, hints, key, keys};
+    use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
     fn duration_has_one_format() {
@@ -237,5 +317,41 @@ mod tests {
             hints(&[("pgup/pgdn", "翻页"), ("shift+x", "跳过")], 80),
             "PgUp/PgDn 翻页 · Shift+X 跳过"
         );
+    }
+
+    /// 点击区间必须与画出来的文字逐列对齐，且只登记单键项；键位按终端真实上报口径。
+    #[test]
+    fn hint_layout_maps_single_key_items_to_columns() {
+        let items = [
+            ("↑↓", "移动"),
+            ("shift+x", "跳过"),
+            ("e/c", "展收"),
+            ("shift+tab", "上一问"),
+            ("esc", "关闭"),
+        ];
+        let (text, keys) = hint_layout(&items, 80);
+        assert_eq!(text, hints(&items, 80));
+        let key = |start, width, modifiers, code| HintKey {
+            start,
+            width,
+            modifiers,
+            code,
+        };
+        // 「↑↓ 移动 · 」占 10 列；「Shift+X 跳过 · e/c 展收 · 」之后才是 Shift+Tab。
+        assert_eq!(
+            keys,
+            vec![
+                key(10, 12, KeyModifiers::SHIFT, KeyCode::Char('X')),
+                key(36, 16, KeyModifiers::SHIFT, KeyCode::BackTab),
+                key(55, 8, KeyModifiers::NONE, KeyCode::Esc),
+            ]
+        );
+        // 截断到只剩末项的半截：不完整的项不可点。
+        let (text, keys) = hint_layout(&items, 5);
+        assert_eq!(text, "Esc…");
+        assert!(keys.is_empty());
+        // 丢掉左侧项后区间从新的起点重算。
+        let (_, keys) = hint_layout(&items, 10);
+        assert_eq!(keys, vec![key(0, 8, KeyModifiers::NONE, KeyCode::Esc)]);
     }
 }

@@ -8,6 +8,7 @@
 //! - omp 风格的底部 Dock 操作栏
 
 use chrono::TimeZone;
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -16,6 +17,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::modal::{Modal, RewindState};
+use crate::render::labels::KeyHit;
 use crate::render::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
 
@@ -69,6 +71,7 @@ fn format_short_clock(at_ms: u64) -> String {
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let win = modal_area(area);
+    app.modal_card_area = win;
 
     // 降低外部背景对比度
     frame
@@ -160,8 +163,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     // 2. 主体区（时间线 + 详情）
     draw_body(frame, state, body_area, theme);
 
-    // 3. 底部 Dock 操作栏（omp 风格）
-    draw_dock(frame, state, dock_area, theme);
+    // 3. 底部 Dock 操作栏（omp 风格）；键位提示可点。
+    app.key_hits = draw_dock(frame, state, dock_area, theme);
 }
 
 fn draw_header(
@@ -718,79 +721,113 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
     frame.render_widget(Paragraph::new(detail_lines), content_area);
 }
 
-/// 绘制底部 Dock 操作栏（omp 风格）
-fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) {
+/// 绘制底部 Dock 操作栏（omp 风格）；返回其中可点击键位（Esc / Enter / 搜索）的命中区。
+fn draw_dock(frame: &mut Frame, state: &RewindState, area: Rect, theme: &Theme) -> Vec<KeyHit> {
     if area.height == 0 || area.width == 0 {
-        return;
+        return Vec::new();
     }
 
     let mut spans = Vec::new();
+    let mut keys = Vec::new();
+    let mut column = 0u16;
+    // 逐段累计列宽：带键位的段整段可点，被右缘裁掉的段不登记。
+    let mut push = |span: Span<'static>, key: Option<KeyCode>| {
+        let width = u16::try_from(span.width()).unwrap_or(u16::MAX);
+        if let Some(code) = key
+            && column.saturating_add(width) <= area.width
+        {
+            keys.push(KeyHit {
+                area: Rect::new(area.x + column, area.y, width, 1),
+                modifiers: KeyModifiers::NONE,
+                code,
+            });
+        }
+        column = column.saturating_add(width);
+        spans.push(span);
+    };
+    let sep = || Span::styled(" · ", Style::new().fg(theme.gray_dim));
 
     // 回退徽标
-    spans.push(Span::styled(
-        " ⏪ 回退 ",
-        Style::new()
-            .bg(theme.accent_user)
-            .fg(theme.bg_base)
-            .add_modifier(Modifier::BOLD),
-    ));
-    spans.push(Span::raw(" "));
+    push(
+        Span::styled(
+            " ⏪ 回退 ",
+            Style::new()
+                .bg(theme.accent_user)
+                .fg(theme.bg_base)
+                .add_modifier(Modifier::BOLD),
+        ),
+        None,
+    );
+    push(Span::raw(" "), None);
 
     if state.filtering {
-        spans.push(Span::styled(
-            format!("过滤: \"{}\"", state.query),
-            Style::new()
-                .fg(theme.accent_warning)
-                .add_modifier(Modifier::BOLD),
-        ));
+        push(
+            Span::styled(
+                format!("过滤: \"{}\"", state.query),
+                Style::new()
+                    .fg(theme.accent_warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            None,
+        );
         let matches = state.filtered_indices();
-        spans.push(Span::styled(
-            format!(" (匹配 {}/{})", matches.len(), state.items.len()),
-            Style::new().fg(theme.text_secondary),
-        ));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(
-            "↑↓ 切换匹配",
-            Style::new().fg(theme.text_primary),
-        ));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(
-            "Esc 清除过滤",
-            Style::new().fg(theme.gray_dim),
-        ));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(enter_hint_span(state, theme));
+        push(
+            Span::styled(
+                format!(" (匹配 {}/{})", matches.len(), state.items.len()),
+                Style::new().fg(theme.text_secondary),
+            ),
+            None,
+        );
+        push(sep(), None);
+        push(
+            Span::styled("↑↓ 切换匹配", Style::new().fg(theme.text_primary)),
+            None,
+        );
+        push(sep(), None);
+        push(
+            Span::styled("Esc 清除过滤", Style::new().fg(theme.gray_dim)),
+            Some(KeyCode::Esc),
+        );
+        push(sep(), None);
+        push(enter_hint_span(state, theme), Some(KeyCode::Enter));
     } else {
         if !state.items.is_empty() {
-            spans.push(Span::styled(
-                format!("{}/{} ", state.selected + 1, state.items.len()),
-                Style::new()
-                    .fg(theme.accent_model)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled("· ", Style::new().fg(theme.gray_dim)));
+            push(
+                Span::styled(
+                    format!("{}/{} ", state.selected + 1, state.items.len()),
+                    Style::new()
+                        .fg(theme.accent_model)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                None,
+            );
+            push(Span::styled("· ", Style::new().fg(theme.gray_dim)), None);
         }
-        spans.push(Span::styled(
-            "↑↓/jk 逐条选择",
-            Style::new().fg(theme.text_primary),
-        ));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(
-            "←→/hl 仅跳用户提问",
-            Style::new().fg(theme.accent_user),
-        ));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(
-            "f// 搜索过滤",
-            Style::new().fg(theme.text_secondary),
-        ));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled("Esc 取消", Style::new().fg(theme.gray_dim)));
-        spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-        spans.push(enter_hint_span(state, theme));
+        push(
+            Span::styled("↑↓/jk 逐条选择", Style::new().fg(theme.text_primary)),
+            None,
+        );
+        push(sep(), None);
+        push(
+            Span::styled("←→/hl 仅跳用户提问", Style::new().fg(theme.accent_user)),
+            None,
+        );
+        push(sep(), None);
+        push(
+            Span::styled("f// 搜索过滤", Style::new().fg(theme.text_secondary)),
+            Some(KeyCode::Char('f')),
+        );
+        push(sep(), None);
+        push(
+            Span::styled("Esc 取消", Style::new().fg(theme.gray_dim)),
+            Some(KeyCode::Esc),
+        );
+        push(sep(), None);
+        push(enter_hint_span(state, theme), Some(KeyCode::Enter));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    keys
 }
 
 /// 底部 Dock 的确认键提示：选中已回退条目时是前滚，否则是回退。

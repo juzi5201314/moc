@@ -56,6 +56,7 @@ pub fn split(app: &mut App, area: Rect) -> Rect {
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = app.btw.area;
+    app.btw.key_hits.clear();
     if area.is_empty() {
         return;
     }
@@ -174,7 +175,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         title.push_str(&format!("{SEP}{percent}%"));
     }
     let edge = usize::from(area.width.saturating_sub(4));
-    let footer = labels::hints(
+    let (footer, footer_keys) = labels::hint_layout(
         &[
             ("x", "清空"),
             ("c", "复制"),
@@ -184,6 +185,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ],
         edge.saturating_sub(2),
     );
+    // 底边标题从左角之后起排、前面补一格空白：键位从 `area.x + 2` 开始。
+    let footer_y = area.bottom().saturating_sub(1);
+    let key_hits: Vec<_> = footer_keys
+        .into_iter()
+        .map(|key| key.at(area.x + 2, footer_y))
+        .collect();
     let block = panel
         .title(overlay::title_span(&title, edge, theme))
         .title_bottom(Line::styled(
@@ -191,6 +198,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Style::new().fg(theme.text_secondary),
         ));
     frame.render_widget(block, area);
+    app.btw.key_hits = key_hits;
     if inner.is_empty() {
         return;
     }

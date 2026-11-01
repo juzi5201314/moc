@@ -293,6 +293,33 @@ async fn plan_review_model_picker_changes_execution_model_without_switching_sess
     h.close().await;
 }
 
+/// 审阅卡片的动作行可点：点「继续计划」等同选中后按 Enter（关闭窗口、保持待审）。
+#[tokio::test]
+async fn plan_review_action_rows_accept_mouse_clicks() {
+    let mut h = PlanHarness::new().await;
+    h.write_and_review().await;
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).expect("测试终端");
+    let mut view = render::ScrollbackView::new();
+    terminal
+        .draw(|frame| render::draw(frame, &mut h.app, &mut view))
+        .expect("绘制审阅");
+    let (index, row) = *h.app.modal_item_hits.last().expect("动作行可点");
+    assert_eq!(index, 3, "最后一行是「继续计划」");
+    handle_mouse_with_connection(
+        &mut h.app,
+        &h.connection,
+        crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: row.x + 2,
+            row: row.y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+    assert!(h.app.modal.is_none(), "点「继续计划」关闭审阅窗口");
+    h.close().await;
+}
+
 #[tokio::test]
 async fn plan_review_approval_loads_new_session() {
     let mut h = PlanHarness::new().await;

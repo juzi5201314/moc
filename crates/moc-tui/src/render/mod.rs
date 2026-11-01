@@ -91,6 +91,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     app.plan_model_area = Rect::default();
     app.plan_body_area = Rect::default();
     app.plan_row_map.clear();
+    app.key_hits.clear();
+    app.legend_tip_area = Rect::default();
+    app.header_back_area = Rect::default();
     app.todo_hud.begin_frame();
     let saving = app.saving_config();
     if let Some(panel) = &mut app.settings {
@@ -212,7 +215,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, view: &mut ScrollbackView) {
     btw::draw(frame, app);
     // 浮层最后画：补全菜单贴输入框上沿，就地引擎菜单贴模式图例，居中模态覆盖全部。
     if let Some(completion) = &mut app.completion {
-        modal::draw_completion_menu(frame, completion, prompt_area);
+        let keys = modal::draw_completion_menu(frame, completion, prompt_area);
+        app.key_hits.extend(keys);
     }
     if app.modal.is_none() {
         modal::draw_engine_menu(frame, app);
@@ -602,6 +606,8 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         buffer.set_string(x, y, left_tip, Style::new().fg(left_color));
         x += cell_width(left_tip);
         buffer.set_string(x, y, left_separator, Style::new().fg(theme.border));
+        // 左端提示可点：空闲打开帮助，运行中停止（与提示文字同义）。
+        app.legend_tip_area = Rect::new(area.x + 3, y, x - (area.x + 3), 1);
     }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
@@ -766,8 +772,17 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             wrap::truncate(title, 24).into_owned(),
             Style::new().fg(theme.text_primary),
         ));
+        let back = labels::hints(&[("esc", "返回")], usize::MAX);
+        // 「Esc 返回」可点：与空输入框按 Esc 同样返回主会话。
+        let used: usize = spans.iter().map(|span| str_width(&span.content)).sum::<usize>() + 2;
+        let end = (used + str_width(&back)).min(usize::from(area.width));
+        if let (Ok(start), Ok(end)) = (u16::try_from(used), u16::try_from(end))
+            && start < end
+        {
+            app.header_back_area = Rect::new(area.x + start, area.y, end - start, 1);
+        }
         spans.push(Span::styled(
-            format!("  {}", labels::hints(&[("esc", "返回")], usize::MAX)),
+            format!("  {back}"),
             Style::new().fg(theme.gray_dim),
         ));
     }

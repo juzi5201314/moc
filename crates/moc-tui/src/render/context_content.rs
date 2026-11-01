@@ -15,6 +15,7 @@ use crate::app::App;
 use crate::modal::{
     CONTEXT_COLLAPSED_LINES, ContextContentState, ContextLayout, ContextScrollbar, Modal,
 };
+use crate::render::labels::KeyHit;
 use crate::render::overlay;
 use crate::render::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
@@ -48,6 +49,8 @@ fn modal_area(area: Rect) -> Rect {
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let area = modal_area(area);
+    // 点到正文窗外即关闭（与 Esc 同义）。
+    app.modal_card_area = area;
     overlay::paint_opaque(
         frame.buffer_mut(),
         area,
@@ -108,7 +111,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(visible), content);
     highlight_focus(frame, state, content, theme);
     draw_scrollbar(frame, state, theme);
-    draw_footer(frame, inner, state, theme);
+    app.key_hits = draw_footer(frame, inner, state, theme);
 }
 
 /// 键盘焦点块的标题行加底色：告诉用户 `Enter` 会展开哪一块。
@@ -198,10 +201,15 @@ fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, th
     );
 }
 
-/// 页脚：操作提示，窄屏从左丢项、恒保留关闭键。
-fn draw_footer(frame: &mut Frame, inner: Rect, state: &ContextContentState, theme: &Theme) {
+/// 页脚：操作提示，窄屏从左丢项、恒保留关闭键；返回可点击键位的命中区。
+fn draw_footer(
+    frame: &mut Frame,
+    inner: Rect,
+    state: &ContextContentState,
+    theme: &Theme,
+) -> Vec<KeyHit> {
     let width = usize::from(inner.width);
-    let line = if state.drag.is_some() {
+    let footer = if state.drag.is_some() {
         overlay::footer(&[("", "松开鼠标结束拖拽")], width, theme)
     } else if state.content.is_some() {
         overlay::footer(
@@ -224,7 +232,9 @@ fn draw_footer(frame: &mut Frame, inner: Rect, state: &ContextContentState, them
         height: 1,
         ..inner
     };
-    frame.render_widget(Paragraph::new(line), row);
+    let keys = footer.hits(row.x, row.y).collect();
+    frame.render_widget(Paragraph::new(footer.line), row);
+    keys
 }
 
 /// 滚动条：内容溢出时才画滑块，轨道本身始终占一列（正文折行宽度不随之跳动）。

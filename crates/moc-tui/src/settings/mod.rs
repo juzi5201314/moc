@@ -235,6 +235,9 @@ pub enum Hit {
     Check(usize),
     /// 工具栏按钮：等价于按下某个按键。
     Key(KeyCode, KeyModifiers),
+    /// 提示条/弹窗 footer 上的键位：等价于按下该键，编辑态下同样生效
+    /// （提示条描述的正是当前编辑器接受的键）。
+    Hint(KeyCode, KeyModifiers),
     /// 编辑弹窗里的第 N 行（候选、清单项、键值行）。
     Item(usize),
     /// 点击弹窗外部或关闭按钮。
@@ -1513,6 +1516,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
             Some(Hit::DismissPopup) | Some(Hit::Key(KeyCode::Esc, _)) => {
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
             }
+            Some(Hit::Hint(code, modifiers)) => handle_key(app, connection, modifiers, code),
             _ => {}
         }
         return;
@@ -1539,7 +1543,9 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Char(' '));
             }
         }
-        Hit::Key(code, modifiers) => handle_key(app, connection, modifiers, code),
+        Hit::Key(code, modifiers) | Hit::Hint(code, modifiers) => {
+            handle_key(app, connection, modifiers, code)
+        }
         _ => {}
     }
 }

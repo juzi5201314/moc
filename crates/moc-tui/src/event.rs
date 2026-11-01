@@ -1213,13 +1213,30 @@ fn handle_mouse_with_connection(
     mouse: crossterm::event::MouseEvent,
 ) {
     use crossterm::event::{MouseButton, MouseEventKind};
+    let position = (mouse.column, mouse.row);
+    let left_down = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left));
     if app.modal.is_some() {
+        // 提示条上的键位（footer、回退 dock、提问细条）：点中 = 按下该键。
+        if left_down && let Some(hit) = key_hit_at(app, position) {
+            handle_key(app, connection, hit.modifiers, hit.code);
+            return;
+        }
+        // 浏览/选择类模态点卡片外即关闭（与 Esc 同义）；授权、提问、计划审阅、
+        // 切换确认这类需要明确答复的卡片不因误点背景而消失。
+        if left_down
+            && app.modal.as_ref().is_some_and(modal_dismissable)
+            && !app.modal_card_area.is_empty()
+            && !app.modal_card_area.contains(position.into())
+        {
+            handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
+            return;
+        }
         if matches!(app.modal, Some(Modal::ContextContent { .. })) {
             handle_context_content_mouse(app, mouse);
             return;
         }
         if matches!(app.modal, Some(Modal::Rewind { .. })) {
-            handle_rewind_mouse(app, mouse);
+            handle_rewind_mouse(app, connection, mouse);
             return;
         }
         if matches!(app.modal, Some(Modal::Ask { .. })) {
@@ -1227,37 +1244,51 @@ fn handle_mouse_with_connection(
             return;
         }
         if matches!(app.modal, Some(Modal::Plan { .. })) {
-            handle_plan_mouse(app, mouse);
+            handle_plan_mouse(app, connection, mouse);
             return;
         }
-        let position = (mouse.column, mouse.row);
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if app.plan_model_area.contains(position.into()) {
-                app.open_plan_model_picker();
-                return;
-            }
-            // 点中选项 = 先选中再确认；命中矩形由渲染层按卡片正文行号每帧写入。
-            if let Some((hit_idx, _)) = app
-                .modal_item_hits
-                .iter()
-                .find(|(_, area)| area.contains(position.into()))
-                .copied()
-            {
-                match app.modal.as_mut() {
-                    Some(Modal::Permission { selected, .. }) => *selected = hit_idx,
-                    Some(Modal::Model { picker, .. } | Modal::Sessions { picker, .. }) => {
-                        picker.selected = hit_idx;
-                    }
-                    Some(Modal::Fusion { focus, .. }) => *focus = hit_idx,
-                    _ => {}
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // 命中矩形由渲染层按卡片正文行号每帧写入。
+                if let Some((index, _)) = app
+                    .modal_item_hits
+                    .iter()
+                    .find(|(_, area)| area.contains(position.into()))
+                    .copied()
+                {
+                    click_modal_item(app, connection, index);
+                } else if let Some((index, _)) = app
+                    .modal_level_hits
+                    .iter()
+                    .find(|(_, area)| area.contains(position.into()))
+                    .copied()
+                {
+                    click_model_level(app, index);
                 }
-                handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
             }
-        } else if matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) {
-            handle_mouse(app, mouse);
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
+                match app.modal {
+                    // 列表类模态：滚轮与 ↑↓ 同语义移动选中项，不滚背后的转写。
+                    Some(
+                        Modal::Model { .. }
+                        | Modal::Sessions { .. }
+                        | Modal::Subagents { .. }
+                        | Modal::Fusion { .. }
+                        | Modal::SwitchModel { .. },
+                    ) => handle_modal_key(
+                        app,
+                        connection,
+                        KeyModifiers::NONE,
+                        if up { KeyCode::Up } else { KeyCode::Down },
+                    ),
+                    // 占用窗没有可滚内容，也不该滚背后的转写。
+                    Some(Modal::Context { .. }) => {}
+                    // 授权预览与帮助：滚各自的正文。
+                    _ => handle_mouse(app, mouse),
+                }
+            }
+            _ => {}
         }
         return;
     }
@@ -1265,6 +1296,11 @@ fn handle_mouse_with_connection(
         return;
     }
     if handle_engine_menu_mouse(app, connection, &mouse) {
+        return;
+    }
+    // 补全菜单等浮层提示条上的键位。
+    if left_down && let Some(hit) = key_hit_at(app, position) {
+        handle_key(app, connection, hit.modifiers, hit.code);
         return;
     }
     if handle_completion_mouse(app, &mouse) {
@@ -1332,6 +1368,19 @@ fn handle_mouse_with_connection(
             }
             return;
         }
+        // 输入框图例左端：运行中是「停止」，空闲是「帮助」，点中与对应按键同义。
+        if app.legend_tip_area.contains(position.into()) {
+            if app.prompt_running {
+                request_stop(app, connection);
+            } else {
+                app.modal = Some(Modal::Help { scroll: 0 });
+            }
+            return;
+        }
+        if app.focused.is_some() && app.header_back_area.contains(position.into()) {
+            leave_focus(app, connection);
+            return;
+        }
         if let Some((id, _, cancel)) = app
             .queue_hits
             .iter()
@@ -1358,6 +1407,98 @@ fn handle_mouse_with_connection(
         }
     }
     handle_mouse(app, mouse);
+}
+
+/// 坐标命中的提示条键位（上一帧绘制登记）。
+fn key_hit_at(app: &App, position: (u16, u16)) -> Option<crate::render::labels::KeyHit> {
+    app.key_hits
+        .iter()
+        .copied()
+        .find(|hit| hit.area.contains(position.into()))
+}
+
+/// 点卡片外可关闭的模态：只浏览或选择、关闭不丢答复的那些。
+fn modal_dismissable(modal: &Modal) -> bool {
+    matches!(
+        modal,
+        Modal::Help { .. }
+            | Modal::Context { .. }
+            | Modal::ContextContent { .. }
+            | Modal::Model { .. }
+            | Modal::Sessions { .. }
+            | Modal::Subagents { .. }
+            | Modal::Fusion { .. }
+            | Modal::Rewind { .. }
+    )
+}
+
+/// 点中通用模态的第 `index` 项。
+///
+/// 按钮式选项（授权、Fusion 行、切换确认）点中即执行；候选列表（模型、会话、
+/// 子代理）先选中、再点已选中的一项才确认——模型的思考等级跟随高亮行，一次点击
+/// 就确认的话根本没机会先挑等级。
+fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize) {
+    let confirm = match app.modal.as_mut() {
+        Some(Modal::Permission { selected, .. }) => {
+            *selected = index;
+            true
+        }
+        Some(Modal::Fusion { focus, .. }) => {
+            *focus = index;
+            true
+        }
+        Some(Modal::SwitchModel { option, .. }) => {
+            *option = index;
+            true
+        }
+        Some(Modal::Model { picker, level, .. }) => {
+            let again = picker.selected == index;
+            if !again {
+                // 与 ↑↓ 换行同语义：手动等级只属于原来高亮的模型。
+                picker.selected = index;
+                level.clear_manual();
+            }
+            again
+        }
+        Some(Modal::Sessions { picker, .. } | Modal::Subagents { picker, .. }) => {
+            let again = picker.selected == index;
+            picker.selected = index;
+            again
+        }
+        _ => false,
+    };
+    if confirm {
+        handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+    }
+}
+
+/// 点中模型选择器思考等级条的第 `index` 档：就地切档，焦点仍在候选列表。
+fn click_model_level(app: &mut App, index: usize) {
+    let Some(Modal::Model {
+        entries,
+        picker,
+        level,
+        ..
+    }) = app.modal.as_mut()
+    else {
+        return;
+    };
+    if let Some((_, entry)) = crate::modal::filtered_entries(entries, &picker.query)
+        .get(picker.selected)
+        .copied()
+        && let Some(chosen) = entry.levels.get(index)
+    {
+        level.manual = Some(chosen.clone());
+    }
+}
+
+/// 请求停止当前提示（`Esc` 与图例「停止」共用）；已在停止中时不重复发送。
+fn request_stop(app: &mut App, connection: &EmbeddedConnection) {
+    if !app.cancel_requested {
+        app.cancel_requested = true;
+        app.set_notice("正在停止...");
+        cancel_prompt(&connection.client, app);
+    }
 }
 
 /// todo HUD：悬停展开、点击固定、按住卡片拖动。
@@ -1433,17 +1574,40 @@ fn handle_context_content_mouse(app: &mut App, mouse: crossterm::event::MouseEve
     }
 }
 
-/// 计划审阅的鼠标交互：执行模型可点选；批注视图按住拖动即可选行。
-fn handle_plan_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+/// 计划审阅的鼠标交互：执行模型与动作行可点选；批注视图按住拖动即可选行。
+/// 批注编辑器盖在上面时只响应它自己的提示条键位（由调用方先行分派）。
+fn handle_plan_mouse(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mouse: crossterm::event::MouseEvent,
+) {
     use crossterm::event::{MouseButton, MouseEventKind};
-    let height = usize::from(app.plan_body_area.height).max(1);
-    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-        && app
-            .plan_model_area
-            .contains((mouse.column, mouse.row).into())
-    {
-        app.open_plan_model_picker();
+    if matches!(&app.modal, Some(Modal::Plan { state }) if state.editor.is_some()) {
         return;
+    }
+    let height = usize::from(app.plan_body_area.height).max(1);
+    let position = (mouse.column, mouse.row).into();
+    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+        if app.plan_model_area.contains(position) {
+            app.open_plan_model_picker();
+            return;
+        }
+        // 动作行（执行 / 压缩后执行 / 新会话执行 / 继续计划）：点中即选中并确认。
+        if let Some((index, _)) = app
+            .modal_item_hits
+            .iter()
+            .find(|(_, area)| area.contains(position))
+            .copied()
+        {
+            if let Some(Modal::Plan { state }) = app.modal.as_mut() {
+                if state.submitting {
+                    return;
+                }
+                state.selected = index;
+            }
+            handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+            return;
+        }
     }
     let body_area = app.plan_body_area;
     let row_map = app.plan_row_map.clone();
@@ -1499,8 +1663,13 @@ fn handle_plan_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
     }
 }
 
-/// 消息回退视图的鼠标处理：滚动时间线列表或详情预览、点击直接选择时间线节点。
-fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
+/// 消息回退视图的鼠标处理：滚动时间线列表或详情预览；点击选择时间线节点，
+/// 再点已选中的节点即确认（与 Enter 同义）。
+fn handle_rewind_mouse(
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    mouse: crossterm::event::MouseEvent,
+) {
     use crossterm::event::{MouseButton, MouseEventKind};
     let timeline_area = app.rewind_timeline_area;
     let detail_area = app.rewind_detail_area;
@@ -1538,6 +1707,10 @@ fn handle_rewind_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 let item_click = rel_row / item_height + state.list_scroll;
                 let matches = state.filtered_indices();
                 if item_click < matches.len() {
+                    if state.selected == matches[item_click] {
+                        handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+                        return;
+                    }
                     state.selected = matches[item_click];
                     state.sync_prompt_item_from_selected();
                 }
@@ -2265,11 +2438,7 @@ fn handle_key(
                 // 取消仍在运行的那个提示交给 `Ctrl+C`。
                 leave_focus(app, connection);
             } else if app.prompt_running {
-                if !app.cancel_requested {
-                    app.cancel_requested = true;
-                    app.set_notice("正在停止...");
-                    cancel_prompt(&connection.client, app);
-                }
+                request_stop(app, connection);
             } else if app.focus == Focus::Prompt && !app.prompt_text().is_empty() {
                 if app.clear_pending {
                     app.prompt.clear();
@@ -7421,6 +7590,115 @@ mod tests {
             mouse(MouseEventKind::Down(MouseButton::Left), 10, 20),
         );
         assert!(app.completion.is_none(), "点击外部应关闭补全菜单");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 画一帧整屏 UI，让鼠标命中几何与真实绘制同源。
+    fn draw_frame(app: &mut App, width: u16, height: u16) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        let mut view = crate::render::ScrollbackView::new();
+        terminal
+            .draw(|frame| crate::render::draw(frame, app, &mut view))
+            .unwrap();
+        terminal
+    }
+
+    /// 一行区域里画出的文字：宽字符的尾格不重复计入。
+    fn cell_text(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        area: ratatui::layout::Rect,
+    ) -> String {
+        let buffer = terminal.backend().buffer();
+        let mut text = String::new();
+        let mut x = area.x;
+        while x < area.right() {
+            let symbol = buffer.cell((x, area.y)).unwrap().symbol();
+            text.push_str(symbol);
+            x += u16::try_from(crate::render::wrap::str_width(symbol).max(1)).unwrap_or(1);
+        }
+        text
+    }
+
+    /// 模型选择器：点思考等级芯片就地切档；候选行先选中、再点才确认——
+    /// 换行时手动等级作废（与 ↑↓ 同语义），确认带上点选的等级。
+    #[tokio::test]
+    async fn model_picker_mouse_selects_row_then_level_then_confirms() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let entry = |selector: &str| crate::modal::ModelEntry {
+            selector: selector.into(),
+            label: selector.into(),
+            display_name: String::new(),
+            levels: vec!["off".into(), "low".into(), "high".into()],
+            context_window: None,
+            max_output_tokens: None,
+            inputs: Vec::new(),
+            remote_compaction: false,
+            pricing: None,
+        };
+        app.modal = Some(Modal::Model {
+            entries: vec![entry("test/a"), entry("test/b")],
+            current: "test/a".into(),
+            picker: crate::modal::PickerState::default(),
+            level: crate::modal::LevelState::default(),
+            target: crate::modal::ModelTarget::Session,
+        });
+        let picker = |app: &App| match app.modal.as_ref() {
+            Some(Modal::Model { picker, level, .. }) => {
+                (picker.selected, picker.loading, level.manual.clone())
+            }
+            _ => panic!("模型选择器应保持打开"),
+        };
+
+        let terminal = draw_frame(&mut app, 100, 30);
+        let (_, low) = app.modal_level_hits[1];
+        assert_eq!(cell_text(&terminal, low), " low ", "命中区与芯片文字逐列对齐");
+        let (_, row_b) = app.modal_item_hits[1];
+
+        // 点芯片：只切档，不确认。
+        handle_mouse_with_connection(&mut app, &connection, left_click(low.x, low.y));
+        assert_eq!(picker(&app), (0, false, Some("low".into())));
+        // 点未选中的行：只选中，手动等级随换行作废。
+        handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
+        assert_eq!(picker(&app), (1, false, None));
+
+        let _ = draw_frame(&mut app, 100, 30);
+        let (_, low) = app.modal_level_hits[1];
+        handle_mouse_with_connection(&mut app, &connection, left_click(low.x + 1, low.y));
+        // 再点已选中的行：确认，按点选的等级发起切换。
+        handle_mouse_with_connection(&mut app, &connection, left_click(row_b.x + 3, row_b.y));
+        assert_eq!(picker(&app), (1, true, Some("low".into())));
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
+    /// 提示条键位与卡片外点击：帮助卡片的「Esc 关闭」与卡片外都关闭；卡片内正文不关闭。
+    #[tokio::test]
+    async fn modal_footer_key_and_backdrop_clicks_close_browse_modals() {
+        let (core, connection, mut app) = setup_test_app().await;
+        app.modal = Some(Modal::Help { scroll: 0 });
+        let terminal = draw_frame(&mut app, 100, 30);
+        let esc = app
+            .key_hits
+            .iter()
+            .find(|hit| hit.code == KeyCode::Esc)
+            .copied()
+            .expect("帮助 footer 的 Esc 可点");
+        assert_eq!(cell_text(&terminal, esc.area), "Esc 关闭");
+        let card = app.modal_card_area;
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(card.x + 3, card.y + 3));
+        assert!(app.modal.is_some(), "卡片内正文不是关闭入口");
+        handle_mouse_with_connection(&mut app, &connection, left_click(esc.area.x, esc.area.y));
+        assert!(app.modal.is_none(), "点 Esc 关闭 = 按 Esc");
+
+        app.modal = Some(Modal::Help { scroll: 0 });
+        let _ = draw_frame(&mut app, 100, 30);
+        handle_mouse_with_connection(&mut app, &connection, left_click(0, 0));
+        assert!(app.modal.is_none(), "点卡片外关闭浏览类模态");
 
         connection.shutdown().await;
         core.shutdown().await;

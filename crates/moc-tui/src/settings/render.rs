@@ -170,7 +170,8 @@ fn toolbar(panel: &SettingsPanel) -> Vec<Button> {
 struct Footer {
     description: String,
     source: Option<&'static str>,
-    hint: String,
+    /// 提示条文字与其中可点击的键位（列区间相对提示条起点）。
+    hint: (String, Vec<labels::HintKey>),
 }
 
 pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &Theme) {
@@ -310,12 +311,17 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
         ..desc_area
     };
     paint_lines(frame, shown, &lines);
+    let hint_area = Rect::new(area.x, hint_y, area.width, 1);
     label(
         frame,
-        Rect::new(area.x, hint_y, area.width, 1),
-        &footer.hint,
+        hint_area,
+        &footer.hint.0,
         Style::new().fg(theme.gray),
     );
+    hits.extend(footer.hint.1.iter().map(|key| {
+        let hit = key.at(hint_area.x, hint_area.y);
+        (hit.area, Hit::Hint(hit.code, hit.modifiers))
+    }));
     draw_edit_popup(frame, panel, theme, outer, &mut hits);
     // 失败红字、普通反馈中性色，与主界面 notice 同一套配色；都不铺底。
     let message_area = Rect::new(area.x, message_y, area.width, 1);
@@ -406,7 +412,7 @@ fn draw_fields(
     hits: &mut Vec<(Rect, Hit)>,
 ) -> Footer {
     let width = usize::from(body.width);
-    let hints = |items: &[(&str, &str)]| labels::hints(items, width);
+    let hints = |items: &[(&str, &str)]| labels::hint_layout(items, width);
     if panel.data.is_none() {
         label(
             frame,
@@ -744,7 +750,7 @@ fn draw_models(
     Footer {
         description: "勾选需要的模型后按 Enter 添加；也可以返回后手动填写模型 ID。".into(),
         source: None,
-        hint: labels::hints(&[("↑↓/jk", "移动"), ("space", "勾选")], width),
+        hint: labels::hint_layout(&[("↑↓/jk", "移动"), ("space", "勾选")], width),
     }
 }
 
@@ -801,9 +807,9 @@ fn draw_maintenance(
         description: "只清理过期且没有被会话引用的临时文件。".into(),
         source: None,
         hint: if total > height {
-            labels::hints(&[("↑↓", "浏览清单")], usize::from(body.width))
+            labels::hint_layout(&[("↑↓", "浏览清单")], usize::from(body.width))
         } else {
-            String::new()
+            Default::default()
         },
     }
 }
@@ -850,6 +856,12 @@ fn draw_edit_popup(
         footer: Some(overlay::footer(&edit.editor.hints(), width, theme)),
     }
     .render(frame, area, card_width, theme);
+    hits.extend(
+        layout
+            .keys
+            .iter()
+            .map(|key| (key.area, Hit::Hint(key.code, key.modifiers))),
+    );
     for (row, item) in body.items.iter().enumerate() {
         let y = layout.body.y + cells(offset + row);
         if let Some(index) = item
@@ -1420,12 +1432,11 @@ mod tests {
             .collect();
         // 宽字符后的占位格是空格，比较前去掉
         assert!(row.replace(' ', "").contains("选项A"), "点击区域落在候选行上：{row}");
-        assert!(
-            panel
-                .hits
-                .iter()
-                .all(|(_, hit)| matches!(hit, Hit::Item(_) | Hit::DismissPopup))
-        );
+        // 只剩弹窗自己的候选、底部键位与卡片外关闭；底下页面的命中区全部清掉。
+        assert!(panel.hits.iter().all(|(_, hit)| matches!(
+            hit,
+            Hit::Item(_) | Hit::Hint(..) | Hit::DismissPopup
+        )));
         assert!(panel.hits.iter().any(|(area, hit)| {
             matches!(hit, Hit::DismissPopup) && area.contains((0, 0).into())
         }));
@@ -1568,6 +1579,25 @@ mod tests {
                 "工具栏丢了 {expected:?}：{keys:?}"
             );
         }
+    }
+
+    /// 底部提示条的单键项可点：命中区落在画出来的那段文字上，且是编辑态也生效的 `Hint`。
+    #[test]
+    fn hint_bar_keys_are_clickable_where_drawn() {
+        let mut panel = loaded("模型", models_config(), Vec::new());
+        select_group(&mut panel, "models/roles");
+        let rows = screen(&mut panel, 120, 40);
+        let (y, x) = locate(&rows, "Esc 返回").expect("提示条有 Esc 返回");
+        let hit = panel
+            .hits
+            .iter()
+            .find_map(|(area, hit)| match hit {
+                Hit::Hint(KeyCode::Esc, KeyModifiers::NONE) => Some(*area),
+                _ => None,
+            })
+            .expect("Esc 返回 登记为提示条键位");
+        let y = u16::try_from(y).expect("行号");
+        assert_eq!((hit.y, hit.x, hit.width), (y, x, 8));
     }
 
     /// 超宽的值以 `…` 收尾，且不越过右边距。

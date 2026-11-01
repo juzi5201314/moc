@@ -123,7 +123,7 @@ fn test_f1_b5_completion_menu_opacity_clears_underlying_noise() {
     comp.area = Rect::new(10, 15, 50, 6);
     let prompt_area = Rect::new(0, 20, 100, 3);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut comp, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     let comp_row = rows
@@ -336,7 +336,7 @@ fn test_f5_b1_slash_command_empty_input() {
     ]);
     let prompt_area = Rect::new(0, 20, 100, 3);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut comp, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(
@@ -351,7 +351,7 @@ fn test_f5_b2_slash_command_unmatched_query_empty_candidates() {
     let mut comp = sample_custom_completion(vec![]);
     let prompt_area = Rect::new(0, 20, 100, 3);
     terminal
-        .draw(|f| draw_completion_menu(f, &mut comp, prompt_area))
+        .draw(|f| drop(draw_completion_menu(f, &mut comp, prompt_area)))
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(!rows.is_empty(), "empty candidates menu does not panic");
