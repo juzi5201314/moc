@@ -19,14 +19,26 @@ pub fn load(home: &Path) -> Result<WebStateDocument, CoreError> {
     let state: WebState = if text.trim().is_empty() {
         WebState::default()
     } else {
-        toml::from_str(&text)
-            .map_err(|error| CoreError::Config(format!("web.toml 格式有误：{error}")))?
+        parse(&text).map_err(|error| CoreError::Config(format!("web.toml 格式有误：{error}")))?
     };
     Ok(WebStateDocument {
         revision: revision(&text),
         exists: path.exists(),
         state,
     })
+}
+
+/// 解析状态文件；旧版的 `expand_thinking = bool` 换算成 `thinking_detail`
+/// （展开 → `full`，折叠 → `brief`），下次保存时自然写成新格式。
+fn parse(text: &str) -> Result<WebState, toml::de::Error> {
+    let mut table: toml::Table = toml::from_str(text)?;
+    if let Some(toml::Value::Boolean(expand)) = table.remove("expand_thinking") {
+        let level = if expand { "full" } else { "brief" };
+        table
+            .entry("thinking_detail")
+            .or_insert_with(|| level.into());
+    }
+    toml::Value::Table(table).try_into()
 }
 
 /// 版本戳不一致说明其他窗口或外部编辑器先动过文件，拒绝覆盖。
@@ -53,7 +65,7 @@ pub fn save(home: &Path, params: WebStateSaveParams) -> Result<WebStateDocument,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use moc_protocol::{WebSubmitAction, WebTheme};
+    use moc_protocol::{WebDetailLevel, WebSubmitAction, WebTheme};
 
     fn save_params(revision: &str, state: WebState) -> WebStateSaveParams {
         WebStateSaveParams {
@@ -68,6 +80,20 @@ mod tests {
         let doc = load(root.path()).unwrap();
         assert!(!doc.exists);
         assert_eq!(doc.state, WebState::default());
+    }
+
+    #[test]
+    fn legacy_expand_thinking_maps_to_thinking_detail() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("web.toml");
+        std::fs::write(&path, "theme = \"dark\"\nexpand_thinking = true\n").unwrap();
+        let state = load(root.path()).unwrap().state;
+        assert_eq!(state.theme, WebTheme::Dark);
+        assert_eq!(state.thinking_detail, WebDetailLevel::Full);
+        assert_eq!(state.tool_detail, WebDetailLevel::Brief);
+
+        std::fs::write(&path, "expand_thinking = false\n").unwrap();
+        assert_eq!(load(root.path()).unwrap().state.thinking_detail, WebDetailLevel::Brief);
     }
 
     #[test]

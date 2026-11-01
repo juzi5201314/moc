@@ -1,9 +1,12 @@
 // 全局快捷键。Alt 组合用 event.code 判断：macOS 上 Option 会改写 event.key。
-// 避开浏览器保留的 Ctrl+N/T/W/Tab；Esc 由 composer 和各浮层自己处理。
+// 与 TUI 同义的功能必须用 TUI 的同一个键；浏览器保留、拦不住的键（Ctrl+N/T/W/Tab）
+// 宁可不做，只走鼠标——例如 TUI 的 Ctrl+T（思考档位）在这里没有快捷键。
+// Esc 由 composer 和各浮层自己处理。
 // 键位表同时供设置页「快捷键」分区展示，改动只需改这一处。
 
 import { useEffect } from "react";
 import { toast } from "sonner";
+import { LEVEL_LABEL, NEXT_LEVEL } from "@/lib/tool-view";
 import type { SessionEngine } from "@/protocol/types";
 import { useLayout } from "@/store/layout";
 import { createQuickSession, setSessionEngine, togglePlanMode } from "@/store/lifecycle";
@@ -20,7 +23,7 @@ export const SHORTCUTS: { keys: string; label: string }[] = [
   { keys: "Alt P", label: "切换模型" },
   { keys: "Alt M", label: "切换会话引擎（首条消息前）" },
   { keys: "Alt J", label: "进入 / 退出计划状态" },
-  { keys: "Alt T", label: "默认展开 / 折叠思考过程" },
+  { keys: "Ctrl O", label: "切换工具显示档位（隐藏 / 简略 / 完整）" },
   { keys: "Ctrl /", label: "查看快捷键" },
   { keys: "Enter", label: "发送；生成中按偏好补充或中断" },
   { keys: "Ctrl Enter", label: "生成中排队发送" },
@@ -92,12 +95,6 @@ function handleAlt(code: string): boolean {
     case "KeyJ":
       cyclePlan();
       return true;
-    case "KeyT": {
-      const expandThinking = !usePrefs.getState().expandThinking;
-      usePrefs.getState().set({ expandThinking });
-      toast(expandThinking ? "思考过程默认展开" : "思考过程默认折叠");
-      return true;
-    }
     default:
       return false;
   }
@@ -116,6 +113,12 @@ function handleCtrl(code: string): boolean {
     case "Slash":
       openSettings("shortcuts");
       return true;
+    case "KeyO": {
+      const toolDetail = NEXT_LEVEL[usePrefs.getState().toolDetail];
+      usePrefs.getState().set({ toolDetail });
+      toast(`工具显示：${LEVEL_LABEL[toolDetail]}`);
+      return true;
+    }
     default:
       return false;
   }

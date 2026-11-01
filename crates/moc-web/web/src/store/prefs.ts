@@ -9,7 +9,7 @@
 import { toast } from "sonner";
 import { create } from "zustand";
 import { clientListeners, rpc } from "@/protocol/client";
-import type { WebState, WebStateDocument } from "@/protocol/types";
+import type { WebDetailLevel, WebState, WebStateDocument } from "@/protocol/types";
 
 export type Theme = "system" | "light" | "dark";
 /** 运行中按 Enter：插队补充到当前提示（steer），或中断后作为下一条提示（interrupt）。 */
@@ -21,8 +21,10 @@ export type Prefs = {
   runningEnter: RunningEnter;
   notify: boolean;
   diffMode: DiffMode;
-  /** 思考过程默认展开。 */
-  expandThinking: boolean;
+  /** 思考块显示档位。 */
+  thinkingDetail: WebDetailLevel;
+  /** 工具块显示档位。 */
+  toolDetail: WebDetailLevel;
 };
 
 type PrefsStore = Prefs & {
@@ -70,7 +72,8 @@ function toWire(prefs: Prefs, workspaces: string[]): WebState {
     active_submit: prefs.runningEnter === "steer" ? "steering" : "interrupt",
     notify: prefs.notify,
     diff_mode: prefs.diffMode,
-    expand_thinking: prefs.expandThinking,
+    thinking_detail: prefs.thinkingDetail,
+    tool_detail: prefs.toolDetail,
     workspaces,
   };
 }
@@ -81,7 +84,8 @@ function fromWire(state: WebState): Prefs {
     runningEnter: state.active_submit === "steering" ? "steer" : "interrupt",
     notify: state.notify,
     diffMode: state.diff_mode,
-    expandThinking: state.expand_thinking,
+    thinkingDetail: state.thinking_detail,
+    toolDetail: state.tool_detail,
   };
 }
 
@@ -112,11 +116,15 @@ function adopt(doc: WebStateDocument): void {
 async function sync(): Promise<void> {
   if (revision === null) await read();
   if (revision === null) return;
-  const { workspaces, theme, runningEnter, notify, diffMode, expandThinking } = usePrefs.getState();
+  const { workspaces, theme, runningEnter, notify, diffMode, thinkingDetail, toolDetail } =
+    usePrefs.getState();
   try {
     const doc = await rpc.call<WebStateDocument>("web/state_save", {
       revision,
-      state: toWire({ theme, runningEnter, notify, diffMode, expandThinking }, workspaces),
+      state: toWire(
+        { theme, runningEnter, notify, diffMode, thinkingDetail, toolDetail },
+        workspaces,
+      ),
     });
     // 服务端原样回显，只收版本戳；乐观更新保持领先。
     revision = doc.revision;
@@ -146,7 +154,9 @@ function readLegacy(): { prefs: Partial<Prefs>; workspaces: string[] } {
     if (state.diffMode === "unified" || state.diffMode === "split") {
       prefs.diffMode = state.diffMode;
     }
-    if (typeof state.expandThinking === "boolean") prefs.expandThinking = state.expandThinking;
+    if (typeof state.expandThinking === "boolean") {
+      prefs.thinkingDetail = state.expandThinking ? "full" : "brief";
+    }
   } catch {
     // 解析失败按没有旧数据处理
   }
@@ -206,7 +216,8 @@ export const usePrefs = create<PrefsStore>()((set, get) => ({
   runningEnter: "steer",
   notify: false,
   diffMode: "unified",
-  expandThinking: false,
+  thinkingDetail: "brief",
+  toolDetail: "brief",
   workspaces: [],
 
   set: (patch) => {

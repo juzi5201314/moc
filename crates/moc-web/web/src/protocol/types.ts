@@ -184,6 +184,8 @@ export type ConfigReply =
 export type WebTheme = "system" | "light" | "dark";
 export type WebSubmitAction = "steering" | "interrupt";
 export type WebDiffMode = "unified" | "split";
+/** 思考块 / 工具块显示档位，与 `tui.toml` 同名同义。 */
+export type WebDetailLevel = "hidden" | "brief" | "full";
 
 /** `web.toml` 的内容；字段名与 `tui.toml` 的对应项同一套词汇。 */
 export type WebState = {
@@ -191,7 +193,8 @@ export type WebState = {
   active_submit: WebSubmitAction;
   notify: boolean;
   diff_mode: WebDiffMode;
-  expand_thinking: boolean;
+  thinking_detail: WebDetailLevel;
+  tool_detail: WebDetailLevel;
   workspaces: string[];
 };
 
@@ -252,6 +255,8 @@ export type ToolExecution = {
   tool_call_id: string;
   status: ToolStatus;
   duration_ms?: number;
+  /** 工具产出的结构化 diff，随 transcript 持久化。 */
+  diff?: ToolDiff;
 };
 
 export type BashCommand = {

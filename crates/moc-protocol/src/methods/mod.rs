@@ -134,8 +134,8 @@ pub use update::{
     ToolBatchCall, UpstreamField, UpstreamFieldMismatch,
 };
 pub use web::{
-    WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams, WebStateSave,
-    WebStateSaveParams, WebStateUpdated, WebSubmitAction, WebTheme,
+    WebDetailLevel, WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams,
+    WebStateSave, WebStateSaveParams, WebStateUpdated, WebSubmitAction, WebTheme,
 };
 pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult};
 

@@ -63,8 +63,10 @@ pub struct WebState {
     pub notify: bool,
     /// 内联 diff 的展示方式。
     pub diff_mode: WebDiffMode,
-    /// 思考过程默认展开而不是折叠。
-    pub expand_thinking: bool,
+    /// 思考块的显示档位：隐藏只留标题行，简略显示末尾预览，完整显示全文。
+    pub thinking_detail: WebDetailLevel,
+    /// 工具块的显示档位：隐藏只留标题行，简略按工具给少量预览，完整显示全部输出。
+    pub tool_detail: WebDetailLevel,
     /// 侧栏「工作区」里用户手动添加的目录，按添加先后排列。
     pub workspaces: Vec<String>,
 }
@@ -76,7 +78,8 @@ impl Default for WebState {
             active_submit: WebSubmitAction::Steering,
             notify: false,
             diff_mode: WebDiffMode::Unified,
-            expand_thinking: false,
+            thinking_detail: WebDetailLevel::Brief,
+            tool_detail: WebDetailLevel::Brief,
             workspaces: Vec::new(),
         }
     }
@@ -105,6 +108,16 @@ pub enum WebDiffMode {
     #[default]
     Unified,
     Split,
+}
+
+/// 思考块 / 工具块的显示档位，与 `tui.toml` 的 `thinking_detail`、`tool_detail` 同义。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WebDetailLevel {
+    Hidden,
+    #[default]
+    Brief,
+    Full,
 }
 
 /// 一份带版本戳的状态文档。
@@ -154,7 +167,8 @@ mod tests {
                 active_submit: WebSubmitAction::Interrupt,
                 notify: true,
                 diff_mode: WebDiffMode::Split,
-                expand_thinking: true,
+                thinking_detail: WebDetailLevel::Full,
+                tool_detail: WebDetailLevel::Hidden,
                 workspaces: vec!["/repo".into()],
             },
         };
@@ -168,7 +182,8 @@ mod tests {
                     "active_submit": "interrupt",
                     "notify": true,
                     "diff_mode": "split",
-                    "expand_thinking": true,
+                    "thinking_detail": "full",
+                    "tool_detail": "hidden",
                     "workspaces": ["/repo"],
                 },
             })

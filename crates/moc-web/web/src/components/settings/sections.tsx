@@ -18,6 +18,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { FUSION_ALIAS, groupByProvider, modelName, parseFusion, parseSelector } from "@/lib/models";
 import { SHORTCUTS } from "@/lib/shortcuts";
+import { type DetailLevel, LEVEL_LABEL } from "@/lib/tool-view";
 import { cn } from "@/lib/utils";
 import { rpc } from "@/protocol/client";
 import type {
@@ -36,6 +37,11 @@ import { fieldValues, SettingRow } from "./field";
 import { writeField } from "./settings-store";
 
 const INHERIT = "__inherit__";
+
+const DETAIL_OPTIONS = (["hidden", "brief", "full"] as const).map((value) => ({
+  value,
+  label: LEVEL_LABEL[value],
+}));
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -136,15 +142,24 @@ export function GeneralSection() {
             />
           </SettingRow>
           <SettingRow
-            label="展开思考过程"
-            description="默认展开模型的思考内容；也可以随时按 Alt+T 切换。"
+            label="思考显示"
+            description="隐藏只留耗时行；简略在生成中露出末尾几行，结束后收成一行；完整显示全文。"
           >
-            <div className="flex justify-end">
-              <Switch
-                checked={prefs.expandThinking}
-                onCheckedChange={(value) => prefs.set({ expandThinking: value })}
-              />
-            </div>
+            <Segmented<DetailLevel>
+              value={prefs.thinkingDetail}
+              onChange={(thinkingDetail) => prefs.set({ thinkingDetail })}
+              options={DETAIL_OPTIONS}
+            />
+          </SettingRow>
+          <SettingRow
+            label="工具显示"
+            description="隐藏只留标题行；简略按工具给少量预览（命令末尾输出、几行 diff）；完整显示全部。Ctrl+O 循环切换。"
+          >
+            <Segmented<DetailLevel>
+              value={prefs.toolDetail}
+              onChange={(toolDetail) => prefs.set({ toolDetail })}
+              options={DETAIL_OPTIONS}
+            />
           </SettingRow>
           <SettingRow label="差异视图" description="文件变更的展示方式。">
             <Segmented

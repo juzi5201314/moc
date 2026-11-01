@@ -63,7 +63,15 @@ export type Block =
       atMs: number;
     }
   | { kind: "agent-message"; id: string; from: string; body: string; atMs: number }
-  | { kind: "reasoning"; id: string; text: string; startedAt?: number; durationMs?: number }
+  | {
+      kind: "reasoning";
+      id: string;
+      text: string;
+      startedAt?: number;
+      durationMs?: number;
+      /** 本次模型响应 usage 报告的思考 token 数；与本端实测的 durationMs 合算速率。 */
+      tokens?: number;
+    }
   | { kind: "text"; id: string; entryId?: string; text: string }
   | ToolBlock
   | {
@@ -302,6 +310,7 @@ export function entriesToBlocks(
           block.images = result.images ?? [];
           block.status = entry.tool?.status ?? (result.is_error ? "error" : "completed");
           block.durationMs = entry.tool?.duration_ms;
+          block.diff = entry.tool?.diff;
           // 计划卡只由实时 plan_submitted 生成；历史里靠 exit_plan 的固定结果文本复原，状态与标题由卡片从 view.plans 读取。
           const submitted =
             block.name === "exit_plan" && !result.is_error
@@ -523,6 +532,13 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       const delta = update.delta;
       if (delta.type === "usage") {
         live.usage = delta.usage;
+        // 只回填本次响应自己的思考块：没有思考块的响应（上游可能报 0）不动上一块。
+        const reasoning = live.reasoningId
+          ? view.blocks.find((item) => item.id === live.reasoningId)
+          : undefined;
+        if (reasoning?.kind === "reasoning" && delta.usage.reasoning_tokens) {
+          reasoning.tokens = delta.usage.reasoning_tokens;
+        }
       } else if (delta.type === "reasoning") {
         let block = live.reasoningId
           ? view.blocks.find((item) => item.id === live.reasoningId)

@@ -1,13 +1,13 @@
-// 执行轨迹：思考、工具、命令逐行排列；点开一行看详情（终端输出、diff、入参与结果）。
+// 执行轨迹：思考、工具、命令逐行排列。每行先是一条标题（图标 · 动作 · 对象 · 尾注），
+// 正文按显示档位（隐藏 / 简略 / 完整，见 lib/tool-view.ts）露出；点标题在「完整 ↔
+// 当前档位的收起形态」之间切换。全局档位一变，行按新档位重建，手动展开随之收回。
 
 import {
   BotIcon,
   BrainIcon,
-  CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
   CodeIcon,
-  CopyIcon,
   FileTextIcon,
   GlobeIcon,
   ImageIcon,
@@ -20,10 +20,24 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
-import { DiffBody, DiffStat, diffStats } from "@/components/panels/diff-file";
+import { toolBody } from "@/components/chat/tool-views";
+import { DiffStat, diffStats } from "@/components/panels/diff-file";
 import { formatDuration } from "@/lib/format";
+import {
+  BRIEF_BODY_ROWS,
+  BRIEF_THINKING_ROWS,
+  type DetailLevel,
+  findFiles,
+  grepCounts,
+  groupActivity,
+  headLines,
+  parseSearch,
+  toggledLevel,
+  toolFailed,
+  toolHeadline,
+} from "@/lib/tool-view";
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import { type ActivityKind, activityKind, activitySnippet, activityVerb } from "@/lib/turn";
 import { cn } from "@/lib/utils";
@@ -49,7 +63,6 @@ const KIND_ICON: Record<ActivityKind, ReactNode> = {
 };
 
 function iconFor(block: Block): ReactNode {
-  if (block.kind === "status") return <InfoIcon />;
   const kind = activityKind(block);
   return kind ? KIND_ICON[kind] : <WrenchIcon />;
 }
@@ -60,221 +73,263 @@ export function imageSrc(source: ImageSource): string {
     : `data:${source.Base64.media_type};base64,${source.Base64.data}`;
 }
 
-function parseArgs(raw: string): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(raw);
-    return value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
+/** 尾注里的耗时：不足 1 秒的不显示。 */
+function Duration({ ms }: { ms?: number }) {
+  if (ms === undefined || ms < 1000) return null;
+  return <span className="text-2xs tabular-nums text-text-tertiary">{formatDuration(ms)}</span>;
 }
 
-function prettyJson(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-}
-
-function CopyButton({ text, label = "复制" }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
+/** 标题行：图标 · 动作 · 对象 · 次级范围 · 尾注；可展开时整行可点。 */
+function RowHeader({
+  icon,
+  verb,
+  target,
+  scope,
+  mono,
+  failed,
+  suffix,
+  interactive,
+  open,
+  pulse,
+  onToggle,
+}: {
+  icon: ReactNode;
+  verb: string;
+  target?: string;
+  scope?: string;
+  mono?: boolean;
+  failed?: boolean;
+  suffix?: ReactNode;
+  interactive: boolean;
+  open: boolean;
+  pulse?: boolean;
+  onToggle: () => void;
+}) {
   return (
     <button
       type="button"
-      aria-label={label}
-      onClick={(event) => {
-        event.stopPropagation();
-        void navigator.clipboard.writeText(text);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      }}
-      className="flex size-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-accent hover:text-foreground"
+      disabled={!interactive}
+      onClick={onToggle}
+      className={cn(
+        "group/row flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-ui text-muted-foreground transition-colors",
+        interactive ? "hover:text-foreground" : "cursor-default",
+      )}
     >
-      {copied ? <CheckIcon className="size-3.5 text-success" /> : <CopyIcon className="size-3.5" />}
+      <span
+        className={cn(
+          "flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5",
+          failed ? "text-destructive" : "text-text-tertiary",
+        )}
+      >
+        {failed ? <CircleAlertIcon /> : icon}
+      </span>
+      <span className={cn("shrink-0", pulse && "animate-pulse")}>{verb}</span>
+      <span className="flex min-w-0 flex-1 items-baseline gap-2 truncate">
+        {target && (
+          <span
+            className={cn("min-w-0 truncate text-text-tertiary", mono && "font-mono text-xs")}
+            title={target}
+          >
+            {target}
+          </span>
+        )}
+        {scope && (
+          <span className="shrink-0 truncate font-mono text-2xs text-text-tertiary/70">
+            {scope}
+          </span>
+        )}
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        {suffix}
+        {interactive && (
+          <ChevronRightIcon
+            className={cn(
+              "size-3.5 text-text-tertiary opacity-0 transition-all group-hover/row:opacity-100",
+              open && "rotate-90",
+            )}
+          />
+        )}
+      </span>
     </button>
   );
 }
 
-/** 终端卡片：命令行 + 输出，输出超高时内部滚动。 */
-function CommandCard({
-  command,
-  cwd,
-  code,
-  output,
-  isError,
-  running,
-  durationMs,
-}: {
-  command: string;
-  cwd?: string;
-  code?: string;
-  output?: string;
-  isError?: boolean;
-  running?: boolean;
-  durationMs?: number;
-}) {
-  const prompt = cwd?.split(/[\\/]/).filter(Boolean).pop();
+function Body({ children }: { children: ReactNode }) {
+  return <div className="space-y-1.5 pt-0.5 pb-2 pl-7">{children}</div>;
+}
+
+// ---------- 思考 ----------
+
+/** 每秒 token 数：与 TUI 的 `thinking_tokens_per_second` 同一套四舍五入。 */
+function tokenRate(tokens: number, ms: number): number {
+  return Math.floor((tokens * 1000 + Math.floor(ms / 2)) / ms);
+}
+
+/**
+ * 简略档流式中的思考：整段 Markdown 照常渲染（不截断源文本，免得切坏语法），
+ * 视口只留末尾 {@link BRIEF_THINKING_ROWS} 行并贴底；内容溢出时顶部渐隐。
+ */
+function ThinkingTail({ text }: { text: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [clipped, setClipped] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 流式正文每次增长都要重新贴底
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+    setClipped(node.scrollHeight > node.clientHeight + 1);
+  }, [text]);
   return (
-    <div className="overflow-hidden rounded-xl bg-code font-mono text-xs leading-[19px] ring-1 ring-inset ring-border-subtle">
-      <div className="group/cmd flex items-start gap-2 px-3.5 py-2.5">
-        <span className="select-none text-text-tertiary">{prompt ? `${prompt} $` : "$"}</span>
-        <div className="min-w-0 flex-1">
-          <div className="max-h-[120px] overflow-y-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground">
-            {command}
-          </div>
-          {code && (
-            <pre className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] text-muted-foreground">
-              {code}
-            </pre>
+    <div
+      ref={ref}
+      className={cn(
+        "overflow-hidden",
+        clipped && "[mask-image:linear-gradient(to_bottom,transparent,black_1.75rem)]",
+      )}
+      style={{ maxHeight: `calc(${BRIEF_THINKING_ROWS} * 1.65 * 13.5px)` }}
+    >
+      <ThinkingProse text={text} animating />
+    </div>
+  );
+}
+
+function ThinkingProse({ text, animating }: { text: string; animating?: boolean }) {
+  return (
+    <div className="[--moc-prose-color:var(--muted-foreground)] [--moc-prose-leading:1.65] [--moc-prose-size:13.5px]">
+      <MessageResponse isAnimating={animating}>{text}</MessageResponse>
+    </div>
+  );
+}
+
+function ReasoningRow({
+  block,
+  axis,
+  live,
+}: {
+  block: Extract<Block, { kind: "reasoning" }>;
+  axis: DetailLevel;
+  live: boolean;
+}) {
+  const [level, setLevel] = useState(axis);
+  const streaming = live && block.durationMs === undefined;
+  const hasText = block.text.trim().length > 0;
+  const rate =
+    block.tokens && block.durationMs ? tokenRate(block.tokens, block.durationMs) : undefined;
+  // 完整档展开全文；简略档只在流式中露出末尾，结束后收成标题行；隐藏档只有标题。
+  const body = !hasText ? null : level === "full" ? (
+    <ThinkingProse text={block.text} animating={streaming} />
+  ) : level === "brief" && streaming ? (
+    <ThinkingTail text={block.text} />
+  ) : null;
+  return (
+    <div>
+      <RowHeader
+        icon={<BrainIcon />}
+        verb={streaming ? "思考中" : "思考"}
+        target={body || level === "hidden" ? undefined : activitySnippet(block, 160)}
+        pulse={streaming}
+        interactive={hasText}
+        open={level === "full"}
+        onToggle={() => setLevel(toggledLevel(axis, level))}
+        suffix={
+          <>
+            {rate !== undefined && (
+              <span className="text-2xs tabular-nums text-text-tertiary">{rate} t/s</span>
+            )}
+            <Duration ms={block.durationMs} />
+          </>
+        }
+      />
+      {body && <div className="border-l border-border pt-0.5 pb-2 ml-[13px] pl-[13px]">{body}</div>}
+    </div>
+  );
+}
+
+// ---------- 工具 ----------
+
+function toolSuffix(tool: ToolBlock, stat?: string, statError?: boolean): ReactNode {
+  if (tool.status === "running") {
+    return tool.awaitingPermission ? (
+      <span className="text-2xs text-warn">等待授权</span>
+    ) : (
+      <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
+    );
+  }
+  if (tool.status === "denied") return <span className="text-2xs text-warn">已拒绝</span>;
+  if (tool.status === "cancelled")
+    return <span className="text-2xs text-text-tertiary">已取消</span>;
+  const files = tool.diff?.files ?? [];
+  const total = files.reduce(
+    (sum, file) => {
+      const stats = diffStats(file);
+      return { added: sum.added + stats.added, removed: sum.removed + stats.removed };
+    },
+    { added: 0, removed: 0 },
+  );
+  return (
+    <>
+      {stat && (
+        <span
+          className={cn(
+            "text-2xs tabular-nums",
+            statError ? "text-destructive" : "text-text-tertiary",
           )}
-        </div>
-        <span className="opacity-0 transition-opacity group-hover/cmd:opacity-100">
-          <CopyButton text={code ?? command} label="复制命令" />
+        >
+          {stat}
         </span>
-      </div>
-      {(output || running) && (
-        <div className="border-t border-border-subtle">
-          <pre
-            className={cn(
-              "max-h-[260px] overflow-auto px-3 py-2 whitespace-pre-wrap [overflow-wrap:anywhere]",
-              isError ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
-            {output || (running ? "…" : "")}
-          </pre>
-        </div>
       )}
-      {!running && (durationMs !== undefined || isError) && (
-        <div className="flex items-center gap-2 border-t border-border-subtle px-3 py-1 text-2xs text-text-tertiary">
-          <span
-            className={cn("size-1.5 rounded-full", isError ? "bg-destructive" : "bg-success")}
-          />
-          <span>{isError ? "失败" : "完成"}</span>
-          {durationMs !== undefined && <span>· {formatDuration(durationMs)}</span>}
-        </div>
-      )}
-    </div>
+      {(total.added > 0 || total.removed > 0) && <DiffStat {...total} />}
+      {tool.diff?.truncated && <span className="text-2xs text-text-tertiary">…</span>}
+      <Duration ms={tool.durationMs} />
+    </>
   );
 }
 
-/** 通用工具卡：入参（JSON 美化）+ 结果。 */
-function IoCard({
-  input,
-  output,
-  isError,
-}: {
-  input?: string;
-  output?: string;
-  isError?: boolean;
-}) {
+function ToolRow({ tool, axis }: { tool: ToolBlock; axis: DetailLevel }) {
+  const [level, setLevel] = useState(axis);
+  const headline = toolHeadline(tool);
+  const failed = toolFailed(tool);
+  const interactive = Boolean(tool.result || tool.diff || tool.arguments.trim());
+  const toggle = () => setLevel(toggledLevel(axis, level));
+  const body = toolBody(tool, level, () => setLevel("full"));
+  const extras = level !== "hidden" && (tool.images.length > 0 || Boolean(tool.progress?.length));
   return (
-    <div className="overflow-hidden rounded-xl bg-code font-mono text-xs leading-[19px] ring-1 ring-inset ring-border-subtle">
-      {input && (
-        <div className="group/io relative">
-          <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-2xs text-text-tertiary">
-            <span>参数</span>
-            <span className="opacity-0 transition-opacity group-hover/io:opacity-100">
-              <CopyButton text={input} />
-            </span>
-          </div>
-          <pre className="max-h-[180px] overflow-auto px-3 pb-2 whitespace-pre-wrap [overflow-wrap:anywhere] text-muted-foreground">
-            {prettyJson(input)}
-          </pre>
-        </div>
+    <div>
+      <RowHeader
+        icon={iconFor(tool)}
+        verb={headline.verb ?? activityVerb(tool) ?? "调用工具"}
+        target={headline.target}
+        scope={headline.scope}
+        mono={headline.mono}
+        failed={failed}
+        suffix={toolSuffix(tool, headline.stat, headline.statError)}
+        interactive={interactive}
+        open={level === "full"}
+        onToggle={toggle}
+      />
+      {(body || extras) && (
+        <Body>
+          {body}
+          {extras && <ToolExtras tool={tool} />}
+        </Body>
       )}
-      {output && (
-        <div className={cn("group/io relative", input && "border-t border-border-subtle")}>
-          <div className="flex items-center justify-between px-3 pt-1.5 font-sans text-2xs text-text-tertiary">
-            <span>{isError ? "错误" : "结果"}</span>
-            <span className="opacity-0 transition-opacity group-hover/io:opacity-100">
-              <CopyButton text={output} />
-            </span>
-          </div>
-          <pre
-            className={cn(
-              "max-h-[260px] overflow-auto px-3 pb-2 whitespace-pre-wrap [overflow-wrap:anywhere]",
-              isError ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
-            {output}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ToolDetail({ tool }: { tool: ToolBlock }) {
-  const args = parseArgs(tool.arguments);
-  const command = typeof args?.command === "string" ? args.command : undefined;
-  const code = typeof args?.code === "string" ? args.code : undefined;
-  const cwd = typeof args?.cwd === "string" ? args.cwd : undefined;
-  const running = tool.status === "running";
-
-  return (
-    <div className="space-y-2">
-      {tool.diff?.files.length ? (
-        tool.diff.files.map((file) => (
-          <div
-            key={file.path}
-            className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle"
-          >
-            <div className="flex h-9 items-center gap-2 border-b border-border-subtle bg-card px-3.5 text-xs">
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
-                title={file.path}
-              >
-                {file.path}
-              </span>
-              <DiffStat {...diffStats(file)} />
-            </div>
-            <DiffBody file={file} maxHeight={320} mode="unified" />
-          </div>
-        ))
-      ) : command || code ? (
-        <CommandCard
-          command={command ?? tool.name}
-          cwd={cwd}
-          code={code}
-          output={tool.result}
-          isError={tool.isError}
-          running={running}
-          durationMs={tool.durationMs}
-        />
-      ) : tool.arguments || tool.result ? (
-        <IoCard input={tool.arguments} output={tool.result} isError={tool.isError} />
-      ) : null}
-
-      {tool.diff?.files.length && tool.isError && tool.result ? (
-        <IoCard output={tool.result} isError />
-      ) : null}
-
-      {tool.images.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {tool.images.map((image, index) => (
-            <a
-              // biome-ignore lint/suspicious/noArrayIndexKey: 工具结果的图片列表只读不重排，且没有稳定 id
-              key={index}
-              href={imageSrc(image)}
-              target="_blank"
-              rel="noreferrer"
-              className="overflow-hidden rounded-xl ring-1 ring-inset ring-border-subtle"
-            >
-              <img
-                src={imageSrc(image)}
-                alt="工具返回的图片"
-                className="max-h-48 max-w-[240px] object-contain"
-              />
-            </a>
+      {tool.children.length > 0 && (
+        <div className="ml-[13px] border-l border-border pl-2.5">
+          {tool.children.map((child) => (
+            <ToolRow key={`${child.id}:${axis}`} tool={child} axis={axis} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
 
+/** 子代理进度行与工具返回的图片。 */
+function ToolExtras({ tool }: { tool: ToolBlock }) {
+  return (
+    <>
       {tool.progress && tool.progress.length > 0 && (
-        <div className="space-y-1 rounded-xl bg-card px-3.5 py-2.5 text-xs ring-1 ring-inset ring-border-subtle">
+        <div className="space-y-1 rounded-xl bg-code px-3 py-2 text-xs">
           {tool.progress.map((row) => (
             <div key={row.agent_id} className="flex items-center gap-2">
               {row.status === "running" || row.status === "queued" ? (
@@ -296,11 +351,117 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
           ))}
         </div>
       )}
+      {tool.images.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {tool.images.map((image, index) => (
+            <a
+              // biome-ignore lint/suspicious/noArrayIndexKey: 工具结果的图片列表只读不重排，且没有稳定 id
+              key={index}
+              href={imageSrc(image)}
+              target="_blank"
+              rel="noreferrer"
+              className="overflow-hidden rounded-xl bg-code"
+            >
+              <img
+                src={imageSrc(image)}
+                alt="工具返回的图片"
+                className="max-h-48 max-w-[240px] object-contain"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
 
-      {tool.children.length > 0 && (
-        <div className="border-l border-border pl-3">
-          {tool.children.map((child) => (
-            <ActivityRow key={child.id} block={child} />
+/** 合并行的动作文案：`读取 4 个文件`。 */
+const GROUP_VERB: Record<string, (n: number) => string> = {
+  read: (n) => `读取 ${n} 个文件`,
+  grep: (n) => `搜索代码 ${n} 次`,
+  find: (n) => `查找文件 ${n} 次`,
+  web_search: (n) => `搜索网页 ${n} 次`,
+  web_fetch: (n) => `访问 ${n} 个网页`,
+};
+
+/** 合并行尾注：同类计数求和。 */
+function groupStat(name: string, tools: ToolBlock[]): string | undefined {
+  const done = tools.filter((tool) => tool.result !== undefined && !toolFailed(tool));
+  if (done.length === 0) return undefined;
+  if (name === "grep") {
+    const total = done.reduce(
+      (sum, tool) => {
+        const counts = grepCounts(tool.result as string);
+        return { matches: sum.matches + counts.matches, files: sum.files + counts.files };
+      },
+      { matches: 0, files: 0 },
+    );
+    return `${total.matches} matches · ${total.files} files`;
+  }
+  if (name === "find") {
+    const files = done.reduce(
+      (sum, tool) => sum + findFiles(tool.result as string).paths.length,
+      0,
+    );
+    return `${files} files`;
+  }
+  if (name === "web_search") {
+    const hits = done.reduce(
+      (sum, tool) => sum + parseSearch(tool.result as string).hits.length,
+      0,
+    );
+    return `${hits} results`;
+  }
+  return undefined;
+}
+
+function ToolGroupRow({
+  name,
+  tools,
+  axis,
+}: {
+  name: string;
+  tools: ToolBlock[];
+  axis: DetailLevel;
+}) {
+  const failedCount = tools.filter(toolFailed).length;
+  const [open, setOpen] = useState(axis === "full" || failedCount > 0);
+  const running = tools.some((tool) => tool.status === "running");
+  const targets = tools
+    .map((tool) => toolHeadline(tool).target.split(/[\\/]/).pop() ?? "")
+    .filter(Boolean)
+    .join("  ");
+  const verb =
+    GROUP_VERB[name]?.(tools.length) ?? `${activityVerb(tools[0]) ?? "调用工具"} ×${tools.length}`;
+  const stat = groupStat(name, tools);
+  return (
+    <div>
+      <RowHeader
+        icon={iconFor(tools[0])}
+        verb={verb}
+        target={targets}
+        mono
+        failed={failedCount > 0}
+        interactive
+        open={open}
+        onToggle={() => setOpen(!open)}
+        suffix={
+          running ? (
+            <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
+          ) : (
+            <>
+              {failedCount > 0 && (
+                <span className="text-2xs text-destructive">{failedCount} 失败</span>
+              )}
+              {stat && <span className="text-2xs tabular-nums text-text-tertiary">{stat}</span>}
+            </>
+          )
+        }
+      />
+      {open && (
+        <div className="ml-[13px] border-l border-border pl-2.5">
+          {tools.map((tool) => (
+            <ToolRow key={`${tool.id}:${axis}`} tool={tool} axis={axis} />
           ))}
         </div>
       )}
@@ -308,181 +469,116 @@ function ToolDetail({ tool }: { tool: ToolBlock }) {
   );
 }
 
-function BlockDetail({ block }: { block: Block }) {
-  switch (block.kind) {
-    case "reasoning":
-      return (
-        <div className="border-l-2 border-border pl-3 [--moc-prose-color:var(--muted-foreground)] [--moc-prose-leading:1.65] [--moc-prose-size:13.5px]">
-          <MessageResponse>{block.text}</MessageResponse>
-        </div>
-      );
-    case "bash":
-      return (
-        <CommandCard
-          command={block.command}
-          output={block.output}
-          isError={block.isError}
-          running={block.output === undefined}
-        />
-      );
-    case "tool":
-      return <ToolDetail tool={block} />;
-    case "agent-message":
-      return (
-        <div className="rounded-xl bg-card px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground ring-1 ring-inset ring-border-subtle">
-          {block.body}
-        </div>
-      );
-    default:
-      return null;
-  }
+// ---------- 其他块 ----------
+
+/** `!cmd` 手动命令与 bash 工具同一套呈现。 */
+function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
+  return {
+    kind: "tool",
+    id: block.id,
+    toolCallId: block.toolCallId ?? block.id,
+    name: "bash",
+    arguments: JSON.stringify({ command: block.command }),
+    status: block.output === undefined ? "running" : block.isError ? "error" : "completed",
+    result: block.output,
+    isError: Boolean(block.isError),
+    images: [],
+    children: [],
+    awaitingPermission: false,
+  };
 }
 
-function hasDetail(block: Block): boolean {
-  switch (block.kind) {
-    case "reasoning":
-      return block.text.trim().length > 0;
-    case "bash":
-    case "agent-message":
-      return true;
-    case "tool":
-      return Boolean(
-        block.arguments ||
-          block.result ||
-          block.diff ||
-          block.children.length ||
-          block.progress?.length,
-      );
-    default:
-      return false;
-  }
-}
-
-function rowSuffix(block: Block): ReactNode {
-  if (block.kind === "tool") {
-    if (block.status === "running") {
-      return block.awaitingPermission ? (
-        <span className="text-2xs text-warn">等待授权</span>
-      ) : (
-        <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
-      );
-    }
-    const files = block.diff?.files ?? [];
-    if (files.length > 0) {
-      const total = files.reduce(
-        (sum, file) => {
-          const stats = diffStats(file);
-          return { added: sum.added + stats.added, removed: sum.removed + stats.removed };
-        },
-        { added: 0, removed: 0 },
-      );
-      return <DiffStat {...total} />;
-    }
-    if (block.status === "denied") return <span className="text-2xs text-warn">已拒绝</span>;
-    if (block.status === "cancelled")
-      return <span className="text-2xs text-text-tertiary">已取消</span>;
-    if (block.durationMs !== undefined && block.durationMs >= 1000) {
-      return (
-        <span className="text-2xs tabular-nums text-text-tertiary">
-          {formatDuration(block.durationMs)}
-        </span>
-      );
-    }
-  }
-  if (block.kind === "reasoning" && block.durationMs !== undefined && block.durationMs >= 1000) {
-    return (
-      <span className="text-2xs tabular-nums text-text-tertiary">
-        {formatDuration(block.durationMs)}
-      </span>
-    );
-  }
-  if (block.kind === "bash" && block.output === undefined) {
-    return <Loader2Icon className="size-3 animate-spin text-text-tertiary" />;
-  }
-  return null;
-}
-
-/** 单行活动：图标 · 动作 · 摘要 · 尾注；有详情时整行可点开。 */
-export function ActivityRow({ block, live = false }: { block: Block; live?: boolean }) {
-  const expandThinking = usePrefs((state) => state.expandThinking);
-  const detail = hasDetail(block);
-  const streamingThought = live && block.kind === "reasoning" && block.durationMs === undefined;
-  const [manual, setManual] = useState<boolean | null>(null);
-  const open =
-    detail && (manual ?? (block.kind === "reasoning" && (expandThinking || streamingThought)));
-  const failed =
-    (block.kind === "tool" && (block.isError || block.status === "error")) ||
-    (block.kind === "bash" && block.isError);
-  const verb =
-    block.kind === "reasoning"
-      ? streamingThought
-        ? "思考中"
-        : "思考"
-      : (activityVerb(block) ?? "事件");
-  const snippet = block.kind === "reasoning" && open ? "" : activitySnippet(block, 120);
-
+function AgentMessageRow({
+  block,
+  axis,
+}: {
+  block: Extract<Block, { kind: "agent-message" }>;
+  axis: DetailLevel;
+}) {
+  const [level, setLevel] = useState(axis);
+  const head = headLines(block.body, BRIEF_BODY_ROWS);
+  const lines = level === "full" ? block.body : head.lines.join("\n");
   return (
-    <div className="group/row">
-      <button
-        type="button"
-        disabled={!detail}
-        onClick={() => setManual(!open)}
-        className={cn(
-          "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 text-left text-ui text-muted-foreground transition-colors",
-          detail ? "hover:text-foreground" : "cursor-default",
-        )}
-      >
-        <span
-          className={cn(
-            "flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5",
-            failed ? "text-destructive" : "text-text-tertiary",
-          )}
-        >
-          {failed ? <CircleAlertIcon /> : iconFor(block)}
-        </span>
-        <span className={cn("shrink-0", streamingThought && "animate-pulse")}>{verb}</span>
-        {snippet && (
-          <span
-            className={cn(
-              "min-w-0 flex-1 truncate",
-              block.kind === "reasoning"
-                ? "text-text-tertiary"
-                : "font-mono text-xs text-text-tertiary",
-              failed && "text-destructive/80",
+    <div>
+      <RowHeader
+        icon={<BotIcon />}
+        verb="子代理消息"
+        target={block.from}
+        interactive
+        open={level === "full"}
+        onToggle={() => setLevel(toggledLevel(axis, level))}
+      />
+      {level !== "hidden" && (
+        <Body>
+          <div className="rounded-xl bg-code px-3.5 py-2.5 text-sm whitespace-pre-wrap text-muted-foreground">
+            {lines}
+            {level === "brief" && head.hidden > 0 && (
+              <button
+                type="button"
+                onClick={() => setLevel("full")}
+                className="mt-1 block text-2xs text-text-tertiary hover:text-foreground"
+              >
+                ⋯ 还有 {head.hidden} 行
+              </button>
             )}
-          >
-            {snippet}
-          </span>
-        )}
-        {!snippet && <span className="flex-1" />}
-        <span className="flex shrink-0 items-center gap-1.5">
-          {rowSuffix(block)}
-          {detail && (
-            <ChevronRightIcon
-              className={cn(
-                "size-3.5 text-text-tertiary opacity-0 transition-all group-hover/row:opacity-100",
-                open && "rotate-90 opacity-100",
-              )}
-            />
-          )}
-        </span>
-      </button>
-      {open && (
-        <div className="pt-1 pb-2 pl-7">
-          <BlockDetail block={block} />
-        </div>
+          </div>
+        </Body>
       )}
     </div>
   );
 }
 
-/** 一组连续的活动行。 */
+/** 一组连续的活动行。行的 key 带上所属层的档位：档位一变就按新档位重建，收回手动展开。 */
 export function ActivityGroup({ blocks, live }: { blocks: Block[]; live: boolean }) {
+  const thinking = usePrefs((state) => state.thinkingDetail);
+  const tools = usePrefs((state) => state.toolDetail);
+  const items = useMemo(() => groupActivity(blocks), [blocks]);
   return (
     <div className="-mx-1.5">
-      {blocks.map((block) => (
-        <ActivityRow key={block.id} block={block} live={live} />
-      ))}
+      {items.map((item) => {
+        if (item.kind === "group") {
+          return (
+            <ToolGroupRow
+              key={`${item.id}:${tools}`}
+              name={item.name}
+              tools={item.tools}
+              axis={tools}
+            />
+          );
+        }
+        const block = item.block;
+        switch (block.kind) {
+          case "reasoning":
+            return (
+              <ReasoningRow
+                key={`${block.id}:${thinking}`}
+                block={block}
+                axis={thinking}
+                live={live}
+              />
+            );
+          case "tool":
+            return <ToolRow key={`${block.id}:${tools}`} tool={block} axis={tools} />;
+          case "bash":
+            return <ToolRow key={`${block.id}:${tools}`} tool={bashAsTool(block)} axis={tools} />;
+          case "agent-message":
+            return <AgentMessageRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
+          case "status":
+            return (
+              <RowHeader
+                key={block.id}
+                icon={<InfoIcon />}
+                verb="状态更新"
+                target={block.text}
+                interactive={false}
+                open={false}
+                onToggle={() => {}}
+              />
+            );
+          default:
+            return null;
+        }
+      })}
     </div>
   );
 }
