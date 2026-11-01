@@ -13,7 +13,7 @@
 //! `force=false` 的 `session/unlock` 只释放**本进程**持有的锁；对他人持有的锁，
 //! core 返回 [`crate::RpcErrorCode::SessionLocked`]，`force=true` 则无条件清除。
 
-use super::{plan::PlanInfo, todo::TodoPhase};
+use super::{diff::ToolDiff, plan::PlanInfo, todo::TodoPhase};
 use serde::{Deserialize, Serialize};
 
 use crate::method::{ClientRequest, Method};
@@ -643,6 +643,9 @@ pub struct ToolExecution {
     /// 执行耗时毫秒；`None` 表示不计时（拒绝、取消等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// 工具产出的结构化 diff；随 transcript 持久化，历史回放据此显示改动。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<ToolDiff>,
 }
 
 /// 工具执行终态。

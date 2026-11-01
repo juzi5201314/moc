@@ -2162,6 +2162,7 @@ mod tests {
                     tool_call_id: "call_1".into(),
                     status: ToolStatus::Completed,
                     duration_ms: Some(1),
+                    diff: None,
                 }),
                 None,
             )

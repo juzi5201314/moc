@@ -295,6 +295,7 @@ fn transcript(session_id: &str) -> Vec<TranscriptEntry> {
                 tool_call_id: "call_1".to_owned(),
                 status: ToolStatus::Completed,
                 duration_ms: Some(12),
+                diff: None,
             }),
             bash: None,
             agent: None,

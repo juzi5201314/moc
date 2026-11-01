@@ -141,6 +141,7 @@ async fn commit_prepared(
                 tool_call_id: call.id.clone(),
                 status,
                 duration_ms: Some(duration_ms),
+                diff: outcome.diff.clone(),
             }),
             finish_reason,
         )
@@ -1225,6 +1226,7 @@ pub(super) async fn persist_tool_result(
                 tool_call_id,
                 status,
                 duration_ms: Some(duration_ms),
+                diff: None,
             }),
             None,
         )

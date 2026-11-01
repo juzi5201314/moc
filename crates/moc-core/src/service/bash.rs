@@ -97,6 +97,7 @@ pub(super) async fn run(
                     tool_call_id: call_id.clone(),
                     status,
                     duration_ms: Some(duration_ms),
+                    diff: None,
                 },
             },
         )

@@ -122,6 +122,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
             tool_call_id,
             status,
             duration_ms,
+            diff,
         }) = tool
             && let Some(&index) = call_index.get(tool_call_id)
             && let Some(entry) = blocks.get_mut(index)
@@ -129,6 +130,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
         {
             tool_block.status = Some(*status);
             tool_block.duration_ms = *duration_ms;
+            tool_block.diff.clone_from(diff);
             tool_block.running = false;
             entry.touch();
         }
@@ -230,7 +232,14 @@ mod tests {
 
     #[test]
     fn pairs_tool_calls_with_results() {
-        let call = ToolCall::new("call_1", "bash", "{\"command\":\"ls\"}");
+        let call = ToolCall::new("call_1", "edit", "{\"path\":\"a.rs\"}");
+        let diff = moc_protocol::methods::ToolDiff {
+            files: vec![moc_protocol::methods::ToolFileDiff {
+                path: "/repo/a.rs".into(),
+                hunks: Vec::new(),
+            }],
+            truncated: false,
+        };
         let entries = [
             entry(
                 Message {
@@ -263,6 +272,7 @@ mod tests {
                     tool_call_id: "call_1".into(),
                     status: ToolStatus::Completed,
                     duration_ms: Some(12),
+                    diff: Some(diff.clone()),
                 }),
             ),
         ];
@@ -274,6 +284,7 @@ mod tests {
         };
         assert_eq!(tool.status, Some(ToolStatus::Completed));
         assert_eq!(tool.result.as_deref(), Some("a.rs"));
+        assert_eq!(tool.diff.as_ref(), Some(&diff), "历史回放要带回 edit 的 diff");
     }
 
     #[test]
