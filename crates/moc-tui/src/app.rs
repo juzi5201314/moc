@@ -294,6 +294,8 @@ pub struct App {
     pub notice: Option<String>,
     /// 当前 notice 的设置时刻（toast 超时判定）。
     pub notice_at: Option<std::time::Instant>,
+    /// 当前 notice 是否报告失败（失败用错误色，其余操作反馈用中性强调色）。
+    pub notice_error: bool,
     /// 上游实际配置与请求不一致的告警；同一时刻最多一条，新告警替换旧告警。
     pub warning: Option<String>,
     /// 当前 warning 的设置时刻（超时判定）。
@@ -545,6 +547,7 @@ impl App {
             clear_pending: false,
             notice: None,
             notice_at: None,
+            notice_error: false,
             warning: None,
             warning_at: None,
             terminal_focused: true,
@@ -626,10 +629,17 @@ impl App {
         self.config_flight.is_some() || self.config_queue.is_some()
     }
 
-    /// 设置一次性提示并刷新计时。
+    /// 设置一次性提示并刷新计时（操作反馈、引导，中性配色）。
     pub fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some(text.into());
         self.notice_at = Some(std::time::Instant::now());
+        self.notice_error = false;
+    }
+
+    /// 设置报告失败的一次性提示（错误配色）。
+    pub fn set_error_notice(&mut self, text: impl Into<String>) {
+        self.set_notice(text);
+        self.notice_error = true;
     }
 
     /// 设置上游配置不一致告警并刷新计时。
@@ -704,6 +714,14 @@ impl App {
             || "idle".to_owned(),
             |session| model_selector_label(&session.model),
         )
+    }
+    /// 找到指定调用 ID 的工具块（只读，O(1) 索引）。
+    pub fn tool_block(&self, tool_call_id: &str) -> Option<&ToolCallBlock> {
+        let index = *self.tool_indices.get(tool_call_id)?;
+        match self.blocks.get(index).map(|entry| &entry.block) {
+            Some(Block::Tool(tool)) if tool.id == tool_call_id => Some(tool),
+            _ => None,
+        }
     }
     /// 找到指定调用 ID 的工具条目。
     pub fn tool_entry_mut(&mut self, tool_call_id: &str) -> Option<&mut Entry> {

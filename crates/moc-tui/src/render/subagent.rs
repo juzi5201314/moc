@@ -50,10 +50,7 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 style,
             )));
             lines.push(Line::from(Span::styled(
-                crate::render::scrollback::truncate_to_width(
-                    view.info.title.clone(),
-                    usize::from(area.width.saturating_sub(2)),
-                ),
+                crate::render::wrap::truncate(view.info.title.clone(), usize::from(area.width.saturating_sub(2))).into_owned(),
                 Style::new().fg(theme.text_primary),
             )));
             let model = view
@@ -63,18 +60,12 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .next()
                 .unwrap_or(&view.info.model);
             lines.push(Line::from(Span::styled(
-                crate::render::scrollback::truncate_to_width(
-                    model.to_owned(),
-                    usize::from(area.width.saturating_sub(2)),
-                ),
+                crate::render::wrap::truncate(model.to_owned(), usize::from(area.width.saturating_sub(2))).into_owned(),
                 Style::new().fg(theme.gray_dim),
             )));
             if let Some(message) = &view.info.last_message {
                 lines.push(Line::from(Span::styled(
-                    crate::render::scrollback::truncate_to_width(
-                        message.clone(),
-                        usize::from(area.width.saturating_sub(2)),
-                    ),
+                    crate::render::wrap::truncate(message.clone(), usize::from(area.width.saturating_sub(2))).into_owned(),
                     Style::new().fg(theme.gray_dim),
                 )));
             }
@@ -137,7 +128,7 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 style,
             )));
             block_lines.push(Line::from(Span::styled(
-                crate::render::scrollback::truncate_to_width(view.info.title.clone(), sep_width),
+                crate::render::wrap::truncate(view.info.title.clone(), sep_width).into_owned(),
                 Style::new().fg(theme.text_primary),
             )));
             let model = view
@@ -147,12 +138,12 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .next()
                 .unwrap_or(&view.info.model);
             block_lines.push(Line::from(Span::styled(
-                crate::render::scrollback::truncate_to_width(model.to_owned(), sep_width),
+                crate::render::wrap::truncate(model.to_owned(), sep_width).into_owned(),
                 Style::new().fg(theme.gray_dim),
             )));
             if let Some(message) = &view.info.last_message {
                 block_lines.push(Line::from(Span::styled(
-                    crate::render::scrollback::truncate_to_width(message.clone(), sep_width),
+                    crate::render::wrap::truncate(message.clone(), sep_width).into_owned(),
                     Style::new().fg(theme.gray_dim),
                 )));
             }

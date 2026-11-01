@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
 use crate::modal::{Modal, RewindState};
@@ -65,27 +65,6 @@ fn format_short_clock(at_ms: u64) -> String {
         .unwrap_or_default()
 }
 
-/// 截断文本并补省略号
-fn ellipsize(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut width = 0;
-    let mut result = String::new();
-    for ch in text.chars() {
-        let ch_w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-        if width + ch_w > max_width.saturating_sub(1) && max_width > 3 {
-            result.push('…');
-            break;
-        } else if width + ch_w > max_width {
-            break;
-        }
-        result.push(ch);
-        width += ch_w;
-    }
-    result
-}
-
 /// 绘制回退视图
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
@@ -95,7 +74,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     frame
         .buffer_mut()
         .set_style(area, Style::new().fg(theme.gray_dim).bg(theme.bg_dark));
-    frame.render_widget(Clear, win);
+    super::overlay::paint_opaque(frame.buffer_mut(), win, Style::new().bg(theme.bg_base));
 
     // 外层边框
     let outer_block = Block::default()
@@ -472,7 +451,11 @@ fn draw_timeline_list(frame: &mut Frame, state: &mut RewindState, area: Rect, th
         lines.push(Line::from(row1_spans));
 
         if item_height >= 2 {
-            let snippet = ellipsize(&item.preview, usize::from(inner.width).saturating_sub(6));
+            let snippet = crate::render::wrap::truncate(
+                item.preview.as_str(),
+                usize::from(inner.width).saturating_sub(6),
+            )
+            .into_owned();
             let row2_style = if is_selected {
                 Style::new().fg(theme.text_primary).bg(theme.bg_visual)
             } else if is_dropped {
@@ -681,7 +664,7 @@ fn draw_detail_panel(frame: &mut Frame, state: &mut RewindState, area: Rect, the
         ),
         Span::styled("条目ID：", Style::new().fg(theme.gray_dim)),
         Span::styled(
-            ellipsize(&current_item.entry_id, 14),
+            crate::render::wrap::truncate(current_item.entry_id.as_str(), 14).into_owned(),
             Style::new().fg(theme.gray_dim),
         ),
     ];

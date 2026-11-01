@@ -1141,8 +1141,8 @@ pub enum Modal {
     },
     /// 计划审批（`session/plan_approve`）。
     Plan { state: PlanReviewState },
-    /// 快捷键帮助。
-    Help,
+    /// 快捷键帮助；`scroll` 是正文滚动偏移（渲染时按可见行数收紧）。
+    Help { scroll: usize },
     /// 上下文组成估算详情。
     Context { usage: Option<ContextUsageResult> },
     /// 上下文正文：分块展示真正送进模型的内容。
@@ -1201,7 +1201,7 @@ impl Modal {
             Modal::Subagents { .. } => "子代理".into(),
             Modal::Fusion { .. } => "Fusion".into(),
             Modal::Plan { state } => format!("计划审批：{}", state.title),
-            Modal::Help => "快捷键帮助".into(),
+            Modal::Help { .. } => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
             Modal::ContextContent { .. } => "上下文内容".into(),
             Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
@@ -1238,7 +1238,7 @@ impl Modal {
                 .count(),
             Modal::Plan { .. } => 4,
             Modal::Fusion { .. } => 3,
-            Modal::Help | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
+            Modal::Help { .. } | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
             Modal::SwitchModel { .. } => 2,
         }
     }
@@ -1278,7 +1278,7 @@ impl Modal {
             }
             Modal::Ask { .. }
             | Modal::Rewind { .. }
-            | Modal::Help
+            | Modal::Help { .. }
             | Modal::Context { .. }
             | Modal::ContextContent { .. } => {}
             Modal::SwitchModel { option, .. } => {
@@ -1779,7 +1779,7 @@ mod tests {
                 if error == "读取失败"
         ));
 
-        assert!(!Modal::Help.set_error("没有位置显示"));
+        assert!(!Modal::Help { scroll: 0 }.set_error("没有位置显示"));
         assert!(
             !Modal::Context { usage: None }.set_error("没有位置显示"),
             "上下文占用卡片不承载错误"

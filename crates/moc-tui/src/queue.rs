@@ -475,11 +475,12 @@ pub fn remove(app: &mut App, connection: &EmbeddedConnection, id: u64) {
 }
 
 pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
+    use crate::render::{overlay, wrap};
     use ratatui::{
         layout::Rect,
         style::Style,
         text::{Line, Span},
-        widgets::{Block, Clear, Paragraph},
+        widgets::Paragraph,
     };
     app.queue_hits.clear();
     app.queue_area = ratatui::layout::Rect::default();
@@ -539,21 +540,25 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
     );
     app.queue_area = area;
     app.queue_offset = app.queue_offset.min(total.saturating_sub(visible));
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::bordered()
-            .border_set(ratatui::symbols::border::ROUNDED)
-            .title(format!(
-                " 待发送 {total} · 插队 {} / 队列 {queue_len} · 点击/× 撤回 ",
-                steers.len()
-            ))
-            .style(
-                Style::new()
-                    .bg(app.theme.bg_base)
-                    .fg(app.theme.text_primary),
-            ),
+    let theme = app.theme;
+    overlay::paint_opaque(
+        frame.buffer_mut(),
         area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
+    let title = format!(
+        "待发送 {total} · 插队 {} / 队列 {queue_len} · 点击/× 撤回",
+        steers.len()
+    );
+    let panel = overlay::panel(theme).title(overlay::title_span(
+        &title,
+        usize::from(area.width.saturating_sub(4)),
+        theme,
+    ));
+    // 正文行：左右内边距之内，最右两列留给「×」。
+    let inner = panel.inner(area);
+    frame.render_widget(panel, area);
+    let text_width = usize::from(inner.width.saturating_sub(2));
 
     let mut rows: Vec<(u64, &'static str, usize, String)> = Vec::with_capacity(total);
     for (index, pending) in steers.iter().enumerate() {
@@ -573,26 +578,31 @@ pub fn draw(frame: &mut ratatui::Frame, app: &mut App) {
         .enumerate()
     {
         let row = Rect::new(
-            area.x + 1,
-            area.y + 1 + u16::try_from(row_index).expect("队列视图最多六行"),
-            area.width.saturating_sub(4),
+            inner.x,
+            inner.y + u16::try_from(row_index).expect("队列视图最多六行"),
+            inner.width.saturating_sub(2),
             1,
         );
         let label = if kind == "插队" {
-            Style::new().fg(app.theme.accent_running)
+            Style::new().fg(theme.accent_running)
         } else {
-            Style::new().fg(app.theme.text_primary)
+            Style::new().fg(theme.text_primary)
         };
+        let body = wrap::truncate(
+            format!("{number}. {text}"),
+            text_width.saturating_sub(wrap::str_width(kind) + 1),
+        )
+        .into_owned();
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(format!("{kind} "), label),
-                Span::raw(format!("{number}. {text}")),
+                Span::raw(body),
             ])),
             row,
         );
         let cancel = Rect::new(area.right().saturating_sub(3), row.y, 2, 1);
         frame.render_widget(
-            Paragraph::new("×").style(Style::new().fg(app.theme.gray)),
+            Paragraph::new("×").style(Style::new().fg(theme.gray)),
             cancel,
         );
         app.queue_hits.push((id, row, cancel));

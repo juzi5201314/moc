@@ -1,70 +1,28 @@
 use super::*;
 
-pub(super) fn hint_for(kind: &FieldKind) -> &'static str {
-    match kind {
-        FieldKind::Choice(_) => "↑↓/jk 选择 · Enter 应用 · Esc 取消",
-        FieldKind::Strings => "每行一项 · Ctrl+Enter/Ctrl+S 应用 · Esc 取消",
-        FieldKind::Object => "JSON 格式 · Ctrl+Enter/Ctrl+S 应用 · Esc 取消",
-        FieldKind::Multiline => "Ctrl+Enter/Ctrl+S 应用 · Esc 取消",
-        FieldKind::Secret => "F6/Ctrl+R 切换明文 · Enter 应用 · Esc 取消",
-        FieldKind::Integer | FieldKind::Number => {
-            "输入数值（支持 k/m/千分位）· Enter 应用 · 留空恢复默认 · Esc 取消"
-        }
-        _ => "Enter 应用 · 留空恢复默认 · Esc 取消",
-    }
-}
-
+/// 文本框的初始文本：对象按缩进 JSON，其余按原值。
 pub(super) fn format_value(value: &Value, kind: &FieldKind) -> String {
     if value.is_null() {
         return String::new();
     }
     match kind {
-        FieldKind::Strings => value
-            .as_array()
-            .map(|values| {
-                values
-                    .iter()
-                    .map(|value| value.as_str().unwrap_or_default())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default(),
         FieldKind::Object => serde_json::to_string_pretty(value).expect("JSON 值"),
         _ => value
             .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| value.to_string()),
+            .map_or_else(|| value.to_string(), str::to_owned),
     }
 }
 
-/// 编辑框里的初始文本：候选值显示标签，其余按原值。
-pub(super) fn edit_text(value: &Value, kind: &FieldKind) -> String {
-    if let (FieldKind::Choice(options), Some(current)) = (kind, value.as_str())
-        && let Some(option) = options.iter().find(|option| option.value == current)
-    {
-        return option.label.clone();
-    }
-    format_value(value, kind)
-}
-
-pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
+/// 文本框内容按字段类型解析；`None` 表示留空，删除该项回到默认值。
+pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Option<Value>> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(match kind {
-            FieldKind::Strings => json!([]),
-            FieldKind::Text | FieldKind::Secret | FieldKind::Multiline => json!(""),
-            _ => Value::Null,
+            FieldKind::Text | FieldKind::Secret | FieldKind::Multiline => Some(json!("")),
+            _ => None,
         });
     }
-    Ok(match kind {
-        FieldKind::Bool => {
-            let b = match trimmed.to_lowercase().as_str() {
-                "true" | "1" | "yes" | "on" | "开" | "开启" | "y" | "t" => true,
-                "false" | "0" | "no" | "off" | "关" | "关闭" | "n" | "f" => false,
-                _ => anyhow::bail!("请输入开/关或 true/false"),
-            };
-            json!(b)
-        }
+    Ok(Some(match kind {
         FieldKind::Integer => {
             let s = trimmed.replace(',', "");
             let (multiplier, s) = if s.ends_with('k') || s.ends_with('K') {
@@ -100,31 +58,14 @@ pub(super) fn parse(text: &str, kind: &FieldKind) -> anyhow::Result<Value> {
             anyhow::ensure!(number.is_finite() && number >= 0.0, "请输入有限的非负数");
             json!(number)
         }
-        FieldKind::Strings => json!(
-            text.lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-        ),
         FieldKind::Object => {
             let value: Value =
                 serde_json::from_str(text).map_err(|e| anyhow::anyhow!("JSON 格式有误：{e}"))?;
-            anyhow::ensure!(
-                value.is_object() || value.is_string(),
-                "请输入 JSON 对象；端点风格也可为字符串"
-            );
+            anyhow::ensure!(value.is_object(), "请输入 JSON 对象");
             value
         }
-        FieldKind::Choice(options) => {
-            let chosen = options
-                .iter()
-                .find(|option| option.value == trimmed || option.label == trimmed)
-                .map(|option| option.value.as_str());
-            let value = chosen.ok_or_else(|| anyhow::anyhow!("请从列出的候选值中选择"))?;
-            json!(value)
-        }
         _ => json!(text),
-    })
+    }))
 }
 
 pub(super) fn key(
@@ -145,7 +86,7 @@ pub(super) fn key(
     }
 }
 
-/// 编辑态按键：Enter 保存、Esc 取消，单选列表用 ↑↓/jk 选择。
+/// 编辑态按键：交给编辑器，再按结果写入、报错或关闭。
 fn edit_key(
     panel: &mut SettingsPanel,
     app: &mut App,
@@ -156,89 +97,54 @@ fn edit_key(
     let Some(mut edit) = panel.edit.take() else {
         return false;
     };
-    if code == KeyCode::Esc {
-        return false;
-    }
-    if code == KeyCode::F(6)
-        || (mods.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('r' | 'R')))
-    {
-        edit.reveal = !edit.reveal;
-        panel.edit = Some(edit);
-        return false;
-    }
-    if let FieldKind::Choice(options) = &edit.kind {
-        match code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                if !options.is_empty() {
-                    edit.choice_selected = edit
-                        .choice_selected
-                        .checked_sub(1)
-                        .unwrap_or(options.len() - 1);
-                }
-                panel.edit = Some(edit);
-                return false;
+    let result = match edit.editor.key(mods, code) {
+        Outcome::Stay => {
+            panel.edit = Some(edit);
+            return false;
+        }
+        Outcome::Cancel => {
+            panel.error = None;
+            return false;
+        }
+        Outcome::Error(message) => {
+            panel.error = Some(message);
+            panel.edit = Some(edit);
+            return false;
+        }
+        Outcome::Azure => {
+            if let EditTarget::Field(path) = edit.target {
+                panel.begin_azure(path);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if !options.is_empty() {
-                    edit.choice_selected = (edit.choice_selected + 1) % options.len();
-                }
-                panel.edit = Some(edit);
-                return false;
-            }
-            KeyCode::Enter => {
-                if let Some(option) = options.get(edit.choice_selected) {
-                    let text = option.value.clone();
-                    match apply_edit(
-                        panel,
-                        app,
-                        connection,
-                        &edit.target,
-                        &edit.kind,
-                        &text,
-                        &edit.title,
-                    ) {
-                        Ok(()) => panel.error = None,
-                        Err(error) => {
-                            panel.error = Some(error.to_string());
-                            panel.edit = Some(edit);
-                        }
-                    }
-                }
-                return false;
-            }
-            _ => {
-                panel.edit = Some(edit);
-                return false;
-            }
+            return false;
+        }
+        Outcome::Submit { kind, text } => apply_edit(panel, app, connection, &edit, &kind, &text),
+        Outcome::Value(value) => apply_value(panel, app, connection, &edit, value),
+    };
+    match result {
+        Ok(()) => panel.error = None,
+        Err(error) => {
+            panel.error = Some(error.to_string());
+            panel.edit = Some(edit);
         }
     }
-    let multiline = matches!(
-        edit.kind,
-        FieldKind::Multiline | FieldKind::Strings | FieldKind::Object
-    );
-    let submit = (code == KeyCode::Enter && (mods.contains(KeyModifiers::CONTROL) || !multiline))
-        || (code == KeyCode::Char('s') && mods.contains(KeyModifiers::CONTROL));
-    if submit {
-        match apply_edit(
-            panel,
-            app,
-            connection,
-            &edit.target,
-            &edit.kind,
-            &edit.input.text,
-            &edit.title,
-        ) {
-            Ok(()) => panel.error = None,
-            Err(error) => {
-                panel.error = Some(error.to_string());
-                panel.edit = Some(edit);
-            }
-        }
-        return false;
-    }
-    crate::widgets::prompt::edit_input(&mut edit.input, mods, code);
-    panel.edit = Some(edit);
     false
+}
+
+/// 弹窗控件选定的值写回字段。
+fn apply_value(
+    panel: &mut SettingsPanel,
+    app: &mut App,
+    connection: &EmbeddedConnection,
+    edit: &EditState,
+    value: Option<Value>,
+) -> anyhow::Result<()> {
+    let EditTarget::Field(path) = &edit.target else {
+        unreachable!("只有字段编辑会产出控件值");
+    };
+    panel.commit(&edit.title, app, connection, |panel| {
+        panel.put(path, value);
+        Ok(Store::of(path))
+    })
 }
 
 fn fields_key(
@@ -358,7 +264,7 @@ fn fields_key(
             Job::Maintenance,
         ),
         KeyCode::Char(' ') => {
-            if panel.cycle_choice(app, connection, true) {
+            if panel.cycle(app, connection) {
                 return false;
             }
             panel.begin_edit(app, connection);
@@ -682,38 +588,34 @@ fn maintenance_key(panel: &mut SettingsPanel, code: KeyCode) -> bool {
     false
 }
 
+/// 文本框提交：字段按类型解析后写回，其余目标是新增条目、Azure 版本或搜索。
 fn apply_edit(
     panel: &mut SettingsPanel,
     app: &mut App,
     connection: &EmbeddedConnection,
-    target: &EditTarget,
+    edit: &EditState,
     kind: &FieldKind,
     text: &str,
-    label: &str,
 ) -> anyhow::Result<()> {
-    match target {
+    let label = edit.title.as_str();
+    match &edit.target {
         EditTarget::Field(path) => {
-            let value = if path.last().is_some_and(|k| k == "input")
-                && path.iter().any(|p| p == "models")
-            {
-                if text.contains("image") || text.contains("图片") || text.contains("多模态") {
-                    json!(["text", "image"])
-                } else {
-                    json!(["text"])
-                }
-            } else if path.last().is_some_and(|k| k == "thinking_levels") {
-                parse_thinking_levels(text)?
-            } else {
-                parse(text, kind)?
-            };
-            let path = path.clone();
+            let value = parse(text, kind)?;
             panel.commit(label, app, connection, |panel| {
-                if value.is_null() {
-                    panel.remove_value(&path);
-                } else {
-                    panel.set_value(&path, value);
-                }
-                Ok(Store::of(&path))
+                panel.put(path, value);
+                Ok(Store::of(path))
+            })?;
+        }
+        EditTarget::Azure(path) => {
+            let version = text.trim();
+            anyhow::ensure!(
+                !version.is_empty() && !version.contains(char::is_whitespace),
+                "接口版本不能为空，也不能包含空白，例如 2024-10-21"
+            );
+            let value = json!({ "Azure": { "api_version": version } });
+            panel.commit("服务端点：Azure OpenAI", app, connection, |panel| {
+                panel.set_value(path, value);
+                Ok(Store::Core)
             })?;
         }
         EditTarget::Provider => {
@@ -823,37 +725,4 @@ fn moc_mcp_name(name: &str) -> anyhow::Result<()> {
         "MCP 名使用字母、数字、-、_，不能含 __"
     );
     Ok(())
-}
-
-pub(super) fn parse_thinking_levels(text: &str) -> anyhow::Result<Value> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(Value::Null);
-    }
-    let mut levels = Vec::new();
-    for token in trimmed
-        .split(|c: char| c == ',' || c == '，' || c == '、' || c == '\n' || c.is_whitespace())
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-    {
-        let normalized = match token.to_lowercase().as_str() {
-            "off" | "关" | "关闭" => "off",
-            "low" | "低" => "low",
-            "medium" | "med" | "中" => "medium",
-            "high" | "高" => "high",
-            "xhigh" | "extra_high" | "超高" => "xhigh",
-            "max" | "最大" | "最强" => "max",
-            other => anyhow::bail!(
-                "未知的思考等级“{other}”；可选：off(关)、low(低)、medium(中)、high(高)、xhigh(超高)、max(最大)"
-            ),
-        };
-        if !levels.contains(&normalized.to_string()) {
-            levels.push(normalized.to_string());
-        }
-    }
-    if levels.is_empty() {
-        Ok(Value::Null)
-    } else {
-        Ok(json!(levels))
-    }
 }

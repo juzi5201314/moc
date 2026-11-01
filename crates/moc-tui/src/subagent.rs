@@ -77,7 +77,7 @@ mod tests {
         let mut view = SubagentView::new(info());
         view.set_status(AgentStatus::Completed, Some("done".into()));
         assert!(!view.running);
-        assert_eq!(view.status_label(), "已完成");
+        assert_eq!(view.status_label(), crate::render::labels::status::DONE);
         assert_eq!(view.info.last_message.as_deref(), Some("done"));
     }
 

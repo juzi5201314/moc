@@ -1,5 +1,7 @@
-//! /config：字段树、行内编辑与小弹窗编辑、模型候选勾选、维护预览与工作区管理。
+//! /config：字段树、按字段类型选用的编辑控件、模型候选勾选、维护预览与工作区管理。
 
+mod controls;
+mod editors;
 mod forms;
 mod render;
 
@@ -9,6 +11,8 @@ use crate::{
     protocol::{AppEvent, EmbeddedConnection},
     widgets::prompt::PromptState,
 };
+use controls::{Control, PickAction};
+use editors::{Editor, ListEditor, Outcome, RecordEditor, SelectEditor, TextEditor};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
@@ -43,6 +47,8 @@ pub struct SettingsPanel {
     pub tui: Value,
     pub effective: Value,
     pub fields: Vec<ConfigField>,
+    /// 与 `fields` 一一对应的编辑控件；[`SettingsPanel::rebuild`] 同步生成。
+    pub controls: Vec<Control>,
     /// 当前选项卡展开后的可见行：分组头 + 字段。
     pub rows: Vec<Row>,
     /// 用户折叠的顶层分组（顶层默认展开）。
@@ -54,7 +60,7 @@ pub struct SettingsPanel {
     pub offset: usize,
     pub advanced: bool,
     pub filter: String,
-    /// 正在进行的编辑：行内单行输入或小弹窗。
+    /// 正在进行的编辑：行内单行输入或弹窗控件。
     pub edit: Option<EditState>,
     pub error: Option<String>,
     pub message: Option<String>,
@@ -176,20 +182,20 @@ pub struct Group {
     pub key: String,
     pub title: String,
     pub detail: String,
+    /// 分组在配置里的路径：决定说明文案与右侧摘要。
+    pub grouping: Vec<String>,
     /// 删除整组时提交的配置路径；`None` 表示该分组不可删除。
     pub path: Option<Vec<String>>,
 }
-/// 编辑态：行内单行输入，或带标题与提示的小弹窗。
+/// 编辑态：行内单行输入，或带标题的弹窗控件。
 pub struct EditState {
     pub target: EditTarget,
-    pub kind: FieldKind,
-    pub input: PromptState,
-    pub reveal: bool,
-    /// 小弹窗编辑；`false` 为原地行内编辑。
+    pub editor: Editor,
+    /// 弹窗编辑；`false` 为原地行内编辑。
     pub popup: bool,
     pub title: String,
-    pub hint: String,
-    pub choice_selected: usize,
+    /// 弹窗正文上方的说明；空串不显示。
+    pub note: String,
 }
 
 pub enum View {
@@ -208,6 +214,8 @@ pub enum View {
 }
 pub enum EditTarget {
     Field(Vec<String>),
+    /// 选中 Azure 端点后填写 `api_version`；路径指向 `providers.<p>.endpoint`。
+    Azure(Vec<String>),
     Provider,
     Model(String),
     Mcp,
@@ -227,8 +235,8 @@ pub enum Hit {
     Check(usize),
     /// 工具栏按钮：等价于按下某个按键。
     Key(KeyCode, KeyModifiers),
-    /// 候选单选弹窗选项。
-    Choice(usize),
+    /// 编辑弹窗里的第 N 行（候选、清单项、键值行）。
+    Item(usize),
     /// 点击弹窗外部或关闭按钮。
     DismissPopup,
 }
@@ -260,6 +268,7 @@ pub fn open(app: &mut App, connection: &EmbeddedConnection) {
         tui: tui.clone(),
         effective: json!({}),
         fields: Vec::new(),
+        controls: Vec::new(),
         rows: Vec::new(),
         collapsed: BTreeSet::new(),
         expanded: BTreeSet::new(),
@@ -464,6 +473,7 @@ impl SettingsPanel {
         self.data = None;
         self.collapsed.clear();
         self.expanded.clear();
+        self.rows.clear();
         self.selected = 0;
         self.offset = 0;
         self.edit = None;
@@ -570,6 +580,7 @@ impl SettingsPanel {
             }
         }
         self.fields.extend(crate::config::fields());
+        self.controls = self.fields.iter().map(controls::control).collect();
         self.effective["tui"] = self.tui.clone();
         self.rebuild_rows();
     }
@@ -600,6 +611,7 @@ impl SettingsPanel {
                         key: group.0.clone(),
                         title: group.1.clone(),
                         detail,
+                        grouping: group.2.clone(),
                         path: group.3.clone(),
                     }),
                 });
@@ -780,10 +792,12 @@ impl SettingsPanel {
             [root, roles] if root == "models" && (roles == "roles" || roles == "fusion") => {
                 String::new()
             }
-            [root, name] if root == "mcp" => match self.value(group).map(server_address) {
-                Some(address) if !address.is_empty() => address,
-                _ => String::new(),
-            },
+            [root, servers, _] if root == "mcp" && servers == "servers" => {
+                match self.value(group).map(server_address) {
+                    Some(address) if !address.is_empty() => address,
+                    _ => String::new(),
+                }
+            }
             [root, ..] if root == "defaults" => "模型默认值".into(),
             _ => String::new(),
         }
@@ -959,7 +973,7 @@ impl SettingsPanel {
             }
         }
     }
-    /// 开始编辑选中行：单行字段原地编辑，复杂字段用小弹窗。
+    /// 开始编辑选中行：按字段的控件打开开关、单选、清单、键值表、模型选择器或文本框。
     fn begin_edit(&mut self, app: &mut App, connection: &EmbeddedConnection) {
         let Some(RowKind::Field(index)) = self.row() else {
             if let Some((key, depth)) =
@@ -976,160 +990,112 @@ impl SettingsPanel {
         };
         let field = self.fields[*index].clone();
         let value = self.value(&field.path).cloned().unwrap_or(Value::Null);
-        // 模型角色字段走共用的可搜索模型选择器（含思考等级）；一个候选都没有时
-        // 才退回就地文本编辑，让用户手写 selector。
-        if let Some(role) = model_role(&field.path)
-            && !app.models.is_empty()
-        {
-            app.open_config_model_picker(
-                field.path.clone(),
-                field.label.clone(),
-                forms::format_value(&value, &FieldKind::Text),
-                role_specials(role),
-            );
-            return;
-        }
-        let kind = self.field_kind(&field);
-
-        if let FieldKind::Bool = kind {
-            let current = value.as_bool().unwrap_or(false);
-            let label = field.label.clone();
-            let path = field.path.clone();
-            let _ = self.commit(&label, app, connection, |panel| {
-                panel.set_value(&path, json!(!current));
-                Ok(Store::of(&path))
-            });
-            return;
-        }
-        let (popup, choice_selected) = match &kind {
-            FieldKind::Multiline | FieldKind::Strings | FieldKind::Object => (true, 0),
-            FieldKind::Choice(options) => {
-                if field.path.last().is_some_and(|k| k == "input")
-                    && field.path.iter().any(|p| p == "models")
-                {
-                    let has_image = value
-                        .as_array()
-                        .is_some_and(|arr| arr.iter().any(|v| v == "image"))
-                        || value.as_str().is_some_and(|s| s.contains("image"));
-                    let pos = if has_image {
-                        options
-                            .iter()
-                            .position(|opt| opt.value.contains("image"))
-                            .unwrap_or(1)
-                    } else {
-                        0
-                    };
-                    (true, pos)
-                } else {
-                    let current_str = forms::format_value(&value, &kind);
-                    let pos = options
-                        .iter()
-                        .position(|opt| opt.value == current_str || opt.label == current_str)
-                        .unwrap_or(0);
-                    (true, pos)
-                }
+        let editor = match controls::resolve(&field, self, app) {
+            Control::Toggle => {
+                let path = field.path;
+                let _ = self.commit(&field.label, app, connection, |panel| {
+                    panel.set_value(&path, json!(!value.as_bool().unwrap_or(false)));
+                    Ok(Store::of(&path))
+                });
+                return;
             }
-            _ => (false, 0),
+            // 共用的可搜索模型选择器：只列已配置的模型，可同时挑思考等级。
+            Control::Model(specials) => {
+                if app.models.is_empty() {
+                    self.error = Some("还没有已配置的模型；请先在“供应商”页添加模型".into());
+                } else {
+                    app.open_config_model_picker(
+                        field.path,
+                        field.label,
+                        forms::format_value(&value, &FieldKind::Text),
+                        specials,
+                    );
+                }
+                return;
+            }
+            Control::Select(picks) => Editor::Select(SelectEditor::new(picks, &value)),
+            Control::List(spec) => Editor::List(ListEditor::new(spec, &value)),
+            Control::Record(spec) => Editor::Record(RecordEditor::new(spec, &value)),
+            Control::Input(kind) => {
+                let text = forms::format_value(&value, &kind);
+                Editor::Text(TextEditor::new(kind, text))
+            }
         };
+        let popup = !matches!(&editor, Editor::Text(text) if !text.multiline());
         self.edit = Some(EditState {
             target: EditTarget::Field(field.path),
-            hint: forms::hint_for(&kind).into(),
-            input: PromptState::from_text(forms::edit_text(&value, &kind)),
-            kind,
-            reveal: false,
+            editor,
             popup,
             title: field.label,
-            choice_selected,
+            note: String::new(),
         });
     }
-    /// 快速轮换单选项（按 Space 或方向键时调用，无需进入编辑态）。
-    pub fn cycle_choice(
-        &mut self,
-        app: &mut App,
-        connection: &EmbeddedConnection,
-        forward: bool,
-    ) -> bool {
+    /// Space：单选字段原地轮换到下一个候选，不打开弹窗；其余字段返回 `false`。
+    fn cycle(&mut self, app: &mut App, connection: &EmbeddedConnection) -> bool {
         let Some(RowKind::Field(index)) = self.row() else {
             return false;
         };
-        let field = self.fields[*index].clone();
-        let value = self.value(&field.path).cloned().unwrap_or(Value::Null);
-        if field.path.last().is_some_and(|k| k == "input")
-            && field.path.iter().any(|p| p == "models")
-        {
-            let has_image = value
-                .as_array()
-                .is_some_and(|arr| arr.iter().any(|v| v == "image"))
-                || value.as_str().is_some_and(|s| s.contains("image"));
-            let (next_val, label_text) = if has_image {
-                (json!(["text"]), "仅文本 (text)")
-            } else {
-                (
-                    json!(["text", "image"]),
-                    "文本与图片 / 多模态 (text, image)",
-                )
-            };
-            let label = format!("{}: {}", field.label, label_text);
-            let path = field.path.clone();
-            let _ = self.commit(&label, app, connection, |panel| {
-                panel.set_value(&path, next_val);
-                Ok(Store::of(&path))
-            });
-            return true;
+        let index = *index;
+        let Control::Select(picks) = &self.controls[index] else {
+            return false;
+        };
+        if picks.is_empty() {
+            return false;
         }
-        let kind = self.field_kind(&field);
-        if let FieldKind::Choice(options) = kind {
-            if options.is_empty() {
-                return false;
+        let field = &self.fields[index];
+        let value = self.value(&field.path).unwrap_or(&Value::Null);
+        let next = controls::current_pick(picks, value).map_or(0, |current| (current + 1) % picks.len());
+        let pick = &picks[next];
+        let label = format!("{}：{}", field.label, pick.label);
+        let path = field.path.clone();
+        let value = match &pick.action {
+            PickAction::Set(value) => Some(Some(value.clone())),
+            PickAction::Remove => Some(None),
+            PickAction::Azure => None,
+        };
+        match value {
+            Some(value) => {
+                let _ = self.commit(&label, app, connection, |panel| {
+                    panel.put(&path, value);
+                    Ok(Store::of(&path))
+                });
             }
-            let current_str = forms::format_value(&value, &FieldKind::Text);
-            let pos = options
-                .iter()
-                .position(|opt| opt.value == current_str || opt.label == current_str)
-                .unwrap_or(0);
-            let next_pos = if forward {
-                (pos + 1) % options.len()
-            } else {
-                pos.checked_sub(1).unwrap_or(options.len() - 1)
-            };
-            let next_opt = &options[next_pos];
-            let label = format!("{}: {}", field.label, next_opt.label);
-            let path = field.path.clone();
-            let next_val = next_opt.value.clone();
-            let _ = self.commit(&label, app, connection, |panel| {
-                panel.set_value(&path, json!(next_val));
-                Ok(Store::of(&path))
-            });
-            return true;
+            None => self.begin_azure(path),
         }
-        false
+        true
     }
-    /// 字段的编辑类型：输入模态改为候选列表；模型角色由共用的模型选择器接管。
-    fn field_kind(&self, field: &ConfigField) -> FieldKind {
-        if field.path.last().is_some_and(|k| k == "input")
-            && field.path.iter().any(|p| p == "models")
-        {
-            return FieldKind::Choice(vec![
-                moc_protocol::ChoiceOption::new("text", "仅文本 (text)"),
-                moc_protocol::ChoiceOption::new("text, image", "文本与图片 / 多模态 (text, image)"),
-            ]);
+    /// 写入一项；`None` 删除该项，回到继承值或默认值。
+    fn put(&mut self, path: &[String], value: Option<Value>) {
+        match value {
+            Some(value) => self.set_value(path, value),
+            None => self.remove_value(path),
         }
-
-        field.kind.clone()
     }
 
     /// 打开一个只有一行输入的弹窗（新增条目、搜索等）。
-    fn begin_named(&mut self, target: EditTarget, title: &str, hint: &str, initial: &str) {
+    fn begin_named(&mut self, target: EditTarget, title: &str, note: &str, initial: &str) {
         self.edit = Some(EditState {
             target,
-            kind: FieldKind::Text,
-            input: PromptState::from_text(initial.into()),
-            reveal: false,
+            editor: Editor::Text(TextEditor::new(FieldKind::Text, initial.into())),
             popup: true,
             title: title.into(),
-            hint: hint.into(),
-            choice_selected: 0,
+            note: note.into(),
         });
+    }
+    /// 选中 Azure 端点后填写接口版本；已是 Azure 时带出原值。
+    fn begin_azure(&mut self, path: Vec<String>) {
+        let current = self
+            .value(&path)
+            .and_then(|value| value.pointer("/Azure/api_version"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        self.begin_named(
+            EditTarget::Azure(path),
+            "Azure 接口版本",
+            "填写 api-version，例如 2024-10-21",
+            &current,
+        );
     }
     /// 当前上下文对应的供应商：选中的分组或其字段，退化为第一个供应商。
     fn provider(&self) -> Option<String> {
@@ -1371,7 +1337,7 @@ pub fn finish_save(
                     panel.outcome = None;
                     panel.error = Some(text);
                 }
-                None => app.set_notice(format!("配置保存失败：{text}")),
+                None => app.set_error_notice(format!("配置保存失败：{text}")),
             }
         }
         Ok(_) => {}
@@ -1474,7 +1440,7 @@ pub fn paste(app: &mut App, text: &str) {
     if let Some(panel) = &mut app.settings
         && let Some(edit) = &mut panel.edit
     {
-        edit.input.insert_str_raw(text);
+        edit.editor.paste(text);
     }
 }
 pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) {
@@ -1484,12 +1450,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
     match event.kind {
         MouseEventKind::ScrollDown => {
             if let Some(edit) = &mut panel.edit {
-                if let FieldKind::Choice(options) = &edit.kind
-                    && !options.is_empty()
-                {
-                    edit.choice_selected = (edit.choice_selected + 1) % options.len();
-                    return;
-                }
+                edit.editor.scroll(true);
                 return;
             }
             match &mut panel.view {
@@ -1512,15 +1473,7 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         }
         MouseEventKind::ScrollUp => {
             if let Some(edit) = &mut panel.edit {
-                if let FieldKind::Choice(options) = &edit.kind
-                    && !options.is_empty()
-                {
-                    edit.choice_selected = edit
-                        .choice_selected
-                        .checked_sub(1)
-                        .unwrap_or(options.len() - 1);
-                    return;
-                }
+                edit.editor.scroll(false);
                 return;
             }
             match &mut panel.view {
@@ -1548,11 +1501,14 @@ pub fn mouse(app: &mut App, connection: &EmbeddedConnection, event: MouseEvent) 
         .map(|(_, hit)| hit.clone());
     if panel.edit.is_some() {
         match hit {
-            Some(Hit::Choice(index)) => {
-                if let Some(edit) = &mut panel.edit {
-                    edit.choice_selected = index;
+            Some(Hit::Item(index)) => {
+                if let Some(code) = panel
+                    .edit
+                    .as_mut()
+                    .and_then(|edit| edit.editor.click(index))
+                {
+                    handle_key(app, connection, KeyModifiers::NONE, code);
                 }
-                handle_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
             }
             Some(Hit::DismissPopup) | Some(Hit::Key(KeyCode::Esc, _)) => {
                 handle_key(app, connection, KeyModifiers::NONE, KeyCode::Esc);
@@ -1706,6 +1662,7 @@ mod tests {
                 "providers": { "p": { "models": { "m1": {} } } }
             }),
             fields: Vec::new(),
+            controls: Vec::new(),
             rows: Vec::new(),
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),
@@ -1788,76 +1745,130 @@ mod tests {
 
     #[test]
     fn test_parse_friendly_inputs() {
-        assert_eq!(forms::parse("开", &FieldKind::Bool).unwrap(), json!(true));
-        assert_eq!(forms::parse("开启", &FieldKind::Bool).unwrap(), json!(true));
-        assert_eq!(forms::parse("关", &FieldKind::Bool).unwrap(), json!(false));
-        assert_eq!(
-            forms::parse("关闭", &FieldKind::Bool).unwrap(),
-            json!(false)
-        );
-        assert_eq!(forms::parse("true", &FieldKind::Bool).unwrap(), json!(true));
-        assert_eq!(
-            forms::parse("false", &FieldKind::Bool).unwrap(),
-            json!(false)
-        );
-        assert_eq!(forms::parse("y", &FieldKind::Bool).unwrap(), json!(true));
-        assert_eq!(forms::parse("n", &FieldKind::Bool).unwrap(), json!(false));
-        assert!(forms::parse("notabool", &FieldKind::Bool).is_err());
-
-        assert_eq!(
-            forms::parse("123", &FieldKind::Integer).unwrap(),
-            json!(123)
-        );
-        assert_eq!(
-            forms::parse("200k", &FieldKind::Integer).unwrap(),
-            json!(200_000)
-        );
-        assert_eq!(
-            forms::parse("200K", &FieldKind::Integer).unwrap(),
-            json!(200_000)
-        );
-        assert_eq!(
-            forms::parse("1m", &FieldKind::Integer).unwrap(),
-            json!(1_000_000)
-        );
-        assert_eq!(
-            forms::parse("200,000", &FieldKind::Integer).unwrap(),
-            json!(200_000)
-        );
+        let parse = |text: &str, kind: &FieldKind| forms::parse(text, kind).unwrap();
+        assert_eq!(parse("123", &FieldKind::Integer), Some(json!(123)));
+        assert_eq!(parse("200k", &FieldKind::Integer), Some(json!(200_000)));
+        assert_eq!(parse("200K", &FieldKind::Integer), Some(json!(200_000)));
+        assert_eq!(parse("1m", &FieldKind::Integer), Some(json!(1_000_000)));
+        assert_eq!(parse("200,000", &FieldKind::Integer), Some(json!(200_000)));
         assert!(forms::parse("invalid", &FieldKind::Integer).is_err());
 
-        assert_eq!(
-            forms::parse("1.5k", &FieldKind::Number).unwrap(),
-            json!(1500.0)
-        );
-        assert_eq!(
-            forms::parse("10,000.5", &FieldKind::Number).unwrap(),
-            json!(10000.5)
-        );
+        assert_eq!(parse("1.5k", &FieldKind::Number), Some(json!(1500.0)));
+        assert_eq!(parse("10,000.5", &FieldKind::Number), Some(json!(10000.5)));
 
-        assert_eq!(
-            forms::parse("   ", &FieldKind::Integer).unwrap(),
-            Value::Null
-        );
+        // 留空：数值删除该项回到默认，文本写空串。
+        assert_eq!(parse("   ", &FieldKind::Integer), None);
+        assert_eq!(parse("", &FieldKind::Text), Some(json!("")));
     }
 
+    fn model_field(key: &str, kind: FieldKind) -> ConfigField {
+        ConfigField {
+            path: ["providers", "openai", "models", "o1", key]
+                .map(str::to_owned)
+                .to_vec(),
+            tab: "模型".into(),
+            label: key.into(),
+            description: String::new(),
+            kind,
+            advanced: false,
+        }
+    }
+
+    fn list_editor(field: &ConfigField, value: Value) -> ListEditor {
+        match controls::control(field) {
+            Control::List(spec) => ListEditor::new(spec, &value),
+            _ => panic!("{} 应是清单控件", field.label),
+        }
+    }
+
+    fn press(editor: &mut Editor, keys: &[KeyCode]) -> Outcome {
+        let mut outcome = Outcome::Stay;
+        for code in keys {
+            outcome = editor.key(KeyModifiers::NONE, *code);
+        }
+        outcome
+    }
+
+    fn typed(text: &str) -> Vec<KeyCode> {
+        text.chars().map(KeyCode::Char).collect()
+    }
+
+    /// 思考等级清单：首项即默认等级，可调整顺序、追加自定义等级；全不选回到默认集合。
     #[test]
-    fn test_parse_thinking_levels() {
-        assert_eq!(
-            forms::parse_thinking_levels("low, medium, high").unwrap(),
-            json!(["low", "medium", "high"])
-        );
-        assert_eq!(
-            forms::parse_thinking_levels("低, 中, 高").unwrap(),
-            json!(["low", "medium", "high"])
-        );
-        assert_eq!(
-            forms::parse_thinking_levels("低、中、高、超高、最大").unwrap(),
-            json!(["low", "medium", "high", "xhigh", "max"])
-        );
-        assert_eq!(forms::parse_thinking_levels("关").unwrap(), json!(["off"]));
-        assert_eq!(forms::parse_thinking_levels("  ").unwrap(), Value::Null);
-        assert!(forms::parse_thinking_levels("unknown_level").is_err());
+    fn thinking_levels_checklist_orders_and_adds_custom_levels() {
+        let field = model_field("thinking_levels", FieldKind::Strings);
+        let mut editor = Editor::List(list_editor(&field, json!(["high", "low"])));
+        // 已选项按配置顺序排前；high 移到 low 之后，再加一个自定义等级。
+        editor.key(KeyModifiers::SHIFT, KeyCode::Down);
+        press(&mut editor, &[KeyCode::Char('a')]);
+        press(&mut editor, &typed("ultra-2"));
+        press(&mut editor, &[KeyCode::Enter]);
+        let Outcome::Value(value) = press(&mut editor, &[KeyCode::Up, KeyCode::Enter]) else {
+            panic!("应用清单应写回值");
+        };
+        assert_eq!(value, Some(json!(["low", "high", "ultra-2"])));
+
+        // 自定义等级按 core 规则校验：大写与 off 都拒绝。
+        for bad in ["Ultra", "off"] {
+            let mut editor = Editor::List(list_editor(&field, Value::Null));
+            press(&mut editor, &[KeyCode::Char('a')]);
+            press(&mut editor, &typed(bad));
+            assert!(
+                matches!(press(&mut editor, &[KeyCode::Enter]), Outcome::Error(_)),
+                "{bad} 不是合法的自定义等级"
+            );
+        }
+
+        // 未配置时默认全选内置的 5 个等级；全部取消即删除该项，回到默认集合。
+        let mut editor = Editor::List(list_editor(&field, Value::Null));
+        for _ in 0..5 {
+            press(&mut editor, &[KeyCode::Char(' '), KeyCode::Down]);
+        }
+        assert!(matches!(
+            press(&mut editor, &[KeyCode::Up, KeyCode::Enter]),
+            Outcome::Value(None)
+        ));
+    }
+
+    /// 输入模态至少保留一种。
+    #[test]
+    fn input_modalities_reject_an_empty_selection() {
+        let field = model_field("input", FieldKind::Strings);
+        let mut editor = Editor::List(list_editor(&field, json!(["text"])));
+        assert!(matches!(
+            press(&mut editor, &[KeyCode::Char(' '), KeyCode::Enter]),
+            Outcome::Error(_)
+        ));
+        let Outcome::Value(value) = press(&mut editor, &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter])
+        else {
+            panic!("勾选图片后应写回值");
+        };
+        assert_eq!(value, Some(json!(["image"])));
+    }
+
+    /// 价格表：数值解析，填了任何一项时输入与输出价格必填。
+    #[test]
+    fn pricing_record_requires_input_and_output() {
+        let field = model_field("pricing", FieldKind::Object);
+        let Control::Record(spec) = controls::control(&field) else {
+            panic!("价格应是键值表");
+        };
+        let mut editor = Editor::Record(RecordEditor::new(spec, &Value::Null));
+        let mut keys = vec![KeyCode::Enter];
+        keys.extend(typed("2.5"));
+        keys.push(KeyCode::Enter);
+        press(&mut editor, &keys);
+        let save = |editor: &mut Editor| editor.key(KeyModifiers::CONTROL, KeyCode::Char('s'));
+        assert!(matches!(save(&mut editor), Outcome::Error(message) if message.contains("output")));
+
+        let mut keys = vec![KeyCode::Down, KeyCode::Enter];
+        keys.extend(typed("10"));
+        keys.push(KeyCode::Enter);
+        press(&mut editor, &keys);
+        let Outcome::Value(value) = save(&mut editor) else {
+            panic!("填齐后应写回值");
+        };
+        assert_eq!(value, Some(json!({"input": 2.5, "output": 10.0})));
     }
 
     /// 模型角色字段的路径判定与伪值：主模型没有伪值，explore 只能沿用主模型，plan 两个都有。
@@ -1935,6 +1946,7 @@ mod tests {
             tui: Value::Null,
             effective: Value::Null,
             fields: Vec::new(),
+            controls: Vec::new(),
             rows: Vec::new(),
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),
@@ -2004,6 +2016,7 @@ mod tests {
             tui: Value::Null,
             effective: Value::Null,
             fields: Vec::new(),
+            controls: Vec::new(),
             rows: Vec::new(),
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),
@@ -2035,51 +2048,21 @@ mod tests {
     }
 
     #[test]
-    fn test_display_value_features() {
-        let field_input = ConfigField {
-            path: vec![
-                "providers".into(),
-                "openai".into(),
-                "models".into(),
-                "gpt-4o".into(),
-                "input".into(),
-            ],
-            tab: "模型".into(),
-            label: "输入模态".into(),
-            description: "模型支持接收的内容类型".into(),
-            kind: FieldKind::Choice(vec![]),
-            advanced: false,
-        };
+    fn list_summaries_show_defaults_and_choices() {
+        let field = model_field("thinking_levels", FieldKind::Strings);
+        let control = controls::control(&field);
         assert_eq!(
-            render::display_value(&json!(["text"]), &field_input),
-            "‹ 仅文本 (text) ›"
+            controls::summary(&control, &Value::Null).as_deref(),
+            Some("默认（low、medium、high、xhigh、max）")
         );
         assert_eq!(
-            render::display_value(&json!(["text", "image"]), &field_input),
-            "‹ 文本与图片 / 多模态 (text, image) ›"
+            controls::summary(&control, &json!(["low", "ultra-2"])).as_deref(),
+            Some("low、ultra-2")
         );
-
-        let field_thinking = ConfigField {
-            path: vec![
-                "providers".into(),
-                "openai".into(),
-                "models".into(),
-                "o1".into(),
-                "thinking_levels".into(),
-            ],
-            tab: "模型".into(),
-            label: "可选思考等级".into(),
-            description: "思考等级".into(),
-            kind: FieldKind::Strings,
-            advanced: false,
-        };
+        let field = model_field("input", FieldKind::Strings);
         assert_eq!(
-            render::display_value(&Value::Null, &field_thinking),
-            "默认 (low, medium, high, xhigh, max)"
-        );
-        assert_eq!(
-            render::display_value(&json!(["low", "high"]), &field_thinking),
-            "low、high"
+            controls::summary(&controls::control(&field), &json!(["text", "image"])).as_deref(),
+            Some("text、image")
         );
     }
 }

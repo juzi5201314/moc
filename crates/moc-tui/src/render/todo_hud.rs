@@ -10,7 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 
 use super::scrollback::todo_status_marker;
 use super::wrap::{display_window, str_width, wrap_text};
@@ -51,13 +51,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, header_visible: bool) 
     };
     let task = sanitize(&task);
     let theme = app.theme;
-    // warning 也贴转写区首行右端：让胶囊下移一行，告警保持可读；优先占用顶部间隙区不遮挡正文。
-    let warning_shift = u16::from(app.warning_visible() && area.height > 1);
-    let chip_y = if header_visible && area.y > 0 {
-        area.y.saturating_sub(1).saturating_add(warning_shift)
-    } else {
-        area.y.saturating_add(warning_shift)
-    };
+    let chip_y = chip_row(area, header_visible, app.warning_visible());
     let Some(chip) = build_chip(app, &task, status, done, total, area.width) else {
         app.todo_hud.on_hidden();
         return;
@@ -82,6 +76,17 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, header_visible: bool) 
         return;
     }
     draw_card(frame, app, area, chip_y, done, total);
+}
+
+/// 胶囊所在行：有 header 时优先占用转写区上方的间隙行，不遮挡正文。
+///
+/// warning 胶囊固定贴转写区首行（`area.y`）右端；只有 todo 胶囊也落在首行时才下移一行避让。
+fn chip_row(area: Rect, header_visible: bool, warning_visible: bool) -> u16 {
+    if header_visible && area.y > 0 {
+        area.y - 1
+    } else {
+        area.y + u16::from(warning_visible && area.height > 1)
+    }
 }
 
 /// 折叠胶囊：当前任务 + 进度；超宽时返回 marquee 窗口。
@@ -275,7 +280,11 @@ fn draw_card(
         .title(title_left)
         .title(title_right);
 
-    frame.render_widget(Clear, card_area);
+    super::overlay::paint_opaque(
+        frame.buffer_mut(),
+        card_area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
     frame.render_widget(Paragraph::new(shown).block(block), card_area);
 }
 
@@ -506,6 +515,30 @@ mod tests {
     #[test]
     fn sanitize_flattens_control_chars() {
         assert_eq!(sanitize("a\nb\tc\rd"), "a b c d");
+    }
+
+    /// 回归：todo 胶囊与 warning 胶囊都贴右端，二者绝不能落在同一行。
+    #[test]
+    fn chip_never_shares_the_warning_row() {
+        let area = Rect::new(0, 2, 80, 20);
+        // warning 恒画在转写区首行
+        let warning_row = area.y;
+        for header_visible in [true, false] {
+            let row = chip_row(area, header_visible, true);
+            assert_ne!(row, warning_row, "header_visible={header_visible}");
+        }
+        assert_eq!(
+            chip_row(area, true, false),
+            area.y - 1,
+            "有 header 时占间隙行"
+        );
+        assert_eq!(
+            chip_row(area, true, true),
+            area.y - 1,
+            "间隙行本就不与告警冲突"
+        );
+        let top = Rect::new(0, 0, 80, 20);
+        assert_eq!(chip_row(top, false, true), 1, "无间隙行时下移避让");
     }
 
     #[test]

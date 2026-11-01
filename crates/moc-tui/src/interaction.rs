@@ -78,7 +78,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                 match result {
                     Ok(()) => crate::queue::dispatch(app, connection),
                     Err(_) if interrupted => crate::queue::dispatch(app, connection),
-                    Err(error) => app.set_notice(format!(
+                    Err(error) => app.set_error_notice(format!(
                         "未能完成：{error}；已排队的消息仍保留，可编辑后重发"
                     )),
                 }
@@ -157,7 +157,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             } else {
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
-                            app.set_notice("补充消息未送达，草稿已恢复");
+                            app.set_error_notice("补充消息未送达，草稿已恢复");
                         }
                     } else {
                         // UI 发送与提示关闭相遇：消息没有进入当前提示，转为下一条正常请求。
@@ -182,11 +182,11 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                             } else {
                                 app.queues.entry(session).or_default().push_front(prompt);
                             }
-                            app.set_notice(format!("撤回完成：消息未送达（{error}）"));
+                            app.set_error_notice(format!("撤回完成：消息未送达（{error}）"));
                         }
                     } else {
                         app.queues.entry(session).or_default().push_front(prompt);
-                        app.set_notice(format!("未能送达，已排到待发送：{error}"));
+                        app.set_error_notice(format!("未能送达，已排到待发送：{error}"));
                     }
                     crate::queue::dispatch(app, connection);
                 }
@@ -230,7 +230,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                     if let Some(pending) = crate::queue::steer_mut(app, &session, prompt_id) {
                         pending.withdrawal = None;
                     }
-                    app.set_notice(format!("撤回失败：{error}"));
+                    app.set_error_notice(format!("撤回失败：{error}"));
                 }
             }
         }
@@ -283,7 +283,7 @@ pub fn handle_event(app: &mut App, connection: &EmbeddedConnection, event: AppEv
                         .as_mut()
                         .is_some_and(|modal| modal.set_error(&error));
                     if !shown {
-                        app.set_notice(error);
+                        app.set_error_notice(error);
                     }
                 }
             }

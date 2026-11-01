@@ -67,7 +67,7 @@ pub fn render_diff(
     let omitted = row_count(diff).saturating_sub(rendered);
     if omitted > 0 {
         lines.push(Line::from(Span::styled(
-            format!("⋯ 还有 {omitted} 行"),
+            super::labels::more_lines(omitted),
             Style::new().fg(theme.gray_dim),
         )));
     }
@@ -82,7 +82,7 @@ pub fn rendered_row_count(diff: &ToolDiff, limit: usize) -> usize {
 /// diff 的展示行数（与 [`render_diff`] 同规则，但不做高亮）。
 ///
 /// 懒渲染用它估算工具块高度；hunk 之间的「⋯ N 行未变」与整份 diff 的
-/// 截断提示各占一行。行数与宽度无关：diff 行不做换行，超长行交给终端自身折行。
+/// 截断提示各占一行。行数与宽度无关：diff 行不折行，超宽部分以 `…` 截断。
 pub fn row_count(diff: &ToolDiff) -> usize {
     let mut rows = 0usize;
     for file in &diff.files {
@@ -114,7 +114,8 @@ fn render_file(file: &ToolFileDiff, width: usize, theme: &Theme, out: &mut Vec<L
         .max()
         .map_or(1, |max| max.to_string().len())
         .max(1);
-    let content_width = width.max(gutter_width + 4).saturating_sub(gutter_width + 4);
+    // 行前缀 = 修饰符 1 + 行号 gutter_width + `│` 1 + 空格 1 + 缩进 2。
+    let content_width = width.saturating_sub(gutter_width + 5);
     // 上一个 hunk 在旧文件里覆盖到的最后一行：hunk 间隔只数真正被省略的
     // 未变行，不能拿两个 hunk 的起点相减（那样会把前一个 hunk 的尾部上下文
     // 也算进去）。
@@ -213,7 +214,7 @@ fn render_file(file: &ToolFileDiff, width: usize, theme: &Theme, out: &mut Vec<L
                     Style::new().bg(bg),
                 ));
             }
-            out.push(Line::from(spans));
+            out.push(super::wrap::clip_line(Line::from(spans), width));
         }
         previous_last_old = Some(
             hunk.lines

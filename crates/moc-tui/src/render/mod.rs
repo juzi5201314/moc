@@ -11,9 +11,11 @@ pub mod diff;
 pub mod graphics;
 pub mod highlight;
 pub mod image;
+pub mod labels;
 pub mod markdown;
 pub mod mermaid;
 pub mod modal;
+pub mod overlay;
 pub mod scrollback;
 pub mod subagent;
 pub mod todo_hud;
@@ -21,6 +23,8 @@ pub mod wrap;
 
 pub(crate) mod context_content;
 pub(crate) mod rewind;
+#[cfg(test)]
+mod guards;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -35,11 +39,11 @@ use crate::app::{App, Focus, ScrollbackScrollbar};
 use crate::modal::Modal;
 use crate::transcript::Block as TranscriptBlock;
 
-/// 内容区左右边距（格）。
-const MARGIN_X: u16 = 3;
+/// 内容区左右边距（格）：主界面与设置页共用。
+pub(crate) const MARGIN_X: u16 = 3;
 /// 转写块标题（bullet / 工具名 / TODO）左缩进（格）。
 pub const TITLE_INDENT: usize = 1;
-/// 转写块正文（助手 markdown、工具内容、思考正文）左缩进（格）。
+/// 转写块正文左缩进（格）：助手 markdown、工具正文、思考与 IRC 正文共用这一列。
 pub const PROSE_INDENT: usize = 3;
 /// 顶部信息条行数。
 const HEADER_ROWS: u16 = 1;
@@ -264,6 +268,8 @@ fn highlight_selection(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// 一次性提示 toast：贴滚动区右下角的胶囊，TTL 由 [`App::notice_visible`] 决定。
+///
+/// 失败提示用错误色，其余操作反馈用中性的工具强调色：绿色只该表示「成功」。
 fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     if !app.notice_visible() || area.height == 0 {
         return;
@@ -271,13 +277,18 @@ fn draw_notice(frame: &mut Frame, app: &App, area: Rect) {
     let Some(text) = app.notice.as_deref() else {
         return;
     };
+    let accent = if app.notice_error {
+        app.theme.accent_error
+    } else {
+        app.theme.accent_tool
+    };
     draw_chip(
         frame.buffer_mut(),
         app,
         area,
         area.y + area.height - 1,
         text,
-        app.theme.accent_success,
+        accent,
     );
 }
 
@@ -320,7 +331,7 @@ fn draw_chip(
     // `▌ ◆ ` 前缀 + 左右各 1 格内边距
     const PREFIX: usize = 5;
     let max_text = usize::from(area.width).saturating_sub(PREFIX + 2);
-    let text = scrollback::truncate_to_width(text.to_owned(), max_text);
+    let text = wrap::truncate(text.to_owned(), max_text).into_owned();
     let chip_width = str_width(&text) + PREFIX + 2;
     let chip_width = u16::try_from(chip_width)
         .unwrap_or(area.width)
@@ -378,19 +389,13 @@ fn draw_scrollbar(frame: &mut Frame, app: &mut App, area: Rect, max_offset: usiz
         max_offset,
     };
     let thumb_top = app.scrollbar.thumb_top(app.scroll_offset);
-    for row in 0..track_height {
-        let in_thumb = row >= thumb_top && row < thumb_top.saturating_add(thumb);
-        frame.buffer_mut().set_string(
-            x,
-            area.y + row,
-            "▐",
-            Style::new().fg(if in_thumb {
-                theme.scrollbar_fg
-            } else {
-                theme.scrollbar_bg
-            }),
-        );
-    }
+    overlay::paint_scrollbar(
+        frame.buffer_mut(),
+        app.scrollbar.track,
+        thumb_top,
+        thumb,
+        theme,
+    );
 }
 
 fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -548,9 +553,9 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         .map_or("full", |session| session.permission.as_str());
     let right = [
         (model.as_str(), theme.gray),
-        (" | ", theme.border),
+        (labels::SEP, theme.border),
         (status.as_str(), theme.accent_model),
-        (" | ", theme.border),
+        (labels::SEP, theme.border),
         (permission, theme.accent_model),
     ];
     let right_width: usize = right.iter().map(|(text, _)| str_width(text)).sum();
@@ -563,10 +568,10 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         .keybindings
         .get("help")
         .and_then(|keys| keys.first())
-        .map_or("—", String::as_str);
+        .map_or_else(|| "—".to_owned(), |binding| labels::key(binding));
     let (left_key, left_tip, left_color) = if app.prompt_running {
         (
-            "Esc",
+            labels::key("esc"),
             if app.cancel_requested {
                 "正在停止"
             } else {
@@ -581,7 +586,8 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         (help_key, "帮助", theme.gray_dim)
     };
-    let left_separator = " | ";
+    let left_key = left_key.as_str();
+    let left_separator = labels::SEP;
     let tips_width = str_width(left_key) + 1 + str_width(left_tip) + str_width(left_separator);
     let show_tips = tips_width + 4 + right_width + 4 <= inner;
 
@@ -600,9 +606,9 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
     let model_cells = cell_width(model.as_str());
-    let status_start = right_start + model_cells + cell_width(" | ");
+    let status_start = right_start + model_cells + cell_width(labels::SEP);
     let status_cells = cell_width(status.as_str());
-    let perm_start = status_start + status_cells + cell_width(" | ");
+    let perm_start = status_start + status_cells + cell_width(labels::SEP);
     let perm_cells = cell_width(permission);
     let mut x = right_start;
     buffer.set_string(x.saturating_sub(1), y, " ", Style::new());
@@ -730,7 +736,7 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(theme.border),
         ));
         spans.push(Span::styled(
-            scrollback::truncate_to_width(branch.clone(), 24),
+            wrap::truncate(branch.clone(), 24).into_owned(),
             Style::new().fg(theme.accent_success),
         ));
     }
@@ -742,7 +748,7 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             .sum::<usize>();
         let max_workdir = usize::from(area.width).saturating_sub(used + 18).max(8);
         spans.push(Span::styled(
-            scrollback::truncate_to_width(data.workdir.clone(), max_workdir),
+            wrap::truncate(data.workdir.clone(), max_workdir).into_owned(),
             Style::new().fg(theme.gray),
         ));
     }
@@ -757,11 +763,11 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(theme.accent_tool),
         ));
         spans.push(Span::styled(
-            scrollback::truncate_to_width(title, 24),
+            wrap::truncate(title, 24).into_owned(),
             Style::new().fg(theme.text_primary),
         ));
         spans.push(Span::styled(
-            "  esc 返回".to_owned(),
+            format!("  {}", labels::hints(&[("esc", "返回")], usize::MAX)),
             Style::new().fg(theme.gray_dim),
         ));
     }
@@ -906,6 +912,8 @@ fn short_workdir(cwd: &str) -> String {
 }
 
 /// 上下文进度条：整数运算算占位（`round(used / window * slots)`），最后一格保留给分母。
+///
+/// 只用单宽的 `━`/`─`：两端不加全角括号，宽度恒为 `slots`，与右侧数字之间只隔一格空格。
 fn context_bar(used: u64, window: u64, slots: usize) -> String {
     let slots_u64 = u64::try_from(slots).unwrap_or(1);
     let filled = used
@@ -914,7 +922,7 @@ fn context_bar(used: u64, window: u64, slots: usize) -> String {
         .checked_div(window)
         .map_or(0, |filled| filled.min(slots_u64));
     let filled = usize::try_from(filled).unwrap_or(slots);
-    format!("『{}{}』", "━".repeat(filled), "─".repeat(slots - filled))
+    format!("{}{}", "━".repeat(filled), "─".repeat(slots - filled))
 }
 
 /// 上下文进度条按占用率变色。
@@ -1048,10 +1056,11 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
     }
     // 右侧统计段
     let right = format!(
-        " ⇅ {} › {} › {:.0} tok/s",
+        " ⇅ {} › {} › {:.0} {}",
         format_tokens(data.tokens_in),
         format_tokens(data.tokens_out),
         data.tok_s,
+        labels::RATE_UNIT,
     );
     let mut right_cost = data
         .cost
@@ -1063,7 +1072,7 @@ fn statusline_builtin(app: &App, width: usize) -> Line<'static> {
         right_cost.clear();
     }
     let right =
-        scrollback::truncate_to_width(right, available.saturating_sub(str_width(&right_cost)));
+        wrap::truncate(right, available.saturating_sub(str_width(&right_cost))).into_owned();
     let right_width = str_width(&right) + str_width(&right_cost);
     let gap = width.saturating_sub(used + right_width).max(1);
     spans.push(Span::styled(" ".repeat(gap), Style::new()));
@@ -1107,10 +1116,15 @@ fn statusline_from_template(app: &App, template: &str) -> Line<'static> {
                 .map(|(done, total)| (format!("☑ {done}/{total}"), theme.accent_success)),
             "tokens_in" => Some((format_tokens(data.tokens_in), theme.text_secondary)),
             "tokens_out" => Some((format_tokens(data.tokens_out), theme.text_secondary)),
-            "tok_s" => Some((format!("{:.1} tok/s", data.tok_s), theme.accent_running)),
+            "tok_s" => Some((
+                format!("{:.1} {}", data.tok_s, labels::RATE_UNIT),
+                theme.accent_running,
+            )),
             "prompt_elapsed" => Some((
                 data.prompt_elapsed
-                    .map(|elapsed| format!("⏱ {}s", elapsed.as_secs()))
+                    .map(|elapsed| {
+                        labels::elapsed(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+                    })
                     .unwrap_or_else(|| "⏱ -".into()),
                 theme.gray,
             )),
@@ -1271,13 +1285,14 @@ mod tests {
         assert_eq!(menu.area.right(), legend.right(), "右缘对齐状态图例");
         assert_eq!(menu.area.bottom(), legend.y, "整体贴在图例上方");
         assert_eq!(menu.entry_at(menu.area.x + 4, menu.area.y + 1), Some(0));
-        // 当前引擎 standard 是菜单第一项，位于图例上方第 4 行（边框 + 3 条目）。
+        // 当前引擎 standard 是菜单第一项，位于图例上方第 4 行（边框 + 3 条目）；
+        // 正文从「边框 1 + 卡片内边距 CARD_PAD_X」之后开始。
         let current_y = legend.y - 4;
         assert!(
             row_text(
                 &terminal,
                 Rect {
-                    x: menu.area.x + 1,
+                    x: menu.area.x + 2,
                     y: current_y,
                     width: 12,
                     height: 1,
@@ -1290,7 +1305,7 @@ mod tests {
             terminal
                 .backend()
                 .buffer()
-                .cell((menu.area.x + 3, current_y))
+                .cell((menu.area.x + 4, current_y))
                 .expect("表头格存在")
                 .fg,
             Theme::global().accent_model
@@ -1328,7 +1343,7 @@ mod tests {
 
     /// 告警贴滚动区右上角、notice 贴右下角；两者同屏共存且各自只占一行。
     ///
-    /// 同时校验强调色：告警用 warning、notice 用 success，用户才能一眼区分。
+    /// 同时校验强调色：告警用 warning、普通 notice 用中性 tool 色、失败 notice 用 error 色。
     #[test]
     fn warning_chip_sits_top_right_and_notice_bottom_right() {
         use ratatui::Terminal;
@@ -1395,7 +1410,22 @@ mod tests {
                 .cell((notice_icon_x, area.y + area.height - 1))
                 .expect("图标格存在")
                 .fg,
-            Theme::global().accent_success
+            Theme::global().accent_tool
+        );
+
+        app.set_error_notice("clipboard image attached");
+        terminal
+            .draw(|frame| draw_notice(frame, &app, area))
+            .expect("绘制成功");
+        assert_eq!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((notice_icon_x, area.y + area.height - 1))
+                .expect("图标格存在")
+                .fg,
+            Theme::global().accent_error,
+            "失败提示用错误色"
         );
     }
 

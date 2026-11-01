@@ -85,41 +85,6 @@ pub(crate) fn actions() -> &'static [(&'static str, &'static str, &'static [&'st
     ]
 }
 
-/// 把一组绑定渲染成紧凑键位列：同一键码的多个修饰键合并成 `shift/alt + enter`，
-/// 不同键码之间以 ` / ` 分隔。修饰键与键码之间留空格，长组合不再挤压描述列。
-pub(crate) fn display_keys(keys: &[String]) -> String {
-    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
-    for key in keys {
-        let code = code_of(key);
-        let modifiers = &key[..key.len() - code.len()];
-        let modifiers = modifiers.strip_suffix('+').unwrap_or_default().to_owned();
-        match groups.iter_mut().find(|(group, _)| group == code) {
-            Some((_, alternatives)) => alternatives.push(modifiers),
-            None => groups.push((code.to_owned(), vec![modifiers])),
-        }
-    }
-    groups
-        .into_iter()
-        .map(|(code, modifiers)| {
-            let modifiers: Vec<_> = modifiers
-                .into_iter()
-                .filter(|modifier| !modifier.is_empty())
-                .collect();
-            if modifiers.is_empty() {
-                code
-            } else {
-                format!("{} + {code}", modifiers.join("/"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" / ")
-}
-
-/// 绑定文本里的键码部分（`ctrl+enter` → `enter`；`home` → `home`）。
-fn code_of(key: &str) -> &str {
-    key.rsplit_once('+').map_or(key, |(_, code)| code)
-}
-
 pub struct KeyMap {
     bindings: Vec<(KeyModifiers, KeyCode, String, KeyModifiers, KeyCode)>,
     reserved: Vec<(KeyModifiers, KeyCode)>,
@@ -238,6 +203,45 @@ pub fn parse_key(text: &str) -> anyhow::Result<(KeyModifiers, KeyCode)> {
         _ => anyhow::bail!("无法识别按键 {text}；例如 ctrl+g、alt+enter、f2"),
     };
     Ok(normalize(modifiers, code))
+}
+
+/// [`parse_key`] 的逆运算：把一次按键写成配置口径（`ctrl+g`、`shift+tab`、`f2`）。
+/// 单独的修饰键、`+` 本身（与分隔符冲突）和无法写进配置的键返回 `None`。
+pub fn format_key(modifiers: KeyModifiers, code: KeyCode) -> Option<String> {
+    let (modifiers, code) = normalize(modifiers, code);
+    let key = match code {
+        KeyCode::Enter => "enter".to_owned(),
+        KeyCode::Tab => "tab".to_owned(),
+        KeyCode::Esc => "esc".to_owned(),
+        KeyCode::Char(' ') => "space".to_owned(),
+        KeyCode::Backspace => "backspace".to_owned(),
+        KeyCode::Delete => "delete".to_owned(),
+        KeyCode::Up => "up".to_owned(),
+        KeyCode::Down => "down".to_owned(),
+        KeyCode::Left => "left".to_owned(),
+        KeyCode::Right => "right".to_owned(),
+        KeyCode::Home => "home".to_owned(),
+        KeyCode::End => "end".to_owned(),
+        KeyCode::PageUp => "pageup".to_owned(),
+        KeyCode::PageDown => "pagedown".to_owned(),
+        KeyCode::F(number) => format!("f{number}"),
+        KeyCode::Char('+') => return None,
+        KeyCode::Char(character) => character.to_lowercase().to_string(),
+        _ => return None,
+    };
+    let mut text = String::new();
+    for (flag, name) in [
+        (KeyModifiers::CONTROL, "ctrl+"),
+        (KeyModifiers::ALT, "alt+"),
+        (KeyModifiers::SHIFT, "shift+"),
+        (KeyModifiers::SUPER, "super+"),
+    ] {
+        if modifiers.contains(flag) {
+            text.push_str(name);
+        }
+    }
+    text.push_str(&key);
+    Some(text)
 }
 
 pub struct TuiStore {
@@ -398,18 +402,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_column_merges_alternative_modifiers() {
-        let keys = |list: &[&str]| list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
-        assert_eq!(
-            display_keys(&keys(&["shift+enter", "alt+enter"])),
-            "shift/alt + enter"
-        );
-        assert_eq!(display_keys(&keys(&["home", "ctrl+a"])), "home / ctrl + a");
-        assert_eq!(display_keys(&keys(&["ctrl+shift+p"])), "ctrl+shift + p");
-        assert_eq!(display_keys(&keys(&[])), "");
-    }
-
-    #[test]
     fn partial_key_map_keeps_unrelated_actions_and_rejects_conflicts() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -433,6 +425,26 @@ mod tests {
             .keybindings
             .insert("queue".into(), vec!["ctrl+j".into()]);
         assert!(KeyMap::compile(&config).is_err());
+    }
+
+    /// 录入的按键必须能被 parse_key 原样读回，否则保存后键位会悄悄变成另一个键。
+    #[test]
+    fn captured_keys_round_trip_through_the_parser() {
+        for (modifiers, code) in [
+            (KeyModifiers::CONTROL, KeyCode::Char('g')),
+            (KeyModifiers::NONE, KeyCode::Char('G')),
+            (KeyModifiers::SHIFT, KeyCode::BackTab),
+            (KeyModifiers::ALT, KeyCode::Enter),
+            (KeyModifiers::CONTROL | KeyModifiers::SHIFT, KeyCode::F(5)),
+            (KeyModifiers::NONE, KeyCode::Char(' ')),
+            (KeyModifiers::ALT, KeyCode::Up),
+        ] {
+            let text = format_key(modifiers, code).expect("可写进配置");
+            assert_eq!(parse_key(&text).unwrap(), normalize(modifiers, code), "{text}");
+        }
+        assert_eq!(format_key(KeyModifiers::NONE, KeyCode::Char('G')).as_deref(), Some("shift+g"));
+        assert_eq!(format_key(KeyModifiers::CONTROL, KeyCode::Char('+')), None);
+        assert_eq!(format_key(KeyModifiers::NONE, KeyCode::Insert), None);
     }
 
     #[test]

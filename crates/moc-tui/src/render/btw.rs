@@ -5,8 +5,12 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
 };
+
+use super::labels::{self, SEP};
+use super::overlay;
+use super::wrap::{truncate, wrap_text};
 
 use crate::{
     app::{App, Focus},
@@ -66,39 +70,48 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .turns
         .back()
         .map_or("空线程", |turn| turn.status.label());
-    let title = format!(" BTW · {status} · {} 轮 ", thread.turns.len());
+    let turns = thread.turns.len();
     let focused = app.focus == Focus::Btw && app.modal.is_none();
     let border = if focused {
         theme.border_active
     } else {
         theme.border
     };
-    frame.render_widget(Clear, area);
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::new().bg(theme.bg_base).fg(theme.text_primary));
-            }
-        }
-    }
+    overlay::paint_opaque(
+        frame.buffer_mut(),
+        area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
     if !app.btw.expanded {
+        let head = format!("▸ BTW{SEP}{status}{SEP}{turns} 轮{SEP}");
+        let hints = labels::hints(
+            &[("", "点击展开"), ("alt+b", "展开")],
+            usize::from(area.width).saturating_sub(super::wrap::str_width(&head)),
+        );
         frame.render_widget(
-            Paragraph::new(format!("▸{title} Alt+B / 点击展开"))
+            Paragraph::new(truncate(head + &hints, usize::from(area.width)).into_owned())
                 .style(Style::new().bg(theme.bg_base).fg(theme.text_secondary)),
             area,
         );
         return;
     }
-    let width = usize::from(area.width.saturating_sub(2));
+    let panel = overlay::panel(theme).border_style(Style::new().fg(border));
+    let inner = panel.inner(area);
+    let width = usize::from(inner.width);
     let mut lines: Vec<Line<'static>> = Vec::new();
     if thread.turns.is_empty() {
-        lines.extend(super::wrap::wrap_text("在主输入使用 /btw 问题开始；后续 /btw 问题沿用本线程。仅内存，不调用工具，不写主上下文或历史。", width)
-            .into_iter().map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))));
+        lines.extend(
+            wrap_text(
+                "在主输入使用 /btw 问题开始；后续 /btw 问题沿用本线程。仅内存，不调用工具，不写主上下文或历史。",
+                width,
+            )
+            .into_iter()
+            .map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))),
+        );
     }
     for turn in &thread.turns {
         lines.extend(
-            super::wrap::wrap_text(&format!("你 › {}", turn.question), width)
+            wrap_text(&format!("你 › {}", turn.question), width)
                 .into_iter()
                 .map(|text| Line::styled(text, Style::new().fg(theme.text_primary))),
         );
@@ -106,14 +119,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             lines.push(Line::from(vec![
                 Span::styled("◆ ", Style::new().fg(theme.accent_thinking)),
                 Span::styled(
-                    "思考",
+                    labels::title::THOUGHT,
                     Style::new()
                         .fg(theme.gray_bright)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ),
             ]));
             let inner_width = width.saturating_sub(2).max(1);
-            for row in super::wrap::wrap_text(&turn.reasoning, inner_width) {
+            for row in wrap_text(&turn.reasoning, inner_width) {
                 lines.push(Line::from(vec![
                     Span::styled("▏ ", Style::new().fg(theme.accent_thinking)),
                     Span::styled(row, Style::new().fg(theme.gray)),
@@ -136,13 +149,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ));
         }
         lines.extend(
-            super::wrap::wrap_text(&footer, width)
+            wrap_text(&footer, width)
                 .into_iter()
                 .map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))),
         );
         if let Status::Failed(error) = &turn.status {
             lines.extend(
-                super::wrap::wrap_text(error, width)
+                wrap_text(error, width)
                     .into_iter()
                     .map(|text| Line::styled(text, Style::new().fg(theme.text_secondary))),
             );
@@ -150,43 +163,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         lines.push(Line::default());
     }
 
-    let inner_height = usize::from(area.height.saturating_sub(2));
+    let inner_height = usize::from(inner.height);
     app.btw.scroll_max = lines.len().saturating_sub(inner_height);
     thread.scroll = thread.scroll.min(app.btw.scroll_max);
 
-    let progress_suffix = if app.btw.scroll_max > 0 {
-        let percent = (thread.scroll * 100) / app.btw.scroll_max;
-        format!(" [{percent}%]")
-    } else {
-        String::new()
-    };
-    let title = format!(
-        " BTW · {status} · {} 轮{progress_suffix} ",
-        thread.turns.len()
+    // `scroll` 是距底部的行数；百分比按「已读到哪」从顶部算，到底为 100%。
+    let mut title = format!("BTW{SEP}{status}{SEP}{turns} 轮");
+    if app.btw.scroll_max > 0 {
+        let percent = (app.btw.scroll_max - thread.scroll) * 100 / app.btw.scroll_max;
+        title.push_str(&format!("{SEP}{percent}%"));
+    }
+    let edge = usize::from(area.width.saturating_sub(4));
+    let footer = labels::hints(
+        &[
+            ("x", "清空"),
+            ("c", "复制"),
+            ("ctrl+c", "取消"),
+            ("tab", "主输入"),
+            ("esc", "收起"),
+        ],
+        edge.saturating_sub(2),
     );
-
-    let footer_text = if area.width >= 56 {
-        " Tab 主输入 · Esc 收起 · Ctrl+C 取消 · c 复制 · x 清空 "
-    } else if area.width >= 38 {
-        " Tab 输入 · Esc 收起 · c 复制 · x 清空 "
-    } else {
-        " Tab/Esc 切换 · c 复制 "
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(ratatui::symbols::border::ROUNDED)
-        .border_style(Style::new().fg(border))
-        .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
-        .title(Line::styled(
-            title,
-            Style::new().bg(theme.bg_base).fg(theme.text_primary),
-        ))
+    let block = panel
+        .title(overlay::title_span(&title, edge, theme))
         .title_bottom(Line::styled(
-            footer_text,
-            Style::new().bg(theme.bg_base).fg(theme.text_secondary),
+            format!(" {footer} "),
+            Style::new().fg(theme.text_secondary),
         ));
-    let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {
         return;

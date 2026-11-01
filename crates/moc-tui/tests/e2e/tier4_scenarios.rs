@@ -5,6 +5,7 @@ use super::common::*;
 use moc_protocol::methods::{AgentStatus, PromptMode};
 use moc_protocol::{SessionEngine, Usage};
 use moc_tui::modal::{Modal, PickerState, SessionScope};
+use moc_tui::render::labels::status;
 use moc_tui::render::markdown::render_markdown;
 use moc_tui::render::modal::draw_modal;
 use moc_tui::theme::Theme;
@@ -38,7 +39,7 @@ fn test_scenario_01_multi_agent_collaborative_workflow() {
     assert!(app.subagents.get("ag-arch").unwrap().running);
     assert_eq!(
         app.subagents.get("ag-arch").unwrap().status_label(),
-        "运行中"
+        status::RUNNING
     );
 
     // Step 3: Agent B starts running
@@ -60,7 +61,7 @@ fn test_scenario_01_multi_agent_collaborative_workflow() {
     assert!(!app.subagents.get("ag-arch").unwrap().running);
     assert_eq!(
         app.subagents.get("ag-arch").unwrap().status_label(),
-        "已完成"
+        status::DONE
     );
 
     // Step 6: User switches focus to Agent B
@@ -74,7 +75,7 @@ fn test_scenario_01_multi_agent_collaborative_workflow() {
         .set_status(AgentStatus::Completed, Some("模块测试 100% 通过".into()));
     assert_eq!(
         app.subagents.get("ag-impl").unwrap().status_label(),
-        "已完成"
+        status::DONE
     );
 
     // Step 8: Update task progress HUD
@@ -124,7 +125,7 @@ fn test_scenario_02_parallel_queue_and_btw_dock_flow() {
     // Step 3: Stream reasoning in BTW turn
     let mut turn = sample_btw_turn("为什么使用 Plan 模式？", "正在分析执行树...", "");
     turn.status = moc_tui::btw::Status::Generating;
-    assert_eq!(turn.status.label(), "生成中");
+    assert_eq!(turn.status.label(), status::GENERATING);
 
     // Step 4: BTW turn completes with usage stats
     turn.status = moc_tui::btw::Status::Complete;
@@ -232,7 +233,13 @@ fn test_scenario_04_error_recovery_and_session_switch_flow() {
         Some("远程服务超时 (timeout 30s)".into()),
     );
     app.subagents.insert("ag-err".into(), faulty_agent);
-    assert_eq!(app.subagents.get("ag-err").unwrap().status_label(), "失败");
+    assert_eq!(
+        app.subagents
+            .get("ag-err")
+            .expect("ag-err 已登记进名册")
+            .status_label(),
+        status::FAILED
+    );
 
     // Step 2: User opens session switcher
     app.modal = Some(Modal::Sessions {

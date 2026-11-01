@@ -3,18 +3,19 @@
 //! 浮层画在滚动区之后（覆盖其内容）；模态居中，宽度按内容取值（帮助为双列快捷键表，
 //! 普通模态上限 96 列，带选项预览的提问放宽到 120 列），高度按内容收缩。全部使用主题槽位。
 
-use moc_protocol::Role;
 use moc_protocol::methods::{ContextUsageResult, PlanStatus};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Padding, Paragraph};
 
 use crate::app::App;
 use crate::modal::{Modal, PlanPane, PlanReviewState, SessionScope};
-use crate::render::context_content;
-use crate::render::wrap::str_width;
+use crate::render::wrap::{
+    clip_line, fit, fit_line, line_width, str_width, truncate, truncate_head,
+};
+use crate::render::{context_content, labels, overlay};
 use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
 use crate::widgets::prompt::clamp_cursor;
@@ -52,26 +53,22 @@ pub fn draw_completion_menu(
     completion.adjust_scroll();
 
     let theme = crate::theme::Theme::global();
-    frame.render_widget(Clear, area);
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::new().bg(theme.bg_base).fg(theme.text_primary));
-            }
-        }
-    }
-    let content_width = usize::from(width.saturating_sub(4));
-    let max_label_len = completion
+    overlay::paint_opaque(
+        frame.buffer_mut(),
+        area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
+    let content_width = overlay::content_width(width);
+    let max_label_width = completion
         .candidates
         .iter()
         .skip(completion.offset)
         .take(visible)
-        .map(|c| c.label.chars().count())
+        .map(|c| str_width(&c.label))
         .max()
         .unwrap_or(12)
         .max(14);
-    let col_width = max_label_len + 3;
+    let col_width = max_label_width + 3;
     let mut lines = Vec::with_capacity(visible + 2);
     for (rel_index, candidate) in completion
         .candidates
@@ -83,81 +80,46 @@ pub fn draw_completion_menu(
         let index = completion.offset + rel_index;
         let selected = index == completion.selected;
         let prefix = if selected { "❯ " } else { "  " };
-        if 2 + col_width <= content_width {
-            let desc_budget = content_width.saturating_sub(2 + col_width);
-            let desc = ellipsize(&candidate.description, desc_budget);
-            let label_padded = format!("{:<col_width$}", candidate.label);
-            let spans = if selected {
-                vec![
-                    Span::styled(
-                        prefix,
-                        Style::new()
-                            .fg(theme.accent_user)
-                            .bg(theme.bg_visual)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        label_padded,
-                        Style::new()
-                            .fg(theme.text_primary)
-                            .bg(theme.bg_visual)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        desc,
-                        Style::new().fg(theme.text_secondary).bg(theme.bg_visual),
-                    ),
-                ]
-            } else {
-                vec![
-                    Span::styled(prefix, Style::new().fg(theme.text_primary)),
-                    Span::styled(label_padded, Style::new().fg(theme.text_primary)),
-                    Span::styled(desc, Style::new().fg(theme.gray_dim)),
-                ]
-            };
-            lines.push(Line::from(spans));
-        } else {
-            let style = if selected {
+        let (prefix_style, label_style, desc_style) = if selected {
+            (
+                Style::new()
+                    .fg(theme.accent_user)
+                    .bg(theme.bg_visual)
+                    .add_modifier(Modifier::BOLD),
                 Style::new()
                     .fg(theme.text_primary)
                     .bg(theme.bg_visual)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(theme.text_primary)
-            };
-            lines.push(Line::from(Span::styled(
-                ellipsize(
-                    &format!(
-                        "{prefix}{:<col_width$}{}",
-                        candidate.label, candidate.description
-                    ),
-                    content_width,
-                ),
-                style,
-            )));
-        }
+                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(theme.text_secondary).bg(theme.bg_visual),
+            )
+        } else {
+            (
+                Style::new().fg(theme.text_primary),
+                Style::new().fg(theme.text_primary),
+                Style::new().fg(theme.gray_dim),
+            )
+        };
+        let label_width = col_width.min(content_width.saturating_sub(2));
+        let desc_width = content_width.saturating_sub(2 + label_width);
+        // 选中高亮补满整行：右缘固定，不随描述长短参差
+        lines.push(Line::from(vec![
+            Span::styled(prefix, prefix_style),
+            Span::styled(fit(&candidate.label, label_width), label_style),
+            Span::styled(fit(&candidate.description, desc_width), desc_style),
+        ]));
     }
     if total > visible {
         lines.push(Line::from(Span::styled(
-            format!("… 还有 {} 条", total - visible),
+            truncate(labels::more_items(total - visible), content_width).into_owned(),
             Style::new().fg(theme.gray_dim),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        "↑↓ 选择 · Tab/Enter 确认 · Esc 关闭",
-        Style::new().fg(theme.gray_dim),
-    )));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
-            .block(
-                Block::bordered()
-                    .border_set(ratatui::symbols::border::ROUNDED)
-                    .border_style(Style::new().fg(theme.border_active))
-                    .style(Style::new().bg(theme.bg_base).fg(theme.text_primary)),
-            ),
-        area,
-    );
+    lines.push(overlay::footer(
+        &[("↑↓", "选择"), ("tab/enter", "确认"), ("esc", "关闭")],
+        content_width,
+        theme,
+    ));
+    frame.render_widget(Paragraph::new(lines).block(overlay::panel(theme)), area);
 }
 
 /// 就地引擎菜单：右缘对齐图例里的引擎名，整体贴在它上方（右键菜单那种小浮层）。
@@ -218,32 +180,31 @@ pub fn draw_engine_menu(frame: &mut Frame, app: &mut App) {
             Line::from(vec![
                 Span::styled(if highlighted { "❯ " } else { "  " }, base),
                 Span::styled(
-                    format!(
-                        "{:<label_width$}",
-                        crate::app::engine_label(*engine),
-                        label_width = label_width
-                    ),
+                    fit(crate::app::engine_label(*engine), label_width),
                     label_style,
                 ),
             ])
         })
         .collect();
-    frame.render_widget(Clear, area);
-    frame
-        .buffer_mut()
-        .set_style(area, Style::new().bg(theme.bg_base).fg(theme.text_primary));
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::new().fg(theme.border_active))
-                .style(Style::new().bg(theme.bg_base).fg(theme.text_primary)),
-        ),
+    overlay::paint_opaque(
+        frame.buffer_mut(),
         area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
     );
+    frame.render_widget(Paragraph::new(lines).block(overlay::panel(theme)), area);
     if let Some(menu) = app.engine_menu.as_mut() {
         menu.area = area;
     }
+}
+
+/// 通用模态的正文产物：正文行（已按正文宽度折好/截好、不超过可见行数）、
+/// 底部提示条，以及可点击条目所在的正文行号。
+#[derive(Default)]
+struct ModalBody {
+    lines: Vec<Line<'static>>,
+    footer: Option<Line<'static>>,
+    /// (条目下标, 正文行号)。
+    hits: Vec<(usize, usize)>,
 }
 
 /// 居中模态卡片。
@@ -256,7 +217,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     }
     let theme = app.theme;
     // 折叠的提问卡片不压暗正文：用户正在滚动的就是提问背后的上下文，
-    // 调暗会伤可读性；卡片本身有 Clear 底，照样醒目。
+    // 调暗会伤可读性；细条本身是不透明底，照样醒目。
     let dim_background = !matches!(app.modal, Some(Modal::Ask { parked: true, .. }));
     if dim_background {
         // 保留正文轮廓但降低对比度，浮层成为唯一的视觉焦点。
@@ -269,8 +230,7 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
         return;
     }
     if matches!(app.modal, Some(Modal::ContextContent { .. })) {
-        // 正文窗按自己的列宽折行、按整行滚动，并自带滚动条与命中几何，
-        // 不走 `modal_lines` 的「一次性铺满」路径。
+        // 正文窗按自己的列宽折行、按整行滚动，并自带滚动条与命中几何。
         context_content::draw(frame, app, area);
         return;
     }
@@ -282,129 +242,72 @@ pub fn draw_modal(frame: &mut Frame, app: &mut App) {
     let Some(modal) = &app.modal else {
         return;
     };
-    let max_content = usize::from(area.height.saturating_sub(4)).max(1);
-    let (width, content_width) = if matches!(modal, Modal::Help) {
-        // 帮助是双列快捷键表：按内容自然宽度取值，窄终端由 help_lines 退回单列。
-        let (_, natural) = help_lines(app, usize::from(area.width).saturating_sub(6), max_content);
-        let width = u16::try_from(natural + 4)
-            .unwrap_or(u16::MAX)
-            .min(area.width.saturating_sub(4));
-        (width, usize::from(width.saturating_sub(4)))
-    } else if matches!(modal, Modal::Context { .. }) {
-        // 上下文占用卡片：收敛到紧凑宽度，避免宽屏下右侧过度留白且色条过长。
-        let width = area
-            .width
-            .saturating_sub(4)
-            .clamp(16, 58)
-            .min(area.width.saturating_sub(2));
-        (width, usize::from(width.saturating_sub(4)).max(8))
-    } else {
-        let width = if area.width < 70 {
-            area.width.saturating_sub(4).max(16)
-        } else {
-            area.width.min(96)
-        };
-        (width, usize::from(width.saturating_sub(4)).max(8))
+    let rows = overlay::max_body_rows(area, true).max(1);
+    let width = match modal {
+        Modal::Help { .. } => {
+            // 帮助是双列快捷键表：按内容自然宽度收窄，窄终端由 help_lines 退回单列。
+            let probe = overlay::content_width(overlay::card_width(area, overlay::CARD_MAX_WIDTH));
+            let natural = help_lines(app, probe).1 + usize::from(2 + overlay::CARD_PAD_X * 2);
+            overlay::card_width(area, u16::try_from(natural).unwrap_or(u16::MAX))
+        }
+        // 上下文占用：收敛到紧凑宽度，避免宽屏下右侧过度留白、色条过长。
+        Modal::Context { .. } => overlay::card_width(area, CONTEXT_CARD_MAX_WIDTH),
+        Modal::Plan { .. } => overlay::card_width(area, overlay::CARD_WIDE_MAX_WIDTH),
+        _ => overlay::card_width(area, overlay::CARD_MAX_WIDTH),
     };
-    let (lines, item_hits) = modal_lines_with_hits(app, modal, content_width, max_content);
-    let content_height = u16::try_from(lines.len().max(1)).unwrap_or(u16::MAX);
-    // 2 行给上下边框，1 行留作底部内边距：内容顶格，下沿不贴边框也不空一大片。
-    let height = content_height
-        .saturating_add(3)
-        .min(area.height.saturating_sub(2));
-    let modal_area = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
-    let visible_rows = lines
-        .len()
-        .min(usize::from(modal_area.height.saturating_sub(2)));
-    render_modal_card(frame, lines, modal.title(), theme, modal_area);
-    app.modal_item_hits = item_hits
+    let body = modal_body(app, modal, overlay::content_width(width), rows);
+    let layout = overlay::Card {
+        title: modal.title(),
+        body: body.lines,
+        footer: body.footer,
+    }
+    .render(frame, area, width, theme);
+    // 第 i 行正文就在 `layout.body.y + i`：卡片不二次折行，行号即屏幕行。
+    app.modal_item_hits = body
+        .hits
         .into_iter()
-        .filter_map(|(idx, row)| {
-            if row >= visible_rows {
-                return None;
-            }
-            let y = modal_area.y + 1 + u16::try_from(row).ok()?;
-            Some((
-                idx,
-                Rect::new(modal_area.x + 1, y, modal_area.width.saturating_sub(2), 1),
-            ))
+        .filter_map(|(index, row)| {
+            let y = layout.body.y.checked_add(u16::try_from(row).ok()?)?;
+            (y < layout.body.bottom()).then(|| {
+                (
+                    index,
+                    Rect::new(layout.area.x + 1, y, layout.area.width.saturating_sub(2), 1),
+                )
+            })
         })
         .collect();
     if let Modal::Plan { state } = modal {
         let prefix_width =
-            u16::try_from(str_width("执行模型：")).expect("固定标签宽度可表示为 u16");
-        let available = u16::try_from(content_width)
-            .expect("正文宽度受终端 u16 宽度约束")
-            .saturating_sub(prefix_width);
+            u16::try_from(str_width(PLAN_MODEL_PREFIX)).expect("固定标签宽度可表示为 u16");
         let model_width = u16::try_from(str_width(&crate::app::model_selector_label(
             &state.execution_model,
         )))
         .unwrap_or(u16::MAX)
-        .min(available);
-        app.plan_model_area = Rect::new(
-            modal_area.x + 2 + prefix_width,
-            modal_area.y + 1,
-            model_width,
-            1,
-        );
+        .min(layout.body.width.saturating_sub(prefix_width));
+        app.plan_model_area =
+            Rect::new(layout.body.x + prefix_width, layout.body.y, model_width, 1);
         if state.pane == PlanPane::Annotate {
             // 批注视图是一行源码对一行屏幕行，鼠标拖选直接按行换算。
-            let window = plan_source_window(state, max_content);
+            let window = plan_source_window(state, rows);
             app.plan_body_area = Rect::new(
-                modal_area.x + 2,
-                modal_area.y + 1 + u16::try_from(PLAN_HEADER_ROWS).unwrap_or(0),
-                u16::try_from(content_width).unwrap_or(u16::MAX),
+                layout.body.x,
+                layout.body.y + u16::try_from(PLAN_HEADER_ROWS).expect("常量可表示为 u16"),
+                layout.body.width,
                 u16::try_from(window.len()).unwrap_or(u16::MAX),
             );
             app.plan_row_map = window;
         }
         if state.editor.is_some() {
-            draw_plan_editor(frame, app, modal_area, area);
+            draw_plan_editor(frame, app, layout.area, area);
         }
     }
 }
 
-/// 模态卡片的公共渲染：圆角边框、标题、水平内边距与自动折行。
-fn render_modal_card(
-    frame: &mut Frame,
-    lines: Vec<Line<'static>>,
-    title: String,
-    theme: &Theme,
-    modal_area: Rect,
-) {
-    frame.render_widget(Clear, modal_area);
-    frame.buffer_mut().set_style(
-        modal_area,
-        Style::new().bg(theme.bg_base).fg(theme.text_primary),
-    );
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::bordered()
-                    .border_set(ratatui::symbols::border::ROUNDED)
-                    .border_style(Style::new().fg(theme.border_active))
-                    .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
-                    // 左右各留 1 格内边距，正文不贴边框；标题自带同样的空格才能与正文左缘对齐。
-                    .padding(Padding::horizontal(1))
-                    .title(Span::styled(
-                        format!(" {title} "),
-                        Style::new()
-                            .fg(theme.text_primary)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-            )
-            .wrap(Wrap { trim: false }),
-        modal_area,
-    );
-}
+/// 上下文占用卡片的最大外宽。
+const CONTEXT_CARD_MAX_WIDTH: u16 = 58;
 
 /// 提问卡片：渲染的同时把每个选项（含自定义行）的命中矩形记到 `ask_option_hits`，
-/// 鼠标点选据此换算。宽度、居中与通用模态一致，带选项预览时放宽到 120 列。
+/// 鼠标点选据此换算。带选项预览时放宽到 [`overlay::CARD_WIDE_MAX_WIDTH`]。
 /// 折叠态（parked）不画卡片：收成细条占住输入框位，整屏留给转写区。
 fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
@@ -420,64 +323,57 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(modal) = app.modal.as_ref() else {
         return;
     };
-    let max_content = usize::from(area.height.saturating_sub(4)).max(1);
-    let width = if area.width < 70 {
-        area.width.saturating_sub(4).max(16)
-    } else if modal.has_option_preview() {
-        area.width.min(ASK_PREVIEW_MODAL_WIDTH)
+    let max_width = if modal.has_option_preview() {
+        overlay::CARD_WIDE_MAX_WIDTH
     } else {
-        area.width.min(96)
+        overlay::CARD_MAX_WIDTH
     };
-    let content_width = usize::from(width.saturating_sub(4)).max(8);
-    let layout = ask_layout(theme, modal, content_width, max_content);
-    let content_height = u16::try_from(layout.lines.len().max(1)).unwrap_or(u16::MAX);
-    let height = content_height
-        .saturating_add(3)
-        .min(area.height.saturating_sub(2));
-    let modal_area = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
-    // 卡片被终端高度截断时，画不出来的行点不到：只记录可见行。
-    let visible_rows = layout
-        .lines
-        .len()
-        .min(usize::from(modal_area.height.saturating_sub(2)));
-    render_modal_card(frame, layout.lines, modal.title(), theme, modal_area);
-    app.ask_card_area = modal_area;
-    // 内容文本列 = 卡片 x + 边框 1 + 内边距 1。
-    let text_x = modal_area.x + 2;
+    let width = overlay::card_width(area, max_width);
+    let max_rows = overlay::max_body_rows(area, true).max(1);
+    let AskLayout {
+        mut lines,
+        footer,
+        option_hits,
+        nav_hits,
+        question_area,
+        detail_area,
+    } = ask_layout(theme, modal, overlay::content_width(width), max_rows);
+    // 问题、空行、自定义行是提问卡的最小骨架：极矮终端连骨架都放不下时只截掉底部，
+    // 落在可见区外的命中由下方 `row_y` 统一丢弃。
+    lines.truncate(max_rows);
+    let card = overlay::Card {
+        title: modal.title(),
+        body: lines,
+        footer: Some(footer),
+    }
+    .render(frame, area, width, theme);
+    app.ask_card_area = card.area;
+    let body = card.body;
     let row_y = |row: usize| -> Option<u16> {
-        if row >= visible_rows {
-            return None;
-        }
-        Some(modal_area.y + 1 + u16::try_from(row).ok()?)
+        let y = body.y.checked_add(u16::try_from(row).ok()?)?;
+        (y < body.bottom()).then_some(y)
     };
-    app.ask_option_hits = layout
-        .option_hits
+    app.ask_option_hits = option_hits
         .into_iter()
         .filter_map(|(option, row)| {
             Some((
                 option,
                 Rect::new(
-                    modal_area.x + 1,
+                    card.area.x + 1,
                     row_y(row)?,
-                    modal_area.width.saturating_sub(2),
+                    card.area.width.saturating_sub(2),
                     1,
                 ),
             ))
         })
         .collect();
-    app.ask_nav_hits = layout
-        .nav_hits
+    app.ask_nav_hits = nav_hits
         .into_iter()
         .filter_map(|(question, row, start, end)| {
             Some((
                 question,
                 Rect::new(
-                    text_x + u16::try_from(start).ok()?,
+                    body.x + u16::try_from(start).ok()?,
                     row_y(row)?,
                     u16::try_from(end - start).ok()?,
                     1,
@@ -486,21 +382,22 @@ fn draw_ask_modal(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     // 可滚文本区换算到屏幕：被卡片底边裁掉的行不在命中范围内。
-    let map_area = |area: Rect| -> Rect {
-        let top = usize::from(area.y);
-        let bottom = top + usize::from(area.height);
-        if top >= visible_rows {
+    let visible = usize::from(body.height);
+    let map_area = |text: Rect| -> Rect {
+        let top = usize::from(text.y);
+        if top >= visible {
             return Rect::default();
         }
+        let bottom = (top + usize::from(text.height)).min(visible);
         Rect::new(
-            text_x + area.x,
-            modal_area.y + 1 + area.y,
-            area.width.min(modal_area.width.saturating_sub(2 + area.x)),
-            u16::try_from(bottom.min(visible_rows) - top).unwrap_or(u16::MAX),
+            body.x + text.x,
+            body.y + text.y,
+            text.width.min(body.width.saturating_sub(text.x)),
+            u16::try_from(bottom - top).unwrap_or(u16::MAX),
         )
     };
-    app.ask_question_area = layout.question_area.map(map_area).unwrap_or_default();
-    app.ask_detail_area = layout.detail_area.map(map_area).unwrap_or_default();
+    app.ask_question_area = question_area.map_or_default(map_area);
+    app.ask_detail_area = detail_area.map_or_default(map_area);
 }
 
 /// 折叠的提问细条：占据输入框位（输入框本轮不绘制），左边是进度与当前问，
@@ -540,8 +437,8 @@ fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
     };
     // 内宽 = 边框 2 + 左右内边距 2。
     let inner = usize::from(area.width.saturating_sub(4));
-    let right = "tab 展开作答 · esc 取消";
-    let right_width = str_width(right);
+    let right = labels::hints(&[("tab", "展开作答"), ("esc", "取消")], usize::MAX);
+    let right_width = str_width(&right);
     let mut spans: Vec<Span<'static>> = vec![Span::styled(
         "▸ ",
         Style::new()
@@ -567,13 +464,14 @@ fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
         used += str_width(&counter);
         spans.push(Span::styled(counter, Style::new().fg(theme.gray)));
     }
-    let header = ellipsize(
+    let header = truncate(
         &header,
         inner
             .saturating_sub(used + right_width + 2)
             .max(4)
             .min(inner.saturating_sub(used)),
-    );
+    )
+    .into_owned();
     used += str_width(&header);
     spans.push(Span::styled(
         header,
@@ -589,10 +487,11 @@ fn draw_ask_strip(frame: &mut Frame, app: &mut App) {
     let top_pad = inner_rows.saturating_sub(1) / 2;
     let mut lines = vec![Line::from(String::new()); top_pad];
     lines.push(Line::from(spans));
-    frame.render_widget(Clear, area);
-    frame
-        .buffer_mut()
-        .set_style(area, Style::new().bg(theme.bg_panel).fg(theme.text_primary));
+    overlay::paint_opaque(
+        frame.buffer_mut(),
+        area,
+        Style::new().bg(theme.bg_panel).fg(theme.text_primary),
+    );
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
@@ -621,22 +520,24 @@ struct HelpSection {
     rows: Vec<(String, &'static str)>,
 }
 
-/// 快捷键帮助内容：分为 # 会话与通用、# 输入与编辑、# 旁路交互 三组结构化呈现。
+/// 快捷键帮助内容：会话与通用、输入与编辑、旁路交互三组，组标题加粗着色。
 ///
 /// 默认双列（组内双列排布），宽度不足时退回单列。
 /// 键位列按最长绑定取齐，返回内容的自然宽度，模态据此收窄到刚好容纳。
-fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'static>>, usize) {
+/// 只产出正文；滚动窗口与底部提示由 `modal_body` 负责。
+fn help_lines(app: &App, max_width: usize) -> (Vec<Line<'static>>, usize) {
     let theme = app.theme;
     let get_key = |act: &str| -> String {
         app.preferences
             .keybindings
             .get(act)
-            .map_or_else(|| "—".to_owned(), |keys| crate::config::display_keys(keys))
+            .map_or_else(|| "—".to_owned(), |keys| labels::keys(keys))
     };
-
+    let fixed_keys =
+        |list: &[&str]| labels::keys(&list.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>());
     let sections = [
         HelpSection {
-            title: "# 会话与通用",
+            title: "会话与通用",
             rows: vec![
                 (get_key("model"), "选择模型"),
                 (get_key("engine"), "切换会话引擎"),
@@ -653,7 +554,7 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             ],
         },
         HelpSection {
-            title: "# 输入与编辑",
+            title: "输入与编辑",
             rows: vec![
                 (get_key("send"), "发送消息"),
                 (get_key("queue"), "排队发送"),
@@ -670,12 +571,12 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             ],
         },
         HelpSection {
-            title: "# 旁路交互 (BTW)",
+            title: "旁路交互 (BTW)",
             rows: vec![
                 ("/btw <问题>".into(), "旁路追问(不写历史)"),
-                ("Alt+B / Tab".into(), "旁路展开与焦点切换"),
-                ("Esc / Ctrl+C".into(), "收起旁路 / 取消生成"),
-                ("c / x".into(), "复制回答 / 清空旁路"),
+                (fixed_keys(&["alt+b", "tab"]), "旁路展开与焦点切换"),
+                (fixed_keys(&["esc", "ctrl+c"]), "收起旁路 / 取消生成"),
+                (fixed_keys(&["c", "x"]), "复制回答 / 清空旁路"),
             ],
         },
     ];
@@ -698,15 +599,12 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
         if sec_idx > 0 {
             lines.push(Line::from(String::new()));
         }
-        lines.push(Line::from(vec![
-            Span::styled(" ".repeat(HELP_INDENT), Style::new()),
-            Span::styled(
-                section.title,
-                Style::new()
-                    .fg(theme.accent_warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        lines.push(Line::from(Span::styled(
+            section.title,
+            Style::new()
+                .fg(theme.accent_warning)
+                .add_modifier(Modifier::BOLD),
+        )));
 
         if two_columns {
             let split = section.rows.len().div_ceil(2);
@@ -727,17 +625,12 @@ fn help_lines(app: &App, max_width: usize, max_lines: usize) -> (Vec<Line<'stati
             }
         }
     }
-
-    lines.push(Line::from(String::new()));
-    lines.push(Line::from(vec![
-        Span::styled(" ".repeat(HELP_INDENT), Style::new()),
-        Span::styled("Esc 关闭帮助", Style::new().fg(theme.gray_dim)),
-    ]));
-
-    if lines.len() > max_lines && max_lines > 0 {
-        lines.truncate(max_lines);
-    }
-    (lines, width)
+    // 极窄终端连单列都放不下时截断，卡片不二次折行。
+    let lines = lines
+        .into_iter()
+        .map(|line| clip_line(line, max_width))
+        .collect();
+    (lines, width.min(max_width))
 }
 
 fn measure_column_refs(rows: &[&(String, &'static str)]) -> HelpColumn {
@@ -779,37 +672,6 @@ fn help_cell(
         Span::styled(" ".repeat(pad), Style::new()),
     ]
 }
-fn rewind_kind(role: Role) -> &'static str {
-    match role {
-        Role::User => "用户请求",
-        Role::Assistant => "模型回复",
-        Role::Tool => "工具结果",
-        Role::Custom => "运行时提醒",
-        Role::System | Role::Developer => "系统消息",
-    }
-}
-
-fn rewind_preview(entry: &moc_protocol::methods::TranscriptEntry) -> String {
-    let text = entry.message.text();
-    if !text.trim().is_empty() {
-        return text.replace('\n', " ");
-    }
-    let calls = entry
-        .message
-        .tool_calls()
-        .map(|call| call.name.as_str())
-        .collect::<Vec<_>>();
-    if !calls.is_empty() {
-        return format!("调用 {}", calls.join("、"));
-    }
-    entry
-        .message
-        .tool_results()
-        .map(|result| result.content.replace('\n', " "))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// 上下文窗：分块色标与分块名的左缩进（格）。
 const CONTEXT_INDENT: usize = 2;
 /// 上下文窗：分块名列宽（格）。
@@ -983,7 +845,7 @@ fn format_section_name(name: &str, target_width: usize) -> String {
     if current_width <= target_width {
         format!("{name}{}", " ".repeat(target_width - current_width))
     } else {
-        ellipsize(name, target_width)
+        truncate(name, target_width).into_owned()
     }
 }
 
@@ -1023,25 +885,63 @@ const ASK_PREVIEW_MIN_WIDTH: usize = 72;
 const ASK_PREVIEW_LEFT_MIN: usize = 16;
 /// 并排布局两栏之间的分隔；其显示宽度即两栏的间距。
 const ASK_PREVIEW_SEPARATOR: &str = " │ ";
-/// 带预览的提问卡片的最大宽度（列）：比普通模态更宽，容得下并排的预览栏。
-const ASK_PREVIEW_MODAL_WIDTH: u16 = 120;
 
-/// 模态内容行（按类型分派）。
-#[allow(dead_code)]
+/// 测试用：正文 + 提示条按阅读顺序拼成一列，断言文案时不必区分两处。
+#[cfg(test)]
 fn modal_lines(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Vec<Line<'static>> {
-    modal_lines_with_hits(app, modal, width, max_lines).0
+    let body = modal_body(app, modal, width, max_lines);
+    body.lines.into_iter().chain(body.footer).collect()
 }
 
-/// 模态内容行及可点击项行号（按类型分派）。
-fn modal_lines_with_hits(
-    app: &App,
-    modal: &Modal,
-    width: usize,
-    max_lines: usize,
-) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
+/// 列表窗口起点：沿用选择器自己的偏移，但保证选中项落在 `visible` 行之内。
+///
+/// 键盘处理按固定翻页步长维护 `offset`，真实可见行数只有渲染知道，两边在此对齐。
+fn window_offset(offset: usize, selected: usize, visible: usize, total: usize) -> usize {
+    let visible = visible.max(1);
+    let offset = if selected < offset {
+        selected
+    } else if selected >= offset + visible {
+        selected + 1 - visible
+    } else {
+        offset
+    };
+    offset.min(total.saturating_sub(visible))
+}
+
+/// 搜索框行：`搜索：<query>▏`；查询超宽时从头部截断，光标侧始终可见。
+fn search_line(query: &str, width: usize, theme: &Theme) -> Line<'static> {
+    const LABEL: &str = "搜索：";
+    let budget = width.saturating_sub(str_width(LABEL) + 1);
+    Line::from(vec![
+        Span::styled(LABEL, Style::new().fg(theme.gray_dim)),
+        Span::styled(
+            truncate_head(query, budget).into_owned(),
+            Style::new().fg(theme.accent_model),
+        ),
+        Span::styled("▏", Style::new().fg(theme.accent_model)),
+    ])
+}
+
+/// 说明/错误文本按正文宽度折成整行，样式统一。
+fn wrapped_lines(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    crate::render::wrap::wrap_text(text, width)
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row, style)))
+        .collect()
+}
+
+/// Fusion 卡片标签列宽（列）：最长的 `Sidekick` 加 1 格间距。
+const FUSION_LABEL_WIDTH: usize = 9;
+
+/// 通用模态的正文与提示条（按类型分派）。
+///
+/// `width` 是卡片正文宽度，`max_lines` 是正文可见行数（提示条另算）：
+/// 返回的每行都不超过 `width` 列、总行数不超过 `max_lines`。
+fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> ModalBody {
     let theme = app.theme;
+    let dim = Style::new().fg(theme.gray_dim);
     let mut hits = Vec::new();
-    let mut lines = match modal {
+    let (mut lines, footer) = match modal {
         Modal::Permission {
             params,
             selected,
@@ -1050,12 +950,14 @@ fn modal_lines_with_hits(
         } => {
             let mut all_content = Vec::new();
             if let Some(body) = &params.body {
-                all_content.extend(body.lines().map(|row| {
-                    Line::from(Span::styled(
-                        format!("  {row}"),
-                        Style::new().fg(theme.text_secondary),
-                    ))
-                }));
+                let style = Style::new().fg(theme.text_secondary);
+                for row in body.lines() {
+                    all_content.extend(
+                        crate::render::wrap::wrap_text(row, width.saturating_sub(2))
+                            .into_iter()
+                            .map(|part| Line::from(Span::styled(format!("  {part}"), style))),
+                    );
+                }
             }
             if let Some(diff) = &params.diff {
                 all_content.extend(crate::render::diff::render_diff(
@@ -1065,9 +967,9 @@ fn modal_lines_with_hits(
                     usize::MAX,
                 ));
             }
-            // 预留空行 + 选项行 + 底部提示行。
-            let options_rows = params.options.len() + 3;
-            let max_content_rows = max_lines.saturating_sub(options_rows).max(2);
+            // 正文窗口之后：空行 + 选项行。
+            let options_rows = params.options.len() + 1;
+            let max_content_rows = max_lines.saturating_sub(options_rows).max(1);
             let offset = (*scroll_offset).min(all_content.len().saturating_sub(max_content_rows));
             let mut lines: Vec<Line<'static>> = all_content
                 .into_iter()
@@ -1080,27 +982,29 @@ fn modal_lines_with_hits(
             lines.push(Line::from(String::new()));
             for (index, option) in params.options.iter().enumerate() {
                 hits.push((index, lines.len()));
-                let marker = if index == *selected { "❯ " } else { "  " };
-                let style = if index == *selected {
-                    Style::new()
-                        .fg(theme.accent_user)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
-                lines.push(Line::from(Span::styled(
-                    format!("{marker}{} {}", index + 1, option.label),
-                    style,
-                )));
+                lines.push(overlay::list_row(
+                    &format!("{} {}", index + 1, option.label),
+                    index == *selected,
+                    width,
+                    theme,
+                ));
             }
-            lines.push(Line::from(Span::styled(
-                "1-9 直选 · enter 确认 · PgUp/PgDn 滚动预览 · esc 按拒绝处理",
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
+            let footer = overlay::footer(
+                &[
+                    ("pgup/pgdn", "滚动预览"),
+                    ("1-9", "直选"),
+                    ("esc", "按拒绝处理"),
+                    ("enter", "确认"),
+                ],
+                width,
+                theme,
+            );
+            (lines, footer)
         }
-        Modal::Ask { .. } => ask_layout(theme, modal, width, max_lines).lines,
+        Modal::Ask { .. } => {
+            let layout = ask_layout(theme, modal, width, max_lines);
+            (layout.lines, layout.footer)
+        }
         Modal::Model {
             entries,
             current,
@@ -1112,73 +1016,71 @@ fn modal_lines_with_hits(
             let highlighted = filtered.get(picker.selected).map(|(_, entry)| *entry);
             let resolved = highlighted.and_then(|entry| level.resolve(&entry.levels));
             let has_levels = highlighted.is_some_and(|entry| !entry.levels.is_empty());
-            // 行预算优先让给候选列表：9 行以上三处留白全给（标题下、搜索与等级条
-            // 之间、等级条与列表之间），7~8 行只留标题下那一处，更矮时一处不留，
-            // 先保住至少一行候选和页脚。
-            let full_gap = max_lines >= 9;
-            let title_gap = max_lines >= 7;
+            // 行预算优先让给候选列表：够高时在搜索与等级条、等级条与列表之间各留一行。
+            let gaps = max_lines >= 7;
             let mut lines = Vec::with_capacity(max_lines.clamp(4, 32));
-            if title_gap {
-                lines.push(Line::from(String::new()));
-            }
             lines.push(Line::from(vec![
-                Span::styled("当前  ".to_owned(), Style::new().fg(theme.gray_dim)),
+                Span::styled("当前：", dim),
                 Span::styled(
-                    ellipsize(
-                        &crate::app::model_selector_label(current),
-                        width.saturating_sub(6),
-                    ),
+                    truncate(
+                        crate::app::model_selector_label(current),
+                        width.saturating_sub(str_width("当前：")),
+                    )
+                    .into_owned(),
                     Style::new().fg(theme.text_secondary),
                 ),
             ]));
-            lines.push(Line::from(vec![
-                Span::styled("搜索  ".to_owned(), Style::new().fg(theme.gray_dim)),
-                Span::styled(
-                    if picker.query.is_empty() {
-                        "_".to_owned()
-                    } else {
-                        ellipsize_tail(&picker.query, width.saturating_sub(6))
-                    },
-                    Style::new().fg(if picker.query.is_empty() {
-                        theme.gray_dim
-                    } else {
-                        theme.accent_model
-                    }),
-                ),
-            ]));
+            lines.push(search_line(&picker.query, width, theme));
             let fusion_highlighted = highlighted
                 .is_some_and(|entry| entry.selector == crate::modal::FUSION_ENTRY_SELECTOR);
-            if full_gap {
+            if gaps {
                 lines.push(Line::from(String::new()));
             }
             if fusion_highlighted {
                 // Fusion 特殊项没有等级条：改显组合配置卡的初始草稿。
                 let draft = crate::app::initial_fusion_draft(app, current);
                 for (label, value) in [("Lead", &draft.lead), ("Sidekick", &draft.sidekick)] {
+                    let (shown, color) = if value.is_empty() {
+                        ("未选择".to_owned(), theme.gray)
+                    } else {
+                        (
+                            crate::app::model_selector_label(value),
+                            theme.text_secondary,
+                        )
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{label:<9}"), Style::new().fg(theme.gray_dim)),
+                        Span::styled(fit(label, FUSION_LABEL_WIDTH), dim),
                         Span::styled(
-                            if value.is_empty() {
-                                "未选择".to_owned()
-                            } else {
-                                crate::app::model_selector_label(value)
-                            },
-                            Style::new().fg(if value.is_empty() {
-                                theme.gray
-                            } else {
-                                theme.text_secondary
-                            }),
+                            truncate(&shown, width.saturating_sub(FUSION_LABEL_WIDTH)).into_owned(),
+                            Style::new().fg(color),
                         ),
                     ]));
                 }
             } else {
-                lines.extend(level_lines(theme, highlighted, resolved.as_deref(), width));
+                lines.extend(
+                    level_lines(theme, highlighted, resolved.as_deref(), width)
+                        .into_iter()
+                        .map(|line| clip_line(line, width)),
+                );
             }
-            if full_gap {
+            if gaps {
                 lines.push(Line::from(String::new()));
             }
-            let visible = max_lines.saturating_sub(lines.len() + 1).max(1);
-            let offset = picker.offset.min(filtered.len().saturating_sub(visible));
+            if picker.loading {
+                lines.push(Line::from(Span::styled(
+                    "正在切换模型…",
+                    Style::new().fg(theme.accent_running),
+                )));
+            } else if let Some(error) = &picker.error {
+                lines.extend(wrapped_lines(
+                    &format!("错误：{error}"),
+                    width,
+                    Style::new().fg(theme.accent_error),
+                ));
+            }
+            // 状态行先落位再算列表窗口：否则错误/加载行会把末尾候选挤出卡片。
+            let visible = max_lines.saturating_sub(lines.len()).max(1);
+            let offset = window_offset(picker.offset, picker.selected, visible, filtered.len());
             // 规格卡片挤在候选列表右侧：正文够宽、且整张卡塞得进可见行数时才出现，
             // 否则列表独占整行，把上下文窗口压成行尾的紧凑数字。
             let card_width = if width >= META_MIN_CONTENT {
@@ -1198,22 +1100,6 @@ fn modal_lines_with_hits(
                 width
             };
             let mut rows: Vec<Line<'static>> = Vec::with_capacity(visible);
-
-            if picker.loading {
-                lines.push(Line::from(Span::styled(
-                    "正在切换模型…",
-                    Style::new().fg(theme.accent_running),
-                )));
-            } else if let Some(error) = &picker.error {
-                lines.push(Line::from(Span::styled(
-                    format!("错误：{error}"),
-                    Style::new().fg(theme.accent_error),
-                )));
-                lines.push(Line::from(Span::styled(
-                    "Enter 重试 · Esc 关闭",
-                    Style::new().fg(theme.gray_dim),
-                )));
-            }
             if filtered.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "没有匹配的模型",
@@ -1241,12 +1127,13 @@ fn modal_lines_with_hits(
                             .map(|window| format!("  {}", crate::render::format_tokens(window)))
                             .unwrap_or_default()
                     };
-                    let label = ellipsize(
+                    let label = truncate(
                         &entry.label,
                         list_width
                             .saturating_sub(str_width(marker) + str_width(&suffix))
                             .max(1),
-                    );
+                    )
+                    .into_owned();
                     let mut spans = Vec::with_capacity(8);
                     spans.push(Span::styled(marker, style));
                     if let Some((provider, model_name)) = label.split_once('/') {
@@ -1294,29 +1181,28 @@ fn modal_lines_with_hits(
                 }
                 lines.push(Line::from(spans));
             }
-            // 页脚按可用宽度降档：完整提示 → 去掉搜索提示的中档 → 只留关键键的紧凑档。
-            // 阈值就是各串的显示宽度，保证 Paragraph 不折行、不会多占一行把列表挤掉；
-            // 最后再用 ellipsize 兜住更窄的终端。
-            let footer = if fusion_highlighted {
-                "Enter 配置 Fusion 组合 · Esc 关闭"
+            // 提示条放不下时从左丢项：搜索提示最先让位，Enter/Esc 恒在。
+            let items: &[(&str, &str)] = if picker.error.is_some() {
+                &[("enter", "重试"), ("esc", "关闭")]
+            } else if fusion_highlighted {
+                &[("enter", "配置 Fusion 组合"), ("esc", "关闭")]
             } else if has_levels {
-                if width >= 57 {
-                    "↑↓ 移动 · Tab 切换等级 · 输入搜索 · Enter 确认 · Esc 关闭"
-                } else if width >= 46 {
-                    "↑↓ 移动 · Tab 切换等级 · Enter 确认 · Esc 关闭"
-                } else {
-                    "Tab 切换等级 · Enter 确认 · Esc 关闭"
-                }
-            } else if width >= 42 {
-                "↑↓ 移动 · 输入搜索 · Enter 确认 · Esc 关闭"
+                &[
+                    ("", "输入搜索"),
+                    ("↑↓", "移动"),
+                    ("tab", "切换等级"),
+                    ("enter", "确认"),
+                    ("esc", "关闭"),
+                ]
             } else {
-                "↑↓ 移动 · Enter 确认 · Esc 关闭"
+                &[
+                    ("", "输入搜索"),
+                    ("↑↓", "移动"),
+                    ("enter", "确认"),
+                    ("esc", "关闭"),
+                ]
             };
-            lines.push(Line::from(Span::styled(
-                ellipsize(footer, width),
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
+            (lines, overlay::footer(items, width, theme))
         }
         Modal::Fusion {
             draft,
@@ -1325,14 +1211,12 @@ fn modal_lines_with_hits(
             error,
             ..
         } => {
-            let mut lines = vec![
-                Line::from(String::new()),
-                Line::from(Span::styled(
-                    "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证",
-                    Style::new().fg(theme.text_secondary),
-                )),
-                Line::from(String::new()),
-            ];
+            let mut lines = wrapped_lines(
+                "前沿模型负责规划、调查与评审，高性价比模型执行实现与验证",
+                width,
+                Style::new().fg(theme.text_secondary),
+            );
+            lines.push(Line::from(String::new()));
             for (index, label, value) in [
                 (0usize, "Lead", &draft.lead),
                 (1, "Sidekick", &draft.sidekick),
@@ -1349,51 +1233,44 @@ fn modal_lines_with_hits(
                 } else {
                     Style::new().fg(theme.text_primary)
                 };
-                let shown = if value.is_empty() {
-                    if index == 2 {
-                        String::new()
-                    } else {
-                        "未选择".to_owned()
-                    }
-                } else {
-                    crate::app::model_selector_label(value)
+                let shown = match (index, value.is_empty()) {
+                    (2, _) => String::new(),
+                    (_, true) => "未选择".to_owned(),
+                    (_, false) => crate::app::model_selector_label(value),
                 };
                 let value_style = if selected {
                     style
-                } else if shown == "未选择" {
+                } else if value.is_empty() {
                     Style::new().fg(theme.gray)
                 } else {
                     Style::new().fg(theme.text_secondary)
                 };
-                let mut spans = vec![
+                let text = format!("{}{shown}", fit(label, FUSION_LABEL_WIDTH));
+                lines.push(Line::from(vec![
                     Span::styled(marker, style),
-                    Span::styled(format!("{label:<9}"), value_style),
-                ];
-                if !shown.is_empty() {
-                    spans.push(Span::styled(
-                        ellipsize(&shown, width.saturating_sub(11)),
-                        value_style,
-                    ));
-                }
-                lines.push(Line::from(spans));
+                    Span::styled(fit(&text, width.saturating_sub(2)), value_style),
+                ]));
             }
-            lines.push(Line::from(String::new()));
             if *loading {
+                lines.push(Line::from(String::new()));
                 lines.push(Line::from(Span::styled(
                     "正在切换模型…",
                     Style::new().fg(theme.accent_running),
                 )));
             } else if let Some(error) = error {
-                lines.push(Line::from(Span::styled(
-                    format!("错误：{error}"),
+                lines.push(Line::from(String::new()));
+                lines.extend(wrapped_lines(
+                    &format!("错误：{error}"),
+                    width,
                     Style::new().fg(theme.accent_error),
-                )));
+                ));
             }
-            lines.push(Line::from(Span::styled(
-                ellipsize("↑↓ 移动 · Enter 选择 · Esc 返回", width),
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
+            let footer = overlay::footer(
+                &[("↑↓", "移动"), ("enter", "选择"), ("esc", "返回")],
+                width,
+                theme,
+            );
+            (lines, footer)
         }
         Modal::SwitchModel {
             selector,
@@ -1418,118 +1295,40 @@ fn modal_lines_with_hits(
                     crate::render::format_tokens(overflow.threshold)
                 )
             };
-            let mut lines = vec![
-                Line::from(Span::styled(leading, Style::new().fg(theme.text_primary))),
-                Line::from(Span::styled(
-                    format!(
-                        "确认后先切换到 {selector}，再由它压缩上下文（压缩后不超过 {}）",
-                        crate::render::format_tokens(overflow.target_tokens)
-                    ),
-                    Style::new().fg(theme.text_secondary),
-                )),
-                Line::from(String::new()),
-            ];
+            let mut lines = wrapped_lines(&leading, width, Style::new().fg(theme.text_primary));
+            lines.extend(wrapped_lines(
+                &format!(
+                    "确认后先切换到 {selector}，再由它压缩上下文（压缩后不超过 {}）",
+                    crate::render::format_tokens(overflow.target_tokens)
+                ),
+                width,
+                Style::new().fg(theme.text_secondary),
+            ));
+            lines.push(Line::from(String::new()));
             if *loading {
                 lines.push(Line::from(Span::styled(
                     "正在切换并压缩…",
                     Style::new().fg(theme.accent_running),
                 )));
             } else if let Some(error) = error {
-                lines.push(Line::from(Span::styled(
-                    format!("错误：{error}"),
+                lines.extend(wrapped_lines(
+                    &format!("错误：{error}"),
+                    width,
                     Style::new().fg(theme.accent_error),
-                )));
+                ));
             }
             for (index, text) in ["切换并压缩", "取消"].iter().enumerate() {
-                let marker = if index == *option { "❯ " } else { "  " };
-                let style = if index == *option {
-                    Style::new()
-                        .fg(theme.accent_user)
-                        .bg(theme.bg_visual)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(theme.text_secondary)
-                };
-                lines.push(Line::from(Span::styled(format!("{marker}{text}"), style)));
+                lines.push(overlay::list_row(text, index == *option, width, theme));
             }
-            lines.push(Line::from(Span::styled(
-                if error.is_some() {
-                    "enter 重试 · esc 取消"
-                } else {
-                    "↑↓ 选择 · enter 确认 · esc 取消"
-                },
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
-        }
-        Modal::Rewind { state } => {
-            let mut lines = vec![Line::from(Span::styled(
-                "↑↓ 选择当前用户消息内的条目 · ←→ 切换用户消息",
-                Style::new().fg(theme.gray_dim),
-            ))];
-            if state.loading && state.prompts.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "正在加载消息历史…",
-                    Style::new().fg(theme.accent_running),
-                )));
-            } else if let Some(error) = &state.error {
-                lines.push(Line::from(Span::styled(
-                    format!("错误：{error}"),
-                    Style::new().fg(theme.accent_error),
-                )));
-                lines.push(Line::from(Span::styled(
-                    "Enter 重试 · Esc 关闭",
-                    Style::new().fg(theme.gray_dim),
-                )));
-            } else if state.prompts.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "当前会话没有可回退的消息",
-                    Style::new().fg(theme.gray),
-                )));
+            let items: &[(&str, &str)] = if error.is_some() {
+                &[("enter", "重试"), ("esc", "取消")]
             } else {
-                let prompt = &state.prompts[state.selected_prompt];
-                lines.push(Line::from(Span::styled(
-                    format!(
-                        "用户消息 {}/{} · 当前条目 {}/{}",
-                        state.selected_prompt + 1,
-                        state.prompts.len(),
-                        state.selected_item + 1,
-                        prompt.len()
-                    ),
-                    Style::new().fg(theme.accent_model),
-                )));
-                let visible = max_lines.saturating_sub(5).max(1);
-                let offset = state
-                    .selected_item
-                    .saturating_sub(visible.saturating_sub(1));
-                for (index, entry) in prompt.iter().skip(offset).take(visible).enumerate() {
-                    let actual = offset + index;
-                    let selected = actual == state.selected_item;
-                    let marker = if selected { "❯ " } else { "  " };
-                    let text = format!(
-                        "{marker}{}  {}",
-                        rewind_kind(entry.message.role),
-                        rewind_preview(entry)
-                    );
-                    lines.push(Line::from(Span::styled(
-                        ellipsize(&text, width),
-                        if selected {
-                            Style::new()
-                                .fg(theme.accent_user)
-                                .bg(theme.bg_visual)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::new().fg(theme.text_secondary)
-                        },
-                    )));
-                }
-                lines.push(Line::from(Span::styled(
-                    "Enter 回退到此处（用户消息会恢复到输入框） · Esc 取消",
-                    Style::new().fg(theme.gray_dim),
-                )));
-            }
-            lines
+                &[("↑↓", "选择"), ("enter", "确认"), ("esc", "取消")]
+            };
+            (lines, overlay::footer(items, width, theme))
         }
+        // 回退视图与上下文正文窗自带布局，`draw_modal` 在此之前就已分派走。
+        Modal::Rewind { .. } | Modal::ContextContent { .. } => (Vec::new(), Line::default()),
         Modal::Sessions {
             sessions,
             cwd,
@@ -1537,92 +1336,72 @@ fn modal_lines_with_hits(
             picker,
         } => {
             let filtered = crate::modal::filtered_sessions(sessions, &picker.query, *scope, cwd);
-            let visible = max_lines.saturating_sub(4).max(1);
-            let offset = picker.offset.min(filtered.len().saturating_sub(visible));
-            let mut lines = vec![Line::from(Span::styled(
-                format!(
-                    "搜索：{}",
-                    if picker.query.is_empty() {
-                        "_"
-                    } else {
-                        &picker.query
-                    }
-                ),
-                Style::new().fg(theme.accent_model),
-            ))];
+            let mut lines = vec![search_line(&picker.query, width, theme)];
             if picker.loading && sessions.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "正在加载会话…",
                     Style::new().fg(theme.accent_running),
                 )));
             } else if let Some(error) = &picker.error {
-                lines.push(Line::from(Span::styled(
-                    format!("错误：{error}"),
+                lines.extend(wrapped_lines(
+                    &format!("错误：{error}"),
+                    width,
                     Style::new().fg(theme.accent_error),
-                )));
-                lines.push(Line::from(Span::styled(
-                    "Enter 重试 · Esc 关闭",
-                    Style::new().fg(theme.gray_dim),
-                )));
+                ));
             } else if filtered.is_empty() {
                 // 搜索无结果与目录为空要分开说：后者才值得引导切范围。
                 let hint = if picker.query.is_empty() && *scope == SessionScope::Folder {
-                    "当前目录没有会话 · Tab 查看全部"
+                    labels::hints(&[("", "当前目录没有会话"), ("tab", "查看全部")], width)
                 } else {
-                    "没有匹配的会话"
+                    truncate("没有匹配的会话", width).into_owned()
                 };
                 lines.push(Line::from(Span::styled(hint, Style::new().fg(theme.gray))));
             } else {
+                let visible = max_lines.saturating_sub(lines.len()).max(1);
+                let offset = window_offset(picker.offset, picker.selected, visible, filtered.len());
                 for (index, (_, session)) in filtered.iter().skip(offset).take(visible).enumerate()
                 {
                     let actual = offset + index;
                     hits.push((actual, lines.len()));
-                    let marker = if actual == picker.selected {
-                        "❯ "
-                    } else {
-                        "  "
-                    };
-                    let mut text = format!("{marker}{}", session.title);
+                    let mut text = session.title.clone();
                     if let Some(source) = crate::modal::fork_source_label(sessions, session) {
                         text.push_str(&format!("  ← {source}"));
                     }
                     if *scope == SessionScope::All {
-                        text.push_str(&format!("  {}", ellipsize(&session.cwd, width / 2)));
+                        text.push_str(&format!("  {}", truncate(session.cwd.as_str(), width / 2)));
                     }
-                    lines.push(Line::from(Span::styled(
-                        ellipsize(&text, width),
-                        if actual == picker.selected {
-                            Style::new()
-                                .fg(theme.accent_user)
-                                .bg(theme.bg_visual)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::new().fg(theme.text_secondary)
-                        },
-                    )));
+                    lines.push(overlay::list_row(
+                        &text,
+                        actual == picker.selected,
+                        width,
+                        theme,
+                    ));
                 }
             }
-            lines.push(Line::from(Span::styled(
-                "↑↓ 移动 · PgUp/PgDn 翻页 · Tab 切换范围 · 输入搜索 · Enter 恢复 · Esc 关闭",
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
+            let items: &[(&str, &str)] = if picker.error.is_some() {
+                &[("enter", "重试"), ("esc", "关闭")]
+            } else {
+                &[
+                    ("", "输入搜索"),
+                    ("pgup/pgdn", "翻页"),
+                    ("↑↓", "移动"),
+                    ("tab", "切换范围"),
+                    ("enter", "恢复"),
+                    ("esc", "关闭"),
+                ]
+            };
+            (lines, overlay::footer(items, width, theme))
         }
         Modal::Plan { state } => plan_lines(state, width, max_lines, theme, &mut hits),
         Modal::Context { usage } => {
-            let mut lines = match usage {
+            let lines = match usage {
                 Some(usage) => context_lines(usage, width, theme),
                 None => vec![Line::from(vec![
                     Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
                     Span::styled("正在计算上下文…", Style::new().fg(theme.accent_running)),
                 ])],
             };
-            lines.push(Line::from(String::new()));
-            lines.push(Line::from(vec![
-                Span::styled(" ".repeat(CONTEXT_INDENT), Style::new()),
-                Span::styled("Esc 关闭", Style::new().fg(theme.gray_dim)),
-            ]));
-            lines
+            (lines, overlay::footer(&[("esc", "关闭")], width, theme))
         }
         Modal::Subagents { agents, picker } => {
             let query = picker.query.to_lowercase();
@@ -1632,59 +1411,101 @@ fn modal_lines_with_hits(
                     agent.title.to_lowercase().contains(&query) || agent.id.contains(&query)
                 })
                 .collect();
-            let mut lines = Vec::with_capacity(filtered.len() + 2);
+            let mut lines = vec![search_line(&picker.query, width, theme)];
             if filtered.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "当前会话还没有子代理",
-                    Style::new().fg(theme.text_secondary),
-                )));
-                lines.push(Line::from(Span::styled(
-                    "子代理由模型在复杂任务中自动派生",
-                    Style::new().fg(theme.gray_dim),
-                )));
+                // 过滤无结果与名册为空分开说：前者是搜索词的问题。
+                if picker.query.is_empty() {
+                    lines.extend(wrapped_lines(
+                        "当前会话还没有子代理",
+                        width,
+                        Style::new().fg(theme.text_secondary),
+                    ));
+                    lines.extend(wrapped_lines(
+                        "子代理由模型在复杂任务中自动派生",
+                        width,
+                        dim,
+                    ));
+                } else {
+                    lines.extend(wrapped_lines(
+                        "没有匹配的子代理",
+                        width,
+                        Style::new().fg(theme.gray),
+                    ));
+                }
             } else {
-                for (index, agent) in filtered.iter().enumerate() {
-                    let selected = index == picker.selected;
-                    let status_str = crate::render::scrollback::agent_status_label(agent.status);
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "{}{} · {} · {}",
-                            if selected { "❯ " } else { "  " },
+                // 每个子代理占 1 行（无最近消息）或 2 行：窗口按行预算取，选中项恒在窗内。
+                let heights: Vec<usize> = filtered
+                    .iter()
+                    .map(|agent| 1 + usize::from(agent.last_message.is_some()))
+                    .collect();
+                let budget = max_lines.saturating_sub(lines.len()).max(1);
+                let selected = picker.selected.min(filtered.len() - 1);
+                let mut start = picker.offset.min(selected);
+                while start < selected && heights[start..=selected].iter().sum::<usize>() > budget {
+                    start += 1;
+                }
+                let mut used = 0;
+                for (index, agent) in filtered.iter().enumerate().skip(start) {
+                    if used > 0 && used + heights[index] > budget {
+                        break;
+                    }
+                    used += heights[index];
+                    let status = crate::render::scrollback::agent_status_label(agent.status);
+                    lines.push(overlay::list_row(
+                        &format!(
+                            "{}{}{status}{}{}",
                             agent.title,
-                            status_str,
+                            labels::SEP,
+                            labels::SEP,
                             agent.model
                         ),
-                        if selected {
-                            Style::new().fg(theme.text_primary).bg(theme.bg_visual)
-                        } else {
-                            Style::new().fg(theme.text_primary)
-                        },
-                    )));
+                        index == selected,
+                        width,
+                        theme,
+                    ));
                     if let Some(message) = &agent.last_message {
                         lines.push(Line::from(Span::styled(
-                            format!("    {}", ellipsize(message, width.saturating_sub(4))),
-                            Style::new().fg(theme.gray_dim),
+                            format!(
+                                "    {}",
+                                truncate(message.as_str(), width.saturating_sub(4))
+                            ),
+                            dim,
                         )));
                     }
                 }
             }
-            lines.push(Line::from(Span::styled(
-                "↑↓ 选择 · Enter 聚焦 · Ctrl+S 停止 · Esc 关闭",
-                Style::new().fg(theme.gray_dim),
-            )));
-            lines
+            let footer = overlay::footer(
+                &[
+                    ("", "输入搜索"),
+                    ("↑↓", "选择"),
+                    ("ctrl+s", "停止"),
+                    ("enter", "聚焦"),
+                    ("esc", "关闭"),
+                ],
+                width,
+                theme,
+            );
+            (lines, footer)
         }
-        Modal::Help => help_lines(app, width, max_lines).0,
-        // 正文窗自带布局与滚动，`draw_modal` 在此之前就已分派走。
-        Modal::ContextContent { .. } => Vec::new(),
+        Modal::Help { scroll } => {
+            let rows = help_lines(app, width).0;
+            let lines = scroll_window(rows, max_lines, *scroll, width, theme);
+            (lines, overlay::footer(&[("esc", "关闭")], width, theme))
+        }
     };
     lines.truncate(max_lines.max(1));
-    (lines, hits)
+    ModalBody {
+        lines,
+        footer: Some(footer),
+        hits,
+    }
 }
 
-/// 提问卡片的布局产物：正文行 + 文本坐标的可点击几何，`draw_ask_modal` 换算到屏幕。
+/// 提问卡片的布局产物：正文行 + 提示条 + 文本坐标的可点击几何，`draw_ask_modal` 换算到屏幕。
+#[derive(Default)]
 struct AskLayout {
     lines: Vec<Line<'static>>,
+    footer: Line<'static>,
     /// (选项下标, 行号)；`options.len()` 下标代表自定义行。
     option_hits: Vec<(usize, usize)>,
     /// (问题下标, 行号, 起始列, 结束列)：顶部问题导航条的点击范围。
@@ -1718,13 +1539,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         ..
     } = modal
     else {
-        return AskLayout {
-            lines: Vec::new(),
-            option_hits: Vec::new(),
-            nav_hits: Vec::new(),
-            question_area: None,
-            detail_area: None,
-        };
+        return AskLayout::default();
     };
     let mut lines = Vec::new();
     let mut nav_hits = Vec::new();
@@ -1735,20 +1550,26 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut col = 0usize;
         for (index, entry) in params.questions.iter().enumerate() {
-            if index > 0 {
-                spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
-                col += 3;
-            }
+            let separator = if index > 0 { str_width(labels::SEP) } else { 0 };
             let answered = selected.get(index).is_some_and(|picked| !picked.is_empty())
                 || custom
                     .get(index)
                     .is_some_and(|answer| !answer.text.is_empty());
             let header = entry.header.clone().unwrap_or_else(|| "提问".into());
-            let label = ellipsize(&format!("{}. {header}", index + 1), ASK_NAV_ITEM_MAX);
+            let label =
+                truncate(&format!("{}. {header}", index + 1), ASK_NAV_ITEM_MAX).into_owned();
             let item_width = str_width(&label) + usize::from(answered) * 2;
-            if col + item_width > width {
-                spans.push(Span::styled("…", Style::new().fg(theme.gray_dim)));
+            // 放不下的问题收成一个 `…`；连 `…` 都放不下就不画，导航条绝不越过正文宽度。
+            if col + separator + item_width > width {
+                if col + 2 <= width {
+                    spans.push(Span::styled(" …", Style::new().fg(theme.gray_dim)));
+                    col += 2;
+                }
                 break;
+            }
+            if index > 0 {
+                spans.push(Span::styled(labels::SEP, Style::new().fg(theme.gray_dim)));
+                col += separator;
             }
             nav_hits.push((index, nav_row, col, col + item_width));
             if answered {
@@ -1770,13 +1591,14 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
         // 导航条末尾是确认页：越过最后一问强制经过，点击或 → 直达。
         let confirm_label = "确认";
         let confirm_width = str_width(confirm_label);
-        if col + 3 + confirm_width <= width {
-            spans.push(Span::styled(" · ", Style::new().fg(theme.gray_dim)));
+        let separator = str_width(labels::SEP);
+        if col + separator + confirm_width <= width {
+            spans.push(Span::styled(labels::SEP, Style::new().fg(theme.gray_dim)));
             nav_hits.push((
                 params.questions.len(),
                 nav_row,
-                col + 3,
-                col + 3 + confirm_width,
+                col + separator,
+                col + separator + confirm_width,
             ));
             let style = if *question == params.questions.len() {
                 Style::new()
@@ -1796,7 +1618,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     lines.push(Line::from(String::new()));
 
     // 问题正文窗口：常规字重、限高滚动——长问题铺满整卡会把选项挤出视野；
-    // 溢出时末行给出滚动状态（滚轮/PgUp·PgDn 读全文），窗口区记为可滚命中。
+    // 溢出时末行给出滚动状态（滚轮/PgUp/PgDn 读全文），窗口区记为可滚命中。
     let question_rows = crate::render::wrap::wrap_text(&current.question, width);
     let question_overflow = question_rows.len() > ASK_QUESTION_ROWS;
     let question_start = lines.len();
@@ -1807,6 +1629,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             .collect(),
         ASK_QUESTION_ROWS,
         *question_scroll,
+        width,
         theme,
     ));
     let question_area = question_overflow.then(|| {
@@ -1829,7 +1652,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     }) && width >= ASK_PREVIEW_MIN_WIDTH;
     let focused_option = current.options.get(highlight[*question]);
     // 单栏时聚焦项描述进底部固定区：分隔线 + 限高窗口。它是次信息——
-    // 预算不足保住两个可见选项 + 自定义行 + 页脚时，先压详情区再整个让掉。
+    // 预算不足保住两个可见选项 + 自定义行时，先压详情区再整个让掉。
     let detail_content: Vec<Line<'static>> = if two_col {
         Vec::new()
     } else {
@@ -1837,8 +1660,8 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             .map(|option| focused_detail_lines(option, width, theme))
             .unwrap_or_default()
     };
-    // 固定行：自定义行 1 + 页脚 1。
-    let fixed_tail = lines.len() + 2;
+    // 固定行：自定义行 1（提示条在卡片底部另算）。
+    let fixed_tail = lines.len() + 1;
     let mut detail_zone_rows = if detail_content.is_empty() {
         0
     } else {
@@ -1851,9 +1674,9 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             detail_zone_rows = 0;
         }
     }
-    // 剩余行预算给选项列表窗口 + 自定义行 + 页脚。
+    // 剩余行预算给选项列表窗口 + 自定义行。
     let opt_budget = max_lines
-        .saturating_sub(lines.len() + 1 + detail_zone_rows + 1)
+        .saturating_sub(lines.len() + 1 + detail_zone_rows)
         .max(1);
 
     // 选项每项恒单行（描述已挪进详情区）；超出预算时窗口跟随光标，
@@ -1885,12 +1708,22 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             .saturating_sub(if recommended { 8 } else { 0 });
         let mut spans = vec![
             Span::styled(format!(" {marker} {check} "), style),
-            Span::styled(ellipsize(&option.label, label_budget), style),
+            Span::styled(
+                truncate(option.label.as_str(), label_budget).into_owned(),
+                style,
+            ),
         ];
         if recommended {
             spans.push(Span::styled("（推荐）", Style::new().fg(theme.gray)));
         }
-        option_rows.push(Line::from(spans));
+        // 单栏时聚焦行补满正文宽度，选中色带右缘整齐；双栏左栏由 join_columns 补齐。
+        let mut row = Line::from(spans);
+        if focused && !two_col {
+            let used = line_width(&row);
+            row.spans
+                .push(Span::styled(" ".repeat(width.saturating_sub(used)), style));
+        }
+        option_rows.push(row);
     }
     let total_opts = current.options.len();
     let (mut start, mut take) = (0usize, total_opts.min(opt_budget));
@@ -1946,13 +1779,14 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     };
     option_hits.push((current.options.len(), base + list.len()));
     list.push(Line::from(Span::styled(
-        ellipsize(
+        truncate(
             &format!(
                 " {} ✎ 自定义：{custom_display}",
                 if editing_here { "❯" } else { " " }
             ),
             width,
-        ),
+        )
+        .into_owned(),
         custom_style,
     )));
 
@@ -1971,7 +1805,13 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             .map(|option| focused_detail_lines(option, pane_width, theme))
             .unwrap_or_default();
         let pane_overflow = pane_content.len() > pane_budget;
-        let pane = scroll_window(pane_content, pane_budget, *preview_scroll, theme);
+        let pane = scroll_window(
+            pane_content,
+            pane_budget,
+            *preview_scroll,
+            pane_width,
+            theme,
+        );
         let pane_rows = pane.len();
         let pane_start = lines.len();
         lines.extend(join_columns(list, pane, left_width, theme));
@@ -1995,7 +1835,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
                 Style::new().fg(theme.border),
             )));
             let overflow = detail_content.len() > capacity;
-            let windowed = scroll_window(detail_content, capacity, *preview_scroll, theme);
+            let windowed = scroll_window(detail_content, capacity, *preview_scroll, width, theme);
             lines.extend(windowed);
             if overflow {
                 detail_area = Some(Rect::new(
@@ -2007,39 +1847,22 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
             }
         }
     }
-    // 页脚一行：方向键、数字键属常规交互不教，只留反直觉的键；
-    // 多选最后一问 enter 从切勾变成进确认页，提示如实切换。
-    let pick_hint = if current.multi {
-        if *question + 1 >= params.questions.len() {
-            "space 勾选 · enter 确认"
-        } else {
-            "space/enter 勾选"
-        }
-    } else {
-        "enter 选择"
-    };
-    let nav_hint = (params.questions.len() > 1).then_some("tab 换题");
-    let footer = [
-        Some(pick_hint),
-        nav_hint,
-        Some("esc 折叠问题卡"),
-        Some("shift+X 跳过"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" · ");
-    // 页脚与正文之间空一行：提示贴向卡片底部、不黏在最后一行内容上。
-    // 这是装饰行——预算占满时先牺牲它，不挤掉选项/详情/页脚本身。
-    if lines.len() + 1 < max_lines {
-        lines.push(Line::from(String::new()));
+    // 提示条：方向键、数字键属常规交互不教，只留反直觉的键；
+    // 多选最后一问 enter 从切勾变成进确认页，提示如实切换。窄屏先丢跳过/换题。
+    let last = *question + 1 >= params.questions.len();
+    let mut items: Vec<(&str, &str)> = vec![("shift+x", "跳过")];
+    if params.questions.len() > 1 {
+        items.push(("tab", "换题"));
     }
-    lines.push(Line::from(Span::styled(
-        ellipsize(&footer, width),
-        Style::new().fg(theme.gray_dim),
-    )));
+    items.push(("esc", "折叠问题卡"));
+    match (current.multi, last) {
+        (true, true) => items.extend([("space", "勾选"), ("enter", "确认")]),
+        (true, false) => items.push(("space/enter", "勾选")),
+        (false, _) => items.push(("enter", "选择")),
+    }
     AskLayout {
         lines,
+        footer: overlay::footer(&items, width, theme),
         option_hits,
         nav_hits,
         question_area,
@@ -2048,11 +1871,12 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
 }
 
 /// 把内容截取为最多 `capacity` 行的滚动窗口；放不下时末行换成
-/// 「… a-b/total 行 · 滚轮/PgUp·PgDn」状态行（各滚动区同一约定）。
+/// 「⋯ a-b/total 行 · 滚轮/PgUp/PgDn」状态行（各滚动区同一约定），状态行截到 `width`。
 fn scroll_window(
     rows: Vec<Line<'static>>,
     capacity: usize,
     scroll: usize,
+    width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let total = rows.len();
@@ -2060,17 +1884,24 @@ fn scroll_window(
     if total <= capacity {
         return rows;
     }
-    let visible = capacity - 1;
-    let offset = scroll.min(total.saturating_sub(visible));
+    // 只剩一行时状态行没有意义：留给内容本身。
+    let visible = (capacity - 1).max(1);
+    let offset = scroll.min(total - visible);
     let mut out: Vec<Line<'static>> = rows.into_iter().skip(offset).take(visible).collect();
-    out.push(Line::from(Span::styled(
-        format!(
-            "… {}-{}/{total} 行 · 滚轮/PgUp·PgDn",
+    if capacity > 1 {
+        let status = format!(
+            "{} {}-{}/{total} 行{}{}",
+            labels::OMITTED,
             offset + 1,
-            offset + visible
-        ),
-        Style::new().fg(theme.gray_dim),
-    )));
+            offset + visible,
+            labels::SEP,
+            labels::hints(&[("pgup/pgdn", "滚动")], usize::MAX),
+        );
+        out.push(Line::from(Span::styled(
+            truncate(status, width).into_owned(),
+            Style::new().fg(theme.gray_dim),
+        )));
+    }
     out
 }
 
@@ -2147,10 +1978,8 @@ fn ask_confirm_layout(
     else {
         return AskLayout {
             lines,
-            option_hits: Vec::new(),
             nav_hits,
-            question_area: None,
-            detail_area: None,
+            ..AskLayout::default()
         };
     };
     lines.push(Line::from(String::new()));
@@ -2160,7 +1989,7 @@ fn ask_confirm_layout(
             .fg(theme.gray_bright)
             .add_modifier(Modifier::BOLD),
     )));
-    let rows = max_lines.saturating_sub(lines.len() + 1).max(1);
+    let rows = max_lines.saturating_sub(lines.len()).max(1);
     // key 列对齐：取 header 兜底 id，统一截断到同一列宽。
     let key_width = params
         .questions
@@ -2171,7 +2000,7 @@ fn ask_confirm_layout(
         .min(ASK_CONFIRM_KEY_MAX);
     let mut answers = Vec::with_capacity(params.questions.len());
     for (index, entry) in params.questions.iter().enumerate() {
-        let key = ellipsize(entry.header.as_deref().unwrap_or(&entry.id), key_width);
+        let key = truncate(entry.header.as_deref().unwrap_or(&entry.id), key_width).into_owned();
         let pad = " ".repeat(key_width.saturating_sub(str_width(&key)));
         let mut spans = vec![Span::styled(
             format!("{key}{pad}: "),
@@ -2195,7 +2024,7 @@ fn ask_confirm_layout(
             ));
         } else {
             spans.push(Span::styled(
-                ellipsize(&parts.join(", "), width.saturating_sub(key_width + 2)),
+                truncate(&parts.join(", "), width.saturating_sub(key_width + 2)).into_owned(),
                 Style::new().fg(theme.text_primary),
             ));
         }
@@ -2203,20 +2032,19 @@ fn ask_confirm_layout(
     }
     let scroll = (*preview_scroll).min(answers.len().saturating_sub(rows));
     lines.extend(answers.into_iter().skip(scroll).take(rows));
-    // 与作答页同款：页脚前空一行（预算占满时让位），提示行沉到卡片底部。
-    if lines.len() + 1 < max_lines {
-        lines.push(Line::from(String::new()));
-    }
-    lines.push(Line::from(Span::styled(
-        ellipsize("enter 确认提交 · esc 折叠问题卡 · shift+X 跳过", width),
-        Style::new().fg(theme.gray_dim),
-    )));
     AskLayout {
         lines,
-        option_hits: Vec::new(),
+        footer: overlay::footer(
+            &[
+                ("shift+x", "跳过"),
+                ("esc", "折叠问题卡"),
+                ("enter", "确认提交"),
+            ],
+            width,
+            theme,
+        ),
         nav_hits,
-        question_area: None,
-        detail_area: None,
+        ..AskLayout::default()
     }
 }
 
@@ -2412,8 +2240,11 @@ fn model_meta_lines(
     lines.push(Line::from(Span::styled(format!("╭{rule}╮"), border_style)));
     if rows.is_empty() {
         // 角色伪值没有任何可选元数据：给一行说明，不留一只空框。
-        let text = pad_to(
-            &format!(" {}", ellipsize(&entry.label, inner.saturating_sub(2))),
+        let text = fit(
+            &format!(
+                " {}",
+                truncate(entry.label.as_str(), inner.saturating_sub(2))
+            ),
             inner,
         );
         lines.push(Line::from(vec![
@@ -2426,10 +2257,10 @@ fn model_meta_lines(
         lines.push(Line::from(vec![
             Span::styled("│", border_style),
             Span::raw(" "),
-            Span::styled(pad_to(&label, label_width), Style::new().fg(theme.gray_dim)),
+            Span::styled(fit(&label, label_width), Style::new().fg(theme.gray_dim)),
             Span::raw("  "),
             Span::styled(
-                pad_to(&ellipsize(&value, value_width), value_width),
+                fit(&value, value_width),
                 Style::new().fg(theme.text_primary),
             ),
             Span::raw(" "),
@@ -2440,103 +2271,10 @@ fn model_meta_lines(
     lines
 }
 
-/// 右侧补空格到指定显示宽度；已经够宽就原样返回。
-fn pad_to(text: &str, width: usize) -> String {
-    let used = str_width(text);
-    if used >= width {
-        text.to_owned()
-    } else {
-        format!("{text}{}", " ".repeat(width - used))
-    }
-}
-
 /// 每百万 token 的单价：最多三位小数，去掉尾随零，`$1`、`$0.075`、`$1.25`。
 fn meta_price(value: f64) -> String {
     let text = format!("{value:.3}");
     format!("${}", text.trim_end_matches('0').trim_end_matches('.'))
-}
-
-pub(crate) fn ellipsize(text: &str, width: usize) -> String {
-    if crate::render::wrap::str_width(text) <= width {
-        return text.to_owned();
-    }
-    crate::render::scrollback::truncate_to_width(text.to_owned(), width.max(1))
-}
-
-/// 保留尾部、截掉开头的省略：搜索框的光标在结尾，越靠后的字符越是正在输入的内容。
-fn ellipsize_tail(text: &str, width: usize) -> String {
-    if crate::render::wrap::str_width(text) <= width {
-        return text.to_owned();
-    }
-    // `…` 占 1 列，剩下的预算从末尾往前数，凑不满的宽字符整体丢掉。
-    let budget = width.saturating_sub(1);
-    let mut used = 0usize;
-    let mut start = text.len();
-    for (index, ch) in text.char_indices().rev() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > budget {
-            break;
-        }
-        used += ch_width;
-        start = index;
-    }
-    let mut out = String::with_capacity(text.len() - start + '…'.len_utf8());
-    out.push('…');
-    out.push_str(&text[start..]);
-    out
-}
-
-/// 一行的显示宽度（列，CJK 双宽）。
-fn line_width(line: &Line<'static>) -> usize {
-    line.spans
-        .iter()
-        .map(|span| str_width(span.content.as_ref()))
-        .sum()
-}
-
-/// 截断一行到 `width` 列，超出部分以 `…` 收尾。
-fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
-    if line_width(&line) <= width {
-        return line;
-    }
-    let budget = width.saturating_sub(1);
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 1);
-    let mut used = 0usize;
-    for span in line.spans {
-        let mut kept = String::new();
-        let mut whole = true;
-        for ch in span.content.chars() {
-            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if used + ch_width > budget {
-                whole = false;
-                break;
-            }
-            kept.push(ch);
-            used += ch_width;
-        }
-        if !kept.is_empty() {
-            spans.push(Span::styled(kept, span.style));
-        }
-        if !whole {
-            spans.push(Span::styled("…", span.style));
-            break;
-        }
-    }
-    Line::from(spans).style(line.style)
-}
-
-/// 补齐一行到 `width` 列，超出则截断：并排布局两栏互不越界的基础。
-fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
-    let used = line_width(&line);
-    if used > width {
-        return clip_line(line, width);
-    }
-    if used == width {
-        return line;
-    }
-    let mut spans = line.spans;
-    spans.push(Span::raw(" ".repeat(width - used)));
-    Line::from(spans).style(line.style)
 }
 
 /// 并排拼接左右两栏：左栏补齐到 `left_width` 列后接竖线分隔，再接右栏。
@@ -2592,13 +2330,14 @@ const PLAN_ACTIONS_LEN: usize = 4;
 
 /// 状态文字与配色。
 fn plan_status_label(theme: &Theme, status: PlanStatus) -> (&'static str, Color) {
+    use labels::status;
     match status {
-        PlanStatus::Draft => ("起草中", theme.accent_running),
-        PlanStatus::Submitted => ("待审阅", theme.accent_success),
-        PlanStatus::Revised => ("等待修订", theme.accent_warning),
-        PlanStatus::Superseded => ("已被取代", theme.gray),
-        PlanStatus::Approved => ("已批准", theme.accent_success),
-        PlanStatus::Rejected => ("已拒绝", theme.accent_error),
+        PlanStatus::Draft => (status::DRAFT, theme.accent_running),
+        PlanStatus::Submitted => (status::IN_REVIEW, theme.accent_success),
+        PlanStatus::Revised => (status::REVISING, theme.accent_warning),
+        PlanStatus::Superseded => (status::SUPERSEDED, theme.gray),
+        PlanStatus::Approved => (status::APPROVED, theme.accent_success),
+        PlanStatus::Rejected => (status::REJECTED, theme.accent_error),
     }
 }
 
@@ -2615,18 +2354,21 @@ fn plan_status_note(status: PlanStatus) -> &'static str {
 }
 
 /// 正文之外的固定行数；渲染与鼠标命中都走它，两边算出的正文窗口才会一致。
+///
+/// 头部 [`PLAN_HEADER_ROWS`] 行；正文之后的尾部（动作列表 / 状态说明 / 错误）
+/// 非空时先空一行再排。操作提示在卡片底部的提示条里，不占正文行。
 pub(crate) fn plan_fixed_rows(state: &PlanReviewState) -> usize {
-    let mut fixed = PLAN_HEADER_ROWS + 1;
+    let mut tail = 0;
     if state.pane == PlanPane::Read && state.status == PlanStatus::Submitted {
-        fixed += PLAN_ACTIONS_LEN;
+        tail += PLAN_ACTIONS_LEN;
     }
     if state.status != PlanStatus::Submitted {
-        fixed += 1;
+        tail += 1;
     }
     if state.error.is_some() || state.submitting {
-        fixed += 1;
+        tail += 1;
     }
-    fixed
+    PLAN_HEADER_ROWS + if tail > 0 { tail + 1 } else { 0 }
 }
 
 /// 正文可见行数。
@@ -2642,38 +2384,50 @@ pub(crate) fn plan_source_window(state: &PlanReviewState, max_lines: usize) -> V
     (offset..(offset + rows).min(total)).collect()
 }
 
-/// 计划审阅卡片的内容行。
+/// 计划卡片首行的标签；`draw_modal` 按它的宽度换算执行模型的点击区。
+const PLAN_MODEL_PREFIX: &str = "执行模型：";
+
+/// 计划审阅卡片的正文行与提示条。
 fn plan_lines(
     state: &PlanReviewState,
     width: usize,
     max_lines: usize,
     theme: &Theme,
     hits: &mut Vec<(usize, usize)>,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Line<'static>) {
     let mut lines = Vec::with_capacity(max_lines);
-    let prefix = "执行模型：";
     lines.push(Line::from(vec![
-        Span::styled(prefix, Style::new().fg(theme.text_secondary)),
+        Span::styled(PLAN_MODEL_PREFIX, Style::new().fg(theme.text_secondary)),
         Span::styled(
-            ellipsize(
-                &crate::app::model_selector_label(&state.execution_model),
-                width.saturating_sub(str_width(prefix)),
-            ),
+            truncate(
+                crate::app::model_selector_label(&state.execution_model),
+                width.saturating_sub(str_width(PLAN_MODEL_PREFIX)),
+            )
+            .into_owned(),
             Style::new()
                 .fg(theme.accent_model)
                 .add_modifier(Modifier::UNDERLINED),
         ),
     ]));
+    // 状态先占位、标题吃剩下的宽度：标题再长也不会把这一行挤成两行。
     let (status_label, status_color) = plan_status_label(theme, state.status);
-    lines.push(Line::from(vec![
-        Span::styled(
-            ellipsize(&format!("{} · v{}", state.title, state.version), width),
-            Style::new()
-                .fg(theme.text_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" · {status_label}"), Style::new().fg(status_color)),
-    ]));
+    let status = format!("{}{status_label}", labels::SEP);
+    lines.push(clip_line(
+        Line::from(vec![
+            Span::styled(
+                truncate(
+                    format!("{}{}v{}", state.title, labels::SEP, state.version),
+                    width.saturating_sub(str_width(&status)),
+                )
+                .into_owned(),
+                Style::new()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(status, Style::new().fg(status_color)),
+        ]),
+        width,
+    ));
     let mut location = state.path.clone();
     if state.previous_plan_id.is_some() {
         location.push_str(&format!(" · 对比 v{}", state.version.saturating_sub(1)));
@@ -2686,7 +2440,7 @@ fn plan_lines(
         ));
     }
     lines.push(Line::from(Span::styled(
-        ellipsize(&location, width),
+        truncate(&location, width).into_owned(),
         Style::new().fg(theme.gray),
     )));
 
@@ -2696,7 +2450,7 @@ fn plan_lines(
             if state.show_diff && state.previous_plan_id.is_some() {
                 if let Some(error) = &state.diff_error {
                     lines.push(Line::from(Span::styled(
-                        ellipsize(&format!("无法加载改动：{error}"), width),
+                        truncate(&format!("无法加载改动：{error}"), width).into_owned(),
                         Style::new().fg(theme.accent_error),
                     )));
                 } else if let Some(diff) = &state.diff {
@@ -2730,7 +2484,8 @@ fn plan_lines(
                         rendered
                             .into_iter()
                             .skip(state.scroll_offset)
-                            .take(body_rows),
+                            .take(body_rows)
+                            .map(|line| clip_line(line, width)),
                     );
                 }
             }
@@ -2743,57 +2498,71 @@ fn plan_lines(
         }
     }
 
-    let hint = match state.pane {
-        PlanPane::Read if state.show_diff && state.previous_plan_id.is_some() => {
-            "↑↓/PgUp/PgDn 滚动 · D 看计划 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换引擎"
-        }
+    // 提示条从左丢项：引擎/模型/批注等次要键先让位，滚动与确认/关闭恒在。
+    let mut items: Vec<(&str, &str)> = Vec::with_capacity(8);
+    match state.pane {
         PlanPane::Read => {
-            "↑↓/PgUp/PgDn 滚动 · D 看改动 · A 批注 · ←→/Tab 选择 · Enter 确认 · Ctrl+P 选模型 · M 换引擎"
+            let submitted = state.status == PlanStatus::Submitted;
+            if submitted {
+                items.push(("m", "换引擎"));
+            }
+            items.push(("ctrl+p", "选模型"));
+            items.push(("a", "批注"));
+            if state.previous_plan_id.is_some() {
+                items.push((
+                    "d",
+                    if state.show_diff {
+                        "看计划"
+                    } else {
+                        "看改动"
+                    },
+                ));
+            }
+            items.push(("↑↓/pgup/pgdn", "滚动"));
+            if submitted {
+                items.extend([("←→/tab", "选择"), ("enter", "确认")]);
+            }
+            items.push(("esc", "关闭"));
         }
-        PlanPane::Annotate => {
-            "↑↓ 移动 · v 选行 · c 批注 · Ctrl+G 建议改法 · x 删除 · s 发送 · A 返回阅读 · Esc 返回"
-        }
-    };
-    lines.push(Line::from(Span::styled(
-        ellipsize(hint, width),
-        Style::new().fg(theme.gray_dim),
-    )));
+        PlanPane::Annotate => items.extend([
+            ("ctrl+g", "建议改法"),
+            ("x", "删除"),
+            ("v", "选行"),
+            ("↑↓", "移动"),
+            ("c", "批注"),
+            ("a/esc", "返回阅读"),
+            ("s", "发送"),
+        ]),
+    }
+    let footer = overlay::footer(&items, width, theme);
 
+    let tail_start = lines.len();
+    if plan_fixed_rows(state) > PLAN_HEADER_ROWS {
+        lines.push(Line::from(String::new()));
+    }
     if state.pane == PlanPane::Read && state.status == PlanStatus::Submitted {
         for index in 0..PLAN_ACTIONS_LEN {
             let label = plan_action_label(state, index);
             hits.push((index, lines.len()));
-            let style = if state.submitting {
-                Style::new().fg(theme.gray_dim)
-            } else if state.selected == index {
-                Style::new()
-                    .fg(theme.accent_success)
-                    .bg(theme.bg_visual)
-                    .add_modifier(Modifier::BOLD)
+            lines.push(if state.submitting {
+                Line::from(Span::styled(
+                    fit(&format!("  {label}"), width),
+                    Style::new().fg(theme.gray_dim),
+                ))
             } else {
-                Style::new().fg(theme.text_secondary)
-            };
-            lines.push(Line::from(Span::styled(
-                ellipsize(
-                    &format!(
-                        "{} {label}",
-                        if state.selected == index { "❯" } else { " " }
-                    ),
-                    width,
-                ),
-                style,
-            )));
+                overlay::list_row(&label, state.selected == index, width, theme)
+            });
         }
     } else if state.status != PlanStatus::Submitted {
         lines.push(Line::from(Span::styled(
-            ellipsize(plan_status_note(state.status), width),
+            truncate(plan_status_note(state.status), width).into_owned(),
             Style::new().fg(theme.gray),
         )));
     }
 
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
-            ellipsize(&format!("错误：{error}"), width),
+            truncate(&format!("错误：{error}"), width).into_owned(),
             Style::new().fg(theme.accent_error),
         )));
     } else if state.submitting {
@@ -2802,7 +2571,12 @@ fn plan_lines(
             Style::new().fg(theme.accent_running),
         )));
     }
-    lines
+    debug_assert_eq!(
+        lines.len() - tail_start,
+        plan_fixed_rows(state) - PLAN_HEADER_ROWS,
+        "尾部行数必须与 plan_fixed_rows 一致，否则正文窗口与鼠标映射错位"
+    );
+    (lines, footer)
 }
 
 /// 批注视图的一行源码：行号 gutter + 内容，选区铺底、光标加粗、有批注的行标 `●`。
@@ -2828,10 +2602,11 @@ fn plan_source_line(
     };
     let gutter = format!("{line_no:>4} {} ", if annotated { "●" } else { "│" });
     let gutter_width = str_width(&gutter);
-    let mut text = ellipsize(
+    let mut text = truncate(
         source.get(index).copied().unwrap_or(""),
         width.saturating_sub(gutter_width),
-    );
+    )
+    .into_owned();
     // 补到整行宽度，让选区底色铺满整行而不是只盖住文字。
     let text_width = str_width(&text);
     if let Some(pad) = width.checked_sub(gutter_width + text_width) {
@@ -2905,33 +2680,21 @@ fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) 
         .saturating_sub(8)
         .clamp(32, 76)
         .min(modal_area.width);
-    let inner_width = usize::from(width.saturating_sub(4)).max(8);
+    let inner_width = overlay::content_width(width).max(1);
     let wrapped = wrap_input(&editor.body, inner_width);
+    let capacity = overlay::max_body_rows(area, true).max(1);
+    // 行预算紧张时先让掉引用，保住标签 + 至少一行正文。
     let quote_rows: Vec<String> = editor
         .quote
         .lines()
-        .take(2)
-        .map(|line| ellipsize(&format!("> {line}"), inner_width))
+        .take(2.min(capacity.saturating_sub(2)))
+        .map(|line| truncate(&format!("> {line}"), inner_width).into_owned())
         .collect();
-    let hint = "Ctrl+S 保存 · Ctrl+G 插入建议改法 · Esc 取消";
-    // 边框 2 行 + 引用 + 标签 + 正文 + 提示。
-    let content_rows = quote_rows.len() + 1 + wrapped.lines.len().max(1) + 1;
-    let height = u16::try_from(content_rows.saturating_add(2))
-        .unwrap_or(u16::MAX)
-        .min(area.height.saturating_sub(4).max(6));
-    let rect = Rect {
-        x: area.x + (area.width.saturating_sub(width)) / 2,
-        y: area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    };
-    let visible_rows = usize::from(rect.height.saturating_sub(2));
-    let fixed = quote_rows.len() + 2;
-    let body_space = visible_rows.saturating_sub(fixed).max(1);
+    let body_space = capacity.saturating_sub(quote_rows.len() + 1).max(1);
     let start = wrapped
         .cursor_row
         .saturating_sub(body_space.saturating_sub(1));
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(capacity);
     for row in &quote_rows {
         lines.push(Line::from(Span::styled(
             row.clone(),
@@ -2939,7 +2702,11 @@ fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) 
         )));
     }
     lines.push(Line::from(Span::styled(
-        "批注正文（可用 ```suggestion 围栏给出替换文本）",
+        truncate(
+            "批注正文（可用 ```suggestion 围栏给出替换文本）",
+            inner_width,
+        )
+        .into_owned(),
         Style::new().fg(theme.text_secondary),
     )));
     for row in wrapped.lines.iter().skip(start).take(body_space) {
@@ -2948,39 +2715,39 @@ fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) 
             Style::new().fg(theme.text_primary),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        ellipsize(hint, inner_width),
-        Style::new().fg(theme.gray_dim),
-    )));
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .border_set(ratatui::symbols::border::ROUNDED)
-                .border_style(Style::new().fg(theme.border_active))
-                .style(Style::new().bg(theme.bg_base))
-                .padding(Padding::horizontal(1))
-                .title(Span::styled(
-                    format!(" 批注 · 第 {}-{} 行 ", editor.start_line, editor.end_line),
-                    Style::new()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                )),
+    lines.truncate(capacity);
+    let label_rows = quote_rows.len() + 1;
+    let layout = overlay::Card {
+        title: format!(
+            "批注{}第 {}-{} 行",
+            labels::SEP,
+            editor.start_line,
+            editor.end_line
         ),
-        rect,
-    );
+        body: lines,
+        footer: Some(overlay::footer(
+            &[
+                ("ctrl+g", "插入建议改法"),
+                ("esc", "取消"),
+                ("ctrl+s", "保存"),
+            ],
+            inner_width,
+            theme,
+        )),
+    }
+    .render(frame, area, width, theme);
     let cursor_row = wrapped.cursor_row.saturating_sub(start);
-    let y = rect.y + 1 + u16::try_from(quote_rows.len() + 1 + cursor_row).unwrap_or(u16::MAX);
-    let x = rect.x + 2 + u16::try_from(wrapped.cursor_column).unwrap_or(u16::MAX);
+    let y = layout.body.y + u16::try_from(label_rows + cursor_row).unwrap_or(u16::MAX);
+    let x = layout.body.x + u16::try_from(wrapped.cursor_column).unwrap_or(u16::MAX);
     frame.set_cursor_position((
-        x.min(rect.right().saturating_sub(2)),
-        y.min(rect.bottom().saturating_sub(2)),
+        x.min(layout.body.right().saturating_sub(1)),
+        y.min(layout.body.bottom().saturating_sub(1)),
     ));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ask_layout, modal_lines};
+    use super::{ask_layout, modal_body, modal_lines};
     use crate::{
         app::App,
         modal::{Modal, PickerState, SessionScope},
@@ -3109,36 +2876,31 @@ mod tests {
         });
         let modal = app.modal.as_ref().expect("模型选择器");
 
-        // (正文宽度, 行预算, 标题下留白, 内部留白)
-        for (width, budget, title_gap, full_gap) in [
-            (76usize, 18usize, true, true),
-            (56, 8, true, false),
-            (36, 6, false, false),
-        ] {
-            let lines = modal_lines(&app, modal, width, budget);
-            let texts: Vec<String> = lines.iter().map(line_text).collect();
+        // (正文宽度, 正文行预算, 内部留白)：提示条在卡片底部另算，不占正文预算。
+        for (width, budget, gaps) in [(76usize, 18usize, true), (56, 8, true), (36, 6, false)] {
+            let body = modal_body(&app, modal, width, budget);
+            let texts: Vec<String> = body.lines.iter().map(line_text).collect();
             assert!(
-                lines.len() <= budget,
+                body.lines.len() <= budget,
                 "{width}/{budget} 超出预算：{texts:?}"
             );
-            for text in &texts {
+            let footer = line_text(body.footer.as_ref().expect("缺少提示条"));
+            for text in texts.iter().chain([&footer]) {
                 assert!(
                     crate::render::wrap::str_width(text) <= width,
-                    "{text:?} 超过 {width} 列，会被 Paragraph 折行多占一行"
+                    "{text:?} 超过 {width} 列"
                 );
             }
-            // 留白阶梯：预算够就三处全给，其次只留标题下那一处，更矮时一处不留。
-            assert_eq!(texts[0].is_empty(), title_gap, "{texts:?}");
             let search = texts
                 .iter()
-                .position(|text| text.starts_with("搜索  "))
+                .position(|text| text.starts_with("搜索："))
                 .expect("缺少搜索行");
             let label = texts
                 .iter()
                 .position(|text| text.contains("思考等级"))
                 .expect("缺少等级条标签行");
-            assert_eq!(label, search + 1 + usize::from(full_gap), "{texts:?}");
-            assert_eq!(texts[label + 2].is_empty(), full_gap, "{texts:?}");
+            assert_eq!(label, search + 1 + usize::from(gaps), "{texts:?}");
+            assert_eq!(texts[label + 2].is_empty(), gaps, "{texts:?}");
             // 圆角与方括号：标签行 `╭ 思考等级`，芯片行 `╰ [ … ]` 首尾成对。
             assert_eq!(texts[label], "╭ 思考等级", "{texts:?}");
             assert!(texts[label + 1].starts_with("╰ ["), "{texts:?}");
@@ -3161,20 +2923,17 @@ mod tests {
             } else {
                 assert!(row.contains("500k") && !row.contains("context"), "{row}");
             }
-            // 页脚：唯一、收尾，宽度不够时降档而不是折行。
-            let footer = texts.last().expect("缺少页脚");
-            assert_eq!(
-                texts.iter().filter(|text| text.contains("Esc")).count(),
-                1,
-                "{texts:?}"
+            // 提示条：宽度不够时从左丢项，Enter/Esc 恒在。
+            assert!(
+                footer.contains("Enter 确认") && footer.contains("Esc 关闭"),
+                "{footer:?}"
             );
-            assert!(footer.contains("Enter 确认") && footer.contains("Esc 关闭"));
             if width == 76 {
                 assert!(footer.contains("输入搜索") && footer.contains("Tab 切换等级"));
             } else {
                 assert!(
                     !footer.contains("输入搜索"),
-                    "窄宽度应换成紧凑提示：{footer:?}"
+                    "窄宽度应先丢掉搜索提示：{footer:?}"
                 );
             }
         }
@@ -3343,11 +3102,13 @@ mod tests {
                 })
                 .collect()
         };
+        // 列表行补满正文宽度（选中色带右缘整齐），比较前去掉尾部补白。
         let row = |rows: &[String], needle: &str| {
             rows.iter()
                 .find(|row| row.contains(needle))
                 .unwrap_or_else(|| panic!("缺少 {needle} 行：{rows:?}"))
-                .clone()
+                .trim_end()
+                .to_owned()
         };
 
         let folder = rows(SessionScope::Folder);
@@ -3522,9 +3283,9 @@ mod tests {
         assert!(texts[6].ends_with("500k"), "{:?}", texts[6]);
     }
 
-    /// 上下文窗：分块名称过长或包含宽字符时保持列宽对齐，Esc 行具有缩进。
+    /// 上下文窗：分块名称过长或包含宽字符时保持列宽对齐。
     #[test]
-    fn context_modal_handles_wide_names_and_indents_footer() {
+    fn context_modal_handles_wide_names() {
         let (events, _receiver) = unbounded_channel();
         let app = App::new(Theme::global(), events);
         let modal = Modal::Context {
@@ -3548,9 +3309,6 @@ mod tests {
         let texts: Vec<String> = lines.iter().map(line_text).collect();
         // 验证各分块行总宽度一致，列对齐未被顶破
         assert_eq!(line_width(&texts[2]), line_width(&texts[3]));
-        // 验证底部的 Esc 说明具备 2 格左缩进
-        let last_line = texts.last().expect("footer line");
-        assert!(last_line.starts_with("  Esc 关闭"), "{:?}", last_line);
     }
 
     /// 推荐项在标签后显示星号；星号与用户当前勾选状态相互独立，多选可显示多个星号。
@@ -3687,7 +3445,7 @@ mod tests {
         let compact = text.replace(' ', "");
         assert!(compact.contains("布局偏好"), "细条应显示当前问：{text:?}");
         assert!(
-            compact.contains("tab展开作答") && compact.contains("esc取消"),
+            compact.contains("Tab展开作答") && compact.contains("Esc取消"),
             "细条应给出返回与取消的路：{text:?}"
         );
     }
@@ -3775,12 +3533,12 @@ mod tests {
         assert!(head.iter().any(|text| text.contains("L01")), "{head:?}");
         let status = head
             .iter()
-            .position(|text| text.contains("滚轮/PgUp·PgDn"))
+            .position(|text| text.contains("PgUp/PgDn 滚动"))
             .unwrap_or_else(|| panic!("超窗详情区应给滚动提示：{head:?}"));
         assert_eq!(
             status,
-            head.len() - 3,
-            "滚动提示应在详情区末行（其后是空行与页脚）：{head:?}"
+            head.len() - 2,
+            "滚动提示应在详情区末行（其后只有提示条）：{head:?}"
         );
 
         if let Modal::Ask { preview_scroll, .. } = &mut modal {
@@ -3828,12 +3586,13 @@ mod tests {
         }
 
         // 首屏：问题窗限高 + 状态行；选项窗口从头开始，尾部 ▼ 提示。
-        let layout = ask_layout(theme, &modal, 40, 16);
+        // 15 行正文：问题窗 6 + 空行 2 + 选项窗口 6 + 自定义行 1。
+        let layout = ask_layout(theme, &modal, 40, 15);
         let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
         assert!(
             texts
                 .iter()
-                .any(|text| text.contains("行 · 滚轮/PgUp·PgDn")),
+                .any(|text| text.contains("行 · PgUp/PgDn 滚动")),
             "超窗问题应给滚动状态行：{texts:?}"
         );
         assert!(layout.question_area.is_some(), "溢出时问题区登记命中");
@@ -3851,7 +3610,7 @@ mod tests {
         if let Modal::Ask { highlight, .. } = &mut modal {
             highlight[0] = 11;
         }
-        let layout = ask_layout(theme, &modal, 40, 16);
+        let layout = ask_layout(theme, &modal, 40, 15);
         let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
         assert!(
             texts.iter().any(|text| text.contains("▲ 还有 7 项")),
@@ -3868,10 +3627,10 @@ mod tests {
             highlight[0] = 0;
             *question_scroll = 3;
         }
-        let layout = ask_layout(theme, &modal, 40, 16);
+        let layout = ask_layout(theme, &modal, 40, 15);
         let texts: Vec<String> = layout.lines.iter().map(line_text).collect();
         assert!(
-            texts.iter().any(|text| text.contains("… 3-6/6 行")),
+            texts.iter().any(|text| text.contains("⋯ 3-6/6 行")),
             "问题窗应显示钳取后的行区间：{texts:?}"
         );
     }
@@ -3915,7 +3674,7 @@ mod tests {
             "聚焦项预览应与选项同行：{option_row:?}"
         );
         assert!(
-            compact.iter().any(|text| text.contains("esc折叠问题卡")),
+            compact.iter().any(|text| text.contains("Esc折叠问题卡")),
             "底部按键行应留在卡片内：{compact:?}"
         );
     }
@@ -4084,7 +3843,7 @@ mod tests {
         assert!(body.contains("主题    : 纸张白"), "key 列补齐对齐：{body}");
         assert!(body.contains("features: 未回答"), "未回答醒目标记：{body}");
         assert!(body.contains("lang    : Rust"), "第三问回答：{body}");
-        assert!(body.contains("enter 确认提交"), "确认页页脚：{body}");
+        assert!(body.contains("Enter 确认提交"), "确认页页脚：{body}");
     }
 
     /// 回退模态：在终端缓冲里正确绘制时间线分界、回退横幅与底部 dock 操作栏。
@@ -4313,7 +4072,7 @@ mod tests {
 
         let (events, _rx) = unbounded_channel();
         let mut app = App::new(Theme::global(), events);
-        app.modal = Some(Modal::Help);
+        app.modal = Some(Modal::Help { scroll: 0 });
 
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
         terminal
@@ -4338,5 +4097,71 @@ mod tests {
             "模态卡片中心应为 bg_base，实际为 {:?}",
             center_cell.bg
         );
+    }
+
+    /// 防复发守卫：通用卡片压在满屏宽字符上时，左边框每一行都必须真的发到终端。
+    ///
+    /// 两帧绘制让 TestBackend 走真实 diff；背景起始列取 0/1 两种奇偶，保证
+    /// 「宽字符引导格恰在边框左邻」这一触发条件对任意卡片 x 都会出现。
+    #[test]
+    fn modal_left_border_survives_wide_char_background() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Style;
+
+        // 帮助（双列表）、上下文占用（紧凑宽度）、会话列表（通用宽度）：覆盖三种卡宽。
+        let modal = |kind: usize| match kind {
+            0 => Modal::Help { scroll: 0 },
+            1 => Modal::Context { usage: None },
+            _ => Modal::Sessions {
+                sessions: Vec::new(),
+                cwd: "/tmp".into(),
+                scope: SessionScope::All,
+                picker: PickerState::default(),
+            },
+        };
+        for (width, height) in [(120u16, 40u16), (80, 30), (71, 24)] {
+            for kind in 0..3 {
+                for start in [0u16, 1] {
+                    let (events, _rx) = unbounded_channel();
+                    let mut app = App::new(Theme::global(), events);
+                    app.modal = Some(modal(kind));
+                    let background = |frame: &mut ratatui::Frame| {
+                        let fill = "中".repeat(usize::from(width) / 2);
+                        for y in 0..height {
+                            frame.buffer_mut().set_string(start, y, &fill, Style::new());
+                        }
+                    };
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(width, height)).expect("构造测试终端");
+                    terminal.draw(background).expect("首帧");
+                    terminal
+                        .draw(|frame| {
+                            background(frame);
+                            super::draw_modal(frame, &mut app);
+                        })
+                        .expect("模态帧");
+                    let screen = terminal.backend().buffer();
+                    let (left, top) = (0..height)
+                        .find_map(|y| {
+                            (0..width)
+                                .find(|&x| screen[(x, y)].symbol() == "╭")
+                                .map(|x| (x, y))
+                        })
+                        .expect("卡片左上角");
+                    let bottom = (top..height)
+                        .find(|&y| screen[(left, y)].symbol() == "╰")
+                        .expect("卡片左下角");
+                    for y in top..=bottom {
+                        let symbol = screen[(left, y)].symbol();
+                        assert!(
+                            matches!(symbol, "│" | "╭" | "╰"),
+                            "{width}×{height} 起始列 {start} 的 {} 第 {y} 行左边框缺失：{symbol:?}",
+                            modal(kind).title()
+                        );
+                    }
+                }
+            }
+        }
     }
 }

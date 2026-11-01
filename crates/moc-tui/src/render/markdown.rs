@@ -12,7 +12,7 @@
 use moc_core::chart::{self, RawTable};
 use std::path::PathBuf;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -22,7 +22,7 @@ use super::highlight;
 use super::image::{
     ImageKey, ImagePlacement, ImageSourceSpec, ImageState, ImageStore, layout as image_layout,
 };
-use super::wrap::{str_width, wrap_text};
+use super::wrap::{line_width, str_width, truncate, wrap_spans, wrap_text};
 use crate::theme::Theme;
 use crate::transcript::TableChartState;
 
@@ -39,12 +39,11 @@ const TABLE_COLUMN_FLOOR: usize = 4;
 /// 不可断词宽度的上限（格）：超长 token 允许硬折行，不能独占整列。
 const TABLE_COLUMN_TOKEN_MAX: usize = 12;
 
-/// 单列宽度上限：正文宽度的 30%，对齐 DSH Web 的 30vw。
-const TABLE_COLUMN_CAP_PERCENT: usize = 30;
+/// 代码块续行的起头：与真正的下一行区分开（与左内边距同为 2 列）。
+const CODE_CONTINUATION: &str = "↪ ";
 
-/// 单列宽度上限的下限与上限（格）。
-const TABLE_COLUMN_CAP_FLOOR: usize = 12;
-const TABLE_COLUMN_CAP_CEILING: usize = 40;
+/// 宽度契约生效的最小正文宽度：再窄时引用竖线与列表缩进本身就放不下。
+const MIN_CONTRACT_WIDTH: usize = 24;
 
 /// 渲染 markdown 文本为终端行（无表格视图态：表格永远画成表格）。
 pub fn render_markdown(source: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
@@ -130,7 +129,7 @@ pub fn render_markdown_with(
     let mut renderer = MdRenderer {
         theme,
         views,
-        width: width.max(8),
+        width: width.max(1),
         out: Vec::new(),
         inline: Vec::new(),
         bold: 0,
@@ -140,8 +139,9 @@ pub fn render_markdown_with(
         quote_depth: 0,
         heading: None,
         list_stack: Vec::new(),
-        item_prefix: String::new(),
-        item_indent: 0,
+        item_lead: None,
+        heading_mark: None,
+        code_gap: false,
         code_info: None,
         code_buf: String::new(),
         in_code: false,
@@ -186,6 +186,10 @@ struct Run {
 struct ListFrame {
     ordered: bool,
     next_index: u64,
+    /// 本层标记的起始列：父项正文列（顶层为 0），嵌套列表对齐父项文字而非固定 2 格。
+    base: usize,
+    /// 当前项正文的起始列（标记之后），续行与项内代码块悬挂到这里。
+    content: usize,
 }
 
 /// 代码块 info 串是否声明了 SVG：首个空白分隔 token，大小写不敏感。
@@ -337,6 +341,8 @@ fn file_key(path: &std::path::Path) -> Option<ImageKey> {
 
 #[derive(Default)]
 struct TableAcc {
+    /// 各列对齐（`:---:` 等）；缺省列按左对齐。
+    alignments: Vec<Alignment>,
     header: Vec<Vec<Run>>,
     rows: Vec<Vec<Vec<Run>>>,
 }
@@ -360,9 +366,12 @@ struct MdRenderer<'a> {
     quote_depth: usize,
     heading: Option<HeadingLevel>,
     list_stack: Vec<ListFrame>,
-    /// 当前列表项的前缀（bullet / 序号 + 缩进），flush 时应用。
-    item_prefix: String,
-    item_indent: usize,
+    /// 当前列表项尚未落行的前缀（缩进 + bullet / 序号 / 复选框），由首个输出行消费。
+    item_lead: Option<Span<'static>>,
+    /// 当前标题的符号前缀；标题续行按它的宽度悬挂。
+    heading_mark: Option<Span<'static>>,
+    /// 刚压入行内代码：下一个正文片段紧贴文字时先补一个普通空格。
+    code_gap: bool,
     code_info: Option<String>,
     code_buf: String,
     /// 是否位于代码块内（缩进代码块无 info 串，需与 [`Self::code_info`] 分开记）。
@@ -444,10 +453,18 @@ impl<'a> MdRenderer<'a> {
                 } else {
                     ("☐ ", self.theme.gray)
                 };
-                self.push_run(Run {
-                    style: Style::new().fg(color),
-                    text: marker.into(),
-                });
+                // 无序列表的复选框顶替 `•`（同为 2 列），续行悬挂到复选框之后；
+                // 有序列表保留序号，复选框跟在序号后。
+                if let Some(lead) = self.item_lead.as_mut()
+                    && let Some(indent) = lead.content.strip_suffix("• ")
+                {
+                    *lead = Span::styled(format!("{indent}{marker}"), Style::new().fg(color));
+                } else {
+                    self.push_run(Run {
+                        style: Style::new().fg(color),
+                        text: marker.into(),
+                    });
+                }
             }
             Event::FootnoteReference(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
             Event::Html(html) | Event::InlineHtml(html) => {
@@ -474,6 +491,7 @@ impl<'a> MdRenderer<'a> {
             }
             Tag::BlockQuote(_) => {
                 self.flush_inline();
+                self.open_item_block();
                 if self.quote_depth == 0 {
                     self.block_boundary();
                     self.ensure_block_gap();
@@ -484,6 +502,7 @@ impl<'a> MdRenderer<'a> {
                 self.flush_inline();
                 self.block_boundary();
                 self.ensure_block_gap();
+                self.open_item_block();
                 // 缩进代码块没有 info 串，代码块判定必须与 info 分开记。
                 self.in_code = true;
                 self.code_info = match kind {
@@ -498,31 +517,40 @@ impl<'a> MdRenderer<'a> {
                     self.block_boundary();
                     self.ensure_block_gap();
                 }
+                self.open_item_block();
+                let base = self.content_indent();
                 self.list_stack.push(ListFrame {
                     ordered: start.is_some(),
                     next_index: start.unwrap_or(1),
+                    base,
+                    content: base,
                 });
             }
             Tag::Item => {
                 self.flush_inline();
-                let depth = self.list_stack.len();
-                let prefix = match self.list_stack.last_mut() {
-                    Some(frame) if frame.ordered => {
+                let border = Style::new().fg(self.theme.border);
+                if let Some(frame) = self.list_stack.last_mut() {
+                    let marker = if frame.ordered {
                         let marker = format!("{}. ", frame.next_index);
                         frame.next_index += 1;
-                        "  ".repeat(depth - 1) + &marker
-                    }
-                    Some(_) => "  ".repeat(depth - 1) + "• ",
-                    None => String::new(),
-                };
-                self.item_indent = str_width(&prefix);
-                self.item_prefix.push_str(&prefix);
+                        marker
+                    } else {
+                        "• ".to_owned()
+                    };
+                    let lead = " ".repeat(frame.base) + &marker;
+                    frame.content = str_width(&lead);
+                    self.item_lead = Some(Span::styled(lead, border));
+                }
             }
-            Tag::Table(_) => {
+            Tag::Table(alignments) => {
                 self.flush_inline();
                 self.block_boundary();
                 self.ensure_block_gap();
-                self.table = Some(TableAcc::default());
+                self.open_item_block();
+                self.table = Some(TableAcc {
+                    alignments,
+                    ..TableAcc::default()
+                });
             }
             Tag::TableHead => self.in_table_head = true,
             Tag::TableRow => {
@@ -534,6 +562,7 @@ impl<'a> MdRenderer<'a> {
             }
             Tag::TableCell => {
                 self.table_cell.clear();
+                self.code_gap = false;
                 self.in_table_cell = true;
             }
             Tag::Emphasis => self.italic += 1,
@@ -568,15 +597,20 @@ impl<'a> MdRenderer<'a> {
         match tag {
             TagEnd::Paragraph => self.flush_inline(),
             TagEnd::Heading(level) => {
-                // 标题换行时逐级递减亮度 + 符号前缀（omp 的层级感）
-                match level {
-                    HeadingLevel::H1 => self.prefix_inline("█ ", self.theme.accent_assistant, true),
-                    HeadingLevel::H2 => self.prefix_inline("▌ ", self.theme.accent_user, true),
-                    HeadingLevel::H3 => self.prefix_inline("◆ ", self.theme.accent_tool, true),
-                    _ => self.prefix_inline("◇ ", self.theme.text_secondary, true),
-                }
+                // 标题符号随层级变细；不用 `◆`——那是工具与 Thought 标题的 bullet。
+                let (mark, color) = match level {
+                    HeadingLevel::H1 => ("█ ", self.theme.accent_assistant),
+                    HeadingLevel::H2 => ("▌ ", self.theme.accent_user),
+                    HeadingLevel::H3 => ("▎ ", self.theme.accent_tool),
+                    _ => ("◇ ", self.theme.text_secondary),
+                };
+                self.heading_mark = Some(Span::styled(
+                    mark,
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ));
                 self.heading = None;
                 self.flush_inline();
+                self.heading_mark = None;
                 self.out
                     .push(Line::from(Span::styled(String::new(), Style::new())));
             }
@@ -590,7 +624,7 @@ impl<'a> MdRenderer<'a> {
             }
             TagEnd::Item => {
                 self.flush_inline();
-                self.item_indent = 0;
+                self.open_item_block();
             }
             TagEnd::Table => {
                 self.flush_inline();
@@ -635,21 +669,6 @@ impl<'a> MdRenderer<'a> {
         }
     }
 
-    /// 给 inline 缓冲头部注入一个带色前缀（标题符号）。
-    fn prefix_inline(&mut self, prefix: &str, color: ratatui::style::Color, bold: bool) {
-        let mut style = Style::new().fg(color);
-        if bold {
-            style = style.add_modifier(Modifier::BOLD);
-        }
-        self.inline.insert(
-            0,
-            Run {
-                style,
-                text: prefix.to_owned(),
-            },
-        );
-    }
-
     fn text(&mut self, text: &str) {
         if self.in_code {
             self.code_buf.push_str(text);
@@ -674,11 +693,23 @@ impl<'a> MdRenderer<'a> {
             image.alt.push_str(text);
             return;
         }
-        let style = Style::new().fg(self.theme.path).bg(self.theme.code_bg);
+        // 行内代码只在紧贴文字时与正文隔开一个普通空格（不带底色）：源码里已有
+        // 空白、全角标点或位于行首时不补，避免双空格与续行左缘漂移。
+        if self.last_inline_char().is_some_and(needs_code_gap) {
+            self.push_run(Run {
+                style: Style::new(),
+                text: " ".to_owned(),
+            });
+        }
+        let style = self
+            .current_style()
+            .fg(self.theme.path)
+            .bg(self.theme.code_bg);
         self.push_run(Run {
             style,
-            text: format!(" {text} "),
+            text: text.to_owned(),
         });
+        self.code_gap = true;
     }
 
     /// 逐行压入 inline 片段：事件可能整块携带换行（HTML 块等），换行
@@ -739,6 +770,14 @@ impl<'a> MdRenderer<'a> {
     fn push_run(&mut self, run: Run) {
         if run.text.is_empty() {
             return;
+        }
+        // 行内代码之后紧跟文字：补一个普通空格（见 [`Self::code`]）。
+        if std::mem::take(&mut self.code_gap) && run.text.chars().next().is_some_and(needs_code_gap)
+        {
+            self.push_run(Run {
+                style: Style::new(),
+                text: " ".to_owned(),
+            });
         }
         let runs = if self.in_table_cell {
             &mut self.table_cell
@@ -1014,18 +1053,24 @@ impl<'a> MdRenderer<'a> {
             )));
             for (idx, (label, url)) in self.links.iter().enumerate() {
                 let num = format!("  [{}] ", idx + 1);
+                let room = self.width.saturating_sub(str_width(&num));
                 let label_prefix = if label.is_empty() || label == url {
                     String::new()
                 } else {
-                    format!("{label}: ")
+                    // 标签与 URL 都可能很长：标签最多占一半，URL 优先保全。
+                    format!(
+                        "{}: ",
+                        truncate(label.as_str(), (room / 2).saturating_sub(2))
+                    )
                 };
-                let prefix = format!("{num}{label_prefix}");
-                let prefix_width = str_width(&prefix);
-                let rem = self.width.saturating_sub(prefix_width).max(8);
+                let rem = room.saturating_sub(str_width(&label_prefix));
                 self.out.push(Line::from(vec![
-                    Span::styled(prefix, Style::new().fg(self.theme.gray_dim)),
                     Span::styled(
-                        crate::render::modal::ellipsize(url, rem),
+                        format!("{num}{label_prefix}"),
+                        Style::new().fg(self.theme.gray_dim),
+                    ),
+                    Span::styled(
+                        truncate(url.as_str(), rem).into_owned(),
                         Style::new()
                             .fg(self.theme.link)
                             .add_modifier(Modifier::UNDERLINED),
@@ -1075,6 +1120,14 @@ impl<'a> MdRenderer<'a> {
         for image in &mut images {
             image.row += kept.iter().filter(|(_, row, _)| *row <= image.row).count();
         }
+        // 宽度契约：每行不超过正文宽度。超宽内容必须在这里折行或带 `…` 截断，
+        // 不能交给 buffer 静默裁掉。
+        debug_assert!(
+            self.width < MIN_CONTRACT_WIDTH
+                || self.out.iter().all(|line| line_width(line) <= self.width),
+            "markdown 行超出正文宽度 {}",
+            self.width
+        );
         Rendered {
             lines: self.out,
             tables: self.slots,
@@ -1090,158 +1143,185 @@ impl<'a> MdRenderer<'a> {
         }
     }
 
-    /// 段落 / 标题 / 列表项结束：inline 缓冲按宽度换行后产出。
+    /// 段落 / 标题 / 列表项结束：inline 缓冲按宽度折行后产出。
     ///
-    /// 首行带引用竖线 + 列表前缀；续行悬挂对齐到内容起点。
-    /// 相同样式的相邻字符合并为单个 Span（大幅减少 Span 数量与内存）。
+    /// 折行走 [`wrap_spans`]（空格 / CJK 字间 / 标点后断行、避头尾、续行丢行首空格）。
+    /// 每行先画引用竖线；首行接列表标记或标题符号，续行用等宽空格悬挂到正文起点。
     fn flush_inline(&mut self) {
+        self.code_gap = false;
         if self.inline.is_empty() {
             return;
         }
-        let prefix = if !self.item_prefix.is_empty() {
-            std::mem::take(&mut self.item_prefix)
-        } else if self.item_indent > 0 {
-            " ".repeat(self.item_indent)
-        } else {
-            String::new()
-        };
-        let quote = "│ ".repeat(self.quote_depth);
-        let full_prefix = format!("{quote}{prefix}");
-        let prefix_width = str_width(&full_prefix);
         let runs = std::mem::take(&mut self.inline);
-        // 展开为 (char, style) 序列再按宽度切行——跨片段换行时样式保持
-        let chars: Vec<(char, Style)> = runs
-            .iter()
-            .flat_map(|run| run.text.chars().map(move |ch| (ch, run.style)))
+        let mut lead: Vec<Span<'static>> = Vec::with_capacity(2);
+        lead.extend(self.item_lead.take());
+        lead.extend(self.heading_mark.take());
+        let lead_width = if lead.is_empty() {
+            self.content_indent()
+        } else {
+            lead.iter().map(|span| str_width(&span.content)).sum()
+        };
+        let budget = self
+            .width
+            .saturating_sub(2 * self.quote_depth + lead_width)
+            .max(1);
+        let spans: Vec<Span<'static>> = runs
+            .into_iter()
+            .map(|run| Span::styled(run.text, run.style))
             .collect();
-
-        let mut line: Vec<Span<'static>> = Vec::new();
-        if !full_prefix.is_empty() {
-            line.push(Span::styled(
-                full_prefix.clone(),
-                Style::new().fg(self.theme.border),
-            ));
-        }
-        let budget = self.width.saturating_sub(prefix_width);
-        let hang = " ".repeat(prefix_width.saturating_sub(str_width(&quote)));
-        let mut used = 0usize;
-        let mut segment = String::new();
-        let mut segment_style: Option<Style> = None;
-        // 结算当前同样式片段
-        macro_rules! flush_segment {
-            () => {
-                if let Some(style) = segment_style.take() {
-                    if !segment.is_empty() {
-                        line.push(Span::styled(std::mem::take(&mut segment), style));
-                    }
-                    segment.clear();
-                }
-            };
-        }
-        for (ch, style) in chars {
-            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if used + ch_width > budget && used > 0 {
-                flush_segment!();
-                self.out.push(Line::from(std::mem::take(&mut line)));
-                line.push(Span::styled(hang.clone(), Style::new()));
-                used = 0;
+        let hang = " ".repeat(lead_width);
+        for row in wrap_spans(&spans, budget) {
+            let mut line = Vec::with_capacity(row.spans.len() + 2);
+            if self.quote_depth > 0 {
+                line.push(self.quote_span());
             }
-            match segment_style {
-                Some(current) if current == style => segment.push(ch),
-                _ => {
-                    flush_segment!();
-                    segment.push(ch);
-                    segment_style = Some(style);
-                }
+            if !lead.is_empty() {
+                line.append(&mut lead);
+            } else if lead_width > 0 {
+                line.push(Span::raw(hang.clone()));
             }
-            used += ch_width;
-        }
-        flush_segment!();
-        if !line.is_empty() {
+            line.extend(row.spans);
             self.out.push(Line::from(line));
         }
     }
 
+    /// 列表项以代码块 / 表格 / 引用块 / 子列表开头：先把标记单独落成一行，
+    /// 否则它会被留给下一段正文，或泄漏给下一项。
+    fn open_item_block(&mut self) {
+        let Some(lead) = self.item_lead.take() else {
+            return;
+        };
+        let mut line = Vec::with_capacity(2);
+        if self.quote_depth > 0 {
+            line.push(self.quote_span());
+        }
+        line.push(lead);
+        self.out.push(Line::from(line));
+    }
+
+    /// 当前列表项正文的起始列（不含引用竖线）；不在列表里为 0。
+    fn content_indent(&self) -> usize {
+        self.list_stack.last().map_or(0, |frame| frame.content)
+    }
+
+    /// 引用竖线（每层 `│ `，2 列）。
+    fn quote_span(&self) -> Span<'static> {
+        Span::styled(
+            "│ ".repeat(self.quote_depth),
+            Style::new().fg(self.theme.border),
+        )
+    }
+
+    /// 当前 inline 缓冲（或单元格缓冲）的最后一个字符。
+    fn last_inline_char(&self) -> Option<char> {
+        let runs = if self.in_table_cell {
+            &self.table_cell
+        } else {
+            &self.inline
+        };
+        runs.last().and_then(|run| run.text.chars().next_back())
+    }
+
     /// 代码块结束：syntect 高亮并整体铺 code_bg，保留引用竖线与列表缩进。
+    ///
+    /// 超宽行按代码宽度折行，续行以 [`CODE_CONTINUATION`] 起头，与真正的下一行
+    /// 区分开；内容绝不交给 buffer 静默裁掉。
     fn flush_code(&mut self) {
         let info = self.code_info.take().unwrap_or_default();
-        let code = std::mem::take(&mut self.code_buf);
+        // 制表符按 4 列展开：宽度计算把 `\t` 记作 0 列，不展开背景带就会错位。
+        let code = std::mem::take(&mut self.code_buf).replace('\t', "    ");
 
         if self.place_mermaid(&info, &code) || self.place_svg(&info, &code) {
             return;
         }
-        let highlighted = highlight::highlight(&info, &code);
-        let bg_style = Style::new().bg(self.theme.code_bg);
+        let lang = code_language(&info);
+        let highlighted = highlight::highlight(lang, &code);
+        let indent = self.content_indent();
+        // 背景带：引用竖线与列表缩进之后、右侧留 2 列；带内左侧 2 列内边距。
+        let band = self
+            .width
+            .saturating_sub(2 * self.quote_depth + indent + 2)
+            .max(1);
+        let body = band.saturating_sub(2).max(1);
+        let bg = self.theme.code_bg;
+        let pad = Span::styled("  ", Style::new().bg(bg));
 
-        let list_indent = if self.item_indent > 0 {
-            self.item_indent
-        } else {
-            self.list_stack.len() * 2
-        };
-        let quote = "│ ".repeat(self.quote_depth);
-        let quote_style = Style::new().fg(self.theme.border);
-        let prefix_width = str_width(&quote) + list_indent;
-        let code_width = self.width.saturating_sub(prefix_width + 2).max(8);
-
-        let make_prefix = || -> Vec<Span<'static>> {
-            let mut p = Vec::new();
-            if self.quote_depth > 0 {
-                p.push(Span::styled(quote.clone(), quote_style));
-            }
-            if list_indent > 0 {
-                p.push(Span::raw(" ".repeat(list_indent)));
-            }
-            p
-        };
-
-        if !info.trim().is_empty() {
-            let tag = info.trim();
-            let mut top_line = make_prefix();
-            top_line.push(Span::styled("  ", bg_style));
-            top_line.push(Span::styled(
-                tag.to_owned(),
+        if !lang.is_empty() {
+            let tag = Span::styled(
+                truncate(lang, body).into_owned(),
                 Style::new()
                     .fg(self.theme.accent_tool)
-                    .bg(self.theme.code_bg)
+                    .bg(bg)
                     .add_modifier(Modifier::BOLD),
-            ));
-            let used = 2 + str_width(tag);
-            if used < code_width {
-                top_line.push(Span::styled(" ".repeat(code_width - used), bg_style));
-            }
-            self.out.push(Line::from(top_line));
+            );
+            self.push_code_row(indent, band, pad.clone(), vec![tag]);
         }
         if highlighted.lines.is_empty() {
-            let mut line = make_prefix();
-            line.push(Span::styled("  ", bg_style));
-            if code_width > 2 {
-                line.push(Span::styled(" ".repeat(code_width - 2), bg_style));
-            }
-            self.out.push(Line::from(line));
-        } else {
-            for spans in &highlighted.lines {
-                let mut line = make_prefix();
-                line.push(Span::styled("  ", bg_style));
-                let mut line_used = 2;
-                for span in spans {
+            self.push_code_row(indent, band, pad.clone(), Vec::new());
+        }
+        let mark = Span::styled(
+            CODE_CONTINUATION,
+            Style::new().fg(self.theme.gray_dim).bg(bg),
+        );
+        for code_line in highlighted.lines {
+            let spans: Vec<Span<'static>> = code_line
+                .into_iter()
+                .map(|span| {
                     let fg = span
                         .fg
                         .map(highlight::rgb_to_color)
                         .unwrap_or(self.theme.text_primary);
-                    line_used += str_width(&span.text);
-                    line.push(Span::styled(
-                        span.text.clone(),
-                        Style::new().fg(fg).bg(self.theme.code_bg),
-                    ));
-                }
-                if line_used < code_width {
-                    line.push(Span::styled(" ".repeat(code_width - line_used), bg_style));
-                }
-                self.out.push(Line::from(line));
+                    Span::styled(span.text, Style::new().fg(fg).bg(bg))
+                })
+                .collect();
+            for (index, row) in wrap_spans(&spans, body).into_iter().enumerate() {
+                let lead = if index == 0 {
+                    pad.clone()
+                } else {
+                    mark.clone()
+                };
+                self.push_code_row(indent, band, lead, row.spans);
             }
         }
-        let gap = make_prefix();
+        let mut gap = Vec::with_capacity(2);
+        if self.quote_depth > 0 {
+            gap.push(self.quote_span());
+        }
+        if indent > 0 {
+            gap.push(Span::raw(" ".repeat(indent)));
+        }
         self.out.push(Line::from(gap));
+    }
+
+    /// 代码块的一行：引用竖线 + 列表缩进 + 左内边距（或续行标记）+ 内容，背景补齐到带宽。
+    fn push_code_row(
+        &mut self,
+        indent: usize,
+        band: usize,
+        lead: Span<'static>,
+        content: Vec<Span<'static>>,
+    ) {
+        let used = str_width(&lead.content)
+            + content
+                .iter()
+                .map(|span| str_width(&span.content))
+                .sum::<usize>();
+        let mut line = Vec::with_capacity(content.len() + 4);
+        if self.quote_depth > 0 {
+            line.push(self.quote_span());
+        }
+        if indent > 0 {
+            line.push(Span::raw(" ".repeat(indent)));
+        }
+        line.push(lead);
+        line.extend(content);
+        if used < band {
+            line.push(Span::styled(
+                " ".repeat(band - used),
+                Style::new().bg(self.theme.code_bg),
+            ));
+        }
+        self.out.push(Line::from(line));
     }
 
     /// 表格：内容定列宽，单元格按列折行；表头与行之间用细线分隔。
@@ -1271,17 +1351,37 @@ impl<'a> MdRenderer<'a> {
         self.out.extend(table_row_lines(
             &table.header,
             &widths,
+            &table.alignments,
             gap,
             self.theme,
             true,
         ));
         self.out.push(table_rule(table_width, self.theme));
         for row in &table.rows {
-            self.out
-                .extend(table_row_lines(row, &widths, gap, self.theme, false));
+            self.out.extend(table_row_lines(
+                row,
+                &widths,
+                &table.alignments,
+                gap,
+                self.theme,
+                false,
+            ));
             self.out.push(table_rule(table_width, self.theme));
         }
     }
+}
+
+/// 围栏 info 串里的语言名：首个空白或逗号之前（`rust,ignore`、`rust title="x"` → `rust`）。
+fn code_language(info: &str) -> &str {
+    info.trim()
+        .split(|ch: char| ch.is_whitespace() || ch == ',')
+        .next()
+        .unwrap_or("")
+}
+
+/// 行内代码与这个相邻字符之间是否要补空格：字母、数字、汉字要；空白与标点（含全角）不要。
+fn needs_code_gap(ch: char) -> bool {
+    ch.is_alphanumeric()
 }
 
 /// 表格单元格的纯文本：与 [`raw_table`] 用同一份去装饰结果。
@@ -1311,8 +1411,8 @@ fn table_metrics(table: &TableAcc, columns: usize) -> (Vec<usize>, Vec<usize>, V
     (natural, longest_word, has_wide)
 }
 
-/// 计算可见列宽：先封顶，再在可用宽度内均衡拉伸；放不下时按可读下限
-/// 收缩，最后退到硬下限。`None` 表示连两格一列都放不下。
+/// 计算可见列宽：放得下就按内容自然宽度（不拉伸，窄表不撑满整行）；超宽时先
+/// 按可读下限收缩、再退到硬下限，单元格在列内折行。`None` 表示连两格一列都放不下。
 fn table_widths(
     available: usize,
     natural: &[usize],
@@ -1332,11 +1432,8 @@ fn table_widths(
         return None;
     };
     let usable = available.saturating_sub(gap.saturating_mul(columns - 1));
-    let cap = (available * TABLE_COLUMN_CAP_PERCENT / 100)
-        .clamp(TABLE_COLUMN_CAP_FLOOR, TABLE_COLUMN_CAP_CEILING);
-    let mut widths: Vec<usize> = natural.iter().map(|width| (*width).clamp(1, cap)).collect();
-    let mut total: usize = widths.iter().sum();
-    if total > usable {
+    let mut widths = natural.to_vec();
+    if widths.iter().sum::<usize>() > usable {
         let mut floors: Vec<usize> = (0..columns)
             .map(|index| {
                 let token_floor =
@@ -1349,17 +1446,12 @@ fn table_widths(
             })
             .collect();
         shrink_widths(&mut widths, &floors, usable);
-        total = widths.iter().sum();
-        if total > usable {
+        if widths.iter().sum::<usize>() > usable {
             for (index, floor) in floors.iter_mut().enumerate() {
                 *floor = (if has_wide[index] { 2 } else { 1 }).min(widths[index]);
             }
             shrink_widths(&mut widths, &floors, usable);
-            total = widths.iter().sum();
         }
-    }
-    if total < usable {
-        fill_widths(&mut widths, cap, usable);
     }
     Some((widths, gap))
 }
@@ -1383,105 +1475,44 @@ fn shrink_widths(widths: &mut [usize], floors: &[usize], target: usize) {
     }
 }
 
-/// 把总宽拉向 `target`：每次给“离上限最远”的列加一格，封顶后停止。
-fn fill_widths(widths: &mut [usize], cap: usize, target: usize) {
-    let mut total: usize = widths.iter().sum();
-    while total < target {
-        let mut best: Option<(usize, usize)> = None;
-        for (index, width) in widths.iter().enumerate() {
-            let headroom = cap.saturating_sub(*width);
-            if headroom > 0 && best.is_none_or(|(_, current)| headroom > current) {
-                best = Some((index, headroom));
-            }
-        }
-        let Some((index, _)) = best else {
-            break;
-        };
-        widths[index] += 1;
-        total += 1;
-    }
-}
-
-/// 单元格内联样式折行：保留粗体、斜体、代码等样式并按列宽规整换行。
-fn wrap_cell_runs(runs: &[Run], width: usize, base_style: Style) -> Vec<Vec<Span<'static>>> {
-    if runs.is_empty() {
-        return vec![vec![Span::styled(" ".repeat(width), base_style)]];
-    }
-    let chars: Vec<(char, Style)> = runs
+/// 单元格折行：与正文同一套断点规则（[`wrap_spans`]），保留内联样式，按列对齐补齐到列宽。
+fn wrap_cell_runs(
+    runs: &[Run],
+    width: usize,
+    align: Alignment,
+    base_style: Style,
+) -> Vec<Vec<Span<'static>>> {
+    let spans: Vec<Span<'static>> = runs
         .iter()
-        .flat_map(|run| {
-            let s = base_style.patch(run.style);
-            run.text.chars().map(move |c| (c, s))
-        })
+        .map(|run| Span::styled(run.text.clone(), base_style.patch(run.style)))
         .collect();
-
-    if chars.is_empty() {
-        return vec![vec![Span::styled(" ".repeat(width), base_style)]];
-    }
-
-    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
-    let mut current_line: Vec<Span<'static>> = Vec::new();
-    let mut current_line_width = 0;
-    let mut segment = String::new();
-    let mut segment_style: Option<Style> = None;
-
-    macro_rules! flush_seg {
-        () => {
-            if let Some(style) = segment_style.take() {
-                if !segment.is_empty() {
-                    current_line.push(Span::styled(std::mem::take(&mut segment), style));
-                }
-                segment.clear();
+    wrap_spans(&spans, width)
+        .into_iter()
+        .map(|line| {
+            let free = width.saturating_sub(line_width(&line));
+            let (left, right) = match align {
+                Alignment::Right => (free, 0),
+                Alignment::Center => (free / 2, free - free / 2),
+                Alignment::Left | Alignment::None => (0, free),
+            };
+            let mut row = Vec::with_capacity(line.spans.len() + 2);
+            if left > 0 {
+                row.push(Span::styled(" ".repeat(left), base_style));
             }
-        };
-    }
-
-    for (ch, style) in chars {
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if current_line_width > 0 && current_line_width + cw > width {
-            flush_seg!();
-            if current_line_width < width {
-                current_line.push(Span::styled(
-                    " ".repeat(width - current_line_width),
-                    base_style,
-                ));
+            row.extend(line.spans);
+            if right > 0 {
+                row.push(Span::styled(" ".repeat(right), base_style));
             }
-            result.push(std::mem::take(&mut current_line));
-            current_line_width = 0;
-        }
-        match segment_style {
-            Some(curr) if curr == style => segment.push(ch),
-            _ => {
-                flush_seg!();
-                segment.push(ch);
-                segment_style = Some(style);
-            }
-        }
-        current_line_width += cw;
-    }
-    flush_seg!();
-
-    if !current_line.is_empty() {
-        if current_line_width < width {
-            current_line.push(Span::styled(
-                " ".repeat(width - current_line_width),
-                base_style,
-            ));
-        }
-        result.push(current_line);
-    }
-
-    if result.is_empty() {
-        result.push(vec![Span::styled(" ".repeat(width), base_style)]);
-    }
-
-    result
+            row
+        })
+        .collect()
 }
 
 /// 单行表格：每个单元格按列宽折行，保留单元格内联样式，行高取该行最多的行数。
 fn table_row_lines(
     cells: &[Vec<Run>],
     widths: &[usize],
+    alignments: &[Alignment],
     gap: usize,
     theme: &Theme,
     header: bool,
@@ -1497,9 +1528,9 @@ fn table_row_lines(
         .iter()
         .enumerate()
         .map(|(index, width)| {
-            let empty = Vec::new();
-            let runs = cells.get(index).unwrap_or(&empty);
-            wrap_cell_runs(runs, (*width).max(1), base_style)
+            let runs = cells.get(index).map_or(&[][..], Vec::as_slice);
+            let align = alignments.get(index).copied().unwrap_or(Alignment::None);
+            wrap_cell_runs(runs, (*width).max(1), align, base_style)
         })
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
@@ -1717,6 +1748,68 @@ mod tests {
             out.iter().all(|line| str_width(line) <= 120),
             "表格行不得超宽：{out:?}"
         );
+    }
+
+    /// 代码块超宽行折行而非被 buffer 裁掉：内容完整、每行不超宽、续行带标记。
+    #[test]
+    fn long_code_lines_wrap_within_width() {
+        let tail = "TAIL_MARKER";
+        let source = format!("```text\n{} {tail}\n```", "x".repeat(70));
+        let out = lines(&source, 40);
+        assert!(out.iter().all(|line| str_width(line) <= 40), "{out:?}");
+        assert!(out.iter().any(|line| line.contains(tail)), "{out:?}");
+        assert!(
+            out.iter().any(|line| line.contains(CODE_CONTINUATION)),
+            "{out:?}"
+        );
+    }
+
+    /// 引用续行保留竖线，列表续行悬挂到正文起点（不多也不少 1 列）。
+    #[test]
+    fn continuation_rows_keep_quote_bar_and_list_hang() {
+        let quoted = lines(&format!("> {}", "引用正文".repeat(12)), 30);
+        assert!(quoted.len() > 1, "{quoted:?}");
+        assert!(
+            quoted.iter().all(|line| line.starts_with("│ ")),
+            "{quoted:?}"
+        );
+
+        let listed = lines("- alpha beta gamma delta epsilon zeta eta theta", 20);
+        assert!(listed[0].starts_with("• alpha"), "{listed:?}");
+        for line in &listed[1..] {
+            assert!(
+                line.starts_with("  ") && !line.starts_with("   "),
+                "{listed:?}"
+            );
+        }
+    }
+
+    /// 以代码块开头的列表项保留自己的标记，且不泄漏给下一项。
+    #[test]
+    fn item_starting_with_code_keeps_its_bullet() {
+        let out = lines("- ```\n  code\n  ```\n- next", 40);
+        let bullets = out.iter().filter(|line| line.contains('•')).count();
+        assert_eq!(bullets, 2, "{out:?}");
+        assert!(out.iter().any(|line| line.starts_with("• next")), "{out:?}");
+    }
+
+    /// 放得下的表格按内容自然宽度，不把每列拉到上限。
+    #[test]
+    fn narrow_tables_keep_natural_widths() {
+        let out = lines("| a | b |\n|---|---|\n| x | y |", 120);
+        let rule = out
+            .iter()
+            .find(|line| line.starts_with('─'))
+            .expect("表头细线");
+        assert_eq!(str_width(rule), 1 + TABLE_COLUMN_GAP + 1, "{out:?}");
+    }
+
+    /// 行内代码只在紧贴文字时补空格；全角标点与已有空白旁不补。
+    #[test]
+    fn inline_code_gap_follows_neighbors() {
+        assert_eq!(lines("调用`foo`即可", 40), vec!["调用 foo 即可"]);
+        assert_eq!(lines("（`foo`）", 40), vec!["（foo）"]);
+        assert_eq!(lines("run `foo` now", 40), vec!["run foo now"]);
     }
 
     /// 入口只在支持图形协议时出现；按钮左对齐且命中区间等于文字宽度。

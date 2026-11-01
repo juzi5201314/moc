@@ -6,6 +6,7 @@ use moc_protocol::SessionEngine;
 use moc_protocol::methods::{AgentStatus, PromptMode};
 use moc_tui::app::EngineMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
+use moc_tui::render::labels::status;
 use moc_tui::render::markdown::render_markdown;
 use moc_tui::render::modal::{draw_completion_menu, draw_engine_menu, draw_modal};
 use moc_tui::theme::Theme;
@@ -128,7 +129,7 @@ fn test_combo_07_help_modal_over_expanded_btw() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     prefill_noise(&mut terminal, "#", Color::Blue);
     app.btw.expanded = true;
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     let help_row = rows
@@ -246,7 +247,7 @@ fn test_combo_14_session_search_filter_with_active_stream() {
         picker: PickerState::default(),
     });
     let turn = sample_btw_turn("streaming-q", "processing step...", "");
-    assert_eq!(turn.status.label(), "完成");
+    assert_eq!(turn.status.label(), status::DONE);
     assert!(app.modal.is_some());
 }
 

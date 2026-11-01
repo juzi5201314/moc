@@ -4,6 +4,7 @@
 use super::common::*;
 use moc_protocol::methods::AgentStatus;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
+use moc_tui::render::labels::{status, title};
 use moc_tui::render::markdown::render_markdown;
 use moc_tui::render::modal::{draw_completion_menu, draw_engine_menu, draw_modal};
 use moc_tui::theme::Theme;
@@ -386,8 +387,9 @@ fn test_f5_01_subagent_roster_running_status_label() {
         .find(|r| r.contains("CodeAgent"))
         .expect("agent line found");
     assert!(
-        agent_line.contains("运行中"),
-        "Running agent must be labeled '运行中': {}",
+        agent_line.contains(status::RUNNING),
+        "Running agent must be labeled '{}': {}",
+        status::RUNNING,
         agent_line
     );
     assert!(
@@ -414,8 +416,8 @@ fn test_f5_02_subagent_roster_waiting_status_label() {
         .find(|r| r.contains("ReviewAgent"))
         .expect("agent line found");
     assert!(
-        agent_line.contains("排队中") || agent_line.contains("等待中"),
-        "Queued agent must have localized label"
+        agent_line.contains(status::QUEUED),
+        "Queued agent must have its status label"
     );
     assert!(
         !agent_line.contains(" · 1 · ") && !agent_line.contains(" · 0 · "),
@@ -441,8 +443,8 @@ fn test_f5_03_subagent_roster_completed_status_label() {
         .find(|r| r.contains("BuildAgent"))
         .expect("agent line found");
     assert!(
-        agent_line.contains("已完成"),
-        "Completed agent must be labeled '已完成'"
+        agent_line.contains(status::DONE),
+        "Completed agent must be labeled done"
     );
     assert!(
         !agent_line.contains(" · 2 · "),
@@ -464,8 +466,8 @@ fn test_f5_04_subagent_roster_failed_status_label() {
         .find(|r| r.contains("TestAgent"))
         .expect("agent line found");
     assert!(
-        agent_line.contains("失败"),
-        "Failed agent must be labeled '失败'"
+        agent_line.contains(status::FAILED),
+        "Failed agent must be labeled failed"
     );
     assert!(
         !agent_line.contains(" · 3 · "),
@@ -491,8 +493,8 @@ fn test_f5_05_subagent_roster_stopped_status_label() {
         .find(|r| r.contains("DeployAgent"))
         .expect("agent line found");
     assert!(
-        agent_line.contains("已停止"),
-        "Stopped agent must be labeled '已停止'"
+        agent_line.contains(status::STOPPED),
+        "Stopped agent must be labeled stopped"
     );
     assert!(
         !agent_line.contains(" · 4 · "),
@@ -704,7 +706,7 @@ fn test_f7_05_long_command_descriptions_not_prematurely_truncated() {
 #[test]
 fn test_f8_01_help_modal_contains_three_distinct_sections() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
@@ -721,7 +723,7 @@ fn test_f8_01_help_modal_contains_three_distinct_sections() {
 #[test]
 fn test_f8_02_help_modal_session_commands_included() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
@@ -733,7 +735,7 @@ fn test_f8_02_help_modal_session_commands_included() {
 #[test]
 fn test_f8_03_help_modal_editing_shortcuts_included() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
@@ -744,7 +746,7 @@ fn test_f8_03_help_modal_editing_shortcuts_included() {
 #[test]
 fn test_f8_04_help_modal_bypass_interaction_included() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     let text = rows.join("\n");
@@ -755,11 +757,11 @@ fn test_f8_04_help_modal_bypass_interaction_included() {
 #[test]
 fn test_f8_05_help_modal_sections_rendered_with_header_styling() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 35);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(rows.iter().any(|r| r.contains("快捷键帮助")));
-    assert!(rows.iter().any(|r| r.contains("# 输入与编辑")));
+    assert!(rows.iter().any(|r| r.contains("输入与编辑")));
 }
 
 // ============================================================================
@@ -806,7 +808,7 @@ fn test_f9_03_click_toggles_card_expansion() {
 fn test_f9_04_todo_hud_hidden_when_modal_active() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
     app.todos.push(sample_todo_phase("阶段", "任务"));
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     let mut view = moc_tui::render::ScrollbackView::default();
     terminal
         .draw(|f| moc_tui::render::draw(f, &mut app, &mut view))
@@ -1668,8 +1670,7 @@ fn test_f20_01_btw_dock_thinking_trace_has_thinking_diamond_header() {
         .unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(
-        rows.iter()
-            .any(|r| r.contains("◆ 思考") || r.contains("思考")),
+        rows.iter().any(|r| r.contains(title::THOUGHT)),
         "BTW dock thinking header rendered"
     );
 }

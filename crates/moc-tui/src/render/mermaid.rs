@@ -8,8 +8,7 @@ use std::collections::HashMap;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::modal::ellipsize;
-use super::wrap::{str_width, wrap_text};
+use super::wrap::{str_width, truncate, wrap_text};
 use crate::theme::Theme;
 
 const MAX_NODES: usize = 40;
@@ -1377,7 +1376,7 @@ fn layout_sequence(sequence: &Sequence, width: usize) -> Option<Grid> {
     let labels: Vec<String> = sequence
         .actors
         .iter()
-        .map(|label| ellipsize(label, col_w))
+        .map(|label| truncate(label, col_w).into_owned())
         .collect();
     let mut rows: Vec<SeqRow> = vec![SeqRow::Header, SeqRow::Life];
     for event in &sequence.events {

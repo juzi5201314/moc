@@ -6,6 +6,7 @@ use moc_protocol::methods::{AgentStatus, PromptMode};
 use moc_protocol::{SessionEngine, Usage};
 use moc_tui::app::EngineMenu;
 use moc_tui::modal::{LevelState, Modal, PickerState, SessionScope};
+use moc_tui::render::labels::status;
 use moc_tui::render::markdown::render_markdown;
 use moc_tui::render::modal::{draw_completion_menu, draw_engine_menu, draw_modal};
 use moc_tui::theme::Theme;
@@ -142,7 +143,7 @@ fn test_f1_b5_completion_menu_opacity_clears_underlying_noise() {
 #[test]
 fn test_f2_b1_border_sharp_corner_consistency_across_modals() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_rows(&terminal);
     let border_chars: Vec<char> = rows.iter().flat_map(|r| r.chars()).collect();
@@ -271,7 +272,7 @@ fn test_f3_b5_aspect_ratio_extreme_tall() {
 #[test]
 fn test_f4_b1_help_modal_empty_bindings() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     assert!(
@@ -283,7 +284,7 @@ fn test_f4_b1_help_modal_empty_bindings() {
 #[test]
 fn test_f4_b2_help_modal_scroll_clamp() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     assert!(
@@ -295,7 +296,7 @@ fn test_f4_b2_help_modal_scroll_clamp() {
 #[test]
 fn test_f4_b3_help_modal_top_render() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_squashed_rows(&terminal);
     assert!(
@@ -307,7 +308,7 @@ fn test_f4_b3_help_modal_top_render() {
 #[test]
 fn test_f4_b4_help_modal_zero_width_terminal() {
     let (mut app, _rx, mut terminal) = create_test_terminal(10, 10);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     terminal.draw(|f| draw_modal(f, &mut app)).unwrap();
     let rows = buffer_compact_rows(&terminal);
     assert!(!rows.is_empty(), "help modal handles tiny width");
@@ -316,7 +317,7 @@ fn test_f4_b4_help_modal_zero_width_terminal() {
 #[test]
 fn test_f4_b5_help_modal_dismissal_restores_none() {
     let (mut app, _rx, _terminal) = create_test_terminal(100, 30);
-    app.modal = Some(Modal::Help);
+    app.modal = Some(Modal::Help { scroll: 0 });
     assert!(app.modal.is_some());
     app.modal = None;
     assert!(app.modal.is_none(), "modal dismissed cleanly");
@@ -599,14 +600,14 @@ fn test_f9_b5_btw_dock_tiny_terminal_handling() {
 fn test_f10_b1_btw_stream_running_spinner() {
     let mut turn = sample_btw_turn("q_running", "正在思考...", "");
     turn.status = moc_tui::btw::Status::Generating;
-    assert_eq!(turn.status.label(), "生成中");
+    assert_eq!(turn.status.label(), status::GENERATING);
 }
 
 #[test]
 fn test_f10_b2_btw_stream_empty_reasoning() {
     let turn = sample_btw_turn("q_empty", "", "Completed");
     assert_eq!(turn.reasoning, "");
-    assert_eq!(turn.status.label(), "完成");
+    assert_eq!(turn.status.label(), status::DONE);
 }
 
 #[test]
@@ -633,7 +634,7 @@ fn test_f10_b4_btw_completed_turn_duration() {
 fn test_f10_b5_btw_failed_turn_styling() {
     let mut turn = sample_btw_turn("q_fail", "reasoning failed", "Failed");
     turn.status = moc_tui::btw::Status::Failed("network timeout".into());
-    assert_eq!(turn.status.label(), "未完成");
+    assert_eq!(turn.status.label(), status::FAILED);
 }
 
 // ============================================================================
@@ -952,14 +953,14 @@ fn test_f17_b2_subagent_status_update_with_message() {
 #[test]
 fn test_f17_b3_subagent_status_label_helper() {
     let view = sample_subagent_view("l3", "Log Agent", AgentStatus::Running);
-    assert_eq!(view.status_label(), "运行中");
+    assert_eq!(view.status_label(), status::RUNNING);
 }
 
 #[test]
 fn test_f17_b4_subagent_status_completed_label() {
     let mut view = sample_subagent_view("l4", "Done Agent", AgentStatus::Running);
     view.set_status(AgentStatus::Completed, Some("Task finished".into()));
-    assert_eq!(view.status_label(), "已完成");
+    assert_eq!(view.status_label(), status::DONE);
 }
 
 #[test]

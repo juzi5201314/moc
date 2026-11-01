@@ -230,7 +230,7 @@ async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
             );
         }
         Ok(None) => {}
-        Err(error) => app.set_notice(format!("会话启动失败：{error}")),
+        Err(error) => app.set_error_notice(format!("会话启动失败：{error}")),
     }
 }
 
@@ -569,7 +569,7 @@ fn apply_focus_loaded(
         Err(error) => {
             app.focus_restore = None;
             app.focused = None;
-            app.set_notice(format!("加载代理会话失败：{error}"));
+            app.set_error_notice(format!("加载代理会话失败：{error}"));
             return;
         }
     };
@@ -985,14 +985,14 @@ async fn event_loop(
                                 *current = app.subagents.values().map(|view| view.info.clone()).collect();
                             }
                         }
-                        Err(error) => app.set_notice(format!("读取子代理列表失败：{error}")),
+                        Err(error) => app.set_error_notice(format!("读取子代理列表失败：{error}")),
                     },
                     Some(AppEvent::FocusLoaded { returning, result }) => {
                         apply_focus_loaded(app, connection, returning, result);
                     }
                     Some(AppEvent::SubagentOperation(result)) => match result {
                         Ok(notice) => app.set_notice(notice.message),
-                        Err(error) => app.set_notice(format!("子代理操作失败：{error}")),
+                        Err(error) => app.set_error_notice(format!("子代理操作失败：{error}")),
                     },
                     Some(AppEvent::ImagePrepared { key, result }) => {
                         app.images.complete(key.clone(), result);
@@ -1012,7 +1012,7 @@ async fn event_loop(
                             .as_mut()
                             .is_some_and(|modal| modal.set_error(&error));
                         if !shown {
-                            app.set_notice(error);
+                            app.set_error_notice(error);
                         }
                     }
                     Some(AppEvent::ResourceCompletion {
@@ -1230,12 +1230,29 @@ fn handle_mouse_with_connection(
             handle_plan_mouse(app, mouse);
             return;
         }
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && app
-                .plan_model_area
-                .contains((mouse.column, mouse.row).into())
-        {
-            app.open_plan_model_picker();
+        let position = (mouse.column, mouse.row);
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if app.plan_model_area.contains(position.into()) {
+                app.open_plan_model_picker();
+                return;
+            }
+            // 点中选项 = 先选中再确认；命中矩形由渲染层按卡片正文行号每帧写入。
+            if let Some((hit_idx, _)) = app
+                .modal_item_hits
+                .iter()
+                .find(|(_, area)| area.contains(position.into()))
+                .copied()
+            {
+                match app.modal.as_mut() {
+                    Some(Modal::Permission { selected, .. }) => *selected = hit_idx,
+                    Some(Modal::Model { picker, .. } | Modal::Sessions { picker, .. }) => {
+                        picker.selected = hit_idx;
+                    }
+                    Some(Modal::Fusion { focus, .. }) => *focus = hit_idx,
+                    _ => {}
+                }
+                handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
+            }
         } else if matches!(
             mouse.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -1284,26 +1301,6 @@ fn handle_mouse_with_connection(
     }
     if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
         let position = (mouse.column, mouse.row);
-        if app.modal.is_some() {
-            if let Some((hit_idx, _)) = app
-                .modal_item_hits
-                .iter()
-                .find(|(_, area)| area.contains(position.into()))
-                .cloned()
-            {
-                if let Some(Modal::Permission { selected, .. }) = app.modal.as_mut() {
-                    *selected = hit_idx;
-                } else if let Some(Modal::Model { picker, .. }) = app.modal.as_mut() {
-                    picker.selected = hit_idx;
-                } else if let Some(Modal::Sessions { picker, .. }) = app.modal.as_mut() {
-                    picker.selected = hit_idx;
-                } else if let Some(Modal::Fusion { focus, .. }) = app.modal.as_mut() {
-                    *focus = hit_idx;
-                }
-                handle_modal_key(app, connection, KeyModifiers::NONE, KeyCode::Enter);
-                return;
-            }
-        }
         if let Some((agent_id, _)) = app
             .subagent_hits
             .iter()
@@ -1902,6 +1899,10 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
                 *scroll_offset = scroll_offset.saturating_sub(3);
                 return;
             }
+            if let Some(Modal::Help { scroll }) = app.modal.as_mut() {
+                *scroll = scroll.saturating_sub(3);
+                return;
+            }
             scroll(app, 3);
         }
         MouseEventKind::ScrollDown => {
@@ -1911,6 +1912,10 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) {
             }
             if let Some(Modal::Permission { scroll_offset, .. }) = app.modal.as_mut() {
                 *scroll_offset = scroll_offset.saturating_add(3);
+                return;
+            }
+            if let Some(Modal::Help { scroll }) = app.modal.as_mut() {
+                *scroll = scroll.saturating_add(3);
                 return;
             }
             scroll(app, -3);
@@ -2214,7 +2219,7 @@ fn handle_key(
                 app.set_notice("再次按 Ctrl+C 退出");
             }
         }
-        (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help),
+        (KeyCode::Char('h'), KeyModifiers::CONTROL) => app.modal = Some(Modal::Help { scroll: 0 }),
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
             app.cycle_thinking_detail();
             app.set_notice(format!("思考显示：{}", app.thinking_detail.label()));
@@ -2467,6 +2472,8 @@ fn open_session_picker(app: &mut App, connection: &EmbeddedConnection) {
 
 /// 提问预览每次翻页滚动的行数；渲染层会夹到实际内容高度。
 const ASK_PREVIEW_SCROLL_STEP: usize = 8;
+/// 帮助页 PgUp/PgDn 每次滚动的行数；渲染层会夹到实际内容高度。
+const HELP_PAGE: usize = 8;
 
 /// Fusion 相关的模态跳转：全部延迟到模态借用结束后统一执行。
 enum FusionNav {
@@ -3763,7 +3770,22 @@ fn handle_modal_key(
         }
         // 计划审阅在 `handle_modal_key` 开头整体分派，这里不会走到。
         Modal::Plan { .. } => {}
-        Modal::Help | Modal::Context { .. } => {
+        Modal::Help { scroll } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                *scroll = scroll.saturating_sub(1);
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                *scroll = scroll.saturating_add(1);
+            }
+            (KeyCode::PageUp, _) => *scroll = scroll.saturating_sub(HELP_PAGE),
+            (KeyCode::PageDown, _) => *scroll = scroll.saturating_add(HELP_PAGE),
+            (KeyCode::Home, _) => *scroll = 0,
+            // 上界由渲染按可见行数收紧，这里只表达「到底」。
+            (KeyCode::End, _) => *scroll = usize::MAX,
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
+            _ => {}
+        },
+        Modal::Context { .. } => {
             if matches!(
                 (code, modifiers),
                 (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE)
@@ -4350,7 +4372,10 @@ fn apply_update_and_refresh(
                 .map_or(agent_id.as_str(), |view| view.info.title.as_str())
                 .to_owned();
             let label = crate::render::scrollback::agent_status_label(*status);
-            app.push_note(format!("子代理「{title}」{label}"), false);
+            app.push_note(
+                format!("子代理「{title}」{}{label}", crate::render::labels::SEP),
+                false,
+            );
         }
     }
     let prompt_started = matches!(
@@ -4880,7 +4905,7 @@ fn usage_table(result: &moc_protocol::SessionUsageResult, max_width: usize) -> V
         .min(max_width.saturating_sub(fixed))
         .max(str_width(COLUMNS[0]));
     for row in &mut rows {
-        row[0] = crate::render::scrollback::truncate_to_width(row[0].clone(), widths[0]);
+        row[0] = crate::render::wrap::truncate(row[0].clone(), widths[0]).into_owned();
     }
 
     let line = |cells: &[String; 9]| {
@@ -5082,7 +5107,7 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
             }
             refresh_usage(app, connection, true);
         }
-        "/help" => app.modal = Some(Modal::Help),
+        "/help" => app.modal = Some(Modal::Help { scroll: 0 }),
         "/context" => open_context_content(app, connection),
         "/quit" => app.should_quit = true,
         "/compact" => {
@@ -6448,7 +6473,7 @@ mod tests {
         app.session = Some(session);
         app.prompt_running = true;
         app.inflight_prompts.insert(id.clone());
-        app.modal = Some(Modal::Help);
+        app.modal = Some(Modal::Help { scroll: 0 });
         app.prompt.insert_str_raw("弹窗关闭后继续执行");
         crate::queue::submit(&mut app, &connection, true);
         crate::interaction::handle_event(
@@ -8455,7 +8480,7 @@ mod tests {
 
         app.prompt.backspace();
         commit_prompt(&mut app, &connection);
-        assert!(matches!(app.modal, Some(Modal::Help)));
+        assert!(matches!(app.modal, Some(Modal::Help { .. })));
         assert!(app.prompt.is_empty());
         connection.shutdown().await;
         core.shutdown().await;
@@ -9333,6 +9358,52 @@ mod tests {
         core.shutdown().await;
     }
 
+    /// 通用模态（权限/模型/会话/Fusion）点选项：命中矩形来自渲染层，点中即确认。
+    #[tokio::test]
+    async fn modal_item_click_confirms_the_hit_option() {
+        let (core, connection, mut app) = setup_test_app().await;
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        app.modal = Some(Modal::Permission {
+            params: moc_protocol::methods::PermissionRequestParams {
+                session_id: "ses_001".into(),
+                prompt_id: "prm_001".into(),
+                request_id: "req_001".into(),
+                tool_call_id: "call_001".into(),
+                tool_name: "bash".into(),
+                title: "执行命令".into(),
+                body: None,
+                diff: None,
+                options: ["允许一次", "拒绝"]
+                    .iter()
+                    .enumerate()
+                    .map(|(index, label)| moc_protocol::methods::PermissionOption {
+                        id: format!("opt_{index}"),
+                        label: (*label).into(),
+                        kind: moc_protocol::methods::PermissionOptionKind::AllowOnce,
+                    })
+                    .collect(),
+            },
+            selected: 0,
+            scroll_offset: 0,
+            reply: Some(reply_tx),
+        });
+        app.modal_item_hits = vec![
+            (0, ratatui::layout::Rect::new(10, 5, 40, 1)),
+            (1, ratatui::layout::Rect::new(10, 6, 40, 1)),
+        ];
+
+        handle_mouse_with_connection(&mut app, &connection, left_click(12, 6));
+        let result = reply_rx
+            .try_recv()
+            .expect("点第二项应立即回复")
+            .expect("授权结果");
+        assert_eq!(result.option_id, "opt_1");
+        assert!(app.modal.is_none(), "确认后模态关闭");
+
+        connection.shutdown().await;
+        core.shutdown().await;
+    }
+
     /// 作答态滚轮 = ↑↓：移动选项光标（含自定义行），不折叠；折叠态滚轮转写区。
     #[tokio::test]
     async fn ask_mouse_wheel_moves_highlight() {
@@ -9949,7 +10020,7 @@ mod tests {
         );
 
         let view = app.subagents.get(&child.id).expect("名册里有该代理");
-        assert_eq!(view.status_label(), "已完成");
+        assert_eq!(view.status_label(), crate::render::labels::status::DONE);
         assert_eq!(view.info.last_message.as_deref(), Some("done"));
         assert!(!view.running);
 
@@ -10029,6 +10100,7 @@ mod config_picker_tests {
             tui: Value::Null,
             effective: Value::Null,
             fields: Vec::new(),
+            controls: Vec::new(),
             rows: Vec::new(),
             collapsed: BTreeSet::new(),
             expanded: BTreeSet::new(),

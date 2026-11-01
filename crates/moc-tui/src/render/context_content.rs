@@ -9,12 +9,13 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::app::App;
 use crate::modal::{
     CONTEXT_COLLAPSED_LINES, ContextContentState, ContextLayout, ContextScrollbar, Modal,
 };
+use crate::render::overlay;
 use crate::render::wrap::{str_width, wrap_text};
 use crate::theme::Theme;
 
@@ -47,36 +48,31 @@ fn modal_area(area: Rect) -> Rect {
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let area = modal_area(area);
-    frame.render_widget(Clear, area);
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
-                cell.set_char(' ');
-                cell.set_style(Style::new().bg(theme.bg_base).fg(theme.text_primary));
-            }
-        }
-    }
+    overlay::paint_opaque(
+        frame.buffer_mut(),
+        area,
+        Style::new().bg(theme.bg_base).fg(theme.text_primary),
+    );
     let Some(Modal::ContextContent { state }) = app.modal.as_mut() else {
         return;
     };
-    // 上边框、总览行、空行、正文、页脚、下边框
-    let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
+    // 卡片内区（边框与左右内边距之内）：总览行、空行、正文、空行、提示条。
+    let panel = overlay::panel(theme).title(overlay::title_span(
+        "上下文内容",
+        usize::from(area.width.saturating_sub(4)),
+        theme,
+    ));
+    let inner = panel.inner(area);
+    frame.render_widget(panel, area);
     let body = Rect {
-        x: inner.x,
         y: inner.y.saturating_add(2),
-        width: inner.width,
-        height: inner.height.saturating_sub(3),
+        height: inner.height.saturating_sub(4),
+        ..inner
     };
     let content = Rect {
         width: body.width.saturating_sub(1),
         ..body
     };
-    draw_frame(frame, area, theme);
     draw_overview(frame, inner, state, theme);
     let content_width = usize::from(content.width);
     if state
@@ -144,24 +140,6 @@ fn highlight_focus(frame: &mut Frame, state: &ContextContentState, content: Rect
     }
 }
 
-/// 边框与标题。
-fn draw_frame(frame: &mut Frame, area: Rect, theme: &Theme) {
-    frame.render_widget(
-        Block::bordered()
-            .border_set(ratatui::symbols::border::ROUNDED)
-            .border_style(Style::new().fg(theme.border_active))
-            .style(Style::new().bg(theme.bg_base).fg(theme.text_primary))
-            .title(Span::styled(
-                "上下文内容",
-                Style::new()
-                    .fg(theme.text_primary)
-                    .bg(theme.bg_base)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        area,
-    );
-}
-
 /// 总览行：合计与窗口上限、分块数，或加载 / 失败状态。
 fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, theme: &Theme) {
     let row = Rect { height: 1, ..inner };
@@ -169,7 +147,7 @@ fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, th
         let text = format!("读取上下文内容失败：{error}");
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                crate::render::modal::ellipsize(&text, usize::from(row.width)),
+                crate::render::wrap::truncate(&text, usize::from(row.width)).into_owned(),
                 Style::new().fg(theme.accent_error),
             ))),
             row,
@@ -220,47 +198,53 @@ fn draw_overview(frame: &mut Frame, inner: Rect, state: &ContextContentState, th
     );
 }
 
-/// 页脚：固定提示（随宽度截断）。
+/// 页脚：操作提示，窄屏从左丢项、恒保留关闭键。
 fn draw_footer(frame: &mut Frame, inner: Rect, state: &ContextContentState, theme: &Theme) {
-    let hint = if state.drag.is_some() {
-        "松开鼠标结束拖拽"
+    let width = usize::from(inner.width);
+    let line = if state.drag.is_some() {
+        overlay::footer(&[("", "松开鼠标结束拖拽")], width, theme)
     } else if state.content.is_some() {
-        "点击分块展开/收起 · ↑↓/PgUp/PgDn 滚动 · Tab 切换 · Enter 展开 · e/c 全部 · Esc 关闭"
+        overlay::footer(
+            &[
+                ("e/c", "全部展开/收起"),
+                ("", "点击分块展开/收起"),
+                ("tab", "切换"),
+                ("↑↓/pgup/pgdn", "滚动"),
+                ("enter", "展开"),
+                ("esc", "关闭"),
+            ],
+            width,
+            theme,
+        )
     } else {
-        "Esc 关闭"
+        overlay::footer(&[("esc", "关闭")], width, theme)
     };
     let row = Rect {
         y: inner.y + inner.height.saturating_sub(1),
         height: 1,
         ..inner
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            crate::render::modal::ellipsize(hint, usize::from(row.width)),
-            Style::new().fg(theme.gray_dim),
-        ))),
-        row,
-    );
+    frame.render_widget(Paragraph::new(line), row);
 }
 
 /// 滚动条：内容溢出时才画滑块，轨道本身始终占一列（正文折行宽度不随之跳动）。
 fn draw_scrollbar(frame: &mut Frame, state: &ContextContentState, theme: &Theme) {
     let scrollbar = state.scrollbar;
-    let track = scrollbar.track;
-    if track.height == 0 || track.width == 0 {
+    if scrollbar.track.height == 0 || scrollbar.track.width == 0 {
         return;
     }
-    let top = scrollbar.thumb_top(state.scroll);
-    let buffer = frame.buffer_mut();
-    for row in 0..track.height {
-        let in_thumb = scrollbar.max_offset > 0 && row >= top && row < top + scrollbar.thumb;
-        let color = if in_thumb {
-            theme.scrollbar_fg
-        } else {
-            theme.scrollbar_bg
-        };
-        buffer.set_string(track.x, track.y + row, "▐", Style::new().fg(color));
-    }
+    let thumb = if scrollbar.max_offset > 0 {
+        scrollbar.thumb
+    } else {
+        0
+    };
+    overlay::paint_scrollbar(
+        frame.buffer_mut(),
+        scrollbar.track,
+        scrollbar.thumb_top(state.scroll),
+        thumb,
+        theme,
+    );
 }
 
 /// 滑块高度：视口占全文的比例，至少一行。
@@ -524,6 +508,7 @@ mod tests {
         );
     }
 
+    /// 底色不透：底下铺满宽字符也不泄露底色，左边框也不被左邻宽字符吞掉。
     #[test]
     fn context_content_frame_renders_solid_opaque_background() {
         use ratatui::buffer::CellWidth;
@@ -532,25 +517,31 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("构造测试终端");
         let area = Rect::new(0, 0, 100, 30);
+        let modal = modal_area(area);
+        // 按窗左缘奇偶选起点，使 `modal.x - 1` 恰好是宽字符首格（最坏情况）。
+        let start = (modal.x - 1) % 2;
         terminal
             .draw(|frame| {
-                frame.buffer_mut().set_style(
-                    Rect::new(0, 0, 100, 30),
-                    ratatui::style::Style::new().bg(Color::Red),
-                );
+                let style = ratatui::style::Style::new().bg(Color::Red);
+                for y in 0..30 {
+                    frame
+                        .buffer_mut()
+                        .set_string(start, y, "中".repeat(50), style);
+                }
                 draw(frame, &mut app, area);
             })
             .expect("绘制成功");
 
-        let modal = modal_area(area);
         let buffer = terminal.backend().buffer();
         for y in modal.y..modal.y + modal.height {
+            let border = buffer.cell((modal.x, y)).expect("单元格存在").symbol();
+            assert!(
+                matches!(border, "│" | "╭" | "╰"),
+                "第 {y} 行左边框被吞：{border:?}"
+            );
             for x in modal.x..modal.x + modal.width {
-                if x > modal.x
-                    && buffer
-                        .cell((x - 1, y))
-                        .map_or(false, |c| c.cell_width() > 1)
-                {
+                // 窗内宽字符的尾格由 ratatui 重置成 Reset，终端上被首格盖住，不算泄露。
+                if x > modal.x && buffer.cell((x - 1, y)).is_some_and(|c| c.cell_width() > 1) {
                     continue;
                 }
                 let cell = buffer.cell((x, y)).expect("单元格存在");

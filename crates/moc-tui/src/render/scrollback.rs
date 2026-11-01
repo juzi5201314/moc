@@ -10,13 +10,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use super::diff;
 use super::image::{ImagePlacement, ImageState, layout as image_layout};
 use super::markdown::{
     ButtonSpan, ChartPlacement, RenderViews, render_markdown, render_markdown_with,
 };
-use super::wrap::{str_width, wrap_text};
+use super::wrap::{clip_line, str_width, wrap_text};
 use super::{PROSE_INDENT, TITLE_INDENT};
+use super::{diff, labels};
 use crate::app::{App, ChartHit, ImageSlot, SlotSource};
 use crate::theme::Theme;
 use crate::transcript::{
@@ -134,7 +134,7 @@ impl ScrollbackView {
                 continue;
             }
             let (lines, tables, images, height, rendered) = if index >= eager_start {
-                let rendered = render_entry(index, entry, app, width, index == 0);
+                let rendered = render_entry(index, entry, app, width);
                 let height = rendered.lines.len();
                 (
                     rendered.lines,
@@ -205,8 +205,7 @@ impl ScrollbackView {
             for (index, cached) in self.cache.iter_mut().enumerate() {
                 let next = offset.saturating_add(cached.height);
                 if !cached.rendered && offset < end && next > window.skip_rows {
-                    let rendered =
-                        render_entry(index, &app.blocks[index], app, self.width, index == 0);
+                    let rendered = render_entry(index, &app.blocks[index], app, self.width);
                     cached.height = rendered.lines.len();
                     cached.lines = rendered.lines;
                     cached.tables = rendered.tables;
@@ -466,9 +465,7 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
     if let Block::Assistant { text } = &entry.block
         && (may_contain_table(text) || may_contain_image(text) || may_contain_mermaid(text))
     {
-        return render_entry_estimate(index, entry, app, width, index == 0)
-            .lines
-            .len();
+        return render_entry_estimate(index, entry, app, width).lines.len();
     }
     let level = entry.level(app.block_level(&entry.block));
     let Some((batch_id, name)) = tool_batch_key(entry) else {
@@ -485,7 +482,7 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
             _ => None,
         })
         .collect();
-    estimate_tool_batch_height(app, &tools, index == 0, level, usize::from(width))
+    estimate_tool_batch_height(app, &tools, level, usize::from(width))
 }
 
 /// 批次渲染的行数：标题 + 每个工具的（摘要行 + 正文行）+ 完成统计 + 尾随留白。
@@ -494,18 +491,19 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
 fn estimate_tool_batch_height(
     app: &App,
     tools: &[&ToolCallBlock],
-    first: bool,
     level: DetailLevel,
     width: usize,
 ) -> usize {
-    let mut rows = tools.len() + 3 + usize::from(!first);
-    let inner_width = width.saturating_sub(BATCH_BODY_INDENT);
+    let mut rows = tools.len() + 3;
     for tool in tools {
         if !tool.has_body() {
             continue;
         }
         let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        rows += tool_body_rows(tool, &args, app, inner_width, level);
+        let tail = batch_member_tail(tool, app.theme);
+        let budget = batch_summary_budget(&tail, width);
+        let (_, in_title) = title_summary(tool, &args, budget, level);
+        rows += tool_body_rows(tool, &args, app, batch_body_width(width), level, in_title);
     }
     rows
 }
@@ -531,21 +529,32 @@ fn batch_group_start(app: &App, index: usize, batch_id: &str, name: &str) -> usi
 fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u16) -> usize {
     let width = usize::from(width).max(8);
     match &entry.block {
-        Block::User { text } | Block::Assistant { text } | Block::Note { text, .. } => {
-            wrapped_rows(text, width).saturating_add(2)
-        }
+        // 纯文本折行很便宜：直接复用渲染，估高与渲染恒等。
+        Block::User { text } => user_message(text, entry.at_ms, width, app.theme).len(),
+        Block::Note { text, error } => note_block(text, *error, width, app.theme).len(),
+        Block::Assistant { text } => wrapped_rows(text, prose_width(width))
+            .saturating_add(usize::from(entry.elapsed_ms.is_some()))
+            .saturating_add(1),
         Block::Thinking { text, .. } => {
-            let rows = wrapped_rows(text, width.saturating_sub(PROSE_INDENT + 2));
+            let width = prose_width(width);
             match level {
                 DetailLevel::Hidden => 2,
-                DetailLevel::Brief => rows.min(BRIEF_THINKING_ROWS).saturating_add(2),
-                DetailLevel::Full => rows.saturating_add(2),
+                // 简略档跳过段间空行，超出预算再补一行省略提示
+                DetailLevel::Brief => {
+                    let rows: usize = text
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .map(|line| wrapped_rows(line, width))
+                        .sum();
+                    rows.min(BRIEF_THINKING_ROWS) + usize::from(rows > BRIEF_THINKING_ROWS) + 2
+                }
+                DetailLevel::Full => wrapped_rows(text, width).saturating_add(2),
             }
         }
         Block::Tool(tool) => estimate_tool_height(tool, app, level, width),
         Block::AgentMessage { body, .. } => {
             // 与 `agent_message_block` 同源：简略档是预览行数 + 省略行，隐藏档只剩标题行。
-            let rows = wrapped_rows(body, width.saturating_sub(TITLE_INDENT + 2));
+            let rows = wrapped_text_rows(body, prose_width(width)).len();
             let (shown, omitted) = match level {
                 DetailLevel::Hidden => (0, false),
                 DetailLevel::Brief => (
@@ -558,6 +567,14 @@ fn estimate_entry_height(entry: &Entry, app: &App, level: DetailLevel, width: u1
         }
         Block::Todo { phases } => estimate_todo_height(phases, width),
     }
+}
+
+/// 块正文的可用宽度：去掉 [`PROSE_INDENT`]，右侧不再另留边距（滚动区已留 `MARGIN_X`）。
+///
+/// 所有块的正文（用户、助手、工具输出、IRC、Note、Todo 条目）都按这个宽度折行/截断，
+/// 左缘与右缘因此只有一套网格。
+fn prose_width(width: usize) -> usize {
+    width.saturating_sub(PROSE_INDENT)
 }
 
 /// 正文里是否可能出现 GFM 表格：分隔行（只有 `|`、`-`、`:`、空白且含 `-`）。
@@ -635,7 +652,7 @@ fn message_agent_rows_count(
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let clamped = clamp_rows(message, width.saturating_sub(2), limit, BodyEdge::Head);
+    let clamped = clamp_rows(message, width, limit, BodyEdge::Head);
     let mut rows = clamped.shown;
     let mut dropped = clamped.dropped;
     let Some(receipts) = message_receipts(tool) else {
@@ -659,51 +676,45 @@ fn message_agent_rows_count(
 
 /// Todo 树高度：标题行 + 每阶段一行 + 每条目折行 + 尾随留白。
 fn estimate_todo_height(phases: &[moc_protocol::methods::TodoPhase], width: usize) -> usize {
-    let phase_count = phases.len();
-    let mut rows = 2; // 标题行 + 尾随留白
-    for (index, phase) in phases.iter().enumerate() {
-        rows += 1;
-        // 与 render_todo 的条目缩进同源：末阶段用空白分支，其余用竖线分支
-        let branch = if index + 1 == phase_count {
-            "    "
-        } else {
-            "│   "
-        };
-        let budget = width
-            .saturating_sub(TITLE_INDENT + branch.len() + 2 + 4)
-            .max(8);
-        rows += phase
-            .items
-            .iter()
-            .map(|item| wrap_text(&item.task, budget).len())
-            .sum::<usize>();
-    }
-    rows
+    let budget = todo_item_width(width);
+    2 + phases
+        .iter()
+        .map(|phase| {
+            1 + phase
+                .items
+                .iter()
+                .map(|item| wrap_text(&item.task, budget).len())
+                .sum::<usize>()
+        })
+        .sum::<usize>()
 }
 
-/// 工具块高度：无正文工具有一行标题；有正文工具是
-/// 标题 + 正文行 +（耗时尾注）+ 尾随留白，与 [`render_tool`] 同规则。
+/// 工具块高度：标题 +（正文行 + 耗时尾注）+ 尾随留白，与 [`render_tool`] 同规则。
 fn estimate_tool_height(
     tool: &ToolCallBlock,
     app: &App,
     level: DetailLevel,
     width: usize,
 ) -> usize {
-    if !tool.has_body() {
-        return 1;
-    }
-    // read 的成功结果只在完整档展开；隐藏／简略档收起为单行标题（不留给白与耗时）。
-    if tool_body_policy(&tool.name) == ToolBody::FullOnly
-        && !tool_is_error(tool)
-        && level != DetailLevel::Full
-    {
-        return 1;
+    if !shows_tool_body(tool, level) {
+        return 2;
     }
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-    let body = tool_body_rows(tool, &args, app, width, level);
-    body.saturating_add(1)
-        .saturating_add(usize::from(tool.duration_ms.is_some()))
-        .saturating_add(1)
+    let width = width.saturating_sub(nest_indent(app, tool));
+    let budget = tool_summary_budget(tool_title(tool, &args), width);
+    let (_, in_title) = title_summary(tool, &args, budget, level);
+    let body = tool_body_rows(tool, &args, app, prose_width(width), level, in_title);
+    body.saturating_add(usize::from(tool.duration_ms.is_some()))
+        .saturating_add(2)
+}
+
+/// 工具卡是否展开正文：无正文的记账工具与收起态的 read 只留标题行。
+fn shows_tool_body(tool: &ToolCallBlock, level: DetailLevel) -> bool {
+    // read 的成功结果只在完整档展开；隐藏／简略档收起为单行标题。
+    tool.has_body()
+        && !(tool_body_policy(&tool.name) == ToolBody::FullOnly
+            && !tool_is_error(tool)
+            && level != DetailLevel::Full)
 }
 
 /// 工具是否以失败终态结束；运行中（`status: None`）不算失败。
@@ -712,21 +723,16 @@ fn tool_is_error(tool: &ToolCallBlock) -> bool {
         .is_some_and(|status| status != moc_protocol::methods::ToolStatus::Completed)
 }
 
-/// 单块渲染。`first` 表示它是转写首块（不额外加前导留白）。
-/// 折叠状态由全局开关与块类型共同决定。
-fn render_entry(index: usize, entry: &Entry, app: &App, width: u16, first: bool) -> EntryLines {
-    render_entry_with(index, entry, app, width, first, true)
+/// 单块渲染。折叠状态由全局开关与块类型共同决定。
+///
+/// 留白规则只有一条：每个块自带一行尾随留白，从不加前导留白。
+fn render_entry(index: usize, entry: &Entry, app: &App, width: u16) -> EntryLines {
+    render_entry_with(index, entry, app, width, true)
 }
 
 /// 估高路径的渲染：图片只查缓存，绝不触发解码（否则懒块会连锁解码整个历史）。
-fn render_entry_estimate(
-    index: usize,
-    entry: &Entry,
-    app: &App,
-    width: u16,
-    first: bool,
-) -> EntryLines {
-    render_entry_with(index, entry, app, width, first, false)
+fn render_entry_estimate(index: usize, entry: &Entry, app: &App, width: u16) -> EntryLines {
+    render_entry_with(index, entry, app, width, false)
 }
 
 fn render_entry_with(
@@ -734,7 +740,6 @@ fn render_entry_with(
     entry: &Entry,
     app: &App,
     width: u16,
-    first: bool,
     spawn_images: bool,
 ) -> EntryLines {
     // 估高路径统一按「至少 8 列」计算宽度；渲染必须用同一口径，否则超窄
@@ -753,24 +758,21 @@ fn render_entry_with(
                 _ => None,
             })
             .collect();
-        return render_tool_batch(app, &tools, usize::from(width), first, level, spawn_images);
+        return render_tool_batch(app, &tools, usize::from(width), level, spawn_images);
     }
-    render_entry_single(entry, app, usize::from(width), first, level, spawn_images)
+    render_entry_single(entry, app, usize::from(width), level, spawn_images)
 }
 
 fn render_entry_single(
     entry: &Entry,
     app: &App,
     width: usize,
-    first: bool,
     level: DetailLevel,
     spawn_images: bool,
 ) -> EntryLines {
     let theme = app.theme;
     match &entry.block {
-        Block::User { text } => {
-            EntryLines::plain(user_message(text, entry.at_ms, first, width, theme))
-        }
+        Block::User { text } => EntryLines::plain(user_message(text, entry.at_ms, width, theme)),
         Block::Assistant { text } => assistant_message(text, entry, app, width, spawn_images),
         Block::Thinking {
             text,
@@ -792,81 +794,106 @@ fn render_entry_single(
         Block::Note { text, error } => EntryLines::plain(note_block(text, *error, width, theme)),
     }
 }
-/// 批次成员正文相对批次标题行的缩进（`├─ ` 分支宽度）。
-const BATCH_BODY_INDENT: usize = TITLE_INDENT + 4;
+
+/// 批次成员正文与摘要的列：树挂在正文列（[`PROSE_INDENT`]），再让过 `├─ ` 分支。
+const BATCH_BODY_INDENT: usize = PROSE_INDENT + 3;
+
+/// 批次成员正文的可用宽度。
+fn batch_body_width(width: usize) -> usize {
+    width.saturating_sub(BATCH_BODY_INDENT)
+}
+
+/// 成员行尾的状态列：失败 `✘` 与耗时；无正文的记账工具（todo／skill）不报耗时。
+fn batch_member_tail(tool: &ToolCallBlock, theme: &Theme) -> Vec<Span<'static>> {
+    let mut tail = Vec::new();
+    if tool_is_error(tool) {
+        tail.push(Span::styled("✘", Style::new().fg(theme.accent_error)));
+    }
+    if tool.has_body()
+        && let Some(ms) = tool.duration_ms
+    {
+        if !tail.is_empty() {
+            tail.push(Span::raw(" "));
+        }
+        tail.push(Span::styled(
+            labels::elapsed(ms),
+            Style::new().fg(theme.gray_dim),
+        ));
+    }
+    tail
+}
+
+/// 成员摘要的列宽预算：让出分支与行尾状态列（状态列前至少两格间距）。
+fn batch_summary_budget(tail: &[Span<'_>], width: usize) -> usize {
+    let tail_width: usize = tail.iter().map(Span::width).sum();
+    let reserved = if tail_width > 0 { tail_width + 2 } else { 0 };
+    batch_body_width(width).saturating_sub(reserved)
+}
 
 /// 同一模型响应中的同名工具合并为一个树形批次。
 ///
 /// 档位取组首块的层档位（组内其余成员不单独渲染标题行，不参与档位判定）；
 /// 每个成员是否追加正文、追加几行，由该成员的工具策略与档位共同决定。
-/// 耗时挂在成员行尾、右对齐到行宽，与单工具卡片的 `⏱` 尾注同源，不额外占行；
-/// 与单卡片同样只给有正文的工具，`todo` 一类的记账调用不报耗时。
+/// 成员行尾右对齐状态列（失败 `✘`、耗时），左侧摘要按预算截断，不挤掉状态列。
+/// 统计行只把成功落定的成员计入完成，失败与运行中的另行点明。
 fn render_tool_batch(
     app: &App,
     tools: &[&ToolCallBlock],
     width: usize,
-    first: bool,
     level: DetailLevel,
     spawn_images: bool,
 ) -> EntryLines {
+    use moc_protocol::methods::ToolStatus;
+
     let theme = app.theme;
     let name = tools.first().map_or("tool", |tool| tool.name.as_str());
-    let completed = tools.iter().filter(|tool| !tool.running).count();
-    let mut lines = Vec::new();
+    let mut lines = vec![clip_line(
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled("• ", Style::new().fg(theme.gray_bright)),
+            Span::styled(name.to_owned(), Style::new().fg(theme.accent_tool)),
+            Span::styled(
+                format!(" ({})", tools.len()),
+                Style::new().fg(theme.gray_bright),
+            ),
+        ]),
+        width,
+    )];
     let mut images = Vec::new();
-    if !first {
-        lines.push(Line::from(String::new()));
-    }
-    lines.push(Line::from(vec![
-        Span::styled("• ", Style::new().fg(theme.gray_bright)),
-        Span::styled(name.to_owned(), Style::new().fg(theme.accent_tool)),
-        Span::styled(
-            format!(" ({})", tools.len()),
-            Style::new().fg(theme.gray_bright),
-        ),
-    ]));
+    let body_width = batch_body_width(width);
     for (offset, tool) in tools.iter().enumerate() {
         let branch = if offset + 1 == tools.len() {
-            "└─"
+            "└─ "
         } else {
-            "├─"
+            "├─ "
         };
         let args = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
-        let has_body = tool.has_body();
-        let prefix = format!("  {branch} ");
-        let summary = tool_summary(tool, &args);
-        let used = str_width(&prefix).saturating_add(str_width(&summary));
+        let tail = batch_member_tail(tool, theme);
+        let (summary, in_title) =
+            title_summary(tool, &args, batch_summary_budget(&tail, width), level);
+        let used = BATCH_BODY_INDENT + str_width(&summary);
+        let tail_width: usize = tail.iter().map(Span::width).sum();
         let mut spans = vec![
-            Span::raw(prefix),
+            Span::raw(" ".repeat(PROSE_INDENT)),
+            Span::styled(branch, Style::new().fg(theme.border)),
             Span::styled(summary, Style::new().fg(theme.path)),
         ];
-        // 无正文的工具（todo／skill 等）是记账而不是干活，与单卡片一致不报耗时。
-        if has_body && let Some(duration) = tool.duration_ms {
-            let duration = format!("⏱ {}", format_duration(duration));
-            // 摘要过长时耗时会被行宽裁掉，与助手尾注的时钟同一处理：至少留两格间距。
-            let gap = width.saturating_sub(used + str_width(&duration)).max(2);
-            spans.push(Span::styled(" ".repeat(gap), Style::new()));
-            spans.push(Span::styled(duration, Style::new().fg(theme.gray_dim)));
+        if tail_width > 0 {
+            let gap = width.saturating_sub(used + tail_width).max(2);
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.extend(tail);
         }
-        lines.push(Line::from(spans));
-        if !has_body {
+        lines.push(clip_line(Line::from(spans), width));
+        if !tool.has_body() {
             continue;
         }
-        let indent = Span::raw(" ".repeat(BATCH_BODY_INDENT));
         let base = lines.len();
-        let (body, mut placements) = tool_body(
-            tool,
-            &args,
-            app,
-            width.saturating_sub(BATCH_BODY_INDENT),
-            level,
-            spawn_images,
+        let (body, mut placements) =
+            tool_body(tool, &args, app, body_width, level, spawn_images, in_title);
+        lines.extend(
+            body.into_iter()
+                .map(|line| hang(line, BATCH_BODY_INDENT, body_width)),
         );
-        for line in body {
-            let mut spans = vec![indent.clone()];
-            spans.extend(line.spans);
-            lines.push(Line::from(spans));
-        }
         for placement in &mut placements {
             placement.row += base;
             placement.x = placement
@@ -875,11 +902,31 @@ fn render_tool_batch(
         }
         images.extend(placements);
     }
-    lines.push(Line::from(Span::styled(
-        format!("  {completed}/{} 完成", tools.len()),
-        Style::new().fg(theme.gray_dim),
-    )));
-    lines.push(Line::from(String::new()));
+    let count = |pick: fn(&ToolCallBlock) -> bool| tools.iter().filter(|tool| pick(tool)).count();
+    let done = count(|tool| tool.status == Some(ToolStatus::Completed));
+    let failed = count(tool_is_error);
+    let running = count(|tool| tool.running);
+    let mut stats = vec![
+        Span::raw(" ".repeat(PROSE_INDENT)),
+        Span::styled(
+            format!("{done}/{} {}", tools.len(), labels::status::DONE),
+            Style::new().fg(theme.gray_dim),
+        ),
+    ];
+    if failed > 0 {
+        stats.push(Span::styled(
+            format!("{}{failed} {}", labels::SEP, labels::status::FAILED),
+            Style::new().fg(theme.accent_error),
+        ));
+    }
+    if running > 0 {
+        stats.push(Span::styled(
+            format!("{}{running} {}", labels::SEP, labels::status::RUNNING),
+            Style::new().fg(theme.accent_running),
+        ));
+    }
+    lines.push(clip_line(Line::from(stats), width));
+    lines.push(Line::default());
     EntryLines {
         lines,
         tables: Vec::new(),
@@ -896,61 +943,37 @@ fn content_limit(level: DetailLevel) -> usize {
     }
 }
 
-/// 用户消息：`>` 前缀、正文与右侧本地时间，不使用额外面板边框。
-fn user_message(
-    text: &str,
-    at_ms: Option<u64>,
-    first: bool,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    if !first {
-        lines.push(Line::from(String::new()));
-    }
-
-    let prefix = "> ";
-    let prefix_width = str_width(prefix);
-    let text_width = width.saturating_sub(prefix_width).max(8);
-    let rows = wrap_text(text, text_width);
-    let row_count = rows.len();
-    let clock = at_ms.and_then(format_clock);
-    let mut clock_pending = clock.as_ref();
-
+/// 用户消息：`>` 落在块标记列，正文落在正文列，右侧本地时间；不使用面板边框。
+fn user_message(text: &str, at_ms: Option<u64>, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let rows = wrap_text(text, prose_width(width));
+    let last = rows.len().saturating_sub(1);
+    let mut clock_pending = at_ms.and_then(format_clock);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(rows.len() + 2);
     for (index, row) in rows.into_iter().enumerate() {
-        let row_width = str_width(&row);
-        let mut spans = Vec::new();
-        if index == 0 {
-            spans.push(Span::styled(
-                prefix.to_owned(),
-                Style::new().fg(theme.gray_bright),
-            ));
+        let mut spans = vec![Span::raw(" ".repeat(TITLE_INDENT))];
+        spans.push(if index == 0 {
+            Span::styled("> ", Style::new().fg(theme.gray_bright))
         } else {
-            spans.push(Span::styled(" ".repeat(prefix_width), Style::new()));
-        }
+            Span::raw("  ")
+        });
+        let used = PROSE_INDENT + str_width(&row);
         spans.push(Span::styled(row, Style::new().fg(theme.text_primary)));
-
-        if index + 1 == row_count
-            && let Some(clock) = clock_pending
-            && width.saturating_sub(prefix_width + row_width + str_width(clock)) >= 2
+        if index == last
+            && let Some(clock) =
+                clock_pending.take_if(|clock| width.saturating_sub(used + str_width(clock)) >= 2)
         {
-            let gap = width - prefix_width - row_width - str_width(clock);
-            spans.push(Span::styled(" ".repeat(gap), Style::new()));
-            spans.push(Span::styled(clock.clone(), Style::new().fg(theme.gray_dim)));
-            clock_pending = None;
+            spans.push(Span::raw(" ".repeat(width - used - str_width(&clock))));
+            spans.push(Span::styled(clock, Style::new().fg(theme.gray_dim)));
         }
         lines.push(Line::from(spans));
     }
-
     if let Some(clock) = clock_pending {
-        let clock_width = str_width(clock);
         lines.push(Line::from(vec![
-            Span::styled(" ".repeat(width.saturating_sub(clock_width)), Style::new()),
-            Span::styled(clock.clone(), Style::new().fg(theme.gray_dim)),
+            Span::raw(" ".repeat(width.saturating_sub(str_width(&clock)))),
+            Span::styled(clock, Style::new().fg(theme.gray_dim)),
         ]));
     }
-
-    lines.push(Line::from(String::new()));
+    lines.push(Line::default());
     lines
 }
 
@@ -968,7 +991,7 @@ fn assistant_message(
     let theme = app.theme;
     let rendered = render_markdown_with(
         text,
-        width.saturating_sub(PROSE_INDENT).max(8),
+        prose_width(width).max(8),
         theme,
         RenderViews {
             charts: &entry.charts,
@@ -980,7 +1003,11 @@ fn assistant_message(
             spawn_images,
         },
     );
-    let mut lines: Vec<Line<'static>> = rendered.lines.into_iter().map(indent_prose).collect();
+    let mut lines: Vec<Line<'static>> = rendered
+        .lines
+        .into_iter()
+        .map(|line| hang(line, PROSE_INDENT, usize::MAX))
+        .collect();
     if let Some(footer) = prompt_footer(entry, width, theme) {
         lines.push(footer);
     }
@@ -1000,29 +1027,28 @@ fn assistant_message(
     }
 }
 
-/// 助手回复尾注：左侧 `耗时`、右侧本地时间；提示未结束（或耗时未知）时不占行。
+/// 助手回复尾注：左侧耗时、右侧本地时间；提示未结束（或耗时未知）时不占行。
 fn prompt_footer(entry: &Entry, width: usize, theme: &Theme) -> Option<Line<'static>> {
-    let elapsed = format_duration(entry.elapsed_ms?);
+    let text = labels::elapsed(entry.elapsed_ms?);
     let clock = entry.at_ms.and_then(format_clock);
-    let text = format!("耗时 {elapsed}");
     let used = PROSE_INDENT + str_width(&text);
     let mut spans = vec![
-        Span::styled(" ".repeat(PROSE_INDENT), Style::new()),
+        Span::raw(" ".repeat(PROSE_INDENT)),
         Span::styled(text, Style::new().fg(theme.gray_dim)),
     ];
     if let Some(clock) = clock {
         let gap = width.saturating_sub(used + str_width(&clock)).max(2);
-        spans.push(Span::styled(" ".repeat(gap), Style::new()));
+        spans.push(Span::raw(" ".repeat(gap)));
         spans.push(Span::styled(clock, Style::new().fg(theme.gray_dim)));
     }
-    Some(Line::from(spans))
+    Some(clip_line(Line::from(spans), width))
 }
 
-/// 思维链：标题行 `◆ Thought X.Xs (Yt/s)`；简略档预览正文末尾若干行；
-/// 完整档显示全部正文（低对比度引文带）。
+/// 思维链：标题行 `◆ Thought · 1.2s · 35 tok/s`；简略档预览正文末尾若干行
+/// （跳过段间空行，超出预算补一行省略提示）；完整档显示全部正文（低对比度引文带）。
 ///
 /// 耗时与速率只在本地测到数据时出现：历史恢复的块没有这两项，
-/// 不拿 `0.0s` 充数，否则会与「瞬间想完」混淆。
+/// 不拿 `0ms` 充数，否则会与「瞬间想完」混淆。
 fn thinking_block(
     text: &str,
     reasoning_tokens: Option<u64>,
@@ -1032,11 +1058,12 @@ fn thinking_block(
     level: DetailLevel,
 ) -> Vec<Line<'static>> {
     let theme = app.theme;
+    let dim = Style::new().fg(theme.gray_dim);
     let mut spans = vec![
-        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-        Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_thinking)),
+        Span::raw(" ".repeat(TITLE_INDENT)),
+        Span::styled("◆ ", Style::new().fg(theme.accent_thinking)),
         Span::styled(
-            "Thought".to_owned(),
+            labels::title::THOUGHT,
             Style::new()
                 .fg(theme.gray_bright)
                 .add_modifier(Modifier::BOLD),
@@ -1044,40 +1071,50 @@ fn thinking_block(
     ];
     if let Some(ms) = duration_ms {
         spans.push(Span::styled(
-            format!(" {:.1}s", ms as f64 / 1_000.0),
-            Style::new().fg(theme.gray_dim),
+            format!("{}{}", labels::SEP, labels::duration(ms)),
+            dim,
         ));
         if let Some(tokens) = reasoning_tokens
             && let Some(rate) = thinking_tokens_per_second(tokens, ms)
         {
             spans.push(Span::styled(
-                format!(" ({rate}t/s)"),
-                Style::new().fg(theme.gray_dim),
+                format!("{}{rate} {}", labels::SEP, labels::RATE_UNIT),
+                dim,
             ));
         }
     }
-    spans.push(Span::styled("  ".to_owned(), Style::new()));
     if level == DetailLevel::Hidden {
-        let key = app
+        let binding = app
             .preferences
             .keybindings
             .get("thinking")
             .and_then(|keys| keys.first())
             .map_or("ctrl+t", String::as_str);
         spans.push(Span::styled(
-            format!("  {key} 展开"),
-            Style::new().fg(theme.gray_dim),
+            format!("  {}", labels::hints(&[(binding, "展开")], usize::MAX)),
+            dim,
         ));
     }
-    let mut lines = vec![Line::from(spans)];
-    if level != DetailLevel::Hidden {
-        let mut rows = thinking_rows(text, width, theme);
-        if level == DetailLevel::Brief && rows.len() > BRIEF_THINKING_ROWS {
-            rows.drain(..rows.len() - BRIEF_THINKING_ROWS);
+    let mut lines = vec![clip_line(Line::from(spans), width)];
+    match level {
+        DetailLevel::Hidden => {}
+        DetailLevel::Full => lines.extend(thinking_rows(
+            render_markdown(text, prose_width(width).max(8), theme),
+            theme,
+        )),
+        DetailLevel::Brief => {
+            let mut rows = render_markdown(text, prose_width(width).max(8), theme);
+            // 段间空行不占预览预算
+            rows.retain(|line| line.width() > 0 && !plain_text(line).trim().is_empty());
+            let omitted = rows.len().saturating_sub(BRIEF_THINKING_ROWS);
+            rows.drain(..omitted);
+            if omitted > 0 {
+                rows.push(Line::from(Span::styled(labels::more_lines(omitted), dim)));
+            }
+            lines.extend(thinking_rows(rows, theme));
         }
-        lines.extend(rows);
     }
-    lines.push(Line::from(String::new()));
+    lines.push(Line::default());
     lines
 }
 
@@ -1088,14 +1125,13 @@ fn thinking_tokens_per_second(tokens: u64, duration_ms: u64) -> Option<u64> {
         .then(|| tokens.saturating_mul(1_000).saturating_add(duration_ms / 2) / duration_ms)
 }
 
-/// 思考正文的引文带行（markdown 渲染后逐行加低对比度前缀）。
-fn thinking_rows(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    render_markdown(text, width.saturating_sub(PROSE_INDENT + 2).max(8), theme)
-        .into_iter()
+/// 思考正文的引文带行：`▏ ` 落在块标记列，正文因此落在正文列；文字一律低对比度。
+fn thinking_rows(rows: Vec<Line<'static>>, theme: &Theme) -> Vec<Line<'static>> {
+    rows.into_iter()
         .map(|line| {
             let mut spans = vec![
-                Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-                Span::styled("▏ ".to_owned(), Style::new().fg(theme.accent_thinking)),
+                Span::raw(" ".repeat(TITLE_INDENT)),
+                Span::styled("▏ ", Style::new().fg(theme.accent_thinking)),
             ];
             spans.extend(
                 line.spans
@@ -1104,6 +1140,14 @@ fn thinking_rows(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> 
             );
             Line::from(spans)
         })
+        .collect()
+}
+
+/// 一行的纯文本（不含样式）。
+fn plain_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
         .collect()
 }
 
@@ -1116,21 +1160,24 @@ fn agent_message_block(
     level: DetailLevel,
 ) -> Vec<Line<'static>> {
     let (word, color) = outcome_label(meta.delivery, theme);
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-        Span::styled("◆ ".to_owned(), Style::new().fg(theme.accent_tool)),
-        Span::styled(
-            "IRC ".to_owned(),
-            Style::new()
-                .fg(theme.accent_tool)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("◀ ".to_owned(), Style::new().fg(theme.accent_tool)),
-        Span::styled(meta.from_title.clone(), Style::new().fg(theme.text_primary)),
-        Span::styled(format!(" · {word}"), Style::new().fg(color)),
-    ])];
-    let indent = " ".repeat(TITLE_INDENT + 2);
-    let rows = wrapped_text_rows(body, width.saturating_sub(TITLE_INDENT + 2));
+    let mut lines = vec![clip_line(
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled("◆ ", Style::new().fg(theme.accent_tool)),
+            Span::styled(
+                format!("{} ", labels::title::IRC),
+                Style::new()
+                    .fg(theme.accent_tool)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("◀ ", Style::new().fg(theme.accent_tool)),
+            Span::styled(meta.from_title.clone(), Style::new().fg(theme.text_primary)),
+            Span::styled(format!("{}{word}", labels::SEP), Style::new().fg(color)),
+        ]),
+        width,
+    )];
+    let indent = " ".repeat(PROSE_INDENT);
+    let rows = wrapped_text_rows(body, prose_width(width));
     let total = rows.len();
     let shown = match level {
         DetailLevel::Hidden => 0,
@@ -1139,54 +1186,58 @@ fn agent_message_block(
     };
     for row in rows.into_iter().take(shown) {
         lines.push(Line::from(vec![
-            Span::styled(indent.clone(), Style::new()),
+            Span::raw(indent.clone()),
             Span::styled(row, Style::new().fg(theme.text_primary)),
         ]));
     }
     if shown < total && level != DetailLevel::Hidden {
         lines.push(Line::from(vec![
-            Span::styled(indent, Style::new()),
+            Span::raw(indent),
             Span::styled(
-                format!("⋯ 还有 {} 行", total - shown),
+                labels::more_lines(total - shown),
                 Style::new().fg(theme.gray_dim),
             ),
         ]));
     }
-    lines.push(Line::from(String::new()));
+    lines.push(Line::default());
     lines
 }
 
-/// 系统提示：错误 `✘`、普通 `»`，缩进与块标题一致。
+/// 系统提示：错误 `✘`、普通 `»` 落在块标记列，正文落在正文列。
 fn note_block(text: &str, error: bool, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let (marker, color) = if error {
         ("✘ ", theme.accent_error)
     } else {
         ("» ", theme.gray_bright)
     };
-    let mut lines: Vec<Line<'static>> = wrap_text(text, width.saturating_sub(TITLE_INDENT + 2))
+    let mut lines: Vec<Line<'static>> = wrap_text(text, prose_width(width))
         .into_iter()
         .enumerate()
         .map(|(index, row)| {
             Line::from(vec![
-                Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+                Span::raw(" ".repeat(TITLE_INDENT)),
                 if index == 0 {
-                    Span::styled(marker.to_owned(), Style::new().fg(color))
+                    Span::styled(marker, Style::new().fg(color))
                 } else {
-                    Span::styled("  ".to_owned(), Style::new())
+                    Span::raw("  ")
                 },
                 Span::styled(row, Style::new().fg(color)),
             ])
         })
         .collect();
-    lines.push(Line::from(String::new()));
+    lines.push(Line::default());
     lines
 }
 
-/// 正文统一左缩进（助手回复、工具内容共用同一列）。
-fn indent_prose(line: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::styled(" ".repeat(PROSE_INDENT), Style::new())];
-    spans.extend(line.spans);
-    Line::from(spans)
+/// 正文行右移 `indent` 列，并截到 `width` 列（超宽以 `…` 收尾）：块正文落位的唯一出口。
+///
+/// 空行保持为空，块尾留白因此不会变成一串空格。
+fn hang(line: Line<'static>, indent: usize, width: usize) -> Line<'static> {
+    let mut line = clip_line(line, width);
+    if indent > 0 && line.width() > 0 {
+        line.spans.insert(0, Span::raw(" ".repeat(indent)));
+    }
+    line
 }
 
 /// UNIX 毫秒 → 本地 `HH:MM`；超出可表示范围时返回 `None`。
@@ -1199,16 +1250,16 @@ fn format_clock(at_ms: u64) -> Option<String> {
         .map(|at| at.format("%H:%M").to_string())
 }
 
-/// 代理状态的中文标签；TUI 各处共用一套措辞。
+/// 代理状态词；TUI 各处共用一套措辞（[`labels::status`]）。
 pub(crate) fn agent_status_label(status: moc_protocol::methods::AgentStatus) -> &'static str {
     use moc_protocol::methods::AgentStatus;
     match status {
-        AgentStatus::Queued => "排队中",
-        AgentStatus::Running => "运行中",
-        AgentStatus::Completed => "已完成",
-        AgentStatus::Stopped => "已停止",
-        AgentStatus::Failed => "失败",
-        AgentStatus::Idle => "空闲",
+        AgentStatus::Queued => labels::status::QUEUED,
+        AgentStatus::Running => labels::status::RUNNING,
+        AgentStatus::Completed => labels::status::DONE,
+        AgentStatus::Stopped => labels::status::STOPPED,
+        AgentStatus::Failed => labels::status::FAILED,
+        AgentStatus::Idle => labels::status::IDLE,
     }
 }
 
@@ -1216,9 +1267,9 @@ pub(crate) fn agent_status_label(status: moc_protocol::methods::AgentStatus) -> 
 pub(crate) fn outcome_word(outcome: moc_protocol::methods::AgentMessageOutcome) -> &'static str {
     use moc_protocol::methods::AgentMessageOutcome;
     match outcome {
-        AgentMessageOutcome::Injected => "已注入",
-        AgentMessageOutcome::Woken => "已唤醒",
-        AgentMessageOutcome::Failed => "失败",
+        AgentMessageOutcome::Injected => labels::status::INJECTED,
+        AgentMessageOutcome::Woken => labels::status::WOKEN,
+        AgentMessageOutcome::Failed => labels::status::FAILED,
     }
 }
 
@@ -1236,45 +1287,72 @@ fn outcome_label(
     (outcome_word(outcome), color)
 }
 
-/// 耗时展示：毫秒级给 `ms`，不足一分钟给一位小数，再长给 `Xm Ys`。
-fn format_duration(ms: u64) -> String {
-    if ms < 1_000 {
-        format!("{ms} ms")
-    } else if ms < 60_000 {
-        format!("{}.{}s", ms / 1000, (ms % 1000) / 100)
-    } else {
-        format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
-    }
-}
-
-fn tool_depth(app: &App, tool_id: &str) -> usize {
+/// 嵌套调用（PTC）相对顶层工具右移的列数：每层 2 格，最多 32 层。
+fn nest_indent(app: &App, tool: &ToolCallBlock) -> usize {
     let mut depth = 0;
-    let mut current = Some(tool_id);
-    while let Some(id) = current {
-        if depth >= 32 {
-            break;
+    let mut parent = tool.parent_id.as_deref();
+    while let Some(id) = parent
+        && depth < 32
+    {
+        depth += 1;
+        parent = app
+            .tool_block(id)
+            .and_then(|tool| tool.parent_id.as_deref());
+    }
+    depth * 2
+}
+
+/// 工具标题名：自定义标题（`IRC`、`Sidekick`、`! bash`）统一在此决定。
+fn tool_title<'a>(tool: &'a ToolCallBlock, args: &Value) -> &'a str {
+    match tool.name.as_str() {
+        "message_agent" => labels::title::IRC,
+        "sidekick" => labels::title::SIDEKICK,
+        _ => match args.get("exclude_from_context").and_then(Value::as_bool) {
+            Some(true) => "!! bash · 不进入上下文",
+            Some(false) => "! bash",
+            None => &tool.name,
+        },
+    }
+}
+
+/// 单卡标题行留给参数摘要的列宽：让出标记、bullet、工具名与一格间距。
+fn tool_summary_budget(name: &str, width: usize) -> usize {
+    width.saturating_sub(TITLE_INDENT + 2 + str_width(name) + 1)
+}
+
+/// 标题摘要（截到 `budget` 列），以及 bash 命令是否已整条放进标题。
+///
+/// bash 命令只出现一次：没有描述时命令默认进标题（单行截断），正文不再重复 `$` 行；
+/// 只有完整档且命令放不下（多行或超宽）时才留空标题、交给正文的 `$` 行完整折行展示。
+/// 有描述时标题给描述，命令同样交给正文。
+fn title_summary(
+    tool: &ToolCallBlock,
+    args: &Value,
+    budget: usize,
+    level: DetailLevel,
+) -> (String, bool) {
+    if tool.name == "bash" && ui_description(args).is_none() {
+        let command = args
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let fits = !command.contains('\n') && str_width(command) <= budget;
+        if fits || level != DetailLevel::Full {
+            return (single_line_command(command, budget), true);
         }
-        current = app.blocks.iter().find_map(|entry| match &entry.block {
-            Block::Tool(tool) if tool.id == id => tool.parent_id.as_deref(),
-            _ => None,
-        });
-        depth += usize::from(current.is_some());
+        return (String::new(), false);
     }
-    depth
+    (
+        crate::render::wrap::truncate(tool_summary(tool, args), budget).into_owned(),
+        false,
+    )
 }
 
-fn indent_tool_lines(mut lines: Vec<Line<'static>>, depth: usize) -> Vec<Line<'static>> {
-    if depth == 0 {
-        return lines;
-    }
-    let prefix = Span::raw(" ".repeat(depth * 2));
-    for line in &mut lines {
-        line.spans.insert(0, prefix.clone());
-    }
-    lines
-}
-
-/// 工具块：标题行 + 正文；正文行数与耗时尾注由工具策略和档位共同决定。
+/// 工具块：标题行 + 正文 + 耗时尾注 + 尾随留白。
+///
+/// 标题落在块标记列，正文与尾注落在正文列；正文行数与耗时尾注由工具策略和档位
+/// 共同决定，收起态（无正文、read 非完整档）只留标题行。
 fn render_tool(
     tool: &ToolCallBlock,
     app: &App,
@@ -1283,78 +1361,88 @@ fn render_tool(
     spawn_images: bool,
 ) -> EntryLines {
     let theme = app.theme;
-    let depth = tool_depth(app, &tool.id);
-    let mut lines = Vec::new();
+    let nest = nest_indent(app, tool);
+    let width = width.saturating_sub(nest);
     let args: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
 
-    // 标题行：bullet + 工具名 + 参数摘要
     let (bullet, bullet_color) = match (tool.running, tool.status) {
         (true, _) => ("▸", theme.accent_running),
         (_, Some(moc_protocol::methods::ToolStatus::Completed)) => ("◆", theme.accent_tool),
         (_, Some(_)) => ("✘", theme.accent_error),
         (_, None) => ("◆", theme.accent_tool),
     };
-    let summary = tool_summary(tool, &args);
-    let name = match tool.name.as_str() {
-        // 代理间消息沿用 `!! bash` 的自定义标题先例。
-        "message_agent" => "IRC",
-        "sidekick" => "Sidekick",
-        _ => match args.get("exclude_from_context").and_then(Value::as_bool) {
-            Some(true) => "!! bash · 不进入上下文",
-            Some(false) => "! bash",
-            None => &tool.name,
-        },
-    };
-    lines.push(Line::from(vec![
-        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
+    let name = tool_title(tool, &args);
+    let (summary, in_title) = title_summary(tool, &args, tool_summary_budget(name, width), level);
+    let mut title = vec![
+        Span::raw(" ".repeat(TITLE_INDENT)),
         Span::styled(format!("{bullet} "), Style::new().fg(bullet_color)),
         Span::styled(
             name.to_owned(),
             Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!(" {summary}"), Style::new().fg(theme.text_secondary)),
-    ]));
-
-    if !tool.has_body() {
-        return EntryLines::plain(indent_tool_lines(lines, depth));
+    ];
+    if !summary.is_empty() {
+        title.push(Span::styled(
+            format!(" {summary}"),
+            Style::new().fg(theme.text_secondary),
+        ));
     }
-    // read 的成功结果只在完整档展开；隐藏／简略档收起为单行标题，不留给白与耗时。
-    if tool_body_policy(&tool.name) == ToolBody::FullOnly
-        && !tool_is_error(tool)
-        && level != DetailLevel::Full
-    {
-        return EntryLines::plain(indent_tool_lines(lines, depth));
+    let mut lines = vec![clip_line(Line::from(title), width)];
+    let mut placements = Vec::new();
+    if shows_tool_body(tool, level) {
+        let body_width = prose_width(width);
+        let (body, body_placements) =
+            tool_body(tool, &args, app, body_width, level, spawn_images, in_title);
+        let base = lines.len();
+        lines.extend(
+            body.into_iter()
+                .map(|line| hang(line, PROSE_INDENT, body_width)),
+        );
+        placements = body_placements;
+        for placement in &mut placements {
+            placement.row += base;
+            placement.x = placement
+                .x
+                .saturating_add(u16::try_from(PROSE_INDENT).unwrap_or(u16::MAX));
+        }
+        // 尾注：耗时（失败原因由正文承载）
+        if let Some(duration) = tool.duration_ms {
+            lines.push(hang(
+                Line::from(Span::styled(
+                    labels::elapsed(duration),
+                    Style::new().fg(theme.gray_dim),
+                )),
+                PROSE_INDENT,
+                body_width,
+            ));
+        }
     }
-    let base = lines.len();
-    let (body, mut placements) = tool_body(tool, &args, app, width, level, spawn_images);
-    lines.extend(body);
-    for placement in &mut placements {
-        placement.row += base;
-        // 嵌套调用（PTC）整体右移，图片跟着正文一起缩进
-        placement.x = placement
-            .x
-            .saturating_add(u16::try_from(depth * 2).unwrap_or(u16::MAX));
+    lines.push(Line::default());
+    if nest > 0 {
+        // 嵌套调用整体右移，图片跟着正文一起缩进
+        lines = lines
+            .into_iter()
+            .map(|line| hang(line, nest, usize::MAX))
+            .collect();
+        for placement in &mut placements {
+            placement.x = placement
+                .x
+                .saturating_add(u16::try_from(nest).unwrap_or(u16::MAX));
+        }
     }
-    // 尾注：耗时；尾随留白（失败原因由正文承载）
-    if let Some(duration) = tool.duration_ms {
-        lines.push(Line::from(Span::styled(
-            format!("  ⏱ {}", format_duration(duration)),
-            Style::new().fg(theme.gray_dim),
-        )));
-    }
-    lines.push(Line::from(String::new()));
     EntryLines {
-        lines: indent_tool_lines(lines, depth),
+        lines,
         tables: Vec::new(),
         images: placements,
     }
 }
 
-/// 工具正文行（不含标题、耗时尾注与留白，无缩进）。
+/// 工具正文行（不含标题、耗时尾注与留白，不带缩进，宽度不超过 `width`）。
 ///
 /// 档位与工具策略共同决定正文：`Count` 在隐藏／简略档只报数量，`FullOnly`
 /// 只在完整档展开；其余内容按 [`content_limit`] 截断，被略去的内容折算成一行
-/// `⋯ 还有 N 行`（`bash` 结果取尾部最新输出，`grep` 等文本结果取开头）。
+/// 省略提示（`bash` 结果取尾部最新输出，`grep` 等文本结果取开头）。
+/// `command_in_title` 为真时 bash 命令已在标题里，正文不再重复 `$` 行。
 fn tool_body(
     tool: &ToolCallBlock,
     args: &Value,
@@ -1362,9 +1450,9 @@ fn tool_body(
     width: usize,
     level: DetailLevel,
     spawn_images: bool,
+    command_in_title: bool,
 ) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
     let theme = app.theme;
-    let inner_width = width.saturating_sub(4);
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
 
@@ -1375,7 +1463,7 @@ fn tool_body(
             && let Some(text) = tool_count_text(tool, result)
         {
             lines.push(Line::from(Span::styled(
-                truncate_to_width(format!("  {text}"), width),
+                text,
                 Style::new().fg(theme.gray_dim),
             )));
         }
@@ -1393,37 +1481,32 @@ fn tool_body(
     let limit = content_limit(level);
     let mut lines = Vec::new();
     let mut dropped = 0usize;
+    let text_row = |text: String, color| Line::from(Span::styled(text, Style::new().fg(color)));
 
     if let Some(diff) = &tool.diff {
         let rendered = diff::rendered_row_count(diff, limit);
-        let mut body = diff::render_diff(diff, inner_width, theme, limit);
+        lines = diff::render_diff(diff, width, theme, limit);
         dropped += diff::row_count(diff).saturating_sub(rendered);
-        lines.extend(body.drain(..).map(indent_line));
     } else if tool.name == "bash" {
-        let command = args
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if level == DetailLevel::Full {
-            let (shown_command, command_dropped) = head_lines(command, limit);
-            for (index, row) in wrap_text(&shown_command, inner_width.saturating_sub(2))
-                .into_iter()
-                .enumerate()
-            {
-                lines.push(Line::from(Span::styled(
-                    format!("{}{}", if index == 0 { "  $ " } else { "    " }, row),
-                    Style::new().fg(theme.command),
-                )));
+        if !command_in_title {
+            let command = args
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if level == DetailLevel::Full {
+                let (shown_command, command_dropped) = head_lines(command, limit);
+                for (index, row) in wrap_text(&shown_command, width.saturating_sub(2))
+                    .into_iter()
+                    .enumerate()
+                {
+                    let lead = if index == 0 { "$ " } else { "  " };
+                    lines.push(text_row(format!("{lead}{row}"), theme.command));
+                }
+                dropped += command_dropped;
+            } else {
+                let command = single_line_command(command, width.saturating_sub(2));
+                lines.push(text_row(format!("$ {command}"), theme.command));
             }
-            dropped += command_dropped;
-        } else {
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "  $ {}",
-                    single_line_command(command, inner_width.saturating_sub(4))
-                ),
-                Style::new().fg(theme.command),
-            )));
         }
         if let Some(result) = &tool.result {
             let budget = if level == DetailLevel::Full {
@@ -1431,37 +1514,17 @@ fn tool_body(
             } else {
                 BASH_BRIEF_OUTPUT_ROWS
             };
-            let rows = clamp_rows(
-                result,
-                inner_width.saturating_sub(2),
-                budget,
-                BodyEdge::Tail,
-            );
+            let rows = clamp_rows(result, width, budget, BodyEdge::Tail);
             dropped += rows.dropped;
-            lines.extend(rows.rows.into_iter().map(|text| {
-                Line::from(Span::styled(
-                    format!("  {text}"),
-                    Style::new().fg(if is_error {
-                        theme.diff_delete_fg
-                    } else {
-                        theme.text_secondary
-                    }),
-                ))
-            }));
-        }
-    } else if tool.name == "grep" {
-        if let Some(result) = &tool.result {
-            let rows = clamp_rows(result, inner_width.saturating_sub(2), limit, BodyEdge::Head);
-            dropped += rows.dropped;
-            lines.extend(rows.rows.into_iter().map(|text| {
-                Line::from(Span::styled(
-                    format!("  {text}"),
-                    Style::new().fg(theme.text_secondary),
-                ))
-            }));
+            let color = if is_error {
+                theme.diff_delete_fg
+            } else {
+                theme.text_secondary
+            };
+            lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
         }
     } else if tool.name == "message_agent" {
-        let (rows, omitted) = message_agent_tool_rows(tool, args, inner_width, theme, limit);
+        let (rows, omitted) = message_agent_tool_rows(tool, args, width, theme, limit);
         dropped += omitted;
         lines.extend(rows);
     } else if tool.name == "wait_agent" {
@@ -1469,7 +1532,7 @@ fn tool_body(
         dropped += omitted;
         lines.extend(rows);
     } else if tool.name == "sidekick" && !is_error {
-        let (rows, omitted) = sidekick_tool_rows(tool, inner_width, theme, limit);
+        let (rows, omitted) = sidekick_tool_rows(tool, width, theme, limit);
         dropped += omitted;
         lines.extend(rows);
     } else if tool.name == "ask" && !is_error {
@@ -1482,15 +1545,15 @@ fn tool_body(
             .max()
             .unwrap_or(0)
             .min(ASK_TRANSCRIPT_KEY_MAX);
-        let answer_width = inner_width.saturating_sub(key_width + 4);
+        let answer_width = width.saturating_sub(key_width + 2);
         for (index, (key, text, unanswered)) in pairs.iter().enumerate() {
             if index >= limit {
                 dropped += 1;
                 continue;
             }
-            let mut spans = vec![Span::styled("  ".to_owned(), Style::new())];
+            let mut spans = Vec::with_capacity(2);
             if !key.is_empty() {
-                let key = truncate_to_width(key.clone(), key_width);
+                let key = crate::render::wrap::truncate(key.clone(), key_width).into_owned();
                 let pad = " ".repeat(key_width.saturating_sub(str_width(&key)));
                 spans.push(Span::styled(
                     format!("{key}{pad}: "),
@@ -1498,7 +1561,7 @@ fn tool_body(
                 ));
             }
             spans.push(Span::styled(
-                truncate_to_width(text.clone(), answer_width),
+                crate::render::wrap::truncate(text.clone(), answer_width).into_owned(),
                 if *unanswered {
                     Style::new()
                         .fg(theme.accent_warning)
@@ -1510,23 +1573,20 @@ fn tool_body(
             lines.push(Line::from(spans));
         }
     } else if let Some(result) = &tool.result {
-        let rows = clamp_rows(result, inner_width, limit, BodyEdge::Head);
+        // grep 与通用文本结果：取开头
+        let rows = clamp_rows(result, width, limit, BodyEdge::Head);
         dropped += rows.dropped;
-        lines.extend(rows.rows.into_iter().map(|text| {
-            Line::from(Span::styled(
-                format!("  {text}"),
-                Style::new().fg(theme.text_secondary),
-            ))
-        }));
+        lines.extend(
+            rows.rows
+                .into_iter()
+                .map(|text| text_row(text, theme.text_secondary)),
+        );
     }
 
     // 省略提示统一由此处追加；diff 分支由 `render_diff` 自己产出（只有它知道
     // diff 的总行数），因此不叠加第二行。
     if dropped > 0 && tool.diff.is_none() {
-        lines.push(Line::from(Span::styled(
-            format!("  ⋯ 还有 {dropped} 行"),
-            Style::new().fg(theme.gray_dim),
-        )));
+        lines.push(text_row(labels::more_lines(dropped), theme.gray_dim));
     }
     let placements = tool_images(tool, app, width, spawn_images, &mut lines);
     (lines, placements)
@@ -1641,7 +1701,7 @@ fn find_file_count(result: &str) -> usize {
 /// 把命令折成单行预览：换行与连续空白折叠成一个空格，再按宽度截断。
 fn single_line_command(command: &str, width: usize) -> String {
     let flattened = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    truncate_to_width(flattened, width)
+    crate::render::wrap::truncate(flattened, width).into_owned()
 }
 
 /// 把工具结果里的图片追加到正文行后，返回它们的落位。
@@ -1660,15 +1720,12 @@ fn tool_images(
     if tool.images.is_empty() {
         return placements;
     }
-    // 正文缩进 2 格 + 右侧余量 4 格；图片按这点宽度排版
-    let max_cols = u16::try_from(width.saturating_sub(6)).unwrap_or(u16::MAX);
+    let max_cols = u16::try_from(width).unwrap_or(u16::MAX);
     let shown = tool.images.len().min(MAX_TOOL_IMAGES);
+    let note = |text: String| Line::from(Span::styled(text, Style::new().fg(theme.gray_dim)));
     for image in &tool.images[..shown] {
         let Some(graphics) = app.graphics else {
-            lines.push(Line::from(Span::styled(
-                format!("  [图片 {}]", image.media_type),
-                Style::new().fg(theme.gray_dim),
-            )));
+            lines.push(note(format!("[图片 {}]", image.media_type)));
             continue;
         };
         let state = if spawn_images {
@@ -1686,10 +1743,7 @@ fn tool_images(
         match state {
             ImageState::Ready(prepared) => {
                 let Some(layout) = image_layout(prepared.size(), graphics.cell, max_cols) else {
-                    lines.push(Line::from(Span::styled(
-                        format!("  [图片 {}]", image.media_type),
-                        Style::new().fg(theme.gray_dim),
-                    )));
+                    lines.push(note(format!("[图片 {}]", image.media_type)));
                     continue;
                 };
                 let row = lines.len();
@@ -1698,28 +1752,23 @@ fn tool_images(
                 }
                 placements.push(ImagePlacement {
                     row,
-                    // 正文行统一带 2 格前缀
-                    x: 2,
+                    // 正文行不带内部前缀，落位列由调用方随正文一起平移
+                    x: 0,
                     cols: layout.cols,
                     rows: layout.rows,
                     px: layout.px,
                     key: image.key.clone(),
                 });
             }
-            ImageState::Pending => lines.push(Line::from(Span::styled(
-                "  图片解码中…",
-                Style::new().fg(theme.gray_dim),
-            ))),
-            ImageState::Failed(reason) => lines.push(Line::from(Span::styled(
-                format!("  图片无法显示：{reason}"),
-                Style::new().fg(theme.gray_dim),
-            ))),
+            ImageState::Pending => lines.push(note("图片解码中…".to_owned())),
+            ImageState::Failed(reason) => lines.push(note(format!("图片无法显示：{reason}"))),
         }
     }
     if tool.images.len() > shown {
-        lines.push(Line::from(Span::styled(
-            format!("  ⋯ 还有 {} 张图片", tool.images.len() - shown),
-            Style::new().fg(theme.gray_dim),
+        lines.push(note(format!(
+            "{} 还有 {} 张图片",
+            labels::OMITTED,
+            tool.images.len() - shown
         )));
     }
     placements
@@ -1732,13 +1781,17 @@ fn tool_body_rows(
     app: &App,
     width: usize,
     level: DetailLevel,
+    command_in_title: bool,
 ) -> usize {
-    let inner_width = width.saturating_sub(4);
     let is_error = tool_is_error(tool);
     let policy = tool_body_policy(&tool.name);
 
     if policy == ToolBody::Count && level != DetailLevel::Full && !is_error {
-        return usize::from(tool.result.is_some());
+        return usize::from(
+            tool.result
+                .as_deref()
+                .is_some_and(|result| tool_count_text(tool, result).is_some()),
+        );
     }
     if policy == ToolBody::FullOnly && level != DetailLevel::Full && !is_error {
         return 0;
@@ -1756,16 +1809,18 @@ fn tool_body_rows(
         rows += rendered;
         dropped += diff::row_count(diff).saturating_sub(rendered);
     } else if tool.name == "bash" {
-        let command = args
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if level == DetailLevel::Full {
-            let (shown_command, command_dropped) = head_lines(command, limit);
-            rows += wrap_text(&shown_command, inner_width.saturating_sub(2)).len();
-            dropped += command_dropped;
-        } else {
-            rows += 1;
+        if !command_in_title {
+            let command = args
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if level == DetailLevel::Full {
+                let (shown_command, command_dropped) = head_lines(command, limit);
+                rows += wrap_text(&shown_command, width.saturating_sub(2)).len();
+                dropped += command_dropped;
+            } else {
+                rows += 1;
+            }
         }
         if let Some(result) = &tool.result {
             let budget = if level == DetailLevel::Full {
@@ -1773,23 +1828,12 @@ fn tool_body_rows(
             } else {
                 BASH_BRIEF_OUTPUT_ROWS
             };
-            let clamped = clamp_rows(
-                result,
-                inner_width.saturating_sub(2),
-                budget,
-                BodyEdge::Tail,
-            );
+            let clamped = clamp_rows(result, width, budget, BodyEdge::Tail);
             rows = rows.saturating_add(clamped.shown);
             dropped = dropped.saturating_add(clamped.dropped);
         }
-    } else if tool.name == "grep" {
-        if let Some(result) = &tool.result {
-            let clamped = clamp_rows(result, inner_width.saturating_sub(2), limit, BodyEdge::Head);
-            rows += clamped.shown;
-            dropped += clamped.dropped;
-        }
     } else if tool.name == "message_agent" {
-        let (count, omitted) = message_agent_rows_count(tool, args, inner_width, limit);
+        let (count, omitted) = message_agent_rows_count(tool, args, width, limit);
         rows += count;
         dropped += omitted;
     } else if tool.name == "wait_agent" {
@@ -1797,7 +1841,7 @@ fn tool_body_rows(
         rows += count;
         dropped += omitted;
     } else if tool.name == "sidekick" && !is_error {
-        let (count, omitted) = sidekick_rows_count(tool, inner_width, limit);
+        let (count, omitted) = sidekick_rows_count(tool, width, limit);
         rows += count;
         dropped += omitted;
     } else if tool.name == "ask" && !is_error {
@@ -1806,7 +1850,7 @@ fn tool_body_rows(
         rows += count.min(limit);
         dropped += count.saturating_sub(limit);
     } else if let Some(result) = &tool.result {
-        let clamped = clamp_rows(result, inner_width, limit, BodyEdge::Head);
+        let clamped = clamp_rows(result, width, limit, BodyEdge::Head);
         rows += clamped.shown;
         dropped += clamped.dropped;
     }
@@ -1851,11 +1895,11 @@ fn message_agent_tool_rows(
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let clamped = clamp_rows(message, width.saturating_sub(2), limit, BodyEdge::Head);
+    let clamped = clamp_rows(message, width, limit, BodyEdge::Head);
     dropped += clamped.dropped;
     for row in clamped.rows {
         lines.push(Line::from(Span::styled(
-            format!("  {row}"),
+            row,
             Style::new().fg(theme.text_primary),
         )));
     }
@@ -1876,7 +1920,6 @@ fn message_agent_tool_rows(
         }
         let (word, color) = outcome_label(receipt.outcome, theme);
         let mut spans = vec![
-            Span::styled("  ".to_owned(), Style::new()),
             Span::styled(
                 format!("{} ", receipt.title),
                 Style::new().fg(theme.text_secondary),
@@ -1933,16 +1976,16 @@ fn wait_agent_tool_rows(
             AgentStatus::Idle => ("○", theme.gray_dim),
         };
         let mut spans = vec![
-            Span::styled(format!("  {glyph} "), Style::new().fg(color)),
+            Span::styled(format!("{glyph} "), Style::new().fg(color)),
             Span::styled(title, Style::new().fg(theme.text_primary)),
             Span::styled(
-                format!(" · {}", agent_status_label(status)),
+                format!("{}{}", labels::SEP, agent_status_label(status)),
                 Style::new().fg(color),
             ),
         ];
         if elapsed_ms > 0 {
             spans.push(Span::styled(
-                format!(" · {}", format_duration(elapsed_ms)),
+                format!("{}{}", labels::SEP, labels::duration(elapsed_ms)),
                 Style::new().fg(theme.gray_dim),
             ));
         }
@@ -1950,7 +1993,7 @@ fn wait_agent_tool_rows(
             && !activity.is_empty()
         {
             spans.push(Span::styled(
-                format!(" · {activity}"),
+                format!("{}{activity}", labels::SEP),
                 Style::new().fg(theme.gray_dim),
             ));
         }
@@ -1982,16 +2025,11 @@ fn sidekick_tool_rows(
         return wait_agent_tool_rows(tool, theme, limit);
     };
     let Ok(json) = serde_json::from_str::<Value>(result) else {
-        let clamped = clamp_rows(result, width.saturating_sub(2), limit, BodyEdge::Head);
+        let clamped = clamp_rows(result, width, limit, BodyEdge::Head);
         let lines = clamped
             .rows
             .into_iter()
-            .map(|row| {
-                Line::from(Span::styled(
-                    format!("  {row}"),
-                    Style::new().fg(theme.text_secondary),
-                ))
-            })
+            .map(|row| Line::from(Span::styled(row, Style::new().fg(theme.text_secondary))))
             .collect();
         return (lines, clamped.dropped);
     };
@@ -2008,23 +2046,26 @@ fn sidekick_tool_rows(
         _ => ("▸", theme.accent_running),
     };
     let mut spans = vec![
-        Span::styled(format!("  {glyph} "), Style::new().fg(color)),
-        Span::styled("Sidekick", Style::new().fg(theme.text_primary)),
+        Span::styled(format!("{glyph} "), Style::new().fg(color)),
+        Span::styled(labels::title::SIDEKICK, Style::new().fg(theme.text_primary)),
     ];
     if let Some(delivery) = json.get("delivery").and_then(Value::as_str) {
         spans.push(Span::styled(
-            format!(" · {delivery}"),
+            format!("{}{delivery}", labels::SEP),
             Style::new().fg(theme.gray_dim),
         ));
     }
     if !status.is_empty() {
-        spans.push(Span::styled(format!(" · {status}"), Style::new().fg(color)));
+        spans.push(Span::styled(
+            format!("{}{status}", labels::SEP),
+            Style::new().fg(color),
+        ));
     }
     if let Some(model) = json.get("model").and_then(Value::as_str)
         && !model.is_empty()
     {
         spans.push(Span::styled(
-            format!(" · {model}"),
+            format!("{}{model}", labels::SEP),
             Style::new().fg(theme.gray_dim),
         ));
     }
@@ -2032,19 +2073,19 @@ fn sidekick_tool_rows(
     // 结构化结果：状态摘要行 + 每条 open_issue 一行。
     if let Some(result_obj) = json.get("result").and_then(Value::as_object) {
         lines.push(Line::from(Span::styled(
-            format!("  {}", sidekick_result_summary(result_obj)),
+            sidekick_result_summary(result_obj),
             Style::new().fg(theme.text_secondary),
         )));
         if let Some(issues) = result_obj.get("open_issues").and_then(Value::as_array) {
             let budget = limit.saturating_sub(lines.len());
             for issue in issues.iter().take(budget) {
                 // 每条恒占一行：与 `sidekick_rows_count` 的计数保持一致。
-                let text = truncate_to_width(
-                    issue.as_str().unwrap_or_default().to_owned(),
-                    width.saturating_sub(4),
+                let text = crate::render::wrap::truncate(
+                    issue.as_str().unwrap_or_default(),
+                    width.saturating_sub(2),
                 );
                 lines.push(Line::from(Span::styled(
-                    format!("  ! {text}"),
+                    format!("! {text}"),
                     Style::new().fg(theme.accent_running),
                 )));
             }
@@ -2055,7 +2096,7 @@ fn sidekick_tool_rows(
         && !note.is_empty()
     {
         lines.push(Line::from(Span::styled(
-            format!("  {note}"),
+            note.to_owned(),
             Style::new().fg(theme.gray_dim),
         )));
     }
@@ -2063,11 +2104,11 @@ fn sidekick_tool_rows(
         && !report.is_empty()
     {
         let budget = limit.saturating_sub(lines.len()).max(1);
-        let clamped = clamp_rows(report, width.saturating_sub(2), budget, BodyEdge::Head);
+        let clamped = clamp_rows(report, width, budget, BodyEdge::Head);
         dropped += clamped.dropped;
         for row in clamped.rows {
             lines.push(Line::from(Span::styled(
-                format!("  {row}"),
+                row,
                 Style::new().fg(theme.text_primary),
             )));
         }
@@ -2081,7 +2122,7 @@ fn sidekick_rows_count(tool: &ToolCallBlock, width: usize, limit: usize) -> (usi
         return wait_agent_rows_count(tool, limit);
     };
     let Ok(json) = serde_json::from_str::<Value>(result) else {
-        let clamped = clamp_rows(result, width.saturating_sub(2), limit, BodyEdge::Head);
+        let clamped = clamp_rows(result, width, limit, BodyEdge::Head);
         return (clamped.shown, clamped.dropped);
     };
     let mut rows = 1 + usize::from(
@@ -2105,7 +2146,7 @@ fn sidekick_rows_count(tool: &ToolCallBlock, width: usize, limit: usize) -> (usi
         && !report.is_empty()
     {
         let budget = limit.saturating_sub(rows).max(1);
-        let clamped = clamp_rows(report, width.saturating_sub(2), budget, BodyEdge::Head);
+        let clamped = clamp_rows(report, width, budget, BodyEdge::Head);
         rows += clamped.shown;
         dropped += clamped.dropped;
     }
@@ -2268,15 +2309,8 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
                 .unwrap_or_default();
             format!("{path}{counts}")
         }
-        "bash" => ui_description(args)
-            .map(str::to_owned)
-            .or_else(|| {
-                args.get("command")
-                    .and_then(Value::as_str)
-                    .and_then(|command| command.lines().next())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default(),
+        // 命令本身由 [`title_summary`] 决定进标题还是进正文，这里只给描述
+        "bash" => ui_description(args).map(str::to_owned).unwrap_or_default(),
         "read" => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
             let offset = args.get("offset").and_then(Value::as_u64);
@@ -2331,18 +2365,33 @@ fn tool_summary(tool: &ToolCallBlock, args: &Value) -> String {
             let mut summary = format!("▶ {target}");
             if let Some(receipts) = message_receipts(tool) {
                 if target == "all" {
-                    summary.push_str(" · 广播");
+                    summary.push_str(&format!("{}{}", labels::SEP, labels::status::BROADCAST));
                 }
                 let failed = receipts
                     .iter()
                     .filter(|receipt| receipt.outcome == AgentMessageOutcome::Failed)
                     .count();
                 match receipts.as_slice() {
-                    [receipt] => summary.push_str(&format!(" · {}", outcome_word(receipt.outcome))),
-                    receipts => summary.push_str(&format!(" · {} 已送达", receipts.len() - failed)),
+                    [receipt] => {
+                        summary.push_str(&format!(
+                            "{}{}",
+                            labels::SEP,
+                            outcome_word(receipt.outcome)
+                        ));
+                    }
+                    receipts => summary.push_str(&format!(
+                        "{}{} {}",
+                        labels::SEP,
+                        receipts.len() - failed,
+                        labels::status::DELIVERED
+                    )),
                 }
                 if failed > 0 {
-                    summary.push_str(&format!(" · {failed} 失败"));
+                    summary.push_str(&format!(
+                        "{}{failed} {}",
+                        labels::SEP,
+                        labels::status::FAILED
+                    ));
                 }
             }
             summary
@@ -2508,32 +2557,6 @@ fn head_lines(text: &str, limit: usize) -> (String, usize) {
     (shown, dropped)
 }
 
-/// 截断到显示宽度上限，末尾补省略号。
-pub(crate) fn truncate_to_width(text: String, max: usize) -> String {
-    if str_width(&text) <= max {
-        return text;
-    }
-    let mut out = String::new();
-    let mut used = 0usize;
-    for ch in text.chars() {
-        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + width + 1 > max {
-            out.push('…');
-            return out;
-        }
-        out.push(ch);
-        used += width;
-    }
-    out
-}
-
-/// 整体右移两格（diff 与工具内容的内边距）。
-fn indent_line(line: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::styled("  ".to_owned(), Style::new())];
-    spans.extend(line.spans);
-    Line::from(spans)
-}
-
 /// Todo 状态符号与样式：转写树与 HUD 卡片共用。
 ///
 /// 返回 `(符号, 符号样式, 任务文本样式)`；Completed 只给文本加删除线，
@@ -2559,7 +2582,16 @@ pub(crate) fn todo_status_marker(
     (glyph, marker, text)
 }
 
-/// Todo 树（omp 风格）：阶段行带完成进度，条目按状态给符号与颜色。
+/// Todo 条目文本的列：树挂在正文列，让过 `│  ` 竖线（3 格）与状态符号（2 格）。
+const TODO_ITEM_INDENT: usize = PROSE_INDENT + 5;
+
+/// Todo 条目文本的折行宽度（估高与渲染共用）。
+fn todo_item_width(width: usize) -> usize {
+    width.saturating_sub(TODO_ITEM_INDENT).max(1)
+}
+
+/// Todo 树（omp 风格）：标题落在块标记列，阶段树挂在正文列；
+/// 阶段行带完成进度，条目按状态给符号与颜色，续行悬挂对齐条目文本。
 fn render_todo(
     phases: &[moc_protocol::methods::TodoPhase],
     app: &App,
@@ -2568,15 +2600,19 @@ fn render_todo(
     use moc_protocol::methods::TodoStatus;
 
     let theme = app.theme;
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-        Span::styled(
-            "◆ 任务".to_owned(),
-            Style::new()
-                .fg(theme.accent_user)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ])];
+    let rail_style = Style::new().fg(theme.border);
+    let mut lines = vec![clip_line(
+        Line::from(vec![
+            Span::raw(" ".repeat(TITLE_INDENT)),
+            Span::styled(
+                format!("◆ {}", labels::title::TASKS),
+                Style::new()
+                    .fg(theme.accent_user)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        width,
+    )];
     let phase_count = phases.len();
     for (phase_index, phase) in phases.iter().enumerate() {
         let is_last_phase = phase_index + 1 == phase_count;
@@ -2587,12 +2623,17 @@ fn render_todo(
             .filter(|item| item.status == TodoStatus::Completed)
             .count();
         let total = phase.items.len();
+        let count = format!("{}{done}/{total}", labels::SEP);
+        let name_budget = width.saturating_sub(PROSE_INDENT + 3 + str_width(&count));
         lines.push(Line::from(vec![
-            Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-            Span::styled(branch.to_owned(), Style::new().fg(theme.border)),
-            Span::styled(phase.phase.clone(), Style::new().fg(theme.text_secondary)),
+            Span::raw(" ".repeat(PROSE_INDENT)),
+            Span::styled(branch, rail_style),
             Span::styled(
-                format!(" · {done}/{total}"),
+                crate::render::wrap::truncate(phase.phase.as_str(), name_budget).into_owned(),
+                Style::new().fg(theme.text_secondary),
+            ),
+            Span::styled(
+                count,
                 Style::new().fg(if done == total && total > 0 {
                     theme.accent_success
                 } else {
@@ -2600,31 +2641,27 @@ fn render_todo(
                 }),
             ),
         ]));
-        let item_branch = if is_last_phase { "    " } else { "│   " };
+        let rail = if is_last_phase { "   " } else { "│  " };
         for item in &phase.items {
             let (marker, marker_style, text_style) = todo_status_marker(item.status, theme);
-            let indent = format!("{item_branch}  ");
-            let budget = width.saturating_sub(TITLE_INDENT + indent.len() + 4).max(8);
-            for (index, row) in wrap_text(&item.task, budget).into_iter().enumerate() {
-                if index == 0 {
-                    lines.push(Line::from(vec![
-                        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-                        Span::styled(item_branch.to_owned(), Style::new().fg(theme.border)),
-                        Span::styled(marker.to_owned(), marker_style),
-                        Span::styled(row, text_style),
-                    ]));
-                } else {
-                    lines.push(Line::from(vec![
-                        Span::styled(" ".repeat(TITLE_INDENT), Style::new()),
-                        Span::styled(item_branch.to_owned(), Style::new().fg(theme.border)),
-                        Span::styled("    ".to_owned(), Style::new()),
-                        Span::styled(row, text_style),
-                    ]));
-                }
+            for (index, row) in wrap_text(&item.task, todo_item_width(width))
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(PROSE_INDENT)),
+                    Span::styled(rail, rail_style),
+                    if index == 0 {
+                        Span::styled(marker, marker_style)
+                    } else {
+                        Span::raw("  ")
+                    },
+                    Span::styled(row, text_style),
+                ]));
             }
         }
     }
-    lines.push(Line::from(String::new()));
+    lines.push(Line::default());
     lines
 }
 
@@ -2675,13 +2712,13 @@ mod tests {
         let at_ms = 1_700_000_000_000;
         let clock = format_clock(at_ms).expect("演示时间戳应可格式化");
 
-        let short = user_message("hi", Some(at_ms), true, 40, &theme);
+        let short = user_message("hi", Some(at_ms), 40, &theme);
         assert_eq!(short.len(), 2, "短消息应只有正文和尾随留白");
         assert!(short[0].spans.iter().any(|span| span.content == "> "));
         assert!(short[0].spans.iter().any(|span| span.content == clock));
         assert!(!short[0].spans.iter().any(|span| span.content.contains('╭')));
 
-        let narrow = user_message("一二三四五六七八九十", Some(at_ms), true, 24, &theme);
+        let narrow = user_message("一二三四五六七八九十", Some(at_ms), 24, &theme);
         assert_eq!(narrow.len(), 3, "时间戳应在正文后另起一行");
         for line in &narrow {
             assert!(line.width() <= 24, "行宽 {} 超出消息区域", line.width());
@@ -2710,7 +2747,7 @@ mod tests {
             arguments: r#"{"path":"b.rs"}"#.into(),
         });
 
-        let lines = render_entry(0, &app.blocks[0], &app, 80, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, 80).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -2719,10 +2756,7 @@ mod tests {
         assert!(text.contains("read (2)"));
         assert!(text.contains("a.rs"));
         assert!(text.contains("b.rs"));
-        assert_eq!(
-            render_entry(1, &app.blocks[1], &app, 80, false).lines.len(),
-            0
-        );
+        assert_eq!(render_entry(1, &app.blocks[1], &app, 80).lines.len(), 0);
     }
 
     /// C6：懒渲染与绘制共用同一份渲染后高度累计。
@@ -2817,7 +2851,7 @@ mod tests {
         let text = "结论如下：\n\n| 项 | 耗时 | 内存 |\n|---|---|---|\n| a | 10 ms | 2 MiB |\n| b | 20 ms | 4 MiB |\n\n仅供参考。";
         app.push_block(Block::Assistant { text: text.into() });
 
-        let rendered = render_entry(0, &app.blocks[0], &app, width, true);
+        let rendered = render_entry(0, &app.blocks[0], &app, width);
         assert!(
             rendered
                 .lines
@@ -2828,9 +2862,7 @@ mod tests {
         let heights = |app: &App| {
             (
                 estimate_entry_height_at(app, 0, width),
-                render_entry(0, &app.blocks[0], app, width, true)
-                    .lines
-                    .len(),
+                render_entry(0, &app.blocks[0], app, width).lines.len(),
             )
         };
         let (estimate, rendered) = heights(&app);
@@ -2977,7 +3009,7 @@ mod tests {
         });
 
         let rendered = |app: &App, index: usize| {
-            render_entry(index, &app.blocks[index], app, width, index == 0)
+            render_entry(index, &app.blocks[index], app, width)
                 .lines
                 .len()
         };
@@ -3111,9 +3143,9 @@ mod tests {
         };
 
         app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
-        // 标题 + 命令行 1 + 结果尾 4 + 省略提示 1 + 耗时 1 + 留白 1
-        assert_eq!(brief.len(), 9, "简略档行数固定");
+        let brief = render_entry(0, &app.blocks[0], &app, width).lines;
+        // 标题（命令放得下，进标题）+ 结果尾 4 + 省略提示 1 + 耗时 1 + 留白 1
+        assert_eq!(brief.len(), 8, "简略档行数固定");
         let brief_text = text_of(&brief);
         assert!(
             brief_text.contains("⋯ 还有 196 行"),
@@ -3134,17 +3166,17 @@ mod tests {
         );
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(
             full.len(),
-            200 + 4,
-            "完整档 = 命令行 + 全部 200 行 + 耗时 + 留白"
+            200 + 3,
+            "完整档 = 标题 + 全部 200 行 + 耗时 + 留白（命令已在标题）"
         );
         assert!(!text_of(&full).contains("还有"), "完整档不出现省略提示");
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
         app.tool_detail = DetailLevel::Hidden;
-        let hidden = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
         assert!(!text_of(&hidden).contains("line-"), "隐藏档无正文");
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
@@ -3189,8 +3221,8 @@ mod tests {
 
         for level in [DetailLevel::Hidden, DetailLevel::Brief] {
             app.tool_detail = level;
-            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
-            assert_eq!(lines.len(), 1, "{level:?} 档 read 严格一行");
+            let lines = render_entry(0, &app.blocks[0], &app, width).lines;
+            assert_eq!(lines.len(), 2, "{level:?} 档 read 只占标题行 + 尾随留白");
             let text = lines[0]
                 .spans
                 .iter()
@@ -3200,11 +3232,11 @@ mod tests {
                 text.contains("crates/moc-tui/src/app.rs:1-201"),
                 "摘要带行号范围：{text}"
             );
-            assert_eq!(estimate_entry_height_at(&app, 0, width), 1);
+            assert_eq!(estimate_entry_height_at(&app, 0, width), 2);
         }
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(full.len(), 200 + 3, "完整档 = 标题 + 200 行 + 耗时 + 留白");
         let full_text = full
             .iter()
@@ -3219,19 +3251,12 @@ mod tests {
         app.blocks[0].toggle_level(DetailLevel::Brief);
         assert_eq!(app.blocks[0].level_override, Some(DetailLevel::Full));
         assert_eq!(
-            render_entry(0, &app.blocks[0], &app, width, true)
-                .lines
-                .len(),
+            render_entry(0, &app.blocks[0], &app, width).lines.len(),
             full.len()
         );
         app.blocks[0].toggle_level(DetailLevel::Brief);
         assert_eq!(app.blocks[0].level_override, None);
-        assert_eq!(
-            render_entry(0, &app.blocks[0], &app, width, true)
-                .lines
-                .len(),
-            1
-        );
+        assert_eq!(render_entry(0, &app.blocks[0], &app, width).lines.len(), 2);
 
         // 失败时正文是错误原因，仍可展开。
         app.finish_tool_block(ToolCallFinish {
@@ -3250,7 +3275,7 @@ mod tests {
             diff: None,
         });
         app.tool_detail = DetailLevel::Brief;
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -3306,7 +3331,7 @@ mod tests {
 
         for level in [DetailLevel::Hidden, DetailLevel::Brief] {
             app.tool_detail = level;
-            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+            let lines = render_entry(0, &app.blocks[0], &app, width).lines;
             let text = text_of(&lines);
             assert!(
                 text.contains("2 matches · 2 files"),
@@ -3317,7 +3342,7 @@ mod tests {
         }
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         let full_text = text_of(&full);
         assert!(full_text.contains("alpha beta"), "完整档显示匹配正文");
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
@@ -3339,7 +3364,7 @@ mod tests {
             diff: None,
         });
         app.tool_detail = DetailLevel::Brief;
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         assert!(text_of(&lines).contains("0 matches · 0 files"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
@@ -3386,7 +3411,7 @@ mod tests {
 
         for level in [DetailLevel::Hidden, DetailLevel::Brief] {
             app.tool_detail = level;
-            let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+            let lines = render_entry(0, &app.blocks[0], &app, width).lines;
             let text = text_of(&lines);
             assert!(text.contains("3 files"), "{level:?} 档只报文件数：{text}");
             assert!(!text.contains("src/a.rs"), "{level:?} 档不显示路径");
@@ -3394,7 +3419,7 @@ mod tests {
         }
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         assert!(text_of(&full).contains("src/a.rs"), "完整档显示路径");
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
@@ -3414,7 +3439,7 @@ mod tests {
             diff: None,
         });
         app.tool_detail = DetailLevel::Brief;
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         assert!(text_of(&lines).contains("0 files"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
@@ -3464,7 +3489,7 @@ mod tests {
         };
 
         app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let brief = render_entry(0, &app.blocks[0], &app, width).lines;
         let brief_text = text_of(&brief);
         assert_eq!(
             brief.len(),
@@ -3488,7 +3513,7 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
 
         app.tool_detail = DetailLevel::Hidden;
-        let hidden = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let hidden = render_entry(0, &app.blocks[0], &app, width).lines;
         let hidden_text = text_of(&hidden);
         assert_eq!(hidden.len(), 3, "隐藏档 = 标题 + 耗时 + 留白");
         assert!(hidden_text.contains("Search the renderer"));
@@ -3496,7 +3521,7 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), hidden.len());
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         let full_text = text_of(&full);
         assert!(
             full_text.contains("crates/moc-tui/src"),
@@ -3544,7 +3569,7 @@ mod tests {
             arguments: r#"{"pattern":"artifact","path":"artifact://ses_1/job.log"}"#.into(),
         });
 
-        let text = render_entry(1, &app.blocks[1], &app, 80, true)
+        let text = render_entry(1, &app.blocks[1], &app, 80)
             .lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -3619,7 +3644,7 @@ mod tests {
         };
 
         app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let brief = render_entry(0, &app.blocks[0], &app, width).lines;
         // 标题 + 6 行 diff + 省略提示 + 耗时 + 留白
         assert_eq!(brief.len(), 10, "简略档 diff 限 6 行");
         assert_eq!(
@@ -3634,7 +3659,7 @@ mod tests {
         );
         assert_eq!(estimate_entry_height_at(&app, 0, width), brief.len());
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(
             full.len(),
             total + 3,
@@ -3720,7 +3745,7 @@ mod tests {
             });
         }
         let title = |index: usize| {
-            render_entry(index, &app.blocks[index], &app, width, true).lines[0]
+            render_entry(index, &app.blocks[index], &app, width).lines[0]
                 .spans
                 .iter()
                 .map(|span| span.content.as_ref())
@@ -3785,7 +3810,7 @@ mod tests {
             }),
         });
         app.tool_detail = DetailLevel::Full;
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         let text_of = |lines: &[Line<'static>]| {
             lines
                 .iter()
@@ -3839,10 +3864,10 @@ mod tests {
         let axis = || DetailLevel::Brief;
 
         // 默认档位（简略）：预览 3 行 + 省略提示。
-        let preview = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let preview = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = text_of(&preview);
         assert!(text.contains("IRC ◀ 探查者"), "标题必须标明来源：{text}");
-        assert!(text.contains("已注入"), "标题必须标出投递结果：{text}");
+        assert!(text.contains("injected"), "标题必须标出投递结果：{text}");
         assert!(text.contains("⋯ 还有 3 行"), "简略档只留预览行：{text}");
         assert!(text.contains("第 0 行消息") && text.contains("第 2 行消息"));
         assert!(!text.contains("第 3 行消息"));
@@ -3854,7 +3879,7 @@ mod tests {
 
         // 点一次到完整：全文，无省略提示。
         app.blocks[0].toggle_level(axis());
-        let expanded = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let expanded = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = text_of(&expanded);
         assert!(text.contains("第 5 行消息"));
         assert!(!text.contains("还有"));
@@ -3870,7 +3895,7 @@ mod tests {
             app.blocks[0].level_override, None,
             "目标与层档位相同时不留覆盖"
         );
-        let back = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let back = render_entry(0, &app.blocks[0], &app, width).lines;
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
             back.len(),
@@ -3882,7 +3907,6 @@ mod tests {
             &app.blocks[0],
             &app,
             usize::from(width),
-            true,
             DetailLevel::Hidden,
             true,
         );
@@ -3926,7 +3950,7 @@ mod tests {
             duration_ms: Some(3),
             diff: None,
         });
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -3934,14 +3958,14 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("IRC"), "工具卡标题必须显示 IRC：{text}");
         assert!(text.contains("▶ all"));
-        assert!(text.contains("广播"));
-        assert!(text.contains("1 已送达") && text.contains("1 失败"));
+        assert!(text.contains("broadcast"));
+        assert!(text.contains("1 delivered") && text.contains("1 failed"));
         assert!(
             text.contains("请复查一下改动"),
             "正文必须带消息预览：{text}"
         );
-        assert!(text.contains("甲 已注入"));
-        assert!(text.contains("乙 失败：收件箱已满"));
+        assert!(text.contains("甲 injected"));
+        assert!(text.contains("乙 failed：收件箱已满"));
         assert_eq!(estimate_entry_height_at(&app, 0, width), lines.len());
     }
 
@@ -3980,7 +4004,7 @@ mod tests {
                 },
             ],
         );
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -3988,10 +4012,10 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("等待 2 个代理"));
         assert!(
-            text.contains("▸ 甲 · 运行中 · 3.2s · cargo test"),
+            text.contains("▸ 甲 · running · 3.2s · cargo test"),
             "运行行带耗时与活动摘要：{text}"
         );
-        assert!(text.contains("◆ 乙 · 已完成"));
+        assert!(text.contains("◆ 乙 · done"));
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
             lines.len(),
@@ -4022,14 +4046,14 @@ mod tests {
             duration_ms: Some(1_100),
             diff: None,
         });
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(text.contains("◆ 甲 · 已完成"), "结果行回落到快照：{text}");
-        assert!(text.contains("▸ 乙 · 运行中"));
+        assert!(text.contains("◆ 甲 · done"), "结果行回落到快照：{text}");
+        assert!(text.contains("▸ 乙 · running"));
         assert_eq!(
             estimate_entry_height_at(&app, 0, width),
             lines.len(),
@@ -4085,7 +4109,7 @@ mod tests {
             duration_ms: Some(900),
             diff: None,
         });
-        let lines = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let lines = render_entry(0, &app.blocks[0], &app, width).lines;
         let text = lines
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -4251,7 +4275,7 @@ mod tests {
         };
 
         app.tool_detail = DetailLevel::Full;
-        let full = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let full = render_entry(0, &app.blocks[0], &app, width).lines;
         let full_text = text_of(&full);
         assert!(!full_text.contains("User answers:"), "协议头不进转写");
         assert!(!full_text.contains("The user did not answer"));
@@ -4280,7 +4304,7 @@ mod tests {
         assert_eq!(estimate_entry_height_at(&app, 0, width), full.len());
 
         app.tool_detail = DetailLevel::Brief;
-        let brief = render_entry(0, &app.blocks[0], &app, width, true).lines;
+        let brief = render_entry(0, &app.blocks[0], &app, width).lines;
         let brief_text = text_of(&brief);
         assert!(brief_text.contains("标题5"), "简略档保留前 6 行答案");
         assert!(
@@ -4329,10 +4353,11 @@ mod tests {
         }));
 
         let width = 80u16;
-        let rendered = render_entry(0, &app.blocks[0], &app, width, true);
+        let rendered = render_entry(0, &app.blocks[0], &app, width);
         assert_eq!(rendered.images.len(), 1, "一张图一张落位");
         let placement = &rendered.images[0];
-        assert_eq!(placement.x, 2, "正文前缀两格");
+        let prose_col = u16::try_from(PROSE_INDENT).expect("正文列应放得进 u16");
+        assert_eq!(placement.x, prose_col, "图片落在正文列");
         assert!(
             placement.row + usize::from(placement.rows) <= rendered.lines.len(),
             "占位行必须真的存在"
@@ -4394,7 +4419,8 @@ mod tests {
             .expect("绘制成功");
         let slot = app.image_slots.first().expect("图片应登记槽位").clone();
         assert!(matches!(slot.source, SlotSource::Image(_)));
-        assert_eq!(slot.x, app.scrollback_area.x + 2, "落位对齐正文前缀");
+        let prose_col = u16::try_from(PROSE_INDENT).expect("正文列应放得进 u16");
+        assert_eq!(slot.x, app.scrollback_area.x + prose_col, "落位对齐正文列");
         assert_eq!(slot.cols, 5, "40px 宽 ÷ 8px 单元格");
         assert_eq!(slot.rows, 2, "20px 高 ÷ 18px 单元格，向上取整");
         assert!(slot.placement_id != 0, "kitty 放置 ID 不得为零");
@@ -4469,5 +4495,324 @@ mod tests {
         assert_eq!(row_spans[1].content, "▏ ");
         assert_eq!(row_spans[1].style.fg, Some(app.theme.accent_thinking));
         assert_eq!(row_spans[2].style.fg, Some(app.theme.gray));
+    }
+
+    /// 一行的纯文本。
+    fn plain(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// 一行首个非空白字符所在的列。
+    fn lead_col(line: &Line<'_>) -> usize {
+        let text = plain(line);
+        str_width(&text) - str_width(text.trim_start())
+    }
+
+    /// 开始并结束一次工具调用（正常路径：先 start 再 finish）。
+    fn run_tool(
+        app: &mut App,
+        id: &str,
+        name: &str,
+        arguments: &str,
+        status: moc_protocol::methods::ToolStatus,
+        content: &str,
+    ) {
+        app.start_tool_block(ToolCallStart {
+            id: id.into(),
+            name: name.into(),
+            parent_id: None,
+            arguments: arguments.into(),
+        });
+        app.finish_tool_block(ToolCallFinish {
+            id: id.into(),
+            name: name.into(),
+            parent_id: None,
+            arguments: arguments.into(),
+            status,
+            result: moc_protocol::ToolResult {
+                tool_call_id: id.into(),
+                content: content.into(),
+                is_error: status != moc_protocol::methods::ToolStatus::Completed,
+                images: Vec::new(),
+            },
+            duration_ms: Some(1_200),
+            diff: None,
+        });
+    }
+
+    /// 整份转写按块顺序拼成的行（批次成员只由组首块产出）。
+    fn transcript(app: &App, width: u16) -> Vec<Line<'static>> {
+        (0..app.blocks.len())
+            .flat_map(|index| render_entry(index, &app.blocks[index], app, width).lines)
+            .collect()
+    }
+
+    /// 防复发守卫：所有块共用一套左缘网格，且任何行都不超出块宽。
+    ///
+    /// 标记（`>`、`◆`、批次 bullet）落在 [`TITLE_INDENT`]，正文（用户、助手、
+    /// 工具输出、耗时尾注）落在 [`PROSE_INDENT`]；放不下的标题以 `…` 收尾，
+    /// bash 命令只出现一次。
+    #[test]
+    fn transcript_blocks_share_one_left_grid() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        let width = 60u16;
+        app.push_block(Block::User {
+            text: "你好".into(),
+        });
+        app.push_block(Block::Assistant {
+            text: "收到。".into(),
+        });
+        let command = "cargo test -p moc-tui --lib -- render::scrollback::tests --nocapture";
+        run_tool(
+            &mut app,
+            "bash",
+            "bash",
+            &serde_json::json!({ "command": command }).to_string(),
+            ToolStatus::Completed,
+            "ok",
+        );
+        let pattern = "x".repeat(120);
+        run_tool(
+            &mut app,
+            "grep",
+            "grep",
+            &serde_json::json!({ "pattern": pattern }).to_string(),
+            ToolStatus::Completed,
+            "src/a.rs:1:x",
+        );
+        app.register_tool_batch("batch".into(), ["r1".to_owned(), "r2".to_owned()]);
+        for id in ["r1", "r2"] {
+            run_tool(
+                &mut app,
+                id,
+                "read",
+                r#"{"path":"a.rs"}"#,
+                ToolStatus::Completed,
+                "body",
+            );
+        }
+
+        for (index, entry) in app.blocks.iter().enumerate() {
+            for line in render_entry(index, entry, &app, width).lines {
+                assert!(
+                    line.width() <= usize::from(width),
+                    "第 {index} 块越界：{:?}",
+                    plain(&line)
+                );
+            }
+        }
+        let block = |index: usize| -> Vec<Line<'static>> {
+            render_entry(index, &app.blocks[index], &app, width)
+                .lines
+                .into_iter()
+                .filter(|line| !plain(line).trim().is_empty())
+                .collect()
+        };
+
+        let user = block(0);
+        assert_eq!(lead_col(&user[0]), TITLE_INDENT, "用户标记与块 bullet 同列");
+        assert!(plain(&user[0])[TITLE_INDENT..].starts_with("> 你好"));
+        assert_eq!(lead_col(&block(1)[0]), PROSE_INDENT, "助手正文");
+
+        let bash = block(2);
+        assert_eq!(lead_col(&bash[0]), TITLE_INDENT, "工具标题");
+        for line in &bash[1..] {
+            assert_eq!(lead_col(line), PROSE_INDENT, "工具正文：{:?}", plain(line));
+        }
+        let mentions = bash
+            .iter()
+            .filter(|line| plain(line).contains("cargo test"))
+            .count();
+        assert_eq!(mentions, 1, "bash 命令只出现一次");
+
+        let grep = block(3);
+        assert!(
+            plain(&grep[0])
+                .trim_end()
+                .ends_with(crate::render::wrap::ELLIPSIS),
+            "超长标题以 … 收尾：{:?}",
+            plain(&grep[0])
+        );
+
+        let batch = block(4);
+        assert_eq!(
+            lead_col(&batch[0]),
+            TITLE_INDENT,
+            "批次 bullet 与块 bullet 同列"
+        );
+        for line in &batch[1..] {
+            assert!(lead_col(line) >= PROSE_INDENT, "批次树：{:?}", plain(line));
+        }
+    }
+
+    /// 防复发守卫：块与块之间恰好一行留白——不叠成两行，也不贴在一起。
+    #[test]
+    fn blocks_are_separated_by_exactly_one_blank_row() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        app.push_block(Block::User {
+            text: "第一问".into(),
+        });
+        app.push_block(Block::Assistant {
+            text: "答复。".into(),
+        });
+        run_tool(
+            &mut app,
+            "read",
+            "read",
+            r#"{"path":"a.rs"}"#,
+            ToolStatus::Completed,
+            "body",
+        );
+        app.push_block(Block::Assistant {
+            text: "读完了。".into(),
+        });
+        app.push_block(Block::User {
+            text: "第二问".into(),
+        });
+        app.register_tool_batch("batch".into(), ["r1".to_owned(), "r2".to_owned()]);
+        for id in ["r1", "r2"] {
+            run_tool(
+                &mut app,
+                id,
+                "read",
+                r#"{"path":"b.rs"}"#,
+                ToolStatus::Completed,
+                "body",
+            );
+        }
+        app.push_block(Block::Assistant {
+            text: "收尾。".into(),
+        });
+
+        let rows: Vec<bool> = transcript(&app, 80)
+            .iter()
+            .map(|line| plain(line).trim().is_empty())
+            .collect();
+        assert!(!rows[0], "转写首行不留白");
+        for (index, pair) in rows.windows(2).enumerate() {
+            assert!(!(pair[0] && pair[1]), "第 {index} 行起出现连续两行留白");
+        }
+        // 每个可见块都以一行留白结尾：内容行后面紧跟内容行只允许出现在块内部
+        for index in 0..app.blocks.len() {
+            let lines = render_entry(index, &app.blocks[index], &app, 80).lines;
+            if let Some(last) = lines.last() {
+                assert!(plain(last).is_empty(), "第 {index} 块缺尾随留白");
+            }
+        }
+    }
+
+    /// 回归：批次里失败的成员必须可见，不能被计入完成。
+    #[test]
+    fn batch_marks_failed_members_and_counts_only_completed() {
+        use moc_protocol::methods::ToolStatus;
+
+        let (events, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.tool_detail = DetailLevel::Brief;
+        app.register_tool_batch("batch".into(), ["g1".to_owned(), "g2".to_owned()]);
+        run_tool(
+            &mut app,
+            "g1",
+            "grep",
+            r#"{"pattern":"ok"}"#,
+            ToolStatus::Completed,
+            "src/a.rs:1:ok",
+        );
+        run_tool(
+            &mut app,
+            "g2",
+            "grep",
+            r#"{"pattern":"bad"}"#,
+            ToolStatus::Error,
+            "regex parse error",
+        );
+
+        let lines: Vec<String> = render_entry(0, &app.blocks[0], &app, 80)
+            .lines
+            .iter()
+            .map(plain)
+            .collect();
+        let failed = lines
+            .iter()
+            .find(|line| line.contains("bad"))
+            .expect("失败成员行");
+        assert!(failed.contains('✘'), "失败成员带 ✘：{failed:?}");
+        let stats = lines
+            .iter()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .expect("统计行");
+        assert!(stats.contains("1/2"), "只计成功：{stats:?}");
+        assert!(
+            stats.contains(crate::render::labels::status::FAILED),
+            "统计行点明失败：{stats:?}"
+        );
+        assert_eq!(
+            estimate_entry_height_at(&app, 0, 80),
+            lines.len(),
+            "估高与渲染一致"
+        );
+    }
+
+    /// 回归：思考简略档的预览预算不被段间空行吃掉，并提示还藏了多少行。
+    #[test]
+    fn brief_thinking_skips_blank_rows_and_marks_omission() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(crate::theme::Theme::global(), events);
+        let text = (1..=8)
+            .map(|index| format!("段落 {index}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let lines = thinking_block(&text, None, None, &app, 80, DetailLevel::Brief);
+        let body: Vec<String> = lines[1..lines.len() - 1].iter().map(plain).collect();
+        for row in &body {
+            assert_ne!(row.trim(), "▏", "预览里不应出现空引文行");
+        }
+        assert!(
+            body.iter().any(|row| row.contains("段落 8")),
+            "保留最新内容"
+        );
+        assert!(
+            body.last()
+                .is_some_and(|row| row.contains(&crate::render::labels::more_lines(4))),
+            "末行提示省略：{body:?}"
+        );
+    }
+
+    /// 回归：用户消息与系统提示的估高必须与渲染完全一致（含首块与时间戳换行）。
+    #[test]
+    fn user_and_note_estimates_match_render() {
+        let (events, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(crate::theme::Theme::global(), events);
+        app.push_block(Block::User { text: "hi".into() });
+        app.push_block(Block::User {
+            text: "一二三四五六七八九十".repeat(6),
+        });
+        app.push_block(Block::Note {
+            text: "压缩完成".repeat(20),
+            error: false,
+        });
+        for width in [24u16, 60, 120] {
+            for index in 0..app.blocks.len() {
+                assert_eq!(
+                    estimate_entry_height_at(&app, index, width),
+                    render_entry(index, &app.blocks[index], &app, width)
+                        .lines
+                        .len(),
+                    "宽 {width} 第 {index} 块"
+                );
+            }
+        }
     }
 }

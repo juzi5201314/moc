@@ -26,13 +26,14 @@ pub enum Status {
 
 impl Status {
     pub fn label(&self) -> &str {
+        use crate::render::labels::status;
         match self {
-            Self::Starting => "连接中",
-            Self::Waiting => "等待模型",
-            Self::Generating => "生成中",
-            Self::Complete => "完成",
-            Self::Cancelled => "已取消",
-            Self::Failed(_) => "未完成",
+            Self::Starting => status::CONNECTING,
+            Self::Waiting => status::WAITING,
+            Self::Generating => status::GENERATING,
+            Self::Complete => status::DONE,
+            Self::Cancelled => status::CANCELLED,
+            Self::Failed(_) => status::FAILED,
         }
     }
 }
