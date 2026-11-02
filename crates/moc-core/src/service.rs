@@ -14,7 +14,8 @@ use moc_protocol::methods::{
     AgentWaitResult, ChartAnalyzeParams, ChartAnalyzeResult, ClientCapabilities, CompactResult,
     ConfigGetParams, ConfigGetResult, ContextContentResult, ContextUsageResult, Empty,
     FsCreateDirParams, FsCreateDirResult, FsListDirParams, FsListDirResult, InitializeParams,
-    InitializeResult, ModelInfo, ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo,
+    InitializeResult, JobListParams, JobListResult, JobOutputParams, JobOutputResult, JobResult,
+    JobTarget, ModelInfo, ModelInput, ModelUsageSummary, PluginCommandInfo, PluginInfo,
     PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PluginToolInfo, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, ServerCapabilities, ServerInfo,
@@ -25,10 +26,10 @@ use moc_protocol::methods::{
     SessionPlanDiffParams, SessionPlanDiffResult, SessionPlanReviseParams, SessionPlanReviseResult,
     SessionRedoParams, SessionRenameParams, SessionRetryParams, SessionRewindParams,
     SessionSetAutonomyParams, SessionSetEngineParams, SessionSetFastModeParams,
-    SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
-    SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument,
-    WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionSetModelParams, SessionSetModelResult, SessionSetPermissionParams, SessionUnloadParams,
+    SessionUnlockParams, SessionUpdate, SessionUsageParams, SessionUsageResult, UnsteerParams,
+    UnsteerResult, WebStateDocument, WebStateGetParams, WebStateSaveParams,
+    WorkspaceGitBranchParams, WorkspaceGitBranchResult,
 };
 use moc_protocol::{AgentService, RequestContext, RpcError, RpcErrorCode, UpdateSink};
 use parking_lot::RwLock;
@@ -289,9 +290,11 @@ impl CoreInner {
     }
     pub(crate) async fn runtime(&self, session_id: &str) -> Arc<SessionRuntime> {
         let mut runtimes = self.runtimes.lock().await;
-        Arc::clone(runtimes.entry(session_id.to_owned()).or_insert_with(|| {
-            Arc::new(SessionRuntime::new(&self.sandbox_support))
-        }))
+        Arc::clone(
+            runtimes
+                .entry(session_id.to_owned())
+                .or_insert_with(|| Arc::new(SessionRuntime::new(&self.sandbox_support))),
+        )
     }
     pub(crate) async fn reset_loaded_skills(&self, session_id: &str) {
         if let Some(runtime) = self.runtimes.lock().await.get(session_id).cloned() {
@@ -905,6 +908,55 @@ impl AgentService for Core {
         )
         .await
         .map_err(to_rpc)
+    }
+
+    async fn job_list(
+        &self,
+        _ctx: RequestContext,
+        params: JobListParams,
+    ) -> Result<JobListResult, RpcError> {
+        let runtime = self.inner.runtime(&params.session_id).await;
+        Ok(JobListResult {
+            jobs: runtime.jobs.list(),
+        })
+    }
+
+    async fn job_output(
+        &self,
+        _ctx: RequestContext,
+        params: JobOutputParams,
+    ) -> Result<JobOutputResult, RpcError> {
+        let runtime = self.inner.runtime(&params.session_id).await;
+        let lines = params.tail_lines.unwrap_or(200).min(2000);
+        let (job, text, _path) = runtime
+            .jobs
+            .output(&params.job_id, lines)
+            .map_err(job_error)?;
+        Ok(JobOutputResult { job, text })
+    }
+
+    async fn job_kill(
+        &self,
+        _ctx: RequestContext,
+        params: JobTarget,
+    ) -> Result<JobResult, RpcError> {
+        let runtime = self.inner.runtime(&params.session_id).await;
+        let job = runtime.jobs.kill(&params.job_id).await.map_err(job_error)?;
+        Ok(JobResult { job })
+    }
+
+    async fn job_background(
+        &self,
+        _ctx: RequestContext,
+        params: JobTarget,
+    ) -> Result<JobResult, RpcError> {
+        let runtime = self.inner.runtime(&params.session_id).await;
+        let job = runtime
+            .jobs
+            .background_by_user(&params.job_id)
+            .await
+            .map_err(job_error)?;
+        Ok(JobResult { job })
     }
 
     async fn config_get(
@@ -2127,6 +2179,15 @@ fn to_rpc(error: CoreError) -> RpcError {
 
 pub(crate) fn invalid_params(message: impl Into<String>) -> RpcError {
     RpcError::new(RpcErrorCode::InvalidParams.code(), message)
+}
+
+/// 任务定位失败按非法参数报给前端（`job/*` 的错误码表约定 `-32602`）。
+fn job_error(error: crate::tools::ToolError) -> RpcError {
+    let code = match error.code {
+        "E_JOB_NOT_FOUND" => RpcErrorCode::InvalidParams,
+        _ => RpcErrorCode::InternalError,
+    };
+    RpcError::new(code.code(), error.to_string())
 }
 
 pub(crate) fn protocol_to_rpc(error: impl std::fmt::Display) -> RpcError {

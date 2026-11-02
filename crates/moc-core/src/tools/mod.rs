@@ -414,7 +414,7 @@ impl ToolRegistry {
                 scope
                     .policy
                     .as_ref()
-                    .map_or(true, |policy| policy.permits(tool.name()))
+                    .is_none_or(|policy| policy.permits(tool.name()))
             })
             .filter(|tool| {
                 tool.declared_in(engine)

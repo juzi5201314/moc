@@ -22,9 +22,9 @@ pub mod todo_hud;
 pub mod wrap;
 
 pub(crate) mod context_content;
-pub(crate) mod rewind;
 #[cfg(test)]
 mod guards;
+pub(crate) mod rewind;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -774,7 +774,11 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
         ));
         let back = labels::hints(&[("esc", "返回")], usize::MAX);
         // 「Esc 返回」可点：与空输入框按 Esc 同样返回主会话。
-        let used: usize = spans.iter().map(|span| str_width(&span.content)).sum::<usize>() + 2;
+        let used: usize = spans
+            .iter()
+            .map(|span| str_width(&span.content))
+            .sum::<usize>()
+            + 2;
         let end = (used + str_width(&back)).min(usize::from(area.width));
         if let (Ok(start), Ok(end)) = (u16::try_from(used), u16::try_from(end))
             && start < end

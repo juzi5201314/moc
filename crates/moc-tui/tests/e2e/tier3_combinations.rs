@@ -213,7 +213,7 @@ fn test_combo_11_responsive_collapse_sidebar_and_btw() {
 fn test_combo_12_markdown_code_block_theme_switch() {
     let md = "```rust\nfn main() {\n    println!(\"hello\");\n}\n```";
     let theme1 = Theme::global();
-    let lines1 = render_markdown(md, 80, &theme1);
+    let lines1 = render_markdown(md, 80, theme1);
     assert!(!lines1.is_empty());
 }
 
@@ -274,7 +274,7 @@ fn test_combo_16_queued_prompt_with_tagged_plan_mode() {
 fn test_combo_17_btw_multi_turn_with_markdown_rendering() {
     let t1 = sample_btw_turn("Q1", "### Reasoning step 1\n- Detail A\n- Detail B", "A1");
     let theme = Theme::global();
-    let rendered_reasoning = render_markdown(&t1.reasoning, 80, &theme);
+    let rendered_reasoning = render_markdown(&t1.reasoning, 80, theme);
     assert!(!rendered_reasoning.is_empty());
 }
 

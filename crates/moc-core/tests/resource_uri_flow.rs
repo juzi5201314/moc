@@ -1,6 +1,5 @@
 //! 统一资源 URI 的协议与 core completion 提示验证。
 
-#[allow(dead_code)]
 #[path = "support/mod.rs"]
 mod support;
 

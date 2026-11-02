@@ -331,7 +331,10 @@ fn source_hints(request: &EditRequest) -> Vec<usize> {
         }
     }
     if let Some(movement) = &request.move_lines {
-        hints.extend([movement.from.saturating_sub(1), movement.to.saturating_sub(1)]);
+        hints.extend([
+            movement.from.saturating_sub(1),
+            movement.to.saturating_sub(1),
+        ]);
     }
     hints
 }
@@ -346,11 +349,7 @@ fn target_hints(movement: &MoveRequest) -> Vec<usize> {
 
 /// 回显窗口：每个提示取前 3 行到后 3 行并合并；整体跨度不超过 `max_lines`
 /// 时用首尾之间的一个连续窗口，否则保留各自的小窗口并按总行数截断。
-fn feedback_windows(
-    hints: &[usize],
-    len: usize,
-    max_lines: usize,
-) -> Vec<std::ops::Range<usize>> {
+fn feedback_windows(hints: &[usize], len: usize, max_lines: usize) -> Vec<std::ops::Range<usize>> {
     if hints.is_empty() {
         let all = 0..len.min(max_lines);
         return vec![all];
@@ -399,8 +398,14 @@ mod tests {
         }))
         .expect("类型化 op 应能解析");
         assert!(matches!(request.edits[0], EditOp::Insert { after: 0, .. }));
-        assert!(matches!(request.edits[1], EditOp::Replace { from: 2, to: 3, .. }));
-        assert!(matches!(request.edits[2], EditOp::Delete { from: 5, to: 5 }));
+        assert!(matches!(
+            request.edits[1],
+            EditOp::Replace { from: 2, to: 3, .. }
+        ));
+        assert!(matches!(
+            request.edits[2],
+            EditOp::Delete { from: 5, to: 5 }
+        ));
     }
 
     #[test]

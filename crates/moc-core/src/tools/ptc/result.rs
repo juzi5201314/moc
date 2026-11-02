@@ -80,7 +80,7 @@ pub(super) async fn script_result(
         Err(ScriptError {
             code: outcome.error_code.as_deref().unwrap_or("E_TOOL").into(),
             message: result.content.clone(),
-            result: Some(result),
+            result: Some(Box::new(result)),
         })
     } else {
         Ok(result)
@@ -100,7 +100,7 @@ fn oversized(mut result: ScriptToolResult) -> ScriptError {
     ScriptError {
         code: "E_RESULT_LIMIT".into(),
         message: result.content.clone(),
-        result: Some(result),
+        result: Some(Box::new(result)),
     }
 }
 

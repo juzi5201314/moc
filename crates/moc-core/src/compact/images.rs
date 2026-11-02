@@ -60,13 +60,13 @@ pub fn apply(
 
     let mut total_bytes = body_bytes;
     let mut evicted = 0;
-    for index in 0..messages.len() {
-        if !has_images(&messages[index]) {
+    for message in messages.iter_mut() {
+        if !has_images(message) {
             continue;
         }
-        let before = serialized_bytes(&messages[index]);
-        evicted += strip_images(&mut messages[index]);
-        let after = serialized_bytes(&messages[index]);
+        let before = serialized_bytes(message);
+        evicted += strip_images(message);
+        let after = serialized_bytes(message);
         total_bytes = total_bytes.saturating_sub(before).saturating_add(after);
         if total_bytes <= reclaim {
             break;

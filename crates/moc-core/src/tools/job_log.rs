@@ -123,8 +123,11 @@ impl JobLog {
         let from_ring =
             usize::try_from(window).map_or(state.ring.len(), |window| window.min(state.ring.len()));
         let from_file = (window - len64(from_ring)).min(state.file_len);
-        let mut bytes =
-            Vec::with_capacity(usize::try_from(from_file).unwrap_or(0).saturating_add(from_ring));
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(from_file)
+                .unwrap_or(0)
+                .saturating_add(from_ring),
+        );
         if from_file > 0 {
             // 克隆句柄与原句柄共享文件偏移：读完必须把偏移放回末尾，后续写入才不会覆盖。
             let mut file = state.file.try_clone()?;
@@ -145,13 +148,17 @@ impl JobLog {
         drop(state);
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();
-        Ok((lines[lines.len().saturating_sub(max_lines)..].join("\n"), elided))
+        Ok((
+            lines[lines.len().saturating_sub(max_lines)..].join("\n"),
+            elided,
+        ))
     }
 
     /// 界面用的实时尾部：最后 `max_lines` 行，`\r` 覆盖的进度行只取最终显示，单行截到 `line_chars` 字符。
     pub(crate) fn live_tail(&self, max_lines: usize, line_chars: usize) -> String {
         // UTF-8 单字符至多 4 字节；窗口刚好装下 `max_lines` 个截断后的整行。
-        let window = len64(max_lines.saturating_mul(line_chars.saturating_mul(4).saturating_add(1)));
+        let window =
+            len64(max_lines.saturating_mul(line_chars.saturating_mul(4).saturating_add(1)));
         let bytes = match self.tail_bytes(&self.state.lock(), window) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -162,7 +169,11 @@ impl JobLog {
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text
             .lines()
-            .map(|line| line.rsplit('\r').find(|part| !part.is_empty()).unwrap_or(""))
+            .map(|line| {
+                line.rsplit('\r')
+                    .find(|part| !part.is_empty())
+                    .unwrap_or("")
+            })
             .filter(|line| !line.trim().is_empty())
             .collect();
         lines[lines.len().saturating_sub(max_lines)..]

@@ -115,7 +115,8 @@ pub struct MaintenanceReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConfigReply {
-    Settings(SettingsDocument),
+    // 装箱收窄枚举：SettingsDocument 比其余变体大 200+ 字节。
+    Settings(Box<SettingsDocument>),
     Models(Vec<CatalogModel>),
     Maintenance(MaintenanceReport),
     Updated(String),

@@ -116,6 +116,7 @@ impl ToolCatalog {
         lines.join("\n")
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search(
         &self,
         engine: SessionEngine,

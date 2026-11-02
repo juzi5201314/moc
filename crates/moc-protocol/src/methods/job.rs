@@ -151,7 +151,12 @@ macro_rules! client_method {
 client_method!(JobList, "job/list", JobListParams, JobListResult);
 client_method!(JobKill, "job/kill", JobTarget, JobResult);
 client_method!(JobBackground, "job/background", JobTarget, JobResult);
-client_method!(JobReadOutput, "job/output", JobOutputParams, JobOutputResult);
+client_method!(
+    JobReadOutput,
+    "job/output",
+    JobOutputParams,
+    JobOutputResult
+);
 
 #[cfg(test)]
 mod tests {

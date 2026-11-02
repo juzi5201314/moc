@@ -55,10 +55,10 @@ async fn fast_mode_sets_service_tier_only_for_supporting_models() {
         .expect("打开 Fast Mode");
     assert!(info.fast_mode);
     assert!(
-        h.updates.lock().iter().any(|update| matches!(
-            update,
-            SessionUpdate::FastModeChanged { enabled: true }
-        )),
+        h.updates
+            .lock()
+            .iter()
+            .any(|update| matches!(update, SessionUpdate::FastModeChanged { enabled: true })),
         "fast_mode_changed 更新必须广播"
     );
     assert!(h.load(&id).await.session.fast_mode, "开关随会话持久化");

@@ -151,7 +151,9 @@ fn package_manager(web: &Path) -> String {
         .as_str()
         .filter(|spec| spec.starts_with("pnpm@"))
         .unwrap_or_else(|| panic!("{} 的 packageManager 必须钉住 pnpm 版本", path.display()));
-    spec.split_once('+').map_or(spec, |(version, _)| version).to_owned()
+    spec.split_once('+')
+        .map_or(spec, |(version, _)| version)
+        .to_owned()
 }
 
 fn run(pnpm: &Pnpm, web: &Path, dist: &Path, args: &[&str]) {

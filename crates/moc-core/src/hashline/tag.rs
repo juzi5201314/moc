@@ -62,9 +62,6 @@ mod tests {
     fn different_content_gets_different_tags() {
         let one = vec!["a".to_owned(), "b".to_owned()];
         let two = vec!["a".to_owned(), "c".to_owned()];
-        assert_ne!(
-            tag_of(content_hash(&one)),
-            tag_of(content_hash(&two))
-        );
+        assert_ne!(tag_of(content_hash(&one)), tag_of(content_hash(&two)));
     }
 }

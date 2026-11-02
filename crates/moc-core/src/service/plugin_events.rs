@@ -204,6 +204,7 @@ pub(crate) async fn message_received(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prompt_started_payload(
     prompt_id: &str,
     first_prompt: bool,
@@ -227,6 +228,7 @@ pub(crate) fn prompt_started_payload(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn after_prompt(
     host: &PluginHost,
     context: &CallContext,

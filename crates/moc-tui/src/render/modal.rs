@@ -12,10 +12,10 @@ use ratatui::widgets::{Block, Padding, Paragraph};
 
 use crate::app::App;
 use crate::modal::{Modal, PlanPane, PlanReviewState, SessionScope};
+use crate::render::labels::KeyHit;
 use crate::render::wrap::{
     clip_line, fit, fit_line, line_width, str_width, truncate, truncate_head,
 };
-use crate::render::labels::KeyHit;
 use crate::render::{context_content, labels, overlay};
 use crate::theme::Theme;
 use crate::widgets::completion::CompletionState;
@@ -1396,7 +1396,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                 for (index, job) in jobs.iter().enumerate() {
                     hits.push((index, lines.len()));
                     let is_selected = index == *selected;
-                    
+
                     // 状态图标
                     let icon = match job.status {
                         moc_protocol::methods::JobStatus::Running => "▸",
@@ -1405,7 +1405,7 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                         moc_protocol::methods::JobStatus::Killed => "✘",
                         moc_protocol::methods::JobStatus::TimedOut => "⏱",
                     };
-                    
+
                     // 命令（截断）
                     let cmd_budget = width.saturating_sub(25);
                     let cmd = if job.command.len() > cmd_budget {
@@ -1413,18 +1413,18 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
                     } else {
                         job.command.clone()
                     };
-                    
+
                     let job_id = &job.job_id;
                     let text = if *pending_kill == Some(index) {
                         format!("{icon} {job_id} {cmd} [按 x 确认杀掉]")
                     } else {
                         format!("{icon} {job_id} {cmd}")
                     };
-                    
+
                     lines.push(overlay::list_row(&text, is_selected, width, theme));
                 }
             }
-            
+
             let footer = overlay::footer(
                 &[("↑↓", "选择"), ("x x", "杀任务"), ("esc", "关闭")],
                 width,
@@ -1667,8 +1667,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
                     .get(index)
                     .is_some_and(|answer| !answer.text.is_empty());
             let header = entry.header.clone().unwrap_or_else(|| "提问".into());
-            let label =
-                truncate(&format!("{}. {header}", index + 1), ASK_NAV_ITEM_MAX).into_owned();
+            let label = truncate(format!("{}. {header}", index + 1), ASK_NAV_ITEM_MAX).into_owned();
             let item_width = str_width(&label) + usize::from(answered) * 2;
             // 放不下的问题收成一个 `…`；连 `…` 都放不下就不画，导航条绝不越过正文宽度。
             if col + separator + item_width > width {
@@ -1891,7 +1890,7 @@ fn ask_layout(theme: &Theme, modal: &Modal, width: usize, max_lines: usize) -> A
     option_hits.push((current.options.len(), base + list.len()));
     list.push(Line::from(Span::styled(
         truncate(
-            &format!(
+            format!(
                 " {} ✎ 自定义：{custom_display}",
                 if editing_here { "❯" } else { " " }
             ),
@@ -2135,7 +2134,7 @@ fn ask_confirm_layout(
             ));
         } else {
             spans.push(Span::styled(
-                truncate(&parts.join(", "), width.saturating_sub(key_width + 2)).into_owned(),
+                truncate(parts.join(", "), width.saturating_sub(key_width + 2)).into_owned(),
                 Style::new().fg(theme.text_primary),
             ));
         }
@@ -2572,7 +2571,7 @@ fn plan_lines(
             if state.show_diff && state.previous_plan_id.is_some() {
                 if let Some(error) = &state.diff_error {
                     lines.push(Line::from(Span::styled(
-                        truncate(&format!("无法加载改动：{error}"), width).into_owned(),
+                        truncate(format!("无法加载改动：{error}"), width).into_owned(),
                         Style::new().fg(theme.accent_error),
                     )));
                 } else if let Some(diff) = &state.diff {
@@ -2684,7 +2683,7 @@ fn plan_lines(
 
     if let Some(error) = &state.error {
         lines.push(Line::from(Span::styled(
-            truncate(&format!("错误：{error}"), width).into_owned(),
+            truncate(format!("错误：{error}"), width).into_owned(),
             Style::new().fg(theme.accent_error),
         )));
     } else if state.submitting {
@@ -2810,7 +2809,7 @@ fn draw_plan_editor(frame: &mut Frame, app: &App, modal_area: Rect, area: Rect) 
         .quote
         .lines()
         .take(2.min(capacity.saturating_sub(2)))
-        .map(|line| truncate(&format!("> {line}"), inner_width).into_owned())
+        .map(|line| truncate(format!("> {line}"), inner_width).into_owned())
         .collect();
     let body_space = capacity.saturating_sub(quote_rows.len() + 1).max(1);
     let start = wrapped
@@ -4116,11 +4115,7 @@ mod tests {
         let buffer = terminal.backend().buffer();
         for y in area.y..area.y + area.height {
             for x in area.x..area.x + area.width {
-                if x > area.x
-                    && buffer
-                        .cell((x - 1, y))
-                        .map_or(false, |c| c.cell_width() > 1)
-                {
+                if x > area.x && buffer.cell((x - 1, y)).is_some_and(|c| c.cell_width() > 1) {
                     continue;
                 }
                 let cell = buffer.cell((x, y)).expect("单元格存在");

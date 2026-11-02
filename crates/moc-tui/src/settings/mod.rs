@@ -12,8 +12,8 @@ use crate::{
     widgets::prompt::PromptState,
 };
 use controls::{Control, PickAction};
-use editors::{Editor, ListEditor, Outcome, RecordEditor, SelectEditor, TextEditor};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use editors::{Editor, ListEditor, Outcome, RecordEditor, SelectEditor, TextEditor};
 use moc_protocol::{
     CatalogModel, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope, FieldKind,
     MaintenanceReport, SettingsDocument,
@@ -504,7 +504,7 @@ impl SettingsPanel {
                 self.error = Some(error.to_string());
             }
             Ok(ConfigReply::Settings(data)) => {
-                self.data = Some(data);
+                self.data = Some(*data);
                 match self.restore.take() {
                     // 撤回／重做发生在别的范围：切回来之后先记下磁盘状态，再套用快照。
                     Some(restore) => {
@@ -1047,7 +1047,8 @@ impl SettingsPanel {
         }
         let field = &self.fields[index];
         let value = self.value(&field.path).unwrap_or(&Value::Null);
-        let next = controls::current_pick(picks, value).map_or(0, |current| (current + 1) % picks.len());
+        let next =
+            controls::current_pick(picks, value).map_or(0, |current| (current + 1) % picks.len());
         let pick = &picks[next];
         let label = format!("{}：{}", field.label, pick.label);
         let path = field.path.clone();
@@ -1329,7 +1330,7 @@ pub fn finish_save(
             if keep_local && let Some(write) = app.config_queue.take() {
                 app.write_config(connection, write);
             }
-            adopt(app, connection, data, keep_local);
+            adopt(app, connection, *data, keep_local);
         }
         Err(error) => {
             app.config_queue = None;
@@ -1845,8 +1846,10 @@ mod tests {
             press(&mut editor, &[KeyCode::Char(' '), KeyCode::Enter]),
             Outcome::Error(_)
         ));
-        let Outcome::Value(value) = press(&mut editor, &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter])
-        else {
+        let Outcome::Value(value) = press(
+            &mut editor,
+            &[KeyCode::Down, KeyCode::Char(' '), KeyCode::Enter],
+        ) else {
             panic!("勾选图片后应写回值");
         };
         assert_eq!(value, Some(json!(["image"])));

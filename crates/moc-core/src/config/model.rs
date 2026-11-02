@@ -938,7 +938,10 @@ mod tests {
         assert_eq!(selector.level, Some(ThinkingLevel::Xhigh));
         let custom = ModelSelector::parse("provider/model:ultra-2").expect("自定义等级合法");
         assert_eq!(custom.level, Some(ThinkingLevel::Custom("ultra-2".into())));
-        assert_eq!(custom.level.and_then(|level| level.effort()), Some(Effort::Custom("ultra-2".into())));
+        assert_eq!(
+            custom.level.and_then(|level| level.effort()),
+            Some(Effort::Custom("ultra-2".into()))
+        );
         assert!(ModelSelector::parse("provider/model:Ultra").is_err());
         assert!(ModelSelector::parse("provider/model:").is_err());
     }

@@ -762,22 +762,23 @@ impl App {
             arguments,
         } = call;
         let index = self.blocks.len();
-        self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-            batch_id: self.tool_batches.remove(&id),
-            id: id.clone(),
-            parent_id,
-            name,
-            arguments,
-            status: None,
-            result: None,
-            diff: None,
-            duration_ms: None,
-            running: true,
-            progress: None,
-            job_id: None,
-            live_output: None,
-            images: Vec::new(),
-        })));
+        self.blocks
+            .push(Entry::new(Block::Tool(Box::new(ToolCallBlock {
+                batch_id: self.tool_batches.remove(&id),
+                id: id.clone(),
+                parent_id,
+                name,
+                arguments,
+                status: None,
+                result: None,
+                diff: None,
+                duration_ms: None,
+                running: true,
+                progress: None,
+                job_id: None,
+                live_output: None,
+                images: Vec::new(),
+            }))));
         self.tool_indices.insert(id, index);
     }
 
@@ -814,23 +815,24 @@ impl App {
             // 前端中途接入时没有配对的开始更新：补建终态块前同样先定稿思考流。
             self.finish_thinking();
             let index = self.blocks.len();
-            self.blocks.push(Entry::new(Block::Tool(ToolCallBlock {
-                batch_id: self.tool_batches.remove(&id),
-                id: id.clone(),
-                parent_id,
-                name,
-                arguments,
-                status: Some(status),
-                result: Some(result.content),
-                diff,
-                duration_ms,
-                running: false,
-                progress: None,
-                job_id: None,
-                live_output: None,
-                // 正常路径在 `Entry::finish_tool` 里填；这条兜底分支不能把图丢掉
-                images: crate::transcript::ToolImage::from_sources(result.images),
-            })));
+            self.blocks
+                .push(Entry::new(Block::Tool(Box::new(ToolCallBlock {
+                    batch_id: self.tool_batches.remove(&id),
+                    id: id.clone(),
+                    parent_id,
+                    name,
+                    arguments,
+                    status: Some(status),
+                    result: Some(result.content),
+                    diff,
+                    duration_ms,
+                    running: false,
+                    progress: None,
+                    job_id: None,
+                    live_output: None,
+                    // 正常路径在 `Entry::finish_tool` 里填；这条兜底分支不能把图丢掉
+                    images: crate::transcript::ToolImage::from_sources(result.images),
+                }))));
             self.tool_indices.insert(id, index);
         }
     }
@@ -879,7 +881,7 @@ impl App {
             self.compaction_progress = None;
             return false;
         }
-        let secs = u64::try_from(progress.started_at.elapsed().as_secs()).unwrap_or(u64::MAX);
+        let secs = progress.started_at.elapsed().as_secs();
         if secs == progress.shown_secs {
             return false;
         }
@@ -910,7 +912,7 @@ impl App {
 
     /// 隐式 todo 提醒：按工具样式插入一条占位块，让用户知道刚刚注入了一次提醒。
     pub fn push_todo_reminder(&mut self) {
-        self.push_block(Block::Tool(ToolCallBlock {
+        self.push_block(Block::Tool(Box::new(ToolCallBlock {
             id: format!("todo-reminder-{}", self.blocks.len()),
             batch_id: None,
             parent_id: None,
@@ -925,7 +927,7 @@ impl App {
             job_id: None,
             live_output: None,
             images: Vec::new(),
-        }));
+        })));
     }
 
     /// 更新运行中工具的进度行（按 `tool_call_id` 定位）。
@@ -1855,7 +1857,7 @@ mod detail_control_tests {
     }
 
     fn tool() -> Block {
-        Block::Tool(ToolCallBlock {
+        Block::Tool(Box::new(ToolCallBlock {
             id: "call_1".into(),
             batch_id: None,
             parent_id: None,
@@ -1870,7 +1872,7 @@ mod detail_control_tests {
             images: Vec::new(),
             job_id: None,
             live_output: None,
-        })
+        }))
     }
 
     /// Ctrl+T / Ctrl+O 切换全局档位时收回该层的手动展开，另一层不受影响。

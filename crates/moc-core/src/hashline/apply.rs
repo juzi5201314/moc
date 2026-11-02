@@ -40,9 +40,19 @@ pub struct EditRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 pub enum EditOp {
-    Replace { from: usize, to: usize, text: String },
-    Insert { after: usize, text: String },
-    Delete { from: usize, to: usize },
+    Replace {
+        from: usize,
+        to: usize,
+        text: String,
+    },
+    Insert {
+        after: usize,
+        text: String,
+    },
+    Delete {
+        from: usize,
+        to: usize,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,8 +129,7 @@ pub fn plan_edit(
     max_edits: usize,
     max_file_bytes: u64,
 ) -> Result<EditPlan, EditError> {
-    if (request.edits.is_empty() && request.move_lines.is_none())
-        || request.edits.len() > max_edits
+    if (request.edits.is_empty() && request.move_lines.is_none()) || request.edits.len() > max_edits
     {
         return Err(tool_error(
             "E_BAD_PAYLOAD",
@@ -133,7 +142,10 @@ pub fn plan_edit(
         read_snapshot(&source_path, max_file_bytes).map_err(tool_error_from_io)?;
     if served.epoch != Some(source_snapshot.epoch) {
         let message = if served.epoch.is_none() {
-            format!("{} has not been read in this session", source_path.display())
+            format!(
+                "{} has not been read in this session",
+                source_path.display()
+            )
         } else {
             format!(
                 "{} changed outside this session since it was read",
@@ -684,10 +696,7 @@ fn map_gap(
     if after > len {
         return Err(tool_error(
             "E_BAD_PAYLOAD",
-            &format!(
-                "{}: after {after} is outside 0-{len}",
-                field_name(index)
-            ),
+            &format!("{}: after {after} is outside 0-{len}", field_name(index)),
         ));
     }
     if after == 0 {
@@ -925,7 +934,11 @@ mod tests {
         std::fs::write(path, text).expect("写测试文件");
         let snapshot = read_snapshot(path, 1_000_000).expect("读取快照");
         let mut served = ServedFile::new();
-        let tag = served.serve(snapshot.epoch, &snapshot.lines, &[0..snapshot.lines.len()]);
+        let tag = served.serve(
+            snapshot.epoch,
+            &snapshot.lines,
+            std::slice::from_ref(&(0..snapshot.lines.len())),
+        );
         (snapshot, served, tag_text(tag))
     }
 
@@ -964,7 +977,11 @@ mod tests {
         std::fs::write(&path, b"\xef\xbb\xbffirst\r\nsecond\r\nthird\r\n").expect("写文件");
         let snapshot = read_snapshot(&path, 4096).expect("读取");
         let mut served = ServedFile::new();
-        let tag = tag_text(served.serve(snapshot.epoch, &snapshot.lines, &[0..3]));
+        let tag = tag_text(served.serve(
+            snapshot.epoch,
+            &snapshot.lines,
+            std::slice::from_ref(&(0..3)),
+        ));
         apply_edit(
             dir.path(),
             &request("file.txt", &tag, vec![replace(2, 2, "replacement")]),
@@ -1075,14 +1092,22 @@ mod tests {
         let path = dir.path().join("file.txt");
         let (snapshot, _served, tag) = served_snapshot(&path, "one\ntwo\nthree\n");
         let mut partial = ServedFile::new();
-        partial.serve(snapshot.epoch, &snapshot.lines, &[0..1]);
+        partial.serve(
+            snapshot.epoch,
+            &snapshot.lines,
+            std::slice::from_ref(&(0..1)),
+        );
         let store = AnchorStore::new();
         let edit = request("file.txt", &tag, vec![replace(1, 3, "rewritten")]);
         let error = apply_edit(dir.path(), &edit, &partial, None, &store, 32, 4096)
             .await
             .expect_err("未展示的行必须拒绝");
         assert!(error.to_string().contains("E_UNSEEN"), "{error}");
-        partial.serve(snapshot.epoch, &snapshot.lines, &[0..3]);
+        partial.serve(
+            snapshot.epoch,
+            &snapshot.lines,
+            std::slice::from_ref(&(0..3)),
+        );
         apply_edit(dir.path(), &edit, &partial, None, &store, 32, 4096)
             .await
             .expect("重读后范围可编辑");
@@ -1205,7 +1230,7 @@ mod tests {
         let target_tag = tag_text(target_served.serve(
             target_snapshot.epoch,
             &target_snapshot.lines,
-            &[0..target_snapshot.lines.len()],
+            std::slice::from_ref(&(0..target_snapshot.lines.len())),
         ));
         let store = AnchorStore::new();
         let mut edit = request("source", &source_tag, vec![insert(1, "x")]);
@@ -1517,8 +1542,7 @@ mod tests {
             + "\n";
         let (_source_snapshot, source_served, source_tag) =
             served_snapshot(&source, "move\nkeep\n");
-        let (_target_snapshot, target_served, target_tag) =
-            served_snapshot(&target, &target_text);
+        let (_target_snapshot, target_served, target_tag) = served_snapshot(&target, &target_text);
         let mut edit = request("source.txt", &source_tag, vec![insert(2, "after")]);
         edit.move_lines = Some(MoveRequest {
             from: 1,

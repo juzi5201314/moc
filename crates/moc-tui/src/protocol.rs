@@ -131,7 +131,8 @@ pub enum AppEvent {
     Rewound {
         selected: moc_protocol::methods::TranscriptEntry,
         is_redo: bool,
-        result: anyhow::Result<moc_protocol::SessionLoadResult>,
+        // 装箱收窄枚举：SessionLoadResult 比其余变体大 200+ 字节。
+        result: Box<anyhow::Result<moc_protocol::SessionLoadResult>>,
     },
     /// 会占住会话提示锁的前端操作收尾（模型切换、思考等级切换、手动压缩）。
     ///

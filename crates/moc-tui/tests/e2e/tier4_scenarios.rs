@@ -190,7 +190,7 @@ cargo test --package moc-tui --test e2e_ui_ux_overhaul
 > **注意**: 该操作将写入 release 目录并更新二进制签名。
 "#;
     let theme = Theme::global();
-    let lines = render_markdown(doc, 90, &theme);
+    let lines = render_markdown(doc, 90, theme);
     assert!(!lines.is_empty(), "markdown parsed into lines");
 
     // Step 2: System requests shell execution permission

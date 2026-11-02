@@ -162,7 +162,12 @@ pub fn control(field: &ConfigField) -> Control {
             presets: pairs(&LEVELS),
             custom: Some(Entry::Level),
             ordered: true,
-            empty: Empty::Default(LEVELS.iter().map(|(level, _)| (*level).to_owned()).collect()),
+            empty: Empty::Default(
+                LEVELS
+                    .iter()
+                    .map(|(level, _)| (*level).to_owned())
+                    .collect(),
+            ),
         }),
         "input" if model => Control::List(ListSpec {
             presets: pairs(&[("text", "文本"), ("image", "图片")]),

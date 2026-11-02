@@ -386,8 +386,10 @@ mod tests {
 
     #[test]
     fn validation_names_the_field_and_rejects_empty_or_inverted_limits() {
-        let mut config = BashLimitsConfig::default();
-        config.enabled = true;
+        let mut config = BashLimitsConfig {
+            enabled: true,
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
 
         config.cpu_cores = 0;

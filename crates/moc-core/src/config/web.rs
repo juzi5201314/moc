@@ -93,7 +93,10 @@ mod tests {
         assert_eq!(state.tool_detail, WebDetailLevel::Brief);
 
         std::fs::write(&path, "expand_thinking = false\n").unwrap();
-        assert_eq!(load(root.path()).unwrap().state.thinking_detail, WebDetailLevel::Brief);
+        assert_eq!(
+            load(root.path()).unwrap().state.thinking_detail,
+            WebDetailLevel::Brief
+        );
     }
 
     #[test]

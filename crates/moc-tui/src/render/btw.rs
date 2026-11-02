@@ -170,8 +170,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // `scroll` 是距底部的行数；百分比按「已读到哪」从顶部算，到底为 100%。
     let mut title = format!("BTW{SEP}{status}{SEP}{turns} 轮");
-    if app.btw.scroll_max > 0 {
-        let percent = (app.btw.scroll_max - thread.scroll) * 100 / app.btw.scroll_max;
+    if let Some(percent) =
+        ((app.btw.scroll_max - thread.scroll) * 100).checked_div(app.btw.scroll_max)
+    {
         title.push_str(&format!("{SEP}{percent}%"));
     }
     let edge = usize::from(area.width.saturating_sub(4));

@@ -361,11 +361,7 @@ fn btw_dock_has_solid_opaque_background_both_states() {
         let theme = app.theme;
         for y in dock.y..dock.y + dock.height {
             for x in dock.x..dock.x + dock.width {
-                if x > dock.x
-                    && buffer
-                        .cell((x - 1, y))
-                        .map_or(false, |c| c.cell_width() > 1)
-                {
+                if x > dock.x && buffer.cell((x - 1, y)).is_some_and(|c| c.cell_width() > 1) {
                     continue;
                 }
                 let cell = buffer.cell((x, y)).expect("格存在");

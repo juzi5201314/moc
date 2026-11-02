@@ -478,7 +478,9 @@ fn estimate_entry_height_at(app: &App, index: usize, width: u16) -> usize {
         .blocks
         .iter()
         .filter_map(|candidate| match &candidate.block {
-            Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => Some(tool),
+            Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => {
+                Some(tool.as_ref())
+            }
             _ => None,
         })
         .collect();
@@ -754,7 +756,9 @@ fn render_entry_with(
             .blocks
             .iter()
             .filter_map(|candidate| match &candidate.block {
-                Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => Some(tool),
+                Block::Tool(tool) if is_same_batch_tool(candidate, batch_id, name) => {
+                    Some(tool.as_ref())
+                }
                 _ => None,
             })
             .collect();
@@ -1388,13 +1392,13 @@ fn render_tool(
         ));
     }
     // 后台任务标记
-    if let Some(job_id) = &tool.job_id {
-        if tool.running {
-            title.push(Span::styled(
-                format!(" · 后台 {job_id}"),
-                Style::new().fg(theme.gray_dim),
-            ));
-        }
+    if let Some(job_id) = &tool.job_id
+        && tool.running
+    {
+        title.push(Span::styled(
+            format!(" · 后台 {job_id}"),
+            Style::new().fg(theme.gray_dim),
+        ));
     }
     let mut lines = vec![clip_line(Line::from(title), width)];
     let mut placements = Vec::new();
@@ -4268,13 +4272,13 @@ mod tests {
             id: "call_ask".into(),
             name: "ask".into(),
             parent_id: None,
-            arguments: arguments.clone().into(),
+            arguments: arguments.clone(),
         });
         app.finish_tool_block(ToolCallFinish {
             id: "call_ask".into(),
             name: "ask".into(),
             parent_id: None,
-            arguments: arguments.into(),
+            arguments,
             status: ToolStatus::Completed,
             result: ToolResult {
                 tool_call_id: "call_ask".into(),
@@ -4356,7 +4360,7 @@ mod tests {
                 image::Rgba([9, 9, 9, 255]),
             ))),
         );
-        app.push_block(Block::Tool(ToolCallBlock {
+        app.push_block(Block::Tool(Box::new(ToolCallBlock {
             id: "shot".into(),
             batch_id: None,
             parent_id: None,
@@ -4371,7 +4375,7 @@ mod tests {
             images: vec![ToolImage::for_test(key, "image/png", Some("AAAA"))],
             job_id: None,
             live_output: None,
-        }));
+        })));
 
         let width = 80u16;
         let rendered = render_entry(0, &app.blocks[0], &app, width);
@@ -4412,7 +4416,7 @@ mod tests {
                 image::Rgba([9, 9, 9, 255]),
             ))),
         );
-        app.push_block(Block::Tool(ToolCallBlock {
+        app.push_block(Block::Tool(Box::new(ToolCallBlock {
             id: "shot".into(),
             batch_id: None,
             parent_id: None,
@@ -4431,7 +4435,7 @@ mod tests {
             )],
             job_id: None,
             live_output: None,
-        }));
+        })));
 
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;

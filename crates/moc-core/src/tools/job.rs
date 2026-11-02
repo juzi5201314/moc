@@ -190,7 +190,14 @@ impl JobManager {
     ) -> Result<Foreground, ToolError> {
         let (sender, receiver) = oneshot::channel();
         let id = spec.id.clone();
-        self.register(ctx, spec, process, JobOrigin::Foreground, None, Some(sender))?;
+        self.register(
+            ctx,
+            spec,
+            process,
+            JobOrigin::Foreground,
+            None,
+            Some(sender),
+        )?;
         Ok(Foreground {
             manager: Arc::clone(self),
             id,
@@ -346,7 +353,11 @@ impl JobManager {
         };
         if notify_model {
             let last = log.live_tail(1, LIVE_TAIL_LINE_CHARS);
-            let last = if last.is_empty() { "(no output yet)".to_owned() } else { last };
+            let last = if last.is_empty() {
+                "(no output yet)".to_owned()
+            } else {
+                last
+            };
             let notice = format!(
                 "{}has produced no output for {}s (last line: {last}). It may be blocked on the network, a lock, or stdin input. Check `job output`, or kill it and rerun with a narrower or non-interactive command.",
                 notice_prefix(id),
@@ -395,7 +406,9 @@ impl JobManager {
             // 等待者已被丢弃（提示被中止）时结果无人接收，属于正常收尾。
             let _ = attached.send(waited);
             if !closing {
-                announce.send(SessionUpdate::JobFinished { job: info }).await;
+                announce
+                    .send(SessionUpdate::JobFinished { job: info })
+                    .await;
             }
             return;
         }
@@ -419,7 +432,9 @@ impl JobManager {
             &info.log_uri,
         )
         .await;
-        announce.send(SessionUpdate::JobFinished { job: info }).await;
+        announce
+            .send(SessionUpdate::JobFinished { job: info })
+            .await;
         crate::service::prompt::wake_for_jobs(
             Arc::clone(&ctx.core),
             ctx.request.clone(),
@@ -492,7 +507,11 @@ impl JobManager {
     }
 
     /// 最后 `lines` 行输出与日志路径。
-    pub(crate) fn output(&self, id: &str, lines: usize) -> Result<(JobInfo, String, PathBuf), ToolError> {
+    pub(crate) fn output(
+        &self,
+        id: &str,
+        lines: usize,
+    ) -> Result<(JobInfo, String, PathBuf), ToolError> {
         let (info, log) = {
             let jobs = self.jobs.lock();
             let job = jobs
@@ -504,7 +523,10 @@ impl JobManager {
             .read_tail(lines)
             .map_err(|error| ToolError::new("E_JOB_LOG", error.to_string()))?;
         if elided {
-            text.insert_str(0, "[output_elided=true; the middle of the output was dropped]\n");
+            text.insert_str(
+                0,
+                "[output_elided=true; the middle of the output was dropped]\n",
+            );
         }
         Ok((info, text, log.path().to_owned()))
     }
@@ -515,13 +537,10 @@ impl JobManager {
         if let Some((info, announce)) = self.terminate(id)? {
             announce.send(SessionUpdate::JobUpdated { job: info }).await;
         }
-        Ok(self
-            .wait_terminal(id, None)
-            .await
-            .unwrap_or(JobInfo {
-                status: JobStatus::Killed,
-                ..before
-            }))
+        Ok(self.wait_terminal(id, None).await.unwrap_or(JobInfo {
+            status: JobStatus::Killed,
+            ..before
+        }))
     }
 
     /// 等任务结束，最多 `timeout`；返回当时的快照。
@@ -534,7 +553,11 @@ impl JobManager {
     }
 
     /// 任务已被驱逐时返回 `None`（说明早已结束）。
-    async fn wait_terminal(&self, id: &str, deadline: Option<tokio::time::Instant>) -> Option<JobInfo> {
+    async fn wait_terminal(
+        &self,
+        id: &str,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Option<JobInfo> {
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
@@ -615,7 +638,11 @@ impl JobManager {
     }
 
     /// `job wait` 已经把结束结果交给模型：撤掉还没送达的同一任务通知，不再重复注入。
-    pub(crate) async fn mark_reported(&self, state: &tokio::sync::Mutex<crate::session::state::SessionState>, id: &str) {
+    pub(crate) async fn mark_reported(
+        &self,
+        state: &tokio::sync::Mutex<crate::session::state::SessionState>,
+        id: &str,
+    ) {
         let prefix = notice_prefix(id);
         let mut state = state.lock().await;
         state.notices.retain(|notice| !notice.starts_with(&prefix));
@@ -690,9 +717,8 @@ impl Foreground {
         cancel: &tokio_util::sync::CancellationToken,
         background_after: Option<(Duration, usize)>,
     ) -> ForegroundEnd {
-        let mut threshold = background_after.map(|(after, slots)| {
-            (Box::pin(tokio::time::sleep(after)), slots)
-        });
+        let mut threshold =
+            background_after.map(|(after, slots)| (Box::pin(tokio::time::sleep(after)), slots));
         let mut cancelled = false;
         let end = loop {
             tokio::select! {
@@ -721,7 +747,10 @@ impl Foreground {
         };
         self.settled = true;
         if cancelled && matches!(end, ForegroundEnd::Finished(_)) {
-            return ForegroundEnd::Finished(Err(ToolError::new("E_CANCELLED", "command cancelled")));
+            return ForegroundEnd::Finished(Err(ToolError::new(
+                "E_CANCELLED",
+                "command cancelled",
+            )));
         }
         end
     }
@@ -769,10 +798,9 @@ pub(crate) fn wire<T: serde::Serialize>(value: T) -> String {
 }
 
 fn elapsed_secs(info: &JobInfo) -> u64 {
-    info.duration_ms.map_or_else(
-        || crate::session::store::now_ms().saturating_sub(info.started_at_ms),
-        |duration| duration,
-    ) / 1000
+    info.duration_ms
+        .unwrap_or_else(|| crate::session::store::now_ms().saturating_sub(info.started_at_ms))
+        / 1000
 }
 
 impl Tool for JobTool {

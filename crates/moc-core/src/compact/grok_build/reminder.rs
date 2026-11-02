@@ -64,7 +64,10 @@ async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String>
             JobStatus::Killing => "killing",
             _ => continue,
         };
-        lines.push(format!("- \"{}\": `{}` ({status})", job.job_id, job.command));
+        lines.push(format!(
+            "- \"{}\": `{}` ({status})",
+            job.job_id, job.command
+        ));
     }
     if lines.is_empty() {
         return None;

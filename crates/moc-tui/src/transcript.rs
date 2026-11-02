@@ -376,8 +376,8 @@ pub enum Block {
         reasoning_tokens: Option<u64>,
         duration_ms: Option<u64>,
     },
-    /// 一次工具调用。
-    Tool(ToolCallBlock),
+    /// 一次工具调用。装箱收窄 Block：ToolCallBlock 近 300 字节，比其它变体大一个量级。
+    Tool(Box<ToolCallBlock>),
     /// 其它代理投递进来的消息（IRC 卡片）。
     AgentMessage {
         meta: moc_protocol::methods::AgentMessageMeta,

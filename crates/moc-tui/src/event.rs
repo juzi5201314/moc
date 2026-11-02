@@ -153,16 +153,17 @@ fn init_logging() {
     }));
 }
 
+/// `bootstrap` 成功时恢复的会话与转写块；`bool` 是 `has_more`，末项是首条历史 ID。
+type BootstrapLoad = (
+    SessionInfo,
+    Vec<crate::transcript::Entry>,
+    bool,
+    Option<String>,
+);
+
 /// 拉取模型目录并建立/恢复初始会话；失败给出可见错误但继续运行（用户可退出）。
 async fn bootstrap(client: &ClientHandle, app: &mut App, opts: &TuiOptions) {
-    let outcome: anyhow::Result<
-        Option<(
-            SessionInfo,
-            Vec<crate::transcript::Entry>,
-            bool,
-            Option<String>,
-        )>,
-    > = async {
+    let outcome: anyhow::Result<Option<BootstrapLoad>> = async {
         let config = client.call::<ConfigGet>(ConfigGetParams {}).await?;
         // core 的 cwd 已规范化，会话 header 里存的也是同一形式；用它比较才不受
         // `--cwd` 的相对路径或符号链接影响。
@@ -871,7 +872,7 @@ async fn event_loop(
                         is_redo,
                         result,
                     }) => {
-                        apply_rewound(app, connection, selected, is_redo, result);
+                        apply_rewound(app, connection, selected, is_redo, *result);
                     }
                     Some(AppEvent::HistoryPageLoaded { prepend, result }) => {
                         apply_history_page(app, prepend, result);
@@ -3491,7 +3492,7 @@ fn handle_modal_key(
                             let _ = events.send(AppEvent::Rewound {
                                 selected,
                                 is_redo,
-                                result,
+                                result: Box::new(result),
                             });
                         });
                     }
@@ -3551,7 +3552,7 @@ fn handle_modal_key(
                                 let _ = events.send(AppEvent::Rewound {
                                     selected,
                                     is_redo,
-                                    result,
+                                    result: Box::new(result),
                                 });
                             });
                         }
@@ -4016,10 +4017,7 @@ fn handle_modal_key(
                             if let Some(session_id) = session_id {
                                 let _ = client
                                     .call::<moc_protocol::methods::JobKill>(
-                                        moc_protocol::methods::JobTarget {
-                                            session_id,
-                                            job_id,
-                                        },
+                                        moc_protocol::methods::JobTarget { session_id, job_id },
                                     )
                                     .await;
                             }
@@ -4308,7 +4306,11 @@ fn open_plan_review(app: &mut App, plan: moc_protocol::methods::PlanInfo) {
         return;
     };
     app.modal = Some(Modal::Plan {
-        state: crate::modal::PlanReviewState::new(plan, session.model.clone(), session.engine),
+        state: Box::new(crate::modal::PlanReviewState::new(
+            plan,
+            session.model.clone(),
+            session.engine,
+        )),
     });
 }
 
@@ -4942,7 +4944,9 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::JobFinished { job } => {
-            let code = job.exit_code.map_or_else(String::new, |code| format!("（退出码 {code}）"));
+            let code = job
+                .exit_code
+                .map_or_else(String::new, |code| format!("（退出码 {code}）"));
             app.push_note(format!("后台任务结束：{}{code}", job.command), false);
         }
         SessionUpdate::WorkspaceChanged { .. } => {
@@ -5408,7 +5412,8 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
                             let _ = events.send(AppEvent::OpenJobsModal(result.jobs));
                         }
                         Err(error) => {
-                            let _ = events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
+                            let _ =
+                                events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
                         }
                     }
                 });
@@ -7700,7 +7705,11 @@ mod tests {
     }
 
     /// 画一帧整屏 UI，让鼠标命中几何与真实绘制同源。
-    fn draw_frame(app: &mut App, width: u16, height: u16) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+    fn draw_frame(
+        app: &mut App,
+        width: u16,
+        height: u16,
+    ) -> ratatui::Terminal<ratatui::backend::TestBackend> {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         let mut view = crate::render::ScrollbackView::new();
@@ -7758,7 +7767,11 @@ mod tests {
 
         let terminal = draw_frame(&mut app, 100, 30);
         let (_, low) = app.modal_level_hits[1];
-        assert_eq!(cell_text(&terminal, low), " low ", "命中区与芯片文字逐列对齐");
+        assert_eq!(
+            cell_text(&terminal, low),
+            " low ",
+            "命中区与芯片文字逐列对齐"
+        );
         let (_, row_b) = app.modal_item_hits[1];
 
         // 点芯片：只切档，不确认。
@@ -10634,11 +10647,11 @@ mod config_picker_tests {
             annotations: Vec::new(),
         };
         app.modal = Some(Modal::Plan {
-            state: crate::modal::PlanReviewState::new(
+            state: Box::new(crate::modal::PlanReviewState::new(
                 plan,
                 "test/big:low".into(),
                 moc_protocol::SessionEngine::Standard,
-            ),
+            )),
         });
         app.open_plan_model_picker();
 

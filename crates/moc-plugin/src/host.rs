@@ -1097,6 +1097,7 @@ impl PluginHost {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn invoke_context(
         &self,
         index: usize,

@@ -35,17 +35,15 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, BtwCancelResult, BtwUpdate,
-    JobBackground, JobKill, JobList, JobReadOutput,
-    ChartAnalyze, ClientInfo, ConfigGet, ConfigManage, FsCreateDir, FsListDir, Initialize, Ping,
-    PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams, ResourceComplete,
-    SessionBash, SessionBtw, SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact,
-    SessionContext, SessionContextContent, SessionDelete, SessionList, SessionLoad,
-    SessionLoadPage, SessionNew, SessionPlanApprove, SessionPlanDiff, SessionPlanMode,
-    SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename, SessionRetry, SessionRewind,
-    SessionSetAutonomy, SessionSetEngine, SessionSetFastMode, SessionSetModel,
-    SessionSetPermission, SessionSteer,
-    SessionUnload, SessionUnlock, SessionUnsteer, SessionUsage, WebStateGet, WebStateSave,
-    WorkspaceGitBranch,
+    ChartAnalyze, ClientInfo, ConfigGet, ConfigManage, FsCreateDir, FsListDir, Initialize,
+    JobBackground, JobKill, JobList, JobReadOutput, Ping, PingResult, PluginList, PluginReload,
+    PluginRunCommand, PromptParams, ResourceComplete, SessionBash, SessionBtw, SessionBtwCancel,
+    SessionCancel, SessionCancelResult, SessionCompact, SessionContext, SessionContextContent,
+    SessionDelete, SessionList, SessionLoad, SessionLoadPage, SessionNew, SessionPlanApprove,
+    SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename,
+    SessionRetry, SessionRewind, SessionSetAutonomy, SessionSetEngine, SessionSetFastMode,
+    SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
+    SessionUnsteer, SessionUsage, WebStateGet, WebStateSave, WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;

@@ -101,7 +101,9 @@ pub struct ScriptToolResult {
 pub struct ScriptError {
     pub code: String,
     pub message: String,
-    pub result: Option<ScriptToolResult>,
+    // 装箱收窄 Err 变体：ScriptToolResult 本身上百字节，内联会让所有
+    // `Result<_, ScriptError>` 的搬运成本跟着翻倍；线上序列化不受影响。
+    pub result: Option<Box<ScriptToolResult>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

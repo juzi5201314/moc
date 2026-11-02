@@ -545,8 +545,10 @@ fn test_f6_02_empty_subagent_roster_displays_clean_empty_message() {
 #[test]
 fn test_f6_03_filtered_subagent_roster_empty_state_has_no_agent_command() {
     let (mut app, _rx, mut terminal) = create_test_terminal(100, 30);
-    let mut picker = PickerState::default();
-    picker.query = "non_existent_search".into();
+    let picker = PickerState {
+        query: "non_existent_search".into(),
+        ..Default::default()
+    };
     app.modal = Some(Modal::Subagents {
         agents: vec![sample_agent_info("ag_1", "CodeAgent", AgentStatus::Running)],
         picker,

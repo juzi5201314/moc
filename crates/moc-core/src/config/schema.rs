@@ -1066,12 +1066,16 @@ mod bash_config_tests {
 
     #[test]
     fn ptc_duration_limits_are_rejected_before_runtime() {
-        let mut config = PtcConfig::default();
-        config.max_timeout_secs = u64::MAX;
+        let config = PtcConfig {
+            max_timeout_secs: u64::MAX,
+            ..Default::default()
+        };
         assert!(validate_ptc(&config).is_err());
 
-        let mut config = PtcConfig::default();
-        config.host_idle_timeout_secs = u64::MAX;
+        let config = PtcConfig {
+            host_idle_timeout_secs: u64::MAX,
+            ..Default::default()
+        };
         assert!(validate_ptc(&config).is_err());
     }
 }

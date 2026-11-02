@@ -555,7 +555,8 @@ fn arrow_at(text: &str) -> Option<(String, usize, bool, bool)> {
     }
     // 夹标签只在裸主体后算：`--> B --> C` 是 A→B→C 链，`-- B --> C` 才是
     // 带标签的 A→C。
-    if !left_marker && !right_head
+    if !left_marker
+        && !right_head
         && let Some((label, consumed)) = label_then_link(rest, i)
     {
         return Some((label, consumed, reversed, true));
@@ -828,8 +829,8 @@ fn rank_nodes(graph: &Graph) -> Vec<Vec<usize>> {
         rank
     }
     let mut rank = vec![0; n];
-    for node in 0..n {
-        rank[node] = dfs(node, &preds, &mut memo, &mut stack);
+    for (node, slot) in rank.iter_mut().enumerate() {
+        *slot = dfs(node, &preds, &mut memo, &mut stack);
     }
     let height = rank.iter().copied().max().unwrap_or(0);
     let mut groups = vec![Vec::new(); height + 1];
@@ -1052,12 +1053,8 @@ fn finish_graph(
             paint_label(&mut grid, place.x, place.y + row, line);
         }
     }
-    if !footer_lines.is_empty() {
-        let mut y = height - footer_lines.len();
-        for line in &footer_lines {
-            grid.put_str(0, y, line, Ink::Text);
-            y += 1;
-        }
+    for (row, line) in (height - footer_lines.len()..).zip(&footer_lines) {
+        grid.put_str(0, row, line, Ink::Text);
     }
     Some(grid)
 }
@@ -1286,12 +1283,8 @@ fn layout_column(graph: &Graph, ranks: &[Vec<usize>], width: usize) -> Grid {
             }
         }
     }
-    if !footer_lines.is_empty() {
-        let mut y = height - footer_lines.len();
-        for line in &footer_lines {
-            grid.put_str(0, y, line, Ink::Text);
-            y += 1;
-        }
+    for (row, line) in (height - footer_lines.len()..).zip(&footer_lines) {
+        grid.put_str(0, row, line, Ink::Text);
     }
     grid
 }
@@ -1878,7 +1871,8 @@ mod tests {
         assert!(!picture.contains("state"), "{picture}");
         assert!(!picture.contains("note"), "{picture}");
 
-        let multi = "stateDiagram-v2\n  note right of Idle\n    长说明\n  end note\n  [*] --> Idle\n";
+        let multi =
+            "stateDiagram-v2\n  note right of Idle\n    长说明\n  end note\n  [*] --> Idle\n";
         let picture = draw(multi, 40).expect("多行 note");
         assert!(picture.contains("Idle"), "{picture}");
         assert!(!picture.contains("note"), "{picture}");

@@ -28,7 +28,7 @@ pub enum ColorLevel {
 pub fn detect_color_level() -> ColorLevel {
     #[cfg(test)]
     {
-        return ColorLevel::TrueColor;
+        ColorLevel::TrueColor
     }
     #[cfg(not(test))]
     {

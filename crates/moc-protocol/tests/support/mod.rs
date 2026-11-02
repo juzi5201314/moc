@@ -28,9 +28,8 @@ use moc_protocol::methods::{
     SessionPlanDiffResult, SessionPlanModeParams, SessionPlanReviseParams, SessionPlanReviseResult,
     SessionRenameParams, SessionRequestAsk, SessionRetryParams, SessionSetAutonomyParams,
     SessionSetEngineParams, SessionSetFastModeParams, SessionSetModelParams,
-    SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdate, SessionUpdateParams, ToolExecution, ToolStatus,
-    TranscriptEntry, default_options,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdate,
+    SessionUpdateParams, ToolExecution, ToolStatus, TranscriptEntry, default_options,
 };
 use moc_protocol::{
     AgentService, ClientBuilder, ClientHandle, ClientRequestContext, ContentPart, FinishReason,

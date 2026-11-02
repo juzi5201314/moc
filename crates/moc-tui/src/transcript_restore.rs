@@ -20,7 +20,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
         let TranscriptEntry { message, tool, .. } = record;
         if let Some(command) = &record.bash {
             if let Some(tool) = tool {
-                blocks.push(Entry::new(Block::Tool(ToolCallBlock {
+                blocks.push(Entry::new(Block::Tool(Box::new(ToolCallBlock {
                     id: tool.tool_call_id.clone(),
                     batch_id: None,
                     parent_id: None,
@@ -35,7 +35,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                     job_id: None,
                     live_output: None,
                     images: Vec::new(),
-                })));
+                }))));
             }
             continue;
         }
@@ -94,7 +94,7 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                                 images: Vec::new(),
                             };
                             call_index.insert(call.id.clone(), blocks.len());
-                            blocks.push(Entry::new(Block::Tool(block)));
+                            blocks.push(Entry::new(Block::Tool(Box::new(block))));
                         }
                         _ => {}
                     }
@@ -180,7 +180,7 @@ pub fn blocks_from_entries_with_children(
             live_output: None,
             images: Vec::new(),
         };
-        blocks.insert(insert_at, Entry::new(Block::Tool(block)));
+        blocks.insert(insert_at, Entry::new(Block::Tool(Box::new(block))));
         next_positions.insert(child.parent_tool_call_id.clone(), insert_at + 1);
     }
     blocks
@@ -290,7 +290,11 @@ mod tests {
         };
         assert_eq!(tool.status, Some(ToolStatus::Completed));
         assert_eq!(tool.result.as_deref(), Some("a.rs"));
-        assert_eq!(tool.diff.as_ref(), Some(&diff), "历史回放要带回 edit 的 diff");
+        assert_eq!(
+            tool.diff.as_ref(),
+            Some(&diff),
+            "历史回放要带回 edit 的 diff"
+        );
     }
 
     #[test]

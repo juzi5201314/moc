@@ -314,7 +314,7 @@ mod tests {
         fs::write(&path, "fn main() {}\nfn other() {}\n").expect("写文件");
         let snapshot = read_snapshot(&path, 1024).expect("读取快照");
         let anchors = AnchorStore::new();
-        anchors.record_served(path.clone(), &snapshot, &[0..2]);
+        anchors.record_served(path.clone(), &snapshot, std::slice::from_ref(&(0..2)));
         assert!(reject_served_hash_echo(&path, "1│one\n2│two", &anchors, 2).is_err());
         assert!(reject_served_hash_echo(&path, "3│x", &anchors, 2).is_ok());
     }

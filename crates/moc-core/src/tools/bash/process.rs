@@ -231,6 +231,7 @@ impl Process {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_pty(
     args: BashArgs,
     cwd: PathBuf,

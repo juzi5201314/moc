@@ -394,6 +394,7 @@ impl EntryPayload {
 ///   `yield` 和代理通信能力，所以只有真正的 spawn 才能写入。
 /// - `forked_from`：从已有会话派生出的独立会话（如计划执行新会话）。派生会话在模型侧
 ///   和普通会话完全一致，这个字段只给用户标出来源，永远不参与提示词、工具或代理列表的判断。
+///
 /// spawn 时解析并快照进 header 的委托契约。
 ///
 /// 四个字段彼此独立：普通子代理可以只带 `output_schema`（结构化 yield），
@@ -466,6 +467,18 @@ impl SessionOrigin {
         }
     }
 }
+
+/// [`Entry::header_fields`] 投影出的会话头字段，顺序与 `Entry::header` 的参数一致。
+pub type HeaderFields<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    SessionEngine,
+    SessionPermission,
+    &'a str,
+    u64,
+    u64,
+);
 
 impl Entry {
     /// 创建 JSONL 文件的第一行。
@@ -772,18 +785,7 @@ impl Entry {
         }
     }
 
-    pub fn header_fields(
-        &self,
-    ) -> Option<(
-        &str,
-        &str,
-        &str,
-        SessionEngine,
-        SessionPermission,
-        &str,
-        u64,
-        u64,
-    )> {
+    pub fn header_fields(&self) -> Option<HeaderFields<'_>> {
         match self {
             Self::Header {
                 session_id,

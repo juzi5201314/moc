@@ -42,10 +42,10 @@ pub mod config;
 pub mod diff;
 pub mod fs;
 pub mod initialize;
+pub mod job;
 pub mod management;
 pub mod permission;
 pub mod plan;
-pub mod job;
 pub mod plugin;
 pub mod prompt;
 pub mod resources;
@@ -86,6 +86,10 @@ pub use initialize::{
     ClientCapabilities, ClientInfo, EmptyParams, Initialize, InitializeParams, InitializeResult,
     Ping, PingResult, ServerCapabilities, ServerInfo,
 };
+pub use job::{
+    JobBackground, JobInfo, JobKill, JobLifecycle, JobList, JobListParams, JobListResult,
+    JobOrigin, JobOutputParams, JobOutputResult, JobReadOutput, JobResult, JobStatus, JobTarget,
+};
 pub use management::{
     CatalogModel, ChoiceOption, ConfigAction, ConfigField, ConfigManage, ConfigReply, ConfigScope,
     FieldKind, MaintenanceReport, SessionSteer, SessionUnsteer, SettingsDocument, SteerParams,
@@ -100,10 +104,6 @@ pub use plan::{
     SessionPlanApproveResult, SessionPlanDiff, SessionPlanDiffParams, SessionPlanDiffResult,
     SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams,
     SessionPlanReviseResult,
-};
-pub use job::{
-    JobBackground, JobInfo, JobKill, JobLifecycle, JobList, JobListParams, JobListResult,
-    JobOrigin, JobOutputParams, JobOutputResult, JobReadOutput, JobResult, JobStatus, JobTarget,
 };
 pub use plugin::{
     PluginCommandInfo, PluginInfo, PluginList, PluginListParams, PluginListResult, PluginReload,
@@ -129,10 +129,9 @@ pub use session::{
     SessionRewind, SessionRewindParams, SessionSetAutonomy, SessionSetAutonomyParams,
     SessionSetEngine, SessionSetEngineParams, SessionSetFastMode, SessionSetFastModeParams,
     SessionSetModel, SessionSetModelParams, SessionSetModelResult, SessionSetPermission,
-    SessionSetPermissionParams, SessionUnload,
-    SessionUnloadParams, SessionUnlock, SessionUnlockParams, SessionUsage, SessionUsageParams,
-    SessionUsageResult, ToolExecution, ToolStatus, TranscriptChildCall, TranscriptEntry,
-    UsageSource,
+    SessionSetPermissionParams, SessionUnload, SessionUnloadParams, SessionUnlock,
+    SessionUnlockParams, SessionUsage, SessionUsageParams, SessionUsageResult, ToolExecution,
+    ToolStatus, TranscriptChildCall, TranscriptEntry, UsageSource,
 };
 pub use todo::{TodoItem, TodoPhase, TodoStatus};
 pub use update::{
@@ -186,7 +185,10 @@ mod tests {
                 "session/set_permission",
             ),
             (<SessionSetModel as Method>::NAME, "session/set_model"),
-            (<SessionSetFastMode as Method>::NAME, "session/set_fast_mode"),
+            (
+                <SessionSetFastMode as Method>::NAME,
+                "session/set_fast_mode",
+            ),
             (<SessionPlanMode as Method>::NAME, "session/plan_mode"),
             (<SessionPlanApprove as Method>::NAME, "session/plan_approve"),
             (<SessionPlanRevise as Method>::NAME, "session/plan_revise"),

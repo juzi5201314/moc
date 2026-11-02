@@ -50,7 +50,11 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 style,
             )));
             lines.push(Line::from(Span::styled(
-                crate::render::wrap::truncate(view.info.title.clone(), usize::from(area.width.saturating_sub(2))).into_owned(),
+                crate::render::wrap::truncate(
+                    view.info.title.clone(),
+                    usize::from(area.width.saturating_sub(2)),
+                )
+                .into_owned(),
                 Style::new().fg(theme.text_primary),
             )));
             let model = view
@@ -60,12 +64,20 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .next()
                 .unwrap_or(&view.info.model);
             lines.push(Line::from(Span::styled(
-                crate::render::wrap::truncate(model.to_owned(), usize::from(area.width.saturating_sub(2))).into_owned(),
+                crate::render::wrap::truncate(
+                    model.to_owned(),
+                    usize::from(area.width.saturating_sub(2)),
+                )
+                .into_owned(),
                 Style::new().fg(theme.gray_dim),
             )));
             if let Some(message) = &view.info.last_message {
                 lines.push(Line::from(Span::styled(
-                    crate::render::wrap::truncate(message.clone(), usize::from(area.width.saturating_sub(2))).into_owned(),
+                    crate::render::wrap::truncate(
+                        message.clone(),
+                        usize::from(area.width.saturating_sub(2)),
+                    )
+                    .into_owned(),
                     Style::new().fg(theme.gray_dim),
                 )));
             }
@@ -197,19 +209,19 @@ pub fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             let row_y = area
                 .y
                 .saturating_add(1 + u16::try_from(line_idx).unwrap_or(u16::MAX));
-            if row_y < bottom {
-                if let Some(agent_id) = owner {
-                    if let Some((_, rect)) =
-                        app.subagent_hits.iter_mut().find(|(id, _)| *id == agent_id)
-                    {
-                        rect.height = rect
-                            .height
-                            .saturating_add(1)
-                            .min(bottom.saturating_sub(rect.y));
-                    } else {
-                        app.subagent_hits
-                            .push((agent_id, Rect::new(area.x, row_y, area.width, 1)));
-                    }
+            if row_y < bottom
+                && let Some(agent_id) = owner
+            {
+                if let Some((_, rect)) =
+                    app.subagent_hits.iter_mut().find(|(id, _)| *id == agent_id)
+                {
+                    rect.height = rect
+                        .height
+                        .saturating_add(1)
+                        .min(bottom.saturating_sub(rect.y));
+                } else {
+                    app.subagent_hits
+                        .push((agent_id, Rect::new(area.x, row_y, area.width, 1)));
                 }
             }
             lines.push(line);

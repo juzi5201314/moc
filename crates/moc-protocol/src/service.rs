@@ -35,8 +35,7 @@ use crate::methods::{
     ContextUsageResult, Empty, FsCreateDirParams, FsCreateDirResult, FsListDirParams,
     FsListDirResult, InitializeParams, InitializeResult, JobListParams, JobListResult,
     JobOutputParams, JobOutputResult, JobResult, JobTarget, PermissionRequestParams,
-    PermissionResult,
-    PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
+    PermissionResult, PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
     SessionContextContentParams, SessionContextParams, SessionDeleteParams, SessionInfo,
@@ -46,10 +45,10 @@ use crate::methods::{
     SessionPlanReviseParams, SessionPlanReviseResult, SessionRedoParams, SessionRenameParams,
     SessionRetryParams, SessionRewindParams, SessionSetAutonomyParams, SessionSetEngineParams,
     SessionSetFastModeParams, SessionSetModelParams, SessionSetModelResult,
-    SessionSetPermissionParams, SessionUnloadParams,
-    SessionUnlockParams, SessionUpdateMethod, SessionUpdateParams, SessionUsageParams,
-    SessionUsageResult, UnsteerParams, UnsteerResult, WebStateDocument, WebStateGetParams,
-    WebStateSaveParams, WorkspaceGitBranchParams, WorkspaceGitBranchResult,
+    SessionSetPermissionParams, SessionUnloadParams, SessionUnlockParams, SessionUpdateMethod,
+    SessionUpdateParams, SessionUsageParams, SessionUsageResult, UnsteerParams, UnsteerResult,
+    WebStateDocument, WebStateGetParams, WebStateSaveParams, WorkspaceGitBranchParams,
+    WorkspaceGitBranchResult,
 };
 
 /// core 实现的接口：每方法一个 async 方法。

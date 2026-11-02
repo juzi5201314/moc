@@ -390,7 +390,8 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 /// 同一模型选择器可切换会话模型，也可只选择计划执行模型。
 pub enum ModelTarget {
     Session,
-    PlanReview(PlanReviewState),
+    // 装箱收窄枚举：PlanReviewState 比其余变体大 200+ 字节。
+    PlanReview(Box<PlanReviewState>),
     /// `/config` 的模型角色字段：选中后写回该路径的配置值。
     Config {
         path: Vec<String>,
@@ -1139,8 +1140,8 @@ pub enum Modal {
         loading: bool,
         error: Option<String>,
     },
-    /// 计划审批（`session/plan_approve`）。
-    Plan { state: PlanReviewState },
+    /// 计划审批（`session/plan_approve`）。装箱收窄 Modal：PlanReviewState 近 600 字节。
+    Plan { state: Box<PlanReviewState> },
     /// 快捷键帮助；`scroll` 是正文滚动偏移（渲染时按可见行数收紧）。
     Help { scroll: usize },
     /// 上下文组成估算详情。

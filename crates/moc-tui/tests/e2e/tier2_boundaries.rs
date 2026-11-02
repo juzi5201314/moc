@@ -614,7 +614,7 @@ fn test_f10_b2_btw_stream_empty_reasoning() {
 fn test_f10_b3_btw_multi_turn_order() {
     let t1 = sample_btw_turn("q1", "step 1", "Completed");
     let t2 = sample_btw_turn("q2", "step 2", "Completed");
-    let turns = vec![t1, t2];
+    let turns = [t1, t2];
     assert_eq!(turns[0].question, "q1");
     assert_eq!(turns[1].question, "q2");
 }
@@ -693,7 +693,7 @@ fn test_f11_b5_btw_50_turns_handling() {
 fn test_f12_b1_code_block_unsupported_language() {
     let text = "```brainfuck\n++[>++<-]>.\n```";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(!rendered.is_empty(), "unsupported language renders safely");
 }
 
@@ -701,7 +701,7 @@ fn test_f12_b1_code_block_unsupported_language() {
 fn test_f12_b2_code_block_empty_language() {
     let text = "```\nplain text content\n```";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(!rendered.is_empty(), "empty language block renders");
 }
 
@@ -709,7 +709,7 @@ fn test_f12_b2_code_block_empty_language() {
 fn test_f12_b3_code_block_unclosed_fence() {
     let text = "```rust\nfn unclosed() {\n";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(
         !rendered.is_empty(),
         "unclosed code block fence degrades gracefully"
@@ -720,7 +720,7 @@ fn test_f12_b3_code_block_unclosed_fence() {
 fn test_f12_b4_inline_code_span_empty() {
     let text = "Inline code: `` and ``";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(!rendered.is_empty(), "empty inline code spans do not crash");
 }
 
@@ -729,7 +729,7 @@ fn test_f12_b5_code_block_extreme_line_length() {
     let long_line = "a".repeat(500);
     let text = format!("```\n{long_line}\n```");
     let theme = Theme::global();
-    let rendered = render_markdown(&text, 80, &theme);
+    let rendered = render_markdown(&text, 80, theme);
     assert!(
         !rendered.is_empty(),
         "extreme line length code block renders"
@@ -744,7 +744,7 @@ fn test_f12_b5_code_block_extreme_line_length() {
 fn test_f13_b1_table_zero_rows() {
     let table = "| Header 1 | Header 2 |\n| --- | --- |";
     let theme = Theme::global();
-    let rendered = render_markdown(table, 80, &theme);
+    let rendered = render_markdown(table, 80, theme);
     assert!(!rendered.is_empty(), "zero rows table renders header");
 }
 
@@ -752,7 +752,7 @@ fn test_f13_b1_table_zero_rows() {
 fn test_f13_b2_table_mismatched_columns() {
     let table = "| A | B | C |\n|---|---|---|\n| 1 | 2 |";
     let theme = Theme::global();
-    let rendered = render_markdown(table, 80, &theme);
+    let rendered = render_markdown(table, 80, theme);
     assert!(
         !rendered.is_empty(),
         "mismatched column counts render padded cells"
@@ -763,7 +763,7 @@ fn test_f13_b2_table_mismatched_columns() {
 fn test_f13_b3_table_narrow_terminal_wrap() {
     let table = "| Long Column Header 1 | Long Column Header 2 |\n|---|---|\n| Data 1 | Data 2 |";
     let theme = Theme::global();
-    let rendered = render_markdown(table, 35, &theme);
+    let rendered = render_markdown(table, 35, theme);
     assert!(!rendered.is_empty(), "table renders in narrow terminal");
 }
 
@@ -771,7 +771,7 @@ fn test_f13_b3_table_narrow_terminal_wrap() {
 fn test_f13_b4_table_unicode_alignment() {
     let table = "| 语言 | 符号 |\n|---|---|\n| 中文 | 🚀 |";
     let theme = Theme::global();
-    let rendered = render_markdown(table, 80, &theme);
+    let rendered = render_markdown(table, 80, theme);
     assert!(!rendered.is_empty(), "unicode table cells render correctly");
 }
 
@@ -779,7 +779,7 @@ fn test_f13_b4_table_unicode_alignment() {
 fn test_f13_b5_table_empty_cells() {
     let table = "| | |\n|---|---|\n| | |";
     let theme = Theme::global();
-    let rendered = render_markdown(table, 80, &theme);
+    let rendered = render_markdown(table, 80, theme);
     assert!(!rendered.is_empty(), "empty table cells render");
 }
 
@@ -791,7 +791,7 @@ fn test_f13_b5_table_empty_cells() {
 fn test_f14_b1_copy_button_small_code_block() {
     let text = "```bash\nls -la\n```";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(!rendered.is_empty(), "small code block renders");
 }
 
@@ -806,7 +806,7 @@ fn test_f14_b2_copy_action_copies_raw_code_only() {
 fn test_f14_b3_multiple_code_blocks_selection() {
     let text = "```python\nprint(1)\n```\n\n```python\nprint(2)\n```";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(
         !rendered.is_empty(),
         "multiple code blocks render sequentially"
@@ -817,7 +817,7 @@ fn test_f14_b3_multiple_code_blocks_selection() {
 fn test_f14_b4_copy_feedback_indicator() {
     let text = "```json\n{\"status\":\"ok\"}\n```";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(!rendered.is_empty());
 }
 
@@ -825,7 +825,7 @@ fn test_f14_b4_copy_feedback_indicator() {
 fn test_f14_b5_empty_code_block_copy() {
     let text = "```\n\n```";
     let theme = Theme::global();
-    let rendered = render_markdown(text, 80, &theme);
+    let rendered = render_markdown(text, 80, theme);
     assert!(!rendered.is_empty(), "empty code block renders cleanly");
 }
 

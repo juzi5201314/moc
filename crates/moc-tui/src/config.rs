@@ -440,9 +440,16 @@ mod tests {
             (KeyModifiers::ALT, KeyCode::Up),
         ] {
             let text = format_key(modifiers, code).expect("可写进配置");
-            assert_eq!(parse_key(&text).unwrap(), normalize(modifiers, code), "{text}");
+            assert_eq!(
+                parse_key(&text).unwrap(),
+                normalize(modifiers, code),
+                "{text}"
+            );
         }
-        assert_eq!(format_key(KeyModifiers::NONE, KeyCode::Char('G')).as_deref(), Some("shift+g"));
+        assert_eq!(
+            format_key(KeyModifiers::NONE, KeyCode::Char('G')).as_deref(),
+            Some("shift+g")
+        );
         assert_eq!(format_key(KeyModifiers::CONTROL, KeyCode::Char('+')), None);
         assert_eq!(format_key(KeyModifiers::NONE, KeyCode::Insert), None);
     }

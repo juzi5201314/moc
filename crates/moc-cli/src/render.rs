@@ -206,8 +206,10 @@ impl Renderer {
                 let _ = writeln!(out, "\n[上下文压缩失败：{message}]");
             }
             SessionUpdate::JobFinished { job } => {
-                let code = job.exit_code.map_or_else(String::new, |code| format!(" ({code})"));
-                let status_str = serde_json::to_value(&job.status)
+                let code = job
+                    .exit_code
+                    .map_or_else(String::new, |code| format!(" ({code})"));
+                let status_str = serde_json::to_value(job.status)
                     .ok()
                     .and_then(|v| v.as_str().map(str::to_owned))
                     .unwrap_or_else(|| format!("{:?}", job.status));
@@ -290,8 +292,7 @@ impl Renderer {
             | SessionUpdate::LockChanged { .. }
             | SessionUpdate::JobStarted { .. }
             | SessionUpdate::JobUpdated { .. }
-            | SessionUpdate::JobOutput { .. }
-            | SessionUpdate::JobFinished { .. } => {}
+            | SessionUpdate::JobOutput { .. } => {}
         }
     }
 }

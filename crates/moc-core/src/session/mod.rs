@@ -106,6 +106,7 @@ impl SessionTable {
 
     /// 只登记内存状态；transcript 在第一次 append 时才写盘，空会话不会留下文件。
     /// `compress` 由调用者传入本工作区的有效配置，格式在创建时固定。
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         cwd: impl AsRef<Path>,

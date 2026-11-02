@@ -234,7 +234,7 @@ pub(super) async fn manage(
             .map_err(|error| CoreError::Config(error.to_string()))??;
             super::plugin_persistence::settings(inner, Path::new(&cwd), view)
                 .await
-                .map(ConfigReply::Settings)
+                .map(|data| ConfigReply::Settings(Box::new(data)))
         }
         ConfigAction::Save {
             scope,
@@ -290,7 +290,7 @@ pub(super) async fn manage(
             let view = editor::inspect(&inner.boot, scope, Path::new(&cwd))?;
             super::plugin_persistence::settings(inner, Path::new(&cwd), view)
                 .await
-                .map(ConfigReply::Settings)
+                .map(|data| ConfigReply::Settings(Box::new(data)))
         }
         ConfigAction::Models { id, mut provider } => {
             editor::remove_nulls(&mut provider);

@@ -530,7 +530,7 @@ mod tests {
     fn older_tag_maps_untouched_rows_and_drops_rewritten_ones() {
         let mut served = ServedFile::new();
         let before = rows(&["one", "two", "three"]);
-        let old_tag = served.serve(id(3), &before, &[0..3]);
+        let old_tag = served.serve(id(3), &before, std::slice::from_ref(&(0..3)));
         // 删除第 2 行（位置 1），并在开头插入一行：one → 1，three → 3。
         let after = rows(&["top", "one", "three"]);
         let next = served.advanced(&[(0, 0), (0, 1), (1, isize::MIN), (2, 0)], &after);
@@ -576,7 +576,7 @@ mod tests {
             bom: false,
             line_ending: LineEnding::Lf,
         };
-        store.record_served(path.clone(), &snapshot, &[0..1]);
+        store.record_served(path.clone(), &snapshot, std::slice::from_ref(&(0..1)));
         store.invalidate(&path);
         let served = store.served(&path).expect("served record");
         assert_eq!(served.current_tag(), None);

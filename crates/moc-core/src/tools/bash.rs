@@ -315,10 +315,7 @@ fn backgrounded_outcome(ctx: &ToolCtx, job_id: &str, log: &JobLog, after: u64) -
             "Command was still running after {after}s and moved to the background as monitored job {job_id}"
         ),
     };
-    let uri = info.map_or_else(
-        || log.path().display().to_string(),
-        |info| info.log_uri,
-    );
+    let uri = info.map_or_else(|| log.path().display().to_string(), |info| info.log_uri);
     let (tail, elided) = log
         .read_tail(BACKGROUNDED_TAIL_LINES)
         .unwrap_or_else(|error| (format!("[E_JOB_LOG] failed to read log: {error}"), false));

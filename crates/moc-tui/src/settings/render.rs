@@ -345,6 +345,9 @@ pub fn draw(frame: &mut Frame, panel: &mut SettingsPanel, saving: bool, theme: &
     panel.hits = hits;
 }
 
+/// 滚动条命中登记：行 → 目标偏移 的换算器，配上收集矩形与 Hit 的表。
+type HitSink<'a> = (&'a mut Vec<(Rect, Hit)>, fn(usize) -> Hit);
+
 /// 竖向滚动条：贴终端右缘（与主界面同一列、同一字形），可选登记点击跳转。
 fn scrollbar(
     frame: &mut Frame,
@@ -352,7 +355,7 @@ fn scrollbar(
     offset: usize,
     total: usize,
     theme: &Theme,
-    hit: Option<(&mut Vec<(Rect, Hit)>, fn(usize) -> Hit)>,
+    hit: Option<HitSink<'_>>,
 ) {
     let height = usize::from(rows.height);
     if total <= height || height == 0 {
@@ -531,14 +534,18 @@ fn draw_fields(
                 frame
                     .buffer_mut()
                     .set_line(label_area.x, y, &line, label_area.width);
-                let inline = panel.edit.as_ref().and_then(|edit| match (&edit.target, &edit.editor) {
-                    (EditTarget::Field(path), Editor::Text(text))
-                        if !edit.popup && *path == field.path =>
-                    {
-                        Some(text)
-                    }
-                    _ => None,
-                });
+                let inline =
+                    panel
+                        .edit
+                        .as_ref()
+                        .and_then(|edit| match (&edit.target, &edit.editor) {
+                            (EditTarget::Field(path), Editor::Text(text))
+                                if !edit.popup && *path == field.path =>
+                            {
+                                Some(text)
+                            }
+                            _ => None,
+                        });
                 match inline {
                     Some(editor) => {
                         let (text, column) = edit_line(editor, usize::from(value_width));
@@ -562,7 +569,11 @@ fn draw_fields(
                             _ => {
                                 let text = controls::summary(control, value)
                                     .unwrap_or_else(|| display_value(value, field));
-                                let dim = if value.is_null() { style.fg(theme.gray) } else { style };
+                                let dim = if value.is_null() {
+                                    style.fg(theme.gray)
+                                } else {
+                                    style
+                                };
                                 (text, dim)
                             }
                         };
@@ -886,9 +897,19 @@ fn draw_edit_popup(
 fn dismiss_around(card: Rect, area: Rect, hits: &mut Vec<(Rect, Hit)>) {
     let sides = [
         Rect::new(area.x, area.y, area.width, card.y - area.y),
-        Rect::new(area.x, card.bottom(), area.width, area.bottom() - card.bottom()),
+        Rect::new(
+            area.x,
+            card.bottom(),
+            area.width,
+            area.bottom() - card.bottom(),
+        ),
         Rect::new(area.x, card.y, card.x - area.x, card.height),
-        Rect::new(card.right(), card.y, area.right() - card.right(), card.height),
+        Rect::new(
+            card.right(),
+            card.y,
+            area.right() - card.right(),
+            card.height,
+        ),
     ];
     hits.extend(
         sides
@@ -923,7 +944,10 @@ fn popup_body(editor: &Editor, width: usize, rows: usize, theme: &Theme) -> Popu
                         ("○ ", Style::new().fg(theme.gray))
                     };
                     let spans = vec![Span::styled(mark, style), Span::raw(pick.label.clone())];
-                    (option_row(index == editor.selected, spans, width, theme), Some(index))
+                    (
+                        option_row(index == editor.selected, spans, width, theme),
+                        Some(index),
+                    )
                 })
                 .collect();
             window(lines, editor.selected, rows, None)
@@ -1077,9 +1101,15 @@ fn list_body(editor: &ListEditor, width: usize, rows: usize, theme: &Theme) -> P
         };
         let mut spans = vec![Span::styled(mark, mark_style), Span::raw(fit(text, column))];
         if !note.is_empty() {
-            spans.push(Span::styled(format!("  {note}"), Style::new().fg(theme.gray)));
+            spans.push(Span::styled(
+                format!("  {note}"),
+                Style::new().fg(theme.gray),
+            ));
         }
-        lines.push((option_row(editor.cursor == index, spans, width, theme), Some(index)));
+        lines.push((
+            option_row(editor.cursor == index, spans, width, theme),
+            Some(index),
+        ));
     }
     if let Some(entry) = entry {
         let index = editor.items.len();
@@ -1096,7 +1126,10 @@ fn list_body(editor: &ListEditor, width: usize, rows: usize, theme: &Theme) -> P
                     Entry::Text => "+ 添加一项",
                 };
                 let spans = vec![Span::raw(text)];
-                lines.push((option_row(editor.cursor == index, spans, width, theme), Some(index)));
+                lines.push((
+                    option_row(editor.cursor == index, spans, width, theme),
+                    Some(index),
+                ));
             }
         }
     }
@@ -1147,7 +1180,10 @@ fn record_body(editor: &RecordEditor, width: usize, rows: usize, theme: &Theme) 
                 Style::new().fg(theme.gray),
             ));
         }
-        lines.push((option_row(editor.cursor == index, spans, width, theme), Some(index)));
+        lines.push((
+            option_row(editor.cursor == index, spans, width, theme),
+            Some(index),
+        ));
     }
     if editor.spec.custom {
         let index = editor.rows.len();
@@ -1159,7 +1195,10 @@ fn record_body(editor: &RecordEditor, width: usize, rows: usize, theme: &Theme) 
             }
             None => {
                 let spans = vec![Span::raw("+ 添加键")];
-                lines.push((option_row(editor.cursor == index, spans, width, theme), Some(index)));
+                lines.push((
+                    option_row(editor.cursor == index, spans, width, theme),
+                    Some(index),
+                ));
             }
         }
     }
@@ -1431,12 +1470,17 @@ mod tests {
             .map(|x| buffer.cell((x, item.y)).expect("候选格").symbol())
             .collect();
         // 宽字符后的占位格是空格，比较前去掉
-        assert!(row.replace(' ', "").contains("选项A"), "点击区域落在候选行上：{row}");
+        assert!(
+            row.replace(' ', "").contains("选项A"),
+            "点击区域落在候选行上：{row}"
+        );
         // 只剩弹窗自己的候选、底部键位与卡片外关闭；底下页面的命中区全部清掉。
-        assert!(panel.hits.iter().all(|(_, hit)| matches!(
-            hit,
-            Hit::Item(_) | Hit::Hint(..) | Hit::DismissPopup
-        )));
+        assert!(
+            panel
+                .hits
+                .iter()
+                .all(|(_, hit)| matches!(hit, Hit::Item(_) | Hit::Hint(..) | Hit::DismissPopup))
+        );
         assert!(panel.hits.iter().any(|(area, hit)| {
             matches!(hit, Hit::DismissPopup) && area.contains((0, 0).into())
         }));

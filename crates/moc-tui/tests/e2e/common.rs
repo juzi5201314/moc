@@ -68,7 +68,7 @@ pub fn buffer_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
                     let w = cell.cell_width();
                     line.push_str(cell.symbol());
                     if w > 1 {
-                        col += u16::from(w);
+                        col += w;
                         continue;
                     }
                 }
@@ -99,10 +99,10 @@ pub fn buffer_squashed_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
 pub fn area_has_bg(buffer: &Buffer, area: Rect, expected_bg: Color) -> bool {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            if let Some(cell) = buffer.cell((x, y)) {
-                if cell.style().bg == Some(expected_bg) {
-                    return true;
-                }
+            if let Some(cell) = buffer.cell((x, y))
+                && cell.style().bg == Some(expected_bg)
+            {
+                return true;
             }
         }
     }
@@ -115,7 +115,7 @@ pub fn prefill_noise(terminal: &mut Terminal<TestBackend>, noise_char: &str, noi
     terminal
         .draw(|frame| {
             let buffer = frame.buffer_mut();
-            let area = buffer.area().clone();
+            let area = *buffer.area();
             for y in 0..area.height {
                 for x in 0..area.width {
                     if let Some(cell) = buffer.cell_mut((x, y)) {
@@ -133,10 +133,10 @@ pub fn count_leaked_noise(buffer: &Buffer, area: Rect, noise_char: &str) -> usiz
     let mut leaks = 0;
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            if let Some(cell) = buffer.cell((x, y)) {
-                if cell.symbol() == noise_char {
-                    leaks += 1;
-                }
+            if let Some(cell) = buffer.cell((x, y))
+                && cell.symbol() == noise_char
+            {
+                leaks += 1;
             }
         }
     }

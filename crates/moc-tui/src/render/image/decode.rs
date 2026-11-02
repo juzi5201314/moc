@@ -154,12 +154,12 @@ pub(crate) fn substitute_svg_tokens(text: &str, palette: &crate::theme::RawPalet
             rest = after;
             continue;
         }
-        if let Some((name, consumed)) = var_token(rest) {
-            if let Some(rgb) = token_rgb(name, palette) {
-                out.push_str(&hex(rgb));
-                rest = &rest[consumed..];
-                continue;
-            }
+        if let Some((name, consumed)) = var_token(rest)
+            && let Some(rgb) = token_rgb(name, palette)
+        {
+            out.push_str(&hex(rgb));
+            rest = &rest[consumed..];
+            continue;
         }
         let ch = rest.chars().next().expect("rest 非空");
         out.push(ch);

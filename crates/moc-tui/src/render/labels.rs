@@ -178,9 +178,7 @@ pub fn hint_layout(items: &[(&str, &str)], width: usize) -> (String, Vec<HintKey
         })
         .collect();
     let mut start = 0;
-    while start + 1 < shown.len()
-        && super::wrap::str_width(&shown[start..].join(SEP)) > width
-    {
+    while start + 1 < shown.len() && super::wrap::str_width(&shown[start..].join(SEP)) > width {
         start += 1;
     }
     let text = super::wrap::truncate(shown[start..].join(SEP), width).into_owned();

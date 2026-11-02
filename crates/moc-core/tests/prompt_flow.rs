@@ -1,10 +1,8 @@
 //! 固定上游响应下验证 core 的 JSON-RPC 提示闭环。
 
-#[path = "support/content.rs"]
-mod content;
 mod support;
 
-use support::Harness;
+use support::{Harness, content};
 
 fn text_stream(text: &str) -> String {
     format!(
@@ -838,7 +836,7 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
             .tool_calls()
             .any(|call| call.name == "plan")
     );
-    let notifications = updates.lock();
+    let notifications = updates.lock().clone();
     let exit_started = notifications
         .iter()
         .position(|update| {
@@ -852,7 +850,6 @@ async fn plan_tools_write_then_exit_emit_review_only_on_exit() {
         .position(|update| matches!(update, SessionUpdate::PlanSubmitted { .. }))
         .expect("计划审阅通知");
     assert!(reviewed > exit_started, "写入工具不得提前触发审阅");
-    drop(notifications);
     assert!(
         submitted
             .message
@@ -1480,7 +1477,7 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
         .expect("run prompt");
     assert_eq!(result.message.text(), "done");
 
-    let updates = updates.lock();
+    let updates = updates.lock().clone();
     // 前端只从 `tool_started` 拿参数：名字与 ID 分片到达的网关下，
     // 这里必须是真实参数，而不是空 ID 上攒下来的半截增量。
     let (name, arguments) = updates
@@ -1496,7 +1493,6 @@ async fn prompt_keeps_arguments_when_tool_name_precedes_call_id() {
     let arguments: serde_json::Value =
         serde_json::from_str(&arguments).expect("启动更新里的参数是合法 JSON");
     assert_eq!(arguments["command"], "printf name-first");
-    drop(updates);
 
     let loaded = client
         .call::<SessionLoad>(SessionLoadParams {
@@ -3007,7 +3003,7 @@ async fn plan_edits_patch_draft_seed_reviewed_and_reject_submitted() {
             .flatten()
             .filter(|message| message["role"].as_str() == Some("user"))
             .filter_map(|message| message["content"].as_str())
-            .last()
+            .next_back()
             .unwrap_or_default()
             .to_owned()
     }
