@@ -113,13 +113,7 @@ pub fn pending<'a>(
 pub fn render(selected: &[&Reminder]) -> (Message, Vec<ReminderItem>) {
     let text = selected
         .iter()
-        .map(|reminder| {
-            if reminder.text.starts_with("<system-") {
-                reminder.text.clone()
-            } else {
-                format!("<system-reminder>{}</system-reminder>", reminder.text)
-            }
-        })
+        .map(|reminder| wrap(&reminder.text))
         .collect::<Vec<_>>()
         .join("\n\n");
     let items = selected
@@ -131,6 +125,19 @@ pub fn render(selected: &[&Reminder]) -> (Message, Vec<ReminderItem>) {
         })
         .collect();
     (Message::custom(text), items)
+}
+
+/// 提醒正文的外壳：自带 `<system-*` 标签的保留原标签，其余套 `<system-reminder>`。
+///
+/// `Role::Custom` 在上游不支持 `developer` 角色时降级为 `user` 下发，这层标签是
+/// 模型区分注入内容与真实用户输入的唯一依据；不经 `render` 直发提醒的地方也必须
+/// 过这层壳。
+pub fn wrap(text: &str) -> String {
+    if text.starts_with("<system-") {
+        text.to_owned()
+    } else {
+        format!("<system-reminder>{text}</system-reminder>")
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -1446,9 +1446,9 @@ async fn run_prompt_locked(
                     .sessions
                     .append_message(
                         &params.session_id,
-                        Message::custom(
+                        Message::custom(reminder::wrap(
                             "Output hit the length limit. Continue from the cut without repeating text.",
-                        ),
+                        )),
                         None,
                         None,
                     )
@@ -1466,7 +1466,7 @@ async fn run_prompt_locked(
                             && !crate::agents::has_yielded(&inner, &params.session_id).await
                         {
                             yield_reminders += 1;
-                            let reminder = format!(
+                            let text = format!(
                                 "Reminder {yield_reminders}/{}: call `yield` with your complete report; do not end the turn with a plain message.",
                                 crate::agents::MAX_YIELD_REMINDERS
                             );
@@ -1474,7 +1474,7 @@ async fn run_prompt_locked(
                                 .sessions
                                 .append_message(
                                     &params.session_id,
-                                    Message::custom(reminder),
+                                    Message::custom(reminder::wrap(&text)),
                                     None,
                                     None,
                                 )
