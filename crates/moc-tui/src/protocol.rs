@@ -181,6 +181,17 @@ pub enum AppEvent {
     },
     /// 打开后台任务列表弹窗。
     OpenJobsModal(Vec<moc_protocol::methods::JobInfo>),
+    /// workflow 审批请求：打开审批窗（可最小化成胶囊）。
+    OpenWorkflowApproval(Box<moc_protocol::methods::WorkflowApproval>),
+    /// 打开 workflow run 面板（快照来自 `session/workflow_run`）。
+    OpenWorkflowRun(Box<moc_protocol::methods::WorkflowRunSnapshot>),
+    /// 打开 run 列表（`/workflows`，`session/workflow_runs` 的结果）。
+    OpenWorkflowRuns(Vec<moc_protocol::methods::WorkflowRunSummary>),
+    /// `session/workflow_artifact` 的内容回执：写进打开的 run 面板查看区。
+    WorkflowArtifactView {
+        artifact_id: String,
+        content: serde_json::Value,
+    },
 }
 
 /// 剪贴板粘贴载荷：图片以 base64 承载，文本内联。

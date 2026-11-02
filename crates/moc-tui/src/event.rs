@@ -1053,6 +1053,87 @@ async fn event_loop(
                             pending_kill: None,
                         });
                     }
+                    Some(AppEvent::OpenWorkflowApproval(request)) => {
+                        app.workflow.pending_approvals = app
+                            .workflow
+                            .pending_approvals
+                            .saturating_sub(1);
+                        app.modal = Some(Modal::WorkflowApproval {
+                            state: Box::new(crate::workflow::WorkflowApprovalState::new(
+                                request,
+                            )),
+                        });
+                    }
+                    Some(AppEvent::OpenWorkflowRun(snapshot)) => {
+                        let state = crate::workflow::WorkflowRunState {
+                            run_id: snapshot.summary.run_id.clone(),
+                            title: snapshot
+                                .summary
+                                .title
+                                .clone()
+                                .unwrap_or_else(|| snapshot.summary.run_id.clone()),
+                            status: snapshot.summary.status,
+                            plan: snapshot.plan.clone().unwrap_or(serde_json::Value::Null),
+                            phases: snapshot.phases.clone(),
+                            roles: snapshot.roles.clone(),
+                            commands: snapshot.commands.clone(),
+                            reports: snapshot.reports.clone(),
+                            artifacts: snapshot.artifacts.clone(),
+                            holes: snapshot.holes.clone(),
+                            usage: snapshot.usage.clone(),
+                            log: Vec::new(),
+                            artifact_versions: std::collections::BTreeMap::new(),
+                            artifact_view: None,
+                            focus: 0,
+                            graph_scroll: 0,
+                            list_scroll: 0,
+                        };
+                        app.modal = Some(Modal::WorkflowRun {
+                            state: Box::new(state),
+                        });
+                    }
+                    Some(AppEvent::WorkflowArtifactView {
+                        artifact_id,
+                        content,
+                    }) => {
+                        if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut() {
+                            // markdown 复用渲染管线；文本按行；结构化内容 pretty JSON。
+                            let theme = app.theme;
+                            let width = 100usize;
+                            let view = if let Some(text) = content.as_str() {
+                                if state
+                                    .artifacts
+                                    .iter()
+                                    .find(|a| {
+                                        a.get("artifact_id").and_then(|v| v.as_str())
+                                            == Some(artifact_id.as_str())
+                                    })
+                                    .and_then(|a| a.get("member"))
+                                    .and_then(|v| v.as_str())
+                                    == Some("markdown")
+                                {
+                                    crate::render::markdown::render_markdown(text, width, theme)
+                                } else {
+                                    text.lines()
+                                        .map(|line| ratatui::text::Line::raw(line.to_string()))
+                                        .collect()
+                                }
+                            } else {
+                                serde_json::to_string_pretty(&content)
+                                    .unwrap_or_default()
+                                    .lines()
+                                    .map(|line| ratatui::text::Line::raw(line.to_string()))
+                                    .collect()
+                            };
+                            state.artifact_view = Some((artifact_id, view));
+                        }
+                    }
+                    Some(AppEvent::OpenWorkflowRuns(runs)) => {
+                        app.modal = Some(Modal::WorkflowRuns {
+                            runs,
+                            picker: crate::modal::PickerState::default(),
+                        });
+                    }
                     Some(AppEvent::Loaded(
                         info,
                         blocks,
@@ -1376,6 +1457,15 @@ fn handle_mouse_with_connection(
             }
             return;
         }
+        // workflow 胶囊：有最小化审批优先重开，否则打开 run 列表。
+        if app.modal.is_none() && app.workflow_capsule_area.contains(position.into()) {
+            if let Some(state) = app.workflow.parked_approval.take() {
+                app.modal = Some(Modal::WorkflowApproval { state });
+            } else {
+                open_workflow_runs(app, connection);
+            }
+            return;
+        }
         // 输入框图例左端：运行中是「停止」，空闲是「帮助」，点中与对应按键同义。
         if app.legend_tip_area.contains(position.into()) {
             if app.prompt_running {
@@ -1471,6 +1561,23 @@ fn click_modal_item(app: &mut App, connection: &EmbeddedConnection, index: usize
         Some(Modal::Sessions { picker, .. } | Modal::Subagents { picker, .. }) => {
             let again = picker.selected == index;
             picker.selected = index;
+            again
+        }
+        Some(Modal::WorkflowRuns { picker, .. }) => {
+            let again = picker.selected == index;
+            picker.selected = index;
+            again
+        }
+        // workflow 审批窗：单击选中 role/ref 行，点已选行 = 打开模型选择器。
+        Some(Modal::WorkflowApproval { state }) => {
+            let again = state.focus == index;
+            state.focus = index;
+            again
+        }
+        // workflow run 面板：同上（点已选 role 行开选择器改模型）。
+        Some(Modal::WorkflowRun { state }) => {
+            let again = state.focus == index;
+            state.focus = index;
             again
         }
         _ => false,
@@ -3058,6 +3165,11 @@ fn handle_modal_key(
     )> = None;
     // `session/set_model` 的发起也延后：模态借用期拿不走 `&mut App`。
     let mut session_apply: Option<(String, String)> = None;
+    // workflow：模型选择后还原的 modal、审批决策、待打开 run 面板/选择器。
+    let mut workflow_back: Option<crate::workflow::WorkflowRoleBack> = None;
+    let mut workflow_decision: Option<(String, moc_protocol::methods::WorkflowDecision)> = None;
+    let mut workflow_picker: Option<(crate::workflow::FocusTarget, String)> = None;
+    let mut workflow_action: Option<crate::workflow::WorkflowAction> = None;
     let plan_review_open = matches!(app.modal, Some(Modal::Plan { .. }));
     let Some(modal) = app.modal.as_mut() else {
         return;
@@ -3673,6 +3785,23 @@ fn handle_modal_key(
                                 );
                                 fusion_nav = Some(FusionNav::Slot(index, draft, origin));
                             }
+                            crate::modal::ModelTarget::WorkflowRole { .. } => {
+                                // 先整体取出（借用期拿不走 back 箱），写回后统一还原。
+                                let owned = std::mem::replace(
+                                    target,
+                                    crate::modal::ModelTarget::Session,
+                                );
+                                if let crate::modal::ModelTarget::WorkflowRole {
+                                    key,
+                                    back,
+                                } = owned
+                                {
+                                    let (back, action) =
+                                        crate::workflow::apply_workflow_pick(back, &key, selector);
+                                    workflow_back = Some(back);
+                                    workflow_action = action;
+                                }
+                            }
                             crate::modal::ModelTarget::Session => {
                                 let Some(session_id) = session_id.clone() else {
                                     picker.error = Some("当前没有活动会话".into());
@@ -3701,6 +3830,15 @@ fn handle_modal_key(
                         ));
                     } else if matches!(target, crate::modal::ModelTarget::PlanReview(_)) {
                         return_plan_review = true;
+                    } else if matches!(target, crate::modal::ModelTarget::WorkflowRole { .. }) {
+                        // 取消选择：原样放回回程票，不写覆盖。
+                        let owned = std::mem::replace(
+                            target,
+                            crate::modal::ModelTarget::Session,
+                        );
+                        if let crate::modal::ModelTarget::WorkflowRole { back, .. } = owned {
+                            workflow_back = Some(*back);
+                        }
                     } else {
                         close = true;
                     }
@@ -4034,6 +4172,205 @@ fn handle_modal_key(
                 *pending_kill = None;
             }
         },
+        Modal::WorkflowApproval { state } => {
+            if let Some(feedback) = state.feedback.as_mut() {
+                // 反馈输入态：全部键位归文本行。
+                match (code, modifiers) {
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        let text = state.feedback.take().unwrap_or_default();
+                        workflow_decision = Some((
+                            state.request.request_id.clone(),
+                            moc_protocol::methods::WorkflowDecision::Reject {
+                                feedback: (!text.trim().is_empty()).then_some(text),
+                            },
+                        ));
+                        close = true;
+                    }
+                    (KeyCode::Esc, _) => {
+                        state.feedback = None;
+                    }
+                    (KeyCode::Backspace, _) => {
+                        feedback.pop();
+                    }
+                    (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                        feedback.push(ch);
+                    }
+                    _ => {}
+                }
+            } else {
+                match (code, modifiers) {
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                        state.focus = state.focus.saturating_sub(1);
+                    }
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                        state.focus = (state.focus + 1).min(state.rows().saturating_sub(1));
+                    }
+                    (KeyCode::PageUp, _) => {
+                        state.graph_scroll = state.graph_scroll.saturating_sub(6);
+                    }
+                    (KeyCode::PageDown, _) => {
+                        state.graph_scroll = state.graph_scroll.saturating_add(6);
+                    }
+                    (KeyCode::Enter, KeyModifiers::NONE) => {
+                        // 选中 role/ref → 打开模型选择器；回程票带回整个审批状态。
+                        if let Some(target) = state.focus_target() {
+                            let current = match &target {
+                                crate::workflow::FocusTarget::Role(id) => state
+                                    .role_models
+                                    .get(id)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                crate::workflow::FocusTarget::ModelRef(id) => state
+                                    .model_ref_map
+                                    .get(id)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            };
+                            workflow_picker = Some((target, current));
+                        }
+                    }
+                    (KeyCode::Char('a'), KeyModifiers::NONE) => {
+                        workflow_decision = Some((
+                            state.request.request_id.clone(),
+                            moc_protocol::methods::WorkflowDecision::Approve {
+                                role_models: Some(state.role_models.clone()),
+                                model_ref_map: Some(state.model_ref_map.clone()),
+                            },
+                        ));
+                        close = true;
+                    }
+                    (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                        state.feedback = Some(String::new());
+                    }
+                    (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
+                        // 最小化：审批仍在等待，状态栏胶囊可重开。
+                        state.parked = true;
+                        close = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Modal::WorkflowRuns { runs, picker } => {
+            let filtered: Vec<_> = runs
+                .iter()
+                .filter(|run| {
+                    let query = picker.query.to_lowercase();
+                    run.run_id.to_lowercase().contains(&query)
+                        || run
+                            .title
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&query)
+                })
+                .collect();
+            match (code, modifiers) {
+                (KeyCode::Up, _) => picker.move_selection(-1, filtered.len(), 8),
+                (KeyCode::Down, _) => picker.move_selection(1, filtered.len(), 8),
+                (KeyCode::Backspace, _) => {
+                    picker.query.pop();
+                    picker.selected = 0;
+                }
+                (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                    if !ch.is_control() =>
+                {
+                    picker.query.push(ch);
+                    picker.selected = 0;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if let Some(run) = filtered.get(picker.selected) {
+                        workflow_action = Some(crate::workflow::WorkflowAction::OpenRun(
+                            run.run_id.clone(),
+                        ));
+                    }
+                    close = true;
+                }
+                (KeyCode::Esc, _) => close = true,
+                _ => {}
+            }
+        }
+        Modal::WorkflowRun { state } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                state.focus = state.focus.saturating_sub(1);
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                state.focus = (state.focus + 1).min(state.roles.len().saturating_sub(1));
+            }
+            (KeyCode::PageUp, _) => {
+                state.graph_scroll = state.graph_scroll.saturating_sub(6);
+            }
+            (KeyCode::PageDown, _) => {
+                state.graph_scroll = state.graph_scroll.saturating_add(6);
+            }
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                if let Some(role) = state.roles.get(state.focus) {
+                    workflow_picker = Some((
+                        crate::workflow::FocusTarget::Role(role.role_id.clone()),
+                        role.model.clone().unwrap_or_default(),
+                    ));
+                }
+            }
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                workflow_action = Some(crate::workflow::WorkflowAction::Stop(
+                    state.run_id.clone(),
+                ));
+            }
+            (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                workflow_action = Some(crate::workflow::WorkflowAction::Resume(
+                    state.run_id.clone(),
+                ));
+            }
+            (KeyCode::Char('v'), KeyModifiers::NONE) => {
+                // 多版本切换：所有有多版本的 artifact 各进一版（wrap）。
+                let mut ids: Vec<String> = Vec::new();
+                let mut counts: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
+                for artifact in &state.artifacts {
+                    if let Some(id) = artifact.get("artifact_id").and_then(|v| v.as_str()) {
+                        *counts.entry(id.to_string()).or_insert(0) += 1;
+                        if !ids.contains(&id.to_string()) {
+                            ids.push(id.to_string());
+                        }
+                    }
+                }
+                for id in ids {
+                    let n = counts[&id];
+                    if n > 1 {
+                        let cur = *state.artifact_versions.get(&id).unwrap_or(&n);
+                        state.artifact_versions.insert(id, cur % n + 1);
+                    }
+                }
+            }
+            (KeyCode::Char('o'), KeyModifiers::NONE) => {
+                if state.artifact_view.is_some() {
+                    state.artifact_view = None;
+                } else if let Some(id) = state
+                    .artifacts
+                    .iter()
+                    .find(|a| {
+                        matches!(
+                            a.get("member").and_then(|v| v.as_str()),
+                            Some("file") | Some("markdown")
+                        )
+                    })
+                    .and_then(|a| a.get("artifact_id").and_then(|v| v.as_str()))
+                {
+                    workflow_action = Some(crate::workflow::WorkflowAction::ViewArtifact(
+                        state.run_id.clone(),
+                        id.to_string(),
+                    ));
+                }
+            }
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
+                if state.artifact_view.is_some() {
+                    state.artifact_view = None;
+                } else {
+                    close = true;
+                }
+            }
+            _ => {}
+        },
         Modal::Subagents { agents, picker } => {
             let filtered: Vec<_> = agents
                 .iter()
@@ -4097,6 +4434,157 @@ fn handle_modal_key(
     }
     if let Some((id, selector)) = session_apply {
         request_session_model(app, connection, id, selector);
+    }
+    // workflow：模型选择器回程（审批窗/run 面板）。
+    if let Some(back) = workflow_back {
+        app.modal = Some(match back {
+            crate::workflow::WorkflowRoleBack::Approval(state) => {
+                Modal::WorkflowApproval { state }
+            }
+            crate::workflow::WorkflowRoleBack::Run(state) => Modal::WorkflowRun { state },
+        });
+    }
+    // workflow：审批决策回传 core。
+    if let Some((request_id, decision)) = workflow_decision
+        && let Some(session_id) = app.session.as_ref().map(|session| session.id.clone())
+    {
+        let client = connection.client.clone();
+        let events = app.events.clone();
+        tokio::spawn(async move {
+            let result = client
+                .call::<moc_protocol::methods::SessionWorkflowApprove>(
+                    moc_protocol::methods::SessionWorkflowApproveParams {
+                        session_id,
+                        request_id,
+                        decision,
+                    },
+                )
+                .await;
+            if let Err(error) = result {
+                let _ = events.send(AppEvent::Notice(format!("workflow 审批回传失败：{error}")));
+            }
+        });
+    }
+    // workflow：role/ref 焦点进模型选择器（带回程票）。
+    if let Some((key, current)) = workflow_picker
+        && let Some(modal) = app.modal.take()
+    {
+        let back = match modal {
+            Modal::WorkflowApproval { state } => {
+                crate::workflow::WorkflowRoleBack::Approval(state)
+            }
+            Modal::WorkflowRun { state } => crate::workflow::WorkflowRoleBack::Run(state),
+            other => {
+                app.modal = Some(other);
+                return;
+            }
+        };
+        app.open_model_picker_for(
+            current,
+            &[],
+            crate::modal::ModelTarget::WorkflowRole {
+                key,
+                back: Box::new(back),
+            },
+        );
+    }
+    // workflow：面板动作 RPC。
+    if let Some(action) = workflow_action
+        && let Some(session_id) = app.session.as_ref().map(|session| session.id.clone())
+    {
+        let client = connection.client.clone();
+        let events = app.events.clone();
+        tokio::spawn(async move {
+            match action {
+                crate::workflow::WorkflowAction::Stop(run_id) => {
+                    if let Err(error) = client
+                        .call::<moc_protocol::methods::SessionWorkflowStop>(
+                            moc_protocol::methods::SessionWorkflowRunParams {
+                                session_id,
+                                run_id,
+                            },
+                        )
+                        .await
+                    {
+                        let _ =
+                            events.send(AppEvent::Notice(format!("workflow 停止失败：{error}")));
+                    }
+                }
+                crate::workflow::WorkflowAction::Resume(run_id) => {
+                    if let Err(error) = client
+                        .call::<moc_protocol::methods::SessionWorkflowResume>(
+                            moc_protocol::methods::SessionWorkflowRunParams {
+                                session_id,
+                                run_id,
+                            },
+                        )
+                        .await
+                    {
+                        let _ =
+                            events.send(AppEvent::Notice(format!("workflow 续跑失败：{error}")));
+                    }
+                }
+                crate::workflow::WorkflowAction::OpenRun(run_id) => {
+                    match client
+                        .call::<moc_protocol::methods::SessionWorkflowRun>(
+                            moc_protocol::methods::SessionWorkflowRunParams {
+                                session_id,
+                                run_id,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(snapshot) => {
+                            let _ = events.send(AppEvent::OpenWorkflowRun(Box::new(snapshot)));
+                        }
+                        Err(error) => {
+                            let _ = events
+                                .send(AppEvent::Notice(format!("读取 run 失败：{error}")));
+                        }
+                    }
+                }
+                crate::workflow::WorkflowAction::SetRoleModel(run_id, role_id, model) => {
+                    if let Err(error) = client
+                        .call::<moc_protocol::methods::SessionWorkflowSetRoleModel>(
+                            moc_protocol::methods::SessionWorkflowSetRoleModelParams {
+                                session_id,
+                                run_id,
+                                role_id,
+                                model,
+                            },
+                        )
+                        .await
+                    {
+                        let _ = events
+                            .send(AppEvent::Notice(format!("role 模型热改失败：{error}")));
+                    }
+                }
+                crate::workflow::WorkflowAction::ViewArtifact(run_id, artifact_id) => {
+                    match client
+                        .call::<moc_protocol::methods::SessionWorkflowArtifact>(
+                            moc_protocol::methods::SessionWorkflowArtifactParams {
+                                session_id,
+                                run_id,
+                                artifact_id,
+                                version: None,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(result) => {
+                            let _ = events.send(AppEvent::WorkflowArtifactView {
+                                artifact_id: result.artifact_id,
+                                content: result.content,
+                            });
+                        }
+                        Err(error) => {
+                            let _ = events
+                                .send(AppEvent::Notice(format!("读取 artifact 失败：{error}")));
+                        }
+                    }
+                }
+            }
+        });
     }
     if let Some((slot, current, draft, origin)) = fusion_slot_picker {
         app.open_model_picker_for(
@@ -4171,7 +4659,14 @@ fn handle_modal_key(
             app.modal = Some(Modal::Plan { state });
         }
     } else if close {
-        app.modal = None;
+        // 最小化的 workflow 审批：状态移进状态栏胶囊（点击重开），不算已决。
+        if let Some(Modal::WorkflowApproval { state }) = app.modal.take()
+            && state.parked
+        {
+            app.workflow.parked_approval = Some(state);
+        } else {
+            app.modal = None;
+        }
         if !plan_review_open {
             crate::queue::dispatch(app, connection);
         }
@@ -4707,9 +5202,15 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::AgentStarted { .. } | SessionUpdate::AgentStatusChanged { .. } => {}
         // 在主循环的 apply_update_and_refresh 里单独处理（需要会话上下文）。
         SessionUpdate::SteeringApplied { .. } => {}
+        // workflow 事件走 `apply_workflow_update`：审批弹窗、run 面板实时着色、
+        // 状态栏胶囊与终态通知都在那里更新，不进转写块序列。
+        SessionUpdate::Workflow { run_id, event } => {
+            apply_workflow_update(app, run_id, event);
+        }
         SessionUpdate::AgentMessage { meta, body } => {
             app.push_block(Block::AgentMessage { meta, body })
         }
+
         SessionUpdate::ToolProgress {
             tool_call_id, rows, ..
         } => app.set_tool_progress(&tool_call_id, rows),
@@ -4987,6 +5488,116 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         }
         SessionUpdate::PromptRewound { replayed_tools } => {
             app.rewind_failed_turn(replayed_tools);
+        }
+    }
+}
+
+/// workflow 事件：审批弹窗（modal 占用时退化为胶囊计数）、run 面板实时投影、
+/// 活跃 run 胶囊与终态通知。
+fn apply_workflow_update(
+    app: &mut App,
+    run_id: String,
+    event: moc_protocol::methods::WorkflowEvent,
+) {
+    use moc_protocol::methods::WorkflowEvent as E;
+    match event {
+        E::ApprovalRequested { request } => {
+            // 已有 modal 占用时只计胶囊（用户处理完会回来）；空档时直接弹窗。
+            if app.modal.is_some() {
+                app.workflow.pending_approvals = app.workflow.pending_approvals.saturating_add(1);
+            } else {
+                app.modal = Some(Modal::WorkflowApproval {
+                    state: Box::new(crate::workflow::WorkflowApprovalState::new(request)),
+                });
+            }
+        }
+        E::ApprovalResolved { .. } => {
+            app.workflow.pending_approvals = app.workflow.pending_approvals.saturating_sub(1);
+        }
+        E::RunStatus { status } => {
+            let active = matches!(
+                status,
+                moc_protocol::methods::WorkflowRunStatus::Running
+                    | moc_protocol::methods::WorkflowRunStatus::Pending
+            );
+            if active {
+                app.workflow
+                    .active_runs
+                    .entry(run_id.clone())
+                    .or_insert_with(|| run_id.clone());
+            } else {
+                let title = app.workflow.active_runs.remove(&run_id);
+                app.set_notice(format!(
+                    "workflow run {} {}",
+                    title.unwrap_or_else(|| run_id.clone()),
+                    crate::workflow::status_label(status)
+                ));
+            }
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.status = status;
+            }
+        }
+        E::PhaseEntered { phase } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.log_line(format!("phase → {phase}"));
+            }
+        }
+        E::NodeUpdated { phases, roles } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.phases = phases;
+                state.roles = roles;
+            }
+        }
+        E::Log { level, message } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.log_line(format!("[{level}] {message}"));
+            }
+        }
+        E::Report { item, .. } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.reports.push(item);
+            }
+        }
+        E::Artifact { artifact } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.artifacts.push(artifact);
+            }
+        }
+        E::HoleOpened { name, prompt, .. } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.holes.push(serde_json::json!({"name": name, "prompt": prompt}));
+            }
+            app.set_notice(format!("workflow hole 打开：{name}"));
+        }
+        E::HoleFilled { name } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state
+                    .holes
+                    .retain(|hole| hole.get("name").and_then(|v| v.as_str()) != Some(name.as_str()));
+            }
+        }
+        E::Usage { usage } => {
+            if let Some(Modal::WorkflowRun { state }) = app.modal.as_mut()
+                && state.run_id == run_id
+            {
+                state.usage = usage;
+            }
         }
     }
 }
@@ -5397,6 +6008,44 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/ask" => ask_once(app, connection, rest),
         "/retry" => retry(app, connection),
         "/model" => app.open_model_picker(),
+        "/workflow" => {
+            let Some(session_id) = session_id.clone() else {
+                app.set_notice("当前没有活动会话");
+                return;
+            };
+            let client = connection.client.clone();
+            let events = app.events.clone();
+            let prompt_text = rest.to_string();
+            tokio::spawn(async move {
+                match client
+                    .call::<moc_protocol::methods::SessionWorkflowActivate>(
+                        moc_protocol::methods::SessionWorkflowActivateParams {
+                            session_id: session_id.clone(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        let _ = events.send(AppEvent::Notice("workflow 已激活".into()));
+                        // 附带的指令作为下一条提示发送，让模型直接开写。
+                        if !prompt_text.trim().is_empty() {
+                            crate::queue::send_prompt(
+                                &client,
+                                session_id,
+                                vec![moc_protocol::InputPart::Text { text: prompt_text }],
+                                None,
+                                events.clone(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let _ =
+                            events.send(AppEvent::Notice(format!("workflow 激活失败：{error}")));
+                    }
+                }
+            });
+        }
+        "/workflows" => open_workflow_runs(app, connection),
         "/jobs" => {
             if let Some(session_id) = session_id {
                 let client = connection.client.clone();
@@ -10870,3 +11519,28 @@ mod config_picker_tests {
 #[cfg(test)]
 #[path = "event_plan_tests.rs"]
 mod plan_tests;
+
+/// 打开 workflow run 列表：`session/workflow_runs` → `AppEvent::OpenWorkflowRuns`。
+fn open_workflow_runs(app: &mut App, connection: &EmbeddedConnection) {
+    let Some(session_id) = app.session.as_ref().map(|session| session.id.clone()) else {
+        app.set_notice("当前没有活动会话");
+        return;
+    };
+    let client = connection.client.clone();
+    let events = app.events.clone();
+    tokio::spawn(async move {
+        match client
+            .call::<moc_protocol::methods::SessionWorkflowRuns>(
+                moc_protocol::methods::SessionWorkflowRunsParams { session_id },
+            )
+            .await
+        {
+            Ok(result) => {
+                let _ = events.send(AppEvent::OpenWorkflowRuns(result.runs));
+            }
+            Err(error) => {
+                let _ = events.send(AppEvent::Notice(format!("获取 run 列表失败：{error}")));
+            }
+        }
+    });
+}

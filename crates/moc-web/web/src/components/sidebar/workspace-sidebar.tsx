@@ -37,11 +37,56 @@ import { allSessions, groupWorkspaces, useSessions } from "@/store/sessions";
 import { useTabs } from "@/store/tabs";
 import { attentionCount, useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
+import { selectWorkflowBadges, useWorkflow, workflowRuns } from "@/store/workflow";
 
 /** 每个工作区默认展示的会话数；更多的折叠在「显示更多」后面。 */
 const VISIBLE_SESSIONS = 6;
 
 const ROW = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-ui transition-colors";
+
+/** workflow 入口：待审批优先开审批窗，否则开 run 列表。 */
+function WorkflowNavRow() {
+  const badges = useWorkflow(selectWorkflowBadges);
+  const active = useTabs((state) => state.active);
+  if (badges.approvals === 0 && badges.runs === 0) return null;
+  return (
+    <NavRow
+      icon={<WorkflowIcon />}
+      label="workflow"
+      hint={
+        <span className="text-ui text-muted-foreground">
+          {badges.approvals > 0 ? `${badges.approvals}审` : ""}
+          {badges.runs > 0 ? `${badges.approvals > 0 ? "·" : ""}${badges.runs}跑` : ""}
+        </span>
+      }
+      onClick={() => {
+        const wf = useWorkflow.getState();
+        if (wf.approvals.length > 0) {
+          useWorkflow.setState({ approvalOpen: true });
+        } else {
+          useWorkflow.setState({ runsOpen: true });
+          if (active) {
+            void workflowRuns(active)
+              .then((runs) => useWorkflow.setState({ runList: runs }))
+              .catch((error) => toast.error(`获取 run 列表失败：${error}`));
+          }
+        }
+      }}
+    />
+  );
+}
+
+function WorkflowIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <title>workflow</title>
+      <circle cx="8" cy="4" r="2" />
+      <circle cx="4" cy="12" r="2" />
+      <circle cx="12" cy="12" r="2" />
+      <path d="M8 6v2M8 8l-2.5 2M8 8l2.5 2" />
+    </svg>
+  );
+}
 
 function NavRow({
   icon,
@@ -134,6 +179,7 @@ export function WorkspaceSidebar() {
           hint={<Kbd>Alt N</Kbd>}
           onClick={() => createQuickSession()}
         />
+        <WorkflowNavRow />
         {searching ? (
           <div className={cn(ROW, "bg-sidebar-accent")}>
             <SearchIcon className="size-4 shrink-0 text-muted-foreground" />

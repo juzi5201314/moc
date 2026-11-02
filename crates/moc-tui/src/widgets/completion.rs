@@ -50,6 +50,14 @@ pub const SLASH_COMMANDS: &[SlashCommand] = &[
         description: "新建会话",
     },
     SlashCommand {
+        name: "/workflow",
+        description: "激活 workflow（可附指令）",
+    },
+    SlashCommand {
+        name: "/workflows",
+        description: "workflow run 列表",
+    },
+    SlashCommand {
         name: "/model",
         description: "切换模型",
     },

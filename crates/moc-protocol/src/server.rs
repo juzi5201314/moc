@@ -43,7 +43,10 @@ use crate::methods::{
     SessionPlanDiff, SessionPlanMode, SessionPlanRevise, SessionPrompt, SessionRedo, SessionRename,
     SessionRetry, SessionRewind, SessionSetAutonomy, SessionSetEngine, SessionSetFastMode,
     SessionSetModel, SessionSetPermission, SessionSteer, SessionUnload, SessionUnlock,
-    SessionUnsteer, SessionUsage, WebStateGet, WebStateSave, WorkspaceGitBranch,
+    SessionUnsteer, SessionUsage, SessionWorkflowActivate, SessionWorkflowApprove,
+    SessionWorkflowArtifact, SessionWorkflowResume, SessionWorkflowRun, SessionWorkflowRuns,
+    SessionWorkflowSetRoleModel, SessionWorkflowStop, WebStateGet, WebStateSave,
+    WorkspaceGitBranch,
 };
 use crate::service::{AgentService, RequestContext};
 use crate::transport::Transport;
@@ -866,6 +869,79 @@ impl<S: AgentService> ServerDispatch<S> {
                     .server
                     .service
                     .session_plan_diff(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            // —— workflow（§9）：激活、审批、run 查询与控制 ——
+            <SessionWorkflowActivate as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowActivate>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_activate(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowApprove as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowApprove>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_approve(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowRuns as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowRuns>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_runs(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowRun as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowRun>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_run(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowStop as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowRun>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_stop(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowResume as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowRun>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_resume(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowSetRoleModel as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowSetRoleModel>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_set_role_model(self.context(client, cancel), params)
+                    .await?;
+                value_from(result)
+            }
+            <SessionWorkflowArtifact as Method>::NAME => {
+                let params = params_from_value::<SessionWorkflowArtifact>(params)?;
+                let result = self
+                    .server
+                    .service
+                    .session_workflow_artifact(self.context(client, cancel), params)
                     .await?;
                 value_from(result)
             }

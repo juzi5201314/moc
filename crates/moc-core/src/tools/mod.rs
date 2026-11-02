@@ -314,6 +314,9 @@ pub struct ToolScope {
     pub fusion: bool,
     /// preset 快照的工具面策略；`None` 表示不限（普通会话与旧子代理）。
     pub policy: Option<crate::agents::ToolPolicy>,
+    /// workflow 工具面是否激活（`session/workflow_activate` 持久化的会话位）。
+    /// 未激活时 `definitions`/`visible`/signatures 一律不含 workflow 工具——零泄漏。
+    pub workflows: bool,
 }
 
 impl ToolScope {
@@ -324,6 +327,7 @@ impl ToolScope {
             subagent: false,
             fusion: false,
             policy: None,
+            workflows: false,
         }
     }
 
@@ -338,6 +342,7 @@ impl ToolScope {
                 .agent
                 .as_ref()
                 .and_then(|meta| meta.tool_policy.clone()),
+            workflows: state.workflow_activated && !state.session.is_subagent(),
         }
     }
 }
@@ -369,6 +374,15 @@ impl ToolRegistry {
                 Arc::new(agent::SidekickTool),
                 Arc::new(plan::PlanTool),
                 Arc::new(plan::ExitPlanTool),
+                Arc::new(crate::workflow::runtime::tools::CreateWorkflowTool),
+                Arc::new(crate::workflow::runtime::tools::AmendWorkflowTool),
+                Arc::new(crate::workflow::runtime::tools::ResumeWorkflowTool),
+                Arc::new(crate::workflow::runtime::tools::StopWorkflowTool),
+                Arc::new(crate::workflow::runtime::tools::FillHoleTool),
+                Arc::new(crate::workflow::runtime::tools::SaveWorkflowTool),
+                Arc::new(crate::workflow::runtime::tools::ListSavedTool),
+                Arc::new(crate::workflow::runtime::tools::WorkflowStatusTool),
+                Arc::new(crate::workflow::runtime::tools::EvalSnippetTool),
                 Arc::new(clm::ClmContextTool),
                 Arc::new(crate::tools::ptc::RunCodeTool),
                 Arc::new(crate::skills::tool::SkillTool),
@@ -407,6 +421,10 @@ impl ToolRegistry {
                 name if Self::is_parent_only_tool(name) => scope.control_agents,
                 // 交付最终结果只对子代理有意义：顶层会话没有父代理可交付。
                 "yield" => scope.subagent,
+                // workflow 工具只在会话激活后可见（零泄漏）。
+                name if crate::workflow::runtime::WORKFLOW_TOOLS.contains(&name) => {
+                    scope.workflows
+                }
                 _ => true,
             })
             // preset 快照的策略对内置、MCP 与插件工具统一生效。
@@ -449,8 +467,9 @@ impl ToolRegistry {
         snapshot: &moc_mcp::McpSnapshot,
         manager: Arc<moc_mcp::McpManager>,
         plugins: Vec<Arc<dyn Tool>>,
+        workflows_active: bool,
     ) -> Result<catalog::ToolCatalog, ToolError> {
-        catalog::ToolCatalog::new(self, snapshot, manager, plugins)
+        catalog::ToolCatalog::new(self, snapshot, manager, plugins, workflows_active)
     }
 }
 

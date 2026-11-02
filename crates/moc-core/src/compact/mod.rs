@@ -130,13 +130,15 @@ pub(crate) async fn model_context(
     model: &crate::ResolvedModel,
 ) -> Result<ModelContext, CoreError> {
     let cwd = std::path::Path::new(&state.session.cwd);
-    let skills = inner.project_skills(cwd)?;
+    let skills =
+        inner.session_skills(cwd, state.workflow_activated && !state.session.is_subagent())?;
     let summary = inner.mcp_summary(config).await?;
     let tool_declarations = inner
         .tool_declarations(
             state.engine,
             config,
             inner.ask_available(ctx.connection_id(), state.session.autonomy),
+            state.workflow_activated && !state.session.is_subagent(),
         )
         .await?;
     let context_files = inner.project_context_files(&state.session.id, cwd).await;

@@ -1432,6 +1432,83 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             );
             (lines, footer)
         }
+        Modal::WorkflowApproval { state } => {
+            let (lines, row_hits) = crate::workflow::approval_lines(state, width, theme);
+            hits.extend(row_hits);
+            let footer = if state.feedback.is_some() {
+                overlay::footer(
+                    &[("enter", "提交拒绝"), ("esc", "取消输入")],
+                    width,
+                    theme,
+                )
+            } else {
+                overlay::footer(
+                    &[
+                        ("↑↓", "选择 role"),
+                        ("enter", "选模型"),
+                        ("a", "批准"),
+                        ("r", "拒绝"),
+                        ("esc", "最小化"),
+                    ],
+                    width,
+                    theme,
+                )
+            };
+            (lines, footer)
+        }
+        Modal::WorkflowRuns { runs, picker } => {
+            let filtered = runs
+                .iter()
+                .filter(|run| {
+                    let query = picker.query.to_lowercase();
+                    run.run_id.to_lowercase().contains(&query)
+                        || run
+                            .title
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&query)
+                })
+                .collect::<Vec<_>>();
+            let mut lines = Vec::new();
+            if filtered.is_empty() {
+                lines.push(Line::from(Span::styled("没有 workflow run", dim)));
+            } else {
+                for (index, run) in filtered.iter().enumerate() {
+                    hits.push((index, lines.len()));
+                    let status = crate::workflow::status_label(run.status);
+                    let title = run.title.as_deref().unwrap_or(run.run_id.as_str());
+                    lines.push(overlay::list_row(
+                        &format!("{status:<14} {title}"),
+                        index == picker.selected,
+                        width,
+                        theme,
+                    ));
+                }
+            }
+            let footer = overlay::footer(
+                &[("↑↓", "选择"), ("enter", "打开面板"), ("esc", "关闭")],
+                width,
+                theme,
+            );
+            (lines, footer)
+        }
+        Modal::WorkflowRun { state } => {
+            let (lines, row_hits) = crate::workflow::run_lines(state, width, theme);
+            hits.extend(row_hits);
+            let footer = overlay::footer(
+                &[
+                    ("↑↓", "选择 role"),
+                    ("enter", "改模型"),
+                    ("s", "停止"),
+                    ("r", "续跑"),
+                    ("esc", "关闭"),
+                ],
+                width,
+                theme,
+            );
+            (lines, footer)
+        }
         // 回退视图与上下文正文窗自带布局，`draw_modal` 在此之前就已分派走。
         Modal::Rewind { .. } | Modal::ContextContent { .. } => {
             (Vec::new(), overlay::Footer::default())

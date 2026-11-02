@@ -30,6 +30,7 @@ pub fn render_signatures(
     catalog: &ToolCatalog,
     engine: SessionEngine,
     ask_supported: bool,
+    workflows_active: bool,
     config: &ResolvedConfig,
 ) -> Option<String> {
     if engine != SessionEngine::Ptc {
@@ -44,6 +45,7 @@ pub fn render_signatures(
         engine,
         crate::service::mode::Mode::Default,
         ask_supported,
+        workflows_active,
         config,
     ) {
         if tool.origin() == ToolOrigin::Mcp {
@@ -79,6 +81,7 @@ pub fn render_mcp_index(
             engine,
             crate::service::mode::Mode::Default,
             ask_supported,
+            false,
             config,
         )
         .filter(|tool| tool.origin() == ToolOrigin::Mcp)
@@ -249,6 +252,7 @@ mod tests {
             },
             McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
             Vec::new(),
+            false,
         )
         .expect("工具目录")
     }
@@ -271,10 +275,10 @@ mod tests {
         let config = config();
         let catalog = catalog_with(Vec::new());
         assert!(
-            render_signatures(&catalog, SessionEngine::Standard, false, &config).is_none(),
+            render_signatures(&catalog, SessionEngine::Standard, false, false, &config).is_none(),
             "标准引擎由原生工具表提供 schema"
         );
-        assert!(render_signatures(&catalog, SessionEngine::Ptc, false, &config).is_some());
+        assert!(render_signatures(&catalog, SessionEngine::Ptc, false, false, &config).is_some());
         assert!(
             render_mcp_index(&catalog, SessionEngine::Ptc, false, &config, 200_000).is_none(),
             "没有 MCP 工具时不渲染索引"
@@ -285,7 +289,7 @@ mod tests {
     fn builtin_signatures_carry_required_and_optional() {
         let config = config();
         let catalog = catalog_with(Vec::new());
-        let text = render_signatures(&catalog, SessionEngine::Ptc, false, &config).unwrap();
+        let text = render_signatures(&catalog, SessionEngine::Ptc, false, false, &config).unwrap();
         assert!(text.starts_with("<tool-declarations>"));
         assert!(
             !text.contains("MCP tool index"),
@@ -350,8 +354,8 @@ mod tests {
                 .collect(),
         );
         assert_eq!(
-            render_signatures(&plain, SessionEngine::Ptc, false, &config),
-            render_signatures(&loaded, SessionEngine::Ptc, false, &config),
+            render_signatures(&plain, SessionEngine::Ptc, false, false, &config),
+            render_signatures(&loaded, SessionEngine::Ptc, false, false, &config),
             "MCP 工具变化不得改写系统提示里的签名"
         );
         assert_ne!(

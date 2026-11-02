@@ -53,6 +53,7 @@ pub mod session;
 pub mod todo;
 pub mod update;
 pub mod web;
+pub mod workflow;
 pub mod workspace;
 
 use serde::{Deserialize, Serialize};
@@ -141,6 +142,16 @@ pub use update::{
 pub use web::{
     WebDetailLevel, WebDiffMode, WebState, WebStateDocument, WebStateGet, WebStateGetParams,
     WebStateSave, WebStateSaveParams, WebStateUpdated, WebSubmitAction, WebTheme,
+};
+pub use workflow::{
+    SessionWorkflowActivate, SessionWorkflowActivateParams, SessionWorkflowApprove,
+    SessionWorkflowApproveParams, SessionWorkflowArtifact, SessionWorkflowArtifactParams,
+    SessionWorkflowResume, SessionWorkflowRun, SessionWorkflowRunParams, SessionWorkflowRuns,
+    SessionWorkflowRunsParams, SessionWorkflowRunsResult, SessionWorkflowSetRoleModel,
+    SessionWorkflowSetRoleModelParams, SessionWorkflowStop, WorkflowAck, WorkflowApproval,
+    WorkflowApprovalDefaults, WorkflowApprovalKind, WorkflowArtifactResult, WorkflowDecision,
+    WorkflowEvent, WorkflowPhaseState, WorkflowRoleState, WorkflowRunSnapshot, WorkflowRunStatus,
+    WorkflowRunSummary, WorkflowStopReason,
 };
 pub use workspace::{WorkspaceGitBranch, WorkspaceGitBranchParams, WorkspaceGitBranchResult};
 

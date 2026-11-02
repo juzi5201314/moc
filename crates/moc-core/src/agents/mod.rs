@@ -261,7 +261,7 @@ pub(crate) async fn note_activity(inner: &CoreInner, session_id: &str, call: &mo
 ///
 /// 不能挂父的 prompt guard：`guard.cancel` 是请求级 token，父的那次 prompt 一
 /// 返回即取消，会把还活着的子代理误杀（经 `spawn_agent` 工具 spawn 必踩）。
-async fn child_cancel(inner: &CoreInner, parent_id: &str) -> CancellationToken {
+pub(crate) async fn child_cancel(inner: &CoreInner, parent_id: &str) -> CancellationToken {
     let registry = inner.agents.lock().await;
     match registry.items.get(parent_id) {
         Some(runtime) => runtime.cancel.child_token(),
@@ -291,6 +291,9 @@ pub(crate) struct SpawnSpec {
     pub context: Option<String>,
     /// `yield` 交付物必须满足的 JSON Schema；省略为自由文本交付。
     pub output_schema: Option<serde_json::Value>,
+    /// SeedFrom（workflow amend 导入）：逐字接入新会话的 transcript 前缀
+    ///（不含 header；在本会话自身的插件 sessionStart 与 task 之前）。
+    pub seed_entries: Vec<crate::session::entries::Entry>,
 }
 
 /// 解析 preset 名 → 快照契约：先查内置注册表，再查该工作区插件声明。
@@ -430,6 +433,13 @@ pub(crate) async fn spawn(
         .sessions
         .ensure_write_lease(&session.id, &record, &request.client().frontend)
         .await?;
+    // SeedFrom：导入的 transcript 前缀写在 header 之后、插件消息与 task 之前，
+    // 让新子会话的前缀历史与前驱 actor 会话逐字一致（真 fork，不写前驱文件）。
+    if !spec.seed_entries.is_empty() {
+        let mut combined = record.state.lock().await.entries.clone();
+        combined.extend(spec.seed_entries.iter().cloned());
+        inner.sessions.rewrite(&session.id, combined).await?;
+    }
     let info = info_from_session(&session, AgentStatus::Queued);
     let cancel = child_cancel(&inner, &session_id).await;
     prepare_agent(&inner, &info, cancel.clone()).await;

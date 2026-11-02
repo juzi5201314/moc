@@ -25,6 +25,7 @@ pub mod system_prompt;
 mod tips;
 pub mod tools;
 pub mod websearch;
+pub mod workflow;
 pub mod workspace;
 pub use service::Core;
 

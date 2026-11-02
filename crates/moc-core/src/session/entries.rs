@@ -160,6 +160,13 @@ pub enum Entry {
         at_ms: u64,
         active: bool,
     },
+    /// workflow 激活变化（`session/workflow_activate`）；resume 时据 entry 恢复工具面。
+    WorkflowActivated {
+        id: String,
+        parent_id: Option<String>,
+        at_ms: u64,
+        active: bool,
+    },
     /// 会话自主程度变化（`session/set_autonomy`）。
     AutonomyChange {
         id: String,
@@ -314,6 +321,10 @@ pub enum EntryPayload {
     },
     /// plan 模式变化。
     PlanMode {
+        active: bool,
+    },
+    /// workflow 激活变化。
+    WorkflowActivated {
         active: bool,
     },
     /// 自主程度变化。
@@ -606,6 +617,12 @@ impl Entry {
                 at_ms,
                 active,
             },
+            EntryPayload::WorkflowActivated { active } => Self::WorkflowActivated {
+                id,
+                parent_id,
+                at_ms,
+                active,
+            },
             EntryPayload::AutonomyChange { autonomy } => Self::AutonomyChange {
                 id,
                 parent_id,
@@ -725,6 +742,7 @@ impl Entry {
             | Self::EngineChange { id, .. }
             | Self::AutonomyChange { id, .. }
             | Self::PlanMode { id, .. }
+            | Self::WorkflowActivated { id, .. }
             | Self::PermissionChange { id, .. }
             | Self::ModelChange { id, .. }
             | Self::FastModeChange { id, .. }
@@ -748,6 +766,7 @@ impl Entry {
             | Self::EngineChange { parent_id, .. }
             | Self::AutonomyChange { parent_id, .. }
             | Self::PlanMode { parent_id, .. }
+            | Self::WorkflowActivated { parent_id, .. }
             | Self::PermissionChange { parent_id, .. }
             | Self::ModelChange { parent_id, .. }
             | Self::FastModeChange { parent_id, .. }
@@ -770,6 +789,7 @@ impl Entry {
             | Self::EngineChange { at_ms, .. }
             | Self::AutonomyChange { at_ms, .. }
             | Self::PlanMode { at_ms, .. }
+            | Self::WorkflowActivated { at_ms, .. }
             | Self::PermissionChange { at_ms, .. }
             | Self::ModelChange { at_ms, .. }
             | Self::FastModeChange { at_ms, .. }

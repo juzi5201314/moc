@@ -135,8 +135,19 @@ pub(crate) fn wrap(
     cwd: &Path,
     policy: &SandboxPolicy,
 ) -> Result<WrappedCommand, ToolError> {
-    let scratch = policy.scratch()?;
     let (shell_program, shell_args) = crate::shell::command_line(shell, command);
+    let mut tail = vec![shell_program.into_os_string()];
+    tail.extend(shell_args);
+    wrap_argv(tail, cwd, policy)
+}
+
+/// 不经 shell 的 argv 直跑变体：`tail` 原样拼在 bwrap `--` 之后（world.run）。
+pub(crate) fn wrap_argv(
+    tail: Vec<OsString>,
+    cwd: &Path,
+    policy: &SandboxPolicy,
+) -> Result<WrappedCommand, ToolError> {
+    let scratch = policy.scratch()?;
     let mut args: Vec<OsString> = Vec::new();
     push_args(
         &mut args,
@@ -231,8 +242,7 @@ pub(crate) fn wrap(
     args.push("--chdir".into());
     args.push(cwd.as_os_str().to_owned());
     args.push("--".into());
-    args.push(shell_program.into_os_string());
-    args.extend(shell_args);
+    args.extend(tail);
 
     Ok(WrappedCommand {
         program: OsString::from("bwrap"),

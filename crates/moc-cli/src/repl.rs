@@ -25,7 +25,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::args::CliArgs;
 use crate::render::Renderer;
 
-type Input = Arc<AsyncMutex<tokio::sync::mpsc::Receiver<std::io::Result<String>>>>;
+pub(crate) type Input = Arc<AsyncMutex<tokio::sync::mpsc::Receiver<std::io::Result<String>>>>;
 
 fn input_reader() -> Input {
     let (sender, receiver) = tokio::sync::mpsc::channel(16);
@@ -299,7 +299,7 @@ async fn run_embedded(core: Arc<Core>, args: CliArgs) -> anyhow::Result<()> {
         bail!("连接到非 moc-core 服务：{}", handshake.server.name);
     }
     *notification_client.lock().expect("通知 client 槽位") = Some(client.clone());
-    let result = run_repl(&client, &input, &args, initial_prompt).await;
+    let result = run_repl(&client, &input, &args, initial_prompt, &renderer).await;
     client.close().await;
     server.shutdown();
     connection.wait().await;
@@ -311,6 +311,7 @@ async fn run_repl(
     input: &Input,
     args: &CliArgs,
     initial_prompt: Option<String>,
+    renderer: &Renderer,
 ) -> anyhow::Result<()> {
     if args.list {
         let result = client.call::<SessionList>(SessionListParams {}).await?;
@@ -350,6 +351,7 @@ async fn run_repl(
             })
             .await?
     };
+    renderer.bind_workflow(client.clone(), session.id.clone(), input.clone());
     if let Some(selector) = &args.model
         && selector != &session.model
     {

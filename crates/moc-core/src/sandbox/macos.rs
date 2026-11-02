@@ -94,12 +94,21 @@ pub(crate) fn wrap(
     command: &str,
     policy: &SandboxPolicy,
 ) -> Result<WrappedCommand, ToolError> {
-    let scratch = policy.scratch()?;
     let (shell_program, shell_args) = crate::shell::command_line(shell, command);
+    let mut tail = vec![shell_program.into_os_string()];
+    tail.extend(shell_args);
+    wrap_argv(tail, policy)
+}
+
+/// 不经 shell 的 argv 直跑变体（world.run）。
+pub(crate) fn wrap_argv(
+    tail: Vec<OsString>,
+    policy: &SandboxPolicy,
+) -> Result<WrappedCommand, ToolError> {
+    let scratch = policy.scratch()?;
     let profile = profile(policy, &scratch);
     let mut args: Vec<OsString> = vec!["-p".into(), profile.into(), "--".into()];
-    args.push(shell_program.into_os_string());
-    args.extend(shell_args);
+    args.extend(tail);
 
     let mut envs = vec![
         (OsString::from("TMPDIR"), scratch.tmp.as_os_str().to_owned()),

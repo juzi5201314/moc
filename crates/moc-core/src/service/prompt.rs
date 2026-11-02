@@ -503,7 +503,14 @@ async fn run_prompt_locked(
             };
             // 代理消息原样写入会话：skill 调用对用户输入的改写不适用于代理投递的消息。
             let message = if agent_meta.is_none() {
-                apply_skill_invocation(&inner, message, &state_snapshot.session.cwd).await?
+                apply_skill_invocation(
+                    &inner,
+                    message,
+                    &state_snapshot.session.cwd,
+                    state_snapshot.workflow_activated
+                        && !state_snapshot.session.is_subagent(),
+                )
+                .await?
             } else {
                 message
             };
@@ -671,11 +678,19 @@ async fn run_prompt_locked(
     let catalog = Arc::new(
         inner
             .tools
-            .catalog(&mcp_snapshot, Arc::clone(&mcp), plugin_tools.clone())
+            .catalog(
+                &mcp_snapshot,
+                Arc::clone(&mcp),
+                plugin_tools.clone(),
+                state_snapshot.workflow_activated && !state_snapshot.session.is_subagent(),
+            )
             .map_err(|error| to_rpc(crate::CoreError::Tool(error.to_string())))?,
     );
     let skills = inner
-        .project_skills(std::path::Path::new(&state_snapshot.session.cwd))
+        .session_skills(
+            std::path::Path::new(&state_snapshot.session.cwd),
+            state_snapshot.workflow_activated && !state_snapshot.session.is_subagent(),
+        )
         .map_err(to_rpc)?;
     // 会话身份只看会话头。系统提示、工具可见性和代理列表都必须以它为准，
     // 否则会出现「系统提示说我是子代理，工具表里却没有 yield」这类矛盾。
@@ -706,6 +721,7 @@ async fn run_prompt_locked(
         &catalog,
         engine,
         ask_supported,
+        state_snapshot.workflow_activated && !state_snapshot.session.is_subagent(),
         &project_config,
     )
     .unwrap_or_default();
@@ -1836,6 +1852,7 @@ async fn apply_skill_invocation(
     inner: &CoreInner,
     message: Message,
     cwd: &str,
+    workflows_active: bool,
 ) -> Result<Message, RpcError> {
     let text = message.text();
     let Some(rest) = text.strip_prefix("/skill:") else {
@@ -1848,8 +1865,9 @@ async fn apply_skill_invocation(
     if name.is_empty() {
         return Ok(message);
     }
+    // 会话级索引：未激活会话对 `workflow-authoring` 一律不可见（/skill: 也不例外）。
     let skills = inner
-        .project_skills(std::path::Path::new(cwd))
+        .session_skills(std::path::Path::new(cwd), workflows_active)
         .map_err(to_rpc)?;
     let mut loaded = std::collections::HashSet::new();
     let content = crate::skills::tool::render_for_invocation(&skills, name, &mut loaded)

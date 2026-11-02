@@ -63,6 +63,8 @@ pub(crate) struct SessionRuntime {
     pub sandbox_grants: Arc<RwLock<crate::sandbox::SandboxGrants>>,
     /// 会话级临时目录与 HOME overlay；runner 不可用时为空。
     pub sandbox_scratch: Option<Arc<crate::sandbox::SandboxScratch>>,
+    /// workflow run 管理器（激活后惰性建立）。
+    pub workflows: tokio::sync::OnceCell<Arc<crate::workflow::runtime::WorkflowManager>>,
 }
 
 impl SessionRuntime {
@@ -86,6 +88,7 @@ impl SessionRuntime {
             grok_prefire: crate::compact::grok_build::prefire::PrefireState::default(),
             sandbox_grants: Arc::new(RwLock::new(crate::sandbox::SandboxGrants::default())),
             sandbox_scratch: scratch,
+            workflows: tokio::sync::OnceCell::new(),
         }
     }
 }
@@ -394,7 +397,7 @@ impl CoreInner {
         let plugins = self.plugin_tools(&config.cwd).await;
         let catalog = self
             .tools
-            .catalog(&snapshot, manager, plugins)
+            .catalog(&snapshot, manager, plugins, false)
             .map_err(|err| CoreError::Tool(err.to_string()))?;
         Ok(catalog.summary())
     }
@@ -407,18 +410,23 @@ impl CoreInner {
         engine: SessionEngine,
         config: &ResolvedConfig,
         ask_supported: bool,
+        workflows_active: bool,
     ) -> Result<String, CoreError> {
         let manager = self.project_mcp(&config.cwd).await?;
         let snapshot = manager.snapshot().await;
         let plugins = self.plugin_tools(&config.cwd).await;
         let catalog = self
             .tools
-            .catalog(&snapshot, manager, plugins)
+            .catalog(&snapshot, manager, plugins, workflows_active)
             .map_err(|err| CoreError::Tool(err.to_string()))?;
-        Ok(
-            crate::tools::declarations::render_signatures(&catalog, engine, ask_supported, config)
-                .unwrap_or_default(),
+        Ok(crate::tools::declarations::render_signatures(
+            &catalog,
+            engine,
+            ask_supported,
+            workflows_active,
+            config,
         )
+        .unwrap_or_default())
     }
 
     /// 获取该项目的插件宿主：没有就发现并加载，目录内容变了就重建。
@@ -503,6 +511,23 @@ impl CoreInner {
         ));
         self.skill_indexes.write().insert(key, Arc::clone(&index));
         Ok(index)
+    }
+
+    /// 会话级 skill 索引：`workflows_active` 时注入内置 `workflow-authoring`
+    ///（只在激活会话的 `<skills>` 目录出现；不激活原样返回——零泄漏）。
+    pub(crate) fn session_skills(
+        &self,
+        cwd: &Path,
+        workflows_active: bool,
+    ) -> Result<Arc<crate::skills::SkillIndex>, CoreError> {
+        let index = self.project_skills(cwd)?;
+        if !workflows_active {
+            return Ok(index);
+        }
+        let mut cloned = (*index).clone();
+        let config = self.project_config(cwd)?;
+        crate::workflow::skill::inject(&mut cloned, &config.home);
+        Ok(Arc::new(cloned))
     }
 
     pub(crate) async fn project_context_files(
@@ -846,6 +871,7 @@ impl AgentService for Core {
                 preset: params.preset,
                 context: None,
                 output_schema: params.output_schema,
+                seed_entries: Vec::new(),
             },
         )
         .await
@@ -1127,8 +1153,14 @@ impl AgentService for Core {
             .get(&params.session_id)
             .await
             .map_err(to_rpc)?;
-        let cwd = PathBuf::from(&record.state.lock().await.session.cwd);
-        let skills = self.inner.project_skills(&cwd).map_err(to_rpc)?;
+        let (cwd, workflows_active) = {
+            let state = record.state.lock().await;
+            (
+                PathBuf::from(&state.session.cwd),
+                state.workflow_activated && !state.session.is_subagent(),
+            )
+        };
+        let skills = self.inner.session_skills(&cwd, workflows_active).map_err(to_rpc)?;
         let context = crate::resources::ResourceContext {
             session_id: &params.session_id,
             cwd: &cwd,
@@ -1992,6 +2024,307 @@ impl AgentService for Core {
         mode::plan_diff(&self.inner, params).await
     }
 
+    // —— workflow（§9）——
+
+    async fn session_workflow_activate(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowActivateParams,
+    ) -> Result<SessionInfo, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        {
+            let state = record.state.lock().await;
+            let config = self
+                .inner
+                .project_config(std::path::Path::new(&state.session.cwd))
+                .map_err(to_rpc)?;
+            if !config.workflow.enabled {
+                return Err(to_rpc(CoreError::Config(
+                    "workflow is disabled ([workflow] enabled = false)".into(),
+                )));
+            }
+        }
+        // 审批流依赖 ask 反向请求能力；无审批能力的连接（--print 等）不给激活。
+        if !self.inner.client_supports_ask(ctx.connection_id()) {
+            return Err(to_rpc(CoreError::Session(
+                "workflows require approval capability; this connection cannot answer approvals"
+                    .into(),
+            )));
+        }
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let already = record.state.lock().await.workflow_activated;
+        if !already {
+            self.inner
+                .sessions
+                .append(
+                    &params.session_id,
+                    crate::session::entries::EntryPayload::WorkflowActivated { active: true },
+                )
+                .await
+                .map_err(to_rpc)?;
+        }
+        // 预热 run 目录的 interrupted 标记（首次激活即建管理器）。
+        let _ = workflow_manager(&self.inner, &record).await;
+        Ok(record.state.lock().await.session.clone())
+    }
+
+    async fn session_workflow_approve(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowApproveParams,
+    ) -> Result<moc_protocol::WorkflowAck, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        manager
+            .resolve_approval(&params.request_id, params.decision, &ctx.updates())
+            .map_err(to_rpc)?;
+        Ok(moc_protocol::WorkflowAck {
+            session_id: params.session_id,
+        })
+    }
+
+    async fn session_workflow_runs(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowRunsParams,
+    ) -> Result<moc_protocol::SessionWorkflowRunsResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        Ok(moc_protocol::SessionWorkflowRunsResult {
+            runs: manager.list(),
+        })
+    }
+
+    async fn session_workflow_run(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowRunParams,
+    ) -> Result<moc_protocol::WorkflowRunSnapshot, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        let meta = manager.meta(&params.run_id).map_err(to_rpc)?;
+        let running = manager.running(&params.run_id);
+        let view = running.as_ref().map(|handle| handle.view.lock());
+        Ok(crate::workflow::runtime::snapshot_of(
+            &meta,
+            view.as_deref(),
+            &manager.run_dir(&params.run_id),
+        ))
+    }
+
+    async fn session_workflow_stop(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowRunParams,
+    ) -> Result<moc_protocol::WorkflowRunSummary, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        manager.stop(&params.run_id).await.map_err(to_rpc)
+    }
+
+    async fn session_workflow_resume(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowRunParams,
+    ) -> Result<moc_protocol::WorkflowRunSummary, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        // resume 走与工具相同的路径：读草稿 → 编译 → mode=resume 重启 worker。
+        let dir = manager.run_dir(&params.run_id);
+        let mut meta = crate::workflow::runtime::read_run_meta(&dir).map_err(to_rpc)?;
+        if meta.status == "running" {
+            return Err(to_rpc(CoreError::Session(format!(
+                "workflow run {} is already running",
+                params.run_id
+            ))));
+        }
+        if meta.status == "errored" {
+            return Err(to_rpc(CoreError::Session(format!(
+                "workflow run {} is errored and cannot be resumed",
+                params.run_id
+            ))));
+        }
+        let source = std::fs::read_to_string(dir.join("script.ts")).map_err(|e| {
+            to_rpc(CoreError::Session(format!("draft unreadable: {e}")))
+        })?;
+        let compiled = crate::workflow::compile::compile(
+            &source,
+            &crate::workflow::compile::CompileOptions::default(),
+        )
+        .map_err(|diags| {
+            to_rpc(CoreError::Session(format!(
+                "script no longer compiles: {}",
+                diags
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )))
+        })?;
+        meta.status = "running".into();
+        meta.mode = "resume".into();
+        let cwd = record.state.lock().await.session.cwd.clone();
+        let cwd_path = std::path::PathBuf::from(&cwd);
+        let config = self
+            .inner
+            .project_config(&cwd_path)
+            .map_err(to_rpc)?;
+        let policy = {
+            let state = record.state.lock().await;
+            let runtime = self.inner.runtime(&params.session_id).await;
+            let grants = runtime.sandbox_grants.read().clone();
+            let permission = self.inner.effective_permission(state.permission);
+            crate::sandbox::SandboxPolicy::new(
+                permission,
+                cwd_path.clone(),
+                &config.sandbox,
+                &grants,
+                &crate::sandbox::SandboxGrants::default(),
+                runtime.sandbox_scratch.clone(),
+            )
+        };
+        manager
+            .launch(
+                meta,
+                compiled,
+                ctx.clone(),
+                cwd_path,
+                policy,
+                ctx.updates(),
+                self.inner.shutdown.child_token(),
+            )
+            .await
+            .map_err(to_rpc)?;
+        let summary = manager.meta(&params.run_id).map_err(to_rpc)?;
+        Ok(crate::workflow::runtime::workflow_summary(&summary))
+    }
+
+    async fn session_workflow_set_role_model(
+        &self,
+        ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowSetRoleModelParams,
+    ) -> Result<moc_protocol::WorkflowAck, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        self.inner
+            .sessions
+            .ensure_write_lease(&params.session_id, &record, &ctx.client().frontend)
+            .await
+            .map_err(|error| write_lease_error(self, &params.session_id, &record, error))?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        manager
+            .set_role_model(&params.run_id, &params.role_id, &params.model)
+            .map_err(to_rpc)?;
+        Ok(moc_protocol::WorkflowAck {
+            session_id: params.session_id,
+        })
+    }
+
+    async fn session_workflow_artifact(
+        &self,
+        _ctx: RequestContext,
+        params: moc_protocol::SessionWorkflowArtifactParams,
+    ) -> Result<moc_protocol::WorkflowArtifactResult, RpcError> {
+        let record = self
+            .inner
+            .sessions
+            .get(&params.session_id)
+            .await
+            .map_err(to_rpc)?;
+        let manager = workflow_manager(&self.inner, &record).await;
+        let dir = manager
+            .run_dir(&params.run_id)
+            .join("artifacts")
+            .join(&params.artifact_id);
+        let mut versions: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(&dir)
+            .map_err(|e| to_rpc(CoreError::Session(format!("artifact dir unreadable: {e}"))))?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let version = name
+                    .strip_prefix('v')
+                    .and_then(|s| s.split('_').next())
+                    .and_then(|s| s.parse::<u32>().ok())?;
+                Some((version, e.path()))
+            })
+            .collect();
+        versions.sort_by_key(|(v, _)| *v);
+        let (version, path) = match params.version {
+            Some(v) => versions
+                .into_iter()
+                .find(|(found, _)| *found == v)
+                .ok_or_else(|| {
+                    to_rpc(CoreError::Session(format!(
+                        "artifact {} version {v} not found",
+                        params.artifact_id
+                    )))
+                })?,
+            None => versions.last().cloned().ok_or_else(|| {
+                to_rpc(CoreError::Session(format!(
+                    "artifact {} has no versions",
+                    params.artifact_id
+                )))
+            })?,
+        };
+        let data = std::fs::read(&path)
+            .map_err(|e| to_rpc(CoreError::Session(format!("artifact unreadable: {e}"))))?;
+        let content = serde_json::from_slice::<serde_json::Value>(&data)
+            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&data).to_string()));
+        Ok(moc_protocol::WorkflowArtifactResult {
+            artifact_id: params.artifact_id,
+            version,
+            content,
+        })
+    }
+
     async fn session_compact(
         &self,
         ctx: RequestContext,
@@ -2141,6 +2474,28 @@ impl AgentService for Core {
         .await
     }
 }
+
+/// 会话的 workflow 管理器（未激活也会惰性创建：run 查询与 stopped 列表不依赖激活位）。
+async fn workflow_manager(
+    inner: &Arc<CoreInner>,
+    record: &crate::session::SessionRecord,
+) -> Arc<crate::workflow::runtime::WorkflowManager> {
+    let session_id = record.state.lock().await.session.id.clone();
+    let runtime = inner.runtime(&session_id).await;
+    Arc::clone(
+        runtime
+            .workflows
+            .get_or_init(|| async {
+                crate::workflow::runtime::WorkflowManager::new(
+                    Arc::clone(inner),
+                    &session_id,
+                    record.paths.clone(),
+                )
+            })
+            .await,
+    )
+}
+
 /// 写租约失败时把持有者投影一并返回，前端不用再发一次 `session/list` 才能提示。
 fn write_lease_error(
     core: &Core,
@@ -2379,3 +2734,4 @@ mod management;
 pub(crate) mod mode;
 pub(crate) mod model;
 pub(crate) mod prompt;
+

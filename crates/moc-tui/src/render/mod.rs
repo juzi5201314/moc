@@ -609,6 +609,28 @@ fn draw_prompt_legends(frame: &mut Frame, app: &mut App, area: Rect) {
         // 左端提示可点：空闲打开帮助，运行中停止（与提示文字同义）。
         app.legend_tip_area = Rect::new(area.x + 3, y, x - (area.x + 3), 1);
     }
+    // workflow 胶囊：活跃 run / 待审批徽标，点击打开审批或 run 面板。
+    app.workflow_capsule_area = Rect::default();
+    let runs_n = app.workflow.active_runs.len();
+    let approvals_n = app.workflow.pending_approvals;
+    if runs_n + approvals_n > 0 {
+        let capsule = if approvals_n > 0 {
+            format!("⚙{runs_n}跑·{approvals_n}审")
+        } else {
+            format!("⚙{runs_n}跑")
+        };
+        let cap_cells = cell_width(&capsule);
+        let cx = if show_tips {
+            app.legend_tip_area.x + app.legend_tip_area.width + 1
+        } else {
+            area.x + 3
+        };
+        if usize::from(cx + cap_cells + 1) + right_width + 4 <= inner + usize::from(area.x) {
+            buffer.set_string(cx, y, &capsule, Style::new().fg(theme.accent_warning));
+            buffer.set_string(cx + cap_cells, y, left_separator, Style::new().fg(theme.border));
+            app.workflow_capsule_area = Rect::new(cx, y, cap_cells, 1);
+        }
+    }
     let right_cells = u16::try_from(right_width).unwrap_or(u16::MAX);
     let right_start = area.x + area.width - 2 - right_cells;
     let model_cells = cell_width(model.as_str());

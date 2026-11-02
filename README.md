@@ -16,6 +16,7 @@ Rust 编写的终端 AI 编码助手。默认启动 TUI，无终端时自动降�
 - **旁路问答**：TUI 中 `/btw 问题` 打开独立 dock，可连续追问；每会话仅内存保留 20 轮，不调用工具、不写主上下文或输入历史，`Alt+B` 切换面板
 - **MCP 支持**：可接入外部 MCP 服务器扩展工具集
 - **插件**：本地目录里的 JavaScript 插件（内嵌 QuickJS）可注册工具、斜杠命令、提示词贡献与生命周期钩子（会话、提示、模型、压缩、权限、工作区、后台任务与子代理），见 [docs/plugins.md](docs/plugins.md)
+- **workflow**：`/workflow` 激活的动态多 actor 编排——确定性引擎、phase/role/ask/world.run、审批窗与 run 面板、journal/resume/amend、hole 填补与 artifacts，未激活会话零泄漏，见 [docs/workflow.md](docs/workflow.md)
 - **循环保护**：自动检测无进展循环与重复内容，防止 token 浪费
 
 ## 安装

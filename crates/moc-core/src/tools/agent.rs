@@ -196,6 +196,7 @@ impl Tool for SpawnAgentTool {
                     preset: item.preset,
                     context: args.context.clone(),
                     output_schema: item.output_schema,
+                    seed_entries: Vec::new(),
                 };
                 match crate::agents::spawn(
                     std::sync::Arc::clone(&ctx.core),

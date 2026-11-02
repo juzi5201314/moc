@@ -13,6 +13,8 @@ import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { WorkspaceSidebar } from "@/components/sidebar/workspace-sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { WorkflowApprovalDialog } from "@/components/workflow/workflow-approval-dialog";
+import { WorkflowRunPanel } from "@/components/workflow/workflow-run-panel";
 import { useGlobalShortcuts } from "@/lib/shortcuts";
 import { useThemeSync } from "@/lib/theme";
 import { rpc } from "@/protocol/client";
@@ -20,6 +22,7 @@ import { createQuickSession } from "@/store/lifecycle";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
 import { useUi } from "@/store/ui";
+import { useWorkflow } from "@/store/workflow";
 import "@/store/connection";
 import "@/store/dispatch";
 
@@ -28,6 +31,8 @@ export function App() {
   useGlobalShortcuts();
 
   const jobsSession = useUi((state) => state.jobsSession);
+  const wfApproval = useWorkflow((s) => s.approvals[0] ?? null);
+  const wfApprovalOpen = useWorkflow((s) => s.approvalOpen);
 
   const active = useTabs((state) => state.active);
   const sessionId = active ?? "draft-session";
@@ -68,6 +73,13 @@ export function App() {
         }
         rightbar={<InspectorPanel sessionId={sessionId} />}
       />
+      <WorkflowApprovalDialog
+        sessionId={sessionId}
+        approval={wfApproval}
+        open={wfApprovalOpen && wfApproval !== null}
+        onOpenChange={(open) => useWorkflow.setState({ approvalOpen: open })}
+      />
+      <WorkflowRunPanel sessionId={sessionId} />
       <WorkspacePicker />
       <SettingsDialog />
       <CommandPalette />

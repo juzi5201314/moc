@@ -289,7 +289,15 @@ async fn snapshot(
     };
     let config = inner.project_config(&cwd).map_err(to_rpc)?;
     let model = config.resolve_model(&model_id).map_err(to_rpc)?;
-    let skills = inner.project_skills(&cwd).map_err(to_rpc)?;
+    let skills = {
+        let state = record.state.lock().await;
+        inner
+            .session_skills(
+                &cwd,
+                state.workflow_activated && !state.session.is_subagent(),
+            )
+            .map_err(to_rpc)?
+    };
     let context_files = inner.project_context_files(session_id, &cwd).await;
     let mcp_summary = inner.mcp_summary(&config).await.map_err(to_rpc)?;
     let subagent = crate::agents::subagent_prompt(inner, session_id).await;
@@ -304,14 +312,21 @@ async fn snapshot(
     // 预览/上下文构建不能持有会话锁等待插件，也不能产生持久化副作用。
     let plugin_prompt = plugins.prompt_text(&plugin_context).await;
     // 快照与声明都要等待 MCP/插件，必须在拿会话锁之前完成。
+    // 锁读取先取到局部量：参数位上的 `record.state.lock()` 临时守卫会活到
+    // 语句末尾，同一调用里再锁 `record.state` 会自死锁（tokio Mutex 不可重入）。
+    let (autonomy, workflows_active) = {
+        let state = record.state.lock().await;
+        (
+            state.session.autonomy,
+            state.workflow_activated && !state.session.is_subagent(),
+        )
+    };
     let tool_declarations = inner
         .tool_declarations(
             engine,
             &config,
-            inner.ask_available(
-                ctx.connection_id(),
-                record.state.lock().await.session.autonomy,
-            ),
+            inner.ask_available(ctx.connection_id(), autonomy),
+            workflows_active,
         )
         .await
         .map_err(to_rpc)?;
@@ -401,3 +416,4 @@ fn message_name(entry: &moc_protocol::methods::TranscriptEntry) -> &'static str 
         Role::System | Role::Developer => "system",
     }
 }
+

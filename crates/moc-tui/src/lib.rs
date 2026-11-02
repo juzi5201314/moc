@@ -29,6 +29,7 @@ pub mod theme;
 pub mod transcript;
 pub mod transcript_restore;
 pub mod widgets;
+pub mod workflow;
 
 pub use event::{TuiOptions, run};
 pub use transcript::DetailLevel;

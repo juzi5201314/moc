@@ -47,13 +47,17 @@ pub(crate) async fn compact(
         ));
     }
     let mut full_messages = Vec::with_capacity(messages.len() + 2);
-    let skills = inner.project_skills(std::path::Path::new(&state.session.cwd))?;
+    let skills = inner.session_skills(
+        std::path::Path::new(&state.session.cwd),
+        state.workflow_activated && !state.session.is_subagent(),
+    )?;
     let summary = inner.mcp_summary(config).await?;
     let tool_declarations = inner
         .tool_declarations(
             state.engine,
             config,
             inner.ask_available(ctx.connection_id(), state.session.autonomy),
+            state.workflow_activated && !state.session.is_subagent(),
         )
         .await?;
     let context_files = inner

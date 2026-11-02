@@ -1,5 +1,8 @@
 //! 长期 PTC Host：统一路由 execution，每次执行创建并销毁独立的 QuickJS Runtime。
 
+mod workflow;
+pub use workflow::{run_workflow, run_workflow_stdio};
+
 use moc_ptc_protocol::wire::{
     GuestMessage, GuestState, GuestStep, HostCompletion, HostMessage, MAX_FRAME_BYTES, ScriptError,
     StartRequest,

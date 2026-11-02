@@ -718,6 +718,7 @@ export type SessionUpdate =
   | { type: "workspace_changed"; violation: boolean; changes: { path: string; kind: string }[] }
   | { type: "upstream_mismatch"; prompt_id: string; fields: UpstreamFieldMismatch[] }
   | { type: "steering_applied"; id: number; text: string }
+  | { type: "workflow"; run_id: string; event: WorkflowEvent }
   | { type: "error"; prompt_id: string; message: string; retryable: boolean }
   | { type: "prompt_rewound"; replayed_tools: boolean };
 
@@ -763,6 +764,7 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   workspace_changed: true,
   upstream_mismatch: true,
   steering_applied: true,
+  workflow: true,
   error: true,
   prompt_rewound: true,
 };
@@ -870,3 +872,141 @@ export type FsCreateDirResult = {
 export function finishReasonKey(reason: FinishReason): string {
   return typeof reason === "string" ? reason : reason.Other;
 }
+
+// ---------- workflow（crates/moc-protocol/src/methods/workflow.rs） ----------
+
+/** run 状态：`{state:"stopped",reason}` 之外的终态不带字段。 */
+export type WorkflowRunStatus =
+  | { state: "pending" | "running" | "completed" | "errored" }
+  | { state: "stopped"; reason: "user" | "interrupted" | "provider" };
+
+export type WorkflowRunSummary = {
+  run_id: string;
+  status: WorkflowRunStatus;
+  title?: string;
+  created_at_ms?: number;
+  finished_at_ms?: number;
+  resumed_from?: string;
+  result?: unknown;
+  error?: string;
+};
+
+/** phase 节点运行态（status: pending|running|done|failed|cancelled）。 */
+export type WorkflowPhaseState = {
+  id: string;
+  name: string;
+  status: string;
+  entered_at_ms?: number;
+  asks_done?: number;
+  world_done?: number;
+};
+
+/** role（actor 实例）运行态。 */
+export type WorkflowRoleState = {
+  role_id: string;
+  name?: string;
+  status: string;
+  model?: string;
+  asks_done?: number;
+  asks_in_flight?: number;
+  spent_tokens?: number;
+  fan_out?: boolean;
+};
+
+/** run 完整快照（`session/workflow_run` 结果；summary 字段 flatten）。 */
+export type WorkflowRunSnapshot = WorkflowRunSummary & {
+  plan?: unknown;
+  phases?: WorkflowPhaseState[];
+  roles?: WorkflowRoleState[];
+  commands?: string[];
+  reports?: unknown[];
+  artifacts?: unknown[];
+  holes?: unknown[];
+  usage?: unknown;
+  script_path?: string;
+};
+
+export type WorkflowApprovalKind = "launch" | "amend" | "hole_fill";
+
+export type WorkflowApprovalDefaults = {
+  role_models: Record<string, string>;
+  model_ref_map: Record<string, string>;
+};
+
+/** 审批请求载荷（`approval_requested` 事件内容）。 */
+export type WorkflowApproval = {
+  request_id: string;
+  run_id: string;
+  script: string;
+  plan: Record<string, unknown>;
+  defaults: WorkflowApprovalDefaults;
+  args: unknown;
+  max_concurrency: number;
+  kind: WorkflowApprovalKind;
+  new_commands?: string[];
+};
+
+/** 审批决策：批准可携带 role 模型与 ModelRef 重映射覆盖。 */
+export type WorkflowDecision =
+  | {
+      action: "approve";
+      role_models?: Record<string, string>;
+      model_ref_map?: Record<string, string>;
+    }
+  | { action: "reject"; feedback?: string };
+
+/** `SessionUpdate::Workflow{run_id, event}` 的事件载荷（tag "kind"）。 */
+export type WorkflowEvent =
+  | { kind: "approval_requested"; request: WorkflowApproval }
+  | { kind: "approval_resolved"; request_id: string; approved: boolean; feedback?: string }
+  | { kind: "run_status"; status: WorkflowRunStatus }
+  | { kind: "phase_entered"; phase: string }
+  | { kind: "node_updated"; phases: WorkflowPhaseState[]; roles: WorkflowRoleState[] }
+  | { kind: "log"; level: string; message: string }
+  | { kind: "report"; item: unknown; artifact_id?: string }
+  | { kind: "artifact"; artifact: unknown }
+  | {
+      kind: "hole_opened";
+      site_id: string;
+      ordinal: number;
+      name: string;
+      prompt: string;
+      schema?: unknown;
+    }
+  | { kind: "hole_filled"; name: string }
+  | { kind: "usage"; usage: unknown };
+
+// —— 方法 DTO ——
+
+export type SessionWorkflowActivateParams = { session_id: string };
+export type SessionWorkflowActivateResult = { activated: boolean };
+
+export type SessionWorkflowApproveParams = {
+  session_id: string;
+  request_id: string;
+  decision: WorkflowDecision;
+};
+
+export type SessionWorkflowRunParams = { session_id: string; run_id: string };
+export type SessionWorkflowRunsParams = { session_id: string };
+export type SessionWorkflowRunsResult = { runs: WorkflowRunSummary[] };
+
+export type SessionWorkflowSetRoleModelParams = {
+  session_id: string;
+  run_id: string;
+  role_id: string;
+  model: string;
+};
+
+export type SessionWorkflowArtifactParams = {
+  session_id: string;
+  run_id: string;
+  artifact_id: string;
+  version?: number;
+};
+export type WorkflowArtifactResult = {
+  artifact_id: string;
+  version: number;
+  /** file/markdown 为文本；chart/table/metrics/board 为结构化 JSON。 */
+  content: unknown;
+};

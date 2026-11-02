@@ -17,6 +17,7 @@ import {
 } from "@/store/lifecycle";
 import { useTranscript } from "@/store/transcript";
 import { openSettings, useUi } from "@/store/ui";
+import { useWorkflow, workflowActivate, workflowRuns } from "@/store/workflow";
 
 export type SlashCommand = {
   name: string;
@@ -45,6 +46,13 @@ export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "usage", description: "查看本会话用量", needsSession: true },
   { name: "settings", description: "打开设置" },
   { name: "jobs", description: "查看和管理后台任务", needsSession: true },
+  {
+    name: "workflow",
+    description: "激活 workflow 功能，可附带指令",
+    usage: "[指令]",
+    needsSession: true,
+  },
+  { name: "workflows", description: "查看 workflow run 列表", needsSession: true },
 ];
 
 /** 拆出 `/name args`；不是斜杠开头返回 null。 */
@@ -176,6 +184,23 @@ export function runSlash(sessionId: string, text: string, commands: SlashCommand
     case "usage":
       useLayout.getState().openInspector("usage");
       break;
+    case "workflow": {
+      // 激活后有指令就作为提示发送；失败（无审批能力/已禁用）显示 toast。
+      void workflowActivate(sessionId)
+        .then(() => {
+          if (args) void sendPrompt(sessionId, toInput(args, []));
+          else toast("workflow 已激活");
+        })
+        .catch((error) => toast.error(`workflow 激活失败：${errorText(error)}`));
+      break;
+    }
+    case "workflows": {
+      useWorkflow.setState({ runsOpen: true });
+      void workflowRuns(sessionId)
+        .then((runs) => useWorkflow.setState({ runList: runs }))
+        .catch((error) => toast.error(`获取 run 列表失败：${errorText(error)}`));
+      break;
+    }
     case "jobs":
       useUi.getState().set({ jobsSession: sessionId });
       break;

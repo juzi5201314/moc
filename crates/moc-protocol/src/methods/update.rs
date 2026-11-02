@@ -237,6 +237,9 @@ pub enum SessionUpdate {
     },
     /// 会话引擎变化（`session/set_engine`；只在空白会话期可能发生）。
     EngineChanged { engine: SessionEngine },
+    /// workflow run 事件（审批、phase/node 状态、log/report/artifact/hole/usage）。
+    /// 前端未实现 workflow 时可直接丢弃。
+    Workflow { run_id: String, event: super::workflow::WorkflowEvent },
     /// 会话自主程度变化（`session/set_autonomy`）。
     AutonomyChanged { autonomy: SessionAutonomy },
     /// plan 模式变化（`session/plan_mode`，或计划批准退出 plan）。

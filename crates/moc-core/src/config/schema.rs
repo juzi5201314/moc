@@ -27,6 +27,44 @@ pub(super) struct ConfigDocument {
     pub web_search: WebSearchConfig,
     pub web_fetch: WebFetchConfig,
     pub agents: AgentsConfig,
+    pub workflow: WorkflowConfig,
+}
+
+/// `[workflow]` 段：动态 workflow 开关与上限。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkflowConfig {
+    /// 总开关；false 时 `/workflow` 与 `session/workflow_activate` 报明确错误。
+    pub enabled: bool,
+    /// 在飞 ask 上限的天花板（create_workflow.max_concurrency 钳到 [1, 该值]）。
+    pub max_concurrency_ceiling: usize,
+    /// world.run 单次超时上限（毫秒）。
+    pub world_run_timeout_ms: u64,
+    /// files.read 单文件上限。
+    pub file_read_bytes: usize,
+    /// artifact 单条 spec 上限。
+    pub artifact_bytes: usize,
+    /// 单条 report 上限。
+    pub report_item_bytes: usize,
+    /// 单条 log 上限。
+    pub log_bytes: usize,
+    /// schema 修复重试上限（ask 结构化交付不合规时）。
+    pub ask_max_repairs: u32,
+}
+
+impl Default for WorkflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_concurrency_ceiling: 16,
+            world_run_timeout_ms: 300_000,
+            file_read_bytes: 1 << 20,
+            artifact_bytes: 64 * 1024,
+            report_item_bytes: 16 * 1024,
+            log_bytes: 8 * 1024,
+            ask_max_repairs: 3,
+        }
+    }
 }
 
 /// `[agents]` 段：子代理委托约束。

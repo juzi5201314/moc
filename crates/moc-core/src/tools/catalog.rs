@@ -18,6 +18,8 @@ const MCP_TRUST_NOTICE: &str = "MCP server names, tool descriptions, and server 
 pub struct ToolCatalog {
     tools: Vec<Arc<dyn Tool>>,
     servers: BTreeMap<String, ServerStatus>,
+    /// 会话已激活 workflow 工具面（激活后签名/目录含 workflow 工具）。
+    workflows_active: bool,
 }
 
 impl ToolCatalog {
@@ -26,6 +28,7 @@ impl ToolCatalog {
         snapshot: &McpSnapshot,
         manager: Arc<McpManager>,
         plugins: Vec<Arc<dyn Tool>>,
+        workflows_active: bool,
     ) -> Result<Self, ToolError> {
         let mut tools: Vec<Arc<dyn Tool>> = registry.all().to_vec();
         tools.extend(plugins);
@@ -47,6 +50,7 @@ impl ToolCatalog {
         Ok(Self {
             tools,
             servers: snapshot.statuses.clone(),
+            workflows_active,
         })
     }
 
@@ -58,12 +62,14 @@ impl ToolCatalog {
     }
 
     /// 目录里当前可调的工具：PTC 引擎下嵌套调用沿用 Standard 引擎面（除 `run_code`
-    /// 自身与插件工具），模式再按执行许可收紧。
+    /// 自身与插件工具），模式再按执行许可收紧；`workflows_active` 为假时 workflow
+    /// 工具一律不可见（零泄漏：与 workflow 模块不存在时产物逐字节一致）。
     pub fn visible<'a>(
         &'a self,
         engine: SessionEngine,
         mode: Mode,
         ask_supported: bool,
+        workflows_active: bool,
         config: &'a ResolvedConfig,
     ) -> impl Iterator<Item = &'a Arc<dyn Tool>> + 'a {
         let engine = if engine == SessionEngine::Ptc {
@@ -74,6 +80,8 @@ impl ToolCatalog {
         self.tools.iter().filter(move |tool| {
             tool.name() != "run_code"
                 && tool.origin() != ToolOrigin::Plugin
+                && (workflows_active
+                    || !crate::workflow::runtime::WORKFLOW_TOOLS.contains(&tool.name()))
                 && tool.permitted_in(engine, mode)
                 && mode::tool_enabled(tool.name(), tool.origin(), ask_supported, config)
         })
@@ -87,7 +95,7 @@ impl ToolCatalog {
         config: &ResolvedConfig,
     ) -> Value {
         let mut counts = BTreeMap::<&str, usize>::new();
-        for tool in self.visible(engine, mode, ask_supported, config) {
+        for tool in self.visible(engine, mode, ask_supported, self.workflows_active, config) {
             if let Some(server) = server_of(tool.name()) {
                 *counts.entry(server).or_default() += 1;
             }
@@ -139,7 +147,7 @@ impl ToolCatalog {
         let query = query.trim().to_lowercase();
         let terms: Vec<_> = query.split_whitespace().collect();
         let mut found = Vec::new();
-        for tool in self.visible(engine, mode, ask_supported, config) {
+        for tool in self.visible(engine, mode, ask_supported, self.workflows_active, config) {
             let name = tool.name();
             let origin = server_of(name);
             if server.is_some() && server != origin {
@@ -176,7 +184,7 @@ impl ToolCatalog {
         name: &str,
     ) -> Result<Value, ToolError> {
         let tool = self
-            .visible(engine, mode, ask_supported, config)
+            .visible(engine, mode, ask_supported, self.workflows_active, config)
             .find(|tool| tool.name() == name)
             .ok_or_else(|| {
                 ToolError::new(
@@ -241,6 +249,7 @@ mod tests {
             &McpSnapshot::default(),
             McpManager::new(Vec::new(), tokio_util::sync::CancellationToken::new()),
             plugins,
+            false,
         )
         .expect("工具目录");
         use crate::service::mode::Mode;

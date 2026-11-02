@@ -774,6 +774,16 @@ pub fn allowed_tools(engine: SessionEngine) -> &'static [&'static str] {
             "run_code",
             "web_search",
             "web_fetch",
+            // workflow 工具面（仍受会话激活位过滤；只读模式不放行——全是写操作）。
+            "create_workflow",
+            "amend_workflow",
+            "resume_workflow_run",
+            "stop_workflow_run",
+            "fill_workflow_hole",
+            "save_workflow",
+            "list_saved_workflows",
+            "workflow_status",
+            "eval_workflow_snippet",
         ],
         SessionEngine::Ptc => &["run_code"],
     }

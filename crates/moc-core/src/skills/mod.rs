@@ -69,6 +69,11 @@ impl SkillIndex {
         }
         self.skills.insert(meta.name.clone(), meta);
     }
+
+    /// 内置 skill（不来自磁盘发现）：激活会话的索引按名覆盖插入。
+    pub(crate) fn insert_builtin(&mut self, meta: SkillMeta) {
+        self.insert(meta);
+    }
 }
 
 /// 已加载 skill 的会话内记账；`skill` 工具据此避免重复注入正文。

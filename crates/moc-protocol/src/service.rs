@@ -188,6 +188,72 @@ pub trait AgentService: Send + Sync + 'static {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 
+    // —— workflow：会话激活、审批与 run 查询控制 ——
+
+    fn session_workflow_activate(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowActivateParams,
+    ) -> impl Future<Output = Result<crate::SessionInfo, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_approve(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowApproveParams,
+    ) -> impl Future<Output = Result<crate::WorkflowAck, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_runs(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowRunsParams,
+    ) -> impl Future<Output = Result<crate::SessionWorkflowRunsResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_run(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowRunParams,
+    ) -> impl Future<Output = Result<crate::WorkflowRunSnapshot, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_stop(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowRunParams,
+    ) -> impl Future<Output = Result<crate::WorkflowRunSummary, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_resume(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowRunParams,
+    ) -> impl Future<Output = Result<crate::WorkflowRunSummary, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_set_role_model(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowSetRoleModelParams,
+    ) -> impl Future<Output = Result<crate::WorkflowAck, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn session_workflow_artifact(
+        &self,
+        _ctx: RequestContext,
+        _params: crate::SessionWorkflowArtifactParams,
+    ) -> impl Future<Output = Result<crate::WorkflowArtifactResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
     fn plugin_list(
         &self,
         ctx: RequestContext,

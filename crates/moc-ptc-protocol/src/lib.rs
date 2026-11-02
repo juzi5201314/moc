@@ -4,3 +4,6 @@ pub mod wire;
 
 /// 在 worker 的 QuickJS 上下文中求值的控制对象；宿主和 guest 的边界只在这里。
 pub const PRELUDE: &str = include_str!("prelude.js");
+
+/// workflow 模式（一个 run 独占一个 worker 进程）的控制对象。
+pub const WORKFLOW_PRELUDE: &str = include_str!("workflow_prelude.js");

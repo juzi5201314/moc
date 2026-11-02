@@ -54,6 +54,11 @@ impl SessionPaths {
     pub fn artifacts(&self) -> PathBuf {
         self.sidecar.join("artifacts")
     }
+
+    /// workflow run 目录：`<sidecar>/workflows/<run_id>/`（run.json/journal/script/artifacts）。
+    pub fn workflows(&self) -> PathBuf {
+        self.sidecar.join("workflows")
+    }
     pub fn compaction(&self) -> PathBuf {
         self.sidecar.join("compaction")
     }

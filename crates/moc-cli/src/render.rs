@@ -13,6 +13,11 @@ struct State {
     print_mode: bool,
     hide_thinking: bool,
     calls: HashMap<String, ToolCallView>,
+    /// workflow 审批回传用的连接句柄与会话（repl 启动后注入）。
+    client: Option<moc_protocol::ClientHandle>,
+    session_id: Option<String>,
+    /// 与主输入循环共用的 stdin 行通道（审批读行走它，不直接抢 stdin）。
+    input: Option<crate::repl::Input>,
 }
 
 struct ToolCallView {
@@ -27,7 +32,23 @@ impl Renderer {
             print_mode,
             hide_thinking,
             calls: HashMap::new(),
+            client: None,
+            session_id: None,
+            input: None,
         })))
+    }
+
+    /// repl 建立会话后注入 workflow 审批所需的回传通道与输入行通道。
+    pub fn bind_workflow(
+        &self,
+        client: moc_protocol::ClientHandle,
+        session_id: String,
+        input: crate::repl::Input,
+    ) {
+        let mut state = self.0.lock();
+        state.client = Some(client);
+        state.session_id = Some(session_id);
+        state.input = Some(input);
     }
 
     pub fn handle(&self, params: SessionUpdateParams) {
@@ -45,6 +66,87 @@ impl Renderer {
                 agent_id, status, ..
             } => {
                 let _ = writeln!(out, "\n[子代理 {agent_id}：{status:?}]");
+            }
+            SessionUpdate::Workflow { run_id, event } => {
+                use moc_protocol::methods::WorkflowEvent as E;
+                match event {
+                    E::ApprovalRequested { request } => {
+                        // 文本版编排图：phase 列表 + role 默认模型 + 命令集。
+                        let _ = writeln!(out, "\n[workflow 审批 {}]", request.request_id);
+                        if let Some(phases) = request.plan.get("phases").and_then(|p| p.as_array()) {
+                            for phase in phases {
+                                let name = phase.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let _ = writeln!(out, "  ↓ {name}");
+                            }
+                        }
+                        for (role, model) in &request.defaults.role_models {
+                            let _ = writeln!(out, "  role {role} → {model}");
+                        }
+                        for (id, model) in &request.defaults.model_ref_map {
+                            let _ = writeln!(out, "  model({id}) → {model}");
+                        }
+                        if let Some(commands) = request
+                            .plan
+                            .get("commands")
+                            .and_then(|c| c.as_array())
+                        {
+                            for command in commands {
+                                let text = command
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                let _ = writeln!(out, "  cmd {text}");
+                            }
+                        }
+                        if let Some(new) = &request.new_commands {
+                            for command in new {
+                                let _ = writeln!(out, "  +cmd {command}");
+                            }
+                        }
+                        let decision = workflow_decision_prompt(&mut out, state.input.clone());
+                        let client = self.0.lock().client.clone();
+                        if let Some((client, session_id)) = client.zip(self.0.lock().session_id.clone()) {
+                            let request_id = request.request_id.clone();
+                            tokio::spawn(async move {
+                                let _ = client
+                                    .call::<moc_protocol::methods::SessionWorkflowApprove>(
+                                        moc_protocol::methods::SessionWorkflowApproveParams {
+                                            session_id,
+                                            request_id,
+                                            decision,
+                                        },
+                                    )
+                                    .await;
+                            });
+                        }
+                    }
+                    E::ApprovalResolved { approved, .. } => {
+                        let _ = writeln!(out, "[workflow 审批：{}]", if approved { "已批准" } else { "已拒绝" });
+                    }
+                    E::RunStatus { status } => {
+                        let label = match status {
+                            moc_protocol::methods::WorkflowRunStatus::Completed => "completed",
+                            moc_protocol::methods::WorkflowRunStatus::Errored => "errored",
+                            moc_protocol::methods::WorkflowRunStatus::Running => "running",
+                            moc_protocol::methods::WorkflowRunStatus::Pending => "pending",
+                            moc_protocol::methods::WorkflowRunStatus::Stopped { .. } => "stopped",
+                        };
+                        let _ = writeln!(out, "[workflow {run_id}：{label}]");
+                    }
+                    E::PhaseEntered { phase } => {
+                        let _ = writeln!(out, "[workflow {run_id} phase → {phase}]");
+                    }
+                    E::Log { message, .. } => {
+                        let _ = writeln!(out, "[workflow {run_id}] {message}");
+                    }
+                    E::HoleOpened { name, .. } => {
+                        let _ = writeln!(out, "[workflow {run_id} hole 打开：{name}]");
+                    }
+                    E::HoleFilled { name } => {
+                        let _ = writeln!(out, "[workflow {run_id} hole 已填：{name}]");
+                    }
+                    E::Report { .. } | E::Artifact { .. } | E::NodeUpdated { .. } | E::Usage { .. } => {}
+                }
             }
             SessionUpdate::AgentMessage { meta, body } => {
                 let _ = writeln!(out, "\n[代理消息 ◀ {}：{body}]", meta.from_title);
@@ -334,5 +436,116 @@ fn plan_status_label(status: moc_protocol::methods::PlanStatus) -> &'static str 
         moc_protocol::methods::PlanStatus::Superseded => "已被取代",
         moc_protocol::methods::PlanStatus::Approved => "已批准",
         moc_protocol::methods::PlanStatus::Rejected => "已拒绝",
+    }
+}
+
+/// 行式 REPL 的审批输入：`y` 批准 / `n [反馈]` 拒绝 / `role=模型` 覆盖后再 y。
+/// 读行必须走与主循环同一个 stdin 行通道：直接 `stdin().read_line` 会和输入
+/// 读取线程抢行（行被 channel 先吃掉，审批永远等不到输入）。
+fn workflow_decision_prompt(
+    out: &mut impl std::io::Write,
+    input: Option<crate::repl::Input>,
+) -> moc_protocol::methods::WorkflowDecision {
+    use moc_protocol::methods::WorkflowDecision;
+    let mut role_models = std::collections::BTreeMap::new();
+    let Some(input) = input else {
+        return WorkflowDecision::Reject { feedback: None };
+    };
+    loop {
+        let _ = write!(out, "审批 [y/n/<role=模型>]：");
+        let _ = out.flush();
+        // handle() 在 runtime worker 上跑：直接 blocking_recv 会 panic——用
+        // block_in_place 让出 worker 再阻塞取行（repl 是 multi_thread）。
+        let line = match tokio::task::block_in_place(|| {
+            input.blocking_lock().blocking_recv()
+        }) {
+            Some(Ok(line)) => line,
+            _ => return WorkflowDecision::Reject { feedback: None },
+        };
+        match parse_workflow_decision(line.trim()) {
+            DecisionParse::Approve => {
+                return WorkflowDecision::Approve {
+                    role_models: (!role_models.is_empty()).then_some(role_models),
+                    model_ref_map: None,
+                };
+            }
+            DecisionParse::Reject(feedback) => {
+                return WorkflowDecision::Reject { feedback };
+            }
+            DecisionParse::Override(role, model) => {
+                role_models.insert(role, model);
+                let _ = writeln!(out, "已记录覆盖；再输入 y 批准。");
+            }
+        }
+    }
+}
+
+/// 审批行解析：`y|yes` / `n|no [反馈]` / `role=模型`。
+#[derive(Debug, PartialEq)]
+enum DecisionParse {
+    Approve,
+    Reject(Option<String>),
+    Override(String, String),
+}
+
+fn parse_workflow_decision(line: &str) -> DecisionParse {
+    if line == "y" || line == "yes" {
+        return DecisionParse::Approve;
+    }
+    if let Some(rest) = line.strip_prefix('n').map(str::trim)
+        && (line == "n" || line == "no" || line.starts_with("n ") || line.starts_with("no "))
+    {
+        return DecisionParse::Reject((!rest.is_empty()).then(|| rest.to_string()));
+    }
+    if let Some((role, model)) = line.split_once('=') {
+        let role = role.trim();
+        let model = model.trim();
+        if !role.is_empty() && !model.is_empty() {
+            return DecisionParse::Override(role.to_string(), model.to_string());
+        }
+    }
+    DecisionParse::Reject(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decision_line_parses() {
+        assert_eq!(parse_workflow_decision("y"), DecisionParse::Approve);
+        assert_eq!(
+            parse_workflow_decision("n too big"),
+            DecisionParse::Reject(Some("too big".into()))
+        );
+        assert_eq!(
+            parse_workflow_decision("n"),
+            DecisionParse::Reject(None)
+        );
+        assert_eq!(
+            parse_workflow_decision("planner=test/gpt-4"),
+            DecisionParse::Override("planner".into(), "test/gpt-4".into())
+        );
+    }
+
+    /// 审批读行走与主循环同一个 Input 行通道：喂进 channel 的行被审批消费，
+    /// 不需要触碰真实 stdin。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn decision_reads_from_shared_input_channel() {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let input: crate::repl::Input = Arc::new(tokio::sync::Mutex::new(rx));
+        tx.send(Ok("planner=test/gpt-4".to_string())).await.unwrap();
+        tx.send(Ok("y".to_string())).await.unwrap();
+        let mut out = Vec::new();
+        let decision = workflow_decision_prompt(&mut out, Some(input));
+        match decision {
+            moc_protocol::methods::WorkflowDecision::Approve { role_models, .. } => {
+                assert_eq!(
+                    role_models.and_then(|m| m.get("planner").cloned()).as_deref(),
+                    Some("test/gpt-4")
+                );
+            }
+            other => panic!("应批准：{other:?}"),
+        }
     }
 }

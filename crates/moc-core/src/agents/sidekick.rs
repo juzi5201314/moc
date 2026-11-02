@@ -129,6 +129,7 @@ async fn spawn_sidekick(
             preset: Some(preset::SIDEKICK_PRESET.to_owned()),
             context: None,
             output_schema: Some(preset::sidekick_report_schema()),
+            seed_entries: Vec::new(),
         },
     )
     .await

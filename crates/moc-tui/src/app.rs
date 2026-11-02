@@ -202,6 +202,8 @@ pub struct App {
     pub key_hits: Vec<crate::render::labels::KeyHit>,
     /// 输入框下边框左端提示（空闲「帮助」、运行中「停止」）的命中区。
     pub legend_tip_area: Rect,
+    /// workflow 胶囊命中区（活跃 run / 待审批徽标）。
+    pub workflow_capsule_area: Rect,
     /// 聚焦子代理时头部「Esc 返回」的命中区。
     pub header_back_area: Rect,
     /// 计划审阅中的执行模型文本命中区。
@@ -342,6 +344,8 @@ pub struct App {
     pub focused: Option<FocusedAgent>,
     /// 返回主会话时要还原的输入草稿与滚动偏移。
     pub focus_restore: Option<(String, usize)>,
+    /// workflow 状态栏胶囊：待审批数与活跃 run。
+    pub workflow: crate::workflow::WorkflowCapsule,
     /// 双击 `←` 返回的第一次按键时刻。
     pub left_tap_pending: Option<std::time::Instant>,
     pub queues: HashMap<String, std::collections::VecDeque<crate::queue::QueuedPrompt>>,
@@ -514,6 +518,7 @@ impl App {
             modal_card_area: Rect::default(),
             key_hits: Vec::new(),
             legend_tip_area: Rect::default(),
+            workflow_capsule_area: Rect::default(),
             header_back_area: Rect::default(),
             plan_model_area: Rect::default(),
             plan_body_area: Rect::default(),
@@ -586,6 +591,7 @@ impl App {
             subagent_selected: None,
             focused: None,
             focus_restore: None,
+            workflow: crate::workflow::WorkflowCapsule::default(),
             left_tap_pending: None,
             subagent_area: Rect::default(),
             subagent_hits: Vec::new(),

@@ -76,6 +76,8 @@ pub struct SessionState {
     pub engine: SessionEngine,
     /// plan 模式：与引擎正交的持久执行模式，回放自 `PlanMode` / `EngineChange` entry。
     pub plan_active: bool,
+    /// workflow 工具面是否激活（`session/workflow_activate` 后持久化恢复）。
+    pub workflow_activated: bool,
     pub permission: SessionPermission,
     pub model: String,
     /// plan 模式临时覆盖前的会话模型，退出 plan 时恢复。它随 transcript 重放，
@@ -155,6 +157,7 @@ impl SessionState {
             transcript_token_counts: Vec::new(),
             engine: engine.engine(),
             plan_active: engine.legacy_enters_plan(),
+            workflow_activated: false,
             permission: *permission,
             model: model.clone(),
             // 以 plan 创建（旧持久模式或会话恢复）时，header 记录的就是会话自身模型。
@@ -333,6 +336,9 @@ impl SessionState {
                 }
                 self.plan_active = *active;
                 self.session.plan_active = *active;
+            }
+            Entry::WorkflowActivated { active, .. } => {
+                self.workflow_activated = *active;
             }
             Entry::PermissionChange { permission, .. } => {
                 self.permission = *permission;

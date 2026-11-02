@@ -407,6 +407,14 @@ pub enum ModelTarget {
         /// 最终应用 `fusion:lead+sidekick` 的目标。
         origin: Box<ModelTarget>,
     },
+    /// workflow role 的模型选择：来源不同回写不同——审批窗写覆盖表，
+    /// run 面板调用 `session/workflow_set_role_model`。
+    WorkflowRole {
+        /// 目标标识：role_id 或 model() ref_id。
+        key: crate::workflow::FocusTarget,
+        /// 选择后还原的 modal 状态（装箱收窄：审批状态比常规 target 大）。
+        back: Box<crate::workflow::WorkflowRoleBack>,
+    },
 }
 
 /// `Modal::Fusion` 的一侧槽位。
@@ -1166,6 +1174,19 @@ pub enum Modal {
         /// 待确认删除的任务索引（需要按 x 两次）。
         pending_kill: Option<usize>,
     },
+    /// workflow 审批：phase 分层图 + role 模型覆盖 + 命令集 + 脚本/差异。
+    WorkflowApproval {
+        state: Box<crate::workflow::WorkflowApprovalState>,
+    },
+    /// workflow run 列表（/workflows）：选中后打开 run 面板。
+    WorkflowRuns {
+        runs: Vec<moc_protocol::methods::WorkflowRunSummary>,
+        picker: PickerState,
+    },
+    /// workflow run 面板：实时着色图 + role 模型热改 + reports/artifacts/log/hole/停止。
+    WorkflowRun {
+        state: Box<crate::workflow::WorkflowRunState>,
+    },
 }
 /// 回复通道的错误类型别名（协议层 RpcError 的重导出位置）。
 type RpcErrorOf = moc_protocol::RpcError;
@@ -1214,6 +1235,15 @@ impl Modal {
             Modal::ContextContent { .. } => "上下文内容".into(),
             Modal::Jobs { .. } => "后台任务".into(),
             Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
+            Modal::WorkflowApproval { state } => match state.request.kind {
+                moc_protocol::methods::WorkflowApprovalKind::Amend => "workflow 审批：amend".into(),
+                moc_protocol::methods::WorkflowApprovalKind::HoleFill => {
+                    "workflow 审批：hole 填充".into()
+                }
+                _ => "workflow 审批".into(),
+            },
+            Modal::WorkflowRuns { .. } => "workflow runs".into(),
+            Modal::WorkflowRun { state } => format!("run 面板：{}", state.title),
         }
     }
 
@@ -1250,6 +1280,21 @@ impl Modal {
             Modal::Help { .. } | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
             Modal::Jobs { jobs, .. } => jobs.len(),
             Modal::SwitchModel { .. } => 2,
+            Modal::WorkflowApproval { state } => state.rows(),
+            Modal::WorkflowRuns { runs, picker } => runs
+                .iter()
+                .filter(|run| {
+                    let query = picker.query.to_lowercase();
+                    run.run_id.to_lowercase().contains(&query)
+                        || run
+                            .title
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&query)
+                })
+                .count(),
+            Modal::WorkflowRun { state } => state.roles.len(),
         }
     }
 
@@ -1302,9 +1347,16 @@ impl Modal {
             Modal::Fusion { focus, .. } => {
                 *focus = (*focus as i32 + delta).rem_euclid(3) as usize;
             }
+            Modal::WorkflowApproval { state } => {
+                state.focus = (state.focus as i32 + delta).clamp(0, count as i32 - 1) as usize;
+            }
+            Modal::WorkflowRun { state } => {
+                state.focus = (state.focus as i32 + delta).clamp(0, count as i32 - 1) as usize;
+            }
             Modal::Model { picker, .. }
             | Modal::Sessions { picker, .. }
-            | Modal::Subagents { picker, .. } => {
+            | Modal::Subagents { picker, .. }
+            | Modal::WorkflowRuns { picker, .. } => {
                 picker.move_selection(delta, count, 8);
             }
         }

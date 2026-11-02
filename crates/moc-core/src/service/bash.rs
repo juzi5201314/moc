@@ -43,7 +43,12 @@ pub(super) async fn run(
         .map_err(protocol_to_rpc)?;
     let started = Instant::now();
     let cancel = ctx.cancel();
-    let skills = inner.project_skills(&cwd).map_err(to_rpc)?;
+    let skills = {
+        let state = record.state.lock().await;
+        inner
+            .session_skills(&cwd, state.workflow_activated && !state.session.is_subagent())
+            .map_err(to_rpc)?
+    };
     let outcome = crate::tools::bash::run_manual(
         params.command.command.clone(),
         cwd,

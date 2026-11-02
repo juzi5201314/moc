@@ -6,6 +6,10 @@ fn main() -> anyhow::Result<()> {
     if argv.get(1).is_some_and(|arg| arg == "--ptc-worker") {
         return moc_ptc_worker::run_stdio().map_err(anyhow::Error::msg);
     }
+    // workflow run 的独立 worker：一个 run 独占一个进程。
+    if argv.get(1).is_some_and(|arg| arg == "--workflow-worker") {
+        return moc_ptc_worker::run_workflow_stdio().map_err(anyhow::Error::msg);
+    }
     if argv.get(1).is_some_and(|arg| arg == "update") {
         if argv.len() > 3 {
             anyhow::bail!("用法: moc update [版本]");

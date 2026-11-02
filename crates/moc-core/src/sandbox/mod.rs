@@ -468,6 +468,45 @@ pub(crate) fn wrap_command(
     }
 }
 
+/// `world.run` 的 argv 直跑包装：Full 模式原样返回 argv，沙箱模式由 runner 以
+/// argv 包裹——参数不经 shell，引号/`$(...)`/`;` 原样到达子进程。
+pub(crate) fn wrap_command_argv(
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    policy: &SandboxPolicy,
+) -> Result<WrappedCommand, ToolError> {
+    let mut tail = Vec::with_capacity(args.len() + 1);
+    tail.push(OsString::from(command));
+    tail.extend(args.iter().map(OsString::from));
+    if policy.mode == SessionPermission::Full {
+        return Ok(WrappedCommand {
+            program: tail.remove(0),
+            args: tail,
+            envs: Vec::new(),
+            scratch: None,
+            overlay_work: None,
+        });
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::wrap_argv(tail, cwd, policy)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = cwd;
+        macos::wrap_argv(tail, policy)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (tail, cwd);
+        Err(ToolError::new(
+            "E_SANDBOX_UNAVAILABLE",
+            "this platform has no OS sandbox runner",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
