@@ -16,8 +16,7 @@ use wiremock::{
 
 #[tokio::test]
 async fn ptc_run_code_executes_worker_in_normal_mode() {
-    if std::env::var_os("MOC_TEST_BIN").is_none() {
-        eprintln!("skip PTC flow: set MOC_TEST_BIN to the moc binary (cargo build -p moc-cli)");
+    if !support::require_moc_bin("PTC flow") {
         return;
     }
     let upstream = MockServer::builder().start().await;

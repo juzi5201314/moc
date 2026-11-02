@@ -75,4 +75,4 @@ moc 的动态 workflow 让模型把一个多阶段协作过程写成一段 TypeS
 
 ## 测试
 
-workflow 集成测试需要真实 worker 进程：`MOC_TEST_BIN=$PWD/target/debug/moc cargo test -p moc-core --test integration workflow_flow`（未导出时按 ptc_flow 惯例 skip）。
+workflow 集成测试需要真实 worker 进程：`cargo test -p moc-core --test integration workflow_flow`。测试支持库按 `MOC_TEST_BIN` → `CARGO_BIN_EXE_moc` → `target/debug/moc` → 自动 `cargo build -p moc-cli` 的顺序解析二进制，常规开发目录下无需手动设置环境变量。

@@ -635,15 +635,9 @@ async fn interrupted_run_marked_on_load() {
     harness.close().await;
 }
 
-// —— A3 扩展 ——
-
-/// ptc_flow 的 skip 约定：worker 需要 MOC_TEST_BIN 指向 moc 可执行文件。
+/// 需要 moc 二进制的测试入口守卫（解析逻辑见 `support::require_moc_bin`）。
 fn require_moc_bin() -> bool {
-    if std::env::var_os("MOC_TEST_BIN").is_none() {
-        eprintln!("skip workflow flow: set MOC_TEST_BIN to the moc binary (cargo build -p moc-cli)");
-        return false;
-    }
-    true
+    support::require_moc_bin("workflow flow")
 }
 
 /// run 目录（sidecar/workflows/<run_id>）。

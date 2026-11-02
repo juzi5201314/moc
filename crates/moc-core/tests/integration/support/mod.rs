@@ -68,9 +68,9 @@ impl Harness {
                 overlays: vec![],
                 session_dir: Some(root.path().join("sessions")),
                 client: moc_llm::Client::new(),
-                // PTC worker 内嵌在 moc 中：测试通过 MOC_TEST_BIN 指向 moc 可执行文件。
-                ptc_worker: std::env::var_os("MOC_TEST_BIN").map(|program| PtcWorkerCommand {
-                    program: program.into(),
+                // PTC/workflow worker 内嵌在 moc 中：需要 moc 可执行文件路径。
+                ptc_worker: moc_test_bin().map(|program| PtcWorkerCommand {
+                    program,
                     args: vec!["--ptc-worker".into()],
                 }),
             },
@@ -116,8 +116,8 @@ impl Harness {
                 overlays: vec![],
                 session_dir: Some(root.path().join("sessions")),
                 client: moc_llm::Client::new(),
-                ptc_worker: std::env::var_os("MOC_TEST_BIN").map(|program| PtcWorkerCommand {
-                    program: program.into(),
+                ptc_worker: moc_test_bin().map(|program| PtcWorkerCommand {
+                    program,
                     args: vec!["--ptc-worker".into()],
                 }),
             },
@@ -423,4 +423,53 @@ pub async fn transcript_entries(
         .expect("查找会话")
         .expect("会话已落盘");
     store.read_entries(&paths).await.expect("读取 JSONL")
+}
+
+/// moc 可执行文件路径：PTC/workflow worker 由测试宿主以子进程拉起，需要真二进制。
+///
+/// 解析顺序：`MOC_TEST_BIN` → `CARGO_BIN_EXE_moc`（moc-cli 自身测试时由 cargo 注入）
+/// → `<target>/debug/moc` 现成产物 → `cargo build -p moc-cli --bin moc` 构建一次。
+/// 都失败返回 None，测试按惯例 skip。
+pub fn moc_test_bin() -> Option<std::path::PathBuf> {
+    use std::sync::OnceLock;
+    static BIN: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    BIN.get_or_init(|| {
+        if let Some(p) = std::env::var_os("MOC_TEST_BIN").map(std::path::PathBuf::from) {
+            return Some(p);
+        }
+        if let Some(p) = option_env!("CARGO_BIN_EXE_moc").map(std::path::PathBuf::from) {
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        // 工作区根 = crates/moc-core 的上两级；尊重 CARGO_TARGET_DIR。
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)?
+            .to_path_buf();
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| root.join("target"));
+        let bin = target.join("debug").join(if cfg!(windows) { "moc.exe" } else { "moc" });
+        if bin.exists() {
+            return Some(bin);
+        }
+        let built = std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .args(["build", "-p", "moc-cli", "--bin", "moc"])
+            .current_dir(&root)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        (built && bin.exists()).then_some(bin)
+    })
+    .clone()
+}
+
+/// 需要 moc 二进制的测试入口守卫：解析不到时打印原因并跳过。
+pub fn require_moc_bin(suite: &str) -> bool {
+    if moc_test_bin().is_none() {
+        eprintln!("skip {suite}: 无法定位 moc 可执行文件（设 MOC_TEST_BIN 或先 cargo build -p moc-cli）");
+        return false;
+    }
+    true
 }
