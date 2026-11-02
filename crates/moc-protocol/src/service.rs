@@ -33,7 +33,9 @@ use crate::methods::{
     BtwParams, BtwResult, BtwUpdate, BtwUpdateMethod, BtwUpdateParams, ChartAnalyzeParams,
     ChartAnalyzeResult, CompactResult, ConfigGetParams, ConfigGetResult, ContextContentResult,
     ContextUsageResult, Empty, FsCreateDirParams, FsCreateDirResult, FsListDirParams,
-    FsListDirResult, InitializeParams, InitializeResult, PermissionRequestParams, PermissionResult,
+    FsListDirResult, InitializeParams, InitializeResult, JobListParams, JobListResult,
+    JobOutputParams, JobOutputResult, JobResult, JobTarget, PermissionRequestParams,
+    PermissionResult,
     PluginListParams, PluginListResult, PluginReloadParams, PluginReloadResult,
     PluginRunCommandParams, PluginRunCommandResult, PromptParams, PromptResult,
     ResourceCompleteParams, ResourceCompleteResult, SessionCompactParams,
@@ -142,6 +144,40 @@ pub trait AgentService: Send + Sync + 'static {
         _ctx: RequestContext,
         _params: AgentStopParams,
     ) -> impl Future<Output = Result<AgentStopResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn job_list(
+        &self,
+        _ctx: RequestContext,
+        _params: JobListParams,
+    ) -> impl Future<Output = Result<JobListResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    fn job_output(
+        &self,
+        _ctx: RequestContext,
+        _params: JobOutputParams,
+    ) -> impl Future<Output = Result<JobOutputResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 终止任务的进程组并等它退出。
+    fn job_kill(
+        &self,
+        _ctx: RequestContext,
+        _params: JobTarget,
+    ) -> impl Future<Output = Result<JobResult, RpcError>> + Send {
+        async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
+    }
+
+    /// 把前台任务转入后台；已在后台的任务原样返回。
+    fn job_background(
+        &self,
+        _ctx: RequestContext,
+        _params: JobTarget,
+    ) -> impl Future<Output = Result<JobResult, RpcError>> + Send {
         async { Err(RpcError::of(crate::RpcErrorCode::NotSupported)) }
     }
 

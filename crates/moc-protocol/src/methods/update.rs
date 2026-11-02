@@ -278,13 +278,19 @@ pub enum SessionUpdate {
         /// 失败原因。
         message: String,
     },
-    /// 后台任务结束。
-    JobFinished {
+    /// 一条 bash 命令开始运行并登记为任务（前台命令同样登记，`origin=foreground`）。
+    JobStarted { job: super::job::JobInfo },
+    /// 任务的非终态变化：转入后台、开始/结束停滞、正在终止。
+    JobUpdated { job: super::job::JobInfo },
+    /// 运行中任务的最新输出尾部；每个任务最多每秒一条，只在有新输出时发送。
+    JobOutput {
         job_id: String,
-        command: String,
-        exit_code: Option<i32>,
-        log_path: String,
+        tool_call_id: String,
+        /// 最后几行输出（整段替换，不是增量）。
+        tail: String,
     },
+    /// 任务结束；`job.status` 为终态。
+    JobFinished { job: super::job::JobInfo },
     /// 工作区发生变化。
     WorkspaceChanged {
         violation: bool,
@@ -682,13 +688,12 @@ mod tests {
                 json!({ "type": "context_compaction_failed", "message": "上游不可用" }),
             ),
             (
-                SessionUpdate::JobFinished {
+                SessionUpdate::JobOutput {
                     job_id: "job_1".into(),
-                    command: "cargo test".into(),
-                    exit_code: Some(0),
-                    log_path: "/tmp/job.log".into(),
+                    tool_call_id: "call_1".into(),
+                    tail: "Compiling moc".into(),
                 },
-                json!({ "type": "job_finished", "job_id": "job_1", "command": "cargo test", "exit_code": 0, "log_path": "/tmp/job.log" }),
+                json!({ "type": "job_output", "job_id": "job_1", "tool_call_id": "call_1", "tail": "Compiling moc" }),
             ),
             (
                 SessionUpdate::WorkspaceChanged {

@@ -178,6 +178,8 @@ pub enum AppEvent {
     ImageEncoded {
         key: crate::render::image::ImageKey,
     },
+    /// 打开后台任务列表弹窗。
+    OpenJobsModal(Vec<moc_protocol::methods::JobInfo>),
 }
 
 /// 剪贴板粘贴载荷：图片以 base64 承载，文本内联。

@@ -774,6 +774,8 @@ impl App {
             duration_ms: None,
             running: true,
             progress: None,
+            job_id: None,
+            live_output: None,
             images: Vec::new(),
         })));
         self.tool_indices.insert(id, index);
@@ -824,6 +826,8 @@ impl App {
                 duration_ms,
                 running: false,
                 progress: None,
+                job_id: None,
+                live_output: None,
                 // 正常路径在 `Entry::finish_tool` 里填；这条兜底分支不能把图丢掉
                 images: crate::transcript::ToolImage::from_sources(result.images),
             })));
@@ -918,6 +922,8 @@ impl App {
             duration_ms: None,
             running: false,
             progress: None,
+            job_id: None,
+            live_output: None,
             images: Vec::new(),
         }));
     }
@@ -935,6 +941,20 @@ impl App {
             tool.progress = Some(rows);
             entry.touch();
         }
+    }
+
+    /// 统计后台运行中的任务数量。
+    pub fn background_job_count(&self) -> usize {
+        self.blocks
+            .iter()
+            .filter(|entry| {
+                if let Block::Tool(tool) = &entry.block {
+                    tool.running && tool.job_id.is_some()
+                } else {
+                    false
+                }
+            })
+            .count()
     }
 
     /// 追加一条用户消息。
@@ -1848,6 +1868,8 @@ mod detail_control_tests {
             running: false,
             progress: None,
             images: Vec::new(),
+            job_id: None,
+            live_output: None,
         })
     }
 

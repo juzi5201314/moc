@@ -5,6 +5,7 @@ import { ComposerBar } from "@/components/chat/composer-bar";
 import { SessionHeader } from "@/components/chat/session-header";
 import { WelcomeView } from "@/components/chat/welcome";
 import { CommandPalette } from "@/components/dialogs/command-palette";
+import { JobsDialog } from "@/components/dialogs/jobs-dialog";
 import { WorkspacePicker } from "@/components/dialogs/workspace-picker";
 import { AppFrame } from "@/components/layout/AppFrame";
 import { InspectorPanel } from "@/components/panels/inspector-panel";
@@ -18,12 +19,15 @@ import { rpc } from "@/protocol/client";
 import { createQuickSession } from "@/store/lifecycle";
 import { useTabs } from "@/store/tabs";
 import { useTranscript } from "@/store/transcript";
+import { useUi } from "@/store/ui";
 import "@/store/connection";
 import "@/store/dispatch";
 
 export function App() {
   useThemeSync();
   useGlobalShortcuts();
+
+  const jobsSession = useUi((state) => state.jobsSession);
 
   const active = useTabs((state) => state.active);
   const sessionId = active ?? "draft-session";
@@ -67,6 +71,15 @@ export function App() {
       <WorkspacePicker />
       <SettingsDialog />
       <CommandPalette />
+      {jobsSession && (
+        <JobsDialog
+          sessionId={jobsSession}
+          open
+          onOpenChange={(open) => {
+            if (!open) useUi.getState().set({ jobsSession: null });
+          }}
+        />
+      )}
       <Toaster />
     </TooltipProvider>
   );

@@ -384,7 +384,7 @@ function AssistantTurn({
   const renderSegment = (segment: Segment, index: number): ReactNode => {
     switch (segment.kind) {
       case "activity":
-        return <ActivityGroup key={segment.id} blocks={segment.blocks} live={live} />;
+        return <ActivityGroup key={segment.id} blocks={segment.blocks} live={live} sessionId={context.sessionId} />;
       case "text":
         return (
           <MessageResponse key={segment.id} isAnimating={live && index === segments.length - 1}>

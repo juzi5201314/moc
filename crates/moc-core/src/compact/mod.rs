@@ -669,7 +669,7 @@ async fn append_runtime_checkpoint(
         HistoryArchive::Write => archive::write(&record.paths, &state).await?,
         HistoryArchive::Precomputed(uri) => uri,
     };
-    let jobs = inner.runtime(session_id).await.jobs.list().await;
+    let jobs = inner.runtime(session_id).await.jobs.background();
     if archive_uri.is_none() && state.todos.is_empty() && jobs.is_empty() {
         return Ok(());
     }
@@ -691,23 +691,18 @@ async fn append_runtime_checkpoint(
             summary.push('\n');
         }
         for job in jobs {
-            let status = match job.status {
-                crate::tools::job::JobStatus::Running => "running",
-                crate::tools::job::JobStatus::Finished(Some(0)) => "finished(0)",
-                crate::tools::job::JobStatus::Finished(Some(_)) => "finished(nonzero)",
-                crate::tools::job::JobStatus::Finished(None) => "finished",
-                crate::tools::job::JobStatus::Killing => "killing",
-                crate::tools::job::JobStatus::Killed => "killed",
-                crate::tools::job::JobStatus::TimedOut => "timed_out",
-                crate::tools::job::JobStatus::OutputLimited => "output_limited",
-            };
-            let lifecycle = match job.lifecycle {
-                crate::tools::job::JobLifecycle::Monitored => "monitored",
-                crate::tools::job::JobLifecycle::Persistent => "persistent",
+            let status = match job.exit_code {
+                Some(code) => format!("{}({code})", crate::tools::job::wire(job.status)),
+                None => crate::tools::job::wire(job.status),
             };
             summary.push_str(&format!(
-                "Background job {} [{} lifecycle={} origin={:?} warnings={}]: {}\n",
-                job.id, status, lifecycle, job.origin, job.warning_count, job.command
+                "Background job {} [{} lifecycle={} origin={} stalled={}]: {}\n",
+                job.job_id,
+                status,
+                crate::tools::job::wire(job.lifecycle),
+                crate::tools::job::wire(job.origin),
+                job.stalled,
+                job.command
             ));
         }
         summary.push_str("</compaction-runtime>");

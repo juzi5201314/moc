@@ -23,7 +23,7 @@ import { useConnection } from "./connection";
 import { usePrefs } from "./prefs";
 import { type DraftSession, useSessions } from "./sessions";
 import { useTabs } from "./tabs";
-import { useTranscript } from "./transcript";
+import { refreshJobs, useTranscript } from "./transcript";
 import { requestComposerFocus } from "./ui";
 
 const PAGE_SIZE = 80;
@@ -100,6 +100,7 @@ async function loadSession(sessionId: string, requestedReadOnly: boolean): Promi
     view.plans = loaded.plans ?? page.plans ?? [];
   });
   useSessions.getState().upsert(page.session);
+  void refreshJobs(sessionId).catch(() => undefined);
   void refreshSideData(sessionId);
 }
 

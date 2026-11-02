@@ -13,11 +13,12 @@ import {
   interruptLive,
   type SessionView,
 } from "@/lib/transcript-model";
-import { rpc } from "@/protocol/client";
+import { clientListeners, rpc } from "@/protocol/client";
 import type {
   AskParams,
   AskResult,
   ImageSource,
+  JobListResult,
   PermissionRequestParams,
   PermissionResult,
   SessionInfo,
@@ -113,6 +114,48 @@ rpc.on("session/update", (params: SessionUpdateParams) => {
       if (view) applyUpdate(view, update);
     }),
   );
+});
+
+export async function refreshJobs(sessionId: string): Promise<void> {
+  const result = await rpc.call<JobListResult>("job/list", { session_id: sessionId });
+  useTranscript.setState(
+    produce((state: TranscriptState) => {
+      const view = state.bySession[sessionId];
+      if (!view) return;
+      view.jobs = Object.fromEntries(result.jobs.map((job) => [job.job_id, job]));
+      for (const job of result.jobs) applyUpdate(view, { type: "job_updated", job });
+    }),
+  );
+  await Promise.all(
+    result.jobs
+      .filter((job) => job.status === "running" || job.status === "killing")
+      .map(async (job) => {
+        const output = await rpc.call<{ text: string }>("job/output", {
+          session_id: sessionId,
+          job_id: job.job_id,
+          tail_lines: 20,
+        });
+        useTranscript.setState(
+          produce((state: TranscriptState) => {
+            const view = state.bySession[sessionId];
+            if (view) {
+              applyUpdate(view, {
+                type: "job_output",
+                job_id: job.job_id,
+                tool_call_id: job.tool_call_id,
+                tail: output.text,
+              });
+            }
+          }),
+        );
+      }),
+  );
+}
+
+clientListeners.ready.add(() => {
+  for (const sessionId of Object.keys(useTranscript.getState().bySession)) {
+    void refreshJobs(sessionId).catch(() => undefined);
+  }
 });
 
 // ---------- 反向请求 ----------

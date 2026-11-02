@@ -35,6 +35,7 @@ use crate::message::{Notification, Request};
 use crate::method::Method;
 use crate::methods::{
     AgentList, AgentMessage, AgentSpawn, AgentStop, AgentWait, BtwCancelResult, BtwUpdate,
+    JobBackground, JobKill, JobList, JobReadOutput,
     ChartAnalyze, ClientInfo, ConfigGet, ConfigManage, FsCreateDir, FsListDir, Initialize, Ping,
     PingResult, PluginList, PluginReload, PluginRunCommand, PromptParams, ResourceComplete,
     SessionBash, SessionBtw, SessionBtwCancel, SessionCancel, SessionCancelResult, SessionCompact,
@@ -1001,6 +1002,42 @@ impl<S: AgentService> ServerDispatch<S> {
                     self.server
                         .service
                         .agent_wait(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <JobList as Method>::NAME => {
+                let params = params_from_value::<JobList>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .job_list(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <JobReadOutput as Method>::NAME => {
+                let params = params_from_value::<JobReadOutput>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .job_output(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <JobKill as Method>::NAME => {
+                let params = params_from_value::<JobKill>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .job_kill(self.context(client, cancel), params)
+                        .await?,
+                )
+            }
+            <JobBackground as Method>::NAME => {
+                let params = params_from_value::<JobBackground>(params)?;
+                value_from(
+                    self.server
+                        .service
+                        .job_background(self.context(client, cancel), params)
                         .await?,
                 )
             }

@@ -20,7 +20,8 @@ import {
   SquareTerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { toolBody } from "@/components/chat/tool-views";
 import { DiffStat, diffStats } from "@/components/panels/diff-file";
@@ -41,7 +42,8 @@ import {
 import type { Block, ToolBlock } from "@/lib/transcript-model";
 import { type ActivityKind, activityKind, activitySnippet, activityVerb } from "@/lib/turn";
 import { cn } from "@/lib/utils";
-import type { ImageSource } from "@/protocol/types";
+import { rpc } from "@/protocol/client";
+import type { ImageSource, JobResult } from "@/protocol/types";
 import { usePrefs } from "@/store/prefs";
 
 const KIND_ICON: Record<ActivityKind, ReactNode> = {
@@ -79,6 +81,16 @@ function Duration({ ms }: { ms?: number }) {
   return <span className="text-2xs tabular-nums text-text-tertiary">{formatDuration(ms)}</span>;
 }
 
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
 /** 标题行：图标 · 动作 · 对象 · 次级范围 · 尾注；可展开时整行可点。 */
 function RowHeader({
   icon,
@@ -88,6 +100,7 @@ function RowHeader({
   mono,
   failed,
   suffix,
+  action,
   interactive,
   open,
   pulse,
@@ -100,6 +113,7 @@ function RowHeader({
   mono?: boolean;
   failed?: boolean;
   suffix?: ReactNode;
+  action?: ReactNode;
   interactive: boolean;
   open: boolean;
   pulse?: boolean;
@@ -139,6 +153,7 @@ function RowHeader({
           </span>
         )}
       </span>
+      {action}
       <span className="flex shrink-0 items-center gap-1.5">
         {suffix}
         {interactive && (
@@ -247,12 +262,18 @@ function ReasoningRow({
 
 // ---------- 工具 ----------
 
-function toolSuffix(tool: ToolBlock, stat?: string, statError?: boolean): ReactNode {
+function toolSuffix(tool: ToolBlock, stat?: string, statError?: boolean, now = Date.now()): ReactNode {
   if (tool.status === "running") {
-    return tool.awaitingPermission ? (
-      <span className="text-2xs text-warn">等待授权</span>
-    ) : (
-      <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
+    const elapsed = tool.job?.started_at_ms ? now - tool.job.started_at_ms : undefined;
+    return (
+      <>
+        {tool.awaitingPermission ? (
+          <span className="text-2xs text-warn">等待授权</span>
+        ) : (
+          <Loader2Icon className="size-3 animate-spin text-text-tertiary" />
+        )}
+        <Duration ms={elapsed} />
+      </>
     );
   }
   if (tool.status === "denied") return <span className="text-2xs text-warn">已拒绝</span>;
@@ -285,14 +306,30 @@ function toolSuffix(tool: ToolBlock, stat?: string, statError?: boolean): ReactN
   );
 }
 
-function ToolRow({ tool, axis }: { tool: ToolBlock; axis: DetailLevel }) {
+function ToolRow({
+  tool,
+  axis,
+  sessionId,
+}: {
+  tool: ToolBlock;
+  axis: DetailLevel;
+  sessionId: string;
+}) {
   const [level, setLevel] = useState(axis);
+  const now = useNow(tool.status === "running" && Boolean(tool.job));
   const headline = toolHeadline(tool);
   const failed = toolFailed(tool);
-  const interactive = Boolean(tool.result || tool.diff || tool.arguments.trim());
+  const interactive = Boolean(tool.result || tool.liveOutput || tool.diff || tool.arguments.trim());
   const toggle = () => setLevel(toggledLevel(axis, level));
   const body = toolBody(tool, level, () => setLevel("full"));
   const extras = level !== "hidden" && (tool.images.length > 0 || Boolean(tool.progress?.length));
+  const canBackground = tool.job?.origin === "foreground" && tool.job.status === "running";
+  const background = () => {
+    if (!tool.job) return;
+    void rpc
+      .call<JobResult>("job/background", { session_id: sessionId, job_id: tool.job.job_id })
+      .catch((error) => toast.error(`转后台失败：${error instanceof Error ? error.message : String(error)}`));
+  };
   return (
     <div>
       <RowHeader
@@ -302,7 +339,29 @@ function ToolRow({ tool, axis }: { tool: ToolBlock; axis: DetailLevel }) {
         scope={headline.scope}
         mono={headline.mono}
         failed={failed}
-        suffix={toolSuffix(tool, headline.stat, headline.statError)}
+        suffix={toolSuffix(tool, headline.stat, headline.statError, now)}
+        action={
+          canBackground ? (
+            <span
+              role="button"
+              tabIndex={0}
+              className="rounded px-1 text-2xs text-brand hover:bg-brand/10"
+              onClick={(event) => {
+                event.stopPropagation();
+                background();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  background();
+                }
+              }}
+            >
+              转后台
+            </span>
+          ) : undefined
+        }
         interactive={interactive}
         open={level === "full"}
         onToggle={toggle}
@@ -316,7 +375,7 @@ function ToolRow({ tool, axis }: { tool: ToolBlock; axis: DetailLevel }) {
       {tool.children.length > 0 && (
         <div className="ml-[13px] border-l border-border pl-2.5">
           {tool.children.map((child) => (
-            <ToolRow key={`${child.id}:${axis}`} tool={child} axis={axis} />
+            <ToolRow key={`${child.id}:${axis}`} tool={child} axis={axis} sessionId={sessionId} />
           ))}
         </div>
       )}
@@ -419,10 +478,12 @@ function ToolGroupRow({
   name,
   tools,
   axis,
+  sessionId,
 }: {
   name: string;
   tools: ToolBlock[];
   axis: DetailLevel;
+  sessionId: string;
 }) {
   const failedCount = tools.filter(toolFailed).length;
   const [open, setOpen] = useState(axis === "full" || failedCount > 0);
@@ -461,7 +522,7 @@ function ToolGroupRow({
       {open && (
         <div className="ml-[13px] border-l border-border pl-2.5">
           {tools.map((tool) => (
-            <ToolRow key={`${tool.id}:${axis}`} tool={tool} axis={axis} />
+            <ToolRow key={`${tool.id}:${axis}`} tool={tool} axis={axis} sessionId={sessionId} />
           ))}
         </div>
       )}
@@ -479,12 +540,16 @@ function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
     toolCallId: block.toolCallId ?? block.id,
     name: "bash",
     arguments: JSON.stringify({ command: block.command }),
-    status: block.output === undefined ? "running" : block.isError ? "error" : "completed",
-    result: block.output,
+    status:
+      block.output === undefined && !block.job?.status?.includes("exited") ? "running" : block.isError ? "error" : "completed",
+    result: block.output ?? block.liveOutput,
     isError: Boolean(block.isError),
     images: [],
     children: [],
     awaitingPermission: false,
+    job: block.job,
+    liveOutput: block.liveOutput,
+    durationMs: block.durationMs,
   };
 }
 
@@ -529,7 +594,15 @@ function AgentMessageRow({
 }
 
 /** 一组连续的活动行。行的 key 带上所属层的档位：档位一变就按新档位重建，收回手动展开。 */
-export function ActivityGroup({ blocks, live }: { blocks: Block[]; live: boolean }) {
+export function ActivityGroup({
+  blocks,
+  live,
+  sessionId,
+}: {
+  blocks: Block[];
+  live: boolean;
+  sessionId: string;
+}) {
   const thinking = usePrefs((state) => state.thinkingDetail);
   const tools = usePrefs((state) => state.toolDetail);
   const items = useMemo(() => groupActivity(blocks), [blocks]);
@@ -543,6 +616,7 @@ export function ActivityGroup({ blocks, live }: { blocks: Block[]; live: boolean
               name={item.name}
               tools={item.tools}
               axis={tools}
+              sessionId={sessionId}
             />
           );
         }
@@ -558,9 +632,9 @@ export function ActivityGroup({ blocks, live }: { blocks: Block[]; live: boolean
               />
             );
           case "tool":
-            return <ToolRow key={`${block.id}:${tools}`} tool={block} axis={tools} />;
+            return <ToolRow key={`${block.id}:${tools}`} tool={block} axis={tools} sessionId={sessionId} />;
           case "bash":
-            return <ToolRow key={`${block.id}:${tools}`} tool={bashAsTool(block)} axis={tools} />;
+            return <ToolRow key={`${block.id}:${tools}`} tool={bashAsTool(block)} axis={tools} sessionId={sessionId} />;
           case "agent-message":
             return <AgentMessageRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
           case "status":

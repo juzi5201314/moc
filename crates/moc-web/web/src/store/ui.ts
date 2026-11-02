@@ -25,7 +25,8 @@ export type UiState = {
   modelPicker: string | null;
   /** 删除确认对话框的目标会话。 */
   confirmDelete: { id: string; title: string } | null;
-  /** composer 聚焦请求计数，变化即聚焦当前会话的输入框。 */
+  /** 当前打开的后台任务弹窗所属会话。 */
+  jobsSession: string | null;
   focusComposer: number;
   /** 旁路输入框聚焦请求计数。 */
   focusBtw: number;
@@ -38,6 +39,7 @@ export const useUi = create<UiState>()((set) => ({
   palette: false,
   modelPicker: null,
   confirmDelete: null,
+  jobsSession: null,
   focusComposer: 0,
   focusBtw: 0,
   set: (patch) => set(patch),

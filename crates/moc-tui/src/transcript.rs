@@ -267,6 +267,10 @@ pub struct ToolCallBlock {
     pub running: bool,
     /// 运行中工具的进度行（目前只有 `wait_agent` 推送）。
     pub progress: Option<Vec<moc_protocol::methods::ToolProgressRow>>,
+    /// 后台 job ID（bash 工具转后台时设置）。
+    pub job_id: Option<String>,
+    /// 实时输出（bash 前台任务的最新几行）。
+    pub live_output: Option<String>,
     /// 结果携带的内联图片（含惰性缓存键，渲染期只查表）。
     pub images: Vec<ToolImage>,
 }

@@ -151,7 +151,7 @@ fn rank(key: &str) -> usize {
         "shake" => 10,
         "foreground_after_secs" => 0,
         "monitored_timeout_secs" => 1,
-        "slow_warning_interval_secs" => 2,
+        "stall_after_secs" => 2,
         "max_timeout_secs" => 3,
         "max_output_bytes" => 4,
         "persistent_log_bytes" => 5,
@@ -582,9 +582,9 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
                 "有限任务超时（秒）",
                 "monitored 命令的默认硬超时，必须不超过 max_timeout_secs。",
             ),
-            "slow_warning_interval_secs" => (
-                "慢任务告警间隔（秒）",
-                "monitored 任务每达到一个间隔就在下一轮提示中告警。",
+            "stall_after_secs" => (
+                "无输出提醒（秒）",
+                "monitored 后台任务连续这么久没有新输出时，提醒模型它可能卡在网络、锁或等待输入上；每次停滞只提醒一次。",
             ),
             "max_timeout_secs" => (
                 "命令超时上限（秒）",
@@ -592,11 +592,11 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "max_output_bytes" => (
                 "有限任务输出上限",
-                "monitored 命令最多写入日志的字节数，超过后终止命令。",
+                "monitored 命令日志保留的字节数；超过后保留开头与结尾各一半、丢弃中段，命令继续运行。",
             ),
             "persistent_log_bytes" => (
                 "长期任务日志容量",
-                "persistent 任务保留的环形日志字节数，写满后覆盖最旧内容但不终止进程。",
+                "persistent 任务日志保留的字节数；超过后保留开头与结尾各一半、丢弃中段，进程不受影响。",
             ),
             "cross_filesystems" => (
                 "跨文件系统扫描",
@@ -638,7 +638,8 @@ fn describe<'a>(path: &'a str, key: &'a str) -> (&'a str, &'a str) {
             ),
             "max_candidate_files" => ("扫描文件上限", "搜索时最多检查多少个文件。"),
             "limit" => ("结果数量", "未指定时返回的结果条数。"),
-            "max_running" => ("后台任务上限", "可同时运行的后台任务数量。"),
+            "max_running" => ("后台任务上限", "每个会话可同时运行的后台任务数量。"),
+            "max_wait_secs" => ("job wait 最长阻塞（秒）", "模型调用 job wait 单次最多等待的秒数。"),
             "overflow" => ("超出上限时", "直接报错，或等待有空位再继续。"),
             "method_order" => (
                 "压缩方式顺序",

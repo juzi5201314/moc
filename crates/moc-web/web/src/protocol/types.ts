@@ -605,6 +605,32 @@ export type AskResult = {
   answers: AskAnswer[];
 };
 
+// ---------- 后台任务 ----------
+
+export type JobStatus = "running" | "killing" | "exited" | "killed" | "timed_out";
+export type JobLifecycle = "monitored" | "persistent";
+export type JobOrigin = "foreground" | "explicit" | "auto_background" | "user_background";
+
+export type JobInfo = {
+  job_id: string;
+  command: string;
+  description?: string;
+  tool_call_id: string;
+  status: JobStatus;
+  exit_code?: number | null;
+  lifecycle: JobLifecycle;
+  origin: JobOrigin;
+  stalled: boolean;
+  output_elided: boolean;
+  started_at_ms: number;
+  duration_ms?: number;
+  log_uri: string;
+};
+
+export type JobListResult = { jobs: JobInfo[] };
+export type JobResult = { job: JobInfo };
+export type JobOutputResult = { job: JobInfo; text: string };
+
 // ---------- session/update ----------
 
 export type AssistantDelta =
@@ -685,13 +711,10 @@ export type SessionUpdate =
       full: boolean;
     }
   | { type: "context_compaction_failed"; message: string }
-  | {
-      type: "job_finished";
-      job_id: string;
-      command: string;
-      exit_code: number | null;
-      log_path: string;
-    }
+  | { type: "job_started"; job: JobInfo }
+  | { type: "job_updated"; job: JobInfo }
+  | { type: "job_output"; job_id: string; tool_call_id: string; tail: string }
+  | { type: "job_finished"; job: JobInfo }
   | { type: "workspace_changed"; violation: boolean; changes: { path: string; kind: string }[] }
   | { type: "upstream_mismatch"; prompt_id: string; fields: UpstreamFieldMismatch[] }
   | { type: "steering_applied"; id: number; text: string }
@@ -733,6 +756,9 @@ export const SESSION_UPDATE_TYPES: Record<SessionUpdateType, true> = {
   context_compaction_started: true,
   context_compacted: true,
   context_compaction_failed: true,
+  job_started: true,
+  job_updated: true,
+  job_output: true,
   job_finished: true,
   workspace_changed: true,
   upstream_mismatch: true,

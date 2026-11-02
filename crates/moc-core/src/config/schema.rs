@@ -315,14 +315,14 @@ pub(super) fn validate_tools(config: &ToolsConfig) -> Result<(), crate::error::C
         ));
     }
     if config.bash.monitored_timeout_secs == 0
-        || config.bash.slow_warning_interval_secs == 0
+        || config.bash.stall_after_secs == 0
         || config.bash.max_timeout_secs == 0
         || config.bash.max_output_bytes == 0
         || config.bash.persistent_log_bytes == 0
         || config.bash.monitored_timeout_secs > config.bash.max_timeout_secs
     {
         return Err(crate::error::CoreError::Config(
-            "tools.bash: monitored_timeout_secs、slow_warning_interval_secs、max_timeout_secs、max_output_bytes、persistent_log_bytes 必须大于 0，且 monitored_timeout_secs 不得超过 max_timeout_secs".into(),
+            "tools.bash: monitored_timeout_secs、stall_after_secs、max_timeout_secs、max_output_bytes、persistent_log_bytes 必须大于 0，且 monitored_timeout_secs 不得超过 max_timeout_secs".into(),
         ));
     }
     if config.todo.reminders_after == 0 || config.todo.reminders_max == 0 {
@@ -431,7 +431,8 @@ pub(super) fn validate_ptc(config: &PtcConfig) -> Result<(), crate::error::CoreE
 pub struct BashConfig {
     pub foreground_after_secs: u64,
     pub monitored_timeout_secs: u64,
-    pub slow_warning_interval_secs: u64,
+    /// monitored 后台任务多久没有新输出就提醒模型可能卡住。
+    pub stall_after_secs: u64,
     pub max_timeout_secs: u64,
     pub max_output_bytes: u64,
     pub persistent_log_bytes: u64,
@@ -445,7 +446,7 @@ impl Default for BashConfig {
         Self {
             foreground_after_secs: 60,
             monitored_timeout_secs: 1800,
-            slow_warning_interval_secs: 180,
+            stall_after_secs: 120,
             max_timeout_secs: 3600,
             max_output_bytes: 16 * 1024 * 1024,
             persistent_log_bytes: 16 * 1024 * 1024,
@@ -1012,7 +1013,10 @@ pub enum JobOverflow {
 #[serde(default, deny_unknown_fields)]
 pub struct JobConfig {
     pub enabled: bool,
+    /// 每个会话可同时运行的后台任务数。
     pub max_running: usize,
+    /// `job wait` 单次最多阻塞的秒数。
+    pub max_wait_secs: u64,
     pub overflow: JobOverflow,
 }
 
@@ -1020,7 +1024,8 @@ impl Default for JobConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_running: 4,
+            max_running: 8,
+            max_wait_secs: 600,
             overflow: JobOverflow::Error,
         }
     }
@@ -1053,7 +1058,7 @@ mod bash_config_tests {
         let config = BashConfig::default();
         assert_eq!(config.foreground_after_secs, 60);
         assert_eq!(config.monitored_timeout_secs, 1800);
-        assert_eq!(config.slow_warning_interval_secs, 180);
+        assert_eq!(config.stall_after_secs, 120);
         assert_eq!(config.max_timeout_secs, 3600);
         assert_eq!(config.max_output_bytes, 16 * 1024 * 1024);
         assert_eq!(config.persistent_log_bytes, 16 * 1024 * 1024);

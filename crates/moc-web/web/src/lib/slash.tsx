@@ -44,6 +44,7 @@ export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "context", description: "查看上下文占用", needsSession: true },
   { name: "usage", description: "查看本会话用量", needsSession: true },
   { name: "settings", description: "打开设置" },
+  { name: "jobs", description: "查看和管理后台任务", needsSession: true },
 ];
 
 /** 拆出 `/name args`；不是斜杠开头返回 null。 */
@@ -174,6 +175,9 @@ export function runSlash(sessionId: string, text: string, commands: SlashCommand
       break;
     case "usage":
       useLayout.getState().openInspector("usage");
+      break;
+    case "jobs":
+      useUi.getState().set({ jobsSession: sessionId });
       break;
     case "settings":
       openSettings();

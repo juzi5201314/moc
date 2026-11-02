@@ -21,7 +21,8 @@ const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 pub(crate) struct ProcessExit {
     pub code: Option<i32>,
     pub timed_out: bool,
-    pub output_truncated: bool,
+    /// 由 JobManager 置位：任务是被显式终止的（用户或模型），不是自己退出的。
+    pub killed: bool,
     /// stderr 命中沙盒拒绝签名；仅作提示，不改变退出码。
     pub sandbox_denied: bool,
     /// 资源范围没能建立（命令实际在无限制下执行）；仅作提示。
@@ -48,15 +49,6 @@ impl Process {
             return Err(ToolError::new(
                 "E_SANDBOX_UNAVAILABLE",
                 "sandboxed permissions require a Unix sandbox runner",
-            ));
-        }
-        if timeout.is_some()
-            && log.mode() == super::JobLogMode::Monitored
-            && log.path().as_os_str().is_empty()
-        {
-            return Err(ToolError::new(
-                "E_BASH_CONFIG",
-                "monitored jobs require a log",
             ));
         }
         if args.pty.unwrap_or(false) {
@@ -133,7 +125,6 @@ impl Process {
         let input = child.stdin.take();
         let stdout = child.stdout.take().expect("stdout 已配置为管道");
         let stderr = child.stderr.take().expect("stderr 已配置为管道");
-        let output_group = completion_group.clone();
         let reader_log = log.clone();
         let mut reader = tokio::spawn(async move {
             let write_input = async move {
@@ -148,12 +139,11 @@ impl Process {
                 Ok::<_, std::io::Error>(())
             };
             let (output, errors, input) = tokio::join!(
-                super::super::job::copy_output(stdout, reader_log.clone(), output_group.clone()),
-                super::super::job::copy_output(stderr, reader_log, output_group),
+                super::super::job::copy_output(stdout, reader_log.clone()),
+                super::super::job::copy_output(stderr, reader_log),
                 write_input
             );
-            let truncated = output.and_then(|first| errors.map(|second| first || second))?;
-            input.map(|()| truncated)
+            output.and(errors).and(input)
         });
         let completion = Box::pin(async move {
             let _keepalive = keepalive;
@@ -168,16 +158,15 @@ impl Process {
                 }
             };
             drop(completion_group);
-            let output_truncated = match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader).await {
+            match tokio::time::timeout(PIPE_DRAIN_GRACE, &mut reader).await {
                 Ok(joined) => joined
                     .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?
                     .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?,
                 Err(_) => {
                     tracing::warn!("子进程已退出但 stdout 仍被占用，停止读取输出");
                     reader.abort();
-                    false
                 }
-            };
+            }
             let status =
                 waited.map_err(|error| ToolError::new("E_BASH_WAIT", error.to_string()))?;
             log.finish()
@@ -186,7 +175,7 @@ impl Process {
             Ok(ProcessExit {
                 code: status.code(),
                 timed_out,
-                output_truncated,
+                killed: false,
                 sandbox_denied: crate::sandbox::denial_in(&tail),
                 limits_failed: crate::limits::failure_in(&tail),
             })
@@ -352,21 +341,15 @@ fn run_pty(
     let writer_thread = std::thread::spawn(move || writer.write_all(&input));
     let began = std::time::Instant::now();
     let _ = started.send((pid, group.clone()));
-    let output_group = group.clone();
     let tail_log = log.clone();
-    let reader_thread = std::thread::spawn(move || -> std::io::Result<bool> {
+    let reader_thread = std::thread::spawn(move || -> std::io::Result<()> {
         let mut buffer = [0u8; 16 * 1024];
         loop {
             let count = reader.read(&mut buffer)?;
             if count == 0 {
-                log.finish()?;
-                return Ok(false);
+                return log.finish();
             }
-            if log.append(&buffer[..count])? {
-                output_group.kill().map_err(std::io::Error::other)?;
-                log.finish()?;
-                return Ok(true);
-            }
+            log.append(&buffer[..count])?;
         }
     });
     let mut timed_out = false;
@@ -384,7 +367,7 @@ fn run_pty(
         std::thread::sleep(Duration::from_millis(20));
     };
     let _ = writer_thread.join();
-    let output_truncated = reader_thread
+    reader_thread
         .join()
         .map_err(|_| std::io::Error::other("PTY output thread exited unexpectedly"))??;
     let status = waited?;
@@ -396,7 +379,7 @@ fn run_pty(
     Ok(ProcessExit {
         code: Some(if status.success() { code } else { code.max(1) }),
         timed_out,
-        output_truncated,
+        killed: false,
         sandbox_denied: crate::sandbox::denial_in(&tail),
         limits_failed: crate::limits::failure_in(&tail),
     })
@@ -426,7 +409,7 @@ mod unix_tests {
         }
     }
     async fn test_log(path: PathBuf) -> JobLog {
-        JobLog::create(path, super::super::JobLogMode::Monitored, 1024).expect("创建测试日志")
+        JobLog::create(path, 1024).expect("创建测试日志")
     }
 
     fn policy(mode: moc_protocol::SessionPermission, workspace: &std::path::Path) -> SandboxPolicy {

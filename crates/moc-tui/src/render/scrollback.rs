@@ -1387,6 +1387,15 @@ fn render_tool(
             Style::new().fg(theme.text_secondary),
         ));
     }
+    // 后台任务标记
+    if let Some(job_id) = &tool.job_id {
+        if tool.running {
+            title.push(Span::styled(
+                format!(" · 后台 {job_id}"),
+                Style::new().fg(theme.gray_dim),
+            ));
+        }
+    }
     let mut lines = vec![clip_line(Line::from(title), width)];
     let mut placements = Vec::new();
     if shows_tool_body(tool, level) {
@@ -1508,7 +1517,15 @@ fn tool_body(
                 lines.push(text_row(format!("$ {command}"), theme.command));
             }
         }
-        if let Some(result) = &tool.result {
+        // 运行中的前台任务：显示实时输出而不是完整结果
+        if tool.running && tool.live_output.is_some() {
+            if let Some(live_out) = &tool.live_output {
+                let budget = BASH_BRIEF_OUTPUT_ROWS;
+                let rows = clamp_rows(live_out, width, budget, BodyEdge::Tail);
+                let color = theme.text_secondary;
+                lines.extend(rows.rows.into_iter().map(|text| text_row(text, color)));
+            }
+        } else if let Some(result) = &tool.result {
             let budget = if level == DetailLevel::Full {
                 limit.saturating_sub(lines.len())
             } else {
@@ -4158,6 +4175,8 @@ mod tests {
             running: false,
             progress: None,
             images: Vec::new(),
+            job_id: None,
+            live_output: None,
         };
 
         let pairs = ask_answer_pairs(
@@ -4350,6 +4369,8 @@ mod tests {
             running: false,
             progress: None,
             images: vec![ToolImage::for_test(key, "image/png", Some("AAAA"))],
+            job_id: None,
+            live_output: None,
         }));
 
         let width = 80u16;
@@ -4408,6 +4429,8 @@ mod tests {
                 "image/png",
                 Some("AAAA"),
             )],
+            job_id: None,
+            live_output: None,
         }));
 
         use ratatui::Terminal;

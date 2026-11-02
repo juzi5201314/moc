@@ -65,14 +65,14 @@ pub(crate) struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    fn new(slots: Arc<crate::concurrency::Gate>, support: &crate::sandbox::SandboxSupport) -> Self {
+    fn new(support: &crate::sandbox::SandboxSupport) -> Self {
         let scratch = support
             .runner
             .and_then(|_| crate::sandbox::SandboxScratch::new().ok())
             .map(Arc::new);
         Self {
             anchors: Arc::new(crate::hashline::AnchorStore::new()),
-            jobs: Arc::new(JobManager::with_slots(slots)),
+            jobs: Arc::new(JobManager::new()),
             workspace: Mutex::new(None),
             context_files: Mutex::new(None),
             reminders: tokio::sync::Mutex::new(
@@ -96,7 +96,6 @@ pub(crate) struct CoreInner {
     pub config_write: Mutex<()>,
     pub config_epoch: tokio::sync::RwLock<()>,
     pub provider_gates: RwLock<HashMap<String, Arc<crate::concurrency::Gate>>>,
-    pub job_slots: Arc<crate::concurrency::Gate>,
     pub client: Client,
     pub sessions: Arc<SessionTable>,
     pub tools: ToolRegistry,
@@ -291,10 +290,7 @@ impl CoreInner {
     pub(crate) async fn runtime(&self, session_id: &str) -> Arc<SessionRuntime> {
         let mut runtimes = self.runtimes.lock().await;
         Arc::clone(runtimes.entry(session_id.to_owned()).or_insert_with(|| {
-            Arc::new(SessionRuntime::new(
-                Arc::clone(&self.job_slots),
-                &self.sandbox_support,
-            ))
+            Arc::new(SessionRuntime::new(&self.sandbox_support))
         }))
     }
     pub(crate) async fn reset_loaded_skills(&self, session_id: &str) {
@@ -578,7 +574,6 @@ impl Core {
                 config_write: Mutex::new(()),
                 config_epoch: tokio::sync::RwLock::new(()),
                 provider_gates: RwLock::new(HashMap::new()),
-                job_slots: Arc::new(crate::concurrency::Gate::default()),
                 client: config.client,
                 sessions,
                 tools: ToolRegistry::new(),

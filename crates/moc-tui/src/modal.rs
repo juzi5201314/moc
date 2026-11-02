@@ -1158,6 +1158,13 @@ pub enum Modal {
         loading: bool,
         error: Option<String>,
     },
+    /// 后台任务列表（/jobs）。
+    Jobs {
+        jobs: Vec<moc_protocol::methods::JobInfo>,
+        selected: usize,
+        /// 待确认删除的任务索引（需要按 x 两次）。
+        pending_kill: Option<usize>,
+    },
 }
 /// 回复通道的错误类型别名（协议层 RpcError 的重导出位置）。
 type RpcErrorOf = moc_protocol::RpcError;
@@ -1204,6 +1211,7 @@ impl Modal {
             Modal::Help { .. } => "快捷键帮助".into(),
             Modal::Context { .. } => "上下文占用".into(),
             Modal::ContextContent { .. } => "上下文内容".into(),
+            Modal::Jobs { .. } => "后台任务".into(),
             Modal::SwitchModel { .. } => "切换模型：需要压缩上下文".into(),
         }
     }
@@ -1239,6 +1247,7 @@ impl Modal {
             Modal::Plan { .. } => 4,
             Modal::Fusion { .. } => 3,
             Modal::Help { .. } | Modal::Context { .. } | Modal::ContextContent { .. } => 0,
+            Modal::Jobs { jobs, .. } => jobs.len(),
             Modal::SwitchModel { .. } => 2,
         }
     }
@@ -1275,6 +1284,11 @@ impl Modal {
                     .selected
                     .saturating_add_signed(isize::try_from(delta).expect("方向增量可表示为 isize"))
                     .min(count - 1);
+            }
+            Modal::Jobs { selected, .. } => {
+                *selected = selected
+                    .saturating_add_signed(isize::try_from(delta).expect("方向增量可表示为 isize"))
+                    .min(count.saturating_sub(1));
             }
             Modal::Ask { .. }
             | Modal::Rewind { .. }

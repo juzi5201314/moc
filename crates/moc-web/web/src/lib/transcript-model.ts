@@ -7,6 +7,7 @@ import type {
   ContextUsageResult,
   FinishReason,
   ImageSource,
+  JobInfo,
   Message,
   PlanInfo,
   SessionInfo,
@@ -40,8 +41,9 @@ export type ToolBlock = {
   progress?: ToolProgressRow[];
   awaitingPermission: boolean;
   batchId?: string;
+  job?: JobInfo;
+  liveOutput?: string;
 };
-
 export type StatusTone = "info" | "warn" | "error";
 
 export type Block =
@@ -60,6 +62,9 @@ export type Block =
       command: string;
       output?: string;
       isError?: boolean;
+      job?: JobInfo;
+      liveOutput?: string;
+      durationMs?: number;
       atMs: number;
     }
   | { kind: "agent-message"; id: string; from: string; body: string; atMs: number }
@@ -143,6 +148,7 @@ export type SessionView = {
   /** session/context 的最近一次结果；未读到为 null。 */
   context: ContextUsageResult | null;
   compactingId: string | null;
+  jobs: Record<string, JobInfo>;
   seq: number;
 };
 
@@ -165,6 +171,7 @@ export function createView(info: SessionInfo): SessionView {
     pluginNotice: null,
     context: null,
     compactingId: null,
+    jobs: {},
     seq: 0,
   };
 }
@@ -218,6 +225,22 @@ export function findTool(blocks: Block[], toolCallId: string): ToolBlock | undef
     if (child) return child;
   }
   return undefined;
+}
+
+function findBash(view: SessionView, toolCallId: string): Extract<Block, { kind: "bash" }> | undefined {
+  for (let index = view.blocks.length - 1; index >= 0; index -= 1) {
+    const block = view.blocks[index];
+    if (block.kind === "bash" && block.toolCallId === toolCallId) return block;
+  }
+  return undefined;
+}
+
+function applyJob(view: SessionView, job: JobInfo): void {
+  view.jobs[job.job_id] = job;
+  const tool = findTool(view.blocks, job.tool_call_id);
+  if (tool) tool.job = job;
+  const bash = findBash(view, job.tool_call_id);
+  if (bash) bash.job = job;
 }
 
 // ---------- 历史 → 块 ----------
@@ -794,13 +817,35 @@ export function applyUpdate(view: SessionView, update: SessionUpdate, now = Date
       view.compactingId = null;
       break;
     }
-    case "job_finished":
+    case "job_started":
+    case "job_updated":
+      applyJob(view, update.job);
+      break;
+    case "job_output": {
+      const tool = findTool(view.blocks, update.tool_call_id);
+      if (tool) tool.liveOutput = update.tail;
+      const bash = findBash(view, update.tool_call_id);
+      if (bash) bash.liveOutput = update.tail;
+      break;
+    }
+    case "job_finished": {
+      const job = update.job;
+      applyJob(view, job);
+      const tool = findTool(view.blocks, job.tool_call_id);
+      if (tool) {
+        tool.status = job.exit_code === 0 ? "completed" : "error";
+        tool.isError = job.exit_code !== 0;
+        tool.durationMs = job.duration_ms;
+      }
+      const bash = findBash(view, job.tool_call_id);
+      if (bash) bash.durationMs = job.duration_ms;
       pushStatus(
         view,
-        update.exit_code === 0 ? "info" : "warn",
-        `后台任务结束：${update.command}（退出码 ${update.exit_code ?? "未知"}）`,
+        job.exit_code === 0 ? "info" : "warn",
+        `后台任务结束：${job.command}（退出码 ${job.exit_code ?? "未知"}）`,
       );
       break;
+    }
     case "workspace_changed":
       if (update.violation) {
         pushStatus(

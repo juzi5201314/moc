@@ -32,6 +32,8 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                     duration_ms: tool.duration_ms,
                     running: false,
                     progress: None,
+                    job_id: None,
+                    live_output: None,
                     images: Vec::new(),
                 })));
             }
@@ -87,6 +89,8 @@ pub fn blocks_from_entries(entries: &[TranscriptEntry]) -> Vec<Entry> {
                                 duration_ms: None,
                                 running: false,
                                 progress: None,
+                                job_id: None,
+                                live_output: None,
                                 images: Vec::new(),
                             };
                             call_index.insert(call.id.clone(), blocks.len());
@@ -172,6 +176,8 @@ pub fn blocks_from_entries_with_children(
             duration_ms: child.duration_ms,
             running: false,
             progress: None,
+            job_id: None,
+            live_output: None,
             images: Vec::new(),
         };
         blocks.insert(insert_at, Entry::new(Block::Tool(block)));

@@ -20,6 +20,7 @@
 //! | [`btw::SessionBtw`] | C→S | core | 已初始化 + 该会话无进行中的旁路 | `-32010` / `-32011` / `-32014` |
 //! | [`btw::SessionBtwCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`bash::SessionBash`] | C→S | core | 会话无进行中的提示或命令 | `-32010` / `-32011` / `-32015` |
+//! | [`job::JobList`] / [`job::JobReadOutput`] / [`job::JobKill`] / [`job::JobBackground`] | C→S | core | 已初始化 | `-32010` / `-32602` |
 //! | [`management::SessionSteer`] / [`management::SessionUnsteer`] | C→S | core | 已初始化 | `-32010` / `-32014` |
 //! | [`prompt::SessionCancel`] | C→S | 协议层自答 | 已初始化 | — |
 //! | [`fs::FsListDir`] / [`fs::FsCreateDir`] / [`chart::ChartAnalyze`] | C→S | core | 已初始化 | `-32602` / `-32014` |
@@ -44,6 +45,7 @@ pub mod initialize;
 pub mod management;
 pub mod permission;
 pub mod plan;
+pub mod job;
 pub mod plugin;
 pub mod prompt;
 pub mod resources;
@@ -98,6 +100,10 @@ pub use plan::{
     SessionPlanApproveResult, SessionPlanDiff, SessionPlanDiffParams, SessionPlanDiffResult,
     SessionPlanMode, SessionPlanModeParams, SessionPlanRevise, SessionPlanReviseParams,
     SessionPlanReviseResult,
+};
+pub use job::{
+    JobBackground, JobInfo, JobKill, JobLifecycle, JobList, JobListParams, JobListResult,
+    JobOrigin, JobOutputParams, JobOutputResult, JobReadOutput, JobResult, JobStatus, JobTarget,
 };
 pub use plugin::{
     PluginCommandInfo, PluginInfo, PluginList, PluginListParams, PluginListResult, PluginReload,
@@ -214,6 +220,10 @@ mod tests {
             (<AgentMessage as Method>::NAME, "agent/message"),
             (<AgentStop as Method>::NAME, "agent/stop"),
             (<AgentWait as Method>::NAME, "agent/wait"),
+            (<JobList as Method>::NAME, "job/list"),
+            (<JobReadOutput as Method>::NAME, "job/output"),
+            (<JobKill as Method>::NAME, "job/kill"),
+            (<JobBackground as Method>::NAME, "job/background"),
         ];
         for (actual, expected) in client_methods {
             assert_eq!(actual, expected);

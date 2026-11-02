@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type {
+  JobInfo,
   SessionInfo,
   SessionUpdate,
   ToolDiff,
@@ -189,6 +190,36 @@ describe("applyUpdate", () => {
     expect(bash.kind === "bash" && bash.command).toBe("ls -la");
     expect(bash.kind === "bash" && bash.output).toBe("total 8");
     expect(bash.kind === "bash" && bash.isError).toBe(false);
+  });
+
+  it("任务事件更新 Bash 卡片、实时尾部和最终耗时", () => {
+    const view = createView(INFO);
+    const job: JobInfo = {
+      job_id: "job_1",
+      command: "cargo build",
+      tool_call_id: "bash_1",
+      status: "running",
+      lifecycle: "monitored",
+      origin: "foreground",
+      stalled: false,
+      output_elided: false,
+      started_at_ms: 1_000,
+      log_uri: "artifact://jobs/job_1.log",
+    };
+    applyUpdate(view, {
+      type: "bash_started",
+      tool_call_id: "bash_1",
+      command: { command: "cargo build", exclude_from_context: false },
+    });
+    applyUpdate(view, { type: "job_started", job }, 1_000);
+    applyUpdate(view, { type: "job_output", job_id: "job_1", tool_call_id: "bash_1", tail: "Compiling moc" });
+    const finished: JobInfo = { ...job, status: "exited", exit_code: 0, duration_ms: 2_500 };
+    applyUpdate(view, { type: "job_finished", job: finished }, 3_500);
+    const bash = view.blocks[0];
+    expect(bash.kind === "bash" && bash.job?.status).toBe("exited");
+    expect(bash.kind === "bash" && bash.liveOutput).toBe("Compiling moc");
+    expect(bash.kind === "bash" && bash.durationMs).toBe(2_500);
+    expect(view.jobs.job_1).toEqual(finished);
   });
 
   it("流式两段生成，最后一段以 message 为准", () => {

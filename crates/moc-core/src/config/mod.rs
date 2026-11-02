@@ -233,8 +233,10 @@ impl ResolvedConfig {
         schema::validate_ptc(&document.tools.ptc)?;
         schema::validate_agents(&document.agents)?;
         schema::validate_limits(&document.limits)?;
-        if document.tools.job.max_running == 0 {
-            return Err(CoreError::Config("后台进程上限必须大于 0".into()));
+        if document.tools.job.max_running == 0 || document.tools.job.max_wait_secs == 0 {
+            return Err(CoreError::Config(
+                "tools.job: max_running 与 max_wait_secs 必须大于 0".into(),
+            ));
         }
         let session_dir = expand_config_path(&document.session.dir, &home)?;
         let sandbox = resolve_sandbox(&document.sandbox)?;

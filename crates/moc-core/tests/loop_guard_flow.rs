@@ -260,12 +260,10 @@ async fn guard_stop_reaps_background_processes_owned_by_the_failed_prompt() {
     assert_eq!(result.finish_reason, FinishReason::LoopDetected);
     let exit_code = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
-            if let SessionUpdate::JobFinished {
-                command, exit_code, ..
-            } = events.recv().await.unwrap()
-                && command == "sleep 30"
+            if let SessionUpdate::JobFinished { job } = events.recv().await.unwrap()
+                && job.command == "sleep 30"
             {
-                break exit_code;
+                break job.exit_code;
             }
         }
     })

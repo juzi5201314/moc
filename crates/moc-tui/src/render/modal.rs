@@ -1381,6 +1381,57 @@ fn modal_body(app: &App, modal: &Modal, width: usize, max_lines: usize) -> Modal
             };
             (lines, overlay::footer(items, width, theme))
         }
+        Modal::Jobs {
+            jobs,
+            selected,
+            pending_kill,
+        } => {
+            let mut lines = Vec::new();
+            if jobs.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "当前没有后台任务",
+                    Style::new().fg(theme.gray_dim),
+                )));
+            } else {
+                for (index, job) in jobs.iter().enumerate() {
+                    hits.push((index, lines.len()));
+                    let is_selected = index == *selected;
+                    
+                    // 状态图标
+                    let icon = match job.status {
+                        moc_protocol::methods::JobStatus::Running => "▸",
+                        moc_protocol::methods::JobStatus::Killing => "⏹",
+                        moc_protocol::methods::JobStatus::Exited => "◆",
+                        moc_protocol::methods::JobStatus::Killed => "✘",
+                        moc_protocol::methods::JobStatus::TimedOut => "⏱",
+                    };
+                    
+                    // 命令（截断）
+                    let cmd_budget = width.saturating_sub(25);
+                    let cmd = if job.command.len() > cmd_budget {
+                        format!("{}…", &job.command[..cmd_budget.saturating_sub(1)])
+                    } else {
+                        job.command.clone()
+                    };
+                    
+                    let job_id = &job.job_id;
+                    let text = if *pending_kill == Some(index) {
+                        format!("{icon} {job_id} {cmd} [按 x 确认杀掉]")
+                    } else {
+                        format!("{icon} {job_id} {cmd}")
+                    };
+                    
+                    lines.push(overlay::list_row(&text, is_selected, width, theme));
+                }
+            }
+            
+            let footer = overlay::footer(
+                &[("↑↓", "选择"), ("x x", "杀任务"), ("esc", "关闭")],
+                width,
+                theme,
+            );
+            (lines, footer)
+        }
         // 回退视图与上下文正文窗自带布局，`draw_modal` 在此之前就已分派走。
         Modal::Rewind { .. } | Modal::ContextContent { .. } => {
             (Vec::new(), overlay::Footer::default())

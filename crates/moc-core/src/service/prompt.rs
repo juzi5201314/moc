@@ -31,6 +31,46 @@ use guard::{CycleAction, PromptGuard, ToolCycles};
 use request::{CacheAnchors, build_request, project_input, upstream_mismatches};
 use stream::forward_event;
 use tools::{NOT_EXECUTED, execute_tool_batch, persist_tool_result, repair_pending_calls};
+
+/// 主会话的后台任务完成时唤醒新一轮。
+///
+/// 子代理会话无空闲唤醒：notices 留在原地，下次提示自然送达。前台提示仍在运行时也不唤醒，
+/// 一次提示结束后才重新检查是否有任务完成待通知。
+pub(crate) async fn wake_for_jobs(
+    inner: Arc<CoreInner>,
+    request: RequestContext,
+    session_id: String,
+) {
+    // 只唤醒顶层会话；运行期间再完成的任务，由结尾再检。
+    let Ok(record) = inner.sessions.get(&session_id).await else {
+        return;
+    };
+    let state = record.state.lock().await.clone();
+    if state.session.parent_session_id.is_some() {
+        return;
+    }
+    let runtime = inner.runtime(&session_id).await;
+    if !runtime.jobs.wants_wake() {
+        return;
+    }
+    // 会话空闲时才唤醒，正跑着的提示结束后自己检查 wants_wake 不再轮询。
+    let Ok(prompt_lock) = record.try_prompt_lock() else {
+        return;
+    };
+    crate::service::CoreInner::spawn_detached_prompt(
+        &inner,
+        request,
+        moc_protocol::methods::PromptParams {
+            session_id: session_id.clone(),
+            input: Vec::new(),
+            mode: None,
+            agent_message: None,
+        },
+        record,
+        prompt_lock,
+    )
+    .await;
+}
 use workspace::{WorkspaceScope, check_workspace};
 
 pub async fn run_prompt(
@@ -277,6 +317,17 @@ pub(crate) async fn run_prompt_with_lock(
             error.as_deref(),
         )
         .await;
+    }
+    // 提示成功结束：如果期间又有任务完成，再次唤醒；失败则不再自动重试，避免循环。
+    // 用户取消时抑制唤醒，等用户下次输入重新激活。
+    if result.is_ok() && ctx.cancel().is_cancelled() {
+        runtime.jobs.suppress_wake(true);
+    } else if result.is_ok() {
+        runtime.jobs.suppress_wake(false);
+        drop(plugin_state);
+        if runtime.jobs.wants_wake() {
+            wake_for_jobs(Arc::clone(&inner), ctx.clone(), session_id.clone()).await;
+        }
     }
     result
 }
@@ -807,7 +858,11 @@ async fn run_prompt_locked(
                     ));
                 }
                 // notice 是一次性事实，drain 之后就不可重复获取。
-                let notices = std::mem::take(&mut record.state.lock().await.notices);
+                let notices = {
+                    let mut state = record.state.lock().await;
+                    runtime.jobs.mark_all_reported();
+                    std::mem::take(&mut state.notices)
+                };
                 candidates.extend(
                     notices
                         .into_iter()

@@ -490,7 +490,7 @@ function PreviewLines({ text, onExpand }: { text: string; onExpand: () => void }
  */
 export function toolBody(tool: ToolBlock, level: DetailLevel, onExpand: () => void): ReactNode {
   const args = parseArgs(tool.arguments);
-  const result = tool.result;
+  const result = tool.result ?? tool.liveOutput;
   const failed = toolFailed(tool);
   const running = tool.status === "running";
   const arg = (key: string) => (typeof args[key] === "string" ? (args[key] as string) : "");

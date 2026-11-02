@@ -3,12 +3,11 @@
 //! 整体替换历史后只剩摘要，而 todos、后台任务、子代理和活动计划都是运行状态，既不在
 //! 摘要里也无法从 transcript 推导出来，必须在压缩时快照成一条 system reminder。
 
-use moc_protocol::methods::{AgentStatus, PlanStatus};
+use moc_protocol::methods::{AgentStatus, JobStatus, PlanStatus};
 
 use crate::service::CoreInner;
 use crate::session::state::SessionState;
 use crate::session::store::now_ms;
-use crate::tools::job::JobStatus;
 
 use super::super::digest::TodoLines;
 
@@ -57,7 +56,7 @@ fn edited_files(state: &SessionState) -> Option<String> {
 
 /// 仍在运行或正在终止的后台任务。
 async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String> {
-    let jobs = inner.runtime(&state.session.id).await.jobs.list().await;
+    let jobs = inner.runtime(&state.session.id).await.jobs.background();
     let mut lines = Vec::new();
     for job in jobs {
         let status = match job.status {
@@ -65,7 +64,7 @@ async fn running_jobs(inner: &CoreInner, state: &SessionState) -> Option<String>
             JobStatus::Killing => "killing",
             _ => continue,
         };
-        lines.push(format!("- \"{}\": `{}` ({status})", job.id, job.command));
+        lines.push(format!("- \"{}\": `{}` ({status})", job.job_id, job.command));
     }
     if lines.is_empty() {
         return None;

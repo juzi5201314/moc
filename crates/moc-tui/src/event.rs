@@ -1045,6 +1045,13 @@ async fn event_loop(
                         }
                     }
                     Some(AppEvent::Notice(message)) => app.set_notice(message),
+                    Some(AppEvent::OpenJobsModal(jobs)) => {
+                        app.modal = Some(Modal::Jobs {
+                            jobs,
+                            selected: 0,
+                            pending_kill: None,
+                        });
+                    }
                     Some(AppEvent::Loaded(
                         info,
                         blocks,
@@ -3985,6 +3992,50 @@ fn handle_modal_key(
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
             _ => {}
         },
+        Modal::Jobs {
+            jobs,
+            selected,
+            pending_kill,
+        } => match (code, modifiers) {
+            (KeyCode::Up, _) | (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                *selected = selected.saturating_sub(1);
+                *pending_kill = None;
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                *selected = (*selected + 1).min(jobs.len().saturating_sub(1));
+                *pending_kill = None;
+            }
+            (KeyCode::Char('x'), KeyModifiers::NONE) => {
+                if *pending_kill == Some(*selected) {
+                    // 二次确认：杀任务
+                    if let Some(job) = jobs.get(*selected) {
+                        let job_id = job.job_id.clone();
+                        let client = connection.client.clone();
+                        let session_id = app.session.as_ref().map(|s| s.id.clone());
+                        tokio::spawn(async move {
+                            if let Some(session_id) = session_id {
+                                let _ = client
+                                    .call::<moc_protocol::methods::JobKill>(
+                                        moc_protocol::methods::JobTarget {
+                                            session_id,
+                                            job_id,
+                                        },
+                                    )
+                                    .await;
+                            }
+                        });
+                        close = true;
+                    }
+                } else {
+                    // 首次按 x：标记待确认
+                    *pending_kill = Some(*selected);
+                }
+            }
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => close = true,
+            _ => {
+                *pending_kill = None;
+            }
+        },
         Modal::Subagents { agents, picker } => {
             let filtered: Vec<_> = agents
                 .iter()
@@ -4858,11 +4909,41 @@ fn apply_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::ContextCompactionFailed { message } => {
             app.finish_compaction(format!("上下文压缩失败：{message}"), true);
         }
-        SessionUpdate::JobFinished {
-            command, exit_code, ..
+        SessionUpdate::JobStarted { job } => {
+            // 前台 bash 任务会同时发送 JobStarted 和 ToolStarted
+            // 后台任务（explicit 或 auto_background）只发 JobStarted
+            // 我们通过 tool_call_id 找到对应的 ToolCallBlock 并设置 job_id
+            if let Some(entry) = app.tool_entry_mut(&job.tool_call_id)
+                && let Block::Tool(tool) = &mut entry.block
+            {
+                tool.job_id = Some(job.job_id.clone());
+            }
+        }
+        SessionUpdate::JobUpdated { job } => {
+            // 更新 job 状态，目前主要用于前台任务的实时信息
+            if let Some(entry) = app.tool_entry_mut(&job.tool_call_id)
+                && let Block::Tool(tool) = &mut entry.block
+            {
+                tool.job_id = Some(job.job_id.clone());
+                entry.touch();
+            }
+        }
+        SessionUpdate::JobOutput {
+            job_id: _,
+            tool_call_id,
+            tail,
         } => {
-            let code = exit_code.map_or_else(String::new, |code| format!("（退出码 {code}）"));
-            app.push_note(format!("后台任务结束：{command}{code}"), false);
+            // 更新前台任务的实时输出
+            if let Some(entry) = app.tool_entry_mut(&tool_call_id)
+                && let Block::Tool(tool) = &mut entry.block
+            {
+                tool.live_output = Some(tail);
+                entry.touch();
+            }
+        }
+        SessionUpdate::JobFinished { job } => {
+            let code = job.exit_code.map_or_else(String::new, |code| format!("（退出码 {code}）"));
+            app.push_note(format!("后台任务结束：{}{code}", job.command), false);
         }
         SessionUpdate::WorkspaceChanged { .. } => {
             if let Some(session) = app.session.as_ref() {
@@ -5312,6 +5393,29 @@ fn execute_command(app: &mut App, connection: &EmbeddedConnection, line: String)
         "/ask" => ask_once(app, connection, rest),
         "/retry" => retry(app, connection),
         "/model" => app.open_model_picker(),
+        "/jobs" => {
+            if let Some(session_id) = session_id {
+                let client = connection.client.clone();
+                let events = app.events.clone();
+                tokio::spawn(async move {
+                    match client
+                        .call::<moc_protocol::methods::JobList>(
+                            moc_protocol::methods::JobListParams { session_id },
+                        )
+                        .await
+                    {
+                        Ok(result) => {
+                            let _ = events.send(AppEvent::OpenJobsModal(result.jobs));
+                        }
+                        Err(error) => {
+                            let _ = events.send(AppEvent::Notice(format!("获取任务列表失败：{error}")));
+                        }
+                    }
+                });
+            } else {
+                app.set_notice("当前没有活动会话");
+            }
+        }
         "/resume" => open_session_picker(app, connection),
         other => {
             // 插件命令兜底：名字由 `plugin/list` 提供，执行结果写进转写。

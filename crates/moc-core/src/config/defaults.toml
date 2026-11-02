@@ -61,7 +61,7 @@ max_file_bytes = 104857600
 [tools.bash]
 foreground_after_secs = 60
 monitored_timeout_secs = 1800
-slow_warning_interval_secs = 180
+stall_after_secs = 120
 max_timeout_secs = 3600
 max_output_bytes = 16777216
 persistent_log_bytes = 16777216
@@ -125,7 +125,8 @@ reminders_max = 3
 
 [tools.job]
 enabled = true
-max_running = 4
+max_running = 8
+max_wait_secs = 600
 overflow = "error"
 
 [compaction]

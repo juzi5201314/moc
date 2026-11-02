@@ -205,17 +205,19 @@ impl Renderer {
             SessionUpdate::ContextCompactionFailed { message } => {
                 let _ = writeln!(out, "\n[上下文压缩失败：{message}]");
             }
-            SessionUpdate::JobFinished {
-                job_id,
-                command,
-                exit_code,
-                log_path,
-            } => {
+            SessionUpdate::JobFinished { job } => {
+                let code = job.exit_code.map_or_else(String::new, |code| format!(" ({code})"));
+                let status_str = serde_json::to_value(&job.status)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("{:?}", job.status));
                 let _ = writeln!(
                     out,
-                    "\n[后台任务 {job_id} 结束：{}，退出码 {:?}，日志 {log_path}]",
-                    first_line(&command),
-                    exit_code
+                    "\n[后台任务 {} 结束：{} {}{code}，日志 {}]",
+                    job.job_id,
+                    first_line(&job.command),
+                    status_str,
+                    job.log_uri
                 );
             }
             SessionUpdate::WorkspaceChanged { violation, changes } => {
@@ -285,7 +287,11 @@ impl Renderer {
             | SessionUpdate::PromptStarted { .. }
             | SessionUpdate::SteeringApplied { .. }
             | SessionUpdate::PromptRewound { .. }
-            | SessionUpdate::LockChanged { .. } => {}
+            | SessionUpdate::LockChanged { .. }
+            | SessionUpdate::JobStarted { .. }
+            | SessionUpdate::JobUpdated { .. }
+            | SessionUpdate::JobOutput { .. }
+            | SessionUpdate::JobFinished { .. } => {}
         }
     }
 }

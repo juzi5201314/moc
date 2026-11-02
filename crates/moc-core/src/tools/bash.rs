@@ -7,13 +7,15 @@ use std::time::Duration;
 use futures_util::future::BoxFuture;
 use grep_matcher::Matcher;
 use moc_llm::ToolDef;
+use moc_protocol::methods::{JobLifecycle, JobOrigin};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::job::ForegroundEnd;
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, ToolOutput, schema};
 
 mod group;
-pub(crate) use super::job_log::{JobLog, JobLogMode};
+pub(crate) use super::job_log::JobLog;
 pub(crate) use group::ProcessGroup;
 mod process;
 pub(crate) use process::{Process, ProcessExit};
@@ -156,12 +158,14 @@ impl Tool for BashTool {
     fn def(&self) -> ToolDef {
         let description = match crate::shell::detect() {
             Some(shell) => format!(
-                "Run a shell command. The active shell is {} ({}); write {} commands. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.",
+                "Run a shell command. The active shell is {} ({}); write {} commands. {BACKGROUND_NOTE}",
                 shell.label(),
                 shell.program.display(),
                 crate::shell::dialect(shell),
             ),
-            None => "Run a shell command. No supported shell was found on this platform. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.".to_owned(),
+            None => format!(
+                "Run a shell command. No supported shell was found on this platform. {BACKGROUND_NOTE}"
+            ),
         };
         ToolDef::new(
             "bash",
@@ -215,23 +219,28 @@ impl Tool for BashTool {
                 ));
             }
             let asynchronous = args.asynchronous;
-            let command = args.command.clone();
             let job_id = next_job_id(&ctx.paths, &ctx.state).await?;
             let output_path = ctx.paths.jobs().join(format!("{job_id}.log"));
-            let log_mode = match lifecycle {
-                BashLifecycle::Monitored => JobLogMode::Monitored,
-                BashLifecycle::Persistent => JobLogMode::Persistent,
-            };
             let log_capacity = match lifecycle {
                 BashLifecycle::Monitored => ctx.config.tools.bash.max_output_bytes,
                 BashLifecycle::Persistent => ctx.config.tools.bash.persistent_log_bytes,
             };
-            let log = JobLog::create(output_path.clone(), log_mode, log_capacity)
+            let log = JobLog::create(output_path.clone(), log_capacity)
                 .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
             let permit = if asynchronous {
                 Some(ctx.jobs.reserve(&ctx.config.tools.job, &ctx.cancel).await?)
             } else {
                 None
+            };
+            let spec = super::job::JobSpec {
+                id: job_id.clone(),
+                command: args.command.clone(),
+                description: args.description.clone(),
+                log: log.clone(),
+                lifecycle: match lifecycle {
+                    BashLifecycle::Monitored => JobLifecycle::Monitored,
+                    BashLifecycle::Persistent => JobLifecycle::Persistent,
+                },
             };
             let limits = ctx.config.tools.bash.limits.resolve();
             let process = Process::spawn(
@@ -243,22 +252,8 @@ impl Tool for BashTool {
                 limits,
             )
             .await?;
-            if asynchronous {
-                ctx.jobs.start(
-                    ctx.clone(),
-                    job_id.clone(),
-                    command,
-                    output_path.clone(),
-                    log,
-                    process,
-                    permit.expect("后台任务名额已预留"),
-                    match lifecycle {
-                        BashLifecycle::Monitored => super::job::JobLifecycle::Monitored,
-                        BashLifecycle::Persistent => super::job::JobLifecycle::Persistent,
-                    },
-                    super::job::JobOrigin::Explicit,
-                    timeout,
-                )?;
+            if let Some(permit) = permit {
+                ctx.jobs.start_background(ctx, spec, process, permit)?;
                 let uri = ctx
                     .artifact_store()
                     .uri_for_path(&output_path)
@@ -267,36 +262,76 @@ impl Tool for BashTool {
                     "Background {lifecycle:?} job {job_id} started; completion is reported automatically; log: {uri}"
                 )));
             }
-            let result = wait_foreground(
-                ctx,
-                process,
-                job_id.clone(),
-                command,
-                output_path.clone(),
-                log,
-                timeout,
-            )
-            .await?;
-            let Some(result) = result else {
-                let uri = ctx
-                    .artifact_store()
-                    .uri_for_path(&output_path)
-                    .map_err(|error| ToolError::new(error.code, error.message))?;
-                return Ok(ToolOutcome::success(format!(
-                    "Command exceeded the foreground threshold; monitored job {job_id} continues in the background; completion is reported automatically; log: {uri}"
-                )));
-            };
-            Ok(exit_outcome(
-                output_path,
-                result,
-                timeout.map_or(0, |value| value.as_secs()),
-                ctx.permission,
-                ctx.config.sandbox.on_denied,
-                ctx.config.sandbox.allow_unsandboxed,
-                limits,
-            ))
+            let after = ctx.config.tools.bash.foreground_after_secs;
+            let max_running = ctx.config.tools.job.max_running;
+            // job 工具关闭时模型无法管理后台任务，命令只能在前台跑完。
+            let background_after = ctx
+                .config
+                .tools
+                .job
+                .enabled
+                .then(|| (Duration::from_secs(after), max_running));
+            let mut foreground = ctx.jobs.start_foreground(ctx, spec, process)?;
+            match foreground.wait(&ctx.cancel, background_after).await {
+                ForegroundEnd::Backgrounded => Ok(backgrounded_outcome(ctx, &job_id, &log, after)),
+                ForegroundEnd::Finished(result) => {
+                    let mut outcome = exit_outcome(
+                        output_path,
+                        result?,
+                        timeout.map_or(0, |value| value.as_secs()),
+                        ctx.permission,
+                        ctx.config.sandbox.on_denied,
+                        ctx.config.sandbox.allow_unsandboxed,
+                        limits,
+                    );
+                    if foreground.slots_full
+                        && let ToolOutput::File { suffix, .. } = &mut outcome.content
+                    {
+                        suffix.push_str(&format!(
+                            "\n\n[jobs: still running after {after}s but all {max_running} background slots in this session were busy, so it stayed in the foreground; kill or wait for jobs you no longer need]"
+                        ));
+                    }
+                    Ok(outcome)
+                }
+            }
         })
     }
+}
+
+/// 工具描述里关于自动转后台的说明：模型应当预先知道长命令不会一直阻塞。
+const BACKGROUND_NOTE: &str = "A monitored command still running after the foreground threshold (tools.bash.foreground_after_secs) moves to the background as a job and the call returns early; its completion is reported to you automatically, so do not poll it. Prefer fast, narrow commands (one package, one test, a filtered path) and non-interactive flags; start known-long builds or test suites with async=true. Use async=true with lifecycle=persistent only for long-lived services; persistent jobs never complete on their own.";
+
+/// 转入后台时附在结果里的输出尾部行数。
+const BACKGROUNDED_TAIL_LINES: usize = 20;
+
+/// 前台命令转入后台时的结果：交代原因、已有输出和下一步怎样避免同样慢。
+fn backgrounded_outcome(ctx: &ToolCtx, job_id: &str, log: &JobLog, after: u64) -> ToolOutcome {
+    let info = ctx.jobs.info(job_id);
+    let lead = match info.as_ref().map(|info| info.origin) {
+        Some(JobOrigin::UserBackground) => {
+            format!("The user moved this command to the background as monitored job {job_id}")
+        }
+        _ => format!(
+            "Command was still running after {after}s and moved to the background as monitored job {job_id}"
+        ),
+    };
+    let uri = info.map_or_else(
+        || log.path().display().to_string(),
+        |info| info.log_uri,
+    );
+    let (tail, elided) = log
+        .read_tail(BACKGROUNDED_TAIL_LINES)
+        .unwrap_or_else(|error| (format!("[E_JOB_LOG] failed to read log: {error}"), false));
+    let tail = if tail.trim().is_empty() {
+        "(no output yet)".to_owned()
+    } else if elided {
+        format!("[the middle of the output was dropped]\n{tail}")
+    } else {
+        tail
+    };
+    ToolOutcome::success(format!(
+        "{lead}. Its completion is reported automatically; continue with other work instead of polling with job wait.\nOutput so far:\n{tail}\nLog: {uri}\nIf this command is routinely slow, make the next one cheaper: narrow its scope, avoid rebuilding or refetching what is already done, use non-interactive flags, or start it with async=true from the outset."
+    ))
 }
 
 /// 用户手动执行命令：用户输入本身就是授权，不受模型工具开关、模式限制和自动转后台影响。
@@ -325,12 +360,8 @@ pub(crate) async fn run_manual(
     let job_id = next_job_id(paths, state).await?;
     let output_path = paths.jobs().join(format!("{job_id}.log"));
     let timeout = Duration::from_secs(config.monitored_timeout_secs.min(config.max_timeout_secs));
-    let log = JobLog::create(
-        output_path.clone(),
-        JobLogMode::Monitored,
-        config.max_output_bytes,
-    )
-    .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
+    let log = JobLog::create(output_path.clone(), config.max_output_bytes)
+        .map_err(|error| ToolError::new("E_BASH_LOG", error.to_string()))?;
     let args = BashArgs {
         description: None,
         command,
@@ -384,7 +415,7 @@ fn exit_outcome(
     let mut suffix = render_exit(
         result.code.unwrap_or(-1),
         result.timed_out,
-        result.output_truncated,
+        result.killed,
         timeout,
     );
     if result.sandbox_denied
@@ -421,77 +452,17 @@ fn exit_outcome(
         path: output_path,
         suffix,
     });
-    outcome.is_error = result.timed_out || result.output_truncated || result.code != Some(0);
+    outcome.is_error = result.timed_out || result.killed || result.code != Some(0);
     outcome.error_code = if result.timed_out {
         Some("E_TIMEOUT".into())
-    } else if result.output_truncated {
-        Some("E_OUTPUT_LIMIT".into())
+    } else if result.killed {
+        Some("E_KILLED".into())
     } else if result.code != Some(0) {
         Some("E_BASH_EXIT".into())
     } else {
         None
     };
     outcome
-}
-
-async fn wait_foreground(
-    ctx: &ToolCtx,
-    mut process: Process,
-    job_id: String,
-    command: String,
-    output_path: PathBuf,
-    log: JobLog,
-    timeout: Option<Duration>,
-) -> Result<Option<ProcessExit>, ToolError> {
-    enum Selection {
-        Finished(Result<ProcessExit, ToolError>),
-        Background,
-        Cancelled,
-    }
-    let selection = tokio::select! {
-        biased;
-        result = &mut process.completion => Selection::Finished(result),
-        _ = ctx.cancel.cancelled() => Selection::Cancelled,
-        _ = tokio::time::sleep(Duration::from_secs(ctx.config.tools.bash.foreground_after_secs)) => Selection::Background,
-    };
-    match selection {
-        Selection::Finished(result) => result.map(Some),
-        Selection::Background => {
-            if ctx.config.tools.job.enabled
-                && let Some(permit) = ctx.jobs.slots.try_acquire(ctx.config.tools.job.max_running)
-            {
-                ctx.jobs.start(
-                    ctx.clone(),
-                    job_id,
-                    command,
-                    output_path,
-                    log,
-                    process,
-                    permit,
-                    super::job::JobLifecycle::Monitored,
-                    super::job::JobOrigin::AutoBackground,
-                    timeout,
-                )?;
-                Ok(None)
-            } else {
-                tokio::select! {
-                    result = &mut process.completion => result.map(Some),
-                    _ = ctx.cancel.cancelled() => {
-                        process.group.kill()?;
-                        let _ = process.completion.await;
-                        Err(ToolError::new("E_CANCELLED", "command cancelled"))
-                    }
-                }
-            }
-        }
-        Selection::Cancelled => {
-            process.group.kill()?;
-            if let Err(error) = process.completion.await {
-                tracing::warn!(%error, "取消后回收命令失败");
-            }
-            Err(ToolError::new("E_CANCELLED", "command cancelled"))
-        }
-    }
 }
 
 pub(crate) fn reject_denied(patterns: &[String], command: &str) -> Result<(), ToolError> {
@@ -584,11 +555,11 @@ async fn next_job_id(
     }
 }
 
-fn render_exit(status: i32, timed_out: bool, output_truncated: bool, timeout: u64) -> String {
+fn render_exit(status: i32, timed_out: bool, killed: bool, timeout: u64) -> String {
     if timed_out {
         format!("\n(killed after {timeout}s timeout)")
-    } else if output_truncated {
-        "\n(killed after output limit)".into()
+    } else if killed {
+        "\n(killed)".into()
     } else if status != 0 {
         format!("\n(exit {status})")
     } else {

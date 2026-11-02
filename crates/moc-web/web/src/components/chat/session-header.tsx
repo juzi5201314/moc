@@ -4,6 +4,7 @@ import {
   CopyIcon,
   FolderIcon,
   GitBranchIcon,
+  ListTodoIcon,
   LockIcon,
   MinimizeIcon,
   MoreHorizontalIcon,
@@ -181,6 +182,14 @@ export function SessionHeader({ sessionId }: { sessionId: string }) {
       </div>
 
       <div className="flex shrink-0 items-center gap-0.5">
+        {!isDraft && (
+          <IconButton
+            label="后台任务"
+            onClick={() => useUi.getState().set({ jobsSession: sessionId })}
+          >
+            <ListTodoIcon />
+          </IconButton>
+        )}
         {view.readOnly && !view.info.parent_session_id && (
           <Button
             variant="ghost"
