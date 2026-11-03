@@ -8,10 +8,6 @@ use moc_protocol::{
 use serde::Deserialize;
 use serde_json::Value;
 
-/// 无人应答的兜底等待：到点按「未回答」继续，别让提问在无人值守的终端上
-/// 永久阻塞整轮任务（对齐 Grok Build 的 ask_user_question 默认超时）。
-const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
-
 use super::{Tier, Tool, ToolCtx, ToolError, ToolOutcome, schema};
 
 #[derive(Deserialize)]
@@ -102,18 +98,16 @@ impl Tool for AskTool {
                 request_id,
                 questions: questions.clone(),
             };
-            let requester = ctx.request.requester();
-            let result = requester.request::<SessionRequestAsk>(params);
-            // 用户主动不回答是正常收场而不是前端故障：回明确语义，模型不会
-            // 收到错误，也就不会为「提问失败」道歉或重试。
-            let result = match tokio::time::timeout(ASK_TIMEOUT, result).await {
-                Ok(result) => ask_settled(result)?,
-                Err(_elapsed) => {
-                    return Ok(ToolOutcome::success(
-                        "The user did not answer within the time limit; continue without an answer.",
-                    ));
-                }
-            };
+            // 不设超时：用户不作答就一直等，问题在前端保持显示；取消、跳过、
+            // 提示中止或连接断开都会收场。用户主动不回答是正常收场而不是前端
+            // 故障：回明确语义，模型不会收到错误，也就不会为「提问失败」道歉
+            // 或重试。
+            let result = ask_settled(
+                ctx.request
+                    .requester()
+                    .request::<SessionRequestAsk>(params)
+                    .await,
+            )?;
             if result.answers.is_empty() {
                 return Ok(ToolOutcome::success("The user did not answer."));
             }
