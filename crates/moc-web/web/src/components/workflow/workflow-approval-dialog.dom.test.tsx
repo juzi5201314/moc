@@ -6,9 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkflowApproval } from "@/protocol/types";
 
 const { approve, flags } = vi.hoisted(() => ({
-  approve: vi.fn((_sessionId: string, _requestId: string, _decision: unknown) =>
-    Promise.resolve(),
-  ),
+  approve: vi.fn((_sessionId: string, _requestId: string, _decision: unknown) => Promise.resolve()),
   flags: { readOnly: false },
 }));
 
@@ -29,16 +27,16 @@ vi.mock("@/components/workflow/workflow-graph", () => ({
 
 // 桩：点击按钮即回传 `<target>:high`，便于断言覆盖写进 decision。
 vi.mock("@/components/workflow/workflow-model-select", () => ({
-  WorkflowModelSelect: ({ value, onSelect, disabled }: {
+  WorkflowModelSelect: ({
+    value,
+    onSelect,
+    disabled,
+  }: {
     value: string;
     onSelect: (s: string) => void;
     disabled?: boolean;
   }) => (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onSelect(`${value || "picked"}:high`)}
-    >
+    <button type="button" disabled={disabled} onClick={() => onSelect(`${value || "picked"}:high`)}>
       {value || "select"}
     </button>
   ),
@@ -54,7 +52,7 @@ import { WorkflowApprovalDialog } from "./workflow-approval-dialog";
 const approval: WorkflowApproval = {
   request_id: "req-1",
   run_id: "run-1",
-  script: "phase(\"a\")",
+  script: 'phase("a")',
   plan: {
     phases: [{ id: "p1", name: "a", sites: ["p1", "r1"] }],
     edges: [],

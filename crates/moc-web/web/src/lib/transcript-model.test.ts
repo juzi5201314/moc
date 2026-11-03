@@ -212,7 +212,12 @@ describe("applyUpdate", () => {
       command: { command: "cargo build", exclude_from_context: false },
     });
     applyUpdate(view, { type: "job_started", job }, 1_000);
-    applyUpdate(view, { type: "job_output", job_id: "job_1", tool_call_id: "bash_1", tail: "Compiling moc" });
+    applyUpdate(view, {
+      type: "job_output",
+      job_id: "job_1",
+      tool_call_id: "bash_1",
+      tail: "Compiling moc",
+    });
     const finished: JobInfo = { ...job, status: "exited", exit_code: 0, duration_ms: 2_500 };
     applyUpdate(view, { type: "job_finished", job: finished }, 3_500);
     const bash = view.blocks[0];

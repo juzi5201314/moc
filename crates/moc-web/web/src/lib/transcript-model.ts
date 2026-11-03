@@ -227,7 +227,10 @@ export function findTool(blocks: Block[], toolCallId: string): ToolBlock | undef
   return undefined;
 }
 
-function findBash(view: SessionView, toolCallId: string): Extract<Block, { kind: "bash" }> | undefined {
+function findBash(
+  view: SessionView,
+  toolCallId: string,
+): Extract<Block, { kind: "bash" }> | undefined {
   for (let index = view.blocks.length - 1; index >= 0; index -= 1) {
     const block = view.blocks[index];
     if (block.kind === "bash" && block.toolCallId === toolCallId) return block;

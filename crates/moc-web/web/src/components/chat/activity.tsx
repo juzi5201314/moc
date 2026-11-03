@@ -264,7 +264,12 @@ function ReasoningRow({
 
 // ---------- 工具 ----------
 
-function toolSuffix(tool: ToolBlock, stat?: string, statError?: boolean, now = Date.now()): ReactNode {
+function toolSuffix(
+  tool: ToolBlock,
+  stat?: string,
+  statError?: boolean,
+  now = Date.now(),
+): ReactNode {
   if (tool.status === "running") {
     const elapsed = tool.job?.started_at_ms ? now - tool.job.started_at_ms : undefined;
     return (
@@ -560,7 +565,11 @@ function bashAsTool(block: Extract<Block, { kind: "bash" }>): ToolBlock {
     name: "bash",
     arguments: JSON.stringify({ command: block.command }),
     status:
-      block.output === undefined && !block.job?.status?.includes("exited") ? "running" : block.isError ? "error" : "completed",
+      block.output === undefined && !block.job?.status?.includes("exited")
+        ? "running"
+        : block.isError
+          ? "error"
+          : "completed",
     result: block.output ?? block.liveOutput,
     isError: Boolean(block.isError),
     images: [],
@@ -651,9 +660,23 @@ export function ActivityGroup({
               />
             );
           case "tool":
-            return <ToolRow key={`${block.id}:${tools}`} tool={block} axis={tools} sessionId={sessionId} />;
+            return (
+              <ToolRow
+                key={`${block.id}:${tools}`}
+                tool={block}
+                axis={tools}
+                sessionId={sessionId}
+              />
+            );
           case "bash":
-            return <ToolRow key={`${block.id}:${tools}`} tool={bashAsTool(block)} axis={tools} sessionId={sessionId} />;
+            return (
+              <ToolRow
+                key={`${block.id}:${tools}`}
+                tool={bashAsTool(block)}
+                axis={tools}
+                sessionId={sessionId}
+              />
+            );
           case "agent-message":
             return <AgentMessageRow key={`${block.id}:${tools}`} block={block} axis={tools} />;
           case "status":

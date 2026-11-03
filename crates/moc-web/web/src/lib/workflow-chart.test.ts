@@ -35,10 +35,7 @@ describe("chartToMermaid", () => {
   });
 
   it("scatter：quadrantChart 归一化并注实际范围", () => {
-    const out = chartToMermaid(
-      { type: "scatter", x: { field: "x" }, y: { field: "v" } },
-      items,
-    );
+    const out = chartToMermaid({ type: "scatter", x: { field: "x" }, y: { field: "v" } }, items);
     expect(out).toContain("quadrantChart");
     expect(out).toContain("y 1..4");
   });

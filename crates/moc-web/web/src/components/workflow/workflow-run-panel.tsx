@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import { streamdownControls, streamdownPlugins } from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -16,11 +18,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { WorkflowGraph } from "@/components/workflow/workflow-graph";
 import { WorkflowModelSelect } from "@/components/workflow/workflow-model-select";
-import { chartToMermaid, type ChartSpecLite } from "@/lib/workflow-chart";
+import { type ChartSpecLite, chartToMermaid } from "@/lib/workflow-chart";
 import type { WorkflowRunStatus } from "@/protocol/types";
 import { useTranscript } from "@/store/transcript";
 import type { WorkflowRunView } from "@/store/workflow";
@@ -115,9 +115,9 @@ function ArtifactBlock({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {versions.map((_, vi) => (
-              <SelectItem key={vi + 1} value={String(vi + 1)}>
-                v{vi + 1}/{versions.length}
+            {Array.from({ length: versions.length }, (_, i) => i + 1).map((v) => (
+              <SelectItem key={v} value={String(v)}>
+                v{v}/{versions.length}
               </SelectItem>
             ))}
           </SelectContent>
